@@ -25,7 +25,7 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
 import { normalizeSchemaRecoveryLimit, recoverSchemas } from './schema.js';
-import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaDependencyGeneration, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
 import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
@@ -35,7 +35,7 @@ import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
-import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
+import { createLazyAppAnalysisQueryAPI } from './analysis/query/lazy-app-adapter.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 
@@ -161,18 +161,23 @@ export async function ensureRecognitionState(app, options = {}) {
   const knowledgeRev = Number(app.knowledge?.revision ?? 0);
   const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
   if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
-  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
+  const busy = app.recognitionBusy;
+  if (busy && busy.controller && app.recognitionBusyKnowledgeRev === knowledgeRev && !busy.controller.signal.aborted) {
+    return waitForAppProducer(busy, options.signal ?? null);
+  }
   const epoch = app.backend.gen;
   const max = Math.min(500000, Math.max(1000, coverageBudgetNumber(options.maxFunctions, 350000)));
   const knowledgeLimit = Math.min(2048, Math.max(0, coverageBudgetNumber(options.knowledgeLimit, 512)));
+  const producerController = new AbortController();
+  const producerState = { controller: producerController, waiters: 0, settled: false, promise: null };
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
-    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
+    if (producerController.signal.aborted || epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
     // Symbol metadata can change while the async state build yields. Pin the
     // generation after optional metadata producers finish and reject any
     // snapshot that crosses a symbol-index or knowledge mutation.
     const symbolGen = sym.gen;
-    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
+    const isCurrent = () => !producerController.signal.aborted && epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
@@ -183,15 +188,16 @@ export async function ensureRecognitionState(app, options = {}) {
     app.recognitionKnowledgeRev = knowledgeRev;
     return state;
   })();
-  app.recognitionBusy = pending;
-  app.recognitionBusyKnowledgeRev = knowledgeRev;
-  try { return await pending; }
-  finally {
-    if (app.recognitionBusy === pending) {
+  producerState.promise = pending.finally(() => {
+    if (app.recognitionBusy === producerState) {
       app.recognitionBusy = null;
       app.recognitionBusyKnowledgeRev = null;
     }
-  }
+    producerState.settled = true;
+  });
+  app.recognitionBusy = producerState;
+  app.recognitionBusyKnowledgeRev = knowledgeRev;
+  return waitForAppProducer(producerState, options.signal ?? null);
 }
 
 
@@ -221,6 +227,7 @@ export class App {
     this.schemas = null;        // データファイルの表（schema.js）
     this.schemasBusy = null;
     this.schemasBusyEpoch = -1;
+    this.schemasBusyGeneration = -1;
     this.stringsBusy = null;
     this.stringsBusyEpoch = -1;
     this.lastGoal = null;       // 直近に調べた目的
@@ -328,7 +335,7 @@ export class App {
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
-    this.analysisQueries = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(this));
+    this.analysisQueries = createLazyAppAnalysisQueryAPI(this);
     this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');
@@ -580,7 +587,7 @@ export class App {
     this.dom.addrCur.textContent = addrHex(addr);
     const total = this.viewer.totalRows;
     this.dom.stRight.textContent = total
-      ? t('status.rowOf', { cur: (row + 1).toLocaleString(), total: total.toLocaleString() })
+      ? t('status.rowOf', { cur: (typeof row === 'bigint' ? row + 1n : row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
     this.store.set({ currentAddress: addr });
   }
@@ -598,7 +605,8 @@ export class App {
     if (row == null) {
       const sel = this.viewer.selectedRow;
       const top = this.viewer.topRow();
-      const visible = sel >= top && sel < top + this.viewer.visibleRows();
+      const bottom = typeof top === 'bigint' ? top + BigInt(this.viewer.visibleRows()) : top + this.viewer.visibleRows();
+      const visible = sel >= top && sel < bottom;
       row = visible ? sel : top;
     }
     this.viewer.beginRange(row);
@@ -719,6 +727,7 @@ export class App {
       this.schemas = null;
       this.schemasBusy = null;
       this.schemasBusyEpoch = -1;
+      this.schemasBusyGeneration = -1;
       this.stringsBusy = null;
       this.stringsBusyEpoch = -1;
       this.objcBusy = null;
@@ -760,6 +769,13 @@ export class App {
    * exact seedの正確さと一覧の網羅性は分離し、全region走査済みの時だけcompleteにする。
    */
   async ensureFunctions(region, onProgress) {
+    // A non-function progress observer must never reach the backend callback:
+    // truthy junk (true, {}, []) would be invoked by the backend at the first
+    // progress tick and abort discovery with a raw TypeError. Normalize the
+    // options-object spelling exactly like ensureProgram/ensureStrings (#5448).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     const epoch=this.backend.gen;
     if(this.symbolsReady){try{await this.symbolsReady;}catch{/* names are optional */}}
     if(epoch!==this.backend.gen)return null;
@@ -780,7 +796,7 @@ export class App {
         ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
       if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
       try{
-        const res=await this.backend.guessFunctions(r.id,share,onProgress&&((p)=>onProgress({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+        const res=await this.backend.guessFunctions(r.id,share,progressFn&&((p)=>progressFn({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
         if(epoch!==this.backend.gen)return null;
         if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
         const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
@@ -879,16 +895,20 @@ export class App {
   async ensureSchemas(onProgress) {
     const epoch = this.backend.gen;
     const maxSchemas = normalizeSchemaRecoveryLimit();
-    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas)) return this.schemas;
-    if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
+    const generation = schemaDependencyGeneration(this);
+    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas, generation)) return this.schemas;
+    if (this.schemasBusy && this.schemasBusyEpoch === epoch && this.schemasBusyGeneration === generation) return this.schemasBusy;
     this.schemasBusyEpoch = epoch;
+    this.schemasBusyGeneration = generation;
     this.schemasBusy = (async () => {
       try {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
+        const boundGeneration = Number.isSafeInteger(program?.gen) ? program.gen : generation;
+        const isCurrent = epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this);
         if (!program) {
-          this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+          if (isCurrent) this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
           return this.schemas;
         }
         const read = (addr, len) => this.backend.readAt(addr, len)
@@ -896,17 +916,18 @@ export class App {
         const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
         const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
           limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
-        if (epoch === this.backend.gen) {
-          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+        if (epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this)) {
+          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
         }
       } catch {
-        if (epoch === this.backend.gen) {
-          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas });
+        if (epoch === this.backend.gen && generation === schemaDependencyGeneration(this)) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas, dependencyGeneration: generation });
         }
       } finally {
-        if (this.schemasBusyEpoch === epoch) {
+        if (this.schemasBusyEpoch === epoch && this.schemasBusyGeneration === generation) {
           this.schemasBusy = null;
           this.schemasBusyEpoch = -1;
+          this.schemasBusyGeneration = -1;
         }
       }
       return epoch === this.backend.gen ? this.schemas : null;
@@ -980,7 +1001,7 @@ export class App {
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
           if (!collectionBudget.accept(s.text)) break;
-          out.push({ addr: s.addr, text: s.text, region: r });
+          out.push({ addr: s.addr, text: s.text, byteLength: s.byteLength, region: r });
         }
         if (res.capped && !collectionBudget.truncationReason) collectionBudget.truncationReason = res.truncationReason || 'result-budget';
       }
@@ -1039,10 +1060,27 @@ export class App {
       const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
       if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
       res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
-      this.semantic={regionId:region.id,model:res.model,result:res};
-      if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
+      if(this._presentationMatchesFunction(range.start)){
+        this.semantic={regionId:region.id,model:res.model,result:res};
+        if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
+      }
       return res;
     } catch { return null; }
+  }
+
+  _presentationMatchesFunction(start) {
+    const sym=this.symbols;
+    if(typeof sym?.functionAt!=='function')return true;
+    const row=this.store.get('selectedRow');
+    if(typeof row!=='number'||!Number.isSafeInteger(row)||row<0)return true;
+    if(typeof this.viewer?.rowAddress!=='function')return true;
+    let selected;
+    try{selected=BigInt(this.viewer.rowAddress(row));}catch{return true;}
+    let selectedFunction;
+    let targetFunction;
+    try{selectedFunction=sym.functionAt(selected);targetFunction=sym.functionAt(BigInt(start));}catch{return true;}
+    if(selectedFunction?.start==null||targetFunction?.start==null)return true;
+    try{return BigInt(selectedFunction.start)===BigInt(targetFunction.start);}catch{return true;}
   }
 
   /* ── ファイルを開く ───────────────────────────────────────── */
@@ -1311,6 +1349,9 @@ export class App {
           budget:20000,
           signal:controller.signal,
           resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
+          // ARM64_32 is a 64-bit Mach-O class with 4-byte native pointers: the
+          // architecture is the canonical ABI authority for Swift pointer reads (#8309).
+          architecture:this.store.get('architecture'),
         });
         if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return null;
         this.swiftModel = model; this.swiftRuntime = buildSwiftRuntimeIndex(model);

@@ -95,7 +95,7 @@ function queryAlias(left, right, context) {
     evidenceIds: [`${l.start}:${l.end}:${r.start}:${r.end}`],
     proof: {
       analyzerId: 'phase7.alias.solver',
-      analyzerVersion: '1.1.0',
+      analyzerVersion: '1.1.1',
       completeness: 'complete',
       stopReason: null,
     },

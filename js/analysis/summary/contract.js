@@ -4,16 +4,20 @@
  * core, then applies the stricter serialized-envelope rules added by
  * #4314/#4320/#4695 without weakening any upstream checks.
  */
-import { deepFreeze } from '../../core/identity/index.js';
+import { canonicalAddress, createFunctionId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCompleteStatus } from '../status.js';
 import * as core from './contract-core.js';
+import { canonicalReturnEquations, returnEquationSourceMatches } from './return-equations.js';
 
 export * from './contract-core.js';
 
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.1';
+// The core constructor is the single wire-version authority. Schema 4 / 1.4
+// includes source-bound return equations; a 1.3 envelope must be recomputed.
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = core.FUNCTION_SUMMARY_CONTRACT_VERSION;
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+  'addressSpace',
 ]);
 const RETURN_PROVENANCE_KINDS = new Set(['arg', 'root', 'allocation', 'unknown']);
 
@@ -50,18 +54,6 @@ function optionalInteger(value, code) {
   if (typeof value === 'string' && /^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(value.trim())) return BigInt(value.trim());
   throw new TypeError(code);
 }
-function strictProvenanceIndex(value) {
-  if (typeof value === 'bigint') {
-    const number = Number(value);
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
-  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
-    const number = Number(value.trim());
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  return null;
-}
 function strictProvenanceOffset(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
@@ -94,8 +86,19 @@ function validateReturnProvenance(value) {
   if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
   const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
   if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
-  const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
-  const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
+  // #4314 pin: digit strings are laundering for argIndex/returnIndex. The
+  // canonical offset is the only field whose wire spelling is a string.
+  if (value.argIndex != null && typeof value.argIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-arg-index');
+  }
+  if (value.returnIndex != null && typeof value.returnIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-return-index');
+  }
+  if (value.addressSpace != null) {
+    nonEmptyString(value.addressSpace, 'function-summary-invalid-return-provenance-address-space');
+  }
+  const argIndex = optionalIndex(value.argIndex, 'function-summary-invalid-return-provenance-arg-index');
+  const returnIndex = optionalIndex(value.returnIndex, 'function-summary-invalid-return-provenance-return-index');
   const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
   const root = value.rootEntityId == null ? null : nonEmptyString(value.rootEntityId, 'function-summary-invalid-return-provenance-identity');
   const allocation = value.allocationSiteId == null ? null : nonEmptyString(value.allocationSiteId, 'function-summary-invalid-return-provenance-identity');
@@ -110,6 +113,12 @@ function validateReturnProvenance(value) {
   }
   if (kind === 'arg' && argIndex == null) throw new TypeError('function-summary-invalid-return-provenance-arg-index');
   if ((kind === 'root' || kind === 'allocation') && root == null && allocation == null) throw new TypeError('function-summary-invalid-return-provenance-identity');
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242); checked after the identity code so malformed identities keep
+  // their original error precedence.
+  if ((kind === 'root' || kind === 'allocation') && value.addressSpace == null) {
+    throw new TypeError('function-summary-invalid-return-provenance-address-space');
+  }
   return true;
 }
 function validateMemoryEffectInput(input) {
@@ -130,7 +139,12 @@ function validateUnknownCallInput(input) {
 function validateDirectCallInput(input) {
   plainRecord(input, 'function-summary-invalid-direct-call');
   nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
-  validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  // A direct call with zero targets is an unresolved call, not a no-op: it
+  // must be carried as an unknown-call effect with the broad boundary, never
+  // as a direct-call record (#5328).
+  if (validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids').length === 0) {
+    throw new TypeError('function-summary-direct-call-target-required');
+  }
   if (input.summaryId != null) nonEmptyString(input.summaryId, 'function-summary-invalid-summary-id');
 }
 function validateIndirectCallInput(input) {
@@ -138,6 +152,13 @@ function validateIndirectCallInput(input) {
   nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
   validateStringList(input.candidateEntityIds, 'function-summary-invalid-target-ids');
   optionalBoolean(input.exhaustive, 'function-summary-invalid-exhaustive');
+  // `exhaustive:true` claims the candidate universe is complete and lets the
+  // summary omit the unknown-call fallback. That claim is only meaningful for
+  // a non-empty universe: an empty "exhaustive" set describes an indirect call
+  // with no possible target yet still publishes complete/pure (#5346).
+  if (input.exhaustive === true && input.candidateEntityIds.length === 0) {
+    throw new TypeError('function-summary-exhaustive-indirect-requires-candidates');
+  }
 }
 function detached(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;
@@ -156,6 +177,8 @@ function validateSummaryInput(input) {
   if (input.functionId != null) nonEmptyString(input.functionId, 'function-summary-function-id-required');
   for (const field of ['inputs','returnValues','registerEffects','allocations','frees']) validateStringList(input[field], `function-summary-invalid-${field}`);
   for (const value of denseArray(input.returnProvenance, 'function-summary-invalid-return-provenance')) validateReturnProvenance(value);
+  if (input.returnSourceDigest != null) nonEmptyString(input.returnSourceDigest, 'function-summary-invalid-return-source-digest');
+  canonicalReturnEquations(input.returnEquations, input, value => { validateReturnProvenance(value); return value; });
   for (const value of denseArray(input.memoryReadRegions, 'function-summary-invalid-read-regions')) {
     validateMemoryEffectInput(value);
     if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');
@@ -172,10 +195,76 @@ function validateSummaryInput(input) {
   if (input.stackDelta != null) optionalInteger(input.stackDelta, 'function-summary-invalid-stack-delta');
 }
 
+// Bound newly consumed return-summary universes without confusing the number
+// of callees with the number of distinct points-to roots after their union.
+export const RETURN_SUMMARY_CANDIDATE_LIMIT = 256;
+
 export function classifyCallTargetProof(call = {}) {
   const result = core.classifyCallTargetProof(call);
   if (result.kind !== 'indirect' || result.candidateEntityIds.length > 0 || !result.exhaustive) return result;
   return deepFreeze({ ...result, exhaustive:false, exactSingletonEntityId:null });
+}
+
+/**
+ * Resolve native immediate calls against an existing summary registry. Target
+ * identity is independent of callee effect completeness: retain the canonical
+ * target value and opaque machine CALL unchanged. Neither an ABI declaration
+ * nor an address alone establishes a callee; the same-snapshot summary must
+ * already exist under the canonical function identity for that binary/slice.
+ */
+export function createSemanticCallTargetClassifier(ir, memorySsa, options = {}) {
+  let digest, nodes, values;
+  return node => {
+    const fallback = classifyCallTargetProof(node?.call);
+    const call = node?.call;
+    if (fallback.exhaustive || fallback.candidateEntityIds.length || node?.kind !== 'call'
+      || !node.attributes?.abiCallBinding
+      || call?.summarySource !== 'machine-effects-abi-neutral-call'
+      || ['targetEntityId', 'target', 'callee'].some(key => Object.hasOwn(call, key))
+      || call.targetEntityIds?.length !== 0 || call.targetValueIds?.length !== 1
+      || typeof options.summaryForTarget !== 'function' || options.signal?.aborted) return fallback;
+    try {
+      nodes ??= new Map((ir?.nodes ?? []).map(item => [item.id, item]));
+      values ??= new Map((ir?.values ?? []).map(value => [value.id, value]));
+      if (nodes.get(node.id) !== node) return fallback;
+      const identity = memorySsa?.identity, abi = node.attributes?.abiCallBinding?.abiIdentity;
+      const snapshotId = options.snapshotId ?? 'snapshot-unbound';
+      if (!identity || !abi || identity.functionId !== ir.functionId
+        || memorySsa.functionId !== ir.functionId || identity.snapshotId !== snapshotId
+        || memorySsa.snapshotId !== snapshotId || abi.snapshotId !== snapshotId
+        || !identity.binaryId || !identity.sliceId || !identity.architectureId
+        || abi.binaryId !== identity.binaryId || abi.sliceId !== identity.sliceId
+        || abi.architectureId !== identity.architectureId
+        || (abi.functionId != null && abi.functionId !== ir.functionId)) return fallback;
+      digest ??= stableDigest(ir);
+      if (identity.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.functionId !== ir.functionId) return fallback;
+      const control = node.attributes?.machineControlEffect;
+      if (control?.kind !== 'call' || control.target?.kind !== 'absolute-address'
+        || call.controlEffects?.length !== 1
+        || stableStringify(call.controlEffects[0]) !== stableStringify(control)) return fallback;
+      const target = values.get(call.targetValueIds[0]), producer = nodes.get(target?.definitionNodeId);
+      const constant = target?.metadata?.constant;
+      if (producer?.kind !== 'const' || producer.outputs?.length !== 1
+        || producer.outputs[0] !== target.id || producer.blockId !== node.blockId
+        || constant?.kind !== 'bitvector' || constant.value == null
+        || stableStringify(producer.attributes?.constant) !== stableStringify(constant)
+        || !node.origin?.instructionIds?.length
+        || stableStringify(producer.origin?.instructionIds) !== stableStringify(node.origin.instructionIds)) return fallback;
+      const address = canonicalAddress(control.target.value);
+      if (canonicalAddress(constant.value) !== address) return fallback;
+      const functionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+        canonicalStartIdentity:{ address } });
+      const summary = options.summaryForTarget(functionId);
+      if (options.signal?.aborted || !summaryIdentityMatches(summary, { functionId, snapshotId })) return fallback;
+      return deepFreeze({ kind:'direct', candidateEntityIds:[functionId], exhaustive:true,
+        exactSingletonEntityId:functionId,
+        nativeTargetFact:{ kind:'native-direct-call-target', version:1, callSiteId:node.id,
+          functionId:ir.functionId, targetFunctionId:functionId, address, snapshotId,
+          semanticIrDigest:digest, summaryDigest:functionSummaryDigest(summary) } });
+    } catch { return fallback; }
+  };
 }
 export function createMemoryEffect(input = {}) {
   validateMemoryEffectInput(input);
@@ -220,22 +309,20 @@ export function summaryIdentityMatches(summary, expected = {}) {
       canonical = createFunctionSummary(summary);
       if (!sameCanonicalValue(summary, canonical)) return false;
     }
+    if (!returnEquationSourceMatches(canonical)) return false;
     if (expected.functionId != null && (typeof expected.functionId !== 'string' || canonical.functionId !== expected.functionId)) return false;
     const status = canonical.status;
     if (expected.snapshotId != null && (typeof expected.snapshotId !== 'string' || status.snapshotId !== expected.snapshotId)) return false;
     if (expected.analyzerId != null && (typeof expected.analyzerId !== 'string' || status.analyzerId !== expected.analyzerId)) return false;
     if (expected.analyzerVersion != null && (typeof expected.analyzerVersion !== 'string' || status.analyzerVersion !== expected.analyzerVersion)) return false;
+    if (expected.digest != null && (typeof expected.digest !== 'string' || core.functionSummaryDigest(canonical) !== expected.digest)) return false;
     return true;
   } catch { return false; }
 }
 export function functionSummaryDigest(summary) { return core.functionSummaryDigest(summary); }
-export function summaryMayWriteRegion(summary, regionId) {
+export function summaryMayWriteRegion(summary, regionOrId) {
   if (!summaryIdentityMatches(summary)) return true;
-  if (!isCompleteStatus(summary.status)) return true;
-  if (summary.unknownCallEffects.length > 0) return true;
-  if (summary.memoryWriteRegions.some((effect) => effect.broad)) return true;
-  if (regionId == null) return summary.memoryWriteRegions.length > 0;
-  return summary.memoryWriteRegions.some((effect) => effect.regionId === regionId);
+  return core.summaryMayWriteRegion(summary, regionOrId);
 }
 export function summaryIsPure(summary) {
   // Allocations and frees are canonical effect dimensions of their own: a

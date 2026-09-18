@@ -34,6 +34,7 @@ import {
 import {
   ARM64E_PAC_DENOMINATOR_ID,
   ARM64E_PAC_ENCODING_FAMILIES,
+  ARM64E_PAUTH_LR_DEDICATED_MNEMONICS,
   classifyArm64ePacEncoding,
   validateArm64ePacDenominator,
 } from './arm64e-pac-denominator.mjs';
@@ -138,7 +139,7 @@ function validatePacBoundary() {
   const pac = validateArm64ePacDenominator();
   const registry = [...arm64ePointerAuthenticationMnemonics()];
   const denominatorMnemonics = [...new Set(ARM64E_PAC_ENCODING_FAMILIES.map(({ mnemonic }) => mnemonic))];
-  if (!sameSet(registry, denominatorMnemonics)) fail('arm64e-delegation-pac-registry-drift');
+  if (!sameSet(registry, [...denominatorMnemonics, ...ARM64E_PAUTH_LR_DEDICATED_MNEMONICS])) fail('arm64e-delegation-pac-registry-drift');
   if (pac.denominatorId !== ARM64E_PAC_DENOMINATOR_ID) fail('arm64e-delegation-pac-denominator-identity-drift');
 
   let baselineCaseCount = 0;

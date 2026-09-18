@@ -214,9 +214,19 @@ export function createHexToolRegistry(context = {}, options = {}) {
   register('verify_field_update', 'Deterministically verify a read-modify-write field update and preserve minimal causal paths.', verifyFieldSchema(), async ({ functionAddress, field, limit = 8, pathLimit = 8 }) => legacy.verify_field_update(functionAddress, field, { limit, pathLimit }), {
     verifier: true, cost: 'expensive', scopeSupport: functionScopes, category: 'verification', preferredPrerequisites: ['get_semantic_facts'], resultKind: 'verification', modelProjection: projectVerification,
   });
-  register('get_related_functions', 'Get bounded callers and callees around one function.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => ({
-    functionAddress, callers: (await legacy.get_callers(functionAddress, { limit })).results || [], callees: (await legacy.get_callees(functionAddress, { limit })).results || [],
-  }), { scopeSupport: ['auto', 'neighborhood', 'binary', 'project'], category: 'graph', resultKind: 'call-neighborhood', modelProjection: projectGraph });
+  register('get_related_functions', 'Get bounded callers and callees around one function. Actionable partial sides expose dedicated get_callers/get_callees continuation hints.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => {
+    const [callers, callees] = await Promise.all([
+      legacy.get_callers(functionAddress, { limit }),
+      legacy.get_callees(functionAddress, { limit }),
+    ]);
+    return buildRelatedFunctionsResult({
+      functionAddress,
+      limit,
+      callers,
+      callees,
+      cursorFor:(tool, params, offset) => pageCursor(tool, params, offset),
+    });
+  }, { scopeSupport: ['auto', 'neighborhood', 'binary', 'project'], category: 'graph', resultKind: 'call-neighborhood', modelProjection: projectGraph });
 
   register('find_constant', 'Find a bounded constant use in explicitly scoped candidate functions.', constantSchema(), async ({ value, functions, limit = 100 }) => boundedResult(await legacy.find_constant(value, { functions, limit }), limit), {
     cost: 'medium', scopeSupport: functionScopes, category: 'discovery', resultKind: 'constant-sites', modelProjection: projectSearch,
@@ -256,22 +266,29 @@ export function createHexToolRegistry(context = {}, options = {}) {
   });
 
   if (context.runtimePlatform || context.runtime) {
+    // #8681: the observation reader is a read path. It must not hold the
+    // deterministic verifier capability just because some producers label
+    // their own rows verified; only `verify_runtime_hypothesis` may.
     register('get_runtime_observations', 'Read bounded observations from the active runtime session.', runtimeObservationSchema(), async ({ functionAddress, limit = 100, cursor }) => {
       const params = { functionAddress: functionAddress || null };
       const offset = pageOffset('get_runtime_observations', params, cursor);
       return runtimeObservations(context, { functionAddress, limit, offset, cursorFor: (next) => pageCursor('get_runtime_observations', params, next) });
-    }, { verifier: true, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
+    }, { verifier: false, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
     register('verify_runtime_hypothesis', 'Run the configured deterministic runtime verifier for a hypothesis.', runtimeVerifySchema(), async ({ hypothesis, options: runtimeOptions }, callOptions = {}) => runtimeVerify(context, hypothesis, { ...(runtimeOptions || {}), signal: callOptions.signal || null }), {
-      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false,
-    });
+      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false });
   }
   if (context.binaryDiff || context.getBinaryDiff) {
+    // #8926: `get_binary_diff` is a passive read provider over a producer-supplied
+    // diff. It must not hold the deterministic verifier capability, because a
+    // provider can otherwise self-label a row `verified` and, through the shared
+    // ingestion path, mint privileged verified evidence that ProposalStore accepts
+    // as mutation authority. Only the recomputing verifiers may mint verified.
     register('get_binary_diff', 'Get a paged deterministic function-level binary diff.', { type: 'object', properties: { limit: limitProperty(100, 500), cursor: cursorProperty() }, additionalProperties: false }, async ({ limit = 100, cursor }) => {
       const params = { view: 'function-diff' };
       const offset = pageOffset('get_binary_diff', params, cursor);
       return binaryDiff(context, { limit, offset, cursorFor: (next) => pageCursor('get_binary_diff', params, next) });
     }, {
-      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'verification', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
+      verifier: false, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'semantic', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
     });
   }
 
@@ -485,6 +502,91 @@ async function semanticFactsPage(context, legacy, functionAddress, kinds, limit,
   return pageResult({ address: addr, results: page.map(compactFact), evidence: semanticEvidenceIds(page), engine: ir ? 'semantic-ir' : null }, total, offset, page.length, next == null ? null : cursorFor(next));
 }
 
+function exactRelatedCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function relatedSide(value) {
+  const rows = Array.isArray(value?.results) ? value.results : [];
+  const rawOffset = value?.offset;
+  const rawReturned = value?.returned;
+  const rawTotal = value?.total;
+  const rawComplete = value?.complete;
+  const rawTruncated = value?.truncated;
+  const total = exactRelatedCount(rawTotal);
+  const malformed = (rawOffset != null && exactRelatedCount(rawOffset) !== 0)
+    || (rawReturned != null && exactRelatedCount(rawReturned) !== rows.length)
+    || (rawTotal != null && (total == null || total < rows.length))
+    || (rawComplete !== undefined && typeof rawComplete !== 'boolean')
+    || (rawTruncated !== undefined && typeof rawTruncated !== 'boolean')
+    || (typeof rawComplete === 'boolean' && typeof rawTruncated === 'boolean' && rawTruncated === rawComplete);
+  const complete = !malformed && rawComplete === true;
+  const producerReason = typeof value?.reason === 'string' && value.reason ? value.reason : null;
+  const reason = malformed ? 'malformed-completeness'
+    : complete ? null
+      : producerReason || (rows.length === 0 && total == null ? 'continuation-progress-unprovable' : 'result-limit');
+  return {
+    rows,
+    malformed,
+    page:{
+      offset:0,
+      returned:rows.length,
+      total:malformed ? null : total,
+      complete,
+      truncated:!complete,
+      reason,
+    },
+  };
+}
+
+function relatedContinuationOffset(side, pageLimit) {
+  if (side.malformed || side.page.complete) return null;
+  if (side.rows.length > 0) return side.rows.length;
+  // The first-party graph tools consume opaque cursors as absolute offsets. If
+  // the producer authoritatively reports omitted rows but materializes none,
+  // one bounded page has still been consumed; advance by the requested page
+  // width rather than advertising an offset-zero retry. With no exact total,
+  // forward progress is not provable and the continuation is withheld.
+  if (side.page.total != null && side.page.total > 0) return pageLimit;
+  return null;
+}
+
+export function buildRelatedFunctionsResult({ functionAddress, limit = 24, callers, callees, cursorFor }) {
+  const address = addressText(functionAddress);
+  if (!address) throw new Error('invalid-related-function-address');
+  const pageLimit = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 && limit <= 1000 ? limit : 24;
+  const callerSide = relatedSide(callers);
+  const calleeSide = relatedSide(callees);
+  const continuations = {};
+  for (const [key, tool, side] of [
+    ['callers', 'get_callers', callerSide],
+    ['callees', 'get_callees', calleeSide],
+  ]) {
+    const nextOffset = relatedContinuationOffset(side, pageLimit);
+    if (nextOffset == null || typeof cursorFor !== 'function') continue;
+    continuations[key] = {
+      tool,
+      arguments:{
+        address,
+        limit:pageLimit,
+        cursor:cursorFor(tool, { address }, nextOffset),
+      },
+    };
+  }
+  const complete = callerSide.page.complete && calleeSide.page.complete;
+  return {
+    functionAddress:address,
+    callers:callerSide.rows,
+    callees:calleeSide.rows,
+    callersPage:callerSide.page,
+    calleesPage:calleeSide.page,
+    ...(Object.keys(continuations).length ? { continuations } : {}),
+    complete,
+    truncated:!complete,
+    reason:complete ? null : (callerSide.page.reason || calleeSide.page.reason || 'result-limit'),
+  };
+}
+
 function pageResult(base, total, offset, returned, cursor) {
   const complete = offset + returned >= total;
   return {
@@ -550,7 +652,7 @@ function compactSelection(selection) {
   const rows = Array.isArray(selection.instructions) ? selection.instructions : Array.isArray(selection) ? selection : [];
   return { start: addressText(selection.start ?? rows[0]?.address), end: addressText(selection.end ?? rows[rows.length - 1]?.address), instructions: rows.slice(0, 80).map((i) => ({ address: addressText(i.address), mnemonic: i.mnemonic, operands: i.operands })), total: rows.length, returned: Math.min(rows.length, 80), truncated: rows.length > 80 };
 }
-function currentFunctionAddress(context) { return addressText(context.currentAddress ?? context.activeFunction?.address ?? context.currentFunction?.address ?? context.activeFunction?.identity?.startAddr); }
+function currentFunctionAddress(context) { return addressText(context.activeFunction?.address ?? context.currentFunction?.address ?? context.activeFunction?.identity?.startAddr ?? context.currentAddress); }
 
 async function inspectFunctionRegion(context, legacy, args, offset, cursorFor) {
   const model = await legacy.__loader.get(args.functionAddress);
@@ -692,6 +794,40 @@ function projectSearchLocal(project, query, limit, offset = 0, cursorFor = null)
   const next = offset + results.length < matches.length ? offset + results.length : null;
   return pageResult({ query, results }, matches.length, offset, results.length, next != null && cursorFor ? cursorFor(next) : null);
 }
+/*
+ * #8681: `get_runtime_observations` is a reader. A producer-supplied
+ * `status:'verified'`, `verified:true`, or `verification.verified:true` is
+ * source data, not a deterministic verification verdict — only
+ * `verify_runtime_hypothesis` runs a verifier contract and may mint canonical
+ * verified evidence. Every observation branch normalizes to the same
+ * non-authoritative canonical row and keeps the producer's own claim under an
+ * explicit untrusted label so provenance is never silently erased.
+ */
+const PRODUCER_VERDICT_CLAIM = 'producerVerdictClaims';
+
+function observationVerdictClaims(row) {
+  const claims = [];
+  if (row.status === 'verified') claims.push('status:verified');
+  if (row.verified === true) claims.push('verified:true');
+  if (row.verification && typeof row.verification === 'object' && row.verification.verified === true) {
+    claims.push('verification.verified:true');
+  }
+  return claims;
+}
+
+function normalizeObservationRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const claims = observationVerdictClaims(row);
+  const reported = typeof row.status === 'string' && row.status ? row.status : 'supported';
+  const next = { ...row, verified: false, status: reported === 'verified' ? 'supported' : reported };
+  if (!claims.length) return next;
+  if (next.verification && typeof next.verification === 'object' && !Array.isArray(next.verification)) {
+    next.verification = { ...next.verification, verified: false, authority: 'producer-asserted-non-authoritative' };
+  }
+  next[PRODUCER_VERDICT_CLAIM] = claims;
+  return next;
+}
+
 async function runtimeObservations(context, { functionAddress, limit = 100, offset = 0, cursorFor }) {
   const platform = context.runtimePlatform || context.runtime;
   if (typeof platform.getObservations === 'function') {
@@ -703,22 +839,14 @@ async function runtimeObservations(context, { functionAddress, limit = 100, offs
       localOffset = offset;
     }
     const sourceRows = Array.isArray(value) ? value : (Array.isArray(value?.observations) ? value.observations : (Array.isArray(value?.results) ? value.results : []));
-    const normalized = sourceRows.map((row) => {
-      if (!row || typeof row !== 'object') return row;
-      const explicitlyVerified = row.status === 'verified' || row.verified === true || row.verification?.verified === true;
-      return { ...row, verified: explicitlyVerified, status: explicitlyVerified ? 'verified' : (row.status || 'supported') };
-    });
+    const normalized = sourceRows.map(normalizeObservationRow);
     return externalArrayPage(value, normalized, { offset, limit, localOffset, cursorFor });
   }
   const session = typeof platform.currentSession === 'function' ? platform.currentSession(false) : context.runtimeSession;
   const all = session?.evidence || session?.observations || [];
   const filtered = functionAddress ? all.filter((row) => addressText(row?.functionAddress ?? row?.function ?? row?.address) === addressText(functionAddress)) : all;
   const source = filtered.slice(offset, offset + limit);
-  const rows = source.map((row) => {
-    if (!row || typeof row !== 'object') return row;
-    const explicitlyVerified = row.status === 'verified' || row.verified === true || row.verification?.verified === true;
-    return { ...row, verified: explicitlyVerified, status: explicitlyVerified ? 'verified' : (row.status || 'supported') };
-  });
+  const rows = source.map(normalizeObservationRow);
   const next = offset + rows.length < filtered.length ? offset + rows.length : null;
   return pageResult({ results: rows }, filtered.length, offset, rows.length, next == null ? null : cursorFor(next));
 }

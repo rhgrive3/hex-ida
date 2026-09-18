@@ -6,6 +6,9 @@
  * partial, and unsupported boundaries.
  */
 
+export { COMPLETENESS_STATUS, createCompleteness } from './completeness.js';
+
+import { scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
 import { OP, MK } from '../../ir-base.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -26,42 +29,35 @@ export const ASSUMPTION_TRUST = Object.freeze({
   BOUNDED_UNROLL: 'bounded-unroll',
 });
 
-export const COMPLETENESS_STATUS = Object.freeze({
-  COMPLETE: 'complete',
-  PARTIAL: 'partial',
-  UNSUPPORTED: 'unsupported',
-});
+function requireAssumptionString(value, field) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createAssumption: ${field} must be a non-empty string`);
+  }
+  return value;
+}
 
 export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
-  if (!id || !kind || !statement) {
-    throw new TypeError('createAssumption: id, kind, and statement are required');
-  }
+  requireAssumptionString(id, 'id');
+  requireAssumptionString(kind, 'kind');
+  requireAssumptionString(statement, 'statement');
+  const resolvedSource = source === undefined ? 'translator' : requireAssumptionString(source, 'source');
   if (!Object.values(ASSUMPTION_TRUST).includes(trust)) {
     throw new TypeError(`createAssumption: unknown trust classification '${trust}'`);
   }
+  if (!Array.isArray(originIds)) {
+    throw new TypeError('createAssumption: originIds must be an array of non-empty strings');
+  }
+  const normalizedOriginIds = Array.from(
+    { length: originIds.length },
+    (_, index) => requireAssumptionString(originIds[index], 'originIds entry'),
+  );
   return Object.freeze({
-    id: String(id),
-    kind: String(kind),
-    statement: String(statement),
-    source: String(source || 'translator'),
-    originIds: Object.freeze([...originIds]),
+    id,
+    kind,
+    statement,
+    source: resolvedSource,
+    originIds: Object.freeze(normalizedOriginIds),
     trust,
-  });
-}
-
-export function createCompleteness({
-  translation = COMPLETENESS_STATUS.COMPLETE,
-  controlFlow = COMPLETENESS_STATUS.COMPLETE,
-  memoryEffects = COMPLETENESS_STATUS.COMPLETE,
-  pathCoverage = COMPLETENESS_STATUS.COMPLETE,
-  queryScope = COMPLETENESS_STATUS.COMPLETE,
-} = {}) {
-  return Object.freeze({
-    translation,
-    controlFlow,
-    memoryEffects,
-    pathCoverage,
-    queryScope,
   });
 }
 
@@ -74,31 +70,27 @@ export function classifyOpSupport(op, inst = null) {
     case OP.ADDR:
       return TRANSLATION_STATUS.EXACT;
 
-    case OP.BIN: {
-      const sub = inst?.subOp || inst?.name;
-      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
-      if (!sub || supportedBin.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
-
-    case OP.UN: {
-      const sub = inst?.subOp || inst?.name;
-      const supportedUn = ['not', 'neg'];
-      if (!sub || supportedUn.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
+    case OP.BIN:
+    case OP.UN:
+      // This public classifier receives the opcode separately; callers need
+      // not repeat it inside the optional instruction descriptor (#5202).
+      return scalarOperationSupported(inst, op) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.CMP:
+      /* #5202: a comparison without cond/subOp has no ordering or equality
+         semantic; '==' must not be invented. */
+      if (!(inst?.extra?.comparison || inst?.comparison || inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
     case OP.SEL:
+      /* #5202: a select without a condition must not become an
+         always-true ITE. */
+      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BFX:
     case OP.BFI:
-      return TRANSLATION_STATUS.UNSUPPORTED;
+      return inst?.op===op && scalarBitfieldSupported(inst) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.LOAD: {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;

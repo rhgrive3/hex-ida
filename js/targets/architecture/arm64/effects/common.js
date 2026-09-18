@@ -30,6 +30,56 @@ export function canonicalIdentityStringList(value, errorCode) {
   return value.map((entry) => canonicalIdentityString(entry, errorCode));
 }
 
+// One ordered-source resolver for MachineEffects identity fields, shared by the
+// ARM64 base owners and the ARM64e extension. The first evidence that is
+// actually PRESENT decides, and EVERY present value has to be a primitive
+// non-empty string: `String()` must never run on semantic identity, and a
+// malformed value in a later source must not be skipped because an earlier one
+// was well-formed (#5992, #8815, #8834).
+export function canonicalIdentityField(values, { fallback = null, errorCode }) {
+  let resolved = null;
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const canonical = canonicalIdentityString(value, errorCode);
+    if (resolved === null) resolved = canonical;
+  }
+  if (resolved !== null) return resolved;
+  if (fallback === null) throw new TypeError(errorCode);
+  return fallback;
+}
+
+// The memory and atomic owners used to build their own `{ instructionId, mode,
+// architectureId, dataEndianness, origin }` context with `String()` coercion, so
+// an Array or a custom-toString object collapsed into a canonical-looking
+// identity and reached their `exact` / `exact-with-intrinsic` bundles while the
+// rest of the ARM64 owners already rejected it (#5992, #8834). One shared
+// resolver keeps every owner on the same primitive-only acceptance domain.
+export const ARM64_EFFECT_DATA_ENDIANNESS = 'little';
+
+export function arm64EffectIdentityContext(decoded, context = {}) {
+  const instructionId = canonicalIdentityField(
+    [context?.instructionId, decoded?.instructionId],
+    { errorCode: 'arm64-machine-effects-instruction-id-required' },
+  );
+  return {
+    instructionId,
+    architectureId: canonicalIdentityField(
+      [context?.architectureId, decoded?.architectureId],
+      { fallback: ARM64_ARCHITECTURE_ID, errorCode: 'arm64-machine-effects-architecture-id-invalid' },
+    ),
+    mode: canonicalIdentityField(
+      [context?.mode, decoded?.mode],
+      { fallback: ARM64_MODE, errorCode: 'arm64-machine-effects-mode-invalid' },
+    ),
+    dataEndianness: canonicalIdentityField(
+      [context?.dataEndianness, decoded?.dataEndianness, context?.endian, decoded?.endian],
+      { fallback: ARM64_EFFECT_DATA_ENDIANNESS, errorCode: 'arm64-machine-effects-data-endianness-invalid' },
+    ),
+    origin: context?.origin ?? decoded?.origin ?? { instructionIds: [instructionId] },
+    options: context?.options ?? {},
+  };
+}
+
 
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
@@ -69,7 +119,7 @@ function strictInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim();
-    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
       try { return BigInt(text); } catch { return null; }
     }
   }
@@ -95,6 +145,27 @@ export function canonicalAddressValue(value) {
     try { return BigInt(text); } catch { return null; }
   }
   return null;
+}
+
+const MIN_SIGNED_ADDRESS_64 = -(1n << 63n);
+const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
+
+// Instruction addresses are architectural PCs, not decoder spellings.  They
+// must already be canonical unsigned A64 addresses; accepting an oversized PC
+// and later taking a modulo-2^64 displacement can launder malformed structured
+// evidence into an exact effect.
+export function canonicalArm64InstructionAddress(value) {
+  const address = canonicalAddressValue(value);
+  return address != null && address >= 0n && address <= MAX_UNSIGNED_ADDRESS_64 ? address : null;
+}
+
+// Decoder-facing absolute targets can legitimately arrive sign-extended. Keep
+// that compatibility while rejecting values outside the one-sign-extension
+// envelope, then publish/compare the architectural unsigned 64-bit address.
+export function canonicalArm64TargetAddress(value) {
+  const target = canonicalAddressValue(value);
+  if (target == null || target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
+  return BigInt.asUintN(64, target);
 }
 
 // Canonical target evidence carried by an ADR/ADRP target operand.
@@ -139,7 +210,13 @@ export function conditionOf(instruction) {
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) return strictInteger(explicit);
+  if (explicit != null) {
+    const target = strictInteger(explicit);
+    // A direct branch/call target is an absolute code address: a canonical
+    // integer that is negative is not an architectural A64 target and must
+    // fail closed instead of minting an exact edge (issue #5841).
+    return target != null && target >= 0n ? target : null;
+  }
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);

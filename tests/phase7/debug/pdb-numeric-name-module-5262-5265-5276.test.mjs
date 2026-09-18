@@ -76,7 +76,7 @@ function modInfoEntryOffset(dbiBytes, dbi, streamIndex, symbolByteSize) {
   const end = Math.min(DBI_HEADER_SIZE + dbi.moduleSubstreamSize, dbiBytes.length);
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
-    if (view.getInt16(offset + 34, true) === streamIndex
+    if (view.getUint16(offset + 34, true) === streamIndex
       && view.getUint32(offset + 36, true) === symbolByteSize) return offset;
     // Skip the fixed part plus both NUL-terminated names, 4-aligned.
     let cursor = offset + 64;

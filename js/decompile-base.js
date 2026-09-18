@@ -3,8 +3,10 @@ import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
 import { structureKnownSwitches } from './decompiler/switch.js';
+import { normalizeProjectedCompatibilityLine } from './decompiler/phase8/projection.js';
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
-import { attachDecompilerProvenance } from './decompiler/provenance.js';
+import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
+import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -27,10 +29,7 @@ function asmCount(result) {
 function normalizeCompatibility(result) {
   if (!result) return result;
   for (const l of result.lines || []) {
-    if (!l || typeof l.text !== 'string') continue;
-    l.text = l.text
-      .replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
-      .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
+    normalizeProjectedCompatibilityLine(l, result.ir);
   }
   if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;
@@ -59,9 +58,19 @@ function augmentLegacy(fallback, reason, semantic = null) {
 
 function finalize(result, model, opts) {
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
-  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
+  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, { ...opts, renderProvenance:true });
   result = normalizeCompatibility(result);
-  return result ? attachDecompilerProvenance(result, { ...opts, model }) : result;
+  if (!result?.semantic && result?.switchRenderHistory) {
+    // No semantic-mode promotion or invented analysis snapshot for fallback
+    // output. Missing snapshot identity remains explicit in the shared map.
+    try { result.renderProvenance = buildRenderProvenance({ result, budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort }); }
+    catch {
+      result.renderProvenance = null;
+      result.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
+        completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
+    }
+  }
+  return result;
 }
 
 /*
@@ -72,12 +81,19 @@ function finalize(result, model, opts) {
  */
 function strictTextAddress(op) {
   if (!op || op.k !== 'other') return null;
-  const s = String(op.text || '').trim();
+  // Target completion is control-flow authority, not display formatting: only
+  // a raw primitive string can ground it. String()-coercing arrays/objects or
+  // accepting numbers/booleans would launder schema-invalid operands into
+  // definite branch/call targets (#5676).
+  if (typeof op.text !== 'string') return null;
+  const s = op.text.trim();
   if (!/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(s)) return null;
   try { return BigInt(s.replace(/^#/, '')); } catch { return null; }
 }
 
-function semanticModelForDecompiler(model) {
+// Exported: the CFG-target completion boundary is a fail-closed contract of
+// the decompiler entry, and consumers must be able to pin it (#5676).
+export function semanticModelForDecompiler(model) {
   if (!model?.instructions?.length) return model;
   let changed = false;
   const instructions = model.instructions.map((insn) => {
@@ -299,7 +315,14 @@ function ensureLegacyGoto(lines, edge, label) {
   // Only synthesize an unconditional goto when IR proves a single successor.
   // Conditional non-natural edges keep the conservative Semantic IR CFG path.
   if ((edge.from.succ || []).length !== 1) return false;
-  if (lines.some((l) => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`))) return true;
+  const from = edge.from.insts?.at(-1), to = edge.to.insts?.[0];
+  if (!from || !to) return false;
+  const source = mergeSource(...[from, to].map(inst => sourceOf({
+    row:inst.row, address:inst.address, ir:inst.id,
+    evidence:[{ reason:'canonical shared-cleanup control edge' }],
+  })));
+  const existing = lines.find(l => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`));
+  if (existing) { existing.source = mergeSource(existing.source, source); return true; }
   let at = -1;
   for (let i = 0; i < lines.length; i++) {
     const r = lines[i]?.row;
@@ -307,7 +330,7 @@ function ensureLegacyGoto(lines, edge, label) {
   }
   if (at < 0) return false;
   const indent = Math.max(1, lines[at]?.indent || 1);
-  lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: null, note: null });
+  lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: from.address ?? null, note: null, source });
   return true;
 }
 
@@ -463,9 +486,7 @@ function preferLegacyForUnsupported(model, opts, semantic) {
 }
 
 export function decompile(model, opts = {}) {
-  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) {
-    return finalize(legacyDecompile(model, opts), model, opts);
-  }
+  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
   const semanticModel = semanticModelForDecompiler(model);
   const semanticOpts = semanticOptionsForModel(semanticModel, opts);
   try {

@@ -18,6 +18,10 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { REGION_ERASURE_PASS, runRegionErasurePass, isRegionErasurePlan } from './region-erasure-pass.js';
+import { PROOF_REWRITE_PASS, runProofRewritePass, isPhase8RewritePlan } from './pass-validation.js';
+import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGISTRY_VERSION } from './rewrite-registry.js';
+export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
@@ -59,6 +63,9 @@ export { STRUCTURING_PASS, STRUCTURING_SUMMARY_VERSION, EDGE_CONSTRUCTS, account
  * so adding a pass in the wrong place cannot silently reorder the pipeline.
  * Later checkpoints append their passes here; nothing else registers passes.
  */
+// Callback-free deadline check used only at the final publication boundary.
+const PUBLICATION_DEADLINES = new WeakMap();
+
 const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: IDENTITY_PASS, run: runIdentityPass, observe: identityPassObservation }),
   Object.freeze({ descriptor: SCCP_PASS, run: runSccpPass }),
@@ -69,6 +76,18 @@ const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: STRUCTURING_PASS, run: runStructuringPass }),
   Object.freeze({ descriptor: PROVIDER_PASS, run: runProviderPass }),
 ]);
+// `pass-validation.js` re-exports the solver-backed proof plan, while the
+// proof plan imports transaction helpers from this module family. Constructing
+// the registry at module evaluation time therefore reads the proof descriptor
+// through a temporal dead zone when this entry point is imported directly.
+// Keep the registry deterministic, but initialize it on first use after the
+// dependency cycle has completed.
+let rewriteRegistryCache = null;
+function rewriteRegistry() {
+  rewriteRegistryCache ??= buildRewriteRegistry([...REGISTERED, { descriptor:PROOF_REWRITE_PASS }, { descriptor:REGION_ERASURE_PASS }]);
+  return rewriteRegistryCache;
+}
+export function phase8RewriteRegistry() { return rewriteRegistry(); }
 
 /**
  * Stages that run on the default interactive decompile.
@@ -123,9 +142,12 @@ function orderWithinStage(passes) {
   return ordered;
 }
 
-export function phase8Passes({ stages = null } = {}) {
+export function phase8Passes({ stages = null, proofRewritePlan = null, regionErasurePlan = null } = {}) {
   const enabled = stages == null ? null : new Set(stages);
-  const selected = [...REGISTERED].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
+  const registry = [...REGISTERED,
+    ...(proofRewritePlan == null ? [] : [Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })]),
+    ...(regionErasurePlan == null ? [] : [Object.freeze({ descriptor: REGION_ERASURE_PASS, run: runRegionErasurePass })])];
+  const selected = [...registry].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
   const byStage = new Map();
   for (const pass of selected) {
     if (!byStage.has(pass.descriptor.stageIndex)) byStage.set(pass.descriptor.stageIndex, []);
@@ -197,6 +219,8 @@ export function passRegistryDigest(passes = phase8Passes(), providers = REGISTER
     invalidates: descriptor.invalidates,
     produces: descriptor.produces,
     contractVersion: descriptor.contractVersion,
+    rewriteRegistryVersion: REWRITE_REGISTRY_VERSION,
+    rewritePolicy: passRewritePolicy(descriptor),
     ...(descriptor.id === PROVIDER_PASS.id ? {
       providerInterfaceVersion: PROVIDER_INTERFACE_VERSION,
       providers: providerRegistry,
@@ -229,7 +253,7 @@ function clock() {
  * result that is simply absent is indistinguishable from a Phase 8 that never
  * ran, and "unknown stays explicit" is a non-negotiable principle.
  */
-function withheldLedger(status, reason, diagnostics, registryDigest, analysisVersions = null) {
+function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null) {
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -239,6 +263,7 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
     degraded: true,
     passes: Object.freeze([]),
     transformCount: 0,
+    rewriteCoverage,
     produced: Object.freeze([]),
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
@@ -266,7 +291,22 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
-  const passes = phase8Passes({ stages: enabledStages });
+  // A stage selector is an explicit caller contract: any unknown stage name
+  // (typo, renamed stage) must fail closed instead of silently selecting no
+  // passes and publishing a "complete" ledger for work that never ran (#5464).
+  if (enabledStages != null) {
+    if (!Array.isArray(enabledStages)) throw new TypeError('phase8-enabled-stages-invalid');
+    const known = new Set(PASS_STAGES);
+    for (const stage of enabledStages) {
+      if (!known.has(stage)) throw new TypeError(`phase8-enabled-stage-unknown:${stage}`);
+    }
+  }
+  const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
+  const regionErasurePlan = context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
+  const passes = phase8Passes({ stages: enabledStages, proofRewritePlan, regionErasurePlan });
+  const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
+    withheldLedgerBase(status,reason,diagnostics,digest,versions,
+      rewriteCoverage(rewriteRegistry(),passes,[],false,reason));
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -348,6 +388,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     ...providerContext,
     analysis,
     resolvedAnalysisIdentity,
+    requireRewritePolicy: true,
   };
   const results = [];
   const timings = [];
@@ -420,6 +461,43 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
   }
 
+  const diagnostics = results.flatMap((result) => result.diagnostics);
+  const ledger = {
+    contractVersion: PHASE8_CONTRACT_VERSION,
+    registryDigest,
+    status: 'published',
+    published: true,
+    completeness: weakestCompleteness(results.map((result) => result.completeness)),
+    degraded: results.some((result) => result.status === 'degraded'),
+    passes: Object.freeze(results),
+    transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
+    rewriteCoverage: rewriteCoverage(rewriteRegistry(),passes,results,true),
+    // Analyses this run produced, so a consumer can tell "the optimizer ran and
+    // found nothing" apart from "the optimizer never ran".
+    produced: Object.freeze([...new Set(results.flatMap((result) => result.produced))].sort()),
+    invalidated: Object.freeze([...invalidated].sort()),
+    diagnostics: Object.freeze(diagnostics),
+    observations: Object.freeze(observations),
+    enabledStages: Object.freeze(enabledStages == null ? [...PASS_STAGES] : [...enabledStages]),
+    // Analysis versions before and after. Invalidation is a property a consumer
+    // can check, not a claim it has to believe.
+    analysisVersions: Object.freeze({ before, after: analysis.snapshot() }),
+    stopReason: null,
+  };
+  ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
+  if (aborted(budget) || (proofRewritePlan != null && !isPhase8RewritePlan(proofRewritePlan, context))
+    || (regionErasurePlan != null && !isRegionErasurePlan(regionErasurePlan, context))) {
+    return {
+      ledger: withheldLedger('cancelled', 'cancelled-or-stale-before-publication', [], registryDigest, before),
+      timings: Object.freeze(timings), analysis: authoritative,
+    };
+  }
+  if (PUBLICATION_DEADLINES.get(budget)?.()) {
+    return {
+      ledger: withheldLedger('cancelled', 'deadline-before-publication', [], registryDigest, before),
+      timings: Object.freeze(timings), analysis: authoritative,
+    };
+  }
   if (!commitAnalysisState(authoritative, analysis, before)) {
     return {
       ledger: withheldLedger('failed', 'analysis-concurrent-change', [{
@@ -432,30 +510,6 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-
-  const diagnostics = results.flatMap((result) => result.diagnostics);
-  const ledger = {
-    contractVersion: PHASE8_CONTRACT_VERSION,
-    registryDigest,
-    status: 'published',
-    published: true,
-    completeness: weakestCompleteness(results.map((result) => result.completeness)),
-    degraded: results.some((result) => result.status === 'degraded'),
-    passes: Object.freeze(results),
-    transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
-    // Analyses this run produced, so a consumer can tell "the optimizer ran and
-    // found nothing" apart from "the optimizer never ran".
-    produced: Object.freeze([...new Set(results.flatMap((result) => result.produced))].sort()),
-    invalidated: Object.freeze([...invalidated].sort()),
-    diagnostics: Object.freeze(diagnostics),
-    observations: Object.freeze(observations),
-    enabledStages: Object.freeze(enabledStages == null ? [...PASS_STAGES] : [...enabledStages]),
-    // Analysis versions before and after. Invalidation is a property a consumer
-    // can check, not a claim it has to believe.
-    analysisVersions: Object.freeze({ before, after: authoritative.snapshot() }),
-    stopReason: null,
-  };
-  ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
   return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis: authoritative };
 }
 
@@ -479,14 +533,14 @@ export function runPhase8Stage(context = {}, options = {}) {
   const started = clock();
   const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
   const explicitDeadline = options.timeBudgetMs != null;
-  const parsedTimeBudget = explicitDeadline ? Number(options.timeBudgetMs) : null;
+  const parsedTimeBudget = explicitDeadline && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
   // Invalid explicit deadlines fail closed as an immediate cancellation. A
   // NaN deadline would otherwise never compare true and silently disable the
   // caller's requested resource bound.
   const timeBudgetMs = explicitDeadline && Number.isFinite(parsedTimeBudget)
     ? Math.max(0, parsedTimeBudget) : explicitDeadline ? 0 : null;
   const deadline = explicitDeadline ? started + timeBudgetMs : null;
-  const parsedWorkBudget = Number(options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET);
+  const parsedWorkBudget = options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET;
   const maxWorkItems = Number.isSafeInteger(parsedWorkBudget) && parsedWorkBudget >= 0
     ? parsedWorkBudget : 0;
   let workChecks = 0;
@@ -504,14 +558,16 @@ export function runPhase8Stage(context = {}, options = {}) {
           return true;
         }
       }
-      if (!explicitDeadline) {
-        if (workChecks >= maxWorkItems) return true;
-        workChecks += 1;
-        return false;
-      }
-      return clock() >= deadline;
+      if (workChecks >= maxWorkItems) return true;
+      workChecks += 1;
+      return explicitDeadline && clock() >= deadline;
     },
   };
-  const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
-  return { ...outcome, elapsedMs: clock() - started };
+  PUBLICATION_DEADLINES.set(budget, () => explicitDeadline && clock() >= deadline);
+  try {
+    const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
+    return { ...outcome, elapsedMs: clock() - started };
+  } finally {
+    PUBLICATION_DEADLINES.delete(budget);
+  }
 }

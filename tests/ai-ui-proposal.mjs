@@ -8,19 +8,6 @@
  */
 import { openApp, reporter, run, stubEngine, ask } from './ai-ui-support.mjs';
 
-// Use the runtime's actual proposal/evidence stores. A UI fixture must not
-// replace the private single-use mutation authority with lookalike tokens.
-async function prepareProposalStore(page) {
-  await page.evaluate(async () => {
-    const runtime = await window.__hexAi.engine.runtime();
-    if (!runtime?.proposalStore || !runtime.evidenceStore) throw new Error('AI runtime stores unavailable');
-    window.__hexProposals = runtime.proposalStore;
-    for (const id of ['ev_a', 'ev_b', 'ev_c']) {
-      runtime.evidenceStore.add({ id, kind: 'read', status: 'unknown' });
-    }
-  });
-}
-
 await run(async ({ browser }) => {
   const { check, state } = reporter();
   const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, sample: true });
@@ -30,7 +17,17 @@ await run(async ({ browser }) => {
      and refuses when the two disagree. */
   const currentName = await page.evaluate(() => window.__app.symbols.nameAt(BigInt(window.__app.codeRegion().vmAddr)) || null);
 
-  await prepareProposalStore(page);
+  /* Use the runtime-owned stores so this exercises the real approval authority. */
+  await page.evaluate(async () => {
+    const runtime = await window.__hexAi.engine.runtime();
+    window.__hexProposals = runtime.proposalStore;
+    for (const id of ['ev_a', 'ev_b', 'ev_c']) {
+      runtime.evidenceStore.add({
+        id, kind: 'ui-test', status: 'supported', sourceTool: 'ui-test', title: id,
+        summary: 'bounded proposal approval evidence',
+      });
+    }
+  });
   await page.evaluate(({ target: address, current }) => {
     window.__hexProposals.create({
       id: 'proposal_1', kind: 'rename', target: address, before: current, after: 'updateExperience',
@@ -81,15 +78,16 @@ await run(async ({ browser }) => {
       disabled: [...node.querySelectorAll('.ai-proposal-actions .ai-chip')].every((n) => n.disabled),
       symbolName: window.__app.symbols.nameAt(addr),
       noteName: window.__app.notes.nameOf(addr),
-      noteId: window.__app.notes.id,
-      saveError: window.__app.notes.lastSaveError,
-      audit: window.__hexProposals.audit.map((entry) => entry.type + ':' + entry.proposalId),
+      audit: window.__hexProposals.audit.map(({ type, proposalId }) => `${type}:${proposalId}`),
     };
   });
   check('Apply approves and then performs the real rename',
     applied.status === 'applied' && applied.symbolName === 'updateExperience' && applied.noteName === 'updateExperience',
     JSON.stringify(applied));
-  check('the approval is auditable and ordered', applied.audit.join(',') === 'proposal-created:proposal_1,proposal-approved:proposal_1,proposal-applying:proposal_1,proposal-applied:proposal_1', applied.audit.join(','));
+  check('the approval is auditable and ordered', applied.audit.join(',') === [
+    'proposal-created:proposal_1', 'proposal-approved:proposal_1',
+    'proposal-applying:proposal_1', 'proposal-applied:proposal_1',
+  ].join(','), applied.audit.join(','));
   check('an applied card cannot be applied twice', applied.disabled && /適用しました|Applied/.test(applied.message || ''), applied.message);
 
   /* Reject leaves project state alone. */
@@ -113,11 +111,14 @@ await run(async ({ browser }) => {
     return {
       status: node.dataset.status,
       comment: window.__app.notes.comment(addr),
-      audit: window.__hexProposals.audit.slice(-1)[0],
+      audit: (() => {
+        const entry = window.__hexProposals.audit.at(-1);
+        return entry ? `${entry.type}:${entry.proposalId}` : null;
+      })(),
     };
   });
   check('Reject settles the card and writes nothing',
-    rejected.status === 'rejected' && !rejected.comment && rejected.audit?.type === 'proposal-rejected' && rejected.audit.proposalId === 'proposal_2', JSON.stringify(rejected));
+    rejected.status === 'rejected' && !rejected.comment && rejected.audit === 'proposal-rejected:proposal_2', JSON.stringify(rejected));
 
   /* A stale proposal must fail rather than overwrite newer work. */
   await page.evaluate(({ target: address }) => {
@@ -141,13 +142,16 @@ await run(async ({ browser }) => {
       status: node.dataset.status,
       message: node.querySelector('.ai-proposal-status')?.textContent || '',
       symbolName: window.__app.symbols.nameAt(addr),
-      audit: window.__hexProposals.audit.slice(-1)[0],
+      audit: (() => {
+        const entry = window.__hexProposals.audit.at(-1);
+        return entry ? `${entry.type}:${entry.proposalId}` : null;
+      })(),
     };
   });
   check('a proposal whose target moved fails instead of overwriting',
     stale.status === 'failed' && stale.symbolName === 'updateExperience' && /適用できません|Could not apply/.test(stale.message),
     JSON.stringify(stale));
-  check('the stale attempt is recorded', stale.audit?.type === 'proposal-stale' && stale.audit.proposalId === 'proposal_3', String(stale.audit));
+  check('the stale attempt is recorded', stale.audit === 'proposal-stale:proposal_3', String(stale.audit));
 
   check('no page errors during the approval flow', errors.length === 0, errors.slice(0, 3).join(' | '));
   await context.close();

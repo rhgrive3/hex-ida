@@ -12,7 +12,7 @@ for (const bits of [8, 16, 32, 64]) {
   const one = expr.constant(1n, bits, false);
   const signed = printExpression(expr.compare('lt', x, zero, true));
   const unsigned = printExpression(expr.compare('lt', x, one, false));
-  assert.equal(signed, `(${view(bits, true)})x < (${view(bits, true)})0`);
+  assert.equal(signed, `(${view(bits, true)})x < 0`);
   assert.equal(unsigned, `(${view(bits, false)})x < 1`);
   assert.notEqual(signed, unsigned);
 
@@ -44,9 +44,9 @@ for (const bits of [8, 16, 32, 64]) {
   assert.equal(printExpression(expr.binary('lshr', x, one, bits, false)), `(${view(bits, false)})x >> 1`);
   assert.equal(printExpression(expr.binary('ashr', x, one, bits, true)), `(${view(bits, true)})x >> 1`);
   assert.equal(printExpression(expr.binary('udiv', x, two, bits, false)), `(${view(bits, false)})x / 2`);
-  assert.equal(printExpression(expr.binary('sdiv', x, two, bits, true)), `(${view(bits, true)})x / (${view(bits, true)})2`);
+  assert.equal(printExpression(expr.binary('sdiv', x, two, bits, true)), `(${view(bits, true)})x / 2`);
   assert.equal(printExpression(expr.binary('umod', x, two, bits, false)), `(${view(bits, false)})x % 2`);
-  assert.equal(printExpression(expr.binary('smod', x, two, bits, true)), `(${view(bits, true)})x % (${view(bits, true)})2`);
+  assert.equal(printExpression(expr.binary('smod', x, two, bits, true)), `(${view(bits, true)})x % 2`);
 }
 
 // Existing matching recovered views stay readable.
@@ -84,7 +84,7 @@ function state() { return { types: { values: new Map() }, highVariables: null, o
   assert.equal(udiv.op, 'udiv');
   assert.equal(sdiv.op, 'sdiv');
   assert.match(printExpression(udiv), /\(uint32_t\)x0 \/ 2/);
-  assert.match(printExpression(sdiv), /\(int32_t\)x0 \/ \(int32_t\)2/);
+  assert.match(printExpression(sdiv), /\(int32_t\)x0 \/ 2/);
 }
 
 // Semantic flags -> compare AST -> C: the same SSA input keeps signed/unsigned
@@ -107,7 +107,7 @@ function compareSelect(id, cond, x, rhs, bits) {
   const unsignedAst = buildExpressionForTesting(compareSelect(70, 'lo', x, one, 32), state());
   const signedText = printExpression(signedAst);
   const unsignedText = printExpression(unsignedAst);
-  assert.match(signedText, /\(int32_t\)x0 < \(int32_t\)0/);
+  assert.match(signedText, /\(int32_t\)x0 < 0/);
   assert.match(unsignedText, /\(uint32_t\)x0 < 1/);
 }
 

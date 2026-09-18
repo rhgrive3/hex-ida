@@ -291,11 +291,20 @@ function proposalBinding(context) {
  * live context is the fallback for stores that have not been turn-wired yet.
  */
 function evidenceBindingResolver(evidenceStore, context) {
-  const store = evidenceStore?.observationStore;
-  if (store && typeof store.binding === 'function') return () => store.binding().key;
-  // Custom evidence adapters predate revision-bound provenance. Do not
-  // silently upgrade them into a resolver-backed authority contract. First-
-  // party EvidenceStore instances retain the live-context fallback (#8929).
-  if (!(evidenceStore instanceof EvidenceStore)) return null;
-  return () => analysisBinding(context).key;
+  const firstPartyStore = evidenceStore instanceof EvidenceStore;
+  const initialObservationStore = evidenceStore?.observationStore;
+  if (!firstPartyStore && !(initialObservationStore && typeof initialObservationStore.binding === 'function')) return null;
+  // The registry attaches its per-turn ObservationStore after storesFor()
+  // constructs ProposalStore. Resolve dynamically so authority checks use the
+  // exact store that minted the evidence rather than an unresolved-context
+  // fallback captured before registry construction (#6216).
+  return () => {
+    const store = evidenceStore?.observationStore;
+    if (store && typeof store.binding === 'function') return store.binding().key;
+    // Custom evidence adapters predate revision-bound provenance. Do not
+    // silently upgrade them into a resolver-backed authority contract. First-
+    // party EvidenceStore instances retain the live-context fallback (#8929).
+    if (!firstPartyStore) return null;
+    return analysisBinding(context).key;
+  };
 }

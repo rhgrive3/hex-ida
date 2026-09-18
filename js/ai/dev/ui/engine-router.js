@@ -1,4 +1,4 @@
-import { AGENT_PROFILE } from '../policy/agent-profile.js';
+import { AGENT_PROFILE, canSelectAgentProfile } from '../policy/agent-profile.js';
 import { DevSupervisorV0 } from '../supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../supervisor/dev-supervisor-progress-budget.js';
 
@@ -16,17 +16,22 @@ export function createAgentProfileEngine({ standardEngine, settings, supervisor 
     runProof: (options) => dev.runBootstrapProof(options),
   });
 
-  return new Proxy(standardEngine, {
-    get(target, property, receiver) {
-      if (property === 'devBootstrap') return devBootstrap;
-      if (property !== 'run') {
-        const value = Reflect.get(target, property, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      }
-      return async (input = {}) => {
-        if (input.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return target.run(input);
-        return dev.run(input);
-      };
+  const routeRun = async (input = {}) => {
+    if (input.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return standardEngine.run(input);
+    await settings.authProvider?.authorize?.(settings.decisionPolicy);
+    settings.refreshIdentity?.();
+    if (!canSelectAgentProfile(settings.identity, AGENT_PROFILE.DEV) || settings.agentProfile !== AGENT_PROFILE.DEV) throw new Error('Dev authorization denied.');
+    return dev.run(input);
+  };
+  const surface = Object.create(Object.getPrototypeOf(standardEngine));
+  Object.defineProperty(surface, 'run', { value: routeRun, writable: true, enumerable: false, configurable: true });
+  Object.defineProperty(surface, 'devBootstrap', { value: devBootstrap, writable: false, enumerable: false, configurable: true });
+
+  return new Proxy(surface, {
+    get(target, property) {
+      if (property === 'run' || property === 'devBootstrap') return target[property];
+      const value = Reflect.get(standardEngine, property, standardEngine);
+      return typeof value === 'function' ? value.bind(standardEngine) : value;
     },
   });
 }

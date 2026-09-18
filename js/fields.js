@@ -1,6 +1,19 @@
 import { objcIvarRangeWithinInstance } from './objc-ivar-layout.js';
 
 /*
+ * 検索件数の上限。件数は primitive な正の safe integer だけが authority。
+ * 文字列・配列・boolean を Number() で昇格させたり、0.5件のような
+ * fractional 上限を採用したりしない (#5260)。省略時は既定値。
+ */
+function resultLimit(limit, fallback) {
+  if (limit == null) return fallback;
+  if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError('result limit must be a positive safe integer');
+  }
+  return limit;
+}
+
+/*
  * フィールド（ivar）の索引 — 「x0 + 0x20」を「self の hp」に変える層。
  *
  * このツールでいちばん効く一手。逆アセンブルの中でいちばん多いのは
@@ -42,6 +55,12 @@ export class FieldIndex {
   constructor(model) {
     this.classes = new Map();      // クラス名 -> {name, instanceSize, ivars, byOffset}
     this.methodOwner = new Map();  // 実装アドレス(string) -> owner[]（同一IMP共有を保持）
+    // #8855: per-insert (address, class, selector, kind) identity index. The
+    // shared-IMP list may hold thousands of owners; scanning the growing array
+    // for every insertion is Θ(M²) and a valid 60 000-method Objective-C image
+    // blocks the analysis loop for seconds. Insertion order and the exact
+    // duplicate identity (className, sel, kind) stay unchanged.
+    this._ownerIdentities = new Set();
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
     /*
      * 「位置が書いてある場所」→ フィールド。
@@ -104,18 +123,19 @@ export class FieldIndex {
          but the runtime metadata still states what `foo` / `setFoo:` means. */
       const accessorField = (sel) => {
         const text = String(sel || '');
-        let plain = null;
-        const sm = /^set(.+):$/.exec(text);
-        if (sm && sm[1]) plain = sm[1];
-        else if (text && !text.includes(':')) plain = text;
-        if (!plain) return null;
-        const want = plain.replace(/^_+/, '').toLowerCase();
+        const setter = /^set(.+):$/.test(text);
+        if (!text || (!setter && text.includes(':'))) return null;
+
+        const matches = [];
         for (const iv of ivars) {
           const names = [iv.name, iv.property && iv.property.name]
-            .filter(Boolean).map((x) => plainFieldName(x).toLowerCase());
-          if (names.includes(want)) return iv;
+            .filter(Boolean).map((x) => plainFieldName(x)).filter(Boolean);
+          const matched = setter
+            ? names.some((name) => `set${name[0].toUpperCase()}${name.slice(1)}:` === text)
+            : names.includes(plainFieldName(text));
+          if (matched) matches.push(iv);
         }
-        return null;
+        return matches.length === 1 ? matches[0] : null;
       };
       const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
         if (m.addr == null) return;
@@ -124,8 +144,11 @@ export class FieldIndex {
           className: c.name, sel: m.sel || null, kind: m.kind || defaultKind,
           accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
+        const identity = `${key}\u0000${owner.className}\u0000${owner.sel ?? ''}\u0000${owner.kind ?? ''}`;
+        if (this._ownerIdentities.has(identity)) return;
+        this._ownerIdentities.add(identity);
         const owners = this.methodOwner.get(key) || [];
-        if (!owners.some((x) => x.className === owner.className && x.sel === owner.sel && x.kind === owner.kind)) owners.push(owner);
+        owners.push(owner);
         this.methodOwner.set(key, owners);
       };
       for (const m of c.methods || []) addMethodOwner(m, '-', true);
@@ -194,8 +217,8 @@ export class FieldIndex {
   findFields(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
-    const maxResults = Number(limit);
-    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
+    const maxResults = resultLimit(limit, 200);
+    if (maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
         re.lastIndex = 0;
@@ -211,8 +234,8 @@ export class FieldIndex {
   findClasses(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
-    const maxResults = Number(limit);
-    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
+    const maxResults = resultLimit(limit, 200);
+    if (maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       re.lastIndex = 0;
       if (re.test(c.name)) out.push(c);
@@ -256,7 +279,7 @@ export class FieldIndex {
           size: via.field.size,
           type: via.field.type,
           exact: true,
-          certain: access.self === true || className === via.className,
+          certain: access.self === true,
           viaRegister: access.base,
           viaOffsetVar: true,
         };

@@ -106,6 +106,55 @@ const tmp = (id, bits) => createTemporaryValue(id, bv(bits));
 }
 
 {
+  const target = { kind:'bitvector', widthBits:64, value:'28672' };
+  const condition = createFlagValue('same-successor-condition', 1);
+  const bundle = fixture({
+    operations: [],
+    controlEffect: { kind:'conditional-branch', condition, target, fallthrough:{ ...target } },
+  });
+  const ir = lowerMachineEffectBundleToSemanticIr(bundle, context('same-successor-conditional'));
+  const control = ir.nodes.find((node) => node.kind === 'branch' || node.kind === 'conditional-branch');
+  assert.equal(control?.kind, 'conditional-branch', '#865: equal taken and fallthrough successors keep the syntactic conditional identity');
+  assert.equal(control.targets.length, 2);
+  assert.equal(control.targets[0], control.targets[1], 'both arms resolve to the same successor block');
+  assert.equal(control.inputs.length, 1, 'the condition value must remain a control input');
+  assert.equal(control.attributes.degenerateConditional, true, 'the converging-arms case must stay identifiable');
+}
+
+{
+  const target = { kind: 'absolute-address', widthBits: 64, value: '4104' };
+  const condition = createFlagValue('resolved-same-successor-condition', 1);
+  const instructionId = createInstructionId({
+    binaryId: 'bin_lowering_control',
+    sliceId: 'slice_lowering_control',
+    virtualAddress: address,
+    decodeMode: 'opaque-mode',
+    decoderSemanticVersion: '1',
+  });
+  const implicitFallthrough = { kind: 'fallthrough-continuation', instructionId };
+  const bundle = fixture({
+    instructionId,
+    operations: [],
+    controlEffect: { kind: 'conditional-branch', condition, target, fallthrough: implicitFallthrough },
+  });
+  const successor = 'block_resolved_same_successor';
+  const ir = lowerMachineEffectBundleToSemanticIr(bundle, {
+    ...context('resolved-same-successor-conditional'),
+    controlTargets: [
+      { target, role: 'branch-0', blockId: successor },
+      { target: implicitFallthrough, role: 'fallthrough', blockId: successor },
+    ],
+  });
+  const control = ir.nodes.find((node) => node.kind === 'conditional-branch');
+  assert.ok(control, '#865: canonical convergence must be detected after role-aware target resolution');
+  assert.deepEqual(control.targets, [successor, successor], 'different raw arms may resolve to the same canonical successor');
+  assert.equal(control.inputs.length, 1, 'canonical convergence must retain the condition input');
+  assert.equal(control.attributes.degenerateConditional, true);
+  assert.equal(ir.blocks.filter((block) => block.id === successor).length, 1, 'the successor set must contain one canonical target block');
+  assert.ok(!ir.unknowns.some((entry) => entry.reason === 'conditional-branch-target-cardinality'));
+}
+
+{
   const bundle = fixture({ controlEffect: { kind: 'call', target: { kind: 'bitvector', widthBits: 64, value: '32768' } } });
   const ir = lowerMachineEffectBundleToSemanticIr(bundle, context('call'));
   const call = ir.nodes.find((node) => node.kind === 'call');

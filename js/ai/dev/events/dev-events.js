@@ -9,6 +9,14 @@ export const DEV_EVENT_TYPE = Object.freeze({
 });
 
 export const DEV_EVENT_TYPES = Object.freeze(Object.values(DEV_EVENT_TYPE));
+export const DEV_WORKER_EVENT_TYPES = Object.freeze([
+  DEV_EVENT_TYPE.WORKER_REGISTERED,
+  DEV_EVENT_TYPE.WORKER_STARTED,
+  DEV_EVENT_TYPE.WORKER_PROGRESS,
+  DEV_EVENT_TYPE.WORKER_COMPLETED,
+  DEV_EVENT_TYPE.WORKER_FAILED,
+  DEV_EVENT_TYPE.WORKER_CANCELLED,
+]);
 
 export function createDevEvent(type, data = {}, { now = () => new Date().toISOString() } = {}) {
   if (!DEV_EVENT_TYPES.includes(type)) throw new TypeError(`Unsupported Dev event: ${type}`);
@@ -48,13 +56,31 @@ export class DevRunEventHost {
   async waitForWorkerDecision(run, input, { signal } = {}) {
     const yielded = this.yieldDecision(run, input);
     if (yielded.decision.type !== 'wait') return yielded;
+    /* yieldDecision registered this call's waiting record. If the event
+       transport fails, the wait is over — the registration must not survive as
+       resume authority for a late event. The identity check (same frozen
+       record reference) means a concurrently re-registered newer wait is never
+       deleted by this call's cleanup. */
+    const registered = this.waiting.get(yielded.run.runId);
+    const releaseOwnRegistration = () => {
+      if (registered && this.waiting.get(yielded.run.runId) === registered) {
+        this.waiting.delete(yielded.run.runId);
+      }
+    };
     if (!this.supervisor.workerTools || typeof this.supervisor.workerTools.waitEvent !== 'function') {
+      releaseOwnRegistration();
       throw new TypeError('Dev Worker event transport is unavailable.');
     }
-    const event = await this.supervisor.workerTools.waitEvent(yielded.decision.events, {
-      runId: yielded.run.runId,
-      signal,
-    });
+    let event;
+    try {
+      event = await this.supervisor.workerTools.waitEvent(yielded.decision.events, {
+        runId: yielded.run.runId,
+        signal,
+      });
+    } catch (error) {
+      releaseOwnRegistration();
+      throw error;
+    }
     return Object.freeze({
       ...this.acceptEvent(yielded.run, event),
       decision: yielded.decision,

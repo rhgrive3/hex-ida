@@ -12,8 +12,8 @@ export function buildMinimalJvmClass() {
   view.setUint16(4, 0, false);  // minor_version
   view.setUint16(6, 61, false); // major_version (Java 17)
 
-  // Constant pool count = 6 (entries 1..5)
-  view.setUint16(8, 6, false);
+  // Constant pool count = 8 (entries 1..7)
+  view.setUint16(8, 8, false);
 
   let p = 10;
   // CP 1: Utf8 "TestClass"
@@ -35,10 +35,15 @@ export function buildMinimalJvmClass() {
   buf[p++] = 1; view.setUint16(p, 4, false); p += 2;
   buf.set(new TextEncoder().encode('Code'), p); p += 4;
 
-  // Class info: access_flags=0x0001, this_class=2, super_class=0, interfaces_count=0
+  // CP 6: Utf8 "java/lang/Object"; CP 7: Class -> name_index 6
+  buf[p++] = 1; view.setUint16(p, 16, false); p += 2;
+  buf.set(new TextEncoder().encode('java/lang/Object'), p); p += 16;
+  buf[p++] = 7; view.setUint16(p, 6, false); p += 2;
+
+  // Class info: access_flags=0x0001, this_class=2, super_class=7, interfaces_count=0
   view.setUint16(p, 0x0001, false); p += 2;
   view.setUint16(p, 2, false); p += 2;
-  view.setUint16(p, 0, false); p += 2;
+  view.setUint16(p, 7, false); p += 2;
   view.setUint16(p, 0, false); p += 2;
 
   // fields_count=0
@@ -88,5 +93,27 @@ assert.ok(parsed.methods[0].code);
 assert.equal(parsed.methods[0].code.maxStack, 2);
 assert.equal(parsed.methods[0].code.maxLocals, 2);
 assert.equal(parsed.methods[0].code.codeLength, 6);
+
+function buildFieldClass(fieldName) {
+  const b = [];
+  const u1 = (n) => b.push(n & 0xff);
+  const u2 = (n) => b.push((n >>> 8) & 0xff, n & 0xff);
+  const u4 = (n) => b.push((n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+  const utf = (text) => { const bytes = Buffer.from(text); u1(1); u2(bytes.length); b.push(...bytes); };
+
+  u4(0xcafebabe); u2(0); u2(61); u2(7);
+  utf('FieldNames'); u1(7); u2(1);
+  utf('java/lang/Object'); u1(7); u2(3);
+  utf(fieldName); utf('I');
+  u2(0x0021); u2(2); u2(4); u2(0); // public | super, no interfaces
+  u2(1); u2(0x0009); u2(5); u2(6); u2(0); // one public static field
+  u2(0); u2(0); // no methods or class attributes
+  return Uint8Array.from(b);
+}
+
+for (const fieldName of ['<x>', 'x>y', '<init>', '<clinit>']) {
+  const fieldImage = parseJvm(buildFieldClass(fieldName), { binaryId: `phase11-7462-${fieldName}` });
+  assert.equal(fieldImage.fields[0].name, fieldName);
+}
 
 console.log('  ok jvm parser tests passed');

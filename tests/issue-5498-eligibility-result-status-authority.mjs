@@ -2,30 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { checkProofEligibility } from '../js/symbolic/verify/eligibility.js';
-import { isExactProofBackend, SolverBackend } from '../js/symbolic/solver/backend.js';
+import { isExactProofBackend } from '../js/symbolic/solver/backend.js';
+import { ExhaustiveBvBackend } from '../js/symbolic/solver/exhaustive-backend.js';
 import { createSolverResult, SOLVER_STATUS, isValidSolverResult } from '../js/symbolic/solver/result.js';
 import { TRANSLATION_STATUS, COMPLETENESS_STATUS } from '../js/symbolic/translate/support-matrix.js';
 import { createVerificationQuery } from '../js/symbolic/verify/query.js';
 
-class FakeExactBackend extends SolverBackend {
-  constructor() {
-    super({ id: 'fake-exact', version: '1.0.0', proofAuthority: 'exact' });
-  }
-
-  baseCapabilities() {
-    return {
-      ...super.baseCapabilities(),
-      exactProofs: true,
-      supportsModelExtraction: true,
-    };
-  }
-
-  capabilityFingerprint() {
-    return 'fp-1';
-  }
-}
-
-const backend = new FakeExactBackend();
+const backend = new ExhaustiveBvBackend({ id: 'fake-exact', version: '1.0.0' });
+const capabilities = backend.capabilities();
 
 const COMPLETE_SCOPE = Object.freeze({
   translation: COMPLETENESS_STATUS.COMPLETE,

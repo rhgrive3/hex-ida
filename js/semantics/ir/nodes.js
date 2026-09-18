@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import {
   SEMANTIC_SETS,
+  array,
   assertAllowedKeys,
   enumValue,
   fail,
@@ -22,6 +23,75 @@ import {
 const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
+
+// Versioned semantic extension: a machine return destination is a scalar use,
+// distinct from the ABI result values carried by a return node's inputs.
+export const SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA = 'semantic-return-control-target/v1';
+
+function normalizeReturnControlTarget(input, node) {
+  input = object(input, 'semantic-ir-invalid-return-control-target');
+  if (node.kind !== 'return') fail('semantic-ir-return-control-target-not-allowed');
+  if (input.schema !== SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA) fail('semantic-ir-return-control-target-schema-mismatch');
+  if (input.state === 'resolved') {
+    assertAllowedKeys(input, new Set(['schema', 'state', 'valueId']), 'semantic-ir-unexpected-return-control-target-field');
+    return { schema: input.schema, state: input.state,
+      valueId: nonEmpty(input.valueId, 'semantic-ir-invalid-return-control-target-value-id') };
+  }
+  if (input.state !== 'unavailable') fail('semantic-ir-invalid-return-control-target-state');
+  assertAllowedKeys(input, new Set(['schema', 'state', 'reason']), 'semantic-ir-unexpected-return-control-target-field');
+  if (node.completeness === 'complete' || node.unknown == null) fail('semantic-ir-return-control-target-unknown-hidden');
+  return { schema: input.schema, state: input.state,
+    reason: nonEmpty(input.reason, 'semantic-ir-return-control-target-reason-required') };
+}
+
+// Fixed-arity control nodes have exact successor counts; a `switch` keeps its
+// n-ary case list.
+export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
+  branch: 1,
+  'conditional-branch': 2,
+});
+
+export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.entries({
+  const: { inputs: [0, 0], outputs: [1, 1] },
+  copy: { inputs: [1, 1], outputs: [1, 1] },
+  unary: { inputs: [1, 1], outputs: [1, 1] },
+  binary: { inputs: [2, 2], outputs: [1, 1] },
+  compare: { inputs: [2, 2], outputs: [1, 1] },
+  select: { inputs: [3, 3], outputs: [1, 1] },
+  zext: { inputs: [1, 1], outputs: [1, 1] },
+  sext: { inputs: [1, 1], outputs: [1, 1] },
+  trunc: { inputs: [1, 1], outputs: [1, 1] },
+  bitcast: { inputs: [1, 1], outputs: [1, 1] },
+  extract: { inputs: [1, 1], outputs: [1, 1] },
+  insert: { inputs: [2, 2], outputs: [1, 1] },
+  concat: { inputs: [2, null], outputs: [1, 1] },
+}).map(([kind, entry]) => [kind, Object.freeze({
+  inputs: Object.freeze(entry.inputs),
+  outputs: Object.freeze(entry.outputs),
+})])));
+
+export const SEMANTIC_INTRINSIC_OPERATOR_ARITY = Object.freeze({
+  'add-with-carry': Object.freeze({ inputs: Object.freeze([3, 3]), outputs: Object.freeze([0, null]) }),
+});
+
+export function dataArityContract(kind, operator) {
+  if (Object.hasOwn(SEMANTIC_NODE_DATA_ARITY, kind)) return SEMANTIC_NODE_DATA_ARITY[kind];
+  if (kind === 'intrinsic' && typeof operator === 'string'
+      && Object.hasOwn(SEMANTIC_INTRINSIC_OPERATOR_ARITY, operator.toLowerCase())) {
+    return SEMANTIC_INTRINSIC_OPERATOR_ARITY[operator.toLowerCase()];
+  }
+  return null;
+}
+
+function arityViolation(node, contract) {
+  const deficitOrSurplus = ([min, max], length) => {
+    if (length > (max == null ? Number.POSITIVE_INFINITY : max)) return true;
+    return length < min && node.completeness === 'complete';
+  };
+  if (deficitOrSurplus(contract.inputs, node.inputs.length)) return 'input';
+  if (deficitOrSurplus(contract.outputs, node.outputs.length)) return 'output';
+  return null;
+}
 
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
@@ -65,7 +135,16 @@ function normalizeUnknown(input, kind) {
   return deepFreeze(out);
 }
 
-export function createSemanticNode(input) {
+function conditionalArmTargets(values, code) {
+  const arms = array(values ?? [], code).map((value) => nonEmpty(value, code));
+  // A syntactic conditional terminator keeps both arms even when taken and
+  // fallthrough resolve to the same successor (#865); only the CFG layer
+  // deduplicates the successor set.
+  if (arms.length === 2 && arms[0] === arms[1]) return arms;
+  return uniqueStrings(arms, code, false);
+}
+
+export function createSemanticNode(input, options = {}) {
   input = object(input, 'semantic-ir-invalid-node');
   assertAllowedKeys(input, new Set([
     'id', 'kind', 'blockId', 'inputs', 'outputs', 'operator', 'variable', 'memory', 'call', 'intrinsic',
@@ -83,7 +162,9 @@ export function createSemanticNode(input) {
     memory: input.memory == null ? null : createSemanticMemoryAccess(input.memory),
     call: input.call == null ? null : createSemanticCallSummary(input.call),
     intrinsic: input.intrinsic == null ? null : createSemanticIntrinsicSummary(input.intrinsic),
-    targets: uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
+    targets: kind === 'conditional-branch'
+      ? conditionalArmTargets(input.targets ?? [], 'semantic-ir-invalid-node-targets')
+      : uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
     attributes: input.attributes == null ? {} : serializable(input.attributes, 'semantic-ir-invalid-node-attributes'),
     unknown: normalizeUnknown(input.unknown, kind),
     completeness: enumValue(input.completeness ?? (SEMANTIC_SETS.unknownOperations.has(kind) ? 'unknown' : 'complete'), SEMANTIC_SETS.completeness, 'semantic-ir-invalid-node-completeness'),
@@ -108,11 +189,46 @@ export function createSemanticNode(input) {
     fail('semantic-ir-intrinsic-unknown-hidden-by-node');
   }
   if (CONTROL_NODE_KINDS.has(kind) && !out.targets.length) fail('semantic-ir-control-target-required');
+  if (kind === 'branch' && out.inputs.length !== 0) fail('semantic-ir-control-input-cardinality');
+  if (kind === 'conditional-branch' && out.inputs.length !== 1) fail('semantic-ir-control-input-cardinality');
+  if (Object.hasOwn(SEMANTIC_CONTROL_TARGET_COUNTS, kind) && out.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS[kind]) {
+    fail('semantic-ir-control-target-cardinality');
+  }
+  // Validate the reserved metadata contract before ordinary data arity.  A
+  // malformed non-return node must report the contract violation rather than
+  // exposing an unrelated const/intrinsic arity error first.
+  if (input.metadata != null && Object.hasOwn(Object(input.metadata), 'returnControlTarget') && kind !== 'return') {
+    fail('semantic-ir-return-control-target-not-allowed');
+  }
+  const dataContract = dataArityContract(kind, out.operator);
+  if (dataContract) {
+    const arity = arityViolation(out, dataContract);
+    const compatibilityIntrinsicArity = options.allowCompatibilityIntrinsicArity === true
+      && kind === 'intrinsic'
+      && out.operator?.toLowerCase() === 'add-with-carry'
+      && arity === 'input';
+    if (arity === 'input' && !compatibilityIntrinsicArity) fail('semantic-ir-node-input-arity');
+    if (arity === 'output') fail('semantic-ir-node-output-arity');
+  }
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness === 'complete') fail('semantic-ir-unknown-cannot-be-complete');
+  // A node-local unknown payload is explicit evidence of an unresolved
+  // semantic dimension, so it can never coexist with completeness — whichever
+  // direction the pair contradicts (#5390).
+  if (out.unknown != null && out.completeness === 'complete') fail('semantic-ir-unknown-detail-on-complete-node');
   if (!SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness !== 'complete' && out.unknown == null) {
     fail('semantic-ir-partial-node-requires-unknown-detail');
   }
-  if (input.metadata != null) out.metadata = serializable(input.metadata, 'semantic-ir-invalid-node-metadata');
+  if (input.metadata != null) {
+    const metadata = input.metadata;
+    out.metadata = serializable(metadata, 'semantic-ir-invalid-node-metadata');
+    if (Object.hasOwn(Object(metadata), 'returnControlTarget')) {
+      // Serialization must not silently drop a named field on an array, Date,
+      // or other metadata payload before the reserved contract is checked.
+      object(out.metadata, 'semantic-ir-invalid-return-control-target-metadata');
+      if (!Object.hasOwn(out.metadata, 'returnControlTarget')) fail('semantic-ir-return-control-target-metadata-lost');
+      out.metadata.returnControlTarget = normalizeReturnControlTarget(out.metadata.returnControlTarget, out);
+    }
+  }
   return deepFreeze(out);
 }

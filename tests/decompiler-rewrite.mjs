@@ -12,16 +12,20 @@ const c = (n, bits = 32, signed = true) => expr.constant(BigInt(n), bits, signed
 const rw = (e) => engine.rewrite(e).root;
 
 assert.equal(printExpression(rw(expr.binary('add', v('x'), c(0), 32, true))), 'x');
-assert.equal(printExpression(rw(expr.binary('xor', v('x'), v('x'), 32, false))), '0');
+const sameVariable = v('x');
+assert.equal(printExpression(rw(expr.binary('xor', sameVariable, sameVariable, 32, false))), '0');
 assert.equal(printExpression(rw(expr.binary('and', v('x', 8, false), c(255, 8, false), 8, false))), 'x');
 const nested = expr.binary('add', expr.binary('add', v('x'), c(5), 32, true), c(7), 32, true);
 // #969: a width-exact signed add prints its wrapping machine view.
 assert.equal(printExpression(rw(nested)), '(int32_t)((uint32_t)x + (uint32_t)12)');
-const maxSel = expr.select(expr.compare('gt', v('a'), v('b'), true), v('a'), v('b'), 32, true);
+const maxA = v('a'), maxB = v('b');
+const maxSel = expr.select(expr.compare('gt', maxA, maxB, true), maxA, maxB, 32, true);
 assert.equal(printExpression(rw(maxSel)), 'max(a, b)');
-const minSel = expr.select(expr.compare('lt', v('a'), v('b'), true), v('a'), v('b'), 32, true);
+const minA = v('a'), minB = v('b');
+const minSel = expr.select(expr.compare('lt', minA, minB, true), minA, minB, 32, true);
 assert.equal(printExpression(rw(minSel)), 'min(a, b)');
-const absSel = expr.select(expr.compare('lt', v('x'), c(0), true), expr.unary('neg', v('x'), 32, true), v('x'), 32, true);
+const absX = v('x');
+const absSel = expr.select(expr.compare('lt', absX, c(0), true), expr.unary('neg', absX, 32, true), absX, 32, true);
 assert.equal(printExpression(rw(absSel)), 'abs(x)');
 
 // Ordering semantics belong to the comparison, not the storage type of the

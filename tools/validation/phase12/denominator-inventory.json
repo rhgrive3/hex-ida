@@ -134,7 +134,7 @@
               "package-dependency-version-required",
               "package-dependency-not-pinned",
               "found.contentHash !== dependency.contentHash",
-              "String(found.packageVersion) !== dependency.packageVersion"
+              "found.packageVersion !== dependency.packageVersion"
             ]
           }
         },
@@ -169,7 +169,9 @@
             "type": "source-includes",
             "path": "js/phase12/package-envelope.js",
             "markers": [
-              "const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];"
+              "const hasItems = Object.hasOwn(value, 'items');",
+              "if (hasItems && !Array.isArray(admitted.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');",
+              "const entries = hasItems ? admitted.items : hasResults ? admitted.results : [];"
             ]
           }
         },
@@ -180,13 +182,9 @@
             "type": "source-collection",
             "path": "js/phase12/package-envelope.js",
             "start": "if (![",
-            "end": "].includes(value.completeness))",
+            "end": "].includes(admitted.completeness))",
             "regex": "'([^']+)'",
-            "expected": [
-              "complete",
-              "partial",
-              "truncated"
-            ]
+            "expected": ["complete", "partial", "truncated"]
           }
         },
         {
@@ -199,7 +197,7 @@
               "provider-output-provenance-required",
               "provider-output-item-identity-required",
               "provider-output-item-target-mismatch",
-              "value.unique === true"
+              "admitted.unique === true"
             ]
           }
         },
@@ -220,13 +218,7 @@
             "type": "export-value",
             "module": "js/knowledge/phase12-recognition.js",
             "export": "MATCH_TIERS",
-            "expected": [
-              "exact-content",
-              "relocation-normalized",
-              "structural",
-              "semantic",
-              "capability"
-            ]
+            "expected": ["exact-content", "relocation-normalized", "structural", "semantic", "capability"]
           }
         },
         {
@@ -238,10 +230,7 @@
             "start": "if (![",
             "end": "].includes(envelope.kind))",
             "regex": "'([^']+)'",
-            "expected": [
-              "knowledge",
-              "mixed"
-            ]
+            "expected": ["knowledge", "mixed"]
           }
         },
         {
@@ -281,11 +270,11 @@
             "type": "source-includes",
             "path": "js/knowledge/phase12-recognition.js",
             "markers": [
-              "token.approved !== true",
-              "token.targetMatchId !== result.id",
-              "result.candidateSearchTruncated || result.status === 'ambiguous'",
-              "confirmation: 'user-confirmed'",
-              "authority: 'L4-local-canonical'"
+              "createRecognitionApprovalControl",
+              "requireTrustedDelivery",
+              "recordApproval",
+              "consumeFor",
+              "approval evidence is minted by the host approval control"
             ]
           }
         },
@@ -295,11 +284,7 @@
           "check": {
             "type": "behavior",
             "id": "knowledge-dependency-pinning",
-            "expected": [
-              "exact-resolution",
-              "wrong-hash-rejected",
-              "wrong-version-rejected"
-            ]
+            "expected": ["exact-resolution", "wrong-hash-rejected", "wrong-version-rejected"]
           }
         },
         {
@@ -308,14 +293,7 @@
           "check": {
             "type": "behavior",
             "id": "knowledge-provider-output",
-            "expected": [
-              "items",
-              "results",
-              "complete",
-              "partial",
-              "truncated",
-              "incomplete-unique-rejected"
-            ]
+            "expected": ["items", "results", "complete", "partial", "truncated", "incomplete-unique-rejected"]
           }
         },
         {
@@ -324,13 +302,7 @@
           "check": {
             "type": "behavior",
             "id": "knowledge-recognition-outcomes",
-            "expected": [
-              "suggestion",
-              "ambiguous",
-              "truncated-partial",
-              "no-unique-claim",
-              "local-promotion"
-            ]
+            "expected": ["suggestion", "ambiguous", "truncated-partial", "no-unique-claim", "local-promotion"]
           }
         },
         {
@@ -370,13 +342,7 @@
             "type": "export-value",
             "module": "js/knowledge/phase12-rules.js",
             "export": "CAPABILITY_SCOPES",
-            "expected": [
-              "instruction",
-              "basic-block",
-              "function",
-              "module",
-              "runtime"
-            ]
+            "expected": ["instruction", "basic-block", "function", "module", "runtime"]
           }
         },
         {
@@ -388,19 +354,7 @@
             "start": "const allowed = new Set([",
             "end": "]);",
             "regex": "'([^']+)'",
-            "expected": [
-              "all",
-              "any",
-              "not",
-              "exists",
-              "equals",
-              "in",
-              "contains",
-              "gte",
-              "lte",
-              "gt",
-              "lt"
-            ]
+            "expected": ["all", "any", "not", "exists", "equals", "in", "contains", "gte", "lte", "gt", "lt"]
           }
         },
         {
@@ -409,9 +363,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/knowledge/phase12-rules.js",
-            "markers": [
-              "const scope = input.scope || 'function';"
-            ]
+            "markers": ["const scope = input.scope || 'function';"]
           }
         },
         {
@@ -420,9 +372,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/knowledge/phase12-rules.js",
-            "markers": [
-              "const version = required(input.version || '1', 'capability-rule-version-required');"
-            ]
+            "markers": ["const version = required(input.version || '1', 'capability-rule-version-required');"]
           }
         },
         {
@@ -434,10 +384,7 @@
             "start": "if (![",
             "end": "].includes(envelope.kind))",
             "regex": "'([^']+)'",
-            "expected": [
-              "capability-rules",
-              "mixed"
-            ]
+            "expected": ["capability-rules", "mixed"]
           }
         },
         {
@@ -446,9 +393,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/knowledge/phase12-rules.js",
-            "markers": [
-              "const rules = envelope.payload.rules || envelope.payload;"
-            ]
+            "markers": ["const rules = envelope.payload.rules || envelope.payload;"]
           }
         },
         {
@@ -499,13 +444,7 @@
           "check": {
             "type": "behavior",
             "id": "rules-result-classes",
-            "expected": [
-              "supported",
-              "not-detected",
-              "partial",
-              "required-feature-missing",
-              "dependency-missing"
-            ]
+            "expected": ["supported", "not-detected", "partial", "required-feature-missing", "dependency-missing"]
           }
         },
         {
@@ -514,11 +453,7 @@
           "check": {
             "type": "behavior",
             "id": "rules-dependency-order",
-            "expected": [
-              "dependency-first",
-              "cycle-rejected",
-              "missing-dependency-rejected"
-            ]
+            "expected": ["dependency-first", "cycle-rejected", "missing-dependency-rejected"]
           }
         },
         {
@@ -528,10 +463,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/knowledge/phase12-rules.js",
-            "markers": [
-              "confirmed: false",
-              "authority: 'L2-evidence'"
-            ]
+            "markers": ["confirmed: false", "authority: 'L2-evidence'"]
           }
         }
       ]
@@ -559,26 +491,7 @@
             "start": "const PRIMITIVES = new Map([",
             "end": "]);",
             "regex": "\\['([^']+)'",
-            "expected": [
-              "u8",
-              "i8",
-              "u16le",
-              "u16be",
-              "i16le",
-              "i16be",
-              "u32le",
-              "u32be",
-              "i32le",
-              "i32be",
-              "u64le",
-              "u64be",
-              "i64le",
-              "i64be",
-              "f32le",
-              "f32be",
-              "f64le",
-              "f64be"
-            ]
+            "expected": ["u8", "i8", "u16le", "u16be", "i16le", "i16be", "u32le", "u32be", "i32le", "i32be", "u64le", "u64be", "i64le", "i64be", "f32le", "f32be", "f64le", "f64be"]
           }
         },
         {
@@ -587,9 +500,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "if (!['const', 'ref', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not'].includes(op))"
-            ]
+            "markers": ["if (!['const', 'ref', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not'].includes(op))"]
           }
         },
         {
@@ -601,18 +512,7 @@
             "start": "function validateType(type, depth = 0, names = new Set())",
             "end": "export function typeCheckPattern(parsed)",
             "regex": "type\\.kind === '([^']+)'",
-            "expected": [
-              "primitive",
-              "named",
-              "struct",
-              "array",
-              "pointer",
-              "offset",
-              "conditional",
-              "union",
-              "enum",
-              "bitfield"
-            ]
+            "expected": ["primitive", "named", "struct", "array", "pointer", "offset", "conditional", "union", "enum", "bitfield"]
           }
         },
         {
@@ -624,18 +524,7 @@
             "start": "function readType(type, offset, space, ctx, values, depth = 0)",
             "end": "export function evaluatePattern(compiled, byteSource, options = {})",
             "regex": "type\\.kind === '([^']+)'",
-            "expected": [
-              "primitive",
-              "named",
-              "enum",
-              "bitfield",
-              "conditional",
-              "pointer",
-              "offset",
-              "array",
-              "union",
-              "struct"
-            ]
+            "expected": ["primitive", "named", "enum", "bitfield", "conditional", "pointer", "offset", "array", "union", "struct"]
           }
         },
         {
@@ -660,9 +549,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset'"
-            ]
+            "markers": ["base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset'"]
           }
         },
         {
@@ -671,10 +558,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "space: 'file'",
-              "targetAddressSpace: options.targetAddressSpace || 'file'"
-            ]
+            "markers": ["space: 'file'", "targetAddressSpace: options.targetAddressSpace || 'file'"]
           }
         },
         {
@@ -711,9 +595,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');"
-            ]
+            "markers": ["if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');"]
           }
         },
         {
@@ -722,14 +604,7 @@
           "check": {
             "type": "behavior",
             "id": "patterns-value-classes",
-            "expected": [
-              "complete",
-              "partial",
-              "primitive",
-              "array-lazy",
-              "provenance",
-              "snapshot-mismatch"
-            ]
+            "expected": ["complete", "partial", "primitive", "array-lazy", "provenance", "snapshot-mismatch"]
           }
         },
         {
@@ -738,11 +613,7 @@
           "check": {
             "type": "behavior",
             "id": "patterns-support-truth",
-            "expected": [
-              "parser-supported",
-              "evaluator-bounded",
-              "authority-l2-evidence"
-            ]
+            "expected": ["parser-supported", "evaluator-bounded", "authority-l2-evidence"]
           }
         },
         {
@@ -752,10 +623,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "mutation: 'unsupported'",
-              "authority: 'L2-evidence'"
-            ]
+            "markers": ["mutation: 'unsupported'", "authority: 'L2-evidence'"]
           }
         },
         {
@@ -765,10 +633,7 @@
           "check": {
             "type": "source-includes",
             "path": "js/pattern/index-core.js",
-            "markers": [
-              "network: 'unsupported'",
-              "arbitraryJavaScript: 'unsupported'"
-            ]
+            "markers": ["network: 'unsupported'", "arbitraryJavaScript: 'unsupported'"]
           }
         }
       ]
@@ -794,7 +659,7 @@
             "type": "export-value",
             "module": "js/collaboration/index.js",
             "export": "CHECKPOINT_SCHEMA_VERSION",
-            "expected": "hex-project-checkpoint-v1"
+            "expected": "hex-project-checkpoint-v2"
           }
         },
         {
@@ -859,13 +724,7 @@
             "start": "const MEANINGFUL_FACTS = new Set([",
             "end": "]);",
             "regex": "'([^']+)'",
-            "expected": [
-              "name",
-              "type",
-              "struct",
-              "confirmation",
-              "patch"
-            ]
+            "expected": ["name", "type", "struct", "confirmation", "patch"]
           }
         },
         {
@@ -950,6 +809,7 @@
             "start": "validate(envelope) {",
             "end": "\n  }\n\n  accept(envelope)",
             "regex": "reason: '([^']+)'",
+            "ordered": false,
             "expected": [
               "remote-envelope-shape-invalid",
               "remote-envelope-schema-unsupported",
@@ -1004,14 +864,7 @@
           "check": {
             "type": "behavior",
             "id": "remote-operation-classes",
-            "expected": [
-              "applied",
-              "duplicate",
-              "conflict",
-              "unresolved",
-              "rejected",
-              "tombstone"
-            ]
+            "expected": ["applied", "duplicate", "conflict", "unresolved", "rejected", "tombstone"]
           }
         },
         {
@@ -1020,12 +873,7 @@
           "check": {
             "type": "behavior",
             "id": "remote-security-gate",
-            "expected": [
-              "default-unverified-rejected",
-              "secure-authorized-accepted",
-              "replay-rejected",
-              "raw-egress-rejected"
-            ]
+            "expected": ["default-unverified-rejected", "secure-authorized-accepted", "replay-rejected", "raw-egress-rejected"]
           }
         },
         {
@@ -1055,16 +903,14 @@
                   "AES-GCM",
                   "Ed25519",
                   "remoteCanonicalTransportBinding(envelope)",
-                  "entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "entry.binding !== canonicalTransportBindingText(envelope)",
                   "remote-transport-response-signature-rejected"
                 ]
               },
               {
                 "type": "behavior",
                 "id": "remote-canonical-transport",
-                "expected": [
-                  "unsupported-without-profile-proof"
-                ]
+                "expected": ["unsupported-without-profile-proof"]
               }
             ]
           }
@@ -1078,10 +924,7 @@
             "module": "js/platform/capability-maturity.js",
             "export": "phase12Maturity",
             "path": "collaboration.limitations",
-            "expected": [
-              "remote-security-gate-required",
-              "derived-analysis-excluded"
-            ]
+            "expected": ["remote-security-gate-required", "derived-analysis-excluded"]
           }
         }
       ]

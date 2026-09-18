@@ -11,15 +11,62 @@ export const SYM_STUB = 1;      // 外部ライブラリへの中継地点 (__st
 export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (__got など)
 
 function finiteListMax(value, fallback = 50000) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  if (value == null) return fallback;
+  // 件数上限は primitive な非負 safe integer だけが authority (#5250):
+  // numeric string / Array / boolean を Number() で昇格させない。
+  // fractional 値は「最大件数」契約を満たさないので採用しない。
+  // 0 は正当な zero-cap（0件）であり、除外しない。
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('result limit must be a non-negative safe integer');
+  }
+  return value;
 }
 
 function canonicalAddressKey(value) {
   return typeof value === 'bigint' && value >= 0n ? value.toString() : null;
 }
 
+function canonicalMetadataAddress(value) {
+  let big = null;
+  if (typeof value === 'bigint') big = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) big = BigInt(value);
+  else if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+      try { big = BigInt(text); } catch { big = null; }
+    }
+  }
+  if (big == null || big < 0n || big > 18446744073709551615n) return null;
+  return big;
+}
+
 export class SymbolIndex {
+  static canonicalizeFunctionStarts(raw) {
+    if (raw == null) return new BigUint64Array(0);
+    if (raw instanceof BigUint64Array) return raw;
+    const canonicalElement = (value) => {
+      if (typeof value === 'bigint') return value;
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+      if (typeof value === 'string') {
+        const text = value.trim();
+        if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+          try { return BigInt(text); } catch { return null; }
+        }
+      }
+      return null;
+    };
+    if (Array.isArray(raw)) {
+      const out = new BigUint64Array(raw.length);
+      for (let index = 0; index < raw.length; index++) {
+        const canonical = canonicalElement(raw[index]);
+        if (canonical == null) throw new TypeError('symbol-function-start-transport-invalid');
+        out[index] = canonical;
+      }
+      return out;
+    }
+    throw new TypeError('symbol-function-start-transport-invalid');
+  }
+
   constructor(result) {
     const r = result || {};
     const rawAddrs = r.addrs || new BigUint64Array(0);
@@ -43,7 +90,12 @@ export class SymbolIndex {
     this.names = symbolCardinalityValid ? rawNames : [];
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
     this.flags = symbolCardinalityValid ? rawFlags : new Uint8Array(0);
-    this.funcs = r.funcs || new BigUint64Array(0);
+    /* Function starts must be a canonical typed transport. A raw Number[]
+       array survives with Number/BigInt coerced comparisons but fails the
+       strict-equality exact-start lookups, so every start becomes invisible
+       (#5094): canonicalize the elements and fail closed on non-canonical
+       ones instead of keeping a lookup-dead transport. */
+    this.funcs = SymbolIndex.canonicalizeFunctionStarts(r.funcs);
     /* Optional exact function ends. A zero/missing entry means unknown. */
     this.funcEnds = r.funcEnds || null;
     /* Executable regions are the trust boundary for containment. */
@@ -55,9 +107,12 @@ export class SymbolIndex {
        retained as the legacy name for an authoritative complete start set;
        `allSeedsExact` only describes the starts currently present. */
     const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
-    this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
+    const seedExactness = r.allSeedsExact != null
+      ? r.allSeedsExact === true
+      : (r.functionStartsExact != null ? r.functionStartsExact === true : null);
+    this.allSeedsExact = seedExactness === true;
     this.functionStartsComplete = discoveryComplete;
-    this.functionStartsExact = discoveryComplete && (r.allSeedsExact == null || this.allSeedsExact);
+    this.functionStartsExact = discoveryComplete && (seedExactness == null || seedExactness);
     this.functionDiscovery = r.functionDiscovery || {
       complete: discoveryComplete,
       capped: !!r.functionStartsCapped,
@@ -396,9 +451,11 @@ export class SymbolIndex {
     for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
     const fresh = [];
     for (const e of entries) {
-      if (!e || e.addr == null || !e.name || have.has(e.addr)) continue;
-      have.add(e.addr);
-      fresh.push(e);
+      if (!e || e.addr == null || !e.name) continue;
+      const addr = canonicalMetadataAddress(e.addr);
+      if (addr == null || have.has(addr)) continue;
+      have.add(addr);
+      fresh.push({ addr, name: e.name, provenance: e.provenance });
     }
     if (!fresh.length) return 0;
 
@@ -440,9 +497,11 @@ export class SymbolIndex {
     const all = Array.from(have);
     let added = 0;
     for (const a of list) {
-      if (a == null || have.has(a)) continue;
-      have.add(a); all.push(a); added++;
-      this.functionProvenance.set(a.toString(), { ...provenance });
+      if (a == null) continue;
+      const addr = canonicalMetadataAddress(a);
+      if (addr == null || have.has(addr)) continue;
+      have.add(addr); all.push(addr); added++;
+      this.functionProvenance.set(addr.toString(), { ...provenance });
     }
     if (!added) return 0;
     all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));

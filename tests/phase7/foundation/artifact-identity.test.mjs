@@ -164,6 +164,7 @@ test('an option group outside the dependency class cannot change artifact identi
   // phase7.alias.region declares aliasOptions only: points-to tuning must not
   // invalidate it, otherwise the dependency table lies about change impact.
   const aliasBase = {
+    budgetClass: 'interactive',
     kind: 'phase7.alias.region',
     binaryId: 'binary_1',
     functionId: 'function_1',
@@ -177,8 +178,8 @@ test('an option group outside the dependency class cannot change artifact identi
     memorySsaVersion: '2.0.0',
     architectureSemanticVersion: '1',
     abiSemanticVersion: '1',
+    // #8809 sync: #5751 requires the budget generation unless explicitly denied.
     budgetClass: 'interactive',
-    budgetAffectsCompleteness: true,
   };
   const reference = createPhase7ArtifactDescriptor(aliasBase).artifactId;
   assert.equal(
@@ -190,6 +191,7 @@ test('an option group outside the dependency class cannot change artifact identi
 
 test('a kind without option dependencies ignores analysis tuning options (#6164)', () => {
   const debugBase = {
+    budgetClass: 'interactive',
     kind: 'phase7.debug.facts',
     binaryId: 'binary_1',
     snapshotId: 'snapshot_1',
@@ -199,8 +201,8 @@ test('a kind without option dependencies ignores analysis tuning options (#6164)
     debugProviderVersion: '1.0.0',
     debugBuildIdentity: 'build_a',
     debugIdentityDigest: 'digest_issue_6164',
+    // #8809 sync: #5751 requires the budget generation unless explicitly denied.
     budgetClass: 'interactive',
-    budgetAffectsCompleteness: true,
   };
   const reference = createPhase7ArtifactDescriptor(debugBase).artifactId;
   assert.equal(

@@ -17,6 +17,9 @@ function uleb(value) {
 const str = (s) => [...new TextEncoder().encode(s), 0];
 
 const abbrev = Uint8Array.from([
+  // 3: compile_unit root with children (DWARF4 §7.5 single-root contract)
+  ...uleb(3), 0x11, 0x01,
+  0x00, 0x00,
   // 1: subprogram: name/string, ranges/sec_offset
   ...uleb(1), 0x2e, 0x00,
     ...uleb(0x03), ...uleb(0x08),   // DW_AT_name, DW_FORM_string
@@ -34,7 +37,9 @@ const abbrev = Uint8Array.from([
 const addr = (v) => { const out = []; for (let i = 0; i < 8; i++) out.push(Number((v >> BigInt(i * 8)) & 0xffn)); return out; };
 const offset32 = (v) => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff];
 
-// CU body: first a ranges-only subprogram, then a contiguous one.
+// CU body: a compile_unit root, then a ranges-only subprogram and a contiguous
+// one as its children, closed by the sibling-chain terminator.
+const dieRoot = [...uleb(3)];
 const dieRanges = [...uleb(1), ...str('split_fn'), ...offset32(0x40)];
 const dieContiguous = [...uleb(2), ...str('plain_fn'), ...addr(0x2000n), 0x10];
 const debug_info = Uint8Array.from([
@@ -42,8 +47,10 @@ const debug_info = Uint8Array.from([
   0x04, 0x00,             // version 4
   0, 0, 0, 0,             // abbrev_offset
   0x08,                   // address_size
+  ...dieRoot,
   ...dieRanges,
   ...dieContiguous,
+  0x00,                   // terminating null entry of the root's child chain
 ]);
 new DataView(debug_info.buffer).setUint32(0, debug_info.length - 4, true);
 
@@ -68,7 +75,7 @@ test('#5731: contiguous low_pc/high_pc subprograms keep parsing alongside', () =
 
 test('#5731: a CU without any DW_AT_ranges stays complete', () => {
   const dieContiguousOnly = [...uleb(2), ...str('plain_fn'), ...addr(0x2000n), 0x10];
-  const info = Uint8Array.from([0, 0, 0, 0, 0x04, 0x00, 0, 0, 0, 0, 8, ...dieContiguousOnly]);
+  const info = Uint8Array.from([0, 0, 0, 0, 0x04, 0x00, 0, 0, 0, 0, 8, ...uleb(3), ...dieContiguousOnly, 0x00]);
   new DataView(info.buffer).setUint32(0, info.length - 4, true);
   const out = parseDebugInfo({ debug_info: info, debug_abbrev: abbrev });
   assert.equal(out.complete, true);

@@ -162,7 +162,7 @@ test('#913 ABI return locations cover FP, void, Microsoft x64, and unknown fail-
 test('#913 ABI argument locations preserve cross-class parameter indexes', () => {
   const aapcs = semanticAbiAdapter(AAPCS64_ABI);
   assert.deepEqual(aapcs.argumentLocations({
-    functionPrototype:{ parameters:[{type:'int64'}, {type:'double'}] },
+    functionPrototype:{ parameters:[{type:'int64', bits:64}, {type:'double', bits:64}] },
   }).map(({index,reg}) => ({index,reg})), [
     { index:0, reg:'x0' },
     { index:1, reg:'v0' },
@@ -175,6 +175,10 @@ test('#913 ABI argument locations preserve cross-class parameter indexes', () =>
     { index:0, reg:'x10' },
     { index:1, reg:'f10' },
   ]);
+
+  assert.deepEqual(aapcs.argumentLocations({
+    functionPrototype:{ parameters:[{type:'int64'}, {type:'double'}] },
+  }).map(({index,reg}) => ({index,reg})), []);
 });
 
 test('#913 shared decompiler no longer embeds AAPCS64 return/argument register literals', async () => {

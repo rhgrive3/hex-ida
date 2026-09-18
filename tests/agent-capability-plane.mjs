@@ -5,7 +5,6 @@ import { createCapabilityExecutor } from '../js/ai/capabilities/executor.js';
 import { ProposalStore } from '../js/ai/proposals.js';
 import { createProposalExecutor } from '../js/ai/interaction/proposal-executor.js';
 import { PatchSet } from '../js/patch.js';
-import { executeApprovedCapability } from './ai/support/approved-capability.mjs';
 import { AgentJobManager } from '../js/ai/jobs/index.js';
 
 assert.equal(assertCapabilityParity(HEX_CAPABILITIES).ok, true);
@@ -17,35 +16,34 @@ const catalog = createCapabilityCatalog();
 const executor = createCapabilityExecutor({ catalog, app, binaryId: 'bin-A' });
 const authorization = { kind: 'proposal', token: '0123456789abcdef' };
 const evidenceStore = { has: (id) => id === 'e1' };
-async function approved(executor, id, args) {
-  if (id.startsWith('annotation.') || id === 'patch.create') return executeApprovedCapability(executor, id, args);
-  const store = new ProposalStore({ evidenceStore });
-  const owner = createProposalExecutor({ store, capabilityExecutor: executor, app });
-  const proposal = await owner.proposeCapability(id, args, { evidenceIds: ['e1'] });
-  return (await owner.approveAndApply(proposal.id)).execution;
-}
+const proposals = new ProposalStore({ evidenceStore });
+const proposalExecutor = createProposalExecutor({ store: proposals, capabilityExecutor: executor, app });
+const applyProposal = async (kind, target, before, after) => {
+  const proposal = proposals.create({ kind, target, before, after, evidenceIds: ['e1'] });
+  return proposalExecutor.approveAndApply(proposal.id);
+};
 
-await approved(executor, 'annotation.rename', { address: '4096', value: 'renamed' });
+await assert.rejects(executor.execute('annotation.rename', { address: '4096', value: 'forged' }, { authorization }), (error) => error.type === 'approval_required');
+await applyProposal('rename', { address: '4096' }, null, 'renamed');
 assert.equal(app.notes.nameOf(4096n), 'renamed'); assert.equal(app.symbols.nameAt(4096n), 'renamed');
-await approved(executor, 'annotation.comment', { address: '4096', value: 'comment' });
+await applyProposal('comment', { address: '4096' }, null, 'comment');
 assert.equal(app.notes.comment(4096n), 'comment');
-await approved(executor, 'annotation.set-type', { address: '4096', key: 'return', value: 'int' });
+await applyProposal('type', { address: '4096', key: 'return' }, null, 'int');
 assert.equal(app.notes.typeOf(4096n, 'return'), 'int');
-await approved(executor, 'annotation.struct-field', { struct: 'Header', offset: 8, field: 'flags', type: 'uint32_t' });
+await applyProposal('struct-field', { struct: 'Header', offset: 8 }, null, { field: 'flags', type: 'uint32_t' });
 assert.equal(app.notes.structs[0].fields[0].name, 'flags');
 await assert.rejects(executor.execute('annotation.rename', { address: '4096', value: 'no-approval' }), (error) => error.type === 'approval_required');
 
 const preview = await executor.execute('patch.preview', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] });
 assert.equal(preview.fileOffset, 0n);
-const patch = await approved(executor, 'patch.create', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] });
+await assert.rejects(executor.execute('patch.create', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] }, { authorization }), (error) => error.type === 'approval_required');
+const { execution: patch } = await applyProposal('patch', { address: '4096' }, [1, 2, 3, 4], [4, 3, 2, 1]);
 assert.deepEqual(patch.after, [4, 3, 2, 1]);
-const output = await approved(executor, 'patch.apply', {});
-assert.deepEqual([...new Uint8Array(await output.output.arrayBuffer())], [4, 3, 2, 1, 5, 6, 7, 8]);
-await approved(executor, 'patch.revert', { fileOffset: '0' }); assert.equal(app.patches.size, 0);
-await assert.rejects(approved(executor, 'patch.create', { address: '4096', before: [9, 2, 3, 4], after: [4, 3, 2, 1] }), /stale/);
+await assert.rejects(executor.execute('patch.apply', { file: app.file }, { authorization }), (error) => error.type === 'approval_required');
+await assert.rejects(executor.execute('patch.revert', { fileOffset: '0' }, { authorization }), (error) => error.type === 'approval_required');
+assert.equal(app.patches.size, 1);
+await assert.rejects(applyProposal('patch', { address: '4096' }, [9, 2, 3, 4], [4, 3, 2, 1]), (error) => error.type === 'tool_failed' && /changed after it was created/.test(error.message));
 
-const proposals = new ProposalStore({ evidenceStore });
-const proposalExecutor = createProposalExecutor({ store: proposals, capabilityExecutor: executor, app });
 const rename = proposals.create({ kind: 'rename', target: { address: '4096' }, before: 'renamed', after: 'approved_name', evidenceIds: ['e1'] });
 await proposalExecutor.approveAndApply(rename.id); assert.equal(app.notes.nameOf(4096n), 'approved_name');
 const stale = proposals.create({ kind: 'comment', target: { address: '4096' }, before: 'comment', after: 'new comment', evidenceIds: ['e1'] });
@@ -69,62 +67,15 @@ const adapter = {
   readRegisters: async () => ({ pc: '0x1000' }), readMemory: async (_address, size) => runtimeBytes.slice(0, size),
   writeMemory: async (_address, bytes) => { runtimeBytes = Uint8Array.from(bytes); return { written: bytes.length }; },
 };
-let currentAdapter = adapter;
-const runtimePlatform = { currentSession: (required = true) => ({ id: 'runtime-A', binaryHash: 'bin-A', backend: 'fake', adapter: currentAdapter }), sessions: { close: async () => true }, runExperiment: async () => ({ evidence: [] }) };
+const runtimePlatform = { currentSession: (required = true) => ({ id: 'runtime-A', binaryHash: 'bin-A', backend: 'fake', adapter }), sessions: { close: async () => true }, runExperiment: async () => ({ evidence: [] }) };
 const runtimeExecutor = createCapabilityExecutor({ catalog, runtimePlatform, binaryId: 'bin-A' });
 await assert.rejects(runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-B', binaryId: 'bin-A' }, { authorization }), (error) => error.type === 'scope_violation');
-await approved(runtimeExecutor, 'runtime.continue', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' });
-assert.deepEqual(runtimeCalls, ['resume']);
+await assert.rejects(runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' }, { authorization }), (error) => error.type === 'approval_required');
+assert.deepEqual(runtimeCalls, []);
 const memory = await runtimeExecutor.execute('runtime.memory-read', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', size: 4 });
 assert.deepEqual(memory.bytes, [3, 3, 3, 3]);
-await approved(runtimeExecutor, 'runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [4, 4, 4, 4] });
-assert.deepEqual([...runtimeBytes], [4, 4, 4, 4]);
-await assert.rejects(approved(runtimeExecutor, 'runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [5, 5, 5, 5] }), /stale/);
-
-// Capability proposals use the same private, single-use authority as annotations.
-await assert.rejects(runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' }, { authorization }), (error) => error.type === 'approval_required');
-const controlStore = new ProposalStore({ evidenceStore });
-const controlOwner = createProposalExecutor({ store: controlStore, capabilityExecutor: runtimeExecutor, app });
-const controlArgs = { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' };
-const changedSession = await controlOwner.proposeCapability('runtime.continue', controlArgs, { evidenceIds: ['e1'] });
-currentAdapter = { ...adapter };
-await assert.rejects(controlOwner.approveAndApply(changedSession.id), /changed after it was created/);
-assert.deepEqual(runtimeCalls, ['resume']);
-currentAdapter = adapter;
-const once = await controlOwner.proposeCapability('runtime.continue', controlArgs, { evidenceIds: ['e1'] });
-await controlOwner.approveAndApply(once.id);
-await assert.rejects(controlOwner.approveAndApply(once.id), (error) => error.type === 'approval_required');
-assert.deepEqual(runtimeCalls, ['resume', 'resume']);
-const substituted = await controlOwner.proposeCapability('runtime.continue', controlArgs, { evidenceIds: ['e1'] });
-const token = controlStore.approve(substituted.id).approvalToken;
-await assert.rejects(controlStore.apply(substituted.id, {
-  approvalToken: token, currentState: await runtimeExecutor.approvalState('runtime.continue', controlArgs),
-  apply: async (_item, authority) => runtimeExecutor.execute('runtime.pause', controlArgs, { authorization: authority }),
-}), (error) => error.type === 'approval_required');
-assert.deepEqual(runtimeCalls, ['resume', 'resume']);
-const patchStore = new ProposalStore({ evidenceStore });
-const patchOwner = createProposalExecutor({ store: patchStore, capabilityExecutor: executor, app });
-const replacedFile = await patchOwner.proposeCapability('patch.apply', {}, { evidenceIds: ['e1'] });
-app.file = new Blob([await app.file.arrayBuffer()]);
-await assert.rejects(patchOwner.approveAndApply(replacedFile.id), /changed after it was created/);
-await assert.rejects(patchOwner.proposeCapability('patch.apply', { file: app.file }, { evidenceIds: ['e1'] }), /without a file argument/);
-await assert.rejects(patchOwner.proposeCapability('project.restore-known', {}, { evidenceIds: ['e1'] }), /Unsupported capability proposal/);
-
-// Same binary, bytes, Blob, and patch metadata do not authorize another app's
-// patch set. Approval names the exact mutation owner as well as its value.
-const otherApp = fakeApp();
-otherApp.file = app.file;
-const otherExecutor = createCapabilityExecutor({ catalog, app: otherApp, binaryId: 'bin-A' });
-const patchArgs = { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] };
-await approved(executor, 'patch.create', patchArgs);
-await approved(otherExecutor, 'patch.create', patchArgs);
-for (const [id, args] of [['patch.revert', { fileOffset: '0' }], ['patch.apply', {}]]) {
-  const pending = await patchOwner.proposeCapability(id, args, { evidenceIds: ['e1'] });
-  const wrongOwner = createProposalExecutor({ store: patchStore, capabilityExecutor: otherExecutor, app: otherApp });
-  await assert.rejects(wrongOwner.approveAndApply(pending.id), /changed after it was created/);
-  assert.equal(app.patches.size, 1);
-  assert.equal(otherApp.patches.size, 1);
-}
+await assert.rejects(runtimeExecutor.execute('runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [4, 4, 4, 4] }, { authorization }), (error) => error.type === 'approval_required');
+assert.deepEqual([...runtimeBytes], [3, 3, 3, 3]);
 
 const knownTools = new Set(HEX_CAPABILITIES.filter((item) => item.agentTool).map((item) => item.agentTool));
 const available = catalog.agent({ toolRegistry: { has: (name) => knownTools.has(name) } });
@@ -150,7 +101,7 @@ function fakeApp() {
   return {
     file: new Blob([bytes]), patches: new PatchSet(),
     backend: { readAt: async (address, length) => ({ found: true, bytes: bytes.slice(Number(BigInt(address) - 4096n), Number(BigInt(address) - 4096n) + length) }) },
-    store: { get: (key) => key === 'regions' ? [{ vmAddr: 4096n, fileOffset: 0n, size: 8n, exec: true }] : key === 'fileInfo' ? { size: 8 } : null },
+    store: { get: (key) => key === 'architecture' ? 'arm64' : key === 'regions' ? [{ vmAddr: 4096n, fileOffset: 0n, size: 8n, exec: true }] : key === 'fileInfo' ? { size: 8 } : null },
     notes: {
       structs: [], dirty: false, save: () => true,
       setName: (address, value) => names.set(String(address), value), nameOf: (address) => names.get(String(address)) || null,

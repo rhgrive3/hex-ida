@@ -127,6 +127,8 @@ test('verifyBoundedEquivalence: classifies sort and width mismatches as unknown 
 
   assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
 });
 
 test('verifyBoundedEquivalence: reports symbolic sort mismatch as unknown before correspondence', async () => {
@@ -143,5 +145,7 @@ test('verifyBoundedEquivalence: reports symbolic sort mismatch as unknown before
 
   assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
   assert.equal(res.unresolvedSymbols, undefined);
 });

@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -437,9 +438,8 @@ test('replacing canonical ranges invalidates dependent scalar analyses', () => {
   f.block(0);
   f.constant(1, 8);
   f.ret();
-  const seed = seedAnalysisState(f.build());
-  const state = createAnalysisState({
-    ...Object.fromEntries(seed.available().map(key => [key, seed.get(key)])),
+  const state = seedAnalysisState(f.build());
+  publishFixtureAnalyses(state, {
     valueNumbers: Object.freeze({ completeness: 'complete' }),
     induction: Object.freeze({ completeness: 'complete' }),
     aggregates: Object.freeze({ completeness: 'complete' }),

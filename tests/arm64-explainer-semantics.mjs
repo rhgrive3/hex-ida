@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 7 つの確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守る確定した欠陥を一覧にしています。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -13,6 +13,12 @@
  *   #3610  ordered narrow memory のアクセス幅をレジスタ幅で推定する
  *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
  *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
+ *   #3620  条件付き比較/select の別演算 alias を同じ説明にする
+ *   #3668  FP compare family を入力レジスタへの代入として説明する
+ *   #3677  LDR literal の転送幅を destination 幅に関係なく固定する
+ *   #3713  LDXRB/H・STXRB/H が exclusive monitor と narrow width を落とす
+ *   #3740  LDAR/STLR family が acquire/release ordering を落とす
+ *   #3775  LDXP/LDAXP/STXP/STLXP が pair operand と total width を落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -21,7 +27,7 @@
  * `out.handlerError` に残るようにし、このテストが機械的に検出します。
  */
 import assert from 'node:assert/strict';
-import { explain, referenceTarget, operandNotes } from '../js/arm64.js';
+import { categoryOf, explain, referenceTarget, operandNotes } from '../js/arm64.js';
 import { buildBasicBlocks, makeInstruction } from '../js/blocks-base.js';
 import { lang, setLang } from '../js/i18n.js';
 
@@ -176,6 +182,215 @@ for (const [mn, reg, bytes] of [
   assert.equal(insn.memory?.size, bytes, `${mn} ${reg} must report ${bytes}-byte access`);
 }
 console.log('  ok 4b ordered narrow memory widths remain architectural (#3610)');
+
+/* ── #3713/#3740 ordered and exclusive narrow families keep their semantics ── */
+
+const exclusiveOrderingLang = lang();
+try {
+  setLang('en');
+
+  const EXCLUSIVE_LOADS = [
+    ['ldxrb', 'w0, [x1]', 1, false],
+    ['ldxrh', 'w0, [x1]', 2, false],
+    ['ldaxrb', 'w0, [x1]', 1, true],
+    ['ldaxrh', 'w0, [x1]', 2, true],
+  ];
+  for (const [mn, ops, bytes, acquire] of EXCLUSIVE_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3713)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3713)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must keep its ${bytes}-byte source width (#3713)`);
+    assert.match(result.pseudo, /zero_extend/, `${mn} must zero-extend its narrow load (#3713)`);
+    assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3713)`);
+    if (acquire) assert.match(rendered, /acquire/i, `${mn} must explain acquire ordering (#3713 #3740)`);
+  }
+
+  const EXCLUSIVE_STORES = [
+    ['stxrb', 'w0, w2, [x1]', 1, false],
+    ['stxrh', 'w0, w2, [x1]', 2, false],
+    ['stlxrb', 'w0, w2, [x1]', 1, true],
+    ['stlxrh', 'w0, w2, [x1]', 2, true],
+  ];
+  for (const [mn, ops, bytes, release] of EXCLUSIVE_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3713)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3713)`);
+    assert.equal(result.pseudo, `w0 = try_store(x1, w2, uint${bytes * 8})`,
+      `${mn} must use w2 as data and w0 as the status destination (#3713)`);
+    assert.match(rendered, new RegExp(`${bytes} byte`), `${mn} must state its ${bytes}-byte conditional store (#3713)`);
+    assert.match(rendered, /w2/, `${mn} must identify the data operand (#3713)`);
+    assert.match(rendered, /w0.*0 on success.*1 on failure/i, `${mn} must explain the status result (#3713)`);
+    if (release) assert.match(rendered, /release/i, `${mn} must explain release ordering (#3713 #3740)`);
+  }
+
+  // The original word/doubleword exclusive forms retain their established
+  // monitor, status, and operand ordering contracts.
+  assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* start exclusive monitor */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* start exclusive monitor */');
+  setLang('ja');
+  assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* 監視開始 */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* 監視開始 */');
+  setLang('en');
+  assert.equal(explain('stxr', 'w0, x2, [x1]').pseudo, 'w0 = try_store(x1, x2)');
+  assert.match([explain('ldaxr', 'x0, [x1]').summary, ...explain('ldaxr', 'x0, [x1]').detail].join(' '), /acquire/i);
+  assert.match([explain('stlxr', 'w0, x2, [x1]').summary, ...explain('stlxr', 'w0, x2, [x1]').detail].join(' '), /release/i);
+
+  const ORDERED_LOADS = [
+    ['ldar', 'w0, [x1]', 4], ['ldar', 'x0, [x1]', 8],
+    ['ldarb', 'w0, [x1]', 1], ['ldarh', 'w0, [x1]', 2],
+  ];
+  for (const [mn, ops, bytes] of ORDERED_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const plain = explain('ldr', ops, 0x1000n, {});
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3740)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3740)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must preserve ${bytes}-byte width (#3740)`);
+    assert.match(result.summary, /acquire/i, `${mn} must identify acquire ordering (#3740)`);
+    assert.notEqual(result.summary, plain.summary, `${mn} must remain distinct from LDR (#3740)`);
+  }
+
+  const ORDERED_STORES = [
+    ['stlr', 'w0, [x1]', 4], ['stlr', 'x0, [x1]', 8],
+    ['stlrb', 'w0, [x1]', 1], ['stlrh', 'w0, [x1]', 2],
+  ];
+  for (const [mn, ops, bytes] of ORDERED_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const plain = explain('str', ops, 0x1000n, {});
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3740)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3740)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must preserve ${bytes}-byte width (#3740)`);
+    assert.match(result.summary, /release/i, `${mn} must identify release ordering (#3740)`);
+    assert.notEqual(result.summary, plain.summary, `${mn} must remain distinct from STR (#3740)`);
+  }
+} finally {
+  setLang(exclusiveOrderingLang);
+}
+console.log('  ok 4c ordered/exclusive narrow families retain width, monitor, status, and ordering (#3713 #3740)');
+
+/* ── #3775 pair-exclusive families preserve both registers and total width ── */
+
+try {
+  setLang('en');
+  const PAIR_LOADS = [
+    ['ldxp', 'x0, x1, [x2]', 'x0', 'x1', 'uint64', 16, false],
+    ['ldxp', 'w0, w1, [x2]', 'w0', 'w1', 'uint32', 8, false],
+    ['ldaxp', 'x0, x1, [x2]', 'x0', 'x1', 'uint64', 16, true],
+    ['ldaxp', 'w0, w1, [x2]', 'w0', 'w1', 'uint32', 8, true],
+  ];
+  for (const [mn, ops, first, second, type, bytes, acquire] of PAIR_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3775)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3775)`);
+    assert.match(result.pseudo, new RegExp(`${first}, ${second} = load_pair_exclusive\\(x2, ${type}, ${bytes} bytes\\)`),
+      `${mn} must expose both pair destinations and its total width (#3775)`);
+    assert.match(rendered, new RegExp(`${bytes} bytes`), `${mn} must state the pair total width (#3775)`);
+    const elementBits = type === 'uint32' ? 32 : 64;
+    assert.match(rendered, new RegExp(`two ${elementBits}-bit elements`),
+      `${mn} must distinguish W-pair and X-pair element widths (#3775)`);
+    if (type === 'uint32') {
+      assert.match(rendered, /A W pair is single-copy atomic at 64-bit doubleword granularity\./,
+        `${mn} must state the W-pair 64-bit single-copy guarantee (#3775)`);
+      assert.doesNotMatch(rendered, /whole 128-bit atomicity is not guaranteed/i,
+        `${mn} must not apply the X-pair 128-bit limitation to a W pair (#3775)`);
+    } else {
+      assert.match(rendered, /Each 64-bit element of an X pair is single-copy atomic at doubleword granularity; whole 128-bit atomicity is not guaranteed by this load\./,
+        `${mn} must scope X-pair atomicity to each element (#3775)`);
+    }
+    assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3775)`);
+    assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both destinations (#3775)`);
+    assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
+    if (acquire) assert.match(rendered, /acquire/i, `${mn} must explain acquire ordering (#3775)`);
+  }
+
+  assert.match(explain('ldxp', 'x0, x1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* start exclusive monitor \*\//,
+    'English pair-load pseudo comments must be localized through J (#3775)');
+  setLang('ja');
+  assert.match(explain('ldxp', 'w0, w1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* 監視開始 \*\//,
+    'Japanese pair-load pseudo comments must remain localized through J (#3775)');
+  setLang('en');
+
+  const PAIR_STORES = [
+    ['stxp', 'w0, x1, x2, [x3]', 'w0', 'x1', 'x2', 'uint64', 16, false],
+    ['stxp', 'w0, w1, w2, [x3]', 'w0', 'w1', 'w2', 'uint32', 8, false],
+    ['stlxp', 'w0, x1, x2, [x3]', 'w0', 'x1', 'x2', 'uint64', 16, true],
+    ['stlxp', 'w0, w1, w2, [x3]', 'w0', 'w1', 'w2', 'uint32', 8, true],
+  ];
+  for (const [mn, ops, status, first, second, type, bytes, release] of PAIR_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3775)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3775)`);
+    assert.equal(result.pseudo, `${status} = try_store_pair(x3, ${first}, ${second}, ${type}, ${bytes} bytes)`,
+      `${mn} must distinguish status from both pair data operands (#3775)`);
+    assert.match(rendered, new RegExp(`${bytes} bytes`), `${mn} must state the pair total width (#3775)`);
+    assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both data operands (#3775)`);
+    assert.match(rendered, new RegExp(`${status}.*0 on success.*1 on failure`, 'i'),
+      `${mn} must explain the status result (#3775)`);
+    assert.match(rendered, /exclusive monitor|matching exclusive monitor/i, `${mn} must explain conditional exclusivity (#3775)`);
+    assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
+    if (release) assert.match(rendered, /release/i, `${mn} must explain release ordering (#3775)`);
+  }
+} finally {
+  setLang(exclusiveOrderingLang);
+}
+console.log('  ok 4d pair-exclusive families retain destinations, status, width, and ordering (#3775)');
+
+/* ── #3620 conditional compare/select aliases keep their own semantics ── */
+
+const conditionalLang = lang();
+try {
+  setLang('en');
+  const CONDITIONAL_CASES = [
+    ['ccmp', 'w0, w1, #0, eq', 'if (eq) flags = w0 − w1 else flags = 0', /subtract|compare again/i],
+    ['ccmp', 'x0, x1, #0, ne', 'if (ne) flags = x0 − x1 else flags = 0', /subtract|compare again/i],
+    ['ccmn', 'x0, x1, #0, ne', 'if (ne) flags = x0 + x1 else flags = 0', /add.*flags|negative/i],
+    ['ccmn', 'w0, w1, #0, eq', 'if (eq) flags = w0 + w1 else flags = 0', /add.*flags|negative/i],
+    ['csinc', 'w0, w1, w2, eq', 'w0 = eq ? w1 : w2 + 1', /adding one/i],
+    ['csinc', 'x0, x1, x2, ne', 'x0 = ne ? x1 : x2 + 1', /adding one/i],
+    ['csinv', 'x0, x1, x2, eq', 'x0 = eq ? x1 : ~x2', /bitwise inverse|invert/i],
+    ['csinv', 'w0, w1, w2, ne', 'w0 = ne ? w1 : ~w2', /bitwise inverse|invert/i],
+    ['csneg', 'w0, w1, w2, ne', 'w0 = ne ? w1 : -w2', /negat|negative/i],
+    ['csneg', 'x0, x1, x2, eq', 'x0 = eq ? x1 : -x2', /negat|negative/i],
+    ['cinc', 'x0, x1, eq', 'x0 = eq ? x1 + 1 : x1', /add one/i],
+    ['cinc', 'w0, w1, ne', 'w0 = ne ? w1 + 1 : w1', /add one/i],
+    ['cinv', 'w0, w1, ne', 'w0 = ne ? ~w1 : w1', /bitwise inverse|invert/i],
+    ['cinv', 'x0, x1, eq', 'x0 = eq ? ~x1 : x1', /bitwise inverse|invert/i],
+    ['cneg', 'x0, x1, eq', 'x0 = eq ? -x1 : x1', /negat|negative/i],
+    ['cneg', 'w0, w1, ne', 'w0 = ne ? -w1 : w1', /negat|negative/i],
+  ];
+
+  for (const [mn, ops, pseudo, summary] of CONDITIONAL_CASES) {
+    const e = explain(mn, ops, 0x1000n, {});
+    assert.equal(e.handlerError, undefined, `${mn} ${ops} handler must not throw (#3620)`);
+    assert.equal(e.pseudo, pseudo, `${mn} ${ops} must preserve both condition paths (#3620)`);
+    assert.match(e.summary, summary, `${mn} ${ops} summary must describe its operation (#3620)`);
+  }
+} finally {
+  setLang(conditionalLang);
+}
+console.log('  ok 4c conditional compare/select aliases retain W/X and true/false-path semantics (#3620)');
+
+/* ── #3677 literal LDR uses the destination transfer width ─────────────── */
+
+for (const [reg, type] of [
+  ['w0', 'uint32'], ['x0', 'uint64'], ['s0', 'uint32'], ['d0', 'uint64'], ['q0', 'uint128'],
+]) {
+  const e = explain('ldr', `${reg}, #0x1000`, 0x2000n, {});
+  assert.equal(e.handlerError, undefined, `ldr ${reg} literal handler must not throw (#3677)`);
+  assert.equal(e.pseudo, `${reg} = *(${type}*)0x1000`,
+    `ldr ${reg} literal must describe its ${type} transfer width (#3677)`);
+}
+
+// The ordinary base-plus-displacement path remains delegated to loadStore.
+const offsetLoad = explain('ldr', 'w0, [x1, #4]', 0x2000n, {});
+assert.equal(offsetLoad.pseudo, 'w0 = *(uint32*)(x1 + 4)',
+  'non-literal ldr must retain its existing addressing path (#3677)');
+console.log('  ok 4d LDR literal explanations retain W/X/S/D/Q transfer widths (#3677)');
 
 /* ── handler が例外で落ちていないこと ───────────────────────── */
 
@@ -406,5 +621,36 @@ try {
   setLang(trapLang);
 }
 console.log('  ok 11 UDF/BRK exception intent stays distinct in both languages (#3750)');
+
+/* #3668 Floating comparisons write flags, never their input FP register. */
+const fpCompareLang = lang();
+try {
+  for (const language of ['en', 'ja']) {
+    setLang(language);
+    for (const width of ['s', 'd']) {
+      for (const mnemonic of ['fcmp', 'fcmpe']) {
+        const result = explain(mnemonic, `${width}0, ${width}1`);
+        assert.equal(result.handlerError, undefined);
+        assert.equal(result.pseudo, `flags = ${width}0 ⋛ ${width}1`);
+        assert.ok(result.terms.includes('flags'));
+        if (mnemonic === 'fcmpe') assert.match(result.detail.join(' '), /quiet NaN.*Invalid Operation/);
+      }
+      for (const [mnemonic, condition, fallback] of [['fccmp', 'eq', 0], ['fccmpe', 'ne', 15]]) {
+        const result = explain(mnemonic, `${width}0, ${width}1, #${fallback}, ${condition}`);
+        assert.equal(result.handlerError, undefined);
+        assert.equal(result.pseudo, `if (${condition}) flags = ${width}0 ⋛ ${width}1 else flags = ${fallback}`);
+        assert.match(result.summary, /NZCV/);
+        assert.ok(result.terms.includes('float') && result.terms.includes('flags'));
+        if (mnemonic === 'fccmpe') assert.match(result.detail.join(' '), /quiet NaN.*Invalid Operation/);
+      }
+      for (const [mnemonic, operator] of [['fadd', '+'], ['fsub', '−'], ['fmul', '×'], ['fdiv', '÷']]) {
+        assert.equal(explain(mnemonic, `${width}0, ${width}1, ${width}2`).pseudo,
+          `${width}0 = ${width}1 ${operator} ${width}2`, 'ordinary FP arithmetic retains its destination');
+      }
+    }
+    assert.equal(explain('fcmpe', 's0, #0.0').pseudo, 'flags = s0 ⋛ 0');
+  }
+} finally { setLang(fpCompareLang); }
+console.log('  ok floating compare flags and conditional NZCV fallback (#3668)');
 
 console.log('ARM64 explainer semantics: PASS');

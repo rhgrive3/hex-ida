@@ -6,6 +6,7 @@ import {
   publishRebuildTransaction,
 } from '../js/rebuild/transaction-v2.js';
 import { stableDigest } from '../js/core/identity/index.js';
+import './stage2/issue-5540-rebuild-v2-impact-sections.test.mjs';
 
 // Issue #5785: an external validator answer containing an explicit failure
 // token (`ok:false`) must fail even when a success token (`status:'passed'` /
@@ -28,9 +29,16 @@ async function transactionWithValidator(validatorFn) {
   });
   const materialized = await materializeRebuildTransaction(transaction, source, { maxOutputBytes: 1024 });
   assert.equal(materialized.status, 'materialized');
+  const loaderIdentity = {
+    format: transaction.format,
+    architecture: transaction.architecture,
+    loaderVersion: transaction.loaderVersion,
+    sourceHash: transaction.sourceHash,
+    outputHash: materialized.outputHash,
+  };
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
-    loaderReparse: validatorFn,
+    loaderReparse: async (context) => ({ ...loaderIdentity, ...await validatorFn(context) }),
     validators: Object.fromEntries(
       ['layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
         .map((name) => [name, () => ({ ok: true })]),

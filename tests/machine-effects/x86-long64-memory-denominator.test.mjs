@@ -61,7 +61,7 @@ function evalAddress(node){
     case'scaled-index':return evalAddress(node.calculation);
     case'add':return(evalAddress(node.left)+evalAddress(node.right))&mask(node.widthBits);
     case'wrap':return evalAddress(node.value)&mask(node.widthBits);
-    case'zero-extend':return evalAddress(node.value)&mask(node.fromWidthBits);
+    case'zero-extend':return evalAddress(node.value)&mask(node.fromBits??node.fromWidthBits);
     case'shift-left':return(evalAddress(node.value)<<BigInt(node.amount))&mask(node.widthBits);
     default:throw new TypeError(`address-oracle-node:${node?.kind}`);
   }

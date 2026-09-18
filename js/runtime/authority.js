@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableDigestBytes, stableStringify } from '../core/identity/index.js';
 import { DEBUG_CAPABILITIES } from '../debug/adapter.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
@@ -22,6 +22,18 @@ const PROVIDER_PROFILE_PATTERNS = Object.freeze([
 ]);
 const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
 const VALID_RUNTIME_PROFILE_SUPPORT = new WeakSet();
+// Runtime support is a live-provider authority, so the branding transition may
+// not be driven by caller-supplied booleans. A receipt is only minted by a
+// tracker that actually accepted the runtime traffic it now attests to (#8851).
+const RUNTIME_VALIDATION_RECEIPT_SCHEMA = 'hex-runtime-validation-receipt/v1';
+const VALID_RUNTIME_VALIDATION_RECEIPTS = new WeakSet();
+const LIVE_RUNTIME_TRACKERS = new WeakSet();
+const RECEIPT_BINDING_FIELDS = Object.freeze([
+  'bindingId', 'providerIdentity', 'providerProfileId', 'runtimeInstanceIdentity',
+  'targetIdentity', 'targetProfileId', 'binaryIdentity', 'buildIdentity',
+  'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'commitSha',
+  'treeSha', 'epoch',
+]);
 const BINDING_FIELDS = Object.freeze([
   'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
   'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
@@ -85,12 +97,50 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
+// #8971 resource authority for canonical observation payloads. Admission is
+// measured on the caller's own views before any owned copy, boxed byte array or
+// identity material is allocated, so one oversized observation fails closed with
+// a deterministic reason instead of aborting the worker heap.
+const OBSERVATION_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+const OBSERVATION_MAX_PAYLOAD_NODES = 65_536;
+const OBSERVATION_MAX_RETAINED_BYTES = 8 * 1024 * 1024;
+const OBSERVATION_IDENTITY_CHUNK_BYTES = 8_192;
+// Keep the historical frozen `bytes:number[]` shape only for genuinely small
+// binary leaves so existing small-record consumers remain source-compatible.
+// Larger leaves use bounded immutable base64 chunks, avoiding one boxed Number
+// per retained byte and making tracker read/snapshot clones proportional to a
+// few hundred strings rather than millions of JS elements (#8971 property 8).
+const OBSERVATION_BOXED_BINARY_MAX_BYTES = 64 * 1024;
+const CANONICAL_BINARY_ENCODING = 'base64-chunks-v1';
+const TRUSTED_CANONICAL_BINARY_INFO = new WeakMap();
+
+function createObservationWorkControl(options = {}) {
+  if (options == null) options = {};
+  if (typeof options !== 'object' || Array.isArray(options)) throw new TypeError('runtime-observation-work-options-invalid');
+  const signal = options.signal ?? null;
+  const isCancelled = options.isCancelled ?? null;
+  const deadlineAt = options.deadlineAt ?? null;
+  const now = options.now ?? Date.now;
+  if (signal != null && (typeof signal !== 'object' && typeof signal !== 'function')) throw new TypeError('runtime-observation-signal-invalid');
+  if (isCancelled != null && typeof isCancelled !== 'function') throw new TypeError('runtime-observation-cancel-check-invalid');
+  if (deadlineAt != null && (typeof deadlineAt !== 'number' || !Number.isFinite(deadlineAt))) throw new TypeError('runtime-observation-deadline-invalid');
+  if (typeof now !== 'function') throw new TypeError('runtime-observation-clock-invalid');
+  return Object.freeze({
+    check() {
+      if (signal?.aborted || (isCancelled && isCancelled())) throw new TypeError('runtime-observation-cancelled');
+      if (deadlineAt != null) {
+        const current = now();
+        if (typeof current !== 'number' || !Number.isFinite(current)) throw new TypeError('runtime-observation-clock-invalid');
+        if (current >= deadlineAt) throw new TypeError('runtime-observation-deadline-exceeded');
+      }
+    },
+  });
+}
+
 // Canonical authority records must not retain mutable binary backing storage.
-// A frozen byte array is safe to expose, but it is not a sufficient identity:
-// it collapses a TypedArray into an ordinary array and collapses all view
-// widths with the same bytes. Keep the original binary constructor name beside
-// an owned, frozen byte copy. The marker is enumerable so structuredClone and
-// transport snapshots retain the canonical representation.
+// Small values preserve the legacy frozen byte-array transport shape. Larger
+// values are represented by frozen base64 chunks; strings are immutable and
+// detached, so they preserve #6214 without per-byte boxed storage.
 const CANONICAL_BINARY_TAG = '$hexRuntimeBinary';
 const CANONICAL_BINARY_BYTES = 'bytes';
 const CANONICAL_BINARY_TYPES = new Set([
@@ -116,81 +166,221 @@ function binaryBytes(value) {
   return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 }
 
-function canonicalBinaryType(value) {
+function canonicalBinaryShape(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (!Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_TAG)
-    || !Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_BYTES)) return null;
+  if (!Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_TAG)) return null;
   const type = value[CANONICAL_BINARY_TAG];
-  const bytes = value[CANONICAL_BINARY_BYTES];
-  // Only the exact transport representation denotes binary data. Ordinary
-  // metadata that happens to use these field names must retain every field.
-  if (!CANONICAL_BINARY_TYPES.has(type) || !Array.isArray(bytes)
-    || Object.keys(value).length !== 2) return null;
-  if (!Array.from(bytes).every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xff)) return null;
-  return type;
+  if (!CANONICAL_BINARY_TYPES.has(type)) return null;
+  const keys = Object.keys(value);
+  if (keys.length === 2 && Object.prototype.hasOwnProperty.call(value, CANONICAL_BINARY_BYTES)
+      && Array.isArray(value[CANONICAL_BINARY_BYTES])) {
+    return { type, storage: 'boxed', byteLength: value[CANONICAL_BINARY_BYTES].length, bytes: value[CANONICAL_BINARY_BYTES] };
+  }
+  if (keys.length === 4
+      && value.encoding === CANONICAL_BINARY_ENCODING
+      && Number.isSafeInteger(value.byteLength) && value.byteLength >= 0
+      && Array.isArray(value.chunks)
+      && Object.prototype.hasOwnProperty.call(value, 'encoding')
+      && Object.prototype.hasOwnProperty.call(value, 'byteLength')
+      && Object.prototype.hasOwnProperty.call(value, 'chunks')) {
+    return { type, storage: 'packed', byteLength: value.byteLength, chunks: value.chunks };
+  }
+  return null;
 }
 
-function canonicalBinary(type, bytes) {
-  return Object.freeze({
+function encodeBase64Range(bytes, start, end, control = null) {
+  control?.check();
+  if (typeof globalThis.btoa !== 'function') throw new TypeError('runtime-observation-base64-unavailable');
+  let binary = '';
+  for (let i = start; i < end; i += 1) {
+    if ((i & 0x1fff) === 0) control?.check();
+    binary += String.fromCharCode(Number(bytes[i]) & 0xff);
+  }
+  const out = globalThis.btoa(binary);
+  control?.check();
+  return out;
+}
+
+function decodeBase64Chunk(text, control = null) {
+  control?.check();
+  if (typeof text !== 'string' || text.length % 4 !== 0 || typeof globalThis.atob !== 'function') {
+    throw new TypeError('runtime-observation-binary-invalid');
+  }
+  let binary;
+  try { binary = globalThis.atob(text); } catch { throw new TypeError('runtime-observation-binary-invalid'); }
+  const out = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    if ((index & 0x1fff) === 0) control?.check();
+    out[index] = binary.charCodeAt(index);
+  }
+  if (globalThis.btoa(binary) !== text) throw new TypeError('runtime-observation-binary-invalid');
+  control?.check();
+  return out;
+}
+
+function canonicalBinaryInfo(value, control = null) {
+  const shape = canonicalBinaryShape(value);
+  if (!shape) return null;
+  control?.check();
+  const trusted = TRUSTED_CANONICAL_BINARY_INFO.get(value);
+  if (trusted && trusted.type === shape.type && trusted.byteLength === shape.byteLength) {
+    return { ...shape, digest: trusted.digest, trusted: true };
+  }
+  if (shape.storage === 'boxed') {
+    for (let index = 0; index < shape.bytes.length; index += 1) {
+      if ((index & 0x1fff) === 0) control?.check();
+      const byte = shape.bytes[index];
+      if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError('runtime-observation-binary-invalid');
+    }
+    return { ...shape, digest: stableDigestBytes(shape.bytes) };
+  }
+  const expectedChunks = shape.byteLength === 0 ? 0 : Math.ceil(shape.byteLength / OBSERVATION_IDENTITY_CHUNK_BYTES);
+  if (shape.chunks.length !== expectedChunks) throw new TypeError('runtime-observation-binary-invalid');
+  const materialized = new Uint8Array(shape.byteLength);
+  let decoded = 0;
+  for (let index = 0; index < shape.chunks.length; index += 1) {
+    control?.check();
+    const text = shape.chunks[index];
+    if (typeof text !== 'string') throw new TypeError('runtime-observation-binary-invalid');
+    const remaining = shape.byteLength - decoded;
+    const expectedBytes = Math.min(OBSERVATION_IDENTITY_CHUNK_BYTES, remaining);
+    const expectedChars = Math.ceil(expectedBytes / 3) * 4;
+    if (text.length !== expectedChars) throw new TypeError('runtime-observation-binary-invalid');
+    const bytes = decodeBase64Chunk(text, control);
+    if (bytes.byteLength !== expectedBytes) throw new TypeError('runtime-observation-binary-invalid');
+    materialized.set(bytes, decoded);
+    decoded += bytes.byteLength;
+  }
+  if (decoded !== shape.byteLength) throw new TypeError('runtime-observation-binary-invalid');
+  return { ...shape, digest: stableDigestBytes(materialized) };
+}
+
+function canonicalBinary(type, bytes, control = null) {
+  control?.check();
+  const length = bytes.length ?? bytes.byteLength ?? 0;
+  const digest = stableDigestBytes(bytes);
+  if (length <= OBSERVATION_BOXED_BINARY_MAX_BYTES) {
+    const copy = new Array(length);
+    for (let index = 0; index < length; index += 1) {
+      if ((index & 0x1fff) === 0) control?.check();
+      copy[index] = Number(bytes[index]) & 0xff;
+    }
+    const canonical = Object.freeze({
+      [CANONICAL_BINARY_TAG]: type,
+      [CANONICAL_BINARY_BYTES]: Object.freeze(copy),
+    });
+    TRUSTED_CANONICAL_BINARY_INFO.set(canonical, { type, byteLength: length, digest });
+    return canonical;
+  }
+  const chunks = [];
+  for (let offset = 0; offset < length; offset += OBSERVATION_IDENTITY_CHUNK_BYTES) {
+    control?.check();
+    chunks.push(encodeBase64Range(bytes, offset, Math.min(offset + OBSERVATION_IDENTITY_CHUNK_BYTES, length), control));
+  }
+  const canonical = Object.freeze({
     [CANONICAL_BINARY_TAG]: type,
-    [CANONICAL_BINARY_BYTES]: Object.freeze(Array.from(bytes)),
+    encoding: CANONICAL_BINARY_ENCODING,
+    byteLength: length,
+    chunks: Object.freeze(chunks),
   });
+  TRUSTED_CANONICAL_BINARY_INFO.set(canonical, { type, byteLength: length, digest });
+  return canonical;
 }
 
-function canonicalizeBinary(value, seen = new WeakMap()) {
-  if (!value || typeof value !== 'object') return value;
-  if (seen.has(value)) return seen.get(value);
+function canonicalBinaryFromInfo(info, control = null) {
+  if (info.storage === 'boxed') return canonicalBinary(info.type, info.bytes, control);
+  const canonical = Object.freeze({
+    [CANONICAL_BINARY_TAG]: info.type,
+    encoding: CANONICAL_BINARY_ENCODING,
+    byteLength: info.byteLength,
+    chunks: Object.freeze([...info.chunks]),
+  });
+  TRUSTED_CANONICAL_BINARY_INFO.set(canonical, {
+    type: info.type,
+    byteLength: info.byteLength,
+    digest: info.digest,
+  });
+  return canonical;
+}
 
-  const taggedType = canonicalBinaryType(value);
-  if (taggedType) {
-    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
-    seen.set(value, canonical);
-    return canonical;
-  }
+function binaryLeafResource(value) {
+  const shape = canonicalBinaryShape(value);
+  if (shape) return shape.byteLength;
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
-    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
-    seen.set(value, canonical);
-    return canonical;
+    return binaryBytes(value).byteLength;
   }
-
-  // Keep the structured clone's object graph so repeated references in valid
-  // metadata, Maps, and Sets remain repeated references after binary replacement.
-  seen.set(value, value);
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = canonicalizeBinary(value[i], seen);
-    return value;
-  }
-  if (value instanceof Map) {
-    const entries = [...value.entries()];
-    value.clear();
-    for (const [key, item] of entries) value.set(canonicalizeBinary(key, seen), canonicalizeBinary(item, seen));
-    return value;
-  }
-  if (value instanceof Set) {
-    const items = [...value.values()];
-    value.clear();
-    for (const item of items) value.add(canonicalizeBinary(item, seen));
-    return value;
-  }
-  for (const key of Object.keys(value)) {
-    const item = canonicalizeBinary(value[key], seen);
-    Object.defineProperty(value, key, { value: item, enumerable: true, configurable: true, writable: true });
-  }
-  return value;
+  return null;
 }
 
-function cloneFallback(value, seen = new WeakMap()) {
+// #8971 byte/work admission. The budget is charged against the caller's views
+// before `clone()` allocates the owned copy, and against an already-canonical
+// record before its binary representation is walked again.
+function admitPayloadResources(value, budget, seen, control = null) {
+  control?.check();
+  if (value === null || typeof value !== 'object') {
+    budget.nodes += 1;
+  } else {
+    const binaryBytesUsed = binaryLeafResource(value);
+    if (binaryBytesUsed !== null) {
+      budget.bytes += binaryBytesUsed;
+      budget.nodes += 1;
+    } else if (seen.has(value)) {
+      throw new TypeError('runtime-observation-cyclic-payload');
+    } else {
+      seen.add(value);
+      budget.nodes += 1;
+      if (Array.isArray(value)) {
+        for (const item of value) admitPayloadResources(item, budget, seen, control);
+      } else if (value instanceof Map) {
+        for (const [key, item] of value) {
+          admitPayloadResources(key, budget, seen, control);
+          admitPayloadResources(item, budget, seen, control);
+        }
+      } else if (value instanceof Set) {
+        for (const item of value) admitPayloadResources(item, budget, seen, control);
+      } else if (!(value instanceof Date)) {
+        for (const key of Object.keys(value)) admitPayloadResources(value[key], budget, seen, control);
+      }
+      seen.delete(value);
+    }
+  }
+  if (budget.bytes > OBSERVATION_MAX_PAYLOAD_BYTES) throw new TypeError('runtime-observation-payload-bytes-exceed-limit');
+  if (budget.nodes > OBSERVATION_MAX_PAYLOAD_NODES) throw new TypeError('runtime-observation-payload-nodes-exceed-limit');
+}
+
+function payloadRetainedBytes(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return 0;
+  const leaf = binaryLeafResource(value);
+  if (leaf !== null) return leaf;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  let total = 0;
+  if (Array.isArray(value)) {
+    for (const item of value) total += payloadRetainedBytes(item, seen);
+  } else if (value instanceof Map) {
+    for (const [key, item] of value) total += payloadRetainedBytes(key, seen) + payloadRetainedBytes(item, seen);
+  } else if (value instanceof Set) {
+    for (const item of value) total += payloadRetainedBytes(item, seen);
+  } else if (!(value instanceof Date)) {
+    for (const key of Object.keys(value)) total += payloadRetainedBytes(value[key], seen);
+  }
+  seen.delete(value);
+  return total;
+}
+
+function cloneFallback(value, seen = new WeakMap(), control = null) {
+  control?.check();
   if (value == null || typeof value !== 'object') return value;
   if (seen.has(value)) return seen.get(value);
 
-  const taggedType = canonicalBinaryType(value);
-  if (taggedType) {
-    const canonical = canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
+  const info = canonicalBinaryInfo(value, control);
+  if (info) {
+    const canonical = canonicalBinaryFromInfo(info, control);
     seen.set(value, canonical);
     return canonical;
   }
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
-    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value));
+    const canonical = canonicalBinary(binaryTypeName(value), binaryBytes(value), control);
     seen.set(value, canonical);
     return canonical;
   }
@@ -202,40 +392,34 @@ function cloneFallback(value, seen = new WeakMap()) {
   if (value instanceof Map) {
     const copy = new Map();
     seen.set(value, copy);
-    for (const [key, item] of value) copy.set(cloneFallback(key, seen), cloneFallback(item, seen));
+    for (const [key, item] of value) copy.set(cloneFallback(key, seen, control), cloneFallback(item, seen, control));
     return copy;
   }
   if (value instanceof Set) {
     const copy = new Set();
     seen.set(value, copy);
-    for (const item of value) copy.add(cloneFallback(item, seen));
+    for (const item of value) copy.add(cloneFallback(item, seen, control));
     return copy;
   }
   if (Array.isArray(value)) {
     const copy = [];
     seen.set(value, copy);
-    for (const item of value) copy.push(cloneFallback(item, seen));
+    for (const item of value) copy.push(cloneFallback(item, seen, control));
     return copy;
   }
   const copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
   seen.set(value, copy);
   for (const key of Object.keys(value)) {
     Object.defineProperty(copy, key, {
-      value: cloneFallback(value[key], seen), enumerable: true, configurable: true, writable: true,
+      value: cloneFallback(value[key], seen, control), enumerable: true, configurable: true, writable: true,
     });
   }
   return copy;
 }
 
-function clone(value) {
+function clone(value, control = null) {
   if (value == null || typeof value !== 'object') return value;
-  const taggedType = canonicalBinaryType(value);
-  if (taggedType) return canonicalBinary(taggedType, value[CANONICAL_BINARY_BYTES]);
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
-    return canonicalBinary(binaryTypeName(value), binaryBytes(value));
-  }
-  if (typeof structuredClone === 'function') return canonicalizeBinary(structuredClone(value));
-  return cloneFallback(value);
+  return cloneFallback(value, new WeakMap(), control);
 }
 
 function capabilityList(value) {
@@ -255,6 +439,14 @@ function hasOwnTrueCapability(source, capability) {
     && !Array.isArray(source)
     && Object.prototype.hasOwnProperty.call(source, capability)
     && source[capability] === true;
+}
+
+function identityList(value, code) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const normalized = value.map((item) => required(item, code));
+  const out = [...new Set(normalized)].sort();
+  if (out.length === 0) throw new TypeError(code);
+  return out;
 }
 
 function bindingPayload(input = {}) {
@@ -314,10 +506,28 @@ function numberWitness(value) {
   return String(value);
 }
 
+// #8971 byte-native identity material. `stableDigestBytes()` hashes the exact
+// canonical byte-array text without allocating a boxed copy or decimal JSON.
+// `type` + `length` + byte content remain identity-sensitive (#7108). The
+// representation change is explicitly namespaced by runtime-observation:v3.
+function binaryIdentityMaterial(type, bytes, control = null) {
+  control?.check();
+  const length = bytes.length ?? bytes.byteLength ?? 0;
+  const digest = stableDigestBytes(bytes);
+  control?.check();
+  return { $t: 'binary', type, length, digest };
+}
+
+function canonicalBinaryIdentityMaterial(info, control = null) {
+  control?.check();
+  if (typeof info.digest !== 'string') throw new TypeError('runtime-observation-binary-invalid');
+  return { $t: 'binary', type: info.type, length: info.byteLength, digest: info.digest };
+}
+
 // Observation identity must be sensitive to TYPES and canonical values, not
 // just core jsonSafe text. This wrapper preserves special-number distinctions
 // and gives Map/Set semantic collections insertion-order-independent material.
-function typeTagged(value, seen = new WeakSet()) {
+function typeTagged(value, seen = new WeakSet(), control = null) {
   if (value === null) return { $t: 'null' };
   switch (typeof value) {
     case 'bigint': return { $t: 'bigint', v: value.toString() };
@@ -326,16 +536,18 @@ function typeTagged(value, seen = new WeakSet()) {
     case 'string': return { $t: 'string', v: value };
     case 'undefined': case 'function': case 'symbol': return { $t: typeof value };
   }
-  const taggedType = canonicalBinaryType(value);
-  if (taggedType) return { $t: taggedType, v: value[CANONICAL_BINARY_BYTES] };
+  const binaryInfo = canonicalBinaryInfo(value, control);
+  if (binaryInfo) return canonicalBinaryIdentityMaterial(binaryInfo, control);
   if (seen.has(value)) fail('runtime-observation-cyclic-payload');
   seen.add(value);
-  const nested = (item) => typeTagged(item, seen);
+  const nested = (item) => typeTagged(item, seen, control);
   let out;
   if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
-  else if (ArrayBuffer.isView(value)) out = { $t: value.constructor?.name ?? 'view', v: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-  else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) out = { $t: binaryTypeName(value), v: Array.from(new Uint8Array(value)) };
-  else if (value instanceof Map) {
+  else if (ArrayBuffer.isView(value)) {
+    out = binaryIdentityMaterial(value.constructor?.name ?? 'view', new Uint8Array(value.buffer, value.byteOffset, value.byteLength), control);
+  } else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    out = binaryIdentityMaterial(binaryTypeName(value), new Uint8Array(value), control);
+  } else if (value instanceof Map) {
     const entries = [...value.entries()].map(([key, item]) => [nested(key), nested(item)]);
     entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
     out = { $t: 'Map', v: entries };
@@ -352,10 +564,12 @@ function typeTagged(value, seen = new WeakSet()) {
   return out;
 }
 
-function observationIdentity(observation) {
+function observationIdentity(observation, control = null) {
   const payload = {};
-  for (const field of OBSERVATION_FIELDS) payload[field] = typeTagged(observation[field]);
-  return `runtime-observation:${stableDigest(payload)}`;
+  for (const field of OBSERVATION_FIELDS) payload[field] = typeTagged(observation[field], new WeakSet(), control);
+  // #8971: the binary identity material changed representation, so the derived
+  // id is explicitly migrated instead of silently reusing the v2 namespace.
+  return `runtime-observation:v3:${stableDigest(payload)}`;
 }
 
 function profileAllowed(value) {
@@ -414,8 +628,13 @@ export function createRuntimeAuthorityBinding(input = {}) {
   return canonicalBinding({ ...input, schemaVersion: undefined, bindingId: undefined });
 }
 
-export function createRuntimeObservation(input = {}) {
+export function createRuntimeObservation(input = {}, options = {}) {
+  const control = createObservationWorkControl(options);
+  control.check();
   const binding = canonicalBinding(input.binding || input);
+  const payload = input.payload ?? null;
+  // #8971: charge the byte/node budget before any owned copy or identity work.
+  admitPayloadResources(payload, { bytes: 0, nodes: 0 }, new WeakSet(), control);
   const sequence = uint(input.sequence, 'runtime-observation-sequence-invalid');
   const observedAt = required(input.observedAt ?? input.timestamp, 'runtime-observation-timestamp-required');
   const observation = {
@@ -441,14 +660,19 @@ export function createRuntimeObservation(input = {}) {
     sequence,
     observedAt,
     kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
-    payload: freezeObservationValue(clone(input.payload ?? null)),
+    payload: freezeObservationValue(clone(payload, control)),
     authority: 'runtime-evidence',
   };
-  return freezeObservationValue(deepFreeze({ ...observation, observationId: observationIdentity(observation) }));
+  const observationId = observationIdentity(observation, control);
+  control.check();
+  return freezeObservationValue(deepFreeze({ ...observation, observationId }));
 }
 
 
 export function validateRuntimeObservation(bindingInput, observation, options = {}) {
+  let control;
+  try { control = createObservationWorkControl(options); control.check(); }
+  catch (error) { return { ok: false, reason: error?.message || 'runtime-observation-work-invalid' }; }
   const binding = canonicalBinding(bindingInput || {}, { throwOnError: false });
   if (!binding) return { ok: false, reason: 'runtime-binding-identity-invalid' };
   if (!observation || typeof observation !== 'object' || observation.schemaVersion !== RUNTIME_OBSERVATION_SCHEMA) return { ok: false, reason: 'runtime-observation-schema-invalid' };
@@ -460,7 +684,14 @@ export function validateRuntimeObservation(bindingInput, observation, options = 
   if (typeof observation.sequence !== 'number' || !Number.isSafeInteger(observation.sequence) || observation.sequence < 0) return { ok: false, reason: 'runtime-observation-sequence-invalid' };
   if (typeof observation.observedAt !== 'string' || !observation.observedAt.trim()) return { ok: false, reason: 'runtime-observation-timestamp-required' };
   if (typeof observation.kind !== 'string' || !observation.kind.trim()) return { ok: false, reason: 'runtime-observation-kind-required' };
-  if (observation.observationId !== observationIdentity(observation)) return { ok: false, reason: 'runtime-observation-identity-invalid' };
+  try {
+    // Imported/schema observations must obey the same pre-canonical resource
+    // authority as freshly created records; do this before identity traversal.
+    admitPayloadResources(observation.payload, { bytes: 0, nodes: 0 }, new WeakSet(), control);
+    if (observation.observationId !== observationIdentity(observation, control)) return { ok: false, reason: 'runtime-observation-identity-invalid' };
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'runtime-observation-invalid' };
+  }
   const minimumSequence = options.minimumSequence == null ? 0 : uint(options.minimumSequence, 'runtime-minimum-sequence-invalid');
   if (observation.sequence < minimumSequence) return { ok: false, reason: 'runtime-observation-stale-sequence' };
   return { ok: true, binding, observation };
@@ -501,35 +732,73 @@ function freezeObservationValue(value, seen = new WeakSet()) {
 
 export class RuntimeAuthorityTracker {
   #observations;
+  #retainedBytes;
+  #acceptedObservationIds;
+  #mutationAuthorityIds;
 
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
+    // #8971: count-based eviction alone cannot bound memory, because one accepted
+    // record already owns its canonical payload copy.
+    this.maxRetainedPayloadBytes = boundedCount(
+      options.maxRetainedPayloadBytes, OBSERVATION_MAX_RETAINED_BYTES, OBSERVATION_MAX_PAYLOAD_BYTES * 8,
+      'runtime-max-retained-payload-bytes-invalid',
+    );
     this.#observations = [];
+    this.#retainedBytes = 0;
+    this.#acceptedObservationIds = new Set();
+    this.#mutationAuthorityIds = new Set();
+    LIVE_RUNTIME_TRACKERS.add(this);
+  }
+
+  #recordBounded(set, id) {
+    set.add(id);
+    while (set.size > this.maxObservations) set.delete(set.values().next().value);
+  }
+
+  get retainedPayloadBytes() {
+    return this.#retainedBytes;
   }
 
   get observations() {
     return this.#observations.map((obs) => deepFreeze(freezeObservationValue(clone(obs))));
   }
 
-  accept(input) {
+  accept(input, options = {}) {
     if (this.closed) return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-closed' });
     let observation;
     try {
-      observation = input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA
-        ? deepFreeze(freezeObservationValue(clone(input)))
-        : createRuntimeObservation({ ...input, binding: this.binding });
+      const control = createObservationWorkControl(options);
+      control.check();
+      if (input?.schemaVersion === RUNTIME_OBSERVATION_SCHEMA) {
+        // Fail closed on imported canonical records before cloning attacker-
+        // controlled binary/node material (#8971 property 9).
+        admitPayloadResources(input.payload, { bytes: 0, nodes: 0 }, new WeakSet(), control);
+        observation = deepFreeze(freezeObservationValue(clone(input, control)));
+      } else {
+        observation = createRuntimeObservation({ ...input, binding: this.binding }, options);
+      }
     } catch (error) {
       return Object.freeze({ status: 'rejected', reason: error?.message || 'runtime-observation-invalid' });
     }
 
-    const checked = validateRuntimeObservation(this.binding, observation, { minimumSequence: this.lastSequence + 1 });
+    const checked = validateRuntimeObservation(this.binding, observation, { ...options, minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
+    const retained = payloadRetainedBytes(observation.payload);
+    if (this.#retainedBytes + retained > this.maxRetainedPayloadBytes) {
+      return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-retained-payload-bytes-exceeded' });
+    }
     this.lastSequence = observation.sequence;
     this.#observations.push(observation);
-    if (this.#observations.length > this.maxObservations) this.#observations.shift();
+    this.#retainedBytes += retained;
+    while (this.#observations.length > this.maxObservations) {
+      const evicted = this.#observations.shift();
+      this.#retainedBytes -= payloadRetainedBytes(evicted.payload);
+    }
+    this.#recordBounded(this.#acceptedObservationIds, observation.observationId);
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
 
@@ -554,7 +823,47 @@ export class RuntimeAuthorityTracker {
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
-    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId: `runtime-mutation:${stableDigest(token)}` }) });
+    const tokenId = `runtime-mutation:${stableDigest(token)}`;
+    this.#recordBounded(this.#mutationAuthorityIds, tokenId);
+    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId }) });
+  }
+
+  mintProfileSupportReceipt(input = {}) {
+    if (!LIVE_RUNTIME_TRACKERS.has(this)) throw new TypeError('runtime-receipt-mint-untrusted');
+    if (this.closed) throw new TypeError('runtime-receipt-tracker-closed');
+    const observationIdentities = identityList(input.observationIdentities, 'runtime-receipt-observation-identities-required');
+    const mutationAuthorityIdentities = identityList(input.mutationAuthorityIdentities, 'runtime-receipt-mutation-identities-required');
+    const testItemIdentities = identityList(input.testItemIdentities, 'runtime-receipt-test-identities-required');
+    for (const observationId of observationIdentities) {
+      if (!this.#acceptedObservationIds.has(observationId)) throw new TypeError(`runtime-receipt-observation-unbound:${observationId}`);
+    }
+    for (const mutationId of mutationAuthorityIdentities) {
+      if (!this.#mutationAuthorityIds.has(mutationId)) throw new TypeError(`runtime-receipt-mutation-authority-unbound:${mutationId}`);
+    }
+    const receipt = {
+      schemaVersion: RUNTIME_VALIDATION_RECEIPT_SCHEMA,
+      bindingId: this.binding.bindingId,
+      providerIdentity: this.binding.providerIdentity,
+      providerProfileId: this.binding.providerProfileId,
+      runtimeInstanceIdentity: this.binding.runtimeInstanceIdentity,
+      targetIdentity: this.binding.targetIdentity,
+      targetProfileId: this.binding.targetProfileId,
+      binaryIdentity: this.binding.binaryIdentity,
+      buildIdentity: this.binding.buildIdentity,
+      moduleIdentity: this.binding.moduleIdentity,
+      loadMappingIdentity: this.binding.loadMappingIdentity,
+      sessionIdentity: this.binding.sessionIdentity,
+      commitSha: this.binding.commitSha,
+      treeSha: this.binding.treeSha,
+      epoch: this.binding.epoch,
+      lastSequence: this.lastSequence,
+      observationIdentities: Object.freeze(observationIdentities),
+      mutationAuthorityIdentities: Object.freeze(mutationAuthorityIdentities),
+      testItemIdentities: Object.freeze(testItemIdentities),
+    };
+    const branded = deepFreeze({ ...receipt, receiptId: `runtime-receipt:${stableDigest(receipt)}` });
+    VALID_RUNTIME_VALIDATION_RECEIPTS.add(branded);
+    return branded;
   }
 
   nextEpoch(bindingOverrides = {}) {
@@ -568,6 +877,20 @@ export class RuntimeAuthorityTracker {
   }
 }
 
+function runtimeReceiptReason(receipt, canonical, providerProfileId, targetProfileId) {
+  if (!receipt || typeof receipt !== 'object' || !VALID_RUNTIME_VALIDATION_RECEIPTS.has(receipt)) return 'runtime-validation-receipt-required';
+  if (receipt.schemaVersion !== RUNTIME_VALIDATION_RECEIPT_SCHEMA) return 'runtime-validation-receipt-schema-invalid';
+  for (const field of RECEIPT_BINDING_FIELDS) {
+    if (receipt[field] !== canonical[field]) return `runtime-validation-receipt-identity-mismatch:${field}`;
+  }
+  if (receipt.providerProfileId !== providerProfileId) return 'runtime-validation-receipt-provider-profile-mismatch';
+  if (receipt.targetProfileId !== targetProfileId) return 'runtime-validation-receipt-target-profile-mismatch';
+  for (const field of ['observationIdentities', 'mutationAuthorityIdentities', 'testItemIdentities']) {
+    if (!Array.isArray(receipt[field]) || receipt[field].length === 0) return `runtime-validation-receipt-evidence-missing:${field}`;
+  }
+  return null;
+}
+
 export function runtimeProfileSupport({
   binding,
   providerProfileId = null,
@@ -579,6 +902,7 @@ export function runtimeProfileSupport({
   expectedTreeSha = null,
   expectedBuildIdentity = null,
   profileProof = null,
+  runtimeReceipt = null,
 } = {}) {
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
@@ -626,6 +950,7 @@ export function runtimeProfileSupport({
     else if (expectedHead != null && (canonical.commitSha !== expectedHead || proofHeadSha !== expectedHead)) reason = 'runtime-proof-stale-head';
     else if (expectedTree != null && (canonical.treeSha !== expectedTree || proofTreeSha !== expectedTree)) reason = 'runtime-proof-stale-tree';
   }
+  if (!reason && hasBinding) reason = runtimeReceiptReason(runtimeReceipt, canonical, normalizedProviderProfileId, normalizedTargetProfileId);
   const proven = hasBinding
     && declared.length > 0
     && missing.length === 0
@@ -646,6 +971,8 @@ export function runtimeProfileSupport({
     treeSha: hasBinding ? canonical.treeSha : null,
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
+    runtimeReceiptId: proven ? runtimeReceipt.receiptId : null,
+    runtimeReceiptBindingId: proven ? runtimeReceipt.bindingId : null,
   });
   if (proven) VALID_RUNTIME_PROFILE_SUPPORT.add(result);
   return result;

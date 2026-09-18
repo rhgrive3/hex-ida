@@ -3771,6 +3771,7 @@ test('DECOMPILE: sp を定数で動かさない関数では、置き場に名前
 
 const { assemble: assemblePatch, parseHexBytes: strictHex, isHexBytes,
   validatePatchRange, PatchSet } = await import('../js/patch.js');
+await import('./issue-4937-patch-length-type.mjs');
 
 const wordOf = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
 

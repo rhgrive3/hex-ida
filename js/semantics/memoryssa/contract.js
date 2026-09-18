@@ -1,5 +1,6 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, jsonSafe, normalizeIdentity, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
+import { analyzeSemanticDominance } from '../cfg/index.js';
 
 export const MEMORY_SSA_CONTRACT_VERSION = '2.0.0';
 export const MEMORY_SSA_ALIAS_RELATIONS = Object.freeze(['must', 'may', 'no', 'unknown']);
@@ -133,6 +134,38 @@ function limit(options, key) {
   return positiveInteger(options.budget[key], `memory-ssa-invalid-budget-${key}`);
 }
 
+/**
+ * Snapshot provenance is an ownership and staleness boundary, not display text:
+ * it decides `memoryssa-stale-snapshot`, cache identity and exact-forwarding
+ * capability binding. It therefore keeps the same primitive token domain as every
+ * other canonical id (#4473 hardened the compat identity fields around it, and
+ * `createAnalysisStatus` already requires a primitive non-empty string).
+ *
+ * `String()` is a conversion API: `String(['S-1'])`, `String({toString(){...}})`,
+ * `String(1)` and `String(true)` all produce a canonical-looking id, so coercing
+ * at the producer and again at each consumer let structured snapshots alias a
+ * real snapshot and executed caller-controlled `toString()` hooks inside
+ * provenance validation (#8804). Anything that is not already a primitive
+ * non-empty string is rejected, and no coercion is ever invoked.
+ */
+export function canonicalSnapshotId(value, code = 'memory-ssa-snapshot-id-invalid') {
+  return nonEmpty(value, code);
+}
+
+/**
+ * Consumer-side view of the same policy. `null` is reserved for a genuinely
+ * absent snapshot; malformed non-null values return `NaN`, which is deliberately
+ * self-unequal. That distinction is important at comparison-only boundaries:
+ * two arrays/objects/blank strings must never authenticate each other merely
+ * because both failed normalization (#8804). No coercion hook is invoked.
+ */
+export function snapshotIdIdentity(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return Number.NaN;
+  const text = value.trim();
+  return text || Number.NaN;
+}
+
 export function createMemoryRegionRef(input) {
   input = object(input, 'memory-ssa-invalid-region');
   assertAllowedKeys(input, new Set(['id','kind','functionId','binaryId','offset','address','rootEntityId','addressSpace','rootIdentity','uncertaintyIdentity','widthBits','origin','metadata']), 'memory-ssa-unexpected-region-field');
@@ -161,7 +194,10 @@ export function createMemoryRegionRef(input) {
     if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
-    if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
+    if (input.rootIdentity != null) {
+      try { out.rootIdentity = normalizeIdentity(input.rootIdentity, 'memory-ssa-invalid-region-root-identity'); }
+      catch { fail('memory-ssa-invalid-region-root-identity'); }
+    }
   } else if (kind === 'unknown') {
     if (input.uncertaintyIdentity == null
       || (typeof input.uncertaintyIdentity === 'string' && !input.uncertaintyIdentity.trim())) {
@@ -250,6 +286,20 @@ function cfgMap(cfg) {
   return cfg ? new Map((cfg.blocks ?? []).map((block) => [block.id, block])) : null;
 }
 
+function dominanceFor(cfg, cache) {
+  if (!cfg) return null;
+  if (!cache.has(cfg)) {
+    try {
+      cache.set(cfg, analyzeSemanticDominance(cfg));
+    } catch {
+      // A CFG that cannot answer dominance keeps phi-edge validation at the
+      // predecessor-membership level; everything else still fails closed.
+      cache.set(cfg, null);
+    }
+  }
+  return cache.get(cfg);
+}
+
 export function createMemorySsaContract(input, options = {}) {
   assertNotAborted(options);
   const work = validationWorkGuard(options);
@@ -268,23 +318,34 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-cfg-function-mismatch');
   }
 
-  const regions = array(input.regions, 'memory-ssa-regions-required')
+  const rawRegions = array(input.regions, 'memory-ssa-regions-required');
+  const rawDefinitions = array(input.definitions, 'memory-ssa-definitions-required');
+  const rawUses = array(input.uses, 'memory-ssa-uses-required');
+  if (rawRegions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
+  if (rawDefinitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
+
+  const regions = rawRegions
     .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => compareId(a.id, b.id));
-  const definitions = array(input.definitions, 'memory-ssa-definitions-required')
+  const definitions = rawDefinitions
     .map((definition) => { work(); return normalizeDefinition(definition); })
     .sort((a, b) => compareId(a.id, b.id));
-  const uses = array(input.uses, 'memory-ssa-uses-required')
+  const uses = rawUses
     .map((use) => { work(); return normalizeUse(use); })
     .sort((a, b) => compareId(a.id, b.id));
-  if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
-  if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
 
   const regionById = new Map();
   for (const region of regions) {
     work();
     if (regionById.has(region.id)) fail('memory-ssa-duplicate-region-id');
+    // A function-local region owned by a different function must never enter
+    // this contract (#5359): stack-fixed regions are function-scoped, so a
+    // foreign functionId would break the function-local stack invariant.
+    // Function-unscoped regions (global/tls/io/unknown) carry functionId null.
+    if (region.functionId != null && region.functionId !== functionId) {
+      fail('memory-ssa-region-function-mismatch');
+    }
     regionById.set(region.id, region);
   }
   const definitionById = new Map();
@@ -297,6 +358,8 @@ export function createMemorySsaContract(input, options = {}) {
   }
 
   const blocks = cfgMap(cfg);
+  // Dominance is computed at most once per contract validation (#5411).
+  const dominanceCache = new Map();
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -326,6 +389,18 @@ export function createMemorySsaContract(input, options = {}) {
     }
     if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
       fail('memory-ssa-phi-predecessor-set-incomplete');
+    }
+    // Each phi argument must be available on its own edge (#5411): the
+    // argument's definition block must be the predecessor itself or dominate
+    // it. A block-local definition attributed to the opposite predecessor
+    // (which it does not dominate) is not canonical MemorySSA. Definitions
+    // without a block stay unpinned.
+    const dominance = dominanceFor(cfg, dominanceCache);
+    for (const incoming of definition.incoming) {
+      const prior = definitionById.get(incoming.definitionId);
+      if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
+      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
+      if (!dominators?.includes(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
     }
   }
 

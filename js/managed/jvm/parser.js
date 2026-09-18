@@ -20,21 +20,42 @@ function validStandaloneNameAndTypeDescriptor(descriptor) {
 }
 
 function validateConstantPoolClosure(pool) {
+  // #8718: aliases of one Utf8 must not re-parse it per referencing entry;
+  // results are memoized by the (already decoded, immutable) Utf8 index.
+  const nameAndTypeDescriptorMemo = new Map();
+  const methodDescriptorMemo = new Map();
+  function validNameAndTypeDescriptorAt(descriptorIndex) {
+    let valid = nameAndTypeDescriptorMemo.get(descriptorIndex);
+    if (valid === undefined) {
+      valid = validStandaloneNameAndTypeDescriptor(utf8(pool, descriptorIndex));
+      nameAndTypeDescriptorMemo.set(descriptorIndex, valid);
+    }
+    return valid;
+  }
+  function parseMethodDescriptorAt(descriptorIndex) {
+    let outcome = methodDescriptorMemo.get(descriptorIndex);
+    if (outcome === undefined) {
+      const descriptor = utf8(pool, descriptorIndex);
+      try { outcome = { parsed: parseJvmMethodDescriptor(descriptor) }; }
+      catch (error) { outcome = { error }; }
+      methodDescriptorMemo.set(descriptorIndex, outcome);
+    }
+    if (outcome.error) throw outcome.error;
+    return outcome.parsed;
+  }
   for (let i = 1; i < pool.length; i++) {
     const entry = pool[i];
     if (!entry) continue;
     if (entry.tag === 12) {
-      const descriptor = utf8(pool, entry.descriptorIndex);
-      if (!validStandaloneNameAndTypeDescriptor(descriptor)) {
+      if (!validNameAndTypeDescriptorAt(entry.descriptorIndex)) {
         fail('jvm-invalid-cp-nameandtype-descriptor');
       }
     }
     if (entry.tag === 15 && entry.referenceKind === 8) {
       const target = cpEntry(pool, entry.referenceIndex);
       const nameAndType = cpEntry(pool, target?.nameAndTypeIndex);
-      const descriptor = utf8(pool, nameAndType?.descriptorIndex);
       let parsed;
-      try { parsed = parseJvmMethodDescriptor(descriptor); }
+      try { parsed = parseMethodDescriptorAt(nameAndType?.descriptorIndex); }
       catch { fail('jvm-invalid-cp-methodhandle-constructor-descriptor'); }
       if (parsed.returnType !== null) fail('jvm-invalid-cp-methodhandle-constructor-descriptor');
     }

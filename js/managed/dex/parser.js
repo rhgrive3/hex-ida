@@ -3,8 +3,36 @@ import { createManagedImageId, createManagedModuleId } from '../shared/identity.
 import { validateDexMap } from './map-validation.js';
 import { checkedRange, fail } from './validation-utils.js';
 import { readDexUleb128 as readUleb128 } from './leb128.js';
-import { dexPrototypeShorty, dexTypeInfo } from './descriptor.js';
+import { dexTypeInfo } from './descriptor.js';
 import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
+import { validateDexIntegrity } from './integrity.js';
+
+// #8705 — aggregate pre-materialization bound on DEX metadata admitted by one
+// `parseDex()` call. Every fixed identity/class table is charged a conservative
+// per-row estimate (canonical row object + retained graph + final deep-freeze
+// traversal) before its decode loop starts, and per-item growth (decoded
+// string units, type_list entries, class-data entries) is charged before the
+// allocation it protects. The default sits far above any legitimate real-world
+// image (the spec-capped 65 535 method/file rows cost well under a tenth of
+// this) while refusing attacker-shaped inputs that would otherwise terminate a
+// constrained worker with a V8 heap abort instead of a deterministic `dex-*`
+// error. `options.maxMetadataBytes` overrides it explicitly.
+export const DEX_METADATA_ADMISSION_BUDGET = 64 * 1024 * 1024;
+const DEX_ADMISSION_STRING_ROW_BYTES = 40;
+const DEX_ADMISSION_TYPE_ROW_BYTES = 48;
+const DEX_ADMISSION_PROTO_ROW_BYTES = 128;
+const DEX_ADMISSION_FIELD_ROW_BYTES = 160;
+const DEX_ADMISSION_METHOD_ROW_BYTES = 160;
+const DEX_ADMISSION_CLASS_DEF_ROW_BYTES = 320;
+const DEX_ADMISSION_STRING_UNIT_BYTES = 4;
+const DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES = 64;
+const DEX_ADMISSION_CLASS_DATA_ENTRY_BYTES = 80;
+
+// Aggregate pre-allocation bound on unique `type_list` materialization inside
+// one parse. Aliased offsets are interned, so the charge is per physical list
+// (#8707); an image that legitimately needs more distinct parameter entries than
+// this is refused before any of those arrays exist.
+export const DEX_TYPE_LIST_ENTRY_BUDGET = 1_000_000;
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
@@ -15,6 +43,92 @@ function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) 
 function requireIndex(table, idx, code) {
   if (!Number.isSafeInteger(idx) || idx < 0 || idx >= table.length) fail(code);
   return table[idx];
+}
+
+function compareDexIndexTuples(left, right) {
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] < right[i]) return -1;
+    if (left[i] > right[i]) return 1;
+  }
+  return 0;
+}
+
+// DEX string_ids use a locale-independent UTF-16 ordering. Keep this
+// comparison explicit rather than using localeCompare, whose result can vary
+// with the host locale and would not validate the on-disk identity order.
+function compareDexStrings(left, right) {
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) {
+    const leftUnit = left.charCodeAt(i), rightUnit = right.charCodeAt(i);
+    if (leftUnit < rightUnit) return -1;
+    if (leftUnit > rightUnit) return 1;
+  }
+  return left.length < right.length ? -1 : left.length > right.length ? 1 : 0;
+}
+
+function compareDexProtoKeys(left, right) {
+  if (left.returnTypeIdx < right.returnTypeIdx) return -1;
+  if (left.returnTypeIdx > right.returnTypeIdx) return 1;
+  const length = Math.min(left.parameterTypeIndices.length, right.parameterTypeIndices.length);
+  for (let i = 0; i < length; i++) {
+    if (left.parameterTypeIndices[i] < right.parameterTypeIndices[i]) return -1;
+    if (left.parameterTypeIndices[i] > right.parameterTypeIndices[i]) return 1;
+  }
+  return left.parameterTypeIndices.length < right.parameterTypeIndices.length
+    ? -1
+    : left.parameterTypeIndices.length > right.parameterTypeIndices.length ? 1 : 0;
+}
+
+function requireFieldOwnerType(descriptor) {
+  if (!descriptor.startsWith('L')) fail('dex-invalid-field-owner-type');
+  return descriptor;
+}
+
+function requireMethodOwnerType(descriptor) {
+  if (!descriptor.startsWith('L') && !descriptor.startsWith('[')) fail('dex-invalid-method-owner-type');
+  return descriptor;
+}
+
+// AOSP dex-format#class-def-item: class_idx and non-NO_INDEX superclass_idx
+// must be class types. type_ids legitimately hold primitives, arrays and void
+// for other roles, so the definer role resolves through its own contract —
+// a non-array object descriptor (L...;) — or the role violation is lost
+// after parsing and a primitive masquerades as a defined class (#7436).
+function requireClassType(types, idx, code) {
+  const descriptor = requireIndex(types, idx, code);
+  const info = dexTypeInfo(descriptor);
+  if (info.category !== 'object' || !descriptor.startsWith('L')) fail(code);
+  return descriptor;
+}
+
+function isDexSimpleNameChar(codePoint, extendedSpaces) {
+  if ((codePoint >= 0x41 && codePoint <= 0x5a) ||
+      (codePoint >= 0x61 && codePoint <= 0x7a) ||
+      (codePoint >= 0x30 && codePoint <= 0x39) ||
+      codePoint === 0x24 || codePoint === 0x2d || codePoint === 0x5f) return true;
+  if (codePoint === 0x20 || codePoint === 0x00a0 || codePoint === 0x202f) return extendedSpaces;
+  if (codePoint >= 0x00a1 && codePoint <= 0x1fff) return true;
+  if (codePoint >= 0x2000 && codePoint <= 0x200a) return extendedSpaces;
+  if (codePoint >= 0x2010 && codePoint <= 0x2027) return true;
+  if (codePoint >= 0x2030 && codePoint <= 0xd7ff) return true;
+  if (codePoint >= 0xe000 && codePoint <= 0xffef) return true;
+  return codePoint >= 0x10000 && codePoint <= 0x10ffff;
+}
+
+function isDexSimpleName(name, dexVersion) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  const extendedSpaces = dexVersion >= 40;
+  for (const char of name) {
+    if (!isDexSimpleNameChar(char.codePointAt(0), extendedSpaces)) return false;
+  }
+  return true;
+}
+
+function requireDexMemberName(name, dexVersion, code) {
+  const wrapped = name.length >= 2 && name.startsWith('<') && name.endsWith('>');
+  const simpleName = wrapped ? name.slice(1, -1) : name;
+  if (!isDexSimpleName(simpleName, dexVersion)) fail(code);
+  return name;
 }
 
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
@@ -87,6 +201,7 @@ function decodeMutf8(bytes, offset) {
 export function parseDex(bytes, options = {}) {
   const probe = probeDex(bytes);
   if (!probe.supported) fail('dex-unsupported-binary');
+  const dexVersion = Number(probe.formatVersion.slice(4));
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 
@@ -109,7 +224,10 @@ export function parseDex(bytes, options = {}) {
   const classDefsSize = view.getUint32(96, true), classDefsOff = view.getUint32(100, true);
 
   const validateTable = (size, off, width, code) => {
-    if (size === 0) return;
+    if (size === 0) {
+      if (off !== 0) fail(code);
+      return;
+    }
     if (off === 0) fail(code);
     if (!Number.isSafeInteger(size) || size > Math.floor(fileSize / width)) fail(code);
     checkedRange(fileSize, off, size * width, code);
@@ -120,6 +238,29 @@ export function parseDex(bytes, options = {}) {
   validateTable(fieldIdsSize, fieldIdsOff, 8, 'dex-invalid-field-ids-range');
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
+
+  // #8705 — table-size validation only proves the rows fit the file; each row
+  // still materializes canonical objects, retained graph, and the final deep
+  // freeze traversal, so an ordinary multi-megabyte unique-`method_ids` image
+  // exhausts a fixed worker heap with zero aliasing or contract violations.
+  // One aggregate admission charge per physical table is taken up front,
+  // before any decoding or materialization, and per-item growth is charged
+  // before its allocation. Format-level topology authority (validateTable,
+  // validateDexMap, ordering and MUTF-8 codes) stays separate and unchanged.
+  const maxMetadataBytes = Number.isSafeInteger(options.maxMetadataBytes) && options.maxMetadataBytes >= 0
+    ? options.maxMetadataBytes
+    : DEX_METADATA_ADMISSION_BUDGET;
+  let metadataBytesAdmitted = 0;
+  function chargeMetadata(bytes) {
+    if (bytes > maxMetadataBytes - metadataBytesAdmitted) fail('dex-metadata-admission-budget-exceeded');
+    metadataBytesAdmitted += bytes;
+  }
+  chargeMetadata(stringIdsSize * DEX_ADMISSION_STRING_ROW_BYTES);
+  chargeMetadata(typeIdsSize * DEX_ADMISSION_TYPE_ROW_BYTES);
+  chargeMetadata(protoIdsSize * DEX_ADMISSION_PROTO_ROW_BYTES);
+  chargeMetadata(fieldIdsSize * DEX_ADMISSION_FIELD_ROW_BYTES);
+  chargeMetadata(methodIdsSize * DEX_ADMISSION_METHOD_ROW_BYTES);
+  chargeMetadata(classDefsSize * DEX_ADMISSION_CLASS_DEF_ROW_BYTES);
 
   // Validate the complete map topology before decoding payloads, while preserving
   // established payload-specific error authority for malformed variable-size items.
@@ -135,60 +276,166 @@ export function parseDex(bytes, options = {}) {
   };
 
   const strings = [];
+  let previousString = null;
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;
     if (off+4>fileSize) fail('dex-truncated-string-ids');
     const dataOff=view.getUint32(off,true);
     dataRange(dataOff,1,'dex-invalid-string-data-offset');
-    strings.push(decodeMutf8(dataBytes,dataOff));
+    // The declared UTF-16 unit count bounds the decode before any chars[] or
+    // retained string is built (#8705); the same ULEB is read again inside
+    // decodeMutf8, so malformed/oversized headers keep their existing
+    // dex-malformed-string-data authority once admission is affordable.
+    chargeMetadata(readUleb128(dataBytes,dataOff).value * DEX_ADMISSION_STRING_UNIT_BYTES);
+    const string = decodeMutf8(dataBytes,dataOff);
+    if (previousString !== null && compareDexStrings(previousString, string) >= 0) {
+      fail('dex-string-ids-order-invalid');
+    }
+    previousString = string;
+    strings.push(string);
   }
 
   const types=[];
+  let previousDescriptorIdx = -1;
   for (let i=0;i<typeIdsSize;i++) {
     const off=typeIdsOff+i*4;
     if (off+4>u8.length) fail('dex-truncated-type-ids');
     const descriptorIdx=view.getUint32(off,true);
-    if (descriptorIdx>=strings.length) fail('dex-invalid-type-descriptor-index');
-    dexTypeInfo(strings[descriptorIdx], { allowVoid:true });
-    types.push(strings[descriptorIdx]);
+    const descriptor = requireIndex(strings, descriptorIdx, 'dex-invalid-type-descriptor-index');
+    dexTypeInfo(descriptor, { allowVoid:true });
+    if (descriptorIdx <= previousDescriptorIdx) fail('dex-type-ids-order-invalid');
+    previousDescriptorIdx = descriptorIdx;
+    types.push(descriptor);
+  }
+
+  // A DEX `type_list` is one physical object no matter how many `proto_id_item`
+  // or `class_def_item` rows alias it, so it is materialized once per exact
+  // offset behind an aggregate entry charge taken *before* allocation, and the
+  // immutable result is shared (#8707).
+  const typeLists = new Map();
+  const maxTypeListEntries = Number.isSafeInteger(options.maxTypeListEntries) && options.maxTypeListEntries >= 0
+    ? options.maxTypeListEntries
+    : DEX_TYPE_LIST_ENTRY_BUDGET;
+  let typeListEntriesCharged = 0;
+  function decodeTypeList(listOff, {
+    headerCode, bodyCode, bodyAlignment = 1, indexCode, sizeBoundCode = null,
+  }) {
+    const cached = typeLists.get(listOff);
+    if (cached !== undefined) return cached;
+    dataRange(listOff, 4, headerCode, 4);
+    const size = view.getUint32(listOff, true);
+    if (sizeBoundCode !== null && size > Math.floor((fileSize - listOff - 4) / 2)) fail(sizeBoundCode);
+    dataRange(listOff + 4, size * 2, bodyCode, bodyAlignment);
+    if (size > maxTypeListEntries - typeListEntriesCharged) fail('dex-type-list-materialization-budget-exceeded');
+    typeListEntriesCharged += size;
+    // #8705 per-item growth accounting stays on the physical list, so aliased
+    // offsets are charged once rather than once per aliasing row.
+    chargeMetadata(size * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
+    const descriptors = [];
+    const typeIndices = [];
+    for (let entry = 0; entry < size; entry++) {
+      const typeIdx = view.getUint16(listOff + 4 + entry * 2, true);
+      const descriptor = requireIndex(types, typeIdx, indexCode);
+      typeIndices.push(typeIdx);
+      descriptors.push(descriptor);
+    }
+    const materialized = {
+      descriptors: Object.freeze(descriptors),
+      typeIndices: Object.freeze(typeIndices),
+      shortySuffix: null,
+    };
+    typeLists.set(listOff, materialized);
+    return materialized;
+  }
+  function typeListShortySuffix(list) {
+    if (list.shortySuffix === null) {
+      list.shortySuffix = list.descriptors.map((type) => dexTypeInfo(type).shorty).join('');
+    }
+    return list.shortySuffix;
+  }
+  const emptyTypeList = { descriptors: Object.freeze([]), typeIndices: Object.freeze([]), shortySuffix: '' };
+  // `class_def_item.interfaces_off` (#7620) checks are functions of the physical
+  // list's contents, so they are proven once per offset and reused by every
+  // class aliasing that list.
+  const validatedInterfaceLists = new Set();
+  function validateInterfaceTypeList(listOff, list) {
+    if (validatedInterfaceLists.has(listOff)) return;
+    const seenInterfaces = new Set();
+    for (const descriptor of list.descriptors) {
+      if (!descriptor.startsWith('L')) fail('dex-invalid-interface-type');
+      if (seenInterfaces.has(descriptor)) fail('dex-duplicate-interface-type');
+      seenInterfaces.add(descriptor);
+    }
+    validatedInterfaceLists.add(listOff);
   }
 
   const protos=[];
+  let previousProtoKey = null;
   for (let i=0;i<protoIdsSize;i++) {
     const off=protoIdsOff+i*12;
     if (off+12>u8.length) fail('dex-truncated-proto-ids');
     const shortyIdx=view.getUint32(off,true), returnTypeIdx=view.getUint32(off+4,true), paramsOff=view.getUint32(off+8,true);
-    const params=[];
+    let params = emptyTypeList.descriptors;
+    let parameterTypeIndices = emptyTypeList.typeIndices;
+    let paramsShorty = '';
     if (paramsOff>0) {
-      dataRange(paramsOff,4,'dex-invalid-proto-params-range',4);
-      const pSize=view.getUint32(paramsOff,true);
-      if (pSize>Math.floor((fileSize-paramsOff-4)/2)) fail('dex-invalid-proto-params-range');
-      dataRange(paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
-      for(let p=0;p<pSize;p++) params.push(requireIndex(types,view.getUint16(paramsOff+4+p*2,true),'dex-invalid-proto-param-type-index'));
+      const list = decodeTypeList(paramsOff, {
+        headerCode:'dex-invalid-proto-params-range',
+        bodyCode:'dex-invalid-proto-params-range',
+        indexCode:'dex-invalid-proto-param-type-index',
+        sizeBoundCode:'dex-invalid-proto-params-range',
+      });
+      params = list.descriptors;
+      parameterTypeIndices = list.typeIndices;
+      paramsShorty = typeListShortySuffix(list);
     }
     const shorty = requireIndex(strings,shortyIdx,'dex-invalid-proto-shorty-index');
     const returnType = requireIndex(types,returnTypeIdx,'dex-invalid-proto-return-type-index');
-    if (shorty !== dexPrototypeShorty(returnType, params)) fail('dex-invalid-proto-shorty');
+    if (shorty !== dexTypeInfo(returnType,{allowVoid:true}).shorty + paramsShorty) fail('dex-invalid-proto-shorty');
+    const protoKey = { returnTypeIdx, parameterTypeIndices };
+    if (previousProtoKey !== null && compareDexProtoKeys(previousProtoKey, protoKey) >= 0) {
+      fail('dex-proto-ids-order-invalid');
+    }
+    previousProtoKey = protoKey;
     protos.push({shorty,returnType,params});
   }
 
   const fields=[];
+  let previousFieldKey = null;
   for(let i=0;i<fieldIdsSize;i++) {
     const off=fieldIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-field-ids');
     const classIdx=view.getUint16(off,true),typeIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    fields.push({classType:requireIndex(types,classIdx,'dex-invalid-field-class-index'),type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name:requireIndex(strings,nameIdx,'dex-invalid-field-name-index')});
+    const classType = requireFieldOwnerType(requireIndex(types,classIdx,'dex-invalid-field-class-index'));
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-field-name-index'),dexVersion,'dex-invalid-field-name');
+    const fieldType = requireIndex(types,typeIdx,'dex-invalid-field-type-index');
+    const fieldKey = [classIdx,nameIdx,typeIdx];
+    if (previousFieldKey !== null && compareDexIndexTuples(previousFieldKey, fieldKey) >= 0) {
+      fail('dex-field-ids-order-invalid');
+    }
+    previousFieldKey = fieldKey;
+    fields.push({classType,type:fieldType,name});
   }
 
   const methods=[];
+  let previousMethodKey = null;
   for(let i=0;i<methodIdsSize;i++) {
     const off=methodIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-method-ids');
     const classIdx=view.getUint16(off,true),protoIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    methods.push({classType:requireIndex(types,classIdx,'dex-invalid-method-class-index'),proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
+    const classType = requireMethodOwnerType(requireIndex(types,classIdx,'dex-invalid-method-class-index'));
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-method-name-index'),dexVersion,'dex-invalid-method-name');
+    const proto = requireIndex(protos,protoIdx,'dex-invalid-method-proto-index');
+    const methodKey = [classIdx,nameIdx,protoIdx];
+    if (previousMethodKey !== null && compareDexIndexTuples(previousMethodKey, methodKey) >= 0) {
+      fail('dex-method-ids-order-invalid');
+    }
+    previousMethodKey = methodKey;
+    methods.push({classType,proto,name});
   }
 
   const classes=[];
+  let previousClassIdx = -1;
   for(let i=0;i<classDefsSize;i++) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
@@ -197,10 +444,11 @@ export function parseDex(bytes, options = {}) {
     requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
     requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
     requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
-    dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4,true);
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
-    const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
+    const classType = requireClassType(types, classIdx, 'dex-invalid-class-definer-type');
+    if (classIdx <= previousClassIdx) fail('dex-class-defs-order-invalid');
+    previousClassIdx = classIdx;
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
@@ -209,6 +457,8 @@ export function parseDex(bytes, options = {}) {
       const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(dataBytes,sOff);
       const {value:directMethodsSize,nextOffset:dOff}=readUleb128(dataBytes,iOff);
       const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(dataBytes,dOff); cPos=vOff;
+      chargeMetadata((staticFieldsSize + instanceFieldsSize + directMethodsSize + virtualMethodsSize)
+        * DEX_ADMISSION_CLASS_DATA_ENTRY_BYTES);
       const fieldDefinitions = new Set();
       for (const [count, output] of [[staticFieldsSize, staticFields], [instanceFieldsSize, instanceFields]]) {
         let lastFieldIdx = 0;
@@ -243,11 +493,27 @@ export function parseDex(bytes, options = {}) {
         lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
+    // class_def_item.interfaces_off is the authority for implemented
+    // interfaces: decode the referenced type_list losslessly and fail closed
+    // on AOSP contract violations — bounds, alignment, type_idx validity,
+    // class (non-array/primitive) entries, and duplicates (#7620).
+    let interfaceTypes = emptyTypeList.descriptors;
+    if(interfacesOff!==0){
+      const list = decodeTypeList(interfacesOff, {
+        headerCode:'dex-invalid-interfaces-offset',
+        bodyCode:'dex-invalid-interfaces-range',
+        bodyAlignment:2,
+        indexCode:'dex-invalid-interface-type-index',
+      });
+      validateInterfaceTypeList(interfacesOff, list);
+      interfaceTypes = list.descriptors;
+    }
+    classes.push({classType,accessFlags,superType:superclassIdx!==0xffffffff?requireClassType(types,superclassIdx,'dex-invalid-superclass-type'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
   dexMethodDefinitions({ methods, classes });
   validateDexMap(u8);
+  validateDexIntegrity(u8);
 
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
   return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,dataSection:{offset:dataStart,size:dataEnd-dataStart},rawBytes:u8});

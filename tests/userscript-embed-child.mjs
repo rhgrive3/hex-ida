@@ -182,7 +182,7 @@ async function testPlainDataBoundary() {
   assert.equal(isPlainData(new Uint8Array([1])), false);
   assert.equal(isPlainData(new ArrayBuffer(4)), false);
   const pair = proxyPair({ 'chatgpt.capabilities': () => new Uint8Array([1, 2]) });
-  await assert.rejects(pair.proxy.capabilities(), /plain data only/);
+  await assert.rejects(pair.proxy.capabilities(), (error) => error?.code === 'RPC_UNSAFE_RESULT');
   await assert.rejects(pair.proxy.request(new Uint8Array([1])), /string-normalizable/);
   pair.close();
 }
@@ -198,6 +198,7 @@ async function testReadyOrdering() {
   const devWorkerClient = fakeDevWorkerClient();
   let readySent = false;
   const result = await startEmbedChildRuntime({
+    startChildAuth: async () => ({ close() {} }),
     window, document, location: locationForGeneration(12, 'chatgpt'), globalObject, cssText: ':root{color-scheme:dark}',
     waitForEmbedParentAttach: async () => { order.push('attach'); return { port: {}, nonce: 'a'.repeat(64), generation: '12' }; },
     createEmbedBridgeProxy: () => { order.push('bridge'); return bridge; },
@@ -221,6 +222,7 @@ async function testFailedAppDoesNotSendReady() {
   const window = fakeWindow({ parent });
   let ready = 0;
   await assert.rejects(startEmbedChildRuntime({
+    startChildAuth: async () => ({ close() {} }),
     window,
     document: fakeDocument({ canonicalReady: true }),
     location: locationForGeneration(13),
@@ -238,6 +240,7 @@ async function testFailedAppDoesNotSendReady() {
 async function testDirectEmbedFailsBounded() {
   const window = fakeWindow(); window.parent = window;
   await assert.rejects(startEmbedChildRuntime({
+    startChildAuth: async () => ({ close() {} }),
     window, document: fakeDocument(), location: locationForGeneration(14), globalObject: {},
   }), /requires an iframe/);
 }
@@ -253,7 +256,10 @@ function testRuntimeResponsibilityBoundaries() {
   assert.match(entrySource, /createChatGPTSandboxHost/);
   assert.doesNotMatch(entrySource, /createChatGPTIframeHost/);
   assert.match(entrySource, /createChatGPTParentRpc/);
-  assert.match(entrySource, /createDevWorkerParentRpc/);
+  assert.match(entrySource, /createAuthRpcServer/);
+  assert.match(entrySource, /parentAuth\.extension\?\.attach/);
+  assert.doesNotMatch(entrySource, /from ['"].*\/dev\//);
+  assert.doesNotMatch(childSource, /from ['"].*\/dev\//);
   assert.doesNotMatch(entrySource, /falling back to legacy light DOM/);
   assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/);
 }

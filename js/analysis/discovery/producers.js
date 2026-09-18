@@ -38,14 +38,33 @@ function loaderStartArray(value, code) {
   return value;
 }
 
-const VALIDATED_LOADER_SEED_SOURCES = new Set([
+// These source names are retained for older producers that predate the exact
+// authority marker. New validated loader producers must set
+// exactFunctionStart=true with their own high-confidence proof instead of
+// requiring another hand-maintained source-name entry here (#8837).
+const LEGACY_VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
 ]);
 const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
+
+// #8846: an authoritative start carries the same exactness threshold the start
+// itself uses; a body whose confidence is below it, or that the model flagged
+// as inferred / a `next-function-start` guess, must not inherit start authority.
+const EXACT_EXTENT_MIN_CONFIDENCE = 0.9;
+
+function extentIsInferred(start) {
+  if (start?.extentInferred === true) return true;
+  if (start?.extentSource === 'next-function-start') return true;
+  const confidence = start?.extentConfidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence < EXACT_EXTENT_MIN_CONFIDENCE;
+}
 
 function seedSources(start) {
   return new Set([
@@ -63,11 +82,24 @@ function hasHighExactConfidence(start) {
     && confidence >= 0.9;
 }
 
+function hasValidatedExactEvidence(start) {
+  return typeof start?.functionStartEvidence === 'string'
+    && start.functionStartEvidence.trim().length > 0;
+}
+
 function isCanonicalLoaderSeed(start) {
   const sources = seedSources(start);
-  if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
-  if (start?.exactFunctionStart !== true) return false;
-  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
+  if ([...sources].some((source) => LEGACY_VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
+  // The exact marker is the source-independent authority contract. This lets
+  // a newly validated loader source reach discovery without silently drifting
+  // from a second source whitelist, while preserving the confidence floor.
+  if (start?.exactFunctionStart !== true || !hasHighExactConfidence(start)) return false;
+  // Symbol/IFUNC seeds predate the evidence field and remain compatible with
+  // their existing explicit exact contract. New source families must carry a
+  // non-empty validation proof so an arbitrary exact bit cannot mint loader
+  // authority (#8837).
+  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source))
+    || hasValidatedExactEvidence(start);
 }
 
 function extentRegion(record, address) {
@@ -84,6 +116,7 @@ function extentRegion(record, address) {
     return null;
   }
 }
+
 /**
  * Loader-supplied function starts and unwind entries.
  *
@@ -91,7 +124,6 @@ function extentRegion(record, address) {
  * `image.functionStarts` projection is accepted only as a compatibility input.
  * Unwind ranges remain in `image.unwindEntries`.
  */
-
 function loaderFunctionStarts(image) {
   const out = [];
   const seen = new Set();
@@ -114,7 +146,6 @@ function loaderFunctionStarts(image) {
 
 export const loaderProducer = Object.freeze({
   id: 'discovery.loader',
-  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -124,6 +155,29 @@ export const loaderProducer = Object.freeze({
       const sources = seedSources(start);
       const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
       const region = extentRegion(start, address);
+      // #8846: keep the exact start authoritative, but do not let it carry an
+      // inferred body as hard region authority. A `next-function-start` /
+      // low-confidence / explicitly-inferred extent is published as a separate
+      // corroborating extent item so `fuseExtent` can only mint `exact` from a
+      // genuinely validated extent source (unwind/exception/etc.), never from
+      // the start alone.
+      if (region && extentIsInferred(start)) {
+        out.push(evidence('loader-function-start', {
+          start: address,
+          name: start.name ?? null,
+          regions: [],
+          confidence: start.confidence ?? null,
+          evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
+        }));
+        out.push(evidence('loader-function-extent', {
+          start: address,
+          regions: [region],
+          extentRole: 'complete',
+          confidence: start.extentConfidence ?? start.confidence ?? null,
+          evidenceIds: [`loader:extent:${address}:${start.extentSource ?? 'inferred'}`, ...sourceEvidenceIds],
+        }));
+        continue;
+      }
       out.push(evidence('loader-function-start', {
         start: address,
         name: start.name ?? null,
@@ -143,10 +197,6 @@ export const loaderProducer = Object.freeze({
         .map((entry) => toAddress(entry.ownerStart))
         .filter(Boolean),
     );
-    const primaryOwners = new Set(unwindEntries
-      .filter((entry) => entry.primary !== false)
-      .map((entry) => toAddress(entry.start ?? entry.address))
-      .filter(Boolean));
     for (const entry of unwindEntries) {
       const isContinuation = entry.primary === false && entry.ownerStart != null;
       const address = isContinuation ? toAddress(entry.ownerStart) : toAddress(entry.start ?? entry.address);
@@ -160,7 +210,6 @@ export const loaderProducer = Object.freeze({
         start: address,
         regions: region ? [region] : [],
         extentRole: isContinuation || ownersWithContinuations.has(address) ? 'partial' : 'complete',
-        extentCoverageComplete: ownersWithContinuations.has(address) && primaryOwners.has(address),
         evidenceIds: [`unwind:${rangeStart}`],
       }));
     }
@@ -171,7 +220,6 @@ export const loaderProducer = Object.freeze({
 /** Exports and the image entrypoint. */
 export const exportProducer = Object.freeze({
   id: 'discovery.exports',
-  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -224,7 +272,6 @@ export const exportProducer = Object.freeze({
  */
 export const symbolTableProducer = Object.freeze({
   id: 'discovery.symbols',
-  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -249,21 +296,13 @@ export const symbolTableProducer = Object.freeze({
 /** Relocation and vtable targets. */
 export const referenceProducer = Object.freeze({
   id: 'discovery.references',
-  version: '2',
   architectureId: null,
   produce(input) {
     const out = [];
     for (const target of input?.image?.relocationTargets ?? []) {
       const address = toAddress(target.address ?? target);
       if (address == null) continue;
-      const relocationId = typeof target?.id === 'string' && target.id ? target.id : `reloc:${address}`;
-      out.push(evidence('relocation-target', {
-        start: address,
-        referenceAddress: target?.sourceAddress ?? target?.addressOfReference ?? null,
-        relocationId,
-        symbolicExpression: target?.symbolicExpression ?? target?.expression ?? null,
-        evidenceIds: [relocationId],
-      }));
+      out.push(evidence('relocation-target', { start: address, evidenceIds: [`reloc:${address}`] }));
     }
     for (const target of input?.image?.vtableEntries ?? []) {
       const address = toAddress(target.address ?? target);
@@ -274,15 +313,6 @@ export const referenceProducer = Object.freeze({
       const address = toAddress(target.address ?? target);
       if (address == null) continue;
       out.push(evidence('exception-metadata', { start: address, evidenceIds: [`eh:${address}`] }));
-    }
-    for (const target of input?.image?.jumpTableTargets ?? []) {
-      const address = toAddress(target.address ?? target);
-      if (address == null) continue;
-      out.push(evidence('jump-table-target', {
-        start: address,
-        referenceAddress: target?.tableAddress ?? target?.sourceAddress ?? null,
-        evidenceIds: [`jump-table:${target?.tableId ?? 'unknown'}:${address}`],
-      }));
     }
     return out;
   },
@@ -297,7 +327,6 @@ export const referenceProducer = Object.freeze({
  */
 export const callGraphProducer = Object.freeze({
   id: 'discovery.call-targets',
-  version: '1',
   architectureId: null,
   produce(input) {
     const out = [];
@@ -314,20 +343,101 @@ export const callGraphProducer = Object.freeze({
   },
 });
 
-/** Debug-provider symbols, already gated by identity at the provider boundary. */
+const DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES = 4n;
+
+function debugFunctionStartBytes(input, sizeBytesRaw) {
+  const minimum = input?.minimumInstructionBytes;
+  let span = DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES;
+  if (minimum !== undefined) {
+    if (!Number.isSafeInteger(minimum) || minimum < 1 || minimum > 64) return null;
+    span = BigInt(minimum);
+  }
+  let extent = 0n;
+  if (sizeBytesRaw != null) {
+    if (!Number.isSafeInteger(sizeBytesRaw) || sizeBytesRaw < 0) return null;
+    extent = BigInt(sizeBytesRaw);
+  }
+  return { span, extent };
+}
+
+/**
+ * A debug identity match proves which build a companion describes; it proves
+ * nothing about whether one claimed address denotes code in this binary. So
+ * `exact` debug evidence becomes an authoritative start only after the target
+ * image itself proves the claim: the *canonical* mapping owner for the address
+ * — the narrowest section/segment `resolveVirtualMapping` selects, not merely
+ * an enclosing segment — is executable, the ISA minimum instruction span is
+ * contiguous file-backed bytes (never a zero-fill tail), and a claimed extent
+ * is validated separately against the same executable file-backed run
+ * (#8833). A missing or unusable target is absence of proof, and absence of
+ * proof never mints authority.
+ */
+function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
+  const image = input?.image;
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  if (typeof image.segmentAt !== 'function' || typeof image.resolveVirtualMapping !== 'function') return false;
+  const bytes = debugFunctionStartBytes(input, sizeBytesRaw);
+  if (bytes === null) return false;
+  const start = BigInt(startString);
+  const segment = image.segmentAt(start);
+  if (!segment || segment.perms?.execute !== true) return false;
+  const mapping = image.resolveVirtualMapping(start);
+  if (!mapping || mapping.kind !== 'file') return false;
+  if (mapping.mapping?.perms?.execute !== true) return false;
+  const available = mapping.available;
+  const required = bytes.span > bytes.extent ? bytes.span : bytes.extent;
+  if (typeof available !== 'bigint' || available < required) return false;
+  if (bytes.extent > 0n) {
+    const segmentEnd = BigInt(segment.address) + BigInt(segment.size);
+    if (start + bytes.extent > segmentEnd) return false;
+    if (image.segmentAt(start + bytes.extent - 1n) !== segment) return false;
+    const endMapping = image.resolveVirtualMapping(start + bytes.extent - 1n);
+    if (!endMapping || endMapping.kind !== 'file' || endMapping.mapping !== mapping.mapping) return false;
+  }
+  return true;
+}
+
 export function createDebugEvidenceProducer(debugEvidence) {
   return Object.freeze({
     id: 'discovery.debug',
-    version: '1',
     architectureId: null,
-    produce() {
-      return (debugEvidence ?? []).map((item) => evidence('debug-symbol', {
-        start: toAddress(item.address),
-        name: item.name ?? null,
-        regions: item.sizeBytes ? [regionFromSize(item.address, item.sizeBytes)].filter(Boolean) : [],
-        confidence: item.confidence,
-        evidenceIds: item.evidenceIds ?? [],
-      })).filter((item) => item.start != null);
+    produce(input) {
+      // A debug record only validates its address as a non-empty string, so a
+      // single malformed symbol must degrade to "no start / no region" and be
+      // filtered like any other unusable row — it must never abort the whole
+      // producer ahead of the start filter (#4930).
+      return (debugEvidence ?? []).map((item) => {
+        const start = toAddress(item.address);
+        const regions = [];
+        if (start != null && item.sizeBytes != null) {
+          const size = toAddress(item.sizeBytes);
+          if (size != null) {
+            const region = regionFromSize(start, size);
+            if (region != null) regions.push(region);
+          }
+        }
+        // `debugFunctionEvidence()` has already applied the provider identity
+        // and partial-coverage gate. Only its canonical `exact` token may keep
+        // the authoritative debug-symbol kind, and only after the target image
+        // proves the claimed address is executable, file-backed code — an
+        // identity match on its own is not address authority (#4050, #8833).
+        // Every other representation is a weak fact. Select the authority-
+        // bearing kind before canonical evidence construction so `String()`
+        // coercion cannot turn a boxed or structured value into an authority
+        // token (#4050).
+        const rawConfidence = item?.confidence;
+        const exact = rawConfidence === 'exact'
+          && start != null
+          && debugFunctionStartIsProvableCode(input, start, item.sizeBytes ?? null);
+        const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
+        return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
+          start,
+          name: item.name ?? null,
+          regions,
+          confidence,
+          evidenceIds: item.evidenceIds ?? [],
+        });
+      }).filter((item) => item.start != null);
     },
   });
 }
@@ -351,6 +461,27 @@ function patternBytes(value, code) {
     bytes[index] = byte;
   }
   return bytes;
+}
+
+const PATTERN_SCAN_CANCEL_CHECK_INTERVAL = 4096;
+
+function patternScanBudget(options) {
+  const budget = options?.budget;
+  if (budget != null && (typeof budget !== 'object' || Array.isArray(budget))) {
+    throw new TypeError('discovery-pattern-budget-invalid');
+  }
+  const limit = (name) => {
+    const value = budget?.[name];
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`discovery-pattern-budget-${name}-invalid`);
+    }
+    return value;
+  };
+  return {
+    maxComparisons: limit('maxPatternComparisons'),
+    maxEvidence: limit('maxPatternEvidence'),
+  };
 }
 
 /**
@@ -395,25 +526,48 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   }
   return Object.freeze({
     id: producerId,
-    version: '1',
     architectureId: producerArchitectureId,
-    produce(input) {
+    produce(input, options = {}) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
       if (!bytes || base == null || compiled.length === 0) return [];
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
+      const { maxComparisons, maxEvidence } = patternScanBudget(options);
+      const signal = options?.signal;
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      let comparisons = 0;
+      let lastObserved = 0;
+      let stopReason = null;
+      scan:
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;
           for (let index = 0; index < pattern.bytes.length; index += 1) {
+            comparisons += 1;
+            if (maxComparisons != null && comparisons > maxComparisons) {
+              stopReason = 'budget-exhausted';
+              break scan;
+            }
+            if (comparisons - lastObserved >= PATTERN_SCAN_CANCEL_CHECK_INTERVAL) {
+              lastObserved = comparisons;
+              if (signal?.aborted) {
+                stopReason = 'cancelled';
+                break scan;
+              }
+            }
             const mask = pattern.mask ? pattern.mask[index] : 0xff;
             if ((bytes[offset + index] & mask) !== (pattern.bytes[index] & mask)) { matched = false; break; }
           }
           if (!matched) continue;
+          if (maxEvidence != null && out.length >= maxEvidence) {
+            stopReason = 'budget-exhausted';
+            break scan;
+          }
           out.push(evidence('prologue-candidate', {
             start: (baseAddress + BigInt(offset)).toString(),
             evidenceIds: [`pattern:${pattern.id}:${offset}`],
@@ -421,6 +575,7 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
           break;
         }
       }
+      if (stopReason != null) return Object.freeze({ evidence: out, truncated: true, stopReason });
       return out;
     },
   });
@@ -434,8 +589,12 @@ export const GENERIC_PRODUCERS = Object.freeze([
   callGraphProducer,
 ]);
 
+// Factory provenance for consumers that need to distinguish repository-owned
+// discovery authority from caller-supplied heuristic producers. Identity is by
+// object, never by the spoofable producer id string.
 const CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);
 
 export function isCanonicalDiscoveryProducer(producer) {
   return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);
 }
+

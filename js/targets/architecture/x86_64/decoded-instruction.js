@@ -7,20 +7,59 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+// Capstone's SKIPDATA contract emits the sentinel instruction ID 0 for bytes
+// it could not decode; the structured bridge publishes those records with
+// `detailStatus:'skipdata'` (#6058). The sentinel is only ever valid together
+// with that status — a normal instruction keeps its positive ID requirement.
+const SKIPDATA_DETAIL_STATUS = 'skipdata';
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed',SKIPDATA_DETAIL_STATUS]);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
+const X86_64_ARCHITECTURE_ID = 'x86_64';
+
+function x86ArchitectureIdentityOf(input) {
+  for (const value of [input.architecture, input.architectureId]) {
+    if (value == null) continue;
+    if (typeof value !== 'string' || value.trim().toLowerCase() !== X86_64_ARCHITECTURE_ID) {
+      throw new TypeError('x86-decoded-instruction-architecture-mismatch');
+    }
+  }
+  return X86_64_ARCHITECTURE_ID;
+}
 // Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
 // and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
 const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
 
+// Numeric fields at the decoder trust boundary accept only exact primitive
+// numeric evidence. `Number()`/`BigInt()` coercion would let booleans, arrays
+// and arbitrary objects mint canonical length/address/width authority
+// (`Number(true)===1`, `BigInt(['16'])===16n`) and promote malformed provider
+// records into valid structured instructions (#5040).
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
+function skipdataInstructionCode(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || !Object.is(value, 0)) {
+    throw new TypeError('x86-decoded-instruction-id-required');
+  }
+  return value;
+}
+
+const NUMERIC_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const textValue = value.trim();
+    if (NUMERIC_TEXT.test(textValue)) {
+      try { return BigInt(textValue); } catch { /* fall through to reject */ }
+    }
+  }
+  throw new TypeError(code);
 }
 
 function text(value, code, { empty = false } = {}) {
@@ -103,7 +142,42 @@ function addressSizeBitsOf(value, mode) {
 }
 
 function bytesOf(input, length) {
-  const bytes = input instanceof Uint8Array ? input.slice() : Uint8Array.from(input || []);
+  // `rawBytes` are the authoritative machine instruction bytes, so every element
+  // must be a genuine byte. Typed conversion coercion (`Uint8Array.from`) remaps
+  // out-of-domain input into a different canonical encoding (`400`→`144`,
+  // `'144'`→`144`, `144.9`→`144`, `-112`→`144`, `true`→`01`), laundering
+  // malformed provider evidence into exact `rawBytes` (#8786). Mirror the strict
+  // byte-domain rule already applied to prefix bytes (`prefixBytesOf`) and to the
+  // RISC-V canonical rawBytes (#6009): accept only a genuine (cross-realm)
+  // `Uint8Array`, or a plain `Array` whose every own element is an integer
+  // `0..0xff`; `null`/`undefined` stay an empty sequence (length check below).
+  if (input == null) {
+    throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+  }
+  let isUint8 = input instanceof Uint8Array;
+  if (!isUint8 && ArrayBuffer.isView(input)) {
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    isUint8 = tag === 'Uint8Array';
+  }
+  if (isUint8) {
+    const bytes = new Uint8Array(input.length);
+    bytes.set(input);
+    if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+    return bytes;
+  }
+  if (!Array.isArray(input)) {
+    throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+  }
+  const bytes = new Uint8Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+    }
+    bytes[index] = byte;
+  }
   if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
   return bytes;
 }
@@ -274,8 +348,11 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  const architecture = x86ArchitectureIdentityOf(input);
   const result = {
     ...input,
+    architecture,
+    architectureId:architecture,
     contractVersion,
     decoderSemanticVersion:text(input.decoderSemanticVersion ?? X86_DECODER_SEMANTIC_VERSION, 'x86-decoder-semantic-version-required'),
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
@@ -287,7 +364,14 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:instructionIdOf(input.instructionId),
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    // SKIPDATA is the one Capstone contract where instruction ID 0 is the
+    // architectural sentinel: admit it only when the record's detail status
+    // is exactly `skipdata` (which also forces `detailAvailable:false`), and
+    // only as exactly 0 — a non-zero ID with skipdata status is a schema
+    // contradiction. Every normal instruction keeps the positive-ID rule.
+    instructionCode:detailStatus === SKIPDATA_DETAIL_STATUS
+      ? skipdataInstructionCode(input.instructionCode ?? input.id)
+      : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily,
     decoderContractVersion:contractVersion,
     detailStatus,

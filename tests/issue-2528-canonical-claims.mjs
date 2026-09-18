@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalClaimVerdict, createProductSurfaceQueries } from '../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../js/analysis/query/snapshot.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -11,7 +12,7 @@ assert.equal(canonicalClaimVerdict({ confirmed:true, confidence:1 }), 'unverifie
 assert.equal(canonicalClaimVerdict({ verdict:'confirmed', confidence:0.01 }), 'confirmed');
 assert.equal(canonicalClaimVerdict({ evidenceVerdict:'contradicted', confidence:1 }), 'contradicted');
 
-const snapshot = Object.freeze({ snapshotId:'snap-2528', analysisEpoch:7 });
+const snapshot = createAnalysisSnapshot({ binaryId:'binary-2528', analysisEpoch:7 });
 const app = {
   autoReport:{ report:{ findings:[
     { id:'legacy-high-confidence', title:'High confidence only', confidence:0.99 },

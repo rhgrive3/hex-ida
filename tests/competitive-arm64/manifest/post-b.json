@@ -1,0 +1,550 @@
+{
+  "schema": "scpa-post-b-manifest/v1",
+  "version": "1.0.0",
+  "campaign": "scope-closed-arm64",
+  "sourceBaseline": "124fdef309baac058a74bce8fd7be736c93391fb",
+  "cases": [
+    {
+      "id": "bv-wrap",
+      "recipeId": "c-micro",
+      "symbol": "bv_wrap",
+      "stratum": "c-arm64",
+      "oracleId": "u64-add-7-v1",
+      "closureObligations": []
+    },
+    {
+      "id": "alias-subobject",
+      "recipeId": "c-micro",
+      "symbol": "alias_subobject",
+      "stratum": "c-arm64",
+      "oracleId": "source-field-distinct-offsets",
+      "closureObligations": [
+        "lifetime-live",
+        "layout-from-compiler"
+      ]
+    },
+    {
+      "id": "reaching-store",
+      "recipeId": "c-micro",
+      "symbol": "reaching_store",
+      "stratum": "c-arm64",
+      "oracleId": "same-address-store-load",
+      "closureObligations": [
+        "nonvolatile-single-thread-no-fault"
+      ]
+    },
+    {
+      "id": "source-sink",
+      "recipeId": "c-micro",
+      "symbol": "source_sink",
+      "stratum": "c-arm64",
+      "oracleId": "explicit-parameter-to-store",
+      "closureObligations": [
+        "reachable-legal-pointer"
+      ]
+    },
+    {
+      "id": "length-buffer",
+      "recipeId": "c-micro",
+      "symbol": "length_buffer",
+      "stratum": "c-arm64",
+      "oracleId": "length-eight-byte-seven",
+      "closureObligations": [
+        "buffer-size-assumption"
+      ]
+    },
+    {
+      "id": "allocation-guard",
+      "recipeId": "c-micro",
+      "symbol": "allocation_guard",
+      "stratum": "c-arm64",
+      "oracleId": "null-guard-before-free",
+      "closureObligations": [
+        "allocator-model"
+      ]
+    },
+    {
+      "id": "register-dispatch",
+      "recipeId": "c-micro",
+      "symbol": "register_dispatch",
+      "stratum": "c-arm64",
+      "oracleId": "unknown-target-remains-open",
+      "closureObligations": [
+        "callee-model"
+      ]
+    },
+    {
+      "id": "virtual-open",
+      "recipeId": "cpp-micro",
+      "symbol": "virtual_open",
+      "stratum": "cpp-arm64",
+      "oracleId": "open-world-vtable",
+      "closureObligations": [
+        "receiver-lifetime",
+        "dynamic-type"
+      ]
+    },
+    {
+      "id": "selector-open",
+      "recipeId": "objc-micro",
+      "symbol": "selector_open",
+      "stratum": "objc-arm64",
+      "oracleId": "objc-dynamic-dispatch",
+      "closureObligations": [
+        "swizzling",
+        "forwarding"
+      ]
+    },
+    {
+      "id": "witness-open",
+      "recipeId": "swift-micro",
+      "symbol": "witnessOpen",
+      "stratum": "swift-arm64",
+      "oracleId": "swift-generic-witness",
+      "closureObligations": [
+        "toolchain-witness-layout",
+        "resilience"
+      ]
+    },
+    {
+      "id": "slice-bounds",
+      "recipeId": "rust-micro",
+      "symbol": "slice_bounds",
+      "stratum": "rust-arm64",
+      "oracleId": "slice-index-bounds",
+      "closureObligations": [
+        "fat-pointer-ABI"
+      ]
+    },
+    {
+      "id": "closure-capture",
+      "recipeId": "go-micro",
+      "symbol": "ClosureCapture",
+      "stratum": "go-arm64",
+      "oracleId": "capture-value-flow",
+      "closureObligations": [
+        "Go-runtime-lifetime"
+      ]
+    }
+  ],
+  "recipes": [
+    {
+      "id": "c-micro",
+      "language": "c",
+      "source": "sources/c.c",
+      "sourceSha256": "0b453fb4ddb19d8f17b12ac2f3e7f0d7cd69e74598a9fe512ea6fd7a589c0afa",
+      "compiler": "clang",
+      "argv": [
+        "--target=aarch64-linux-gnu",
+        "-O1",
+        "-g",
+        "-fno-lto",
+        "-ffreestanding",
+        "-c",
+        "{source}",
+        "-o",
+        "{output}"
+      ],
+      "targetTriple": "aarch64-linux-gnu",
+      "platform": "linux",
+      "requirements": [
+        "sysroot for executable linking",
+        "allocator model for allocation-guard"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    },
+    {
+      "id": "cpp-micro",
+      "language": "cpp",
+      "source": "sources/cpp.cpp",
+      "sourceSha256": "25c01d9a03e8519c6486fa62e86c49bf6f18d47ac58b96e93fff4ad8522611ca",
+      "compiler": "clang++",
+      "argv": [
+        "--target=aarch64-linux-gnu",
+        "-O1",
+        "-g",
+        "-fno-lto",
+        "-fno-exceptions",
+        "-c",
+        "{source}",
+        "-o",
+        "{output}"
+      ],
+      "targetTriple": "aarch64-linux-gnu",
+      "platform": "linux",
+      "requirements": [
+        "C++ ABI/runtime for linked twins"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    },
+    {
+      "id": "objc-micro",
+      "language": "objc",
+      "source": "sources/objc.m",
+      "sourceSha256": "689e2c31fffb13cf531d2d872829d32da1138bce6a05653a0e75d2cdfee432d2",
+      "compiler": "clang",
+      "argv": [
+        "--target=arm64-apple-macos11",
+        "-O1",
+        "-g",
+        "-fno-lto",
+        "-fobjc-runtime=macosx-11.0",
+        "-c",
+        "{source}",
+        "-o",
+        "{output}"
+      ],
+      "targetTriple": "arm64-apple-macos11",
+      "platform": "darwin",
+      "requirements": [
+        "Apple toolchain/SDK and ObjC runtime for linked twins"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    },
+    {
+      "id": "swift-micro",
+      "language": "swift",
+      "source": "sources/swift.swift",
+      "sourceSha256": "36c084c6daaa1e261eaa9d5ab6e3b249fc2b55883a69ed17a2edc2aa2e4bba62",
+      "compiler": "swiftc",
+      "argv": [
+        "-target",
+        "arm64-apple-macos11",
+        "-g",
+        "-Onone",
+        "-emit-object",
+        "{source}",
+        "-o",
+        "{output}"
+      ],
+      "targetTriple": "arm64-apple-macos11",
+      "platform": "darwin",
+      "requirements": [
+        "pinned Swift toolchain and Apple SDK"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    },
+    {
+      "id": "rust-micro",
+      "language": "rust",
+      "source": "sources/rust.rs",
+      "sourceSha256": "b761ca06ed232f14b728670c4611f86f531dc2a5ad8b0a15cefe28484eeb3c77",
+      "compiler": "rustc",
+      "argv": [
+        "--target",
+        "aarch64-unknown-linux-gnu",
+        "--crate-type",
+        "lib",
+        "-C",
+        "debuginfo=2",
+        "-C",
+        "opt-level=1",
+        "--emit=obj",
+        "{source}",
+        "-o",
+        "{output}"
+      ],
+      "targetTriple": "aarch64-unknown-linux-gnu",
+      "platform": "linux",
+      "requirements": [
+        "pinned Rust target standard libraries"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    },
+    {
+      "id": "go-micro",
+      "language": "go",
+      "source": "sources/go.go",
+      "sourceSha256": "13ad0fbf418cc6c5513e03b0d99de9eb0d8d2af841279f5d46f405a77017f2fa",
+      "compiler": "go",
+      "argv": [
+        "tool",
+        "compile",
+        "-N",
+        "-l",
+        "-o",
+        "{output}",
+        "{source}"
+      ],
+      "targetTriple": "linux-arm64",
+      "platform": "linux",
+      "requirements": [
+        "GOOS=linux",
+        "GOARCH=arm64",
+        "pinned Go runtime for linked twins"
+      ],
+      "outputRole": "debug-bearing-object; link once before strip-only twin creation"
+    }
+  ],
+  "toolchainSlots": [
+    {
+      "id": "primary",
+      "versions": "UNBOUND; pin each actual compiler/linker/strip version and distribution before measurement"
+    },
+    {
+      "id": "secondary",
+      "versions": "UNBOUND; pin each actual compiler/linker/strip version and distribution before measurement"
+    }
+  ],
+  "metrics": [
+    {
+      "id": "instruction-semantics",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "independently checked instruction cases / full registered cases"
+    },
+    {
+      "id": "cfg",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "independent CFG edge precision/recall; unknown reported separately"
+    },
+    {
+      "id": "function-discovery",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "debug/linker function-boundary ground truth"
+    },
+    {
+      "id": "indirect-targets",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "sound target bounds with exact errors reported separately"
+    },
+    {
+      "id": "points-to",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "oracle-compatible points-to answers; TOP not false"
+    },
+    {
+      "id": "alias",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "qualified No/Must alias against independent microcase truth"
+    },
+    {
+      "id": "memory-reaching-definition",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "load reaching-store/clobber truth"
+    },
+    {
+      "id": "value-recovery",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "registered scalar value assertions"
+    },
+    {
+      "id": "type-layout-prototype",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "compiler physical layout and argument placement"
+    },
+    {
+      "id": "decompiler-semantics",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "validated observable-equivalence assertions"
+    },
+    {
+      "id": "decompiler-readability",
+      "unit": "task-success-ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "blinded human task protocol; text length is not quality"
+    },
+    {
+      "id": "deobfuscation",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "independent semantic equivalence plus recovered target task"
+    },
+    {
+      "id": "semantic-queries",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "registered query assertions with UNKNOWN and unsupported distinct"
+    },
+    {
+      "id": "symbolic-proof",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "independently replayed solver obligations"
+    },
+    {
+      "id": "static-runtime-reconciliation",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "build/generation-bound recorded runtime observations"
+    },
+    {
+      "id": "similarity-recognition",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "collision-rejected ground-truth top-K retrieval"
+    },
+    {
+      "id": "autonomous-investigation",
+      "unit": "task-success-ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "same-model bounded task outcome; no simulated model result"
+    },
+    {
+      "id": "explanation-provenance",
+      "unit": "ratio",
+      "direction": "higher-better",
+      "cacheStates": [
+        "not-applicable"
+      ],
+      "definition": "source/owner/proof reference replay success"
+    },
+    {
+      "id": "cold-start",
+      "unit": "ms",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "load start through first useful result, including indexing"
+    },
+    {
+      "id": "first-useful-result",
+      "unit": "ms",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "submitted user task to independently useful result"
+    },
+    {
+      "id": "focused-query",
+      "unit": "ms",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "complete requested result/evidence or explicit incomplete frontier"
+    },
+    {
+      "id": "peak-memory",
+      "unit": "bytes",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "peak process plus worker retained heap, not only result payload"
+    },
+    {
+      "id": "large-binary-scaling",
+      "unit": "ms",
+      "direction": "descriptive-only",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "query latency by frozen corpus size stratum"
+    },
+    {
+      "id": "cancellation",
+      "unit": "ms",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "abort requested to child work settled and publication vetoed"
+    },
+    {
+      "id": "incremental-cost",
+      "unit": "work-units",
+      "direction": "lower-better",
+      "cacheStates": [
+        "cold",
+        "warm"
+      ],
+      "definition": "deterministic resumed work including invalidated/recomputed work"
+    }
+  ],
+  "adapterContract": {
+    "schema": "scpa-native-best-adapter/v1",
+    "participants": [
+      "hex-astra",
+      "ida-astra",
+      "ghidra-astra"
+    ],
+    "methods": [
+      "capabilities",
+      "query",
+      "explain",
+      "cancel"
+    ],
+    "maximumRequestBytes": 65536,
+    "maximumResponseBytes": 4194304,
+    "timeoutMs": 30000,
+    "available": "UNMEASURED until installed adapter/tool/model identities and actual trace are bound",
+    "groundTruth": "independent-oracle-only; no tool-majority oracle"
+  },
+  "policies": {
+    "denominator": "12 named cases x 2 toolchain slots x all metrics x 3 participants x repetitions; failed/absent cells retained",
+    "twins": "one linked debug artifact copied then allowlisted strip only; no separate release compilation",
+    "cold": "fresh process/cache and all index initialization charged",
+    "warm": "registered same-input prewarming only; hidden corpus indexes charged",
+    "sameAstra": "all model and prompt/resource/knowledge-policy hashes equal",
+    "victory": "never inferred by the metadata or source oracle checker"
+  }
+}

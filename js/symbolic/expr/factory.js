@@ -27,8 +27,36 @@ import { wrap } from './bitvector.js';
 let symbolCounter = 0;
 const MAX_FRESH_SYMBOL_INDEX = Number.MAX_SAFE_INTEGER - 1;
 
+function deepFreezePlainJson(value) {
+  if (!value || typeof value !== 'object') return value;
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    Object.freeze(current);
+    for (const key of Object.keys(current)) {
+      const child = current[key];
+      if (child && typeof child === 'object') pending.push(child);
+    }
+  }
+  return value;
+}
+
 export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
+}
+
+/**
+ * Run deserialization against the fresh-symbol allocator as a transaction.
+ * Malformed payloads must not consume symbol IDs or exhaust the allocator.
+ */
+export function withSymbolAllocatorTransaction(run) {
+  const savedSymbolCounter = symbolCounter;
+  try {
+    return run();
+  } catch (error) {
+    symbolCounter = savedSymbolCounter;
+    throw error;
+  }
 }
 
 export function createBool(value) {
@@ -115,7 +143,7 @@ export function createUnknownSemantic(sort, reason, detail = null) {
     kind: EXPR_KIND.UNKNOWN_SEMANTIC,
     sort,
     reason,
-    detail: detail ? Object.freeze(JSON.parse(JSON.stringify(detail))) : null,
+    detail: detail ? deepFreezePlainJson(JSON.parse(JSON.stringify(detail))) : null,
   });
 }
 
@@ -183,27 +211,32 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
-  return createConnectiveFromArgs(op, args);
+  // Accept an array as the sole argument for callers which cannot use a
+  // variadic call (deserialization of a large connective), while retaining
+  // the dense-data validation in the array constructor.
+  const actualArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+  return createConnectiveFromArray(op, actualArgs);
 }
 
-// Keep deserialization from expanding a very wide connective into a function
-// call with hundreds of thousands of arguments. The array form retains the
-// same validation and immutable result shape as createConnective.
-export function createConnectiveFromArgs(op, args) {
-  if (!Array.isArray(args)) {
-    throw new TypeError('createConnectiveFromArgs: args must be an array');
-  }
+// Deserialization can admit more operands than the engine's call-argument
+// limit. Use the same constructor validation without a variadic call.
+export function createConnectiveFromArray(op, args) {
+  if (!Array.isArray(args)) throw new TypeError('createConnective: arguments must be an array');
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
   if (args.length === 0) {
     throw new TypeError(`createConnective (${op}): requires at least one argument`);
   }
+  const operands = [];
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+    const descriptor = Object.getOwnPropertyDescriptor(args, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('createConnective: dense data arguments required');
+    const a = descriptor.value;
     if (!a || !isBoolSort(a.sort)) {
       throw new TypeError(`createConnective (${op}): arg[${i}] must have Bool sort, got ${sortToString(a?.sort)}`);
     }
+    operands.push(a);
   }
   if (op === BOOL_CONNECTIVE_OP.NOT && args.length !== 1) {
     throw new TypeError(`createConnective (not): exactly one argument required, got ${args.length}`);
@@ -215,7 +248,7 @@ export function createConnectiveFromArgs(op, args) {
     kind: EXPR_KIND.CONNECTIVE,
     sort: boolSort(),
     op,
-    args: Object.freeze([...args]),
+    args: Object.freeze(operands),
   });
 }
 

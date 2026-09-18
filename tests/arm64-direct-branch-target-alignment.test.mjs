@@ -26,7 +26,10 @@ function liftAt(mnemonic, ops, target, suffix, address = base) {
     address,
     branchTarget:target,
     callTarget:mnemonic === 'bl' ? target : undefined,
-    ops,
+    // Direct branches have a mandatory presentation target operand. The
+    // separately resolved branchTarget/callTarget is authority for the value,
+    // but it must not bypass the structured operand-shape contract.
+    ops:[...ops, { k:'other', text:`#${target.toString()}` }],
   });
 }
 
@@ -64,7 +67,7 @@ const addressless = liftArm64ControlEffects({
   mnemonic:'b',
   mode:'a64',
   branchTarget:0x1000n,
-  ops:[],
+  ops:[{ k:'other', text:'#4096' }],
 });
 assert.equal(addressless.completeness, 'partial');
 assert.equal(addressless.unknownEffects?.reason, 'arm64-b-address-unavailable-for-encoding');

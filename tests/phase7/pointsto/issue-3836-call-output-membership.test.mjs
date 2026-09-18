@@ -71,15 +71,15 @@ function assertUnresolved(set) {
 test('#3836 valid call outputs retain their exact return-index provenance', () => {
   assertRoot(runCall({
     outputs: ['v0'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' }],
   }), 'ret-0');
 
   assertRoot(runCall({
     valueId: 'v1',
     outputs: ['v0', 'v1'],
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' },
-      { kind: 'root', returnIndex: 1, rootEntityId: 'ret-1' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' },
+      { kind: 'root', returnIndex: 1, rootEntityId: 'ret-1', addressSpace: 'memory' },
     ],
   }), 'ret-1');
 });
@@ -88,26 +88,26 @@ test('#3836 a value absent from node.outputs cannot borrow return-0 provenance',
   assertUnresolved(runCall({
     valueId: 'v-missing',
     outputs: ['v0'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' }],
   }));
 
   assertUnresolved(runCall({
     valueId: 'v-missing',
     outputs: [],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' }],
   }));
 
   assertUnresolved(runCall({
     valueId: 'v-missing',
     outputs: undefined,
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' }],
   }));
 });
 
 test('#3836 incomplete callee summaries remain fail-closed', () => {
   assertUnresolved(runCall({
     outputs: ['v0'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'ret-0', addressSpace: 'memory' }],
     summaryCompleteness: 'partial',
   }));
 });

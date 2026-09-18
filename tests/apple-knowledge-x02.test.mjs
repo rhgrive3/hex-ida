@@ -6,6 +6,7 @@ import {
   buildAppleKnowledge,
   parseAppleCodeSignature,
   parseDyldSharedCache,
+  authoritativeDyldSharedCacheBase,
   probeAppleLanguageMetadata,
   parseSerializedAppleKnowledge,
   serializeAppleKnowledge,
@@ -145,9 +146,9 @@ function machoWithMetadataSection(sectionName, { swiftDescriptor = false } = {})
   setAscii(bytes, 120, '__DATA', 16);
   view.setBigUint64(136, 0x2000n, true);
   view.setBigUint64(144, 4n, true);
-  view.setUint32(152, 0x200, true);
+  view.setUint32(152, 0x1000, true);
   if (swiftDescriptor) {
-    view.setInt32(0x200, 0x100, true);
+    view.setInt32(0x1000, 0x100, true);
     view.setUint32(0x1100, 17, true);
     view.setInt32(0x1104, 0, true);
     view.setInt32(0x1108, 0xf8, true);
@@ -430,6 +431,62 @@ let authenticatedImage;
   const overflow = cacheFixture({ mappingCount: 1 });
   new DataView(overflow.buffer).setBigUint64(120, 0xfffffffffffffff0n, true);
   assert.equal(parseDyldSharedCache(overflow).status, 'malformed');
+
+  // #9176: structural validation of images, slide-info, and local-symbols ranges
+  // 1. imagesCount = 1, imagesOffset outside supplied bytes -> malformed, authoritativeDyldSharedCacheBase returns null
+  const invalidImages = cacheFixture({ mappingCount: 1 });
+  const invalidImagesView = new DataView(invalidImages.buffer);
+  invalidImagesView.setUint32(24, 0x10000, true); // imagesOffset
+  invalidImagesView.setUint32(28, 1, true); // imagesCount
+  const invalidImagesCache = parseDyldSharedCache(invalidImages);
+  assert.equal(invalidImagesCache.status, 'malformed');
+  assert.equal(invalidImagesCache.complete, false);
+  assert.deepEqual(invalidImagesCache.reasons, ['images-table-range-invalid']);
+  assert.equal(authoritativeDyldSharedCacheBase(invalidImagesCache), null);
+
+  // imagesOffset > 0 with imagesCount = 0 (inconsistent pair)
+  const inconsistentImages = cacheFixture({ mappingCount: 1 });
+  new DataView(inconsistentImages.buffer).setUint32(24, 104, true);
+  assert.equal(parseDyldSharedCache(inconsistentImages).status, 'malformed');
+
+  // 2. slide-info: non-zero size with zero offset
+  const slideZeroOffset = cacheFixture({ mappingCount: 1 });
+  new DataView(slideZeroOffset.buffer).setBigUint64(64, 0x100n, true); // slideInfoSize
+  assert.equal(parseDyldSharedCache(slideZeroOffset).status, 'malformed');
+  assert.deepEqual(parseDyldSharedCache(slideZeroOffset).reasons, ['slide-info-range-invalid']);
+
+  // slide-info: extending past EOF
+  const slidePastEof = cacheFixture({ mappingCount: 1 });
+  const slidePastEofView = new DataView(slidePastEof.buffer);
+  slidePastEofView.setBigUint64(56, 0x100n, true); // slideInfoOffset
+  slidePastEofView.setBigUint64(64, BigInt(slidePastEof.byteLength), true); // slideInfoSize
+  assert.equal(parseDyldSharedCache(slidePastEof).status, 'malformed');
+
+  // 3. local-symbols: non-zero size with zero offset and out-of-file
+  const localSymZeroOffset = cacheFixture({ mappingCount: 1 });
+  new DataView(localSymZeroOffset.buffer).setBigUint64(80, 0x100n, true); // localSymbolsSize
+  assert.equal(parseDyldSharedCache(localSymZeroOffset).status, 'malformed');
+  assert.deepEqual(parseDyldSharedCache(localSymZeroOffset).reasons, ['local-symbols-range-invalid']);
+
+  const localSymPastEof = cacheFixture({ mappingCount: 1 });
+  const localSymPastEofView = new DataView(localSymPastEof.buffer);
+  localSymPastEofView.setBigUint64(72, BigInt(localSymPastEof.byteLength) + 1n, true); // localSymbolsOffset
+  localSymPastEofView.setBigUint64(80, 0x20n, true); // localSymbolsSize
+  assert.equal(parseDyldSharedCache(localSymPastEof).status, 'malformed');
+
+  // 4. Valid fixture whose declared ranges fit inside the buffer
+  const validRanges = cacheFixture({ mappingCount: 1 });
+  const validRangesView = new DataView(validRanges.buffer);
+  validRangesView.setUint32(24, 0x200, true);
+  validRangesView.setUint32(28, 1, true);
+  validRangesView.setBigUint64(56, 0x220n, true); // slideInfoOffset
+  validRangesView.setBigUint64(64, 0x20n, true); // slideInfoSize
+  validRangesView.setBigUint64(72, 0x240n, true); // localSymbolsOffset
+  validRangesView.setBigUint64(80, 0x20n, true); // localSymbolsSize
+  const validRangesCache = parseDyldSharedCache(validRanges);
+  assert.equal(validRangesCache.status, 'supported');
+  assert.equal(validRangesCache.complete, true);
+  assert.notEqual(authoritativeDyldSharedCacheBase(validRangesCache), null);
 }
 
 // SuperBlob and CodeDirectory parsing is big-endian, bounded, and structural only.

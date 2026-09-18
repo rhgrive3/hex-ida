@@ -22,7 +22,7 @@ test("issue #6281 - valid supervisor decisions pass validation", () => {
 
   const waitDecision = validateDevSupervisorDecision({
     type: "wait",
-    events: ["run.done"],
+    events: ["worker.completed"],
     reason: "waiting for completion",
   });
   assert.equal(waitDecision.type, "wait");

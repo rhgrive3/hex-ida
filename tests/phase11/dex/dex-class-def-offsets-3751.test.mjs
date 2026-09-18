@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseDex } from '../../../js/managed/dex/parser.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running DEX class_def offset regression #3751...');
 
@@ -54,7 +55,7 @@ function buildClassDefDex({ withReferences = false } = {}) {
     view.setUint32(pos + 4, size, true);
     view.setUint32(pos + 8, offset, true);
   }
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 function mutated(fieldOffset, value) {

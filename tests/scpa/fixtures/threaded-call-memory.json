@@ -1,0 +1,34 @@
+{
+  "schema": "scpa-owned-assembled-fixture/v1",
+  "source": "threaded-call-memory.s",
+  "binary": "threaded-call-memory.elf",
+  "sourceSha256": "e724d4cd28935f4c64f55da3e47968c4b29ff32487239bfd892d5e816957aae2",
+  "binarySha256": "4c76a22d4443d553eb907d9703692256839e5a41ff7dcb77b8ac4cc71dff8e9f",
+  "assembler": "LLVM 20.1.2 AArch64 C API",
+  "assemblerObjectSha256": "c787aceb927419d02e72f9259caaa6db05580a87c9cc4bde03628ae122e7ef45",
+  "container": "Minimal ELF wrapper; relocation-free assembler output and original function extents",
+  "rebuild": [
+    "timeout",
+    "30s",
+    "python",
+    "threaded-call-memory.build.py"
+  ],
+  "expectedFunctions": [
+    {
+      "name": "entry",
+      "start": "0x1000",
+      "end": "0x102c"
+    },
+    {
+      "name": "callee",
+      "start": "0x102c",
+      "end": "0x1034"
+    },
+    {
+      "name": "copy_word",
+      "start": "0x1034",
+      "end": "0x1040"
+    }
+  ],
+  "claim": "Test-owned assembled ELF fixture; not compiler-twin, native execution, competitor, browser, or physical-device evidence."
+}

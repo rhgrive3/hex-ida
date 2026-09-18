@@ -2,6 +2,12 @@ import { arm64ePointerAuthenticationMnemonics } from '../../../js/targets/archit
 
 export const ARM64E_PAC_DENOMINATOR_SCHEMA = 'arm64e-pac-denominator/v1';
 export const ARM64E_PAC_DENOMINATOR_ID = 'arm64e:a64+pac:encoding-discriminators:v1';
+// Capstone 5 cannot decode FEAT_PAuth_LR. Keep the v1 finite denominator frozen
+// to the decoder-supported PAC inventory, while explicitly partitioning the six
+// newer mnemonics into the dedicated #8353 decoder/effects regressions.
+export const ARM64E_PAUTH_LR_DEDICATED_MNEMONICS = Object.freeze([
+  'paciasppc','pacibsppc','retaasppc','retabsppc','retaasppcr','retabsppcr',
+]);
 
 const row = (id, mnemonic, mask, match, fields = []) => Object.freeze({ id, mnemonic, mask:mask >>> 0, match:match >>> 0, fields:Object.freeze(fields) });
 const TWO = Object.freeze([
@@ -63,7 +69,9 @@ export function validateArm64ePacDenominator() {
   const registry = arm64ePointerAuthenticationMnemonics();
   const rows = ARM64E_PAC_ENCODING_FAMILIES;
   if (new Set(rows.map(({id})=>id)).size !== rows.length) throw new Error('arm64e-pac-denominator-family-duplicate');
-  if (JSON.stringify([...new Set(rows.map(({mnemonic})=>mnemonic))].sort()) !== JSON.stringify([...registry].sort())) throw new Error('arm64e-pac-denominator-registry-drift');
+  const denominatorMnemonics = [...new Set(rows.map(({mnemonic})=>mnemonic))].sort();
+  const expectedProduction = [...denominatorMnemonics, ...ARM64E_PAUTH_LR_DEDICATED_MNEMONICS].sort();
+  if (JSON.stringify(expectedProduction) !== JSON.stringify([...registry].sort())) throw new Error('arm64e-pac-denominator-registry-drift');
   let encodingCaseCount=0;
   const observed = new Set();
   for (const candidate of arm64ePacEncodingCases()) {

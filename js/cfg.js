@@ -31,7 +31,7 @@ export const EDGE = {
  */
 export function buildCfg(model, opts) {
   const o = opts || {};
-  const rowOf = o.rowOfAddress || (() => null);
+  const rowOf = typeof o.rowOfAddress === 'function' ? o.rowOfAddress : (() => null);
   const blocks = model.basicBlocks || [];
   const insnByRow = new Map();
   for (const i of model.instructions || []) insnByRow.set(i.row, i);
@@ -116,6 +116,11 @@ export function buildCfg(model, opts) {
     }
     if (term.isReturn) { node.isExit = true; continue; }
 
+    if (term.isCall && term.branchTarget != null) {
+      if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
+      continue;
+    }
+
     const isUncond = term.isBranch && !term.isCall && !term.isConditional && !term.isReturn;
     if (term.branchTarget != null) {
       const trow = rowOf(term.branchTarget);
@@ -133,8 +138,8 @@ export function buildCfg(model, opts) {
       continue;
     }
     if (indirect) {
+      // An unresolved indirect transfer is an unknown boundary, not a proven exit (#5364).
       node.succ.push({ to: -1, kind: EDGE.UNKNOWN });
-      node.isExit = true;
       continue;
     }
     if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
@@ -147,7 +152,8 @@ export function buildCfg(model, opts) {
     }
   }
 
-  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), entryBlock);
+  const terminating = nodes.filter((n) => n.succ.some((s) => s.to < 0)).map((n) => n.index);
+  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), entryBlock, terminating);
   backEdges.push(...graph.backEdges.map((e) => ({ from: e.from, to: e.to })));
   const loopHeaders = new Set(graph.backEdges.map((e) => e.to));
   for (const n of nodes) n.isLoopHeader = loopHeaders.has(n.index);

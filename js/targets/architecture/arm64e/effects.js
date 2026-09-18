@@ -7,6 +7,7 @@ import {
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
 import { isArm64eAuthenticatedLoadInstruction, liftArm64eAuthenticatedLoadEffects } from './effects-memory.js';
+import { arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 export const ARM64E_EFFECTS_SEMANTIC_VERSION = '3';
 
@@ -32,6 +33,9 @@ const SIGN = Object.freeze({
   pacizb: { key: 'ib', modifier: 'zero' },
   pacdza: { key: 'da', modifier: 'zero' },
   pacdzb: { key: 'db', modifier: 'zero' },
+  // PACIAZ/PACIBZ are the HINT-space implicit-X30 zero-modifier members of the
+  // same architectural family as PACIZA/PACIZB; omitting them silently loses
+  // sign effects for valid A64 encodings.
   paciaz: { key: 'ia', destination: 'x30', modifier: 'zero' },
   pacibz: { key: 'ib', destination: 'x30', modifier: 'zero' },
   paciasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
@@ -87,6 +91,22 @@ const AUTH_EXCEPTION_RETURN = Object.freeze({
   eretab: { key: 'ib' },
 });
 
+
+const ENHANCED_SIGN = Object.freeze({
+  paciasppc: { key:'ia' },
+  pacibsppc: { key:'ib' },
+});
+
+const ENHANCED_RETURN_IMMEDIATE = Object.freeze({
+  retaasppc: { key:'ia' },
+  retabsppc: { key:'ib' },
+});
+
+const ENHANCED_RETURN_REGISTER = Object.freeze({
+  retaasppcr: { key:'ia' },
+  retabsppcr: { key:'ib' },
+});
+
 // This is the production pointer-authentication family registry.  Keep the
 // list beside the dispatch tables so denominator/audit code cannot silently
 // omit a newly supported alias.
@@ -99,6 +119,9 @@ const ARM64E_POINTER_AUTHENTICATION_MNEMONICS = Object.freeze([
   ...Object.keys(AUTH_CALL),
   ...Object.keys(AUTH_RETURN),
   ...Object.keys(AUTH_EXCEPTION_RETURN),
+  ...Object.keys(ENHANCED_SIGN),
+  ...Object.keys(ENHANCED_RETURN_IMMEDIATE),
+  ...Object.keys(ENHANCED_RETURN_REGISTER),
 ]);
 
 function mnemonicOf(decoded) {
@@ -176,22 +199,6 @@ function authenticatedTargetAlignmentFault() {
       targetSource: 'authenticated-target',
     },
   };
-}
-
-function instructionIdOf(decoded, context) {
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  return instructionId;
-}
-
-function originOf(decoded, context, instructionId) {
-  const origin = context?.origin ?? decoded?.origin;
-  if (origin != null) return origin;
-  return { instructionIds: [instructionId] };
-}
-
-function modeOf(decoded, context) {
-  return String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e';
 }
 
 function addressOf(decoded, context) {
@@ -329,11 +336,11 @@ function baseBundle(decoded, context, instructionId, operations, controlEffect, 
   return createMachineEffectBundle({
     instructionId,
     architectureId: 'arm64e',
-    mode: modeOf(decoded, context),
+    mode: arm64eEffectMode(decoded, context),
     operations,
     controlEffect,
     possibleFaults: extra.possibleFaults ?? [],
-    origin: originOf(decoded, context, instructionId),
+    origin: arm64eEffectOrigin(decoded, context, instructionId),
     completeness,
     ...(extra.unknownEffects == null ? {} : { unknownEffects: extra.unknownEffects }),
     metadata: {
@@ -558,7 +565,7 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
       completeness = 'partial';
       unknownEffects = { categories: ['registers'], reason, detail: { registerId: 'x30' } };
     } else {
-      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, address + 4n), {
+      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, BigInt.asUintN(POINTER_BITS, address + 4n)), {
         stateKind: 'link-register',
         source: 'next-instruction-address',
       });
@@ -641,6 +648,157 @@ function authenticateExceptionReturn(decoded, context, instructionId, descriptor
   });
 }
 
+
+function enhancedReturnAddressSign(decoded, context, instructionId, descriptor) {
+  const operands = operandList(decoded);
+  if (operands.length !== 0) {
+    return partialMissing(decoded, context, instructionId, 'enhanced return-address sign operand shape is invalid');
+  }
+  const operations = [];
+  const pointer = readRegister(operations, 'x30', `${instructionId}.pointer`, POINTER_BITS, {
+    stateKind:'pointer-authentication-pointer',
+  });
+  const modifier = readRegister(operations, 'sp', `${instructionId}.modifier`, POINTER_BITS, {
+    implicit:true, stateKind:'pointer-authentication-modifier',
+  });
+  const secondModifier = readRegister(operations, 'pc', `${instructionId}.second-modifier`, POINTER_BITS, {
+    implicit:true, stateKind:'pointer-authentication-program-counter-second-modifier',
+  });
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
+  const result = tmp(`${instructionId}.sign.result`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId:'arm64e.pointer.sign',
+    inputs:[pointer, modifier, secondModifier, keyValue, architectureState],
+    output:result,
+    registersRead:['x30', 'sp', 'pc', keyId, PAUTH_STATE_ID],
+    metadata:{
+      transform:'sign', use:'return-address', keyIdentity:keyId,
+      modifier:{ kind:'register', registerId:'sp' },
+      pauthLrSecondModifier:{ kind:'program-counter', registerId:'pc', unconditional:true },
+      architectureStateInput:PAUTH_STATE_ID,
+      requiredFeature:'FEAT_PAuth_LR',
+      implicitBti:true,
+      cryptographicAlgorithm:'not-modelled',
+    },
+  }));
+  writeRegister(operations, 'x30', result, { transform:'sign', keyIdentity:keyId });
+  return baseBundle(decoded, context, instructionId, operations, { kind:'fallthrough' }, 'exact-with-intrinsic', {
+    metadata:{
+      transform:'sign', destinationRegister:'x30', keyIdentity:keyId,
+      modifier:{ kind:'register', registerId:'sp' },
+      pauthLrSecondModifier:{ kind:'program-counter', registerId:'pc', unconditional:true },
+      architectureStateInput:PAUTH_STATE_ID,
+      requiredFeature:'FEAT_PAuth_LR',
+      implicitBti:true,
+    },
+  });
+}
+
+function immediatePauthLrOffset(decoded) {
+  const explicit = decoded?.pauthLrPcOffsetBytes;
+  if (explicit != null) {
+    try {
+      const value = BigInt(explicit);
+      if (value >= 0n && value <= 262140n && (value & 3n) === 0n) return value;
+    } catch { /* fall through to operand-derived target */ }
+  }
+  const address = addressOf(decoded, {});
+  const operands = operandList(decoded);
+  if (address == null || operands.length !== 1 || typeof operands[0] !== 'string') return null;
+  const text = operands[0].trim().replace(/^#/, '');
+  try {
+    const target = BigInt(text);
+    const offset = address - target;
+    return offset >= 0n && offset <= 262140n && (offset & 3n) === 0n ? offset : null;
+  } catch { return null; }
+}
+
+function enhancedAuthenticatedReturn(decoded, context, instructionId, descriptor, variant) {
+  const operands = operandList(decoded);
+  const operations = [];
+  const target = readRegister(operations, 'x30', `${instructionId}.target`, POINTER_BITS, {
+    stateKind:'authenticated-control-target',
+  });
+  const modifier = readRegister(operations, 'sp', `${instructionId}.modifier`, POINTER_BITS, {
+    implicit:true, stateKind:'pointer-authentication-modifier',
+  });
+
+  let secondModifier;
+  let secondModifierMetadata;
+  let secondModifierRegister = null;
+  if (variant === 'immediate') {
+    if (operands.length !== 1) {
+      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return immediate operand shape is invalid', { control:true, fault:true });
+    }
+    const address = addressOf(decoded, context);
+    const offset = immediatePauthLrOffset(decoded);
+    if (address == null || offset == null) {
+      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return PC-relative modifier is unavailable', { control:true, fault:true });
+    }
+    const pc = readRegister(operations, 'pc', `${instructionId}.pc`, POINTER_BITS, {
+      implicit:true, stateKind:'program-counter',
+    });
+    const offsetValue = createBitVectorValue(POINTER_BITS, offset);
+    secondModifier = tmp(`${instructionId}.second-modifier`, POINTER_BITS);
+    operations.push(intrinsicOperation({
+      intrinsicId:'arm64.address.pc-minus-offset',
+      inputs:[pc, offsetValue],
+      output:secondModifier,
+      registersRead:['pc'],
+      metadata:{ operation:'subtract', encodedOffsetBytes:offset.toString(), requiredFeature:'FEAT_PAuth_LR' },
+    }));
+    secondModifierRegister = 'pc';
+    secondModifierMetadata = { kind:'pc-minus-offset', registerId:'pc', encodedOffsetBytes:offset.toString() };
+  } else {
+    if (operands.length !== 1) {
+      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return register operand shape is invalid', { control:true, fault:true });
+    }
+    const registerId = authenticatedControlModifierRegisterId(operands[0]);
+    if (!registerId) {
+      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return second-modifier register is invalid', { control:true, fault:true });
+    }
+    secondModifier = readRegister(operations, registerId, `${instructionId}.second-modifier`, POINTER_BITS, {
+      stateKind:'pointer-authentication-second-modifier',
+    });
+    secondModifierRegister = registerId;
+    secondModifierMetadata = { kind:'register', registerId };
+  }
+
+  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
+  const authenticatedTarget = tmp(`${instructionId}.authenticated-target`, POINTER_BITS);
+  operations.push(intrinsicOperation({
+    intrinsicId:'arm64e.pointer.authenticate',
+    inputs:[target, modifier, secondModifier, keyValue, architectureState],
+    output:authenticatedTarget,
+    registersRead:['x30', 'sp', secondModifierRegister, keyId, PAUTH_STATE_ID].filter(Boolean),
+    metadata:{
+      transform:'authenticate', use:'control-target', keyIdentity:keyId,
+      modifier:{ kind:'register', registerId:'sp' },
+      pauthLrSecondModifier:secondModifierMetadata,
+      targetRegister:'x30', architectureStateInput:PAUTH_STATE_ID,
+      requiredFeature:'FEAT_PAuth_LR', authThenBranch:true,
+      cryptographicAlgorithm:'not-modelled',
+    },
+  }));
+
+  return baseBundle(decoded, context, instructionId, operations, {
+    kind:'return', target:authenticatedTarget,
+  }, 'exact-with-intrinsic', {
+    possibleFaults:[
+      authFault(mnemonicOf(decoded), keyId, 'control-target'),
+      authenticatedTargetAlignmentFault(),
+    ],
+    metadata:{
+      transform:'authenticate', authenticatedControlTransfer:true, indirect:true, controlKind:'return',
+      targetRegister:'x30', keyIdentity:keyId,
+      modifier:{ kind:'register', registerId:'sp' },
+      pauthLrSecondModifier:secondModifierMetadata,
+      architectureStateInput:PAUTH_STATE_ID,
+      requiredFeature:'FEAT_PAuth_LR', authThenBranch:true,
+    },
+  });
+}
+
 export function isArm64ePointerAuthenticationInstruction(decoded) {
   const mnemonic = mnemonicOf(decoded);
   return mnemonic === 'pacga'
@@ -650,7 +808,10 @@ export function isArm64ePointerAuthenticationInstruction(decoded) {
     || Object.hasOwn(AUTH_BRANCH, mnemonic)
     || Object.hasOwn(AUTH_CALL, mnemonic)
     || Object.hasOwn(AUTH_RETURN, mnemonic)
-    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic);
+    || Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)
+    || Object.hasOwn(ENHANCED_SIGN, mnemonic)
+    || Object.hasOwn(ENHANCED_RETURN_IMMEDIATE, mnemonic)
+    || Object.hasOwn(ENHANCED_RETURN_REGISTER, mnemonic);
 }
 
 export function arm64ePointerAuthenticationMnemonics() {
@@ -665,7 +826,7 @@ export function liftArm64eEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
   if (isArm64eAuthenticatedLoadInstruction(decoded)) return liftArm64eAuthenticatedLoadEffects(decoded, context);
   if (!isArm64ePointerAuthenticationInstruction(decoded)) return null;
-  const instructionId = instructionIdOf(decoded, context);
+  const instructionId = arm64eEffectInstructionId(decoded, context);
 
   if (Object.hasOwn(SIGN, mnemonic)) return transformPointer(decoded, context, instructionId, SIGN[mnemonic], 'sign');
   if (Object.hasOwn(AUTH, mnemonic)) return transformPointer(decoded, context, instructionId, AUTH[mnemonic], 'authenticate');
@@ -675,6 +836,9 @@ export function liftArm64eEffects(decoded, context = {}) {
   if (Object.hasOwn(AUTH_CALL, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_CALL[mnemonic], 'call');
   if (Object.hasOwn(AUTH_RETURN, mnemonic)) return authenticateControlTarget(decoded, context, instructionId, AUTH_RETURN[mnemonic], 'return');
   if (Object.hasOwn(AUTH_EXCEPTION_RETURN, mnemonic)) return authenticateExceptionReturn(decoded, context, instructionId, AUTH_EXCEPTION_RETURN[mnemonic]);
+  if (Object.hasOwn(ENHANCED_SIGN, mnemonic)) return enhancedReturnAddressSign(decoded, context, instructionId, ENHANCED_SIGN[mnemonic]);
+  if (Object.hasOwn(ENHANCED_RETURN_IMMEDIATE, mnemonic)) return enhancedAuthenticatedReturn(decoded, context, instructionId, ENHANCED_RETURN_IMMEDIATE[mnemonic], 'immediate');
+  if (Object.hasOwn(ENHANCED_RETURN_REGISTER, mnemonic)) return enhancedAuthenticatedReturn(decoded, context, instructionId, ENHANCED_RETURN_REGISTER[mnemonic], 'register');
   return null;
 }
 

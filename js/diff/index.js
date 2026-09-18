@@ -10,11 +10,13 @@ function semanticSummary(before,after) {
   const addedCalls=setDiff(after.calls,before.calls), removedCalls=setDiff(before.calls,after.calls);
   const addedWrites=setDiff(a.writes,b.writes), removedWrites=setDiff(b.writes,a.writes);
   const beforeOps=new Set(b.operations||[]), afterOps=new Set(a.operations||[]);
+  const addedOperations=setDiff(afterOps,beforeOps), removedOperations=setDiff(beforeOps,afterOps);
   const clampBefore=[...beforeOps].some((x)=>/clamp|min|max|saturat/i.test(x));
   const clampAfter=[...afterOps].some((x)=>/clamp|min|max|saturat/i.test(x));
   const tags=[]; if (!clampBefore && clampAfter) tags.push('clamp-introduced'); if (clampBefore && !clampAfter) tags.push('clamp-removed');
+  if (addedOperations.length||removedOperations.length) tags.push('operations-changed');
   if (addedConstants.length) tags.push('constants-added'); if (addedCalls.length) tags.push('calls-added'); if (addedWrites.length||removedWrites.length) tags.push('write-set-changed');
-  return { changed:!!(tags.length||removedConstants.length||removedCalls.length), tags, addedConstants, removedConstants, addedCalls, removedCalls, addedWrites, removedWrites };
+  return { changed:!!(tags.length||removedConstants.length||removedCalls.length), tags, addedOperations, removedOperations, addedConstants, removedConstants, addedCalls, removedCalls, addedWrites, removedWrites };
 }
 
 function statusFor(changeType) {

@@ -19,12 +19,26 @@ export function admitBoundedProposalState(values) {
 let binaryBytes = 0;
 let nodes = 0;
 const seen = new WeakSet();
-const spendNode = () => {
-nodes += 1;
-if (nodes > PROPOSAL_STATE_MAX_NODES) {
+const spendNodes = (count = 1) => {
+if (!Number.isSafeInteger(count) || count < 0 || count > PROPOSAL_STATE_MAX_NODES - nodes) {
 throw new AIError('tool_failed',
 'Proposal state exceeds the admitted snapshot work budget and cannot be snapshotted or fingerprinted safely.');
 }
+nodes += count;
+};
+const ownDataEntries = (value) => {
+const entries = [];
+for (const key of Reflect.ownKeys(value)) {
+if (typeof key === 'symbol') {
+throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+}
+const descriptor = Object.getOwnPropertyDescriptor(value, key);
+if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+}
+entries.push([key, descriptor.value]);
+}
+return entries;
 };
 const visit = (value, depth) => {
 if (value === null || typeof value !== 'object') return;
@@ -32,9 +46,13 @@ if (depth > PROPOSAL_STATE_MAX_DEPTH) {
 throw new AIError('tool_failed',
 'Proposal state is nested beyond the admitted snapshot depth and cannot be snapshotted safely.');
 }
-spendNode();
+spendNodes();
 if (seen.has(value)) return;
 seen.add(value);
+const prototype = Object.getPrototypeOf(value);
+if (prototype !== Object.prototype && prototype !== null && !SUPPORTED_PROPOSAL_STATE_PROTOTYPES.has(prototype)) {
+throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be snapshotted safely.');
+}
 const binary = intrinsicBinaryContainer(value);
 if (binary) {
 binaryBytes += binary.byteLength || 0;
@@ -44,24 +62,36 @@ throw new AIError('tool_failed',
 }
 return;
 }
-if (value instanceof Map) {
-for (const [key, item] of value) { visit(key, depth + 1); visit(item, depth + 1); }
+const entries = ownDataEntries(value);
+if (prototype === Map.prototype) {
+for (const [key, item] of MAP_ENTRIES.call(value)) {
+spendNodes();
+visit(key, depth + 1);
+visit(item, depth + 1);
+}
 return;
 }
-if (value instanceof Set) {
-for (const item of value) visit(item, depth + 1);
+if (prototype === Set.prototype) {
+for (const item of SET_VALUES.call(value)) {
+spendNodes();
+visit(item, depth + 1);
+}
 return;
 }
 if (Array.isArray(value)) {
-if (nodes + value.length > PROPOSAL_STATE_MAX_NODES) spendNode();
-for (let i = 0; i < value.length; i += 1) { spendNode(); visit(value[i], depth + 1); }
+spendNodes(value.length);
+for (const [, item] of entries) visit(item, depth + 1);
 return;
 }
-const keys = Object.keys(value);
-if (nodes + keys.length > PROPOSAL_STATE_MAX_NODES) spendNode();
-for (const key of keys) { spendNode(); visit(value[key], depth + 1); }
+spendNodes(entries.length);
+for (const [, item] of entries) visit(item, depth + 1);
 };
+try {
 for (const value of values) visit(value, 0);
+} catch (error) {
+if (error instanceof AIError) throw error;
+throw new AIError('tool_failed', 'Proposal state cannot be admitted safely.');
+}
 }
 export function rejectUnstableProposalState(value, seen = new Set()) {
 if (value === null || typeof value !== 'object') return;

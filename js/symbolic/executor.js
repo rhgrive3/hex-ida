@@ -1,3 +1,7 @@
+import { prepareCanonicalComparisonCarrierBindings } from "../ir-core.js";
+import { prepareMemoryObservations, observeTerminalMemory } from './memory/observations.js';
+import { validateExecutionContract } from './memory/execution-contract.js';
+import { readReturnControl, observeReturnControl } from './memory/terminal-control.js';
 /*
  * symbolic/executor.js — bounded light symbolic execution over Semantic IR.
  *
@@ -6,18 +10,16 @@
  */
 import { OP, MK, COND, mayAliasProvenance } from '../ir.js';
 import { valueBefore } from '../dataflow-semantic.js';
-import {
-  ByteMemory,
-  createByteMemory,
-  readCanonicalMemory,
-  MEMORY_RESULT_STATUS,
-} from './memory/byte-memory.js';
-import {
-  canonicalMemoryForwardingContextForLoad,
-  isCanonicalExactMemoryForwarding,
-} from '../semantics/memoryssa/queries.js';
-import { TaintStore, taintExpression } from './taint/flow.js';
-import { TAINT_STATUS, joinTaint, unknownTaint } from './taint/lattice.js';
+import { createByteMemory, forkByteMemoryForExecution } from './memory/byte-memory.js';
+import { QueryFailure, monotonicNow, boundedLimit } from './memory/query-state.js';
+import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar, foldMemoryScalarExpression } from './translate/memory.js';
+import { createBv, createConnective, computeStructuralHash } from './expr/index.js';
+import { lowerDirectBranchCondition } from './translate/scalar.js';
+
+import { createExecutionCapture } from './memory/execution-snapshot.js';
+import { semanticValueIdentity, registerExecutionValue } from './memory/value-identity.js';
+
+const BYTE_EXECUTION_OPS = new Set([OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP,OP.SEL,OP.BFX,OP.BFI,OP.LOAD,OP.STORE,OP.ADDR,OP.CALL,OP.RET,OP.BR,OP.CBR,OP.PHI,OP.CLOBBER,OP.UNKNOWN]);
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
 
@@ -35,61 +37,24 @@ export function symbolicField(location, name) {
 
 function c(value) { return { kind: SYM.CONST, value: BigInt(value) }; }
 
-/*
- * The legacy executor predates the solver-neutral Expr DAG.  ByteMemory is
- * intentionally expression-adapter based so this consumer can retain the
- * legacy public shape while sharing the same byte/alias/budget semantics as
- * the canonical translator.
- */
-const LEGACY_MEMORY_EXPRESSION = Object.freeze({
-  constant(width, value) {
-    const bits = widthOf(width, 8);
-    return { ...c(BigInt.asUintN(bits, BigInt(value))), bits };
-  },
-  unknown(width, reason, detail = null) {
-    return { ...unknown(reason, detail), bits: widthOf(width, 8) };
-  },
-  fresh(width, name, meta = {}) {
-    return { ...symbolic(name, meta), bits: widthOf(width, 8) };
-  },
-  isConstant(value) { return value?.kind === SYM.CONST && typeof value.value === 'bigint'; },
-  isUnknown(value) { return value?.kind === SYM.UNKNOWN; },
-  constantValue(value) { return value?.kind === SYM.CONST && typeof value.value === 'bigint' ? value.value : null; },
-  widthOf(value) {
-    if (typeof value?.bits === 'number' && Number.isSafeInteger(value.bits) && value.bits > 0) return value.bits;
-    // Legacy argument/field symbols are machine integers even though older
-    // callers did not annotate their width.  Keep their 64-bit ABI default so
-    // byte stores can preserve symbolic bytes instead of manufacturing a hole.
-    return value?.kind === SYM.SYMBOL ? 64 : null;
-  },
-  extract(value, high, low) {
-    if (value?.kind === SYM.CONST) return { ...c((BigInt(value.value) >> BigInt(low)) & ((1n << BigInt(high - low + 1)) - 1n)), bits: high - low + 1 };
-    return { kind: SYM.OP, op: `extract[${high}:${low}]`, args: [value], bits: high - low + 1 };
-  },
-  concat(left, right) {
-    if (left?.kind === SYM.CONST && right?.kind === SYM.CONST) {
-      const rightBits = typeof right.bits === 'number' ? right.bits : 8;
-      return { ...c((BigInt(left.value) << BigInt(rightBits)) | BigInt(right.value)), bits: (left.bits || 8) + rightBits };
-    }
-    return { kind: SYM.OP, op: 'concat', args: [left, right], bits: (left?.bits || 0) + (right?.bits || 0) };
-  },
-  structuralKey(value) {
-    if (!value) return '?';
-    if (value.kind === SYM.CONST) return `const:${value.value}`;
-    if (value.kind === SYM.SYMBOL) return `symbol:${value.name}`;
-    if (value.kind === SYM.UNKNOWN) return `unknown:${value.reason}`;
-    if (value.kind === SYM.OP) return `${value.op}(${(value.args || []).map((arg) => this.structuralKey(arg)).join(',')})`;
-    if (value.kind === SYM.ITE) return `ite(${this.structuralKey(value.condition)},${this.structuralKey(value.then)},${this.structuralKey(value.else)})`;
-    return JSON.stringify(value);
-  },
-});
-
 // Bit width is a semantic authority: only primitive finite safe-integer numbers
 // may define it. Structured values must not launder into a canonical width via
 // Number() coercion (e.g. Number(['8']) === 8).
-function widthOf(bits, fallback = 64) {
-  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits < 1) return fallback;
-  return Math.max(1, Math.min(64, bits));
+const MAX_EXECUTOR_WIDTH = 64;
+function widthSignal(bits) {
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits < 1) return null;
+  if (bits > MAX_EXECUTOR_WIDTH) return { unsupportedWidth: bits };
+  return { width: bits };
+}
+function resolveWidth(candidates) {
+  for (const bits of candidates) {
+    const signal = widthSignal(bits);
+    if (signal) return signal;
+  }
+  return { width: MAX_EXECUTOR_WIDTH };
+}
+function unsupportedWidth(resolved) {
+  return resolved.unsupportedWidth == null ? null : unknown('unsupported-width', { bits: resolved.unsupportedWidth });
 }
 function unknown(reason, detail) { return { kind: SYM.UNKNOWN, reason, detail: detail || null }; }
 function op(name, ...args) {
@@ -110,25 +75,39 @@ function op(name, ...args) {
 }
 
 function binOp(name, a, b, bits = 64) {
-  const width = widthOf(bits);
+  const resolved = resolveWidth([bits]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  const width = resolved.width;
   if (a && b && a.kind === SYM.CONST && b.kind === SYM.CONST) {
     const av = a.value, bv = b.value;
     try {
       let value;
+      // Shift amounts wrap modulo the width (nonnegative). `& (width - 1)` is
+      // only equivalent for power-of-two widths, so a 24-bit shift by 8 would
+      // otherwise collapse to a shift by 0 (#4621).
+      const amount = ((bv % BigInt(width)) + BigInt(width)) % BigInt(width);
       if (name === 'add') value = av + bv;
       else if (name === 'sub') value = av - bv;
       else if (name === 'mul') value = av * bv;
       else if (name === 'and') value = av & bv;
       else if (name === 'or' || name === 'orr') value = av | bv;
       else if (name === 'xor' || name === 'eor') value = av ^ bv;
-      else if (name === 'shl') value = av << (bv & BigInt(width - 1));
-      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv & BigInt(width - 1));
-      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv & BigInt(width - 1));
+      else if (name === 'shl') value = av << amount;
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> amount;
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> amount;
       else return op(name, a, b);
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
   }
     if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+  // The symbolic amount is normalized by masking with `width - 1`, which is
+  // exact only for power-of-two widths. For any other canonical width the
+  // masked expression would disagree with the constant path, so fail closed
+  // instead of minting a wrong expression (#4621).
+  if ((width & (width - 1)) !== 0) {
+    return unknown('shift-amount-normalization-unsupported', { bits: width });
+  }
   const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))], bits:width };
   return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
 }
@@ -139,7 +118,15 @@ return { kind: SYM.OP, op: name, args: [a, b], bits:width };
 }
 
 function cmp(name, a, b, options = {}) {
-  const bits = widthOf(options.bits);
+  const resolved = resolveWidth([a?.sort?.width, b?.sort?.width, options.bits]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  const bits = resolved.width;
+  if (a?.sort || b?.sort) {
+    const left = a.sort ? a : createBv(bits, a.value);
+    const right = b.sort ? b : createBv(bits, b.value);
+    return translateMemoryScalar({ op: OP.CMP, cond: name, signed: options.signed }, [left, right], bits);
+  }
   const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
@@ -159,12 +146,14 @@ function conditionIdentity(condition) {
 }
 function negate(condition) {
   if (!condition) return unknown('missing-condition');
+  if (condition.sort) return createConnective('not', condition);
   if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
   const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
 }
 function constraintAllowed(existing, condition) {
+  if (condition?.sort) return !(condition.kind === 'const' && condition.sort.kind === 'bool' && condition.value === false);
   if (condition?.kind === SYM.CONST && condition.boolean) return condition.value !== 0n;
   const key = conditionIdentity(condition);
   for (const prior of existing || []) {
@@ -176,6 +165,7 @@ function constraintAllowed(existing, condition) {
 
 export function expressionText(e) {
   if (!e) return '?';
+  if (e.sort && e.kind !== 'const') return `Expr<${e.sort.kind}${e.sort.width ?? ''}>#${computeStructuralHash(e)}`;
   if (e.kind === SYM.CONST) return e.value.toString();
   if (e.kind === SYM.SYMBOL) return e.name;
   if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
@@ -193,12 +183,15 @@ export function expressionText(e) {
 }
 
 function cloneState(s) {
+  s.byteMemory?.chargeExecution(1, s.values.size + (s.scalarCache?.size ?? 0) + s.constraints.length + s.branches.length + s.touchedFields.length + s.visits.size);
   return {
     block: s.block,
     prevBlock: s.prevBlock,
     memory: new Map(s.memory),
-    byteMemory: s.byteMemory ? s.byteMemory.clone() : null,
-    taint: s.taint ? s.taint.clone() : null,
+    byteMemory: s.byteMemory?.fork(),
+    scalarCache: new Map(s.scalarCache), inputExpressions: s.inputExpressions, valueIdentities: s.valueIdentities, semanticIdentities: s.semanticIdentities,
+    taint: s.taint, control: s.control,
+    enforceExecutionOrder: s.enforceExecutionOrder, executingInstruction: null,
     values: new Map(s.values),
     constraints: s.constraints.slice(),
     branches: s.branches.slice(),
@@ -240,148 +233,6 @@ function locationKey(loc) {
   return loc.key || (loc.kind === MK.GLOBAL && loc.address != null ? 'global:' + loc.address.toString(16) : null);
 }
 
-function strictMemoryEnabled(opts = {}) {
-  return opts.symbolicMemory === true
-    || opts.symbolicMemory instanceof ByteMemory
-    || (opts.symbolicMemory && typeof opts.symbolicMemory === 'object' && !Array.isArray(opts.symbolicMemory))
-    || opts.strictMemory === true
-    || opts.memoryMode === 'byte'
-    || opts.memoryModel === 'byte'
-    || opts.byteMemory instanceof ByteMemory
-    || opts.byteMemory != null
-    || opts.memory instanceof ByteMemory
-    || (opts.memory != null && typeof opts.memory === 'object')
-    || opts.memoryInitial != null
-    || opts.memorySsa != null;
-}
-
-function memoryWidthBits(inst, fallback = 64) {
-  const candidates = [
-    inst?.extra?.widthBits,
-    inst?.extra?.memoryAccess?.widthBits,
-    inst?.widthBits,
-    inst?.extra?.size != null ? Number(inst.extra.size) * 8 : null,
-    inst?.loc?.size != null ? Number(inst.loc.size) * 8 : null,
-    inst?.addr?.size != null ? Number(inst.addr.size) * 8 : null,
-    inst?.dst?.bits,
-    fallback,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0 && candidate % 8 === 0) return candidate;
-  }
-  return fallback;
-}
-
-function memoryEndian(inst, opts = {}) {
-  const candidates = [
-    inst?.extra?.memoryAccess?.endian,
-    inst?.extra?.endian,
-    inst?.memoryAccess?.endian,
-    inst?.endian,
-    opts.memoryEndian,
-    opts.endian,
-    'little',
-  ];
-  return candidates.find((candidate) => candidate === 'little' || candidate === 'big') || 'little';
-}
-
-function memoryQualifiers(inst) {
-  const access = inst?.extra?.memoryAccess ?? inst?.memoryAccess ?? {};
-  return {
-    volatile: inst?.volatile === true || inst?.extra?.volatile === true || access.volatile === true || access.isVolatile === true,
-    atomic: inst?.atomic === true || inst?.extra?.atomic === true || access.atomic === true || access.isAtomic === true,
-    barrier: inst?.barrier === true || inst?.extra?.barrier === true || access.barrier === true,
-    ordering: inst?.ordering ?? inst?.extra?.ordering ?? access.ordering ?? null,
-  };
-}
-
-function memoryAliasRelation(inst, opts = {}) {
-  const relation = inst?.memoryAliasRelation
-    ?? inst?.extra?.aliasRelation
-    ?? inst?.extra?.memoryAliasRelation
-    ?? opts.memoryAliasRelation
-    ?? null;
-  return ['must', 'no', 'may', 'unknown'].includes(relation) ? relation : null;
-}
-
-function bigintAddress(value) {
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) {
-    try { return BigInt(value.trim()); } catch { return null; }
-  }
-  return null;
-}
-
-function memoryAddressExpression(inst, state, ir, opts, memo) {
-  const addr = inst?.addr;
-  if (addr?.base) {
-    let expression = evalValue(addr.base, state, ir, opts, memo, new Set());
-    if (addr.index) {
-      const index = evalValue(addr.index, state, ir, opts, memo, new Set());
-      const scale = typeof addr.scale === 'number' && Number.isSafeInteger(addr.scale) && addr.scale > 0 ? addr.scale : 0;
-      const scaled = scale > 0 ? binOp('shl', index, c(BigInt(scale)), widthOf(expression?.bits, 64)) : index;
-      expression = binOp('add', expression, scaled, widthOf(expression?.bits, widthOf(index?.bits, 64)));
-    }
-    const displacement = bigintAddress(addr.disp ?? 0);
-    if (displacement != null && displacement !== 0n) {
-      expression = binOp('add', expression, c(displacement), widthOf(expression?.bits, 64));
-    }
-    return expression;
-  }
-  const location = inst?.loc;
-  const concrete = bigintAddress(location?.address);
-  if (concrete != null) return c(concrete);
-  const key = locationKey(location);
-  if (key && location?.kind !== MK.UNKNOWN) return symbolic(`memory:${key}`, { source: 'symbolic-memory-address', location });
-  return unknown('unknown-memory-address', { instruction: inst?.id ?? null });
-}
-
-function canonicalMemoryLoad(inst, opts = {}) {
-  const qualifiers = memoryQualifiers(inst);
-  if (qualifiers.volatile || qualifiers.atomic || qualifiers.barrier || qualifiers.ordering != null) {
-    return { status: MEMORY_RESULT_STATUS.UNKNOWN, reason: qualifiers.atomic || qualifiers.ordering != null ? 'atomic-memory-barrier' : 'volatile-memory-barrier' };
-  }
-  const attached = inst?.memoryForwarding ?? null;
-  const context = canonicalMemoryForwardingContextForLoad(attached, inst,
-    inst?.memoryForwardingContext ?? inst?.extra?.memoryForwardingContext ?? opts.memoryForwardingContext ?? {});
-  if (attached != null) {
-    if (isCanonicalExactMemoryForwarding(attached, context) && attached.value != null) {
-      return { status: MEMORY_RESULT_STATUS.EXACT, value: attached.value, widthBits: Number(attached.widthBits), endian: attached.endian, fact: attached };
-    }
-    return { status: MEMORY_RESULT_STATUS.UNKNOWN, reason: attached.reason || 'missing-canonical-memory-proof', fact: attached };
-  }
-  const memorySsa = opts.memorySsa ?? null;
-  if (!memorySsa) return null;
-  let useId = inst?.memorySsaUseId
-    ?? inst?.extra?.memorySsaUseId
-    ?? inst?.memorySsaUse?.id
-    ?? inst?.extra?.memorySsaUse?.id
-    ?? null;
-  const byInstruction = opts.memorySsaUseByInstruction ?? opts.memorySsaUses ?? null;
-  if (useId == null && byInstruction instanceof Map) useId = byInstruction.get(inst?.id) ?? null;
-  if (useId == null && byInstruction && typeof byInstruction === 'object') useId = byInstruction[inst?.id] ?? null;
-  if (useId == null) {
-    const candidates = (memorySsa.uses || []).filter((use) => String(use?.sourceEntityId ?? '') === String(inst?.id ?? ''));
-    if (candidates.length === 1) useId = candidates[0].id;
-  }
-  if (useId == null) return { status: MEMORY_RESULT_STATUS.UNKNOWN, reason: 'memoryssa-use-identity-missing' };
-  const queried = readCanonicalMemory(memorySsa, useId, {
-    context,
-    signal: opts.signal,
-    budget: opts.memoryBudget,
-    maxIterations: opts.memoryMaxIterations,
-    ir: opts.memoryIr,
-    cfg: opts.memoryCfg,
-    sourceByEntityId: opts.sourceByEntityId,
-    widthBits: memoryWidthBits(inst),
-  });
-  if (queried.exact && queried.fact) {
-    return { status: MEMORY_RESULT_STATUS.EXACT, value: queried.fact.value, widthBits: Number(queried.fact.widthBits), endian: queried.fact.endian, fact: queried.fact };
-  }
-  return { status: queried.status || MEMORY_RESULT_STATUS.UNKNOWN, reason: queried.expression?.reason || queried.fact?.reason || 'canonical-memory-forwarding-not-exact', fact: queried.fact };
-}
-
 function phiValue(inst, state) {
   if (!inst || !inst.incoming || !inst.incoming.length) return null;
   const hit = inst.incoming.find((x) => x.from === state.prevBlock);
@@ -389,6 +240,7 @@ function phiValue(inst, state) {
 }
 
 function loadExpression(inst, state, opts) {
+  if (state.byteMemory) return translateMemoryAccess(inst, state, opts);
   if (!inst || !inst.loc) return unknown('missing-load-location', { instruction: inst && inst.id });
   const key = locationKey(inst.loc);
   if (key && state.memory.has(key)) {
@@ -399,142 +251,9 @@ function loadExpression(inst, state, opts) {
   return symbolicField(inst.loc, fieldName(opts, inst.loc));
 }
 
-function strictLoadExpression(inst, state, ir, opts, memo) {
-  const canonical = canonicalMemoryLoad(inst, opts);
-  if (canonical) {
-    if (canonical.status === MEMORY_RESULT_STATUS.EXACT && canonical.value != null) {
-      return LEGACY_MEMORY_EXPRESSION.constant(canonical.widthBits || memoryWidthBits(inst), canonical.value);
-    }
-    return unknown(canonical.reason || 'canonical-memory-forwarding-not-exact', {
-      instruction: inst?.id ?? null,
-      status: canonical.status,
-    });
-  }
-  if (!state.byteMemory) return unknown('symbolic-memory-state-missing', { instruction: inst?.id ?? null });
-  const widthBits = memoryWidthBits(inst, 8);
-  const address = memoryAddressExpression(inst, state, ir, opts, memo);
-  const loaded = state.byteMemory.read(address, widthBits, {
-    endian: memoryEndian(inst, opts),
-    aliasRelation: memoryAliasRelation(inst, opts),
-    ...memoryQualifiers(inst),
-  });
-  if (loaded.status === MEMORY_RESULT_STATUS.EXACT && loaded.expression) return loaded.expression;
-  return unknown(loaded.reason || `symbolic-memory-${loaded.status}`, loaded.detail || {
-    instruction: inst?.id ?? null,
-    status: loaded.status,
-  });
-}
-
-function rememberLegacyStore(inst, state, value) {
-  if (!inst?.loc) return;
-  const key = locationKey(inst.loc);
-  if (!key) return;
-  for (const [knownKey, remembered] of Array.from(state.memory.entries())) {
-    const knownLocation = remembered && remembered.location ? remembered.location : null;
-    if (!knownLocation || mayAliasProvenance(knownLocation, inst.loc)) state.memory.delete(knownKey);
-  }
-  state.memory.set(key, { location: inst.loc, value });
-}
-
-function strictStore(inst, state, ir, opts, memo) {
-  if (!state.byteMemory) return { status: MEMORY_RESULT_STATUS.UNKNOWN, reason: 'symbolic-memory-state-missing' };
-  const widthBits = memoryWidthBits(inst, 8);
-  const address = memoryAddressExpression(inst, state, ir, opts, memo);
-  const value = inst.args?.[0]
-    ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set())
-    : unknown('missing-store-value');
-  const stored = state.byteMemory.store(address, value, {
-    widthBits,
-    endian: memoryEndian(inst, opts),
-    aliasRelation: memoryAliasRelation(inst, opts),
-    ...memoryQualifiers(inst),
-  });
-  if (stored.status === MEMORY_RESULT_STATUS.EXACT) rememberLegacyStore(inst, state, value);
-  return stored;
-}
-
-function taintEnabled(opts = {}) {
-  return opts.taint === true
-    || opts.taint instanceof TaintStore
-    || opts.taint != null
-    || opts.taintSources != null
-    || opts.taintSinks != null
-    || opts.sources != null
-    || opts.sinks != null
-    || opts.sanitizers != null;
-}
-
-function initialTaintStore(opts, cancelled) {
-  if (opts?.taint instanceof TaintStore) {
-    const copy = opts.taint.clone();
-    copy.signal = opts.signal ?? copy.signal;
-    copy.isCancelled = cancelled;
-    return copy;
-  }
-  const config = opts?.taint && typeof opts.taint === 'object' && !Array.isArray(opts.taint) ? opts.taint : {};
-  return new TaintStore({
-    ...config,
-    maxLatticeValues: opts?.maxTaintLatticeValues ?? config.maxLatticeValues,
-    maxFlowEdges: opts?.maxTaintFlowEdges ?? config.maxFlowEdges,
-    maxWorkItems: opts?.maxTaintWorkItems ?? config.maxWorkItems,
-    maxUpdatesPerValue: opts?.maxTaintUpdatesPerValue ?? config.maxUpdatesPerValue,
-    maxSources: opts?.maxTaintSources ?? config.maxSources,
-    maxSinks: opts?.maxTaintSinks ?? config.maxSinks,
-    maxEmittedRecords: opts?.maxTaintEmittedRecords ?? config.maxEmittedRecords,
-    signal: opts?.signal ?? config.signal ?? null,
-    isCancelled: cancelled,
-  });
-}
-
-function taintOptions(opts, state) {
-  return {
-    store: state.taint,
-    sourceByValueId: opts?.taintSourcesByValueId ?? opts?.sourceByValueId,
-    sourceLabels: opts?.taintSourceLabels ?? opts?.sourceLabels,
-    sources: opts?.taintSources ?? opts?.sources,
-    treatArgumentsAsSources: opts?.treatArgumentsAsSources === true,
-    autoSourceMetadata: opts?.autoSourceMetadata !== false,
-  };
-}
-
-function recordTaint(inst, value, state, opts) {
-  if (!state.taint || !inst?.dst) return null;
-  let taint = taintExpression(value, taintOptions(opts, state));
-  const direct = opts?.taintSourcesByValueId?.[inst.dst.id]
-    ?? (opts?.taintSourcesByValueId instanceof Map ? opts.taintSourcesByValueId.get(inst.dst.id) : null)
-    ?? opts?.taintSources?.[inst.id]
-    ?? (opts?.taintSources instanceof Map ? opts.taintSources.get(inst.id) : null);
-  if (direct != null) {
-    const sourceResult = state.taint.source(inst.dst, direct, { provenance: { instructionId: inst.id } });
-    taint = sourceResult.taint || taint;
-  }
-  state.taint.setValue(inst.dst, taint, { provenance: { instructionId: inst.id } });
-  return taint;
-}
-
-function recordMemoryTaint(inst, value, state, ir, opts, memo, kind) {
-  if (!state.taint) return null;
-  const address = memoryAddressExpression(inst, state, ir, opts, memo);
-  const addressTaint = taintExpression(address, taintOptions(opts, state));
-  const widthBits = memoryWidthBits(inst, 8);
-  if (kind === 'store') {
-    const sourceValue = inst?.args?.[0]?.value ?? value;
-    const valueTaint = taintExpression(sourceValue, taintOptions(opts, state));
-    return state.taint.storeMemory(address, valueTaint, widthBits, {
-      endian: memoryEndian(inst, opts),
-      aliasRelation: memoryAliasRelation(inst, opts),
-      addressTaint,
-    });
-  }
-  return state.taint.loadMemory(address, widthBits, {
-    endian: memoryEndian(inst, opts),
-    aliasRelation: memoryAliasRelation(inst, opts),
-    addressTaint,
-  });
-}
-
 function evalValue(value, state, ir, opts, memo, active) {
   if (!value) return unknown('missing-value');
+  if (state.byteMemory) return translateExecutionValue(value, state, opts);
   if (state.values.has(value.id)) return state.values.get(value.id);
   const stateKey = value.id + '@' + state.prevBlock + '@' + state.block;
   if (memo.has(stateKey)) return memo.get(stateKey);
@@ -551,29 +270,37 @@ function evalValue(value, state, ir, opts, memo, active) {
       const chosen = phiValue(d, state);
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
     } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
-      out = binOp(d.sub,
-        evalValue(d.args[0].value, state, ir, opts, memo, active),
-        evalValue(d.args[1].value, state, ir, opts, memo, active),
-        widthOf(d.dst?.bits, widthOf(value?.bits, 64)));
+      const resolved = resolveWidth([d.dst?.bits, value?.bits]);
+      const lhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
+      const rhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
+      out = unsupportedWidth(resolved) || binOp(d.sub, lhs, rhs, resolved.width);
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const toBits = widthOf(d.dst?.bits, widthOf(value?.bits, 64));
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
-      if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
-      else if (m) {
-        // m[2] comes from the canonical op-name grammar, not decoder evidence.
-        const fromBits = m[2] != null
-          ? Number(m[2])
-          : widthOf(d.args[0].bits, widthOf(d.args[0].value?.bits, toBits));
-        if (x.kind === SYM.CONST) {
-          const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
-          out = c(BigInt.asUintN(toBits, narrowed));
-        } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
-      } else out = x;
+      const toResolved = resolveWidth([d.dst?.bits, value?.bits]);
+      const toRejected = unsupportedWidth(toResolved);
+      if (toRejected) out = toRejected;
+      else {
+        const toBits = toResolved.width;
+        if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
+        else if (m) {
+          // m[2] comes from the canonical op-name grammar, not decoder evidence.
+          const fromResolved = m[2] != null
+            ? { width: Number(m[2]) }
+            : resolveWidth([d.args[0].bits, d.args[0].value?.bits, toBits]);
+          const fromRejected = unsupportedWidth(fromResolved);
+          if (fromRejected) out = fromRejected;
+          else {
+            const fromBits = fromResolved.width;
+            if (x.kind === SYM.CONST) {
+              const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
+              out = c(BigInt.asUintN(toBits, narrowed));
+            } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
+          }
+        } else out = x;
+      }
     } else if (d.op === OP.LOAD && d.loc) {
-      out = strictMemoryEnabled(opts || {})
-        ? strictLoadExpression(d, state, ir, opts || {}, memo)
-        : loadExpression(d, state, opts);
+      out = loadExpression(d, state, opts);
     } else if (d.op === OP.SEL && d.args.length >= 2) {
       const condition = conditionFromFlags(d, state, ir, opts, memo, active);
       out = {
@@ -596,12 +323,15 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
   const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
-  const bits = widthOf(
+  const resolved = resolveWidth([
     cmpInst.args[0]?.bits,
-    widthOf(cmpInst.args[0]?.value?.bits,
-      widthOf(cmpInst.args[1]?.bits,
-        widthOf(cmpInst.args[1]?.value?.bits, 64))));
-  return cmp(info.op, a, b, { bits, signed: info.signed });
+    cmpInst.args[0]?.value?.bits,
+    cmpInst.args[1]?.bits,
+    cmpInst.args[1]?.value?.bits,
+  ]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  return cmp(info.op, a, b, { bits: resolved.width, signed: info.signed });
 }
 
 function conditionFromFlags(inst, state, ir, opts, memo, active) {
@@ -619,11 +349,22 @@ function conditionFromFlags(inst, state, ir, opts, memo, active) {
     ? positionalCarrier
     : args.find((a) => a?.value?.reg === 'nzcv');
   const carrier = carrierArg?.value ?? null;
+  // Reusing a CMP definition is only valid after that carrier executed on the
+  // current path. Recomputing its operands is not proof of execution.
+  if (state.byteMemory && carrier) evalValue(carrier, state, ir, opts, memo, active);
   return conditionFromCmp(carrier?.def, inst.cond, state, ir, opts, memo, active);
 }
 
 function branchCondition(inst, state, ir, opts, memo) {
+  if (state.byteMemory && inst.args?.length !== 1) throw new QueryFailure('branch-operand-arity');
   const kind = inst.extra && inst.extra.kind;
+  if (state.byteMemory && ['cbz','cbnz','tbz','tbnz'].includes(kind)) {
+    const value = inst.args[0]?.value;
+    const expression = value ? evalValue(value, state, ir, opts, memo, new Set()) : null;
+    const condition = lowerDirectBranchCondition(inst, expression);
+    if (condition.kind === 'unknown_semantic') throw new QueryFailure(condition.reason);
+    return foldMemoryScalarExpression(condition, expression.sort.width);
+  }
   if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
     return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
@@ -669,47 +410,8 @@ function stopResult(state, reason, inst) {
     constraintText: state.constraints.map(expressionText),
     takenBranches: state.branches.slice(),
     touchedFields: state.touchedFields.slice(),
-    memory: state.byteMemory ? state.byteMemory.stats() : null,
-    taint: state.taint ? state.taint.stats() : null,
-    steps: state.steps,
     returnValue: null,
   };
-}
-
-function legacyMemoryValue(value, active = new Set()) {
-  if (value == null) return null;
-  if (typeof value === 'bigint' || (typeof value === 'number' && Number.isSafeInteger(value))) {
-    return LEGACY_MEMORY_EXPRESSION.constant(8, value);
-  }
-  if (typeof value !== 'object') return null;
-  if (active.has(value)) return LEGACY_MEMORY_EXPRESSION.unknown(8, 'symbolic-memory-expression-cycle');
-  if (value.kind === SYM.CONST) {
-    return LEGACY_MEMORY_EXPRESSION.constant(value.bits || value.sort?.width || 8, value.value);
-  }
-  if (value.kind === SYM.SYMBOL || value.kind === 'fresh_symbol') {
-    return LEGACY_MEMORY_EXPRESSION.fresh(value.bits || value.sort?.width || 8, value.name || value.symbolId || 'memory_symbol', value.meta || {});
-  }
-  if (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') {
-    return LEGACY_MEMORY_EXPRESSION.unknown(value.bits || value.sort?.width || 8, value.reason || 'symbolic-memory-unknown', value.detail || null);
-  }
-  active.add(value);
-  let converted = null;
-  if (value.kind === SYM.OP || value.kind === 'unary' || value.kind === 'binary') {
-    const args = value.args || [value.left, value.right].filter((item) => item != null);
-    const convertedArgs = args.map((item) => legacyMemoryValue(item, active));
-    converted = convertedArgs.some((item) => !item)
-      ? null
-      : { kind: SYM.OP, op: value.op || 'memory-expression', args: convertedArgs, bits: value.bits || value.sort?.width || 8 };
-  } else if (value.kind === 'extract') {
-    const arg = legacyMemoryValue(value.arg, active);
-    converted = arg ? LEGACY_MEMORY_EXPRESSION.extract(arg, value.high, value.low) : null;
-  } else if (value.kind === 'concat') {
-    const left = legacyMemoryValue(value.left, active);
-    const right = legacyMemoryValue(value.right, active);
-    converted = left && right ? LEGACY_MEMORY_EXPRESSION.concat(left, right) : null;
-  }
-  active.delete(value);
-  return converted || LEGACY_MEMORY_EXPRESSION.unknown(value.sort?.width || value.bits || 8, 'symbolic-memory-expression-unsupported');
 }
 
 function executionBudget(value, fallback, min, max, name) {
@@ -724,119 +426,40 @@ function executionBudget(value, fallback, min, max, name) {
   return Math.min(n, max);
 }
 
-function initialByteMemory(opts, cancelled) {
-  const supplied = opts?.byteMemory instanceof ByteMemory
-    ? opts.byteMemory
-    : opts?.symbolicMemory instanceof ByteMemory
-      ? opts.symbolicMemory
-    : opts?.memory instanceof ByteMemory
-      ? opts.memory
-      : null;
-  if (supplied) {
-    if (supplied.expression === LEGACY_MEMORY_EXPRESSION) {
-      const copy = supplied.clone();
-      copy.signal = opts?.signal ?? copy.signal;
-      copy.isCancelled = cancelled;
-      return copy;
-    }
-    const snapshot = supplied.snapshot();
-    const initial = new Map();
-    for (const cell of snapshot.cells || []) {
-      const legacy = legacyMemoryValue(cell.value);
-      if (legacy) initial.set(BigInt(cell.address), legacy);
-    }
-    const copy = createByteMemory({
-      expression: LEGACY_MEMORY_EXPRESSION,
-      initial,
-      maxConcreteBytes: supplied.maxConcreteBytes,
-      maxSymbolicCells: supplied.maxSymbolicCells,
-      maxStoreHistory: supplied.maxStoreHistory,
-      maxAliasForks: supplied.maxAliasForks,
-      signal: opts?.signal ?? supplied.signal ?? null,
-      isCancelled: cancelled,
-    });
-    for (const cell of snapshot.symbolicCells || []) {
-      const legacy = legacyMemoryValue(cell.value);
-      if (legacy) copy.symbolicCells.set(cell.key, legacy);
-    }
-    copy.tier = snapshot.tier;
-    copy.uncertain = snapshot.uncertain === true || copy.uncertain;
-    copy._unknownReason = snapshot.reason ?? copy._unknownReason;
-    copy.aliasForks = Number.isSafeInteger(snapshot.stats?.aliasForks)
-      ? snapshot.stats.aliasForks
-      : (Number.isSafeInteger(supplied.aliasForks) ? supplied.aliasForks : 0);
-    copy.storeHistory = Array.isArray(supplied.storeHistory) ? supplied.storeHistory.slice() : [];
-    return copy;
-  }
-  let config = {};
-  if (opts?.byteMemory && typeof opts.byteMemory === 'object' && !Array.isArray(opts.byteMemory)) config = { ...opts.byteMemory };
-  if (opts?.symbolicMemory && typeof opts.symbolicMemory === 'object' && !(opts.symbolicMemory instanceof ByteMemory) && !Array.isArray(opts.symbolicMemory)) {
-    config = { ...config, ...opts.symbolicMemory };
-  }
-  if (opts?.memory && typeof opts.memory === 'object' && !(opts.memory instanceof Map) && !Array.isArray(opts.memory)) {
-    config = { ...config, ...opts.memory };
-  }
-  const initial = config.initial ?? config.bytes ?? opts?.memoryInitial
-    ?? (opts?.byteMemory instanceof Map ? opts.byteMemory : null)
-    ?? (opts?.symbolicMemory instanceof Map ? opts.symbolicMemory : null)
-    ?? (opts?.memory instanceof Map || (opts?.memory && typeof opts.memory === 'object' && !Array.isArray(opts.memory)) ? opts.memory : null);
-  return createByteMemory({
-    ...config,
-    expression: LEGACY_MEMORY_EXPRESSION,
-    ...(initial != null ? { initial } : {}),
-    signal: opts?.signal ?? config.signal ?? null,
-    isCancelled: cancelled,
-  });
-}
-
 /** Explore bounded Semantic IR paths. */
-export function symbolicExecute(ir, opts) {
-  const startedAt = Date.now();
+function executePaths(ir, opts) {
   const cancelledFn = opts?.isCancelled ?? (() => false);
   if (typeof cancelledFn !== 'function') throw new TypeError('isCancelled must be a function');
-  if (!ir || !ir.blocks || !ir.blocks.length) return {
-    paths: [], truncated: false, engine: 'semantic-ir-symbolic',
-  };
-  const maxPaths = executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
-  const maxSteps = executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
-  const maxBranches = executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
-  const maxBlockVisits = executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
+  if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
+  const maxPaths = opts?._byteMemory ? boundedLimit(opts.maxPaths, 16, 16, 'maxPaths') : executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
+  const maxSteps = opts?._byteMemory ? boundedLimit(opts.maxSteps, 2000, 2000, 'maxSteps') : executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
+  const maxBranches = opts?._byteMemory ? boundedLimit(opts.maxBranches, 32, 32, 'maxBranches') : executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
+  const maxBlockVisits = opts?._byteMemory ? boundedLimit(opts.maxBlockVisits, 3, 3, 'maxBlockVisits') : executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
   const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
   const signal = opts && opts.signal || null;
   const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
   const deadline = Date.now() + timeoutMs;
-  const addressMap = addressBlockMap(ir);
-  const byteMemoryEnabled = strictMemoryEnabled(opts || {});
-  const taintEnabledForExecution = taintEnabled(opts || {});
-  const queue = [{
-    block: ir.entry || 0,
-    prevBlock: -1,
-    memory: new Map(),
-    byteMemory: byteMemoryEnabled ? initialByteMemory(opts || {}, cancelled) : null,
-    taint: taintEnabledForExecution ? initialTaintStore(opts || {}, cancelled) : null,
-    values: new Map(),
-    constraints: [],
-    branches: [],
-    touchedFields: [],
-    visits: new Map(),
-    steps: 0,
-  }];
+  const addressMap = opts?._addressMap ?? addressBlockMap(ir);
+  const stats = opts?._executionMetrics ?? { paths: 0, stepsPerPath: 0, branches: 0, blockVisitsPerBlock: 0 };
+  const queue = [{ comparisonCarriers:opts._comparisonCarriers, enforceExecutionOrder: !!opts?._byteMemory, executingInstruction: null, byteMemory: opts?._byteMemory, scalarCache: new Map(), inputExpressions: new Map(), valueIdentities: new Map(), semanticIdentities:new Map(), taint: opts?._taint, control: null, block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
   const paths = [];
   let branchCount = 0;
   let truncated = false;
-  let maxBlockVisitsObserved = 0;
 
   while (queue.length && paths.length < maxPaths) {
     if (cancelled() || Date.now() > deadline) { truncated = true; break; }
+    stats.paths = Math.max(stats.paths, paths.length + queue.length);
     const state = queue.shift();
     if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget')); continue; }
     const n = (state.visits.get(state.block) || 0) + 1;
+    if (state.byteMemory && n > maxBlockVisits) { paths.push(stopResult(state, 'loop-budget')); continue; }
     state.visits.set(state.block, n);
-    maxBlockVisitsObserved = Math.max(maxBlockVisitsObserved, n);
+    stats.blockVisitsPerBlock = Math.max(stats.blockVisitsPerBlock, n);
     if (n > maxBlockVisits) { paths.push(stopResult(state, 'loop-budget')); continue; }
     const block = ir.blocks[state.block];
     if (!block) { paths.push(stopResult(state, 'missing-block')); continue; }
     const memo = new Map();
+    state.executingInstruction = null;
     let transferred = false;
 
         // PHIs are parallel assignments at block entry. Evaluate every
@@ -846,66 +469,94 @@ export function symbolicExecute(ir, opts) {
   const phiUpdates = [];
   for (const phi of block.phis || []) {
     if (!phi.dst) continue;
-    const chosen = phiValue(phi, state);
+    if (state.byteMemory) registerExecutionValue(phi.dst,state);
+    const matches = state.byteMemory ? (phi.incoming || []).filter(item => item.from === state.prevBlock) : null;
+    const chosen = state.byteMemory ? (matches.length === 1 ? matches[0].value : null) : phiValue(phi, state);
+    if (state.byteMemory && !chosen) throw new QueryFailure('ambiguous-phi');
     const value = chosen
       ? evalValue(chosen, state, ir, opts, memo, new Set())
       : unknown('ambiguous-phi', { instruction: phi.id });
     phiUpdates.push([phi.dst.id, value]);
+    state.taint?.value(semanticValueIdentity(phi.dst), chosen ? [semanticValueIdentity(chosen)] : [], 'phi', { unknown: !chosen, control: state.control });
+  }
+  // PHIs read the predecessor iteration in parallel. Ordinary definitions of
+  // a revisited block must then execute again, not reuse last iteration's value.
+  if (state.byteMemory) {
+    state.byteMemory.chargeExecution(block.insts.length);
+    for (const instruction of block.insts) if (instruction.dst) state.values.delete(instruction.dst.id);
   }
   for (const [id, value] of phiUpdates) state.values.set(id, value);
-  if (state.taint) {
-    for (const [id, value] of phiUpdates) {
-      state.taint.setValue({ id }, taintExpression(value, taintOptions(opts || {}, state)), { provenance: { phi: id } });
-    }
-  }
 
 
-    for (const inst of block.insts || []) {
+    const instructions = block.insts || [];
+    for (let instructionIndex = 0; instructionIndex < instructions.length; instructionIndex++) {
+      const inst = instructions[instructionIndex];
+      state.executingInstruction = inst;
+      if (state.byteMemory) {
+        state.byteMemory.check();
+        if (!BYTE_EXECUTION_OPS.has(inst.op)) throw new QueryFailure('unsupported-instruction');
+      }
+      if (state.byteMemory) state.byteMemory.chargeExecution();
+      if (state.byteMemory && state.steps >= maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
       state.steps++;
+      stats.stepsPerPath = Math.max(stats.stepsPerPath, state.steps);
       if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
 
       if (inst.op === OP.LOAD) {
-        if (!inst.dst || (!inst.loc && !inst.addr)) {
+        if (!inst.dst || !inst.loc) {
           paths.push(stopResult(state, 'unsupported-load', inst)); transferred = true; break;
         }
-        const value = byteMemoryEnabled
-          ? strictLoadExpression(inst, state, ir, opts || {}, memo)
-          : loadExpression(inst, state, opts);
+        if (state.byteMemory) registerExecutionValue(inst.dst, state);
+        const value = loadExpression(inst, state, opts);
         if (value.kind === SYM.UNKNOWN) {
           paths.push(stopResult(state, value.reason, inst)); transferred = true; break;
         }
         state.values.set(inst.dst.id, value);
-        if (state.taint) {
-          const direct = recordTaint(inst, value, state, opts || {});
-          const memory = recordMemoryTaint(inst, value, state, ir, opts || {}, memo, 'load');
-          state.taint.setValue(inst.dst, joinTaint(direct, memory), { provenance: { instructionId: inst.id, kind: 'load' } });
-        }
+        continue;
+      }
+      if (inst.op === OP.STORE && state.byteMemory) {
+        const value = translateMemoryAccess(inst, state, opts);
+        state.touchedFields.push({ instructionId: inst.id, value });
         continue;
       }
       if (inst.op === OP.STORE) {
-        if (!byteMemoryEnabled && (!inst.loc || inst.loc.kind === MK.UNKNOWN)) {
+        if (!inst.loc || inst.loc.kind === MK.UNKNOWN) {
           paths.push(stopResult(state, 'unknown-store-alias', inst)); transferred = true; break;
-        }
-        if (byteMemoryEnabled) {
-          const stored = strictStore(inst, state, ir, opts || {}, memo);
-          if (stored.status !== MEMORY_RESULT_STATUS.EXACT) {
-            paths.push(stopResult(state, stored.reason || `symbolic-memory-${stored.status}`, inst)); transferred = true; break;
-          }
         }
         const key = locationKey(inst.loc);
         const value = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-store-value');
-        if (!byteMemoryEnabled) rememberLegacyStore(inst, state, value);
-        if (state.taint) recordMemoryTaint(inst, value, state, ir, opts || {}, memo, 'store');
-        if (inst.loc?.kind === MK.FIELD || inst.loc?.kind === MK.GLOBAL) {
+        for (const [knownKey, remembered] of Array.from(state.memory.entries())) {
+          const knownLocation = remembered && remembered.location ? remembered.location : null;
+          if (!knownLocation || mayAliasProvenance(knownLocation, inst.loc)) state.memory.delete(knownKey);
+        }
+        if (key) state.memory.set(key, { location: inst.loc, value });
+        if (inst.loc.kind === MK.FIELD || inst.loc.kind === MK.GLOBAL) {
           state.touchedFields.push({ key, location: inst.loc, row: inst.row, address: inst.address, value, valueText: expressionText(value) });
         }
         continue;
       }
       if (inst.op === OP.CALL) {
+        if (state.byteMemory) {
+          state.byteMemory.barrier('unknown-call');
+          if (inst.dst) state.taint?.value(semanticValueIdentity(inst.dst), [], 'unknown-call', { unknown: true });
+        }
         paths.push(stopResult(state, 'unsupported-call', inst)); transferred = true; break;
       }
       if (inst.op === OP.UNKNOWN || inst.op === OP.CLOBBER) {
+        state.byteMemory?.barrier('unknown-clobber');
         paths.push(stopResult(state, 'unsupported-instruction', inst)); transferred = true; break;
+      }
+      if (state.byteMemory && inst.extra?.semanticComparisonCarrier === true) {
+        if (state.comparisonCarriers?.get(inst)?.kind !== 'display-carrier') throw new QueryFailure('unproved-display-carrier');
+        // No value or snapshot membership is issued for a display-only carrier.
+        continue;
+      }
+      if (state.byteMemory && inst.dst && ![OP.PHI, OP.RET, OP.CBR, OP.BR].includes(inst.op)) {
+        state.values.delete(inst.dst.id);
+        const translated = evalValue(inst.dst, state, ir, opts, new Map(), new Set());
+        if (!translated?.sort || translated.kind === 'unknown_semantic') throw new QueryFailure(translated?.reason ?? 'unsupported-value-op');
+        state.byteMemory.validateExpression(translated);
+        state.values.set(inst.dst.id, translated);
       }
       if (inst.op === OP.RET) {
         const explicit = inst.args[0]?.value || null;
@@ -926,14 +577,18 @@ export function symbolicExecute(ir, opts) {
           }
         }
         const value = candidate ? evalValue(candidate, state, ir, opts, memo, new Set()) : null;
-        const returnTaint = state.taint
-          ? (candidate && state.taint.getValue(candidate)
-            ? state.taint.getValue(candidate)
-            : (value ? taintExpression(value, taintOptions(opts || {}, state)) : unknownTaint('missing-return-value')))
-          : null;
+        if (state.byteMemory && value) state.byteMemory.validateExpression(value);
+        const control = state.byteMemory ? readReturnControl(inst, state.byteMemory) : null;
+        const terminalControl = control ? observeReturnControl(control,
+          evalValue(control.value, state, ir, opts, memo, new Set()), state.byteMemory,
+          { blockIndex:state.block, instructionIndex }) : null;
+        const observations = state.byteMemory ? observeTerminalMemory(opts._memoryObservations, state, opts) : null;
         paths.push({
-          status: value && value.kind === SYM.UNKNOWN ? 'unknown' : 'complete',
-          reason: value && value.kind === SYM.UNKNOWN ? value.reason : null,
+          ...(observations ? {memoryObservations:observations} : {}),
+          ...(terminalControl ? {terminalControl} : {}),
+          status: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? 'unknown' : 'complete',
+          reason: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? value.reason : null,
+          ...(opts.captureValues && opts._executionCapture ? {snapshot:opts._executionCapture.capture(state,paths.length,observations)} : {}),
           returnValue: value,
           returnText: expressionText(value),
           returnInferred: inferredReturn,
@@ -941,24 +596,28 @@ export function symbolicExecute(ir, opts) {
           constraintText: state.constraints.map(expressionText),
           takenBranches: state.branches.slice(),
           touchedFields: state.touchedFields.slice(),
-          memory: state.byteMemory ? state.byteMemory.stats() : null,
-          taint: state.taint ? state.taint.stats() : null,
-          steps: state.steps,
-          returnTaint,
         });
         transferred = true;
         break;
       }
       if (inst.op === OP.CBR) {
+        if (state.byteMemory && branchCount >= maxBranches) { paths.push(stopResult(state, 'branch-budget', inst)); transferred = true; break; }
+        if (state.taint) state.control = state.taint.joinHandles(state.control, ...(inst.args || []).map(a => semanticValueIdentity(a.value)));
+        stats.branches++;
         if (++branchCount > maxBranches) { paths.push(stopResult(state, 'branch-budget', inst)); transferred = true; break; }
         const cond = branchCondition(inst, state, ir, opts, memo);
+        if (state.byteMemory && (cond.kind === 'unknown_semantic' || cond.sort?.kind !== 'bool')) throw new QueryFailure(cond.reason ?? 'unsupported-branch-condition');
         if (cond.kind === SYM.UNKNOWN) { paths.push(stopResult(state, cond.reason, inst)); transferred = true; break; }
+        opts._executionCapture?.observeBranch(inst,state);
         const next = successorsForBranch(ir, block, inst, addressMap);
         if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
-        const inverse = negate(cond);
+        const inverse = cond.sort && cond.kind === 'const' ? Object.freeze({ ...cond, value: !cond.value }) : negate(cond);
+        if (state.byteMemory) {
+          const needed = Number(constraintAllowed(state.constraints, cond)) + Number(constraintAllowed(state.constraints, inverse));
+          if (paths.length + queue.length + needed > maxPaths) throw new QueryFailure('budget:paths');
+        }
         if (constraintAllowed(state.constraints, cond)) {
           const yes = cloneState(state);
-          if (yes.taint) yes.taint.branch(taintExpression(cond, taintOptions(opts || {}, yes)), { instructionId: inst.id, taken: true });
           yes.prevBlock = state.block; yes.block = next.target;
           yes.constraints.push(cond);
           yes.branches.push({ row: inst.row, address: inst.address, taken: true, condition: expressionText(cond) });
@@ -966,7 +625,6 @@ export function symbolicExecute(ir, opts) {
         }
         if (constraintAllowed(state.constraints, inverse)) {
           const no = cloneState(state);
-          if (no.taint) no.taint.branch(taintExpression(inverse, taintOptions(opts || {}, no)), { instructionId: inst.id, taken: false });
           no.prevBlock = state.block; no.block = next.fallthrough;
           no.constraints.push(inverse);
           no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(inverse) });
@@ -993,23 +651,117 @@ export function symbolicExecute(ir, opts) {
     }
   }
   if (queue.length) truncated = true;
-  const maxPathSteps = paths.reduce((max, path) => Math.max(max, Number(path.steps) || 0), 0);
-  const memoryStats = paths.map((path) => path.memory).filter(Boolean);
-  return {
-    paths,
-    truncated,
-    engine: 'semantic-ir-symbolic',
-    memoryModel: byteMemoryEnabled ? 'symbolic-byte-memory-v1' : 'legacy-location-memory',
-    metrics: {
-      paths: paths.length,
-      stepsPerPath: maxPathSteps,
-      branches: branchCount,
-      blockVisitsPerBlock: maxBlockVisitsObserved,
-      concreteMemoryBytes: memoryStats.reduce((max, stats) => Math.max(max, stats.concreteMemoryBytes || 0), 0),
-      symbolicMemoryCells: memoryStats.reduce((max, stats) => Math.max(max, stats.symbolicMemoryCells || 0), 0),
-      storeHistoryEntries: memoryStats.reduce((max, stats) => Math.max(max, stats.storeHistoryEntries || 0), 0),
-      aliasForks: memoryStats.reduce((max, stats) => Math.max(max, stats.aliasForks || 0), 0),
-      wallClock: Date.now() - startedAt,
-    },
-  };
+  return { paths, truncated, engine: 'semantic-ir-symbolic', ...(opts?._byteMemory ? { metrics: { ...stats, paths: paths.length } } : {}) };
+}
+/** Opt-in query identity preserves the legacy facade while enabling canonical byte state.
+ * No results of a cancelled/stale/budgeted exploration are published as complete paths.
+ */
+export function symbolicExecute(ir, opts = {}) {
+  if (opts == null) opts = {};
+  if (!opts.byteMemory) return executePaths(ir, opts);
+  const started = monotonicNow();
+  let memory, capture;
+  const executionMetrics = { paths: 0, stepsPerPath: 0, branches: 0, blockVisitsPerBlock: 0 };
+  try {
+    const timeoutMs = Math.min(
+      boundedLimit(opts.timeoutMs, 250, 5000, 'timeoutMs'),
+      boundedLimit(opts.byteMemory.timeoutMs, 250, 5000, 'byteMemory.timeoutMs'));
+    const memoryOptions = { ...opts.byteMemory, timeoutMs, signal: opts.signal ?? opts.byteMemory.signal,
+      isCancelled: opts.isCancelled ?? opts.byteMemory.isCancelled };
+    memory = opts.byteMemory.initialState == null ? createByteMemory(memoryOptions)
+      : forkByteMemoryForExecution(opts.byteMemory.initialState, memoryOptions);
+    // The caller cannot change canonical argument bindings during execution.
+    let argumentExpressions;
+    if (opts.argumentExpressions != null) {
+      if (Object.getPrototypeOf(opts.argumentExpressions) !== Map.prototype) throw new QueryFailure('invalid-canonical-arguments');
+      const count = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call(opts.argumentExpressions);
+      memory.chargeExecution(count, count);
+      argumentExpressions = new Map(Map.prototype.entries.call(opts.argumentExpressions));
+      for (const expression of argumentExpressions.values()) memory.validateExpression(expression);
+    }
+    opts = { ...opts, argumentExpressions };
+    const memoryAssumptions = new Map();
+    // Validate data properties before preflight reads any caller-owned IR field.
+    capture = createExecutionCapture(ir, memory, {...opts, memoryAssumptions});
+    if (!ir || !Array.isArray(ir.blocks) || !ir.blocks.length) throw new QueryFailure('invalid-or-empty-ir');
+    // Preflight limits precede address-map construction and operand-array copies.
+    memory.chargeExecution(ir.blocks.length, ir.blocks.length);
+    for (const block of ir.blocks) {
+      if (!block || !Array.isArray(block.insts) || !Array.isArray(block.succ ?? [])) throw new QueryFailure('invalid-ir-block');
+      const phis = block.phis ?? [];
+      if (!Array.isArray(phis)) throw new QueryFailure('invalid-ir-phis');
+      memory.chargeExecution(block.insts.length + phis.length + (block.succ?.length ?? 0), block.insts.length + phis.length);
+      for (const list of [block.insts, phis]) for (const inst of list) {
+        if (!inst || !Array.isArray(inst.args ?? []) || !Array.isArray(inst.incoming ?? [])) throw new QueryFailure('invalid-ir-instruction');
+        memory.chargeExecution((inst.args?.length ?? 0) + (inst.incoming?.length ?? 0));
+      }
+    }
+    const validatedAddressMap = validateExecutionContract(ir, memory, opts, memoryAssumptions);
+    const comparisonCarriers = prepareCanonicalComparisonCarrierBindings(ir, memory.identity);
+    if (comparisonCarriers) {
+      memory.chargeExecution(comparisonCarriers.workItems);
+      if (!comparisonCarriers.isCurrent()) throw new QueryFailure('unproved-display-carrier');
+    }
+    opts = { ...opts, _comparisonCarriers:comparisonCarriers };
+    const observations = prepareMemoryObservations(opts.memoryObservations, memory);
+    const semanticValues=new Map();
+    if (ir.values!=null && !Array.isArray(ir.values)) throw new QueryFailure('invalid-ir-values');
+    memory.chargeExecution(ir.values?.length??0,ir.values?.length??0);
+    for(const value of ir.values??[]) {
+      for(const key of [value?.semanticValueId,value?.semanticSsaValueId]) if(key!=null) {
+        if(typeof key!=='string' || !key || key.length>1024) throw new QueryFailure('invalid-semantic-value-id');
+        if(semanticValues.has(key) && semanticValues.get(key)!==value) throw new QueryFailure('ambiguous-semantic-address-value');
+        semanticValues.set(key,value);
+      }
+    }
+    if (opts.byteMemory.accessSemantics != null && opts.byteMemory.accessSemantics !== 'canonical-normal-completion') throw new QueryFailure('unsupported-memory-access-semantics');
+    const result = executePaths(ir, { ...opts, _sourceIr:ir, _memoryAssumptions:memoryAssumptions, _byteMemory: memory, _executionMetrics: executionMetrics, _semanticValues:semanticValues, _addressMap:validatedAddressMap, _memoryObservations:observations, _executionCapture:opts.captureValues || opts.captureBranchTargets ? capture : null });
+    capture?.check();
+    if (comparisonCarriers) {
+      memory.chargeExecution(comparisonCarriers.workItems);
+      if (!comparisonCarriers.isCurrent()) throw new QueryFailure('unproved-display-carrier');
+    }
+    memory.check();
+    const explorationPartial = result.truncated || result.paths.some(path => path.status !== 'complete');
+    const controlUnproved = result.paths.some(path => path.terminalControl
+      && !(path.terminalControl.normalCompletionCondition.kind === 'const'
+        && path.terminalControl.normalCompletionCondition.value === true));
+    const partial = explorationPartial || controlUnproved;
+    // Preserve terminal observations even when normal return is not proved.
+    // They deliberately carry no ABI values, memory state or path snapshots;
+    // existing proof consumers still see partial with an empty paths array.
+    const observationUnits = result.paths.reduce((count, path) => count + (path.terminalControl
+      ? 3 + path.constraints.length + path.takenBranches.length : 0), 0);
+    memory.chargeExecution(observationUnits, observationUnits);
+    const terminalControlObservations = result.paths.flatMap((path, pathIndex) => path.terminalControl
+      ? [Object.freeze({ pathIndex, control:path.terminalControl,
+        constraints:Object.freeze(path.constraints.slice()),
+        takenBranches:Object.freeze(path.takenBranches.map(step => Object.freeze({ ...step }))) })] : []);
+    const terminalControlCoverage = !explorationPartial && result.paths.length > 0
+      && terminalControlObservations.length === result.paths.length ? 'complete' : 'partial';
+    const metrics = Object.freeze({ ...memory.metrics(), ...result.metrics, wallClock: monotonicNow() - started });
+    const paths = partial ? [] : result.paths.map(path => Object.freeze({ ...path,
+      constraints: Object.freeze(path.constraints), constraintText: Object.freeze(path.constraintText),
+      takenBranches: Object.freeze(path.takenBranches.map(Object.freeze)),
+      touchedFields: Object.freeze(path.touchedFields.map(Object.freeze)) }));
+    return capture.publish(Object.freeze({ ...result, assumptions:Object.freeze([...memoryAssumptions.values()]), memoryObservationRequests:observations, identity: memory.identity, status: partial ? 'partial' : 'complete',
+      ...(terminalControlObservations.length ? { terminalControlObservations:Object.freeze(terminalControlObservations), terminalControlCoverage } : {}),
+      reason: explorationPartial ? (result.paths.find(path => path.status !== 'complete')?.reason ?? 'budget:exploration')
+        : controlUnproved ? 'return-control-normal-completion-unproved' : null, paths: Object.freeze(paths), metrics }));
+  } catch (error) {
+    if (!(error instanceof QueryFailure)) throw error;
+    const failure = reason => Object.freeze({ engine: 'semantic-ir-symbolic', status: 'partial', reason,
+      identity: memory?.identity ?? null, paths: Object.freeze([]), truncated: true,
+      metrics: Object.freeze({ ...(memory?.metrics() ?? {}), ...executionMetrics, wallClock: monotonicNow() - started }) });
+    if (capture && !/budget|deadline|cancel|stale/.test(error.reason)) {
+      try { return capture.publish(failure(error.reason)); }
+      catch (publicationError) {
+        if (!(publicationError instanceof QueryFailure)) throw publicationError;
+        // Publication revalidates the IR and may itself exhaust the remaining
+        // allowance. Do not escape or issue a capability after that failure.
+        return failure(publicationError.reason);
+      }
+    }
+    return failure(error.reason);
+  }
 }

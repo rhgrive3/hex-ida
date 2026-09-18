@@ -29,13 +29,20 @@ function expectCollision(overrides) {
   assert.equal(ledger.all().length, 1);
 }
 
-test('P10 intervention duplicate is idempotent only for the same canonical identity (#3579)', () => {
+test('P10 intervention duplicate with different content collides (#3579, #5327)', () => {
+  // #5327 supersedes the #3579 identity-only idempotency: the same id with a
+  // different canonical record (here a different acknowledged backend result)
+  // is a distinct execution and must fail closed instead of silently
+  // returning the stale record.
   const ledger = new InterventionLedger();
-  const first = ledger.add(intervention({ acknowledgedResult: { ok: true }, evidenceIds: ['e-1'] }));
-  const second = ledger.add(intervention({ acknowledgedResult: { ok: false }, evidenceIds: ['e-2'] }));
-  assert.equal(second, first);
-  assert.deepEqual(second.acknowledgedResult, { ok: true });
-  assert.deepEqual(second.evidenceIds, ['e-1']);
+  ledger.add(intervention({ acknowledgedResult: { ok: true }, evidenceIds: ['e-1'] }));
+  assert.throws(
+    () => ledger.add(intervention({ acknowledgedResult: { ok: false }, evidenceIds: ['e-2'] })),
+    (error) => error?.code === 'runtime-intervention-id-collision',
+  );
+  // Identical re-ingestion (persisted replay) stays idempotent.
+  const replay = ledger.add(intervention({ acknowledgedResult: { ok: true }, evidenceIds: ['e-1'] }));
+  assert.match(replay.interventionId, /^i-1$/);
 });
 
 test('P10 intervention id rejects target/requested-change collisions (#3579)', () => {

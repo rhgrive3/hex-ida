@@ -26,7 +26,34 @@ const list = (value, name) => {
   return [...value];
 };
 
-function encodedByteLength(text) { return new TextEncoder().encode(text).byteLength; }
+const UTF8_COUNT_CHUNK_UNITS = 8 * 1024;
+const UTF8_COUNT_CHUNK_BYTES = (UTF8_COUNT_CHUNK_UNITS * 3) + 3;
+
+function encodedByteLength(text) {
+  if (text.length > MAX_PROJECT_BYTES) return text.length;
+  const encoder = new TextEncoder();
+  const scratch = new Uint8Array(UTF8_COUNT_CHUNK_BYTES);
+  let bytes = 0;
+  let offset = 0;
+  while (offset < text.length) {
+    let end = Math.min(offset + UTF8_COUNT_CHUNK_UNITS, text.length);
+    if (end < text.length) {
+      const lead = text.charCodeAt(end - 1);
+      if (lead >= 0xd800 && lead <= 0xdbff) end -= 1;
+    }
+    let cursor = offset;
+    while (cursor < end) {
+      const chunk = text.slice(cursor, end);
+      const { read, written } = encoder.encodeInto(chunk, scratch);
+      if (read === 0) throw new ProjectFormatError('project text cannot be measured as UTF-8', 'HEX_PROJECT_INVALID_UTF8');
+      bytes += written;
+      if (bytes > MAX_PROJECT_BYTES) return bytes;
+      cursor += read;
+    }
+    offset = end;
+  }
+  return bytes;
+}
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
@@ -53,6 +80,57 @@ function sanitizeCacheReferences(project) {
   return [...legacy, ...artifactIndexFromProject(structuredProject).toProjectReferences()];
 }
 
+const isPlainRecord = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+const isTerminalHypothesisStatus = (status) => status === 'verified' || status === 'rejected';
+
+/* A `.hexproj` document is editable, shareable input, so a verification verdict
+   that travelled in it is an assertion and not a runtime outcome. Portable
+   session records used to reach `createInvestigationSession()` intact, and that
+   normalization seals any `confirmedFindings` array it is handed; `AIRuntime`
+   then reads the seal back as deterministic-verification authority, which let an
+   imported `status:'verified'` row restore as canonical verified evidence and an
+   imported terminal hypothesis keep its verdict (#8687, laundering past #4995).
+   The parse step is the one boundary that knows the bytes came from outside, so
+   the authority is stripped here. The runtime's own session persistence
+   (`createProjectSessionPersistence`) hydrates the live project object and never
+   passes through this function, so legitimate deterministic evidence still
+   survives its trusted save/reload round-trip. */
+function downgradePortableEvidenceAuthority(record) {
+  if (!isPlainRecord(record) || record.status !== 'verified') return record;
+  return { ...record, status: 'supported' };
+}
+
+function downgradePortableHypothesisAuthority(record) {
+  if (!isPlainRecord(record) || !isTerminalHypothesisStatus(record.status)) return record;
+  // Same non-terminal fallback `HypothesisStore.upsert()` applies without
+  // deterministic authority; the confidence a stripped verdict asserted goes too.
+  const hasSupport = Array.isArray(record.supportEvidenceIds) && record.supportEvidenceIds.length > 0;
+  return { ...record, status: hasSupport ? 'supported' : 'open', confidence: 0.5 };
+}
+
+function stripPortableVerificationAuthority(project) {
+  const source = project.findings.investigationSessions;
+  let changed = false;
+  const stripped = source.map((session) => {
+    if (!isPlainRecord(session)) return session;
+    const hasEvidence = Array.isArray(session.confirmedFindings);
+    const hasHypotheses = Array.isArray(session.hypotheses);
+    const confirmedFindings = hasEvidence ? session.confirmedFindings.map(downgradePortableEvidenceAuthority) : null;
+    const hypotheses = hasHypotheses ? session.hypotheses.map(downgradePortableHypothesisAuthority) : null;
+    const evidenceChanged = hasEvidence && confirmedFindings.some((record, index) => record !== session.confirmedFindings[index]);
+    const hypothesesChanged = hasHypotheses && hypotheses.some((record, index) => record !== session.hypotheses[index]);
+    if (!evidenceChanged && !hypothesesChanged) return session;
+    changed = true;
+    return {
+      ...session,
+      ...(evidenceChanged ? { confirmedFindings } : {}),
+      ...(hypothesesChanged ? { hypotheses } : {}),
+    };
+  });
+  if (!changed) return project;
+  return { ...project, findings: { ...project.findings, investigationSessions: stripped } };
+}
+
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
   const project = {
@@ -60,7 +138,7 @@ export function createHexProject(input = {}) {
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
     user: {
-      names: list(input.userNames ?? input.user?.names, 'user.names'), comments: list(input.comments ?? input.user?.comments, 'user.comments'),
+      names: validateAnnotationEntries(input.userNames ?? input.user?.names, 'user.names'), comments: validateAnnotationEntries(input.comments ?? input.user?.comments, 'user.comments'),
       types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'), varsPresent: true,
       structs: list(input.structs ?? input.user?.structs, 'user.structs'),
       bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'), patches: list(input.patches ?? input.user?.patches, 'user.patches'),
@@ -71,6 +149,7 @@ export function createHexProject(input = {}) {
       evidence: list(input.evidence ?? input.findings?.evidence, 'findings.evidence'),
       investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
+    projectAnnotations: list(input.projectAnnotations, 'projectAnnotations'),
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
     navigation: normalizeNavigation(input.navigation ?? {}),
   };
@@ -88,6 +167,54 @@ function normalizeCursorIndex(value) {
 
 const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
 const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+
+function canonicalAnnotationAddressKey(value, field = 'address') {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new ProjectFormatError(`${field} must be a non-negative canonical address`);
+    return value.toString();
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical address`);
+    }
+    return BigInt(value).toString();
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!DECIMAL_ADDRESS.test(text) && !HEX_ADDRESS.test(text)) {
+      throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+    try {
+      return BigInt(text).toString();
+    } catch {
+      throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+  }
+  throw new ProjectFormatError(`${field} must be a bigint, safe integer, or canonical address string`);
+}
+
+function validateAnnotationEntries(entries, name) {
+  const items = list(entries, name);
+  for (let index = 0; index < items.length; index += 1) {
+    const entry = items[index];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    if (entry.address == null || entry.value == null) continue;
+    canonicalAnnotationAddressKey(entry.address, `${name}[${index}].address`);
+    if (typeof entry.value !== 'string') throw new ProjectFormatError(`${name}[${index}].value must be a string`);
+  }
+  return items;
+}
+
+export function projectAnnotationCommitList(entries, name) {
+  const items = validateAnnotationEntries(entries, name);
+  const out = [];
+  for (const entry of items) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    if (entry.address == null || entry.value == null || entry.value === '') continue;
+    out.push([canonicalAnnotationAddressKey(entry.address, `${name}[].address`), entry.value]);
+  }
+  return out;
+}
 
 function normalizeCurrentFunction(value) {
   if (value == null) return null;
@@ -263,7 +390,7 @@ export function parseHexProject(input) {
     }
     throw error;
   }
-  return normalizeHexProjectV1(migrated);
+  return stripPortableVerificationAuthority(normalizeHexProjectV1(migrated));
 }
 
 export function tryParseHexProject(input) { try { return { ok: true, project: parseHexProject(input) }; } catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'HEX_PROJECT_INVALID' }; } }
@@ -298,8 +425,8 @@ export function normalizeHexProjectV1(project) {
       embedded: false,
     },
     user: {
-      names: list(project.user?.names, 'user.names'),
-      comments: list(project.user?.comments, 'user.comments'),
+      names: validateAnnotationEntries(project.user?.names, 'user.names'),
+      comments: validateAnnotationEntries(project.user?.comments, 'user.comments'),
       types: list(project.user?.types, 'user.types'),
       vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),
       varsPresent: project.user?.varsPresent !== false && (Object.prototype.hasOwnProperty.call(project.user || {}, 'vars') || Object.prototype.hasOwnProperty.call(project.user || {}, 'varNames')),
@@ -313,6 +440,7 @@ export function normalizeHexProjectV1(project) {
       evidence: list(project.findings?.evidence, 'findings.evidence'),
       investigationSessions: list(project.findings?.investigationSessions, 'findings.investigationSessions'),
     },
+    projectAnnotations: list(project.projectAnnotations, 'projectAnnotations'),
     analysis: {
       settings: project.analysis?.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings)
         ? { ...project.analysis.settings }

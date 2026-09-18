@@ -8,15 +8,15 @@ import {
 console.log('[phase11] running managed validation scalar boundary regression for #4484...');
 
 const targetId = 'managed-method:test:1';
+const completeValidation = { structural:'complete', specValidation:'valid', semanticEffect:'complete', resolution:'complete' };
 
-const validReport = createManagedValidationReport({ targetId, status: 'valid', profileId: 'ecma-335' });
+const validReport = createManagedValidationReport({ targetId, status: 'valid', profileId: 'ecma-335', completeness: completeValidation });
 assert.equal(validReport.targetId, targetId);
 assert.equal(validReport.status, 'valid');
 assert.equal(validReport.profileId, 'ecma-335');
 assert.equal(validateManagedValidationReport(validReport), true);
 
-const defaultStatusReport = createManagedValidationReport({ targetId });
-assert.equal(defaultStatusReport.status, 'valid');
+assert.throws(() => createManagedValidationReport({ targetId }), /managed-validation-status-required/);
 
 for (const status of [['valid'], { value: 'valid' }, true, 1, null]) {
   assert.throws(
@@ -28,7 +28,7 @@ for (const status of [['valid'], { value: 'valid' }, true, 1, null]) {
 
 for (const malformedTargetId of [['managed-method:test:1'], { value: targetId }, true, 1]) {
   assert.throws(
-    () => createManagedValidationReport({ targetId: malformedTargetId, status: 'valid' }),
+    () => createManagedValidationReport({ targetId: malformedTargetId, status: 'valid', completeness: completeValidation }),
     /managed-validation-target-id-required/,
     `structured targetId must be rejected: ${JSON.stringify(malformedTargetId)}`,
   );
@@ -36,14 +36,14 @@ for (const malformedTargetId of [['managed-method:test:1'], { value: targetId },
 
 for (const malformedProfileId of [['ecma-335'], { value: 'ecma-335' }, true, 1, '']) {
   assert.throws(
-    () => createManagedValidationReport({ targetId, status: 'valid', profileId: malformedProfileId }),
+    () => createManagedValidationReport({ targetId, status: 'valid', profileId: malformedProfileId, completeness: completeValidation }),
     /managed-validation-profile-id-invalid/,
     `structured profileId must be rejected: ${JSON.stringify(malformedProfileId)}`,
   );
 }
 
 for (const status of MANAGED_VALIDATION_STATUS) {
-  const report = createManagedValidationReport({ targetId, status });
+  const report = createManagedValidationReport({ targetId, status, ...(status === 'valid' ? { completeness: completeValidation } : {}) });
   assert.equal(report.status, status);
   assert.equal(validateManagedValidationReport(report), true);
 }

@@ -3,7 +3,11 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
 } from '../../../../semantics/effects/index.js';
-import { X87_FAMILIES } from './extended-state-helpers.js';
+import {
+  isX87RflagsInstruction,
+  X87_FAMILIES,
+} from './extended-state-helpers.js';
+import { hasReceiverRevalidatedX86Row } from '../runtime-provenance.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -40,12 +44,29 @@ const IO_WRITE = /^(?:out|outs|outsb|outsd|outsw)$/;
 const STACK_READ = new Map([['popf',16],['popfq',64]]);
 const STACK_WRITE = new Map([['pushf',16],['pushfq',64]]);
 const BIT_STRING = new Set(['bt','btc','btr','bts']);
-// The x87 family decision selects how Capstone's union `eflags` slot is read:
-// FPU status-word bits vs. RFLAGS bits. A name-prefix regex leaked every
-// `fs*`/`fx*` member into the RFLAGS interpretation, so the terminal minted
-// wrong RFLAGS surfaces as exact-with-intrinsic. The canonical finite family
-// set shared with the extended-state owner is the authority instead.
-const X87_FAMILY = (family) => X87_FAMILIES.has(String(family ?? '').toLowerCase());
+function isX87ByIdentity(instruction, family) {
+  const normalizedFamily = String(
+    family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '',
+  ).toLowerCase();
+  if (X87_FAMILIES.has(normalizedFamily)) return true;
+  const groups = instruction?.detail?.groups;
+  return Array.isArray(groups)
+    && groups.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
+}
+
+function flagDomain(instruction, family) {
+  const isX87 = isX87ByIdentity(instruction, family);
+  const usesRflags = isX87RflagsInstruction(instruction, family);
+  const writesComparisonRflags = isX87 && usesRflags && !family.startsWith('fcmov');
+  const expected = isX87 && !usesRflags ? 'fpu-flags' : 'eflags';
+  return Object.freeze({
+    isX87,
+    usesRflags,
+    writesComparisonRflags,
+    usesFpuFlags:expected === 'fpu-flags',
+    valid:instruction?.detail?.flagsKind === expected,
+  });
+}
 
 function bit(mask, position) {
   return position != null && (mask & (1n << position)) !== 0n;
@@ -82,13 +103,26 @@ function decoderRegisterSets(instruction) {
   return { reads, writes };
 }
 
-function flagSets(instruction, family) {
+function flagSets(instruction, domain) {
   const reads = new Set();
   const writes = new Set();
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
 
-  if (X87_FAMILY(family)) {
+  if (domain.writesComparisonRflags) {
+    // FCOMI[P]/FUCOMI[P] write arithmetic flags. Capstone 5's single
+    // union word is zero for some popping forms and contains FPU-mask bits
+    // for others; interpreting it as EFLAGS invents prior-flag dependencies.
+    // Comparison outputs ZF/PF/CF and clears OF/SF/AF. Do not infer a C1
+    // reset from SDM 253666-088US pp. 3-366/367: the native oracle (including
+    // FCOM controls) and independent QEMU hardware testing preserve C1.
+    // https://www.mail-archive.com/qemu-devel@nongnu.org/msg1222232.html
+    // This is a summary surface, not a numerical/fault-path evaluation.
+    for (const name of ['cf', 'pf', 'zf', 'of', 'sf', 'af']) writes.add(`rflags.${name}`);
+    return { reads, writes, nondeterministic };
+  }
+
+  if (domain.usesFpuFlags) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {
       if (bit(raw, test)) reads.add(`fpsw.${name.toLowerCase()}`);
       if (bit(raw, modify) || bit(raw, reset) || bit(raw, set) || bit(raw, undef)) writes.add(`fpsw.${name.toLowerCase()}`);
@@ -212,12 +246,15 @@ function memorySets(instruction, family) {
   return { reads, writes };
 }
 
-function memorySummary(accesses) {
-  return accesses.length ? { scope:'accesses', accesses } : { scope:'none' };
+function memorySummary(accesses, { conservativeAll = false } = {}) {
+  if (accesses.length) return { scope:'accesses', accesses };
+  return conservativeAll
+    ? { scope:'all', spaces:['memory'], detail:{ reason:'x86-trusted-receiver-implicit-memory-conservative' } }
+    : { scope:'none' };
 }
 
-function hiddenState(ownerId, family, registersRead, registersWritten) {
-  if (X87_FAMILY(family)) {
+function hiddenState(ownerId, family, registersRead, registersWritten, instruction) {
+  if (isX87ByIdentity(instruction, family)) {
     registersRead.add('x86.x87.environment');
     registersWritten.add('x86.x87.environment');
   }
@@ -228,19 +265,28 @@ function hiddenState(ownerId, family, registersRead, registersWritten) {
   }
 }
 
-function promotedControlEffect(partial, instruction, ownerId, context = {}) {
+function promotedControlEffect(partial, instruction, ownerId, receiverAuthorized) {
   const current = partial?.controlEffect;
   if (current && current.kind !== 'unknown') return current;
-  const family = String(instruction?.instructionFamily || '').toLowerCase();
-  if (context?.closureMatrixTerminal && (family === 'ud0' || family === 'ud1')) {
-    return { kind:'trap', reason:`x86-${family}-architectural-invalid-opcode` };
-  }
   const groups = new Set((instruction.detail?.groups || []).map((group) => String(group?.name || '').toLowerCase()));
   if (groups.has('call')) return { kind:'call', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('ret')) return { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('jump')) return { kind:'indirect', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
-  if (groups.has('int') || groups.has('iret')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
-  if (ownerId === 'control') return null;
+  if (groups.has('int')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
+  // IRET/IRETD/IRETQ are interrupt returns, never traps. Only the dedicated
+  // receiver's private byte-revalidation authority may close their opaque
+  // stack/state restoration as a summary-only return. Unit/public projections
+  // remain fail-closed, preserving #5563.
+  if (groups.has('iret')) return receiverAuthorized
+    ? { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } }
+    : null;
+  if (ownerId === 'control') {
+    const family = String(instruction.instructionFamily || '').toLowerCase();
+    if (receiverAuthorized && (family === 'ud0' || family === 'ud1')) {
+      return { kind:'trap', reason:`x86-${family}-invalid-opcode` };
+    }
+    return null;
+  }
   return { kind:'fallthrough' };
 }
 
@@ -272,21 +318,43 @@ function possibleFaults(partial, memory, ownerId, family) {
  * architecturally implicit memory/state surfaces that Capstone does not encode
  * as ordinary operands.
  */
-export function closeTrustedX86Partial(instruction, ownerId, partial, context = {}) {
+export function closeTrustedX86Partial(instruction, ownerId, partial, context = {}, provenanceSource = null) {
   if (!partial || partial.completeness !== 'partial' || !trusted(instruction)) return partial;
+  const receiverAuthorized = hasReceiverRevalidatedX86Row(provenanceSource);
 
   const family = String(instruction.instructionFamily || '').toLowerCase();
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 
-  const controlEffect = promotedControlEffect(partial, instruction, ownerId, context);
+  // Operandless system instructions can carry implicit memory (shadow stack,
+  // interrupt frames, enclave/VM state, etc.). Empty decoder operands therefore
+  // cannot prove `memory:none`. Public/unit projections keep the historical
+  // fail-closed partial (#5569); only a byte-revalidated receiver row may close
+  // with a conservative all-memory summary. INT delivery uses the same rule.
+  const implicitMemoryUnproven = (ownerId === 'system' || family === 'int')
+    && memory.reads.length === 0 && memory.writes.length === 0;
+  if (implicitMemoryUnproven && !receiverAuthorized) return partial;
+  const conservativeImplicitMemory = implicitMemoryUnproven && receiverAuthorized;
+
+  const domain = flagDomain(instruction, family);
+  if (!domain.valid) return partial;
+
+  const controlEffect = promotedControlEffect(partial, instruction, ownerId, receiverAuthorized);
   if (!controlEffect) return partial;
 
   const registers = decoderRegisterSets(instruction);
-  const flags = flagSets(instruction, family);
-  for (const value of flags.reads) registers.reads.add(value);
-  for (const value of flags.writes) registers.writes.add(value);
-  hiddenState(ownerId, family, registers.reads, registers.writes);
+  const flags = flagSets(instruction, domain);
+  for (const value of flags.reads) {
+    if (domain.usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!domain.usesFpuFlags && value.startsWith('fpsw.')) return partial;
+    registers.reads.add(value);
+  }
+  for (const value of flags.writes) {
+    if (domain.usesFpuFlags && value.startsWith('rflags.')) return partial;
+    if (!domain.usesFpuFlags && value.startsWith('fpsw.')) return partial;
+    registers.writes.add(value);
+  }
+  hiddenState(ownerId, family, registers.reads, registers.writes, instruction);
 
   const determinism = NONDETERMINISTIC.has(family) || flags.nondeterministic ? 'nondeterministic' : 'input-dependent';
   const options = context.machineEffectsOptions ?? context.options ?? {};
@@ -295,8 +363,8 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
     outputs:[],
     registersRead:[...registers.reads],
     registersWritten:[...registers.writes],
-    memoryRead:memorySummary(memory.reads),
-    memoryWrite:memorySummary(memory.writes),
+    memoryRead:memorySummary(memory.reads, { conservativeAll:conservativeImplicitMemory }),
+    memoryWrite:memorySummary(memory.writes, { conservativeAll:conservativeImplicitMemory }),
     controlEffects:controlEffect.kind === 'fallthrough' ? [] : [controlEffect],
     determinism,
     symbolicDetail:'summary-only',

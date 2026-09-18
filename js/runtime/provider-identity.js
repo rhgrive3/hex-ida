@@ -147,6 +147,7 @@ export class RuntimeModuleBindingTable {
   #active = new Map();
   #history = [];
   #generation = new Map();
+  #sequenceHighWater = new Map();
 
   constructor(runtimeSessionId) {
     this.runtimeSessionId = required(runtimeSessionId, 'runtime-session-id-required', 'module table requires runtimeSessionId');
@@ -162,8 +163,14 @@ export class RuntimeModuleBindingTable {
     if (bindingInput.unloadedSequence != null) {
       throw new DebugAdapterError('invalid-module-sequence', 'runtime module load cannot include unloadedSequence', { bindingKey });
     }
+    const loadedSequence = safeSequence(bindingInput.loadedSequence, 'loadedSequence');
+    const sequenceHighWater = this.#sequenceHighWater.get(bindingKey);
+    if (loadedSequence != null && sequenceHighWater != null && loadedSequence <= sequenceHighWater) {
+      throw new DebugAdapterError('invalid-module-sequence', 'module load sequence does not advance lifecycle authority', { bindingKey, loadedSequence, sequenceHighWater });
+    }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    const binding = normalizeBinding(bindingInput, this.runtimeSessionId, generation);
+    const binding = normalizeBinding({ ...bindingInput, loadedSequence }, this.runtimeSessionId, generation);
+    if (loadedSequence != null) this.#sequenceHighWater.set(bindingKey, loadedSequence);
     this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);
@@ -172,13 +179,22 @@ export class RuntimeModuleBindingTable {
 
   unload(bindingKey, sequence = null) {
     const key = required(bindingKey, 'runtime-module-binding-key-required', 'runtime module binding key is required');
-    const current = this.#active.get(key);
-    if (!current || current.unloadedSequence != null) return null;
     const unloadedSequence = safeSequence(sequence, 'unloadedSequence');
+    const sequenceHighWater = this.#sequenceHighWater.get(key);
+    const current = this.#active.get(key);
+    if (!current || current.unloadedSequence != null) {
+      if (unloadedSequence != null && (sequenceHighWater == null || unloadedSequence > sequenceHighWater)) {
+        this.#sequenceHighWater.set(key, unloadedSequence);
+      }
+      return null;
+    }
     if (current.loadedSequence != null && unloadedSequence != null && unloadedSequence < current.loadedSequence) {
       throw new DebugAdapterError('invalid-module-sequence', 'module unload sequence precedes load sequence', { bindingKey: key });
     }
     const retired = deepFreeze({ ...current, unloadedSequence });
+    if (unloadedSequence != null && (sequenceHighWater == null || unloadedSequence > sequenceHighWater)) {
+      this.#sequenceHighWater.set(key, unloadedSequence);
+    }
     this.#active.delete(key);
     this.#history.push(retired);
     return retired;
@@ -223,6 +239,18 @@ export class RuntimeModuleBindingTable {
           method: 'binary-id-mismatch',
           binaryId: binding.binaryId,
           sliceId: binding.sliceId,
+          evidenceIds: binding.identityEvidenceIds,
+        });
+      }
+      const matchSliceId = targetSliceId && match.targetSliceId != null
+        ? optionalIdentity(match.targetSliceId, 'sliceId')
+        : null;
+      if (targetSliceId && (binding.sliceId !== targetSliceId || (matchSliceId != null && matchSliceId !== targetSliceId))) {
+        return createRuntimeAddressResolution({
+          ...binding,
+          runtimeAddress: address,
+          state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+          method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
           evidenceIds: binding.identityEvidenceIds,
         });
       }

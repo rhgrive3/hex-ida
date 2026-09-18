@@ -2,34 +2,47 @@ import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunc
 import { maximumWeightCandidateMatchingBounded, solveCandidateMatching } from './bounded-matching.js';
 import { createMatchBudget } from './match-budget.js';
 
+const MATCH_POSTPROCESSING_BUDGET_STOP = Symbol('match-postprocessing-budget-stop');
+
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
-    const mode = options.mode || 'fast';
+    this.mode = options.mode || 'fast';
     this.budget = options.budget || createMatchBudget(options.matchBudget || {});
     this.items = [];
     this.buckets = new Map();
     this.complete = true;
-    indexBuild:
-    for (const raw of functions || []) {
-      if (!this.budget.preprocess(raw, 'after fingerprint preprocessing')) { this.complete = false; break; }
-      const fp = mode === 'full' ? fingerprintFunction(raw) : fingerprintFunctionFast(raw);
-      this.budget.fingerprinted();
-      const index = this.items.length;
-      this.items.push(fp);
-      for (const token of coarseTokens(fp)) {
-        if (!this.budget.indexEntry()) { this.complete = false; break indexBuild; }
-        let bucket = this.buckets.get(token);
-        if (!bucket) this.buckets.set(token, bucket = []);
-        bucket.push(index);
-      }
-      if (!this.budget.checkPreprocessWall('fingerprint index construction')) { this.complete = false; break; }
+    for (const raw of functions || []) if (!this.append(raw)) break;
+  }
+  /** Streaming construction uses the same fingerprint/bucket owner and budget
+   * as synchronous construction; an incomplete prefix is never healed by append.
+   */
+  append(raw) {
+    if (!this.complete) return false;
+    if (!this.budget.preprocess(raw, 'after fingerprint preprocessing')) { this.complete = false; return false; }
+    const fp = this.mode === 'full' ? fingerprintFunction(raw) : fingerprintFunctionFast(raw);
+    this.budget.fingerprinted();
+    const index = this.items.length;
+    this.items.push(fp);
+    for (const token of coarseTokens(fp)) {
+      if (!this.budget.indexEntry()) { this.complete = false; return false; }
+      let bucket = this.buckets.get(token);
+      if (!bucket) this.buckets.set(token, bucket = []);
+      bucket.push(index);
     }
-    if (this.budget.preprocessingIncomplete) this.complete = false;
+    if (!this.budget.checkPreprocessWall('fingerprint index construction') || this.budget.preprocessingIncomplete) this.complete = false;
+    return this.complete;
   }
   candidates(input, options = {}) {
-    const fp = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast'
-      ? input
-      : fingerprintFunctionFast(input);
+    const fingerprinted = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast';
+    // Raw query functions pay the same preprocessing gate as index builds:
+    // the constructor's preprocess budgets must also bound public query
+    // fingerprinting, or the standalone candidates() path bypasses them
+    // entirely (#5021).
+    if (!fingerprinted && !this.budget.preprocess(input, 'before query fingerprint preprocessing')) {
+      this.complete = false;
+      return [];
+    }
+    const fp = fingerprinted ? input : fingerprintFunctionFast(input);
     const rawMaxCandidates = Number(options.maxCandidates ?? 128);
     const maxCandidates = Number.isFinite(rawMaxCandidates) && rawMaxCandidates > 0 ? Math.max(1, Math.floor(rawMaxCandidates)) : 128;
     const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
@@ -200,38 +213,117 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
 
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
-  const usedBefore = new Set(), usedAfter = new Set(), matches = [];
+  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
+  const incompletePostprocessing = () => {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [], deleted: before.slice(), new: after.slice(),
+      candidatesEvaluated: all.length, candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index.buckets.size, truncated: true, ambiguous: true,
+      unresolvedBefore: before, unresolvedAfter: after,
+      matching: {
+        truncated: true,
+        candidateGraphIncomplete: !!matchingBudget.candidateGraphIncomplete,
+        preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
+        postprocessingIncomplete: true,
+        ambiguousBefore: before.length, ambiguousAfter: after.length,
+        truncatedComponents,
+        omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
+        budget: matchingBudget,
+      },
+    };
+  };
+  const postprocessStep = (stage = 'match post-processing', cost = 1) => budget.postprocess(cost, stage);
+  const collectAlternatives = (list, excludedIndex, side, confidence) => {
+    const alternatives = [];
+    for (const x of list) {
+      if (!postprocessStep('alternative scanning')) return null;
+      if ((side === 'after' && x.j === excludedIndex) || (side === 'before' && x.i === excludedIndex)
+        || x.confidence < confidence - ambiguityWindow) continue;
+      alternatives.push({
+        side,
+        index: side === 'after' ? x.j : x.i,
+        address: side === 'after' ? after[x.j].address : before[x.i].address,
+        confidence: x.confidence,
+        identity: x.identity,
+        reasons: x.reasons,
+      });
+      if (alternatives.length === 4) break;
+    }
+    return alternatives;
+  };
+  const sortAlternatives = (alternatives) => {
+    try {
+      alternatives.sort((a, b) => {
+        if (!postprocessStep('alternative ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
+        return b.confidence - a.confidence || String(a.side).localeCompare(String(b.side)) || a.index - b.index;
+      });
+    } catch (error) {
+      if (error === MATCH_POSTPROCESSING_BUDGET_STOP) return false;
+      throw error;
+    }
+    return true;
+  };
+  if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
+
+  const usedBefore = new Set(), usedAfter = new Set(), matchRecords = [];
   for (const c of selected) {
+    if (!postprocessStep('match construction')) return incompletePostprocessing();
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
-    const forwardAlternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const reverseAlternatives = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const alternatives = [...forwardAlternatives, ...reverseAlternatives]
-      .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
-    const ambiguous = alternatives.length > 0;
-    matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
+    const forwardAlternatives = collectAlternatives(eligibleByBefore.get(c.i) || [], c.j, 'after', c.confidence);
+    if (!forwardAlternatives) return incompletePostprocessing();
+    const reverseAlternatives = collectAlternatives(eligibleByAfter.get(c.j) || [], c.i, 'before', c.confidence);
+    if (!reverseAlternatives) return incompletePostprocessing();
+    const alternatives = [...forwardAlternatives, ...reverseAlternatives];
+    if (!sortAlternatives(alternatives)) return incompletePostprocessing();
+    const candidates = alternatives.slice(0, 4);
+    const ambiguous = candidates.length > 0;
+    matchRecords.push({
+      beforeIndex: c.i,
+      afterIndex: c.j,
+      match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates },
+    });
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
+    if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   }
-  matches.sort((a,b)=>{
-    const ai=before.findIndex((x)=>x===a.before), bi=before.findIndex((x)=>x===b.before);
-    return ai-bi;
-  });
-  const deleted = before.filter((_x, i) => !usedBefore.has(i));
-  const added = after.filter((_x, i) => !usedAfter.has(i));
+  try {
+    matchRecords.sort((a, b) => {
+      if (!postprocessStep('match ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
+      return a.beforeIndex - b.beforeIndex || a.afterIndex - b.afterIndex;
+    });
+  } catch (error) {
+    if (error === MATCH_POSTPROCESSING_BUDGET_STOP) return incompletePostprocessing();
+    throw error;
+  }
+  if (!budget.checkPostprocessingWall('match ordering')) return incompletePostprocessing();
+  const matches = [];
+  for (const { match } of matchRecords) {
+    if (!postprocessStep('match publication')) return incompletePostprocessing();
+    matches.push(match);
+  }
+  const deleted = [], added = [];
+  for (let i = 0; i < before.length; i++) {
+    if (!postprocessStep('deleted collection')) return incompletePostprocessing();
+    if (!usedBefore.has(i)) deleted.push(before[i]);
+  }
+  for (let i = 0; i < after.length; i++) {
+    if (!postprocessStep('new collection')) return incompletePostprocessing();
+    if (!usedAfter.has(i)) added.push(after[i]);
+  }
+  if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   const matchingBudget = budget.snapshot();
-  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
+  const hasMatchAmbiguity = matches.some((match) => match.ambiguous);
   return {
     matches, deleted, new: added,
     candidatesEvaluated: all.length,
     candidateComparisons: matchingBudget.candidateEvaluations,
     indexBuckets: index.buckets.size,
     truncated,
-    ambiguous: truncated,
+    ambiguous: truncated || hasMatchAmbiguity,
     unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
     unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
     matching: {

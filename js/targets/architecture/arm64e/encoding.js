@@ -1,4 +1,5 @@
 import { createMachineEffectBundle } from '../../../semantics/effects/index.js';
+import { arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 const ARITY = Object.freeze(Object.fromEntries([
   ...['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb','braa','brab','blraa','blrab'].map((mnemonic) => [mnemonic, 2]),
@@ -6,15 +7,17 @@ const ARITY = Object.freeze(Object.fromEntries([
   // PACIAZ/PACIBZ/AUTIAZ/AUTIBZ are HINT-space zero-modifier forms with an
   // implicit X30 destination: zero operands is the only legal shape.
   ...['paciaz','pacibz','autiaz','autibz'].map((mnemonic) => [mnemonic, 0]),
-  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab'].map((mnemonic) => [mnemonic, 0]),
+  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab','paciasppc','pacibsppc'].map((mnemonic) => [mnemonic, 0]),
+  ...['retaasppc','retabsppc','retaasppcr','retabsppcr'].map((mnemonic) => [mnemonic, 1]),
   ['pacga', 3],
 ]));
 
-const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab','eretaa','eretab']);
+const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab','eretaa','eretab','retaasppc','retabsppc','retaasppcr','retabsppcr']);
 const POINTER_TRANSFORM_TWO = new Set(['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb']);
 const POINTER_TRANSFORM_ONE = new Set(['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd']);
 const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
 const AUTHENTICATED_BRANCH_ONE = new Set(['braaz','brabz','blraaz','blrabz']);
+const ENHANCED_RETURN_REGISTER = new Set(['retaasppcr','retabsppcr']);
 
 function mnemonicOf(decoded) {
   const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
@@ -96,6 +99,7 @@ function expectedRegisterClasses(mnemonic) {
   if (POINTER_TRANSFORM_ONE.has(mnemonic)) return ['x-or-zr'];
   if (AUTHENTICATED_BRANCH_TWO.has(mnemonic)) return ['x-or-zr','x-or-sp'];
   if (AUTHENTICATED_BRANCH_ONE.has(mnemonic)) return ['x-or-zr'];
+  if (ENHANCED_RETURN_REGISTER.has(mnemonic)) return ['x-or-zr'];
   if (mnemonic === 'pacga') return ['x-or-zr','x-or-zr','x-or-sp'];
   return [];
 }
@@ -147,14 +151,13 @@ export function arm64ePointerAuthenticationOperandShapeFailure(decoded) {
 export function arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, context = {}) {
   const failure = arm64ePointerAuthenticationOperandShapeFailure(decoded);
   if (!failure) return null;
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  const origin = context?.origin ?? decoded?.origin ?? { instructionIds:[instructionId] };
+  const instructionId = arm64eEffectInstructionId(decoded, context);
+  const origin = arm64eEffectOrigin(decoded, context, instructionId);
   const categories = failure.control ? ['control','registers'] : ['registers'];
   return createMachineEffectBundle({
     instructionId,
     architectureId:'arm64e',
-    mode:String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e',
+    mode:arm64eEffectMode(decoded, context),
     operations:[],
     controlEffect:failure.control ? { kind:'unknown', reason:failure.reason } : { kind:'fallthrough' },
     possibleFaults:[],

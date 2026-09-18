@@ -150,23 +150,23 @@ export function selectDevContext({ packet, budgetBytes = null, expandEvidenceRef
 /* Exact duplicates collapse, and an explicitly superseded fact loses to the one
    that supersedes it. Both are deterministic; nothing is judged by meaning. The
    loser is never erased -- it is returned as audit evidence, and the winner
-   keeps its supersedes/conflictsWith so the conflict stays inspectable. */
+   keeps its supersedes/conflictsWith so the conflict stays inspectable.
+   Supersession is resolved as a winner -> loser relation, not as a union of
+   declared loser keys: a fact is dropped only when a fact that survives
+   selection -- outside the fact's own supersession cycle -- supersedes it.
+   Cycles (A supersedes B supersedes A, or a self-declaration) have no
+   discernible winner, so every member stays and the contradiction remains
+   visible instead of silently emptying the authoritative context. */
 function resolveFacts(input, omitted) {
   const facts = [...input];
-  const supersededKeys = new Set();
-  for (const fact of facts) {
-    /* A Worker/cache observation is evidence, not authority. Only the
-       host-bound owning-system fact may cause another fact to be suppressed. */
-    if (!isOwningSystemFact(fact)) continue;
-    for (const key of fact?.supersedes || []) supersededKeys.add(String(key));
-  }
+  const alive = survivingFacts(facts);
 
   const byStatement = new Map();
   const kept = [];
   const superseded = [];
   for (const fact of facts) {
     if (!fact?.statement) continue;
-    if (supersededKeys.has(fact.statement) || (fact.source && supersededKeys.has(fact.source))) {
+    if (!alive.has(fact)) {
       superseded.push({ ...fact, omissionReason: DEV_OMISSION_REASON.SUPERSEDED });
       omitted.push(omission(fact.statement, DEV_OMISSION_REASON.SUPERSEDED, 'authoritativeFacts'));
       continue;
@@ -188,6 +188,126 @@ function resolveFacts(input, omitted) {
     }
   }
   return { facts: kept, superseded };
+}
+
+/* Kills are edges; a fact survives unless a surviving fact outside its own
+   strongly connected component supersedes it. Components are processed in
+   topological order so every potential killer is resolved before its victims. */
+function survivingFacts(facts) {
+  const byStatement = new Map();
+  const bySource = new Map();
+  for (const fact of facts) {
+    if (!fact?.statement) continue;
+    if (!byStatement.has(fact.statement)) byStatement.set(fact.statement, []);
+    byStatement.get(fact.statement).push(fact);
+    if (fact.source) {
+      if (!bySource.has(fact.source)) bySource.set(fact.source, []);
+      bySource.get(fact.source).push(fact);
+    }
+  }
+
+  const victimsOf = new Map();
+  const addVictim = (killer, victim) => {
+    if (!victimsOf.has(killer)) victimsOf.set(killer, new Set());
+    victimsOf.get(killer).add(victim);
+  };
+  for (const killer of facts) {
+    /* A Worker/cache observation is evidence, not authority. Only the
+       host-bound owning-system fact may cause another fact to be suppressed. */
+    if (!isOwningSystemFact(killer)) continue;
+    for (const key of killer?.supersedes || []) {
+      const target = String(key);
+      if (!target) continue;
+      for (const group of [byStatement.get(target), bySource.get(target)]) {
+        for (const victim of group || []) {
+          /* A self-declaration has no winner; it never suppresses itself. */
+          if (victim !== killer) addVictim(killer, victim);
+        }
+      }
+    }
+  }
+
+  const nodeIndex = new Map(facts.map((fact, index) => [fact, index]));
+  const outgoing = facts.map((fact) => [...(victimsOf.get(fact) || [])].map((victim) => nodeIndex.get(victim)));
+  const incoming = facts.map(() => []);
+  for (let from = 0; from < outgoing.length; from += 1) {
+    for (const to of outgoing[from]) incoming[to].push(from);
+  }
+
+  /* Iterative Tarjan over the kill graph. */
+  const count = facts.length;
+  const disc = new Int32Array(count).fill(-1);
+  const low = new Int32Array(count);
+  const componentOf = new Int32Array(count).fill(-1);
+  const onStack = new Uint8Array(count);
+  const nextChild = new Int32Array(count);
+  const componentNodes = [];
+  const stack = [];
+  let discovered = 0;
+  for (let start = 0; start < count; start += 1) {
+    if (disc[start] !== -1) continue;
+    const call = [start];
+    while (call.length > 0) {
+      const node = call[call.length - 1];
+      if (disc[node] === -1) {
+        disc[node] = low[node] = discovered;
+        discovered += 1;
+        stack.push(node);
+        onStack[node] = 1;
+      }
+      let descended = false;
+      while (nextChild[node] < outgoing[node].length) {
+        const child = outgoing[node][nextChild[node]];
+        nextChild[node] += 1;
+        if (disc[child] === -1) {
+          call.push(child);
+          descended = true;
+          break;
+        }
+        if (onStack[child]) low[node] = Math.min(low[node], disc[child]);
+      }
+      if (descended) continue;
+      if (low[node] === disc[node]) {
+        const component = [];
+        for (;;) {
+          const member = stack.pop();
+          onStack[member] = 0;
+          componentOf[member] = componentNodes.length;
+          component.push(member);
+          if (member === node) break;
+        }
+        componentNodes.push(component);
+      }
+      call.pop();
+      if (call.length > 0) {
+        const parent = call[call.length - 1];
+        low[parent] = Math.min(low[parent], low[node]);
+      }
+    }
+  }
+
+  /* Tarjan emits sink components first, which places victims before their
+     killers; reversed, every component is resolved after the components that
+     can kill into it. */
+  const survivors = new Uint8Array(count).fill(1);
+  const alive = new Set();
+  for (let index = componentNodes.length - 1; index >= 0; index -= 1) {
+    const component = componentNodes[index];
+    const componentId = componentOf[component[0]];
+    for (const victim of component) {
+      for (const killer of incoming[victim]) {
+        if (componentOf[killer] === componentId) continue;
+        if (survivors[killer]) {
+          survivors[victim] = 0;
+          break;
+        }
+      }
+    }
+    for (const victim of component) {
+      if (survivors[victim]) alive.add(facts[victim]);
+    }
+  }
+  return alive;
 }
 
 function fresher(a, b) {

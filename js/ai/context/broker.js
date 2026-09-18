@@ -20,11 +20,13 @@ export class ContextBroker {
   }
 
   currentAddress(snapshot = null) {
-    return addressText(snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
+    return addressText(snapshot?.currentAddress ?? snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 4096));
+    // Per-turn context budgets are hard ceilings and may be lower than the
+    // broker's 4 KiB configured-capacity floor (#5103).
+    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 1));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
@@ -42,6 +44,7 @@ export class ContextBroker {
       pinnedEvidence: evidenceStore ? evidenceStore.pinned(session?.pinnedEvidence).slice(-32).map(compactEvidence) : [],
       activeHypotheses: hypotheses.filter((item) => item.status === 'open' || item.status === 'supported').slice(-20).map(compactHypothesis),
       recentObservations: compactObservations(observations, this.maxObservationBytes),
+      untrustedTarget: compactUntrustedTarget(request?.untrustedTarget),
       current: this.currentProjection(scope, snapshot),
     };
     // Legacy direct callers can still request bounded transcript history. The
@@ -82,11 +85,30 @@ export class ContextBroker {
   }
 }
 
-export { UNTRUSTED_NOTICE };
+export { UNTRUSTED_NOTICE, compactUntrustedTarget };
+
+function compactUntrustedTarget(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const ownString = (key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'string'
+      ? descriptor.value : undefined;
+  };
+  const kind = (ownString('kind') ?? '').trim().slice(0, 64);
+  if (!kind) return undefined;
+  const out = { kind, trust: 'untrusted-data' };
+  const address = ownString('address')?.trim().slice(0, 128);
+  if (address) out.address = address;
+  for (const [key, max] of [['text', 2048], ['name', 1024], ['label', 1024]]) {
+    const text = ownString(key);
+    if (text !== undefined) out[key] = text.slice(0, max);
+  }
+  return out;
+}
 
 function boundedPositiveNumber(value, fallback, minimum, integer = false) {
-  const numeric = Number(value ?? fallback);
-  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  const numeric = value ?? fallback;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || numeric <= 0) return fallback;
   const bounded = Math.max(minimum, numeric);
   return integer ? Math.floor(bounded) : bounded;
 }
@@ -95,7 +117,7 @@ function compactSnapshot(snapshot) {
   return {
     id: snapshot.id, binaryIdentity: snapshot.binaryIdentity, projectIdentity: snapshot.projectIdentity,
     architecture: snapshot.architecture, slice: snapshot.slice, runtimeSessionIdentity: snapshot.runtimeSessionIdentity,
-    requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
+    currentAddress: snapshot.currentAddress, requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
   };
 }
 function structuredMemory(session) {
@@ -108,10 +130,18 @@ function compactSelection(value) {
   return { start: addressText(value.start ?? instructions[0]?.address), end: addressText(value.end ?? instructions[instructions.length - 1]?.address), instructions: instructions.slice(0, 80).map(compactInstruction), truncated: instructions.length > 80 || !!value.truncated };
 }
 function compactFunction(value, maxLines) {
-  const instructions = Array.isArray(value.instructions) ? value.instructions.slice(0, maxLines).map(compactInstruction) : undefined;
-  const assembly = typeof value.assembly === 'string' ? value.assembly.split('\n').slice(0, maxLines).join('\n').slice(0, 30000) : undefined;
-  const pseudocode = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n').slice(0, 80).join('\n').slice(0, 16000) : undefined;
-  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated: (Array.isArray(value.instructions) && value.instructions.length > maxLines) || (typeof value.assembly === 'string' && value.assembly.split('\n').length > maxLines), trust: 'untrusted-data' });
+  const instructionValues = Array.isArray(value.instructions) ? value.instructions : null;
+  const instructions = instructionValues ? instructionValues.slice(0, maxLines).map(compactInstruction) : undefined;
+  const assemblyLines = typeof value.assembly === 'string' ? value.assembly.split('\n') : null;
+  const assemblyByLines = assemblyLines ? assemblyLines.slice(0, maxLines).join('\n') : undefined;
+  const assembly = assemblyByLines?.slice(0, 30000);
+  const pseudocodeLines = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n') : null;
+  const pseudocodeByLines = pseudocodeLines ? pseudocodeLines.slice(0, 80).join('\n') : undefined;
+  const pseudocode = pseudocodeByLines?.slice(0, 16000);
+  const truncated = (instructionValues != null && instructionValues.length > maxLines)
+    || (assemblyLines != null && (assemblyLines.length > maxLines || assemblyByLines.length > 30000))
+    || (pseudocodeLines != null && (pseudocodeLines.length > 80 || pseudocodeByLines.length > 16000));
+  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated, trust: 'untrusted-data' });
 }
 function compactInstruction(value) { return removeUndefined({ address: addressText(value?.address), mnemonic: String(value?.mnemonic || '').slice(0, 40), operands: String(value?.operands || '').slice(0, 500) }); }
 function compactEvidence(value) { return removeUndefined({ id: value.id, kind: value.kind, status: value.status, address: value.address, functionAddress: value.functionAddress, functionName: value.functionName, title: value.title, summary: value.summary, sourceTool: value.sourceTool }); }

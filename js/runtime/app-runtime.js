@@ -1,7 +1,10 @@
 import { RuntimeAnalysisPlatform } from './index.js';
+import { RuntimeProviderPlatform } from './provider-platform.js';
 
 const states = new WeakMap();
 const transitions = new WeakMap();
+const MAX_IDENTITY_SOURCE_RETRIES = 3;
+const providerStates = new WeakMap();
 
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
@@ -48,6 +51,35 @@ function activeSliceIdentity(app) {
   const uuid=canonicalSliceUuid(detail.uuid);
   return `slice:${index}:${uuid ?? '-'}:${arch}`;
 }
+
+function providerSourceState(app) {
+  const info = currentFileToken(app), backend = app?.backend ?? null;
+  return { info, backend, file: backend?.file ?? app?.store?.get?.('file') ?? null,
+    slice: activeSliceIdentity(app), index: app?.store?.get?.('sliceIndex') ?? null,
+    generation: backend?.gen ?? null, transportEpoch: backend?.transportEpoch ?? null,
+    binaryId: backend?.binaryId ?? null, hash: info?.hash ?? null, sha256: info?.sha256 ?? null };
+}
+
+/** Bind an existing provider facade to this source. No provider/session is
+ * created or selected and no byte hashing, streaming, or replay is performed. */
+export function bindRuntimeProviderPlatformForApp(app, platform) {
+  if (!app || !(platform instanceof RuntimeProviderPlatform)) throw new TypeError('runtime-provider-platform-required');
+  const source = providerSourceState(app);
+  if (!source.info && !source.file) throw new TypeError('runtime-provider-app-source-required');
+  providerStates.set(app, { platform, source });
+  return platform;
+}
+
+export function existingRuntimeProviderPlatformForApp(app) {
+  const bound = app && providerStates.get(app);
+  if (!bound) return null;
+  const now = providerSourceState(app);
+  if (Object.keys(bound.source).some(key => bound.source[key] !== now[key])) {
+    providerStates.delete(app);
+    return null;
+  }
+  return bound.platform;
+}
 function localSandboxSupportsArchitecture(architecture) {
   if (typeof architecture !== 'string') return false;
   const arch=architecture.trim().toLowerCase();
@@ -56,14 +88,136 @@ function localSandboxSupportsArchitecture(architecture) {
 function validContentHash(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
-async function binaryHashOf(app) {
-  const info=currentFileToken(app);
-  for (const candidate of [info?.hash, info?.sha256, app?.project?.binaryHash, app?.backend?.contentHash]) {
-    const existing=validContentHash(candidate);
-    if(existing) return existing;
+
+// Binary authority for a runtime session must never be the platform content
+// hash, which `js/platform/hash.js` deliberately publishes as an FNV-1a 64-bit
+// cache key (`fnv1a64:<size>:<hex>`). `js/analysis/binary-identity-digest.js`
+// already states that this identity contract is never weakened to accept that
+// shape; the runtime/evidence wiring has to apply the same rule instead of
+// promoting a non-collision-resistant cache key to a binary identity (#8964).
+const FNV_CACHE_KEY_PATTERN = /^fnv1a64:/i;
+function binaryAuthorityHash(value) {
+  const text = validContentHash(value);
+  if (text === null) return null;
+  return FNV_CACHE_KEY_PATTERN.test(text) ? null : text;
+}
+
+function scalarSourceValue(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return value;
+  return null;
+}
+
+function sourceInfoFingerprint(info) {
+  if (info == null) return null;
+  if (typeof info !== 'object') return scalarSourceValue(info);
+  const slices = Array.isArray(info.slices)
+    ? info.slices.map((slice) => {
+      const detail = slice?.info || {}, capability = slice?.capability || {};
+      return [
+        scalarSourceValue(slice?.offset), scalarSourceValue(slice?.size),
+        scalarSourceValue(detail.uuid), scalarSourceValue(detail.architecture),
+        scalarSourceValue(detail.cpuSub), scalarSourceValue(detail.cpu),
+        scalarSourceValue(capability.architecture),
+      ];
+    })
+    : null;
+  try {
+    return JSON.stringify([
+      scalarSourceValue(info.name), scalarSourceValue(info.size), scalarSourceValue(info.format),
+      scalarSourceValue(info.hash), scalarSourceValue(info.sha256), slices,
+    ]);
+  } catch {
+    return null;
   }
-  if(typeof app?.backend?.ensureContentHash === 'function') {
-    try { return validContentHash(await app.backend.ensureContentHash()); } catch { return null; }
+}
+
+function backendGeneration(backend) {
+  return backend?.gen ?? backend?.generation ?? backend?.analysisEpoch ?? null;
+}
+
+function sourceFileOf(app, backend) {
+  return backend?.file ?? app?.store?.get?.('file') ?? null;
+}
+
+function sourceBindingForApp(app) {
+  const backend = app?.backend ?? null;
+  const fileToken = currentFileToken(app);
+  const tokenProbe = currentFileToken(app);
+  return Object.freeze({
+    fileToken,
+    fileTokenStable: tokenProbe === fileToken,
+    fileTokenFingerprint: sourceInfoFingerprint(fileToken),
+    backend,
+    file: sourceFileOf(app, backend),
+    generation: backendGeneration(backend),
+    transportEpoch: backend?.transportEpoch ?? null,
+    sliceIndex: strictSliceIndex(app?.store?.get?.('sliceIndex')),
+    sliceIdentity: activeSliceIdentity(app),
+    projectHash: validContentHash(app?.project?.binaryHash),
+  });
+}
+
+function sourceBindingIsCurrent(app, binding) {
+  if (!binding) return false;
+  const currentInfo = currentFileToken(app);
+  if (binding.fileTokenStable && currentInfo !== binding.fileToken) return false;
+  if (sourceInfoFingerprint(currentInfo) !== binding.fileTokenFingerprint) return false;
+  const backend = app?.backend ?? null;
+  if (backend !== binding.backend) return false;
+  if (sourceFileOf(app, backend) !== binding.file) return false;
+  if (backendGeneration(backend) !== binding.generation) return false;
+  if ((backend?.transportEpoch ?? null) !== binding.transportEpoch) return false;
+  if (strictSliceIndex(app?.store?.get?.('sliceIndex')) !== binding.sliceIndex) return false;
+  if (validContentHash(app?.project?.binaryHash) !== binding.projectHash) return false;
+  try {
+    return activeSliceIdentity(app) === binding.sliceIdentity;
+  } catch {
+    return false;
+  }
+}
+
+function staleRuntimeSourceError() {
+  const error = new Error('runtime source binding changed during content hash');
+  error.code = 'RUNTIME_SOURCE_CHANGED';
+  error.stale = true;
+  return error;
+}
+
+async function binaryHashOf(app, binding) {
+  const info = binding.fileToken;
+  const backend = binding.backend;
+  // Strong witnesses first. `info.hash` and `backend.contentHash` are the
+  // platform FNV-1a cache-key spelling, so they can never outrank an explicit
+  // SHA-256 digest; a weak value must not shadow an exact identity.
+  for (const candidate of [info?.sha256, info?.binaryId, backend?.binaryId, info?.hash, binding.projectHash, backend?.contentHash]) {
+    const existing = binaryAuthorityHash(candidate);
+    if (existing) return existing;
+  }
+  const ensureBinaryId = typeof backend?.ensureBinaryId === 'function' ? backend.ensureBinaryId : null;
+  if (ensureBinaryId) {
+    try {
+      const binaryId = await Reflect.apply(ensureBinaryId, backend, []);
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+      const strong = binaryAuthorityHash(binaryId);
+      if (strong) return strong;
+    } catch (error) {
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+    }
+  }
+  const ensureContentHash = typeof backend?.ensureContentHash === 'function' ? backend.ensureContentHash : null;
+  if (ensureContentHash) {
+    try {
+      const hash = await Reflect.apply(ensureContentHash, backend, []);
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+      // A backend whose content hash is only an FNV cache key has no binary
+      // authority here; staying unresolved is explicit, laundering it is not.
+      return binaryAuthorityHash(hash);
+    } catch (error) {
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+      return null;
+    }
   }
   return null;
 }
@@ -73,10 +227,29 @@ function strictAddress(value) {
   if (typeof value !== 'string' || value.trim() === '') return null;
   try { return BigInt(value.trim()); } catch { return null; }
 }
+async function resolveRuntimeIdentityForApp(app) {
+  let stale = null;
+  for (let attempt = 0; attempt < MAX_IDENTITY_SOURCE_RETRIES; attempt += 1) {
+    const source = sourceBindingForApp(app);
+    try {
+      const contentHash = await binaryHashOf(app, source);
+      if (!sourceBindingIsCurrent(app, source)) throw staleRuntimeSourceError();
+      const identity = {
+        contentHash,
+        sliceIdentity: source.sliceIdentity,
+        key: `${contentHash || 'unhashed'}|${source.sliceIdentity}`,
+      };
+      return { identity, source };
+    } catch (error) {
+      if (!error?.stale) throw error;
+      stale = error;
+    }
+  }
+  throw stale || staleRuntimeSourceError();
+}
+
 export async function runtimeIdentityForApp(app) {
-  const contentHash=await binaryHashOf(app);
-  const sliceIdentity=activeSliceIdentity(app);
-  return {contentHash,sliceIdentity,key:`${contentHash || 'unhashed'}|${sliceIdentity}`};
+  return (await resolveRuntimeIdentityForApp(app)).identity;
 }
 
 /**
@@ -84,31 +257,46 @@ export async function runtimeIdentityForApp(app) {
  * This deliberately mirrors the proven emulator I/O path without exposing the
  * whole App object to runtime adapters.
  */
-export function createAppRuntimeIO(app) {
+export function createAppRuntimeIO(app, source = null) {
+  const binding = source || sourceBindingForApp(app);
+  if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+  const backend = binding.backend;
+  const symbols = app?.symbols;
+  const architecture = activeArchitecture(app);
   const regions = (app?.store?.get?.('regions') || []).filter((r) => r.exec && r.size > 0n);
   const regionAt = (addr) => regions.find((r) => addr >= r.vmAddr && addr < r.vmAddr + r.size) || null;
+  const isCurrent = () => sourceBindingIsCurrent(app, binding);
   return {
-    read: (addr, len) => app.backend.readAt(addr, len)
-      .then((r) => (r && r.found ? r.bytes : null)).catch(() => null),
+    read: async (addr, len) => {
+      if (!isCurrent() || typeof backend?.readAt !== 'function') return null;
+      try {
+        const result = await backend.readAt(addr, len);
+        return isCurrent() && result && result.found ? result.bytes : null;
+      } catch {
+        return null;
+      }
+    },
     fetch: async (addr) => {
+      if (!isCurrent()) return null;
       const region = regionAt(addr);
       if (!region) return null;
       // The local concrete sandbox is ARM64 today. Resolve architecture from
       // the same active-slice truth as the runtime identity and fail closed for
       // unknown or variable-width targets instead of defaulting to ARM64.
-      const arch = activeArchitecture(app);
-      if (!localSandboxSupportsArchitecture(arch)) return null;
+      if (!localSandboxSupportsArchitecture(architecture)) return null;
       const delta = addr - region.vmAddr;
       if (delta % 4n !== 0n) return null;
       const row = Number(delta / 4n);
       const chunk = Math.floor(row / 1024);
-      const decoded = await app.backend.fetchChunk(region.id, chunk, true);
+      if (typeof backend?.fetchChunk !== 'function') return null;
+      const decoded = await backend.fetchChunk(region.id, chunk, true);
+      if (!isCurrent()) return null;
       const index = row - chunk * 1024;
       return { mn: decoded.mn ? decoded.mn[index] : '', ops: decoded.ops ? decoded.ops[index] : '' };
     },
-    isExecutable: (addr) => !!regionAt(addr),
-    symbolFor: (addr) => app.symbols?.nameAt?.(addr) || null,
-    labelFor: (addr) => app.symbols?.label?.(addr) || null,
+    isExecutable: (addr) => isCurrent() && !!regionAt(addr),
+    symbolFor: (addr) => isCurrent() ? symbols?.nameAt?.(addr) || null : null,
+    labelFor: (addr) => isCurrent() ? symbols?.label?.(addr) || null : null,
   };
 }
 
@@ -155,27 +343,45 @@ async function withRuntimeTransition(app, operation) {
 export async function runtimePlatformForApp(app) {
   if (!app) throw new Error('runtime app is required');
   return withRuntimeTransition(app, async () => {
-    let identity = await runtimeIdentityForApp(app);
+    let resolved = await resolveRuntimeIdentityForApp(app);
+    let { identity, source } = resolved;
     if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
     let state = states.get(app);
-    if (state && (state.identityKey !== identity.key || state.fileToken !== currentFileToken(app))) {
+    const stateSourceChanged = state?.source
+      ? !sourceBindingIsCurrent(app, state.source)
+      : state?.fileToken !== currentFileToken(app);
+    if (state && (state.identityKey !== identity.key || stateSourceChanged)) {
       await disposeState(state);
       if (states.get(app) === state) states.delete(app);
       state = states.get(app) || null;
-      identity = await runtimeIdentityForApp(app);
+      resolved = await resolveRuntimeIdentityForApp(app);
+      ({ identity, source } = resolved);
       if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
     }
     if (!state) {
       const platform = new RuntimeAnalysisPlatform({
-        localIO: createAppRuntimeIO(app),
+        localIO: createAppRuntimeIO(app, source),
         sessions: { maxSessions: 2 },
         sliceIdentity: identity.sliceIdentity,
       });
-      state = { platform, fileToken:currentFileToken(app), identityKey:identity.key, identity };
+      const candidate = { platform, fileToken:source.fileToken, identityKey:identity.key, identity, source };
+      if (!candidate.platform.sessions.current) {
+        await candidate.platform.startSession({ adapter:'local', binaryHash:identity.contentHash, connect:true });
+      }
+      if (!sourceBindingIsCurrent(app, source)) {
+        await disposeState(candidate);
+        throw staleRuntimeSourceError();
+      }
+      state = candidate;
       states.set(app, state);
     }
     if (!state.platform.sessions.current) {
       await state.platform.startSession({ adapter:'local', binaryHash:identity.contentHash, connect:true });
+      if (!sourceBindingIsCurrent(app, state.source)) {
+        if (states.get(app) === state) states.delete(app);
+        await disposeState(state);
+        throw staleRuntimeSourceError();
+      }
     }
     return state.platform;
   });
@@ -184,7 +390,10 @@ export async function runtimePlatformForApp(app) {
 export function runtimeEvidenceForApp(app, functionAddress = null) {
   const state = states.get(app);
   const sliceIdentity=activeSliceIdentity(app);
-  if (!state || state.fileToken !== currentFileToken(app) || state.identity?.sliceIdentity !== sliceIdentity) return [];
+  const sourceCurrent = state?.source
+    ? sourceBindingIsCurrent(app, state.source)
+    : state?.fileToken === currentFileToken(app);
+  if (!state || !sourceCurrent || state.identity?.sliceIdentity !== sliceIdentity) return [];
   const evidence = (Array.isArray(state.platform?.evidence) ? state.platform.evidence : []).filter((item)=>item?.sliceIdentity===sliceIdentity && item?.binaryHash===state.identity?.contentHash);
   if (functionAddress == null) return evidence.slice();
   const address = strictAddress(functionAddress);

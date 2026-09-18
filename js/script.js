@@ -90,6 +90,7 @@ function awaitRequest(request, signal) {
     const finish = (fn, value) => { if (settled) return; settled = true; signal.removeEventListener('abort', onAbort); fn(value); };
     const onAbort = () => { try { request.cancel?.(); } catch {} finish(reject, abortError(signal)); };
     signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
@@ -400,20 +401,46 @@ export function createApi(app, out, options = {}) {
 
     async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
 
-    /** 文字列を検索する。 */
-    findStrings(query, limit = 200) {
+    /** 文字列を検索する。既定で最大10,000件を走査し、256件ごとにyieldする。 */
+    async findStrings(query, limit = 200, context = null) {
+      if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
+        context = limit;
+        limit = limit.limit ?? 200;
+      }
+      const signal = signalOf(context);
+      throwIfAborted(signal);
       const q = String(query ?? '').toLowerCase();
       const max = Math.max(1, Math.min(5000, Number(limit) || 200));
       const source = app.stringIndex || (app.strings?.items) || [];
       const results = [];
-      for (const s of source) {
+      const maxScanned = Number.isSafeInteger(context?.maxScanned) && context.maxScanned > 0
+        ? context.maxScanned
+        : 10_000;
+      const total = source.length;
+      let scanned = 0;
+      while (scanned < total && scanned < maxScanned) {
+        throwIfAborted(signal);
+        const s = source[scanned++];
         const text = s?.text;
-        if (typeof text !== 'string') continue;
-        if (!q || text.toLowerCase().includes(q)) {
+        if (typeof text === 'string' && (!q || text.toLowerCase().includes(q))) {
           results.push(s);
           if (results.length >= max) break;
         }
+        if (scanned % 256 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          throwIfAborted(signal);
+        }
       }
+      throwIfAborted(signal);
+      const complete = scanned >= total;
+      Object.assign(results, {
+        complete,
+        completeness: complete ? 'complete' : 'partial',
+        scanned,
+        total,
+        capped: results.length >= max && total > results.length,
+        reason: complete ? null : (scanned >= maxScanned ? 'scan-budget-exhausted' : 'result-limit'),
+      });
       return results;
     },
 

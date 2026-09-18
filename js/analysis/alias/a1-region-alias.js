@@ -23,6 +23,7 @@
 
 import { stableStringify } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace, provenDistinctAddressSpace as provenDistinctCanonicalSpace } from './address-space.js';
 import { createAliasResult, mayAlias, reasonCodeForStopReason, unknownAlias } from './result.js';
 import { aliasMemoryRegions } from './legacy-safety-floor.js';
 import { isPreciseMemoryRegion, sameMemoryRegionIdentity } from './regions-v2.js';
@@ -40,16 +41,20 @@ const FLAT_MEMORY_KINDS = new Set(['stack-fixed', 'global-absolute', 'rooted-off
 /** Region kinds that carry their own explicit, self-describing address space. */
 const EXPLICIT_SPACE_KINDS = new Set(['tls', 'io', 'physical-space']);
 
-const FLAT_MEMORY_SPACE = 'memory';
-
 function toBigInt(value) {
   try { return typeof value === 'bigint' ? value : BigInt(value); }
   catch { return null; }
 }
 
 function widthBytes(region) {
-  const bits = Number(region?.widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  // Width authority must match the canonical MemoryRegionRef contract: only a
+  // primitive positive safe-integer bit width may prove interval separation or
+  // identity. Number() is a conversion API (Number(['8']) === 8, Number(true)
+  // === 1), so a structured/malformed width would launder a strong alias
+  // relation out of a lookalike region (#5223). Malformed widths fail closed
+  // to the weak relation instead.
+  const bits = region?.widthBits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
   return BigInt(Math.ceil(bits / 8));
 }
 
@@ -64,15 +69,14 @@ export function provenAddressSpace(region) {
   if (!region) return null;
   // A rooted-offset region may carry an explicit proven space from its
   // canonical proof (tls/io-rooted descriptors, #5901). Only space-less
-  // rooted-offsets are flat memory by construction.
+  // rooted-offsets are flat memory by construction. The token is canonicalized
+  // so a case/whitespace drift cannot name a second physical domain (#8879).
   if (region.kind === 'rooted-offset') {
-    if (typeof region.addressSpace === 'string' && region.addressSpace.trim()) return region.addressSpace.trim();
-    return FLAT_MEMORY_SPACE;
+    return canonicalAddressSpace(region.addressSpace) ?? FLAT_MEMORY_SPACE;
   }
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
-    const space = typeof region.addressSpace === 'string' ? region.addressSpace.trim() : null;
-    return space || null;
+    return canonicalAddressSpace(region.addressSpace);
   }
   return null;
 }
@@ -82,10 +86,7 @@ export function provenAddressSpace(region) {
  * spaces. This is the one separation proof A1 adds on top of the floor.
  */
 function provenDistinctAddressSpace(a, b) {
-  const left = provenAddressSpace(a);
-  const right = provenAddressSpace(b);
-  if (left == null || right == null) return false;
-  return left !== right;
+  return provenDistinctCanonicalSpace(provenAddressSpace(a), provenAddressSpace(b));
 }
 
 /**

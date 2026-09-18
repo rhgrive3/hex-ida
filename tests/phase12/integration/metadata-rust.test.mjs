@@ -13,6 +13,35 @@ import { parseUnifiedLanguageMetadata } from '../../../js/metadata/index.js';
 
 console.log('Testing Rust Metadata Provider...');
 
+// #3710: all basic type codes in the official Rust v0 grammar.
+// https://doc.rust-lang.org/rustc/symbol-mangling/v0.html#type
+{
+  const basicTypes = {
+    a:'i8', b:'bool', c:'char', d:'f64', e:'str', f:'f32', h:'u8',
+    i:'isize', j:'usize', l:'i32', m:'u32', n:'i128', o:'u128',
+    p:'_', s:'i16', t:'u16', u:'()', v:'...', x:'i64', y:'u64', z:'!',
+  };
+  const symbols = Object.entries(basicTypes).map(([code, type], index) => {
+    const name = `_RMC1a${code}`;
+    const parsed = demangleRustV0(name);
+    assert.equal(parsed.parsed, true, `basic type ${code}`);
+    assert.equal(parsed.demangled, `<a::${type}>`, `basic type ${code}`);
+    return { name, address:0x1000n + BigInt(index * 4) };
+  });
+  assert.equal(demangleRustV0('_RMC1aq').parsed, false, 'unknown type code stays unsupported');
+  const provider = new RustMetadataProvider({
+    symbols,
+    commentBuffer:new TextEncoder().encode('rustc version 1.80.0'),
+    binaryIdentity:'sha256:issue-3710-basic-types',
+  });
+  const probe = provider.probe();
+  assert.equal(probe.authoritative, true);
+  assert.equal(probe.completeness.complete, true);
+  assert.equal(probe.counts.symbols, symbols.length);
+  assert.deepEqual(provider.symbols().records.map((record) => record.name),
+    Object.values(basicTypes).map((type) => `<a::${type}>`));
+}
+
 // 1. Positive: Rust v0 Demangling (RFC 2603)
 {
   // Crate root: _RC4core

@@ -1,6 +1,17 @@
+import { canonicalWorkerIdentity } from './worker-identity.js';
+
 const COMPLETION_SOURCE = 'iframe-worker-pool';
 const GRAPH_COMPLETION_SOURCE = 'dynamic-task-graph';
 const MAX_RETAINED_GRAPH_COMPLETIONS = 2048;
+const poolWrappers = new WeakMap();
+
+function unwrapPoolMethod(method, closedOnly = false) {
+  let record;
+  while ((record = poolWrappers.get(method)) && (!closedOnly || record.bridge.closed)) {
+    method = record.previous;
+  }
+  return method;
+}
 
 export class IframeWorkerCompletionBridge {
   constructor({ workerPool, coordinator, now = () => new Date().toISOString() } = {}) {
@@ -17,21 +28,30 @@ export class IframeWorkerCompletionBridge {
     this.runByLease = new Map();
     this.currentBySlot = new Map();
     this.graphCompletions = new Map();
-    this.originalStart = workerPool.start.bind(workerPool);
-    this.originalFollowup = workerPool.followup.bind(workerPool);
-    workerPool.start = (args) => this.start(args);
-    workerPool.followup = (args) => this.followup(args);
+    this.closed = false;
+    this.previousStart = workerPool.start;
+    this.previousFollowup = workerPool.followup;
+    // Only the active bridge tracks a call; predecessor bridges are restoration
+    // targets, not another layer of completion/lease ownership checks.
+    this.originalStart = unwrapPoolMethod(workerPool.start).bind(workerPool);
+    this.originalFollowup = unwrapPoolMethod(workerPool.followup).bind(workerPool);
+    this.startWrapper = (args) => this.start(args);
+    this.followupWrapper = (args) => this.followup(args);
+    poolWrappers.set(this.startWrapper, { bridge: this, previous: this.previousStart });
+    poolWrappers.set(this.followupWrapper, { bridge: this, previous: this.previousFollowup });
+    workerPool.start = this.startWrapper;
+    workerPool.followup = this.followupWrapper;
   }
 
   async claim(args = {}, options = {}) {
     const runId = args.runId == null ? null : requiredIdentity(args.runId, 'runId');
     const claim = await this.workerPool.claim({ ...args, signal: options.signal });
-    if (runId) this.runByLease.set(String(claim.leaseId), runId);
+    if (runId) this.runByLease.set(requiredIdentity(claim.leaseId, 'leaseId'), runId);
     return claim;
   }
 
   async release(args = {}) {
-    const leaseId = String(args.leaseId || '');
+    const leaseId = requiredIdentity(args.leaseId, 'leaseId');
     this.assertRunOwnership(leaseId, args.runId);
     const result = await this.workerPool.release(args);
     this.runByLease.delete(leaseId);
@@ -43,7 +63,7 @@ export class IframeWorkerCompletionBridge {
 
   async start(args = {}) {
     const slot = this.workerPool.requireLease(args.leaseId);
-    const leaseId = String(slot.leaseId);
+    const leaseId = requiredIdentity(slot.leaseId, 'leaseId');
     const runId = this.assertRunOwnership(leaseId, args.runId);
 
     /* Do not replace the current occurrence until the canonical Pool accepts
@@ -56,7 +76,7 @@ export class IframeWorkerCompletionBridge {
 
   async followup(args = {}) {
     const slot = this.workerPool.requireLease(args.leaseId);
-    const leaseId = String(slot.leaseId);
+    const leaseId = requiredIdentity(slot.leaseId, 'leaseId');
     const runId = this.assertRunOwnership(leaseId, args.runId);
     if (slot.pending) throw poolBusyError();
 
@@ -95,6 +115,7 @@ export class IframeWorkerCompletionBridge {
   }
 
   trackOccurrence(slot, leaseId, runId) {
+    if (this.closed) return null;
     const occurrence = {
       completionId: `pool-completion-${++this.sequence}`,
       slot: slot.index,
@@ -147,8 +168,8 @@ export class IframeWorkerCompletionBridge {
         graphId,
         taskId,
         attempt: boundedAttempt(data.attempt),
-        workerId: optionalIdentity(data.workerId),
-        leaseId: optionalIdentity(data.leaseId),
+        workerId: optionalIdentity(data.workerId, 'workerId'),
+        leaseId: optionalIdentity(data.leaseId, 'leaseId'),
         slot: Number.isInteger(Number(data.slot)) ? Number(data.slot) : null,
         completionId,
       }),
@@ -179,7 +200,7 @@ export class IframeWorkerCompletionBridge {
       if (isGraphCompletion(event)) {
         const record = this.graphCompletions.get(String(event.data?.completionId || ''));
         if (!record || record.delivered) continue;
-        const requestedRunId = args.runId == null ? null : String(args.runId);
+        const requestedRunId = optionalIdentity(args.runId, 'runId');
         if (requestedRunId != null && record.runId !== requestedRunId) continue;
         record.delivered = true;
         this.graphCompletions.delete(record.completionId);
@@ -195,7 +216,7 @@ export class IframeWorkerCompletionBridge {
 
   takeRetainedCompletion(args = {}) {
     if (!wantsCompletion(args.events)) return null;
-    const runId = args.runId == null ? null : String(args.runId);
+    const runId = optionalIdentity(args.runId, 'runId');
     for (const occurrence of this.currentBySlot.values()) {
       if (!occurrence.runId || (runId != null && occurrence.runId !== runId)) continue;
       if (occurrence.delivered || !this.isCurrentRetainedCompletion(occurrence)) continue;
@@ -242,7 +263,7 @@ export class IframeWorkerCompletionBridge {
   }
 
   assertRunOwnership(leaseId, suppliedRunId) {
-    const ownerRunId = this.runByLease.get(String(leaseId)) || null;
+    const ownerRunId = this.runByLease.get(requiredIdentity(leaseId, 'leaseId')) || null;
     const requestedRunId = suppliedRunId == null ? null : requiredIdentity(suppliedRunId, 'runId');
     if (!ownerRunId) {
       if (requestedRunId) {
@@ -271,8 +292,10 @@ export class IframeWorkerCompletionBridge {
   }
 
   close() {
-    if (this.workerPool.start !== this.originalStart) this.workerPool.start = this.originalStart;
-    if (this.workerPool.followup !== this.originalFollowup) this.workerPool.followup = this.originalFollowup;
+    if (this.closed) return;
+    this.closed = true;
+    if (this.workerPool.start === this.startWrapper) this.workerPool.start = unwrapPoolMethod(this.previousStart, true);
+    if (this.workerPool.followup === this.followupWrapper) this.workerPool.followup = unwrapPoolMethod(this.previousFollowup, true);
     this.runByLease.clear();
     this.currentBySlot.clear();
     this.graphCompletions.clear();
@@ -303,15 +326,15 @@ function poolBusyError() {
   return error;
 }
 
+/* Worker ownership and provenance ids are authority, so they keep the
+   canonical primitive-string domain instead of collapsing onto whatever a
+   caller-controlled toString() would produce. */
 function requiredIdentity(value, field) {
-  const text = String(value ?? '').trim();
-  if (!text) throw new TypeError(`Iframe Worker completion ${field} must be non-empty.`);
-  return text;
+  return canonicalWorkerIdentity(value, `Iframe Worker completion ${field}`);
 }
 
-function optionalIdentity(value) {
-  const text = String(value ?? '').trim();
-  return text || null;
+function optionalIdentity(value, field) {
+  return value == null ? null : requiredIdentity(value, field);
 }
 function boundedAttempt(value) {
   const number = Number(value);

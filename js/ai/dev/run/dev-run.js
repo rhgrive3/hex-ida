@@ -96,7 +96,11 @@ export function isTerminalDevRun(run) {
 }
 
 function normalizePlanItem(item, index) {
-  if (typeof item === 'string') return Object.freeze({ id: `step-${index + 1}`, text: item.trim(), status: 'planned' });
+  if (typeof item === 'string') {
+    const text = item.trim();
+    if (!text) throw new TypeError('Dev plan item text is required.');
+    return Object.freeze({ id: `step-${index + 1}`, text, status: 'planned' });
+  }
   if (!item || typeof item !== 'object') throw new TypeError('Dev plan items must be strings or objects.');
   const text = String(item.text || item.goal || '').trim();
   if (!text) throw new TypeError('Dev plan item text is required.');

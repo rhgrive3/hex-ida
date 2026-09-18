@@ -47,6 +47,9 @@ function makeImage() {
   const imageBase = 0x100000000n;
   return {
     imageBase,
+    // Re-export ordinals are 1-based dependency indices.  Keep both
+    // ordinal-1 and ordinal-2 cases in-range under the later #5532 bound.
+    libraries: ['libA.dylib', 'libB.dylib'],
     exports: [],
     functions: [],
     metadata: {},
@@ -100,7 +103,8 @@ function run(name, payload, limits) {
   assert.equal(status.complete, false);
   assert.equal(status.budgetExceeded, true);
   assert.equal(image.exports.length, 0);
-  assert.equal(budget.used.stringBytes, 0);
+  // The edge label itself is now charged before decoding the imported name (#4154).
+  assert.equal(budget.used.stringBytes, 4);
 }
 
 {

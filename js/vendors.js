@@ -90,22 +90,62 @@ const VENDOR_PATTERNS = [
  * そこで **同じ接頭辞のクラスが 3 個以上あるとき** だけ SDK とみなす。
  */
 const VENDOR_PREFIXES = {
-  GAD: 'Google Mobile Ads', GAM: 'Google Mobile Ads', GADU: 'Google Mobile Ads',
-  FIR: 'Firebase', FIRCLS: 'Crashlytics', GUL: 'Firebase', GDT: 'Firebase',
-  APM: 'Google App Measurement', GTM: 'Google Toolbox', GTMR: 'Google Toolbox',
-  GIN: 'Google Sign-In', GTLR: 'Google API Client', GPB: 'Protocol Buffers',
-  FB: 'Meta', FBSDK: 'Meta', FBAD: 'Meta Audience Network',
-  IS: 'IronSource', ISN: 'IronSource', ISA: 'IronSource', LPM: 'IronSource LevelPlay',
-  AL: 'AppLovin', MA: 'AppLovin MAX', ALG: 'AppLovin',
-  UAD: 'Unity Ads', UADS: 'Unity Ads', USRV: 'Unity Services', UMON: 'Unity Monetization',
-  VG: 'Vungle', VNG: 'Vungle',
-  TJ: 'Tapjoy', CB: 'Chartboost', CHB: 'Chartboost',
-  MTG: 'Mintegral', BU: 'Pangle', PAG: 'Pangle', IM: 'InMobi', FY: 'Fyber',
-  POB: 'PubMatic', SML: 'Smaato', OMID: 'IAB Open Measurement', OM: 'IAB Open Measurement',
-  ADJ: 'Adjust', AF: 'AppsFlyer', BNC: 'Branch', ADB: 'Adobe',
-  ABK: 'Braze', OS: 'OneSignal', LP: 'Leanplum', HS: 'Helpshift',
-  BSG: 'Bugsnag', SNTR: 'Sentry', AMP: 'Amplitude',
-  AFN: 'AFNetworking', RLM: 'Realm', SD: 'SDWebImage', MB: 'MBProgressHUD',
+  GAD: { vendor: 'Google Mobile Ads', kind: 'ads' },
+  GAM: { vendor: 'Google Mobile Ads', kind: 'ads' },
+  GADU: { vendor: 'Google Mobile Ads', kind: 'ads' },
+  FIR: { vendor: 'Firebase', kind: 'analytics' },
+  FIRCLS: { vendor: 'Crashlytics', kind: 'analytics' },
+  GUL: { vendor: 'Firebase', kind: 'analytics' },
+  GDT: { vendor: 'Firebase', kind: 'analytics' },
+  APM: { vendor: 'Google App Measurement', kind: 'analytics' },
+  GTM: { vendor: 'Google Toolbox', kind: 'library' },
+  GTMR: { vendor: 'Google Toolbox', kind: 'library' },
+  GIN: { vendor: 'Google Sign-In', kind: 'library' },
+  GTLR: { vendor: 'Google API Client', kind: 'library' },
+  GPB: { vendor: 'Protocol Buffers', kind: 'library' },
+  FB: { vendor: 'Meta', kind: 'library' },
+  FBSDK: { vendor: 'Meta', kind: 'library' },
+  FBAD: { vendor: 'Meta Audience Network', kind: 'ads' },
+  IS: { vendor: 'IronSource', kind: 'ads' },
+  ISN: { vendor: 'IronSource', kind: 'ads' },
+  ISA: { vendor: 'IronSource', kind: 'ads' },
+  LPM: { vendor: 'IronSource LevelPlay', kind: 'ads' },
+  AL: { vendor: 'AppLovin', kind: 'ads' },
+  MA: { vendor: 'AppLovin MAX', kind: 'ads' },
+  ALG: { vendor: 'AppLovin', kind: 'ads' },
+  UAD: { vendor: 'Unity Ads', kind: 'ads' },
+  UADS: { vendor: 'Unity Ads', kind: 'ads' },
+  USRV: { vendor: 'Unity Services', kind: 'ads' },
+  UMON: { vendor: 'Unity Monetization', kind: 'ads' },
+  VG: { vendor: 'Vungle', kind: 'ads' },
+  VNG: { vendor: 'Vungle', kind: 'ads' },
+  TJ: { vendor: 'Tapjoy', kind: 'ads' },
+  CB: { vendor: 'Chartboost', kind: 'ads' },
+  CHB: { vendor: 'Chartboost', kind: 'ads' },
+  MTG: { vendor: 'Mintegral', kind: 'ads' },
+  BU: { vendor: 'Pangle', kind: 'ads' },
+  PAG: { vendor: 'Pangle', kind: 'ads' },
+  IM: { vendor: 'InMobi', kind: 'ads' },
+  FY: { vendor: 'Fyber', kind: 'ads' },
+  POB: { vendor: 'PubMatic', kind: 'ads' },
+  SML: { vendor: 'Smaato', kind: 'ads' },
+  OMID: { vendor: 'IAB Open Measurement', kind: 'ads' },
+  OM: { vendor: 'IAB Open Measurement', kind: 'ads' },
+  ADJ: { vendor: 'Adjust', kind: 'analytics' },
+  AF: { vendor: 'AppsFlyer', kind: 'analytics' },
+  BNC: { vendor: 'Branch', kind: 'analytics' },
+  ADB: { vendor: 'Adobe', kind: 'analytics' },
+  ABK: { vendor: 'Braze', kind: 'marketing' },
+  OS: { vendor: 'OneSignal', kind: 'marketing' },
+  LP: { vendor: 'Leanplum', kind: 'marketing' },
+  HS: { vendor: 'Helpshift', kind: 'support' },
+  BSG: { vendor: 'Bugsnag', kind: 'analytics' },
+  SNTR: { vendor: 'Sentry', kind: 'analytics' },
+  AMP: { vendor: 'Amplitude', kind: 'analytics' },
+  AFN: { vendor: 'AFNetworking', kind: 'library' },
+  RLM: { vendor: 'Realm', kind: 'library' },
+  SD: { vendor: 'SDWebImage', kind: 'library' },
+  MB: { vendor: 'MBProgressHUD', kind: 'library' },
 };
 
 /** ゲームの数値を探しているのに、SDK の値を答えてはいけない目的。 */
@@ -222,8 +262,8 @@ export function learnVendors(classNames) {
     if ((prefixCount.get(p) || 0) < PREFIX_MIN) return;
     prefixes.set(p, Object.assign({}, hit, { via: 'prefix', prefix: p, confidence: 'high' }));
   };
-  for (const [p, vendor] of Object.entries(VENDOR_PREFIXES)) {
-    seed(p, { vendor, kind: 'sdk' });
+  for (const [p, hit] of Object.entries(VENDOR_PREFIXES)) {
+    seed(p, hit);
   }
   for (const n of names) {
     const hit = matchPattern(n);

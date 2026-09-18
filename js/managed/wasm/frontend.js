@@ -3,6 +3,7 @@ import { createManagedMethodId, createManagedTypeId } from '../shared/identity.j
 import { createManagedValidationReport } from '../shared/validation.js';
 import { liftWasmFunction } from './lifter.js';
 import { parseWasm, probeWasm } from './parser.js';
+import { wasmModuleIndex } from './module-index.js';
 
 export class WasmFrontend {
   constructor(options = {}) {
@@ -44,12 +45,17 @@ export class WasmFrontend {
   }
 
   async *enumerateMethods(image, options = {}) {
-    const importedCount = image.imports.filter((imp) => imp.desc.kind === 0).length;
+    const moduleIndex = wasmModuleIndex(image);
+    const importedCount = moduleIndex.importedFunctionCount;
     const totalFuncs = importedCount + image.functions.length;
+    const functionExportsByIndex = new Map();
+    for (const entry of image.exports) {
+      if (entry.kind === 0 && !functionExportsByIndex.has(entry.index)) functionExportsByIndex.set(entry.index, entry);
+    }
     for (let i = 0; i < totalFuncs; i++) {
       const methodId = createManagedMethodId(image.moduleId, i);
       const isImport = i < importedCount;
-      const exportEntry = image.exports.find((e) => e.kind === 0 && e.index === i);
+      const exportEntry = functionExportsByIndex.get(i);
       yield {
         id: methodId,
         moduleId: image.moduleId,
@@ -79,6 +85,7 @@ export class WasmFrontend {
         structural: 'complete',
         specValidation,
         semanticEffect: status === 'valid' ? 'complete' : 'partial',
+        resolution: status === 'valid' && specValidation === 'valid' ? 'complete' : 'partial',
       },
     });
   }

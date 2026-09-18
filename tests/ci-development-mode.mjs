@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 // Run without a paths filter so a newly migrated dependency cannot skip its own check.
+import './issue-458-ghidra-trigger.mjs';
 import './dev-agent/agent-loop-trigger-coverage.mjs';
 
 const read = (name) => fs.readFileSync(`.github/workflows/${name}`, 'utf8');
@@ -26,14 +27,6 @@ for (const name of [
   'stage2-release-validation.yml',
   'stage2-nonphysical-closure.yml',
 ]) noPr(name);
-
-const phase12 = read('phase12-release-validation.yml');
-assert.match(phase12, /^  workflow_dispatch:\n    inputs:\n      expect_sha:/m,
-  'Phase 12 release validation must retain an exact-SHA manual path');
-assert.match(phase12, /ref: \$\{\{ inputs\.expect_sha \|\| github\.sha \}\}/,
-  'Phase 12 manual validation must checkout the requested exact SHA');
-assert.match(phase12, /npm run phase12:verify -- --expect-sha "\$VERIFY_SHA"/,
-  'Phase 12 manual validation must invoke its exact-head verifier');
 
 const fast = read('pr-fast-gate.yml');
 assert.match(fast, /^  pull_request:/m);

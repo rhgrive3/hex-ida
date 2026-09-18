@@ -15,6 +15,8 @@ import { COMPLETENESS_STATUS, createCompleteness } from '../translate/support-ma
 
 export const EVIDENCE_SCHEMA_VERSION = '1.1.0';
 
+export const STRUCTURED_ENTITY_ID_PREFIX = '\u0000entity:json:';
+
 export const EVIDENCE_VERDICT = Object.freeze({
   PROVED: 'proved',
   REFUTED: 'refuted',
@@ -207,6 +209,12 @@ export function createSymbolicEvidence({
   if (!backendVersion || typeof backendVersion !== 'string') {
     throw new TypeError('createSymbolicEvidence: backendVersion must be a string');
   }
+  if (typeof architecture !== 'string' || architecture.trim() === '') {
+    throw new TypeError('createSymbolicEvidence: architecture must be a non-empty string');
+  }
+  if (bitWidth !== null && (typeof bitWidth !== 'number' || !Number.isSafeInteger(bitWidth) || bitWidth <= 0)) {
+    throw new TypeError('createSymbolicEvidence: bitWidth must be null or a positive safe integer');
+  }
   if (!Object.values(PROOF_AUTHORITY).includes(proofAuthority)) {
     throw new TypeError(`createSymbolicEvidence: invalid proofAuthority '${proofAuthority}'`);
   }
@@ -284,8 +292,28 @@ export function createSymbolicEvidence({
     throw new Error('createSymbolicEvidence: cannot mint refuted evidence when witness model validation was rejected');
   }
 
+  // Invariant 5 (#3995): a SAT provider assertion alone cannot mint REFUTED
+  // authority — the witness must be independently validated and present.
+  if (verdict === EVIDENCE_VERDICT.REFUTED && normValidationStatus !== VALIDATION_STATUS.VALIDATED) {
+    throw new Error(`createSymbolicEvidence: refuted evidence requires validated witness model, got '${normValidationStatus}'`);
+  }
+  if (verdict === EVIDENCE_VERDICT.REFUTED && !witnessModel) {
+    throw new Error('createSymbolicEvidence: refuted evidence requires a witness model');
+  }
+
   // Normalize targetEntities
-  const normalizedTargets = targetEntities.map((t) => (typeof t === 'string' ? t : JSON.stringify(canonicalize(t))));
+  const normalizedTargets = targetEntities.map((t) => {
+    if (typeof t === 'string') {
+      if (t.startsWith(STRUCTURED_ENTITY_ID_PREFIX)) {
+        throw new TypeError('createSymbolicEvidence: targetEntities strings must not occupy the structured entity id namespace');
+      }
+      return t;
+    }
+    if (t === null || typeof t !== 'object') {
+      throw new TypeError('createSymbolicEvidence: targetEntities entries must be strings or canonicalizable objects');
+    }
+    return `${STRUCTURED_ENTITY_ID_PREFIX}${JSON.stringify(canonicalize(t))}`;
+  });
 
   // Normalize assumptions
   const normalizedAssumptions = Array.isArray(assumptions)
@@ -369,8 +397,8 @@ export function createSymbolicEvidence({
     verdict,
     witnessModel: normalizedWitness,
     limits: limits ? canonicalize(limits) : null,
-    architecture: String(architecture),
-    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    architecture,
+    bitWidth,
     proofScope: proofScope ? canonicalize(proofScope) : null,
     assumptionsFingerprint: stableDigest(normalizedAssumptions),
     metadata: metadata ? canonicalize(metadata) : null,
@@ -405,7 +433,8 @@ export function isRefutedEvidence(evidence) {
     isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.REFUTED &&
     evidence.solverStatus === SOLVER_STATUS.SAT &&
-    evidence.validationStatus !== VALIDATION_STATUS.REJECTED &&
+    evidence.validationStatus === VALIDATION_STATUS.VALIDATED &&
+    evidence.witnessModel != null &&
     !isSolverFailure({ status: evidence.solverStatus })
   );
 }
@@ -428,6 +457,8 @@ function isCanonicalSymbolicEvidence(evidence) {
   if (evidence.capabilityFingerprint !== null && typeof evidence.capabilityFingerprint !== 'string') return false;
   if (evidence.capabilityFingerprintHash !== (evidence.capabilityFingerprint ? stableDigest(String(evidence.capabilityFingerprint)) : null)) return false;
   if (!Array.isArray(evidence.targetEntities) || evidence.targetEntities.some((entity) => typeof entity !== 'string')) return false;
+  if (typeof evidence.architecture !== 'string' || evidence.architecture.length === 0) return false;
+  if (evidence.bitWidth !== null && (typeof evidence.bitWidth !== 'number' || !Number.isSafeInteger(evidence.bitWidth) || evidence.bitWidth <= 0)) return false;
   if (typeof evidence.proofStatement !== 'string' || evidence.proofStatement.length === 0) return false;
   return computeEvidenceId({
     schemaVersion: evidence.schemaVersion,

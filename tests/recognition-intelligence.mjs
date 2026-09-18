@@ -114,6 +114,42 @@ const appFn={...base,bytes:null,objcClass:'PlayerData',strings:['reward','coins'
 assert.equal(classifyFunction(appFn,{notKnownVendor:true,calledFromApplication:true}).classification,'APPLICATION');
 assert.ok(applicationCodeScore(appFn,{notKnownVendor:true,calledFromApplication:true})>0.6);
 assert.ok(discoverSubsystems(appFn).some((x)=>x.subsystem==='economy/reward'));
+
+// Classifier authority accepts only primitive finite confidence values.
+const malformedConfidenceValues=['0.95',['0.95'],true,Object(0.95)];
+for (const confidence of malformedConfidenceValues) {
+  const signatureResult=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence}});
+  assert.equal(signatureResult.classification,'SYSTEM');
+  assert.equal(signatureResult.hardSuppress,false,'malformed signature confidence must not grant suppression authority');
+  assert.ok(signatureResult.confidence<0.9);
+  const vendorResult=classifyFunction(base,{vendor:{classification:'SYSTEM',confidence}});
+  assert.notEqual(vendorResult.hardSuppress,true,'malformed vendor confidence must not grant suppression authority');
+  assert.ok(vendorResult.confidence<0.8);
+}
+const numericSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:0.9}});
+assert.equal(numericSignature.confidence,0.9);
+assert.equal(numericSignature.hardSuppress,true,'finite exact signature confidence keeps existing authority threshold');
+const clampedSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:1.5}});
+assert.equal(clampedSignature.confidence,1,'finite signature confidence keeps existing clamp');
+const belowSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:0.89}});
+assert.equal(belowSignature.hardSuppress,false,'signature suppression threshold remains strict');
+const nonExactSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'similar',confidence:0.95}});
+assert.equal(nonExactSignature.hardSuppress,false,'confidence cannot replace the exact signature identity guard');
+const numericVendor=classifyFunction(base,{vendor:{classification:'SDK',confidence:0.8}});
+assert.equal(numericVendor.classification,'SDK');
+assert.equal(numericVendor.confidence,0.8);
+assert.equal(numericVendor.hardSuppress,true,'finite vendor confidence keeps existing authority');
+const belowVendor=classifyFunction(base,{vendor:{classification:'SDK',confidence:0.79}});
+assert.equal(belowVendor.hardSuppress,false,'vendor suppression threshold remains strict');
+const malformedVendorContext={vendor:{classification:'SYSTEM',confidence:'0.95'},notKnownVendor:true,calledFromApplication:true};
+const malformedVendorResult=classifyFunction(appFn,malformedVendorContext);
+assert.equal(malformedVendorResult.classification,'APPLICATION','malformed vendor evidence must not suppress an application candidate');
+assert.equal(malformedVendorResult.hardSuppress,false);
+const malformedVendorScore=applicationCodeScore(appFn,malformedVendorContext);
+const validVendorScore=applicationCodeScore(appFn,{vendor:{classification:'SYSTEM',confidence:0.95},notKnownVendor:true,calledFromApplication:true});
+assert.ok(malformedVendorScore>validVendorScore,'malformed vendor confidence must not lower application ranking as trusted authority');
+const malformedRank=rankApplicationFunctions([appFn],()=>malformedVendorContext);
+assert.equal(malformedRank[0].classification.classification,'APPLICATION');
 assert.equal(classifyFunction(base,{owningLibrary:'/usr/lib/libSystem.B.dylib'}).classification,'SYSTEM');
 const cAppRuntimeCalls={address:55n,architecture:'arm64',imports:['malloc','free'],instructions:['bl malloc','bl free','ret']};
 assert.notEqual(classifyFunction(cAppRuntimeCalls,{libraries:['Foundation.framework','/usr/lib/libSystem.B.dylib']}).classification,'RUNTIME','linked frameworks plus malloc/free do not imply runtime ownership');

@@ -27,11 +27,12 @@ import {
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
 import { decompilerSourceRows, formatDecompilerSource, fullDecompilerSourceText, hasSingleDecompilerInstruction, primaryDecompilerAddress } from './decompiler/provenance.js';
+import { showDecompilerProvenanceSheet } from './ui/decompiler-provenance-sheet.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
-import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
+import { readableName, shortName, isMangled, findCxxClasses, readVtable, rttiPointerContextForSlice } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
-import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, instructionPatchArchitectureSupported } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
@@ -334,6 +335,7 @@ export async function showDecompiler(app, addr) {
   });
   chips.append(asmChip, noteChip);
   chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '逆コンパイル結果')));
+  chips.append(button('命令との双方向対応', 'chip', () => showDecompilerProvenanceSheet(app, addr)));
   chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
   head.append(chips);
   sheet.body.append(head);
@@ -835,15 +837,20 @@ async function showVtable(app, cls) {
   const status = el('div', 'hint', '読み込んでいます…');
   sheet.body.append(status);
   const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-  const pointerContext = app.pointerResolutionContextFor?.(cls.vtable) ?? {};
+  const pointerContext = rttiPointerContextForSlice(
+    app.currentSlice?.(),
+    app.pointerResolutionContextFor?.(cls.vtable) ?? {},
+  );
   const vt = await readVtable(read, cls.vtable, app.symbols, 64, pointerContext);
   if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
   status.remove();
 
+  const sampleOffset = 0x10;
+  const sampleSlot = sampleOffset / vt.pointerBytes;
   sheet.body.append(el('div', 'hint',
-    '仮想関数の一覧です。番号が「何番目のスロットか」で、\n' +
-    'コードの中で `ldr x8, [x0]` → `ldr x8, [x8, #0x10]` → `blr x8` と呼ばれていたら、\n' +
-    'それは 0x10 ÷ 8 = 2 番のスロット、つまり下の 2 番の関数です。'));
+    `仮想関数の各スロットは ${vt.pointerBytes} バイトです。\n` +
+    `間接呼出しが vptr から byte offset 0x${sampleOffset.toString(16)} を読んでいたら、\n` +
+    `0x${sampleOffset.toString(16)} ÷ ${vt.pointerBytes} = ${sampleSlot} 番のスロットです。`));
 
   const l = list();
   for (const s of vt.slots) {
@@ -1132,6 +1139,22 @@ export function showNotes(app) {
    パッチ
    ══════════════════════════════════════════════════════════ */
 
+function instructionPatchCapability(app) {
+  const architecture = String(app?.store?.get?.('architecture') || '').toLowerCase();
+  const supported = instructionPatchArchitectureSupported(architecture);
+  return {
+    architecture, supported,
+    reason:supported ? null : `このCPU（${architecture || '不明'}）の命令パッチはまだ未対応です。`,
+  };
+}
+
+function patchRegionForAddress(app, addr) {
+  const hasOwnerResolver = typeof app?.executableRegionFor === 'function' || typeof app?.regionForAddress === 'function';
+  const owner = app?.executableRegionFor?.(addr) ?? app?.regionForAddress?.(addr) ?? null;
+  if (owner) return owner.exec === false ? null : owner;
+  return hasOwnerResolver ? null : app?.codeRegion?.() ?? null;
+}
+
 export function showPatches(app) {
   const sheet = new Sheet('パッチ');
   sheet.body.append(el('div', 'hint',
@@ -1161,17 +1184,22 @@ export function showPatches(app) {
     body.append(l);
 
     const chips = el('div', 'chips');
-    chips.append(button('アドレスを指定して書き換える', 'chip', () => {
-      const sh = new Sheet('場所を指定');
-      const a = input('0x100004000');
-      sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
-        let addr;
-        try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
-        sh.close();
-        const insn = await instructionAt(app, addr);
-        showPatchEditor(app, addr, insn);
+    const capability = instructionPatchCapability(app);
+    if (capability.supported) {
+      chips.append(button('アドレスを指定して書き換える', 'chip', () => {
+        const sh = new Sheet('場所を指定');
+        const a = input('0x100004000');
+        sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
+          let addr;
+          try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+          sh.close();
+          const insn = await instructionAt(app, addr);
+          showPatchEditor(app, addr, insn);
+        }));
       }));
-    }));
+    } else {
+      body.append(noteBox(capability.reason));
+    }
     if (items.length) {
       chips.append(button('書き換えたファイルを保存', 'chip strong', () => savePatched(app)));
       chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); render(); }));
@@ -1184,7 +1212,8 @@ export function showPatches(app) {
 }
 
 async function instructionAt(app, addr) {
-  const region = app.codeRegion();
+  if (!instructionPatchCapability(app).supported) return null;
+  const region = patchRegionForAddress(app, addr);
   if (!region) return null;
   const file = app.store.get('file');
   if (validatePatchRange(region, addr, 4, file && file.size, true).error) return null;
@@ -1206,13 +1235,13 @@ async function instructionAt(app, addr) {
 
 export async function showPatchEditor(app, addr, insnArg) {
   const sheet = new Sheet('命令を書き換える');
-  const arch = String(app.store.get('architecture') || '').toLowerCase();
-  if (arch && arch !== 'arm64' && arch !== 'arm64e') {
-    sheet.body.append(noteBox(`パッチ機能（ARM64アセンブラ）はこのアーキテクチャ（${arch}）では未対応です。`));
+  const capability = instructionPatchCapability(app);
+  if (!capability.supported) {
+    sheet.body.append(noteBox(capability.reason));
     return;
   }
   const insn = insnArg || await instructionAt(app, addr);
-  const region = (app.regionForAddress ? app.regionForAddress(addr) : null) || app.codeRegion();
+  const region = patchRegionForAddress(app, addr);
   if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
   const file = app.store.get('file');
   const range = validatePatchRange(region, addr, 4, file && file.size, true);
@@ -1552,7 +1581,7 @@ function showScriptHelp() {
       'await hex.bytes(addr, 16)  生バイト',
       'await hex.string(addr)     文字列として読む',
       'await hex.loadStrings()    文字列を集める',
-      'hex.findStrings("error")   文字列を探す',
+    'await hex.findStrings("error")   文字列を探す',
     ]],
     ['書く・動かす', [
       'hex.rename(addr, "名前")   名前を付ける',

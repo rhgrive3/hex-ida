@@ -8,16 +8,27 @@ export const DEFAULT_MATCH_BUDGET = Object.freeze({
   maxIndexEntries: 2_000_000,
   maxCandidateEvaluations: 500_000,
   maxCandidateEdges: 100_000,
+  // Public-API admission bound for externally supplied candidate iterables
+  // (#8914). The raw-enumeration cap is intentionally large so an already
+  // bounded `matchFunctions()` eligible array (governed by
+  // maxCandidateEvaluations/maxCandidateEdges above) never trips it; it exists
+  // only to stop an unbounded or duplicate-heavy generator from being
+  // enumerated forever before the retained-edge cap or cancellation fires.
+  maxCandidateAdmission: 2_000_000,
   maxComponentNodes: 2_048,
   maxComponentEdges: 20_000,
   maxSolverRelaxations: 500_000,
   maxSolverAugmentations: 2_048,
+  maxPostprocessWork: 500_000,
   maxWallMs: 2_000,
 });
 
+function isPositiveSafeInteger(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
 function limit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return isPositiveSafeInteger(value) ? value : fallback;
 }
 
 function arrayLength(value) { return Array.isArray(value) ? value.length : 0; }
@@ -51,10 +62,12 @@ export function createMatchBudget(overrides = {}) {
     maxIndexEntries: limit(overrides.maxIndexEntries, DEFAULT_MATCH_BUDGET.maxIndexEntries),
     maxCandidateEvaluations: limit(overrides.maxCandidateEvaluations, DEFAULT_MATCH_BUDGET.maxCandidateEvaluations),
     maxCandidateEdges: limit(overrides.maxCandidateEdges, DEFAULT_MATCH_BUDGET.maxCandidateEdges),
+    maxCandidateAdmission: limit(overrides.maxCandidateAdmission, DEFAULT_MATCH_BUDGET.maxCandidateAdmission),
     maxComponentNodes: limit(overrides.maxComponentNodes, DEFAULT_MATCH_BUDGET.maxComponentNodes),
     maxComponentEdges: limit(overrides.maxComponentEdges, DEFAULT_MATCH_BUDGET.maxComponentEdges),
     maxSolverRelaxations: limit(overrides.maxSolverRelaxations, DEFAULT_MATCH_BUDGET.maxSolverRelaxations),
     maxSolverAugmentations: limit(overrides.maxSolverAugmentations, DEFAULT_MATCH_BUDGET.maxSolverAugmentations),
+    maxPostprocessWork: limit(overrides.maxPostprocessWork, DEFAULT_MATCH_BUDGET.maxPostprocessWork),
     maxWallMs: limit(overrides.maxWallMs, DEFAULT_MATCH_BUDGET.maxWallMs),
   };
   const now = typeof overrides.now === 'function' ? overrides.now : Date.now;
@@ -68,8 +81,13 @@ export function createMatchBudget(overrides = {}) {
   let indexEntries = 0;
   let candidateEvaluations = 0;
   let candidateEdges = 0;
+  let candidateAdmissions = 0;
+  let retainedCandidateEdges = 0;
   let solverRelaxations = 0;
   let solverAugmentations = 0;
+  let postprocessWork = 0;
+  let postprocessingStopped = false;
+  let postprocessingReason = null;
   let oversizedComponents = 0;
   let truncated = false;
   let candidateGraphIncomplete = false;
@@ -87,6 +105,22 @@ export function createMatchBudget(overrides = {}) {
     if (truncated) return false;
     if (signal?.aborted) return stop(`${stage} aborted`, incomplete, preprocessing);
     if (now() - started > limits.maxWallMs) return stop(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`, incomplete, preprocessing);
+    return true;
+  };
+  const stopPostprocessing = (message) => {
+    truncated = true;
+    postprocessingStopped = true;
+    if (postprocessingReason == null) postprocessingReason = message;
+    // Solver/candidate truncation remains the first-result authority. A later
+    // post-processing failure still has its own diagnostic without replacing
+    // the original reason that made the solver result incomplete.
+    if (reason == null) reason = message;
+    return false;
+  };
+  const postprocessingWallOkay = (stage = 'match post-processing') => {
+    if (postprocessingStopped) return false;
+    if (signal?.aborted) return stopPostprocessing(`${stage} aborted`);
+    if (now() - started > limits.maxWallMs) return stopPostprocessing(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`);
     return true;
   };
 
@@ -135,7 +169,56 @@ export function createMatchBudget(overrides = {}) {
       return true;
     },
     checkCandidateWall() { return wallOkay('candidate generation', true); },
+    // #8914: a caller-supplied candidate iterable must be treated as
+    // untrusted/enumerating work, not a free buffer. admitCandidate() is
+    // consulted BEFORE requesting the next item from a non-array iterator so an
+    // already-aborted signal or exhausted admission budget cannot consume the
+    // stream at all; checkCandidateRetained() caps how many valid candidates are
+    // kept in adjacency before the solver's own component budget would otherwise
+    // be reached only after the full enumeration. admitEnumerated() is the
+    // integer-only variant used for an already-materialized array (the
+    // matchFunctions() eligible path): it bounds raw enumeration count and
+    // retained adjacency WITHOUT reading AbortSignal or the wall clock, so the
+    // solver/post-processing stage-independence that #4527 pins stays exact.
+    admitEnumerated() {
+      if (truncated) return false;
+      candidateAdmissions++;
+      if (candidateAdmissions > limits.maxCandidateAdmission) {
+        return stop(`candidate admissions exceeded ${limits.maxCandidateAdmission}`, true);
+      }
+      return true;
+    },
+    admitCandidate() {
+      if (truncated) return false;
+      if (signal?.aborted) return stop('candidate admission aborted', true);
+      candidateAdmissions++;
+      if (candidateAdmissions > limits.maxCandidateAdmission) {
+        return stop(`candidate admissions exceeded ${limits.maxCandidateAdmission}`, true);
+      }
+      return (candidateAdmissions & 0xfff) === 0 ? wallOkay('candidate admission', true) : true;
+    },
+    checkCandidateRetained() {
+      if (truncated) return false;
+      retainedCandidateEdges++;
+      if (retainedCandidateEdges > limits.maxCandidateEdges) {
+        return stop(`retained candidate adjacency exceeded ${limits.maxCandidateEdges}`, true);
+      }
+      return true;
+    },
+    get admissionEnumerated() { return candidateAdmissions; },
+    get admissionRetained() { return retainedCandidateEdges; },
     checkSolverWall(stage = 'matching') { return wallOkay(stage, false); },
+    checkPostprocessingWall(stage = 'match post-processing') { return postprocessingWallOkay(stage); },
+    postprocess(cost = 1, stage = 'match post-processing') {
+      if (postprocessingStopped) return false;
+      if (!Number.isSafeInteger(cost) || cost < 1) return stopPostprocessing('match post-processing cost is invalid');
+      if (postprocessWork > limits.maxPostprocessWork - cost) {
+        return stopPostprocessing(`post-processing work exceeded ${limits.maxPostprocessWork}`);
+      }
+      if (!postprocessingWallOkay(stage)) return false;
+      postprocessWork += cost;
+      return true;
+    },
     allowComponent(nodeCount, edgeCount) {
       if (nodeCount > limits.maxComponentNodes || edgeCount > limits.maxComponentEdges) {
         oversizedComponents++;
@@ -168,6 +251,9 @@ export function createMatchBudget(overrides = {}) {
         candidateEdges: Math.min(candidateEdges, limits.maxCandidateEdges),
         solverRelaxations,
         solverAugmentations,
+        postprocessWork,
+        postprocessingStopped,
+        postprocessingReason,
         oversizedComponents,
         truncated,
         candidateGraphIncomplete,

@@ -36,9 +36,11 @@ function buildELF({ secOffset, secSize }) {
   b.setBigUint64(0x58, 0x400000n, true);
   b.setBigUint64(0x60, 0x100n, true);
   b.setBigUint64(0x68, 0x100n, true);
-  b.setBigUint64(0x70, 0x1000n, true);
+  b.setBigUint64(0x70, 0x100n, true); // p_align: congruent with p_offset/p_vaddr (#4090)
 
-  bytes.set(shstrtab, 0x70);
+  // Keep the string table outside the program header: overlapping p_align
+  // would make this fixture malformed under the PT_LOAD contract (#4090).
+  bytes.set(shstrtab, 0x200);
   const sh = (i, name, type, flags, addr, off, size, align = 1n) => {
     const p = shoff + i * 64;
     b.setUint32(p, name, true); b.setUint32(p + 4, type, true);
@@ -48,8 +50,8 @@ function buildELF({ secOffset, secSize }) {
   };
   sh(0, 0, 0, 0n, 0n, 0n, 0n, 0n);
   sh(1, 1, 1, 0x2n, 0x400020n, secOffset, secSize); // .badsec SHF_ALLOC PROGBITS
-  sh(2, 8, 3, 0n, 0n, 0x70, 22n);                   // .shstrtab
-  sh(3, 0, 3, 0n, 0n, 0x70, BigInt(shstrtab.length));
+  sh(2, 8, 3, 0n, 0n, 0x200, 22n);                  // .shstrtab
+  sh(3, 0, 3, 0n, 0n, 0x200, BigInt(shstrtab.length));
   return bytes;
 }
 
@@ -82,7 +84,7 @@ test('#5888: a section whose sh_size runs past EOF cannot shadow a valid PT_LOAD
   assert.equal(image.sections.find((s) => s.index === 1)?.source, 'unmapped-section');
 });
 
-test('#5888: SHT_NOBITS keeps zero-fill mapping semantics without file bytes', () => {
+test('#5888: SHT_NOBITS has no file bytes and cannot shadow PT_LOAD file-backed bytes (#7611)', () => {
   const image = parseELF(buildELF({ secOffset: 0x1000, secSize: 0x10 }));
   const nobits = buildELF({ secOffset: 0x1000, secSize: 0x10 });
   const b = new DataView(nobits.buffer);
@@ -91,5 +93,10 @@ test('#5888: SHT_NOBITS keeps zero-fill mapping semantics without file bytes', (
   void image;
   const sec = nobitsImage.sections.find((s) => s.index === 1);
   assert.equal(sec?.fileSize, 0n);
-  assert.equal(sec?.source, 'section-header', 'NOBITS needs no file bytes');
+  // Reconciled with #7611: this PT_LOAD has no zero-fill tail, so the NOBITS
+  // range overlaps loader file bytes and cannot become zero-fill authority.
+  assert.equal(sec?.source, 'unmapped-section', 'NOBITS over file-backed PT_LOAD bytes has no zero-fill authority');
+  assert.ok(nobitsImage.warnings.some((w) => w.includes('excluded from virtual mapping authority')));
+  assert.equal(nobitsImage.addressToOffset(0x400020n), 0x120n, 'the validated PT_LOAD owns the mapping');
+  assert.ok(nobitsImage.readVirtual(0x400020n, 1n), 'the VA stays readable via the PT_LOAD');
 });

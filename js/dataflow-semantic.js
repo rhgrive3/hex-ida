@@ -378,6 +378,21 @@ const PROPERTY_HELPER_ABI = Object.freeze({
   setProperty: Object.freeze({ kind: 'write', offsetReg: 'x2', valueReg: 'x3' }),
 });
 
+const PROPERTY_HELPER_FAMILY_BY_SYMBOL = new Map([
+  ['objc_getProperty', 'getProperty'],
+  ['_objc_getProperty', 'getProperty'],
+  ['objc_setProperty', 'setProperty'],
+  ['_objc_setProperty', 'setProperty'],
+  ['objc_setProperty_atomic', 'setProperty'],
+  ['_objc_setProperty_atomic', 'setProperty'],
+  ['objc_setProperty_nonatomic', 'setProperty'],
+  ['_objc_setProperty_nonatomic', 'setProperty'],
+  ['objc_setProperty_atomic_copy', 'setProperty'],
+  ['_objc_setProperty_atomic_copy', 'setProperty'],
+  ['objc_setProperty_nonatomic_copy', 'setProperty'],
+  ['_objc_setProperty_nonatomic_copy', 'setProperty'],
+]);
+
 function propertyHelperUpdates(model, ir) {
   const out = [];
   const callMeta = new Map((model.calls || []).map((c) => [c.row, c]));
@@ -385,8 +400,8 @@ function propertyHelperUpdates(model, ir) {
     if (inst.op !== OP.CALL && inst.op !== OP.BR) continue;
     const meta = callMeta.get(inst.row);
     const name = meta && meta.name || null;
-    if (!name || !/objc_(getProperty|setProperty)/.test(name)) continue;
-    const family = /objc_getProperty/.test(name) ? 'getProperty' : 'setProperty';
+    const family = PROPERTY_HELPER_FAMILY_BY_SYMBOL.get(name);
+    if (!family) continue;
     const abi = PROPERTY_HELPER_ABI[family];
     const read = abi.kind === 'read';
     const offsetValue = valueBefore(ir, inst, abi.offsetReg);

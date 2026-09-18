@@ -24,6 +24,18 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_REQUEST_ID_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RECENT_REQUEST_ID_LIMIT = 4096;
 const MAX_DETAILS_DEPTH = 4;
+// #8773 — the receiver must independently bound a compromised peer's result.
+// These limits mirror the parent-side transport admission policy.
+const MAX_RPC_RESULT_DEPTH = 64;
+const MAX_RPC_RESULT_BYTES = 8 * 1024 * 1024;
+const MAX_RPC_RESULT_NODES = 256 * 1024;
+const MAX_RPC_RESULT_CHILDREN = 65536;
+const MAX_ARRAY_INDEX = 2 ** 32 - 2;
+const DANGEROUS_RESULT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const FALLBACK_ERROR_PAYLOAD = Object.freeze({
+  code: 'RPC_INTERNAL_ERROR',
+  message: 'Remote RPC handler failed.',
+});
 const TOKEN_RE = /^[A-Za-z0-9._:~-]+$/;
 const NONCE_RE = /^[a-f0-9]{64}$/;
 
@@ -110,7 +122,8 @@ export function waitForEmbedReady(port, options = {}) {
     }
 
     signal?.addEventListener?.('abort', onAbort, { once: true });
-    if (timeoutMs > 0) timer = setTimeout(() => settle(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.')), timeoutMs);
+    if (signal?.aborted) settle(abortError(signal?.reason));
+    if (!settled && timeoutMs > 0) timer = setTimeout(() => settle(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.')), timeoutMs);
     safeStart(port);
   });
 }
@@ -141,8 +154,14 @@ export function createRpcClient(port, options = {}) {
     if (current.timer !== null) clearTimeout(current.timer);
     current.detachAbort?.();
 
-    if (message.kind === 'result') current.resolve(message.result);
-    else current.reject(remoteError(message.error));
+    if (message.kind === 'result') {
+      try {
+        assertRpcResultAdmitted(message.result);
+        current.resolve(message.result);
+      } catch (error) {
+        current.reject(error);
+      }
+    } else current.reject(remoteError(message.error));
   }
 
   async function call(method, params, callOptions = {}) {
@@ -176,8 +195,10 @@ export function createRpcClient(port, options = {}) {
       if (requestTimeout > 0) {
         timer = setTimeout(() => settleLocal(rpcLocalError('RPC_TIMEOUT', `RPC request timed out: ${method}`), true), requestTimeout);
       }
-      signal?.addEventListener?.('abort', onAbort, { once: true });
       pending.set(id, { method, resolve, reject, timer, detachAbort });
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) settleLocal(abortError(signal?.reason), false);
+      if (!pending.has(id)) return;
 
       if (!safePost(port, { ...envelope('request', id, method), params })) {
         settleLocal(rpcLocalError('RPC_CLOSED', 'RPC port is not available.'), false);
@@ -299,7 +320,12 @@ export function createRpcServer(port, options = {}) {
   }
 
   function sendSanitizedError(id, method, error, wasCancelled) {
-    const payload = sanitizeRemoteError(error, wasCancelled);
+    let payload;
+    try {
+      payload = sanitizeRemoteError(error, wasCancelled);
+    } catch {
+      payload = wasCancelled ? { code: 'RPC_CANCELLED', message: 'RPC request was cancelled.' } : FALLBACK_ERROR_PAYLOAD;
+    }
     safePost(port, { ...envelope('error', id, method), error: payload });
   }
 
@@ -417,15 +443,119 @@ function sanitizeDetails(value, depth = 0, seen = new WeakSet()) {
   if (typeof Error !== 'undefined' && value instanceof Error) return undefined;
   if (seen.has(value)) return undefined;
   seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, 64).map((item) => sanitizeDetails(item, depth + 1, seen));
-  if (!isPlainRecord(value)) return undefined;
-  const out = Object.create(null);
-  for (const key of Object.keys(value).slice(0, 64)) {
-    if (/^(?:stack|cause)$/i.test(key)) continue;
-    const clean = sanitizeDetails(value[key], depth + 1, seen);
-    if (clean !== undefined) out[key] = clean;
+  try {
+    if (Array.isArray(value)) {
+      const out = [];
+      const limit = Math.min(value.length, 64);
+      for (let index = 0; index < limit; index += 1) {
+        out.push(sanitizeDetails(ownDataValue(value, index), depth + 1, seen));
+      }
+      return out;
+    }
+    if (!isPlainRecord(value)) return undefined;
+    const out = Object.create(null);
+    for (const key of Object.keys(value).slice(0, 64)) {
+      if (/^(?:stack|cause)$/i.test(key)) continue;
+      const clean = sanitizeDetails(ownDataValue(value, key), depth + 1, seen);
+      if (clean !== undefined) out[key] = clean;
+    }
+    return out;
+  } finally {
+    // Only ancestors are cycles; sibling references must be visited again.
+    seen.delete(value);
   }
-  return out;
+}
+
+// #8773 receiver-side defense in depth. MessagePort has already performed its
+// structured clone by the time this callback runs, so this gate cannot avoid that
+// first transport allocation. It does prevent a compromised peer from handing an
+// unbounded or non-canonical result to protected-runtime consumers, and the walk
+// itself stops as soon as the same byte/node/cardinality ceiling is exceeded.
+function assertRpcResultAdmitted(value) {
+  const budget = { bytes: 0, nodes: 0 };
+  visitRpcResult(value, 0, new WeakSet(), budget);
+}
+
+function visitRpcResult(value, depth, stack, budget) {
+  const type = typeof value;
+  if (value === null || type === 'boolean') return;
+  if (type === 'string') { chargeRpcResultString(budget, value); return; }
+  if (type === 'number') {
+    if (!Number.isFinite(value)) throw unsafeRpcResult();
+    return;
+  }
+  if (type !== 'object' || depth >= MAX_RPC_RESULT_DEPTH || stack.has(value)) throw unsafeRpcResult();
+
+  if (Array.isArray(value)) {
+    const length = value.length;
+    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_RPC_RESULT_CHILDREN) throw unsafeRpcResult();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    chargeRpcResultNodes(budget, 1 + length);
+    stack.add(value);
+    try {
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (key === 'length') continue;
+        if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) > MAX_ARRAY_INDEX) throw unsafeRpcResult();
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw unsafeRpcResult();
+        visitRpcResult(descriptor.value, depth + 1, stack, budget);
+      }
+    } finally {
+      stack.delete(value);
+    }
+    return;
+  }
+
+  if (!isPlainRecord(value)) throw unsafeRpcResult();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length > MAX_RPC_RESULT_CHILDREN) throw unsafeRpcResult();
+  chargeRpcResultNodes(budget, 1 + keys.length);
+  stack.add(value);
+  try {
+    for (const key of keys) {
+      if (typeof key !== 'string' || DANGEROUS_RESULT_KEYS.has(key)) throw unsafeRpcResult();
+      const descriptor = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw unsafeRpcResult();
+      chargeRpcResultString(budget, key);
+      visitRpcResult(descriptor.value, depth + 1, stack, budget);
+    }
+  } finally {
+    stack.delete(value);
+  }
+}
+
+function chargeRpcResultString(budget, value) {
+  if (value.length === 0) return;
+  const remaining = MAX_RPC_RESULT_BYTES - budget.bytes;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length
+      && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4;
+      index += 1;
+    } else bytes += 3;
+    if (bytes > remaining) throw unsafeRpcResult();
+  }
+  budget.bytes += bytes;
+}
+
+function chargeRpcResultNodes(budget, count) {
+  budget.nodes += count;
+  if (budget.nodes > MAX_RPC_RESULT_NODES) throw unsafeRpcResult();
+}
+
+function unsafeRpcResult() {
+  return rpcLocalError('RPC_UNSAFE_RESULT', 'RPC peer returned unsafe or oversized result data.');
+}
+
+function ownDataValue(target, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return undefined;
+  return descriptor.value;
 }
 
 function remoteError(payload) {
@@ -458,15 +588,13 @@ function validToken(value, min, max) {
 }
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
-  return Math.floor(number);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
+  return Math.floor(value);
 }
 function normalizePositiveInteger(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
+  return value;
 }
 function safeNow(now) {
   const value = Number(now());

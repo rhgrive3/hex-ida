@@ -1,9 +1,16 @@
-import { stableStringify } from '../../core/identity/index.js';
+import { sameCanonicalIdentityValue } from '../../core/identity/index.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import { isPreciseMemoryRegion } from './regions-v2.js';
 
 function widthBytes(region) {
-  const bits = Number(region?.widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  // Width authority must match the canonical MemoryRegionRef contract: only a
+  // primitive positive safe-integer bit width may prove interval separation or
+  // identity. Number() is a conversion API (Number(['8']) === 8, Number(true)
+  // === 1), so a structured/malformed width would launder a strong alias
+  // relation out of a lookalike region (#5223). Malformed widths fail closed
+  // to the weak relation instead.
+  const bits = region?.widthBits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
   return BigInt(Math.ceil(bits / 8));
 }
 
@@ -52,18 +59,16 @@ function storageClass(region) {
 }
 
 function addressSpaceString(value) {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  return text || null;
+  // Canonical spelling only. Comparing raw tokens let a case drift ('MEMORY' vs
+  // 'memory') read as a physically different storage domain and mint a strong
+  // separation, and let a memory-wide summary appear to miss a target that
+  // actually is in memory (#8879). Whitespace/shape drift still carries no
+  // space at all, so the callers' existing null-handling stays conservative.
+  return canonicalAddressSpace(value);
 }
 
 function physicalAddressSpace(region) {
   return addressSpaceString(region?.addressSpace);
-}
-
-function provenStackExternalSeparation(a, b) {
-  const classes = new Set([storageClass(a), storageClass(b)]);
-  return classes.has('function-local-stack') && classes.has('external-entry-memory');
 }
 
 function provenStackGlobalSeparation(a, b) {
@@ -97,8 +102,8 @@ export function aliasMemoryRegions(a, b) {
       // Same root identity, but the two proofs landed in different storage
       // domains: one provably tls/io-rooted, the other flat memory (#5901).
       // Interval overlap across spaces would be unsound.
-      const spaceA = addressSpaceString(a.addressSpace) ?? 'memory';
-      const spaceB = addressSpaceString(b.addressSpace) ?? 'memory';
+      const spaceA = addressSpaceString(a.addressSpace) ?? FLAT_MEMORY_SPACE;
+      const spaceB = addressSpaceString(b.addressSpace) ?? FLAT_MEMORY_SPACE;
       if (spaceA !== spaceB) return 'no';
       return intervalRelation(toBigInt(a.offset), widthBytes(a), toBigInt(b.offset), widthBytes(b));
     }
@@ -108,7 +113,7 @@ export function aliasMemoryRegions(a, b) {
       if (!spaceA || !spaceB) return 'unknown';
       if (spaceA !== spaceB) return 'no';
       if (a.rootIdentity == null || b.rootIdentity == null) return 'unknown';
-      if (stableStringify(a.rootIdentity) !== stableStringify(b.rootIdentity)) return 'unknown';
+      if (!sameCanonicalIdentityValue(a.rootIdentity, b.rootIdentity)) return 'unknown';
       const wa = widthBytes(a), wb = widthBytes(b);
       return wa != null && wb != null && wa === wb ? 'must' : 'may';
     }
@@ -117,11 +122,11 @@ export function aliasMemoryRegions(a, b) {
 
   const pair = new Set([a.kind, b.kind]);
   if (pair.has('stack-fixed') && pair.has('global-absolute')) return provenStackGlobalSeparation(a, b) ? 'no' : 'may';
-  // Do not infer NoAlias from root identity alone. This applies only when an
-  // architecture/ABI boundary supplied explicit, architecture-neutral storage
-  // classes proving that one region is this function's local stack and the
-  // other is externally supplied entry memory.
-  if (pair.has('stack-fixed') && pair.has('rooted-offset') && provenStackExternalSeparation(a, b)) return 'no';
+  // A stack-fixed frame region and a rooted entry-argument pointer are both
+  // `may`: the AAPCS64 fact that x0–x7 carry argument values says nothing
+  // about their numeric addresses, so an entry argument can hold the address
+  // of a stack slot (for example `x0 = sp - 16` before a call) and storage
+  // classes alone are not a separation proof (#5130).
 
   const physicalKinds = new Set(['tls', 'io', 'physical-space']);
   const spaceA = physicalAddressSpace(a);
@@ -148,7 +153,7 @@ function regionAddressSpace(region) {
   if (region.kind === 'stack-fixed' || region.kind === 'global-absolute') return 'memory';
   // A rooted-offset region keeps the storage domain its canonical proof
   // carried (#5901); only space-less rooted-offsets are flat memory.
-  if (region.kind === 'rooted-offset') return addressSpaceString(region.addressSpace) ?? 'memory';
+  if (region.kind === 'rooted-offset') return addressSpaceString(region.addressSpace) ?? FLAT_MEMORY_SPACE;
   return null;
 }
 
@@ -158,7 +163,12 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope === 'unknown') return 'may';
   if (memoryWrite.scope === 'all') {
     const targetSpace = regionAddressSpace(targetRegion);
-    const rawSpaces = Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
+    // The canonical MachineEffects contract names the field `spaces`;
+    // `addressSpaces` is the legacy spelling kept for older summaries
+    // (#5576). Accepting only the legacy field meant every canonical
+    // intrinsic summary lost its space separation and degraded to `may`.
+    const rawSpaces = Array.isArray(memoryWrite.spaces) ? memoryWrite.spaces
+      : Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
     const spaces = rawSpaces.map(addressSpaceString);
     if (spaces.some((space) => space == null)) return 'may';
     if (targetSpace && spaces.length && !spaces.includes(targetSpace)) return 'no';
@@ -167,16 +177,26 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope !== 'accesses' || !Array.isArray(memoryWrite.accesses) || !memoryWrite.accesses.length) return 'unknown';
   if (typeof classifyAccess !== 'function') return 'unknown';
 
+  // The accesses form a set of claims about the same summary, so the relation
+  // must be order-independent (#5201): short-circuiting on the first `may`
+  // let a later exact `must` go unseen, making the answer depend on
+  // enumeration order. Aggregate the whole multiset before deciding.
   let sawUnknown = false;
+  let sawMay = false;
+  let sawMust = false;
   for (const access of memoryWrite.accesses) {
     let region;
     try { region = classifyAccess(access); }
     catch { sawUnknown = true; continue; }
     const relation = aliasMemoryRegions(region, targetRegion);
-    if (relation === 'must') return 'must';
-    if (relation === 'may') return 'may';
-    if (relation === 'unknown') sawUnknown = true;
+    if (relation === 'must') sawMust = true;
+    else if (relation === 'may') sawMay = true;
+    else if (relation === 'unknown') sawUnknown = true;
   }
+  // An exact identity among the accesses is the strongest observed claim;
+  // report it even when other accesses only overlap.
+  if (sawMust) return 'must';
+  if (sawMay) return 'may';
   return sawUnknown ? 'unknown' : 'no';
 }
 

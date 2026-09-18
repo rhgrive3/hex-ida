@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
+import { SEMANTIC_SSA_BUILD_VERSION } from '../../js/semantics/ssa/index.js';
+import { MEMORY_SSA_BUILD_VERSION } from '../../js/semantics/memoryssa/index.js';
 import {
   SEMANTIC_V2_COMPAT_PATH,
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
 } from '../../js/semantics/compat/index.js';
-import { MEMORY_SSA_BUILD_VERSION } from '../../js/semantics/memoryssa/index.js';
 
 const plugin = Object.freeze({
   id: 'test-architecture',
@@ -88,7 +89,7 @@ const result = buildSemanticV2CompatibilityPipeline({
 assert.equal(result.mode, SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT);
 assert.deepEqual(result.path, SEMANTIC_V2_COMPAT_PATH);
 assert.equal(result.semanticSchemaVersion, 2);
-assert.equal(result.scalarSsaPassVersion, '1.0.0');
+assert.equal(result.scalarSsaPassVersion, SEMANTIC_SSA_BUILD_VERSION);
 assert.equal(result.memorySsaPassVersion, MEMORY_SSA_BUILD_VERSION);
 assert.equal(result.instrumentation.v2Executed, true);
 assert.equal(result.instrumentation.unsupportedInstructionCount, 0);

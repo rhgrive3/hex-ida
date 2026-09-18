@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createProductSurfaceQueries } from '../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../js/analysis/query/snapshot.js';
 
-const snapshot = Object.freeze({
-  snapshotId:'snapshot-2528',
-  analysisEpoch:7,
+const snapshot = createAnalysisSnapshot({
   binaryId:'binary-2528',
+  analysisEpoch:7,
   projectRevision:3,
 });
 

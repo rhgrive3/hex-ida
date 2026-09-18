@@ -9,6 +9,7 @@ import {
   analyzeModelAt as analyzeLegacyModelAt,
   createHexAIContext as createLegacyHexAIContext,
 } from './hex-context-legacy.js';
+import { createAnalysisSnapshot } from '../../analysis/query/index.js';
 
 const QUERY_AUTHORITY = 'AnalysisQueryAPI';
 const MAX_QUERY_PAGE = 5_000;
@@ -110,22 +111,27 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
   return model;
 }
 
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function copyWithMetadata(result, key = 'results') {
   const rows = Array.isArray(result?.value) ? result.value : [];
   const completeness = queryCompleteness(result);
   const page = result?.page || {};
+  const total = exactPageTotal(page.total);
   return {
     [key]:rows,
     offset:Number(page.offset ?? 0),
     returned:Number(page.returned ?? rows.length),
-    total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+    total,
     complete:completeness === 'complete' && page.next == null,
     truncated:completeness !== 'complete' || page.next != null,
     reason:queryReason(result),
     completeness:{
       complete:completeness === 'complete' && page.next == null,
       returned:Number(page.returned ?? rows.length),
-      total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+      total,
       reason:queryReason(result),
     },
   };
@@ -145,6 +151,31 @@ function define(context, name, descriptor) {
 
 function currentAddressOf(context) {
   try { return toBigInt(context.currentAddress); } catch { return null; }
+}
+
+function storeValue(app, key) {
+  try { return typeof app?.store?.get === 'function' ? app.store.get(key) : (app?.store?.[key] ?? null); }
+  catch { return null; }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function canonicalAnalysisRevision(app) {
+  const rawEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? null;
+  if (rawEpoch == null) return null;
+  const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
+  const rawVersions = app?.analysisArtifactVersions ?? app?.artifactVersions;
+  const artifactVersions = isPlainObject(rawVersions) ? { ...rawVersions } : {};
+  return createAnalysisSnapshot({
+    binaryId:'ai-cache-analysis-binding',
+    projectRevision:project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0,
+    artifactVersions,
+    analysisEpoch:rawEpoch,
+  }).snapshotId;
 }
 
 /**
@@ -170,6 +201,17 @@ export function createHexAIContext(app) {
   define(context, 'analysisAuthority', { value:QUERY_AUTHORITY, writable:false });
   define(context, 'binaryId', {
     get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
+  });
+
+  // #8931: use the canonical AnalysisQueryAPI snapshot identity machinery for
+  // the outer deterministic cache too. This keeps epoch/project validation and
+  // artifactVersions normalization identical to QueryAPI, so malformed nested
+  // values cannot alias a prior valid cache key. Binary identity remains an
+  // independent ObservationStore binding dimension, hence the fixed local
+  // binary id used solely to digest the analysis tuple. A host with no live
+  // epoch stays explicit-unknown and retains #5887's per-context nonce.
+  define(context, 'analysisRevision', {
+    get() { return canonicalAnalysisRevision(app); },
   });
 
   // Direct analysis indexes are intentionally not part of the production AI
@@ -249,7 +291,7 @@ export function createHexAIContext(app) {
             continue;
           }
           anySupported = true;
-          const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
+          const regionTotal = exactPageTotal(result?.page?.total);
           if (queryCompleteness(result) !== 'complete') {
             complete = false;
             reason ||= queryReason(result) || 'search-incomplete';
@@ -344,7 +386,16 @@ export function createHexAIContext(app) {
     const limit = Math.max(1, safeCount(options.limit, 100, 1_000));
     return withFreshSnapshot(app, async (api, snapshot) => {
       const result = await api[method](snapshot, address, { offset, limit }, { signal:options.signal ?? null });
-      return copyWithMetadata(result);
+      const page = copyWithMetadata(result);
+      if (queryCompleteness(result) !== 'complete') {
+        page.total = null;
+        page.completeness = { ...page.completeness, total:null };
+      }
+      const nextOffset = exactPageTotal(result?.page?.next);
+      if (nextOffset != null && nextOffset > offset && nextOffset <= 1_000_000) {
+        Object.defineProperty(page, 'nextOffset', { value:nextOffset, enumerable:false });
+      }
+      return page;
     }, options);
   };
   define(context, 'getXrefs', { value:(address, options = {}) => graphPage('xrefs', address, options) });

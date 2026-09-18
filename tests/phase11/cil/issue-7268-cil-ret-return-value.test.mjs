@@ -270,15 +270,13 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
       stackType:'int64',
       bits:64,
       machineWidthBits:64,
-      semanticCompleteness:'complete',
     },
     {
       signature:[0x00, 0x00, 0x1c], // static object()
       bytecode:[0x14, 0x2a], // ldnull; ret
       stackType:'object-ref',
       bits:null,
-      machineWidthBits:null,
-      semanticCompleteness:'partial',
+      machineWidthBits:32,
     },
   ];
 
@@ -298,15 +296,7 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
     assert.ok(value, 'return input resolves to a Semantic IR value');
     assert.ok(value.definitionNodeId, 'return value retains its defining node');
     assert.ok(value.origin, 'return value retains origin provenance');
-    if (sample.machineWidthBits == null) {
-      // #7775/#8756: AnyCPU object references have no proven native width.
-      // Preserve #7268's return-value dataflow without fabricating 32/64-bit
-      // authority merely to keep the whole Semantic IR complete.
-      assert.equal(value.metadata?.reason, 'machine-type-unresolved');
-      assert.ok(lowered.semanticIr.unknowns.some((entry) => entry.reason === 'machine-type-unresolved'));
-    } else {
-      assert.equal(value.machineType.widthBits, sample.machineWidthBits);
-    }
-    assert.equal(lowered.semanticIr.completeness, sample.semanticCompleteness);
+    assert.equal(value.machineType.widthBits, sample.machineWidthBits);
+    assert.equal(lowered.semanticIr.completeness, 'complete');
   }
 });

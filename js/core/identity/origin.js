@@ -13,8 +13,18 @@ const ORIGIN_FIELDS = ['byteRanges', 'virtualRanges', 'instructionIds', 'operati
 // Weak ownership lets both the list and its key/value entries be collected.
 const CANONICAL_LIST_ENTRIES = new WeakMap();
 const EMPTY_LIST = Object.freeze([]);
-const ORIGINAL_ARRAY_MAP = Array.prototype.map;
 CANONICAL_LIST_ENTRIES.set(EMPTY_LIST, []);
+// Only normalized, deeply immutable precondition DATA is shared. Transform
+// records, their producer identities and proof/currentness authority are not.
+// This bounded module-owned store retains neither caller objects nor IR graphs.
+const PRECONDITION_DATA = new Map();
+let preconditionDataUnits = 0;
+// Canonical list storage is keyed by exact element identity (including distinct
+// transform records), never just an equal serialized transform description.
+// Retain only bounded, producer-normalized immutable data, not external IR.
+const CANONICAL_LIST_DATA = new Map();
+const LIST_ELEMENT_IDENTITIES = new WeakMap();
+let canonicalListDataUnits = 0, nextListElementIdentity = 0;
 
 function fail(code) { throw new TypeError(code); }
 function arrayList(values, code) {
@@ -43,6 +53,9 @@ function requiredString(value, code) {
   const text = value.trim();
   if (!text) fail(code);
   return text;
+}
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 function bigintValue(value, code) {
   if (typeof value === 'bigint') return value;
@@ -113,6 +126,88 @@ function replaySafeJson(value, active = null) {
     active.delete(value);
   }
 }
+function sharePreconditionData(value) {
+  if (!value || typeof value !== 'object' || !ordinaryJsonPrototypes()) return value;
+  let key = '', nodes = 0;
+  const append = text => {
+    key += text;
+    if (key.length > 8192) throw new RangeError('precondition-storage-key');
+  };
+  const encode = (item, depth) => {
+    if (depth > 16 || ++nodes > 256) throw new RangeError('precondition-storage-shape');
+    if (item === null) { append('null;'); return; }
+    if (typeof item !== 'object') {
+      const text = Object.is(item, -0) ? '-0' : String(item);
+      if (text.length > 2048) throw new RangeError('precondition-storage-text');
+      append(`${typeof item}:${text.length}:${text}`); return;
+    }
+    if (Array.isArray(item)) {
+      if (item.length > 256) throw new RangeError('precondition-storage-array');
+      append(`array:${item.length}:[`);
+      for (const child of item) encode(child, depth + 1);
+    } else {
+      const keys = Object.keys(item);
+      if (keys.length > 256) throw new RangeError('precondition-storage-object');
+      append(`object:${keys.length}:{`);
+      for (const name of keys) {
+        if (name.length > 2048) throw new RangeError('precondition-storage-field');
+        append(`${name.length}:${name}`); encode(item[name], depth + 1);
+      }
+    }
+    append('};');
+  };
+  // replaySafeJson has already certified this producer-normalized immutable
+  // tree. Key encoding uses typed primitive lengths, never ambient JSON hooks.
+  // Oversized trees keep their ordinary fresh payload and observation limits.
+  try { encode(value, 0); } catch { return value; }
+  const prior = PRECONDITION_DATA.get(key);
+  if (prior) {
+    PRECONDITION_DATA.delete(key); PRECONDITION_DATA.set(key, prior);
+    return prior.value;
+  }
+  const cost = key.length + nodes * 32 + 64;
+  if (cost > 131072) return value;
+  while (PRECONDITION_DATA.size >= 512 || preconditionDataUnits + cost > 131072) {
+    const oldest = PRECONDITION_DATA.keys().next().value;
+    preconditionDataUnits -= PRECONDITION_DATA.get(oldest).cost; PRECONDITION_DATA.delete(oldest);
+  }
+  PRECONDITION_DATA.set(key, { value, cost }); preconditionDataUnits += cost;
+  return value;
+}
+function shareCanonicalList(values) {
+  if (values === EMPTY_LIST || !ordinaryJsonPrototypes() || !Object.isFrozen(values)) return values;
+  const entries = CANONICAL_LIST_ENTRIES.get(values);
+  if (!entries || entries.length > 512) return values;
+  let key = '', volume = 0;
+  for (const [serialized, value] of entries) {
+    volume += serialized.length;
+    if (volume > 8192) return values;
+    if (value !== null && typeof value === 'object') {
+      if (!CANONICAL_TRANSFORM_RECORDS.has(value) && !replaySafeJson(value)) return values;
+      if (!LIST_ELEMENT_IDENTITIES.has(value)) {
+        if (!Number.isSafeInteger(nextListElementIdentity + 1)) return values;
+        LIST_ELEMENT_IDENTITIES.set(value, ++nextListElementIdentity);
+      }
+      key += `object:${LIST_ELEMENT_IDENTITIES.get(value)};`;
+    } else {
+      const text = Object.is(value, -0) ? '-0' : String(value);
+      key += `${typeof value}:${text.length}:${text};`;
+    }
+    if (key.length > 8192) return values;
+  }
+  const prior = CANONICAL_LIST_DATA.get(key);
+  if (prior) {
+    CANONICAL_LIST_DATA.delete(key); CANONICAL_LIST_DATA.set(key, prior);
+    return prior.values;
+  }
+  const cost = 128 + 2 * (key.length + volume) + entries.length * 64;
+  while (CANONICAL_LIST_DATA.size >= 4096 || canonicalListDataUnits + cost > 1048576) {
+    const oldest = CANONICAL_LIST_DATA.keys().next().value;
+    canonicalListDataUnits -= CANONICAL_LIST_DATA.get(oldest).cost; CANONICAL_LIST_DATA.delete(oldest);
+  }
+  CANONICAL_LIST_DATA.set(key, { values, cost }); canonicalListDataUnits += cost;
+  return values;
+}
 function normalizedList(values, code, normalize) {
   const input = arrayList(values, code);
   let ordinary = false;
@@ -120,28 +215,16 @@ function normalizedList(values, code, normalize) {
     ordinary = Object.getPrototypeOf(input) === Array.prototype
       && !Object.hasOwn(input, 'map') && !Object.hasOwn(input, 'constructor');
   } catch { /* Reflection failure means replay, not a new input error. */ }
-  // Keep custom map/species behavior unchanged, but do not brand its output
-  // for reuse. Only the original Array#map with an ordinary result proves that
-  // every list value passed through the field normalizer.
-  const mapper = input.map;
-  const mapped = Reflect.apply(mapper, input, [normalize]);
-  const result = uniqueSorted(mapped);
-  let standardMapped = false;
-  try {
-    standardMapped = mapper === ORIGINAL_ARRAY_MAP
-      && Array.prototype.map === ORIGINAL_ARRAY_MAP
-      && Object.getPrototypeOf(mapped) === Array.prototype
-      && !Object.hasOwn(mapped, 'map') && !Object.hasOwn(mapped, 'constructor');
-  } catch { /* Reflection failure means replay, not a new input error. */ }
+  const result = uniqueSorted(input.map(normalize));
   // An overridden mapper/species can bypass the field normalizer altogether.
-  if ((!ordinary || !standardMapped) && result !== EMPTY_LIST) CANONICAL_LIST_ENTRIES.delete(result);
+  if (!ordinary && result !== EMPTY_LIST) CANONICAL_LIST_ENTRIES.delete(result);
   return result;
 }
 function sortedList(byKey, cacheable = true) {
   if (byKey.size === 0) return EMPTY_LIST;
-  // Preserve localeCompare (including ties between distinct keys) and Map's
-  // first-insertion order / last-value-wins semantics exactly.
-  const entries = [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b));
+  // Sort canonical UTF-16 keys deterministically while retaining Map's
+  // first-insertion order / last-value-wins semantics for equal keys.
+  const entries = [...byKey.entries()].sort(([a], [b]) => compareCanonicalText(a, b));
   const values = entries.map(([, value]) => value);
   if (cacheable) CANONICAL_LIST_ENTRIES.set(values, entries);
   return values;
@@ -162,13 +245,15 @@ function mergeCanonicalLists(origins, field) {
   return sortedList(byKey);
 }
 function captureOriginSet(out) {
-  const frozen = deepFreeze(out);
-  CANONICAL_ORIGIN_SETS.add(frozen);
+  let frozen = deepFreeze(out);
   if (ordinaryJsonPrototypes() && ORIGIN_FIELDS.every((field) => CANONICAL_LIST_ENTRIES.has(frozen[field]))
       && frozen.sourceLocations.every((value) => replaySafeJson(value))
       && frozen.transforms.every((value) => CANONICAL_TRANSFORM_RECORDS.has(value))) {
+    const lists = Object.fromEntries(ORIGIN_FIELDS.map(field => [field, shareCanonicalList(frozen[field])]));
+    if (ORIGIN_FIELDS.some(field => lists[field] !== frozen[field])) frozen = Object.freeze({ ...frozen, ...lists });
     REUSABLE_ORIGIN_SETS.add(frozen);
   }
+  CANONICAL_ORIGIN_SETS.add(frozen);
   return frozen;
 }
 // Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
@@ -215,7 +300,7 @@ export function createTransformRecord(input = {}) {
   const passVersion = requiredString(input.passVersion, 'origin-invalid-transform');
   const ruleId = requiredString(input.ruleId, 'origin-invalid-transform');
   const proofKind = requiredString(input.proofKind, 'origin-invalid-transform');
-  const frozen = deepFreeze({
+  let frozen = deepFreeze({
     passId,
     passVersion,
     ruleId,
@@ -225,7 +310,14 @@ export function createTransformRecord(input = {}) {
     proofKind,
     timestampOrBuildId: input.timestampOrBuildId == null ? null : stringValue(input.timestampOrBuildId, 'origin-invalid-transform'),
   });
-  if (replaySafeJson(frozen.preconditions)) CANONICAL_TRANSFORM_RECORDS.add(frozen);
+  if (replaySafeJson(frozen.preconditions)) {
+    const preconditions = sharePreconditionData(frozen.preconditions);
+    const consumedEntityIds = shareCanonicalList(frozen.consumedEntityIds);
+    const producedEntityIds = shareCanonicalList(frozen.producedEntityIds);
+    if (preconditions !== frozen.preconditions || consumedEntityIds !== frozen.consumedEntityIds
+      || producedEntityIds !== frozen.producedEntityIds) frozen = Object.freeze({ ...frozen, preconditions, consumedEntityIds, producedEntityIds });
+    CANONICAL_TRANSFORM_RECORDS.add(frozen);
+  }
   return frozen;
 }
 
@@ -256,6 +348,11 @@ export function createOriginSet(input = {}) {
 export function isCanonicalOriginSet(value) {
   return value != null && typeof value === 'object'
     && CANONICAL_ORIGIN_SETS.has(value);
+}
+
+/** Producer-owned immutable JSON origins can retain identity through IR input capture. */
+export function isReusableOriginSet(value) {
+  return REUSABLE_ORIGIN_SETS.has(value) && ordinaryJsonPrototypes();
 }
 
 export function mergeOriginSets(...sets) {

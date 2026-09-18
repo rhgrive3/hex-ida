@@ -1,0 +1,2236 @@
+{
+  "schemaVersion": "hex-x02-apple-matrix/v1",
+  "assessmentDate": "2026-09-13",
+  "originalRequirements": [
+    "HEX-X-02",
+    "FR-X-02A"
+  ],
+  "overallStatus": "CHECKPOINT-LOCKED",
+  "transformAuthorization": false,
+  "acceptanceComplete": false,
+  "inputArchiveSha256": "adb2d73eeb0695f380824fad1028ad77eed07fffa04bccdac16caff9edb0a9fa",
+  "upstreamCommitVerified": false,
+  "localImportCommit": "5729136d80c8f478c4d22621eed9d6850083dafe",
+  "denominator": {
+    "requirementRows": 12,
+    "functionalCases": 59,
+    "inputArtifacts": 49,
+    "manifestIntegrityTests": 2
+  },
+  "scope": "Finite local contract matrix. Negative-boundary successes are never positive product acceptance.",
+  "expectationProvenance": {
+    "synthetic": "Byte layout and assertions authored with repository-owned fixtures. Not an independent Apple/Swift implementation oracle.",
+    "compilerArtifact": "Existing manifest provenance and SHA256 checked; production Mach-O parser reused. Current independent reparse unavailable.",
+    "productionEntrypoints": [
+      "openBinary",
+      "openBinarySource",
+      "ObjcMetadataProvider.probe",
+      "SwiftMetadataProvider.probe",
+      "resolveObjcDispatch",
+      "describeMachOPointerSite",
+      "inspectFormatSafeImage",
+      "createFormatSafeRebuildTransaction"
+    ]
+  },
+  "generationSource": "tests/scpa/fixtures/x02-apple-version-fixtures.mjs",
+  "commands": [
+    "node --test tests/scpa/x02-apple-version-matrix.test.mjs",
+    "node scripts/run-quiet-command.mjs --label x02-scpa -- npm run scpa:test"
+  ],
+  "requirements": [
+    {
+      "id": "X02-R01",
+      "requirement": "OS / compiler / runtime identity",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "No observed Apple OS/runtime versions; synthetic layout labels are not version observations.",
+      "caseIds": [
+        "X02-SWIFT",
+        "X02-CHAINED-UNKNOWN-VERSION",
+        "X02-TRACKED-COMPILER-INPUT"
+      ]
+    },
+    {
+      "id": "X02-R02",
+      "requirement": "Direct shared-cache input",
+      "status": "product-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Public binary loaders expose Mach-O/ELF/PE, not a direct cache/slide-info reader. Header-only rejection is negative evidence only.",
+      "caseIds": [
+        "X02-SHARED-CACHE-GAP"
+      ]
+    },
+    {
+      "id": "X02-R03",
+      "requirement": "Shared-cache slide / rebase and address identity",
+      "status": "product-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Nonzero VA/file-offset mapping is exercised; shared-cache slides and extracted-image reconciliation are not implemented here.",
+      "caseIds": [
+        "X02-OBJC-BUFFER",
+        "X02-OBJC-SOURCE",
+        "X02-SHARED-CACHE-GAP"
+      ]
+    },
+    {
+      "id": "X02-R04",
+      "requirement": "Chained fixups",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "40 synthetic authenticated site rows and unknown version/format negatives pass; real versioned producers and independent decode are absent.",
+      "caseIds": [
+        "X02-PAC-1-REBASE-0",
+        "X02-PAC-1-REBASE-1",
+        "X02-PAC-1-REBASE-2",
+        "X02-PAC-1-REBASE-3",
+        "X02-PAC-1-BIND-0",
+        "X02-PAC-1-BIND-1",
+        "X02-PAC-1-BIND-2",
+        "X02-PAC-1-BIND-3",
+        "X02-PAC-7-REBASE-0",
+        "X02-PAC-7-REBASE-1",
+        "X02-PAC-7-REBASE-2",
+        "X02-PAC-7-REBASE-3",
+        "X02-PAC-7-BIND-0",
+        "X02-PAC-7-BIND-1",
+        "X02-PAC-7-BIND-2",
+        "X02-PAC-7-BIND-3",
+        "X02-PAC-9-REBASE-0",
+        "X02-PAC-9-REBASE-1",
+        "X02-PAC-9-REBASE-2",
+        "X02-PAC-9-REBASE-3",
+        "X02-PAC-9-BIND-0",
+        "X02-PAC-9-BIND-1",
+        "X02-PAC-9-BIND-2",
+        "X02-PAC-9-BIND-3",
+        "X02-PAC-10-REBASE-0",
+        "X02-PAC-10-REBASE-1",
+        "X02-PAC-10-REBASE-2",
+        "X02-PAC-10-REBASE-3",
+        "X02-PAC-10-BIND-0",
+        "X02-PAC-10-BIND-1",
+        "X02-PAC-10-BIND-2",
+        "X02-PAC-10-BIND-3",
+        "X02-PAC-12-REBASE-0",
+        "X02-PAC-12-REBASE-1",
+        "X02-PAC-12-REBASE-2",
+        "X02-PAC-12-REBASE-3",
+        "X02-PAC-12-BIND-0",
+        "X02-PAC-12-BIND-1",
+        "X02-PAC-12-BIND-2",
+        "X02-PAC-12-BIND-3",
+        "X02-PAC-UNSUPPORTED",
+        "X02-CHAINED-UNKNOWN-VERSION"
+      ]
+    },
+    {
+      "id": "X02-R05",
+      "requirement": "Swift generic metadata",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Owned layout descriptor is parsed. Runtime instantiation and substitutions remain unknown.",
+      "caseIds": [
+        "X02-SWIFT",
+        "X02-SWIFT-UNKNOWN-KIND"
+      ]
+    },
+    {
+      "id": "X02-R06",
+      "requirement": "Swift witness metadata",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Owned layout target passes the image-owned resolver. Real runtime witness execution is unverified.",
+      "caseIds": [
+        "X02-SWIFT"
+      ]
+    },
+    {
+      "id": "X02-R07",
+      "requirement": "Swift capture metadata",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Type/source descriptors preserved; object layout and metadata-source interpretation remain unknown.",
+      "caseIds": [
+        "X02-SWIFT"
+      ]
+    },
+    {
+      "id": "X02-R08",
+      "requirement": "ObjC class / category / protocol / dispatch",
+      "status": "pass",
+      "fullAcceptanceComplete": false,
+      "reason": "Finite public-input contract passes after provider integration; version-wide and device acceptance are not established.",
+      "caseIds": [
+        "X02-OBJC-BUFFER",
+        "X02-OBJC-SOURCE",
+        "X02-OBJC-TRUNCATED-__objc_catlist",
+        "X02-OBJC-TRUNCATED-__objc_protolist",
+        "X02-OBJC-DEFAULTS",
+        "X02-OBJC-RAW-SECTIONS",
+        "X02-OBJC-DUPLICATE-__objc_classlist",
+        "X02-OBJC-DUPLICATE-__objc_catlist",
+        "X02-OBJC-DUPLICATE-__objc_protolist",
+        "X02-OBJC-CACHE",
+        "X02-OBJC-MALFORMED-SECTION",
+        "X02-OBJC-SUPERSEDED"
+      ]
+    },
+    {
+      "id": "X02-R09",
+      "requirement": "PAC raw / key / diversity / site identity",
+      "status": "pass",
+      "fullAcceptanceComplete": false,
+      "reason": "Finite byte-bound metadata contract passes; authenticationVerified and executionTargetExact stay false.",
+      "caseIds": [
+        "X02-PAC-1-REBASE-0",
+        "X02-PAC-1-REBASE-1",
+        "X02-PAC-1-REBASE-2",
+        "X02-PAC-1-REBASE-3",
+        "X02-PAC-1-BIND-0",
+        "X02-PAC-1-BIND-1",
+        "X02-PAC-1-BIND-2",
+        "X02-PAC-1-BIND-3",
+        "X02-PAC-7-REBASE-0",
+        "X02-PAC-7-REBASE-1",
+        "X02-PAC-7-REBASE-2",
+        "X02-PAC-7-REBASE-3",
+        "X02-PAC-7-BIND-0",
+        "X02-PAC-7-BIND-1",
+        "X02-PAC-7-BIND-2",
+        "X02-PAC-7-BIND-3",
+        "X02-PAC-9-REBASE-0",
+        "X02-PAC-9-REBASE-1",
+        "X02-PAC-9-REBASE-2",
+        "X02-PAC-9-REBASE-3",
+        "X02-PAC-9-BIND-0",
+        "X02-PAC-9-BIND-1",
+        "X02-PAC-9-BIND-2",
+        "X02-PAC-9-BIND-3",
+        "X02-PAC-10-REBASE-0",
+        "X02-PAC-10-REBASE-1",
+        "X02-PAC-10-REBASE-2",
+        "X02-PAC-10-REBASE-3",
+        "X02-PAC-10-BIND-0",
+        "X02-PAC-10-BIND-1",
+        "X02-PAC-10-BIND-2",
+        "X02-PAC-10-BIND-3",
+        "X02-PAC-12-REBASE-0",
+        "X02-PAC-12-REBASE-1",
+        "X02-PAC-12-REBASE-2",
+        "X02-PAC-12-REBASE-3",
+        "X02-PAC-12-BIND-0",
+        "X02-PAC-12-BIND-1",
+        "X02-PAC-12-BIND-2",
+        "X02-PAC-12-BIND-3",
+        "X02-PAC-UNSUPPORTED"
+      ]
+    },
+    {
+      "id": "X02-R10",
+      "requirement": "PAC runtime authentication",
+      "status": "environment-excluded",
+      "fullAcceptanceComplete": false,
+      "reason": "No Apple arm64e device/runtime oracle; metadata preservation does not establish authentication.",
+      "caseIds": [
+        "X02-PAC-1-REBASE-0",
+        "X02-PAC-1-REBASE-1",
+        "X02-PAC-1-REBASE-2",
+        "X02-PAC-1-REBASE-3",
+        "X02-PAC-1-BIND-0",
+        "X02-PAC-1-BIND-1",
+        "X02-PAC-1-BIND-2",
+        "X02-PAC-1-BIND-3",
+        "X02-PAC-7-REBASE-0",
+        "X02-PAC-7-REBASE-1",
+        "X02-PAC-7-REBASE-2",
+        "X02-PAC-7-REBASE-3",
+        "X02-PAC-7-BIND-0",
+        "X02-PAC-7-BIND-1",
+        "X02-PAC-7-BIND-2",
+        "X02-PAC-7-BIND-3",
+        "X02-PAC-9-REBASE-0",
+        "X02-PAC-9-REBASE-1",
+        "X02-PAC-9-REBASE-2",
+        "X02-PAC-9-REBASE-3",
+        "X02-PAC-9-BIND-0",
+        "X02-PAC-9-BIND-1",
+        "X02-PAC-9-BIND-2",
+        "X02-PAC-9-BIND-3",
+        "X02-PAC-10-REBASE-0",
+        "X02-PAC-10-REBASE-1",
+        "X02-PAC-10-REBASE-2",
+        "X02-PAC-10-REBASE-3",
+        "X02-PAC-10-BIND-0",
+        "X02-PAC-10-BIND-1",
+        "X02-PAC-10-BIND-2",
+        "X02-PAC-10-BIND-3",
+        "X02-PAC-12-REBASE-0",
+        "X02-PAC-12-REBASE-1",
+        "X02-PAC-12-REBASE-2",
+        "X02-PAC-12-REBASE-3",
+        "X02-PAC-12-BIND-0",
+        "X02-PAC-12-BIND-1",
+        "X02-PAC-12-BIND-2",
+        "X02-PAC-12-BIND-3"
+      ]
+    },
+    {
+      "id": "X02-R11",
+      "requirement": "Signing impact",
+      "status": "evidence-gap",
+      "fullAcceptanceComplete": false,
+      "reason": "Synthetic signature marker blocks unsigned-only mutation; no valid Apple signature, re-signing, or OS launch oracle.",
+      "caseIds": [
+        "X02-SIGNATURE-BOUNDARY"
+      ]
+    },
+    {
+      "id": "X02-R12",
+      "requirement": "Independent Mach-O reparse",
+      "status": "environment-excluded",
+      "fullAcceptanceComplete": false,
+      "reason": "Required Ubuntu LLVM 18.1.3 readobj is unavailable. Checked-in compiler artifact hash is not a current independent reparse.",
+      "caseIds": [
+        "X02-TRACKED-COMPILER-INPUT"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "apple-layout",
+      "inputSha256": "be916a8e757454049c1ada945c95208bb34f21ae09d7484bfd582b7fbb602ec4",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {},
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "truncated-__objc_catlist",
+      "inputSha256": "b71c480746910c5a409c6a2bd323404ee1d121ea6ad2bb9b3e2b7e8087735c24",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "section": "__objc_catlist",
+        "declaredSize": 9
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "truncated-__objc_protolist",
+      "inputSha256": "309c211c9a71d5daf5a746a5d2a31b2f077cfd6cbc879a6963dd95276c806bb1",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "section": "__objc_protolist",
+        "declaredSize": 9
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "signed-marker",
+      "inputSha256": "bfa90b7ff5218e029e38277792690b3fe7d4b32e29a7fcb9118835eb87e0590d",
+      "size": 69648,
+      "format": "macho",
+      "architecture": "arm64",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "signed": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "unknown-swift-kind",
+      "inputSha256": "84b578ed397806668fc3c55c2245b9d9104f4b5b76f10194d8d15f245644c1de",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "descriptorAddress": "0x1300",
+        "flags": 31
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-rebase-0",
+      "inputSha256": "4b01df657f40370b09766883e5f2d97da46f0014449a2878215a6b9d4169aa69",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": false,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-rebase-1",
+      "inputSha256": "c14847f47647f06a25d2e8d7e5bffacb6e4c1c97b85b57523bab009bd918c69f",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": false,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-rebase-2",
+      "inputSha256": "a53691f2f51ebbc257fec1f00e08c1d97c38eeed0d8ff588d1489ae2605c19da",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": false,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-rebase-3",
+      "inputSha256": "f80ffe6f41e61fb98e337bf86d8af225d51186452c07ab35a4b941b8caf7e8eb",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": false,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-bind-0",
+      "inputSha256": "7dea4401c216efaa5ca4856494cdaa89d6e3604bfd69e1ce59431a091e7c0197",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": true,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-bind-1",
+      "inputSha256": "bb2b0b1d1f5fce2364c5e9e8a29cbdb544be6bb4f106a5cf20bf559933c09f0c",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": true,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-bind-2",
+      "inputSha256": "6f7b4ab944bc2df549b3f5bf5382afd8b0a957eebf4af6385793d1c947d33007",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": true,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-1-bind-3",
+      "inputSha256": "c5cafbfcd5f517e2cb4e4b07e14e5cc94e043b3f7c7f39b1c6e0cbfaa89bef0b",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 1,
+        "bind": true,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-rebase-0",
+      "inputSha256": "3580f09dd9a51686918ce6e2c0a2ea5057207c5e0b335f2e2ec91a5208fee0ba",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": false,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-rebase-1",
+      "inputSha256": "688bf51f030b912909c1aa4782da66c7a72f7dc13357f116e7416be0bca66ca0",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": false,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-rebase-2",
+      "inputSha256": "802d8d868a518baeabe7e1db9cbf7ab765ba26f1a6c7ee0c9262dbda4b728291",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": false,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-rebase-3",
+      "inputSha256": "0a9531cc0b72a90cc7eb2e66c9503933347a0470d694773f9b8605d861a3051e",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": false,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-bind-0",
+      "inputSha256": "c0a512e119e4177ffc452721dce937f138c556fb21abefde2f3012eb664e05be",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": true,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-bind-1",
+      "inputSha256": "80f4c026a4105d6a0bb58d26fdada8650a7b6ca8eb99677c6d74ef3c68231005",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": true,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-bind-2",
+      "inputSha256": "86872998997f0326c2dd25131ff583186cd0ba193aaeed19462dd6a30184b6d0",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": true,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-7-bind-3",
+      "inputSha256": "7788268c436eb668d35952538d0bf433b48605622d3ba946352bf5edef321b6d",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 7,
+        "bind": true,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-rebase-0",
+      "inputSha256": "d1824c183cd0223a7f5569b092df6ef64c9b5f99173586efe7831e2362ce211c",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": false,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-rebase-1",
+      "inputSha256": "323da01d79eba5af8052cfab47f96d7d5df67083b21bd13a66721ffae5ae0ea8",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": false,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-rebase-2",
+      "inputSha256": "0f5e020ac45397ed9ecdac70af62ce8f85602648d45378c5387d2bc6539c4464",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": false,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-rebase-3",
+      "inputSha256": "b8d9399f529920cdd66c430f79cb1716a7e9c49f44dcfe0d95879529a7e50890",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": false,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-bind-0",
+      "inputSha256": "3ec163470ed481735a0d3fd843064f993e773431dac59cf80c39f68a523c6089",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": true,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-bind-1",
+      "inputSha256": "deaeb73cb7fc2bcbfd26f4d751f03293063f3be672da002e637a1b2d619cf77b",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": true,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-bind-2",
+      "inputSha256": "2f38ce47aa3680ab8e9479d3fc5350bb56966bbed6c00c85ab8563bfa7099cb4",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": true,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-9-bind-3",
+      "inputSha256": "98d9a4b47b64a6e0a70bf2e7e9e59bcff833dc2f0e9c5b8180256006d405db67",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 9,
+        "bind": true,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-rebase-0",
+      "inputSha256": "cac5eb07ccd47ee662ed2a792fa9730a2955478c67813d98aa5ab991648059e5",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": false,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-rebase-1",
+      "inputSha256": "2a417fc54113af646e84f770f3c7668654b0b251a88887e19bbf53979cfab1fa",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": false,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-rebase-2",
+      "inputSha256": "995da3931a4c810a64bf46602e5e7e7de193c3d23900e8f1b06b81ef0b125335",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": false,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-rebase-3",
+      "inputSha256": "d8a345b5df21a1f0e1479d8a609f54e1ac2cb6e5c2afb46e1e2892fbc9521c83",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": false,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-bind-0",
+      "inputSha256": "5d7a85abe1751b1fb3efb2a640e952f69e2b51373d984d5cce78c68e3f855d8c",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": true,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-bind-1",
+      "inputSha256": "14aeff5ffc82747b8294a2d0d6e631f68996ca7c505466593c33180fb65d574a",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": true,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-bind-2",
+      "inputSha256": "0d5d51e32ae1cc3a2344f17be25d0b95d2a8e964e63d479df0588af8c9f3de07",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": true,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-10-bind-3",
+      "inputSha256": "3092255f4854d6fd2b37ed4038d75b87621ba623a168811292606f0ab6bd3baa",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 10,
+        "bind": true,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-rebase-0",
+      "inputSha256": "b8ac1b141bf96005b058eb80dac19da958194ec990963bff27712646dc0534cf",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": false,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-rebase-1",
+      "inputSha256": "aacb1a155a70c1b9bebf4673f0f6dcdc39f48972c6e015926b5e233538c01f25",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": false,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-rebase-2",
+      "inputSha256": "863225ac81569582bee6b973a4fdef6d8e6432fd68407c846d4cca91fe9d2801",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": false,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-rebase-3",
+      "inputSha256": "7c28d64891773dfe36a0f99bc79aaa09c94c554da67e1a340ba703809b368aea",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": false,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-bind-0",
+      "inputSha256": "845400043934798f460ca90634bda46c988b11bdaa809f3c7b103205ff3d92b4",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": true,
+        "key": 0,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-bind-1",
+      "inputSha256": "efac5d225179a9cedd1761690a8fc46b8ef8a118f2c812b5fe4bef7e81ffc99f",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": true,
+        "key": 1,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-bind-2",
+      "inputSha256": "b292099150c6fbc6e174418f79b4fb44f9b1bd98bdf9ee54f09eea611077f7b8",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": true,
+        "key": 2,
+        "addressDiversity": false
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "pac-12-bind-3",
+      "inputSha256": "c87e17e52c5f651eec35a8f03624f7cef2dced790d83a192f37bcb5d87743caa",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 12,
+        "bind": true,
+        "key": 3,
+        "addressDiversity": true
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "unsupported-pointer-format",
+      "inputSha256": "ec9074992e15ad2c86cb0b6f9722e535bb6ee21a6e8e9129be00f37abc356444",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "format": 14
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "unsupported-fixups-version",
+      "inputSha256": "6056f6c1e10ce2c362fe9156d8718f1ec2ee5bfadac6d7fb40967c8e8038e3a8",
+      "size": 69632,
+      "format": "macho",
+      "architecture": "arm64e",
+      "sourceKind": "owned-synthetic-layout",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "parameters": {
+        "version": 1
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "cache-header-only",
+      "inputSha256": "8d29682554c5a34da3c6351f0a19ea23fc83135ad2547a5ca40cf58b9191b568",
+      "size": 512,
+      "format": "synthetic-dyld-header",
+      "architecture": "arm64e",
+      "sourceKind": "owned-malformed-container-header",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "externalIndependentOracle": false,
+      "generationCommand": "node --test tests/scpa/x02-apple-version-matrix.test.mjs"
+    },
+    {
+      "id": "phase12-vertical-macho64-object",
+      "path": "tests/phase12/rebuild/fixtures/vertical-macho-x86_64.o",
+      "sha256": "d4325809424c713392e932ca04a4f543ba420f40c61569500db6c767568f759d",
+      "format": "macho",
+      "architecture": "x86_64",
+      "profile": "macho:64",
+      "real": true,
+      "producer": "clang-18",
+      "flags": [
+        "--target=x86_64-apple-macos",
+        "-O0",
+        "-fno-stack-protector",
+        "-c"
+      ],
+      "inputSha256": "d4325809424c713392e932ca04a4f543ba420f40c61569500db6c767568f759d",
+      "sourceKind": "checked-in-compiler-artifact",
+      "producerClaims": {
+        "sourcePath": "tests/phase5/corpus/source/vertical-seed.c",
+        "sourceSha256": "0b92988287f8aea5f1ad2ef881e26fc355088e224e46163558fa4336cce2d281",
+        "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+        "linker": "Ubuntu LLD 18.1.3",
+        "hostArchitecture": "x86_64",
+        "policy": "tracked compiler-produced fixture; no synthetic or unchanged-copy proof"
+      },
+      "producerManifest": "tests/phase12/rebuild/fixtures/manifest.json",
+      "observedVersions": {
+        "os": null,
+        "compiler": null,
+        "runtime": null
+      },
+      "currentCompilerReproduction": false,
+      "externalIndependentOracle": false,
+      "size": 568,
+      "generationCommand": "clang-18 --target=x86_64-apple-macos -O0 -fno-stack-protector -c tests/phase5/corpus/source/vertical-seed.c -o tests/phase12/rebuild/fixtures/vertical-macho-x86_64.o"
+    }
+  ],
+  "cases": [
+    {
+      "id": "X02-OBJC-BUFFER",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R03",
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-BUFFER:",
+      "kind": "positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-SOURCE",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R03",
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-SOURCE:",
+      "kind": "positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-TRUNCATED-__objc_catlist",
+      "inputIds": [
+        "truncated-__objc_catlist"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-TRUNCATED-__objc_catlist:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-TRUNCATED-__objc_protolist",
+      "inputIds": [
+        "truncated-__objc_protolist"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-TRUNCATED-__objc_protolist:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-DEFAULTS",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-DEFAULTS:",
+      "kind": "positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-RAW-SECTIONS",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-RAW-SECTIONS:",
+      "kind": "positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-DUPLICATE-__objc_classlist",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-DUPLICATE-__objc_classlist:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-DUPLICATE-__objc_catlist",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-DUPLICATE-__objc_catlist:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-DUPLICATE-__objc_protolist",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-DUPLICATE-__objc_protolist:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-CACHE",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-CACHE:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-MALFORMED-SECTION",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-MALFORMED-SECTION:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-OBJC-SUPERSEDED",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R08"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-OBJC-SUPERSEDED:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-SWIFT",
+      "inputIds": [
+        "apple-layout"
+      ],
+      "requirementIds": [
+        "X02-R01",
+        "X02-R05",
+        "X02-R06",
+        "X02-R07"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-SWIFT:",
+      "kind": "positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-REBASE-0",
+      "inputIds": [
+        "pac-1-rebase-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-REBASE-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-REBASE-1",
+      "inputIds": [
+        "pac-1-rebase-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-REBASE-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-REBASE-2",
+      "inputIds": [
+        "pac-1-rebase-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-REBASE-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-REBASE-3",
+      "inputIds": [
+        "pac-1-rebase-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-REBASE-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-BIND-0",
+      "inputIds": [
+        "pac-1-bind-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-BIND-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-BIND-1",
+      "inputIds": [
+        "pac-1-bind-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-BIND-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-BIND-2",
+      "inputIds": [
+        "pac-1-bind-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-BIND-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-1-BIND-3",
+      "inputIds": [
+        "pac-1-bind-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-1-BIND-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-REBASE-0",
+      "inputIds": [
+        "pac-7-rebase-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-REBASE-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-REBASE-1",
+      "inputIds": [
+        "pac-7-rebase-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-REBASE-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-REBASE-2",
+      "inputIds": [
+        "pac-7-rebase-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-REBASE-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-REBASE-3",
+      "inputIds": [
+        "pac-7-rebase-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-REBASE-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-BIND-0",
+      "inputIds": [
+        "pac-7-bind-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-BIND-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-BIND-1",
+      "inputIds": [
+        "pac-7-bind-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-BIND-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-BIND-2",
+      "inputIds": [
+        "pac-7-bind-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-BIND-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-7-BIND-3",
+      "inputIds": [
+        "pac-7-bind-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-7-BIND-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-REBASE-0",
+      "inputIds": [
+        "pac-9-rebase-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-REBASE-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-REBASE-1",
+      "inputIds": [
+        "pac-9-rebase-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-REBASE-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-REBASE-2",
+      "inputIds": [
+        "pac-9-rebase-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-REBASE-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-REBASE-3",
+      "inputIds": [
+        "pac-9-rebase-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-REBASE-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-BIND-0",
+      "inputIds": [
+        "pac-9-bind-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-BIND-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-BIND-1",
+      "inputIds": [
+        "pac-9-bind-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-BIND-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-BIND-2",
+      "inputIds": [
+        "pac-9-bind-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-BIND-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-9-BIND-3",
+      "inputIds": [
+        "pac-9-bind-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-9-BIND-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-REBASE-0",
+      "inputIds": [
+        "pac-10-rebase-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-REBASE-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-REBASE-1",
+      "inputIds": [
+        "pac-10-rebase-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-REBASE-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-REBASE-2",
+      "inputIds": [
+        "pac-10-rebase-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-REBASE-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-REBASE-3",
+      "inputIds": [
+        "pac-10-rebase-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-REBASE-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-BIND-0",
+      "inputIds": [
+        "pac-10-bind-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-BIND-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-BIND-1",
+      "inputIds": [
+        "pac-10-bind-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-BIND-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-BIND-2",
+      "inputIds": [
+        "pac-10-bind-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-BIND-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-10-BIND-3",
+      "inputIds": [
+        "pac-10-bind-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-10-BIND-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-REBASE-0",
+      "inputIds": [
+        "pac-12-rebase-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-REBASE-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-REBASE-1",
+      "inputIds": [
+        "pac-12-rebase-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-REBASE-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-REBASE-2",
+      "inputIds": [
+        "pac-12-rebase-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-REBASE-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-REBASE-3",
+      "inputIds": [
+        "pac-12-rebase-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-REBASE-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-BIND-0",
+      "inputIds": [
+        "pac-12-bind-0"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-BIND-0:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-BIND-1",
+      "inputIds": [
+        "pac-12-bind-1"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-BIND-1:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-BIND-2",
+      "inputIds": [
+        "pac-12-bind-2"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-BIND-2:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-12-BIND-3",
+      "inputIds": [
+        "pac-12-bind-3"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09",
+        "X02-R10"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-12-BIND-3:",
+      "kind": "negative-and-positive-contract",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-PAC-UNSUPPORTED",
+      "inputIds": [
+        "unsupported-pointer-format"
+      ],
+      "requirementIds": [
+        "X02-R04",
+        "X02-R09"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-PAC-UNSUPPORTED:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-CHAINED-UNKNOWN-VERSION",
+      "inputIds": [
+        "unsupported-fixups-version"
+      ],
+      "requirementIds": [
+        "X02-R01",
+        "X02-R04"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-CHAINED-UNKNOWN-VERSION:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-SWIFT-UNKNOWN-KIND",
+      "inputIds": [
+        "unknown-swift-kind"
+      ],
+      "requirementIds": [
+        "X02-R05"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-SWIFT-UNKNOWN-KIND:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-SHARED-CACHE-GAP",
+      "inputIds": [
+        "cache-header-only"
+      ],
+      "requirementIds": [
+        "X02-R02",
+        "X02-R03"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-SHARED-CACHE-GAP:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-SIGNATURE-BOUNDARY",
+      "inputIds": [
+        "signed-marker"
+      ],
+      "requirementIds": [
+        "X02-R11"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-SIGNATURE-BOUNDARY:",
+      "kind": "negative-boundary",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    },
+    {
+      "id": "X02-TRACKED-COMPILER-INPUT",
+      "inputIds": [
+        "phase12-vertical-macho64-object"
+      ],
+      "requirementIds": [
+        "X02-R01",
+        "X02-R12"
+      ],
+      "testFile": "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "testNamePrefix": "X02-TRACKED-COMPILER-INPUT:",
+      "kind": "artifact-identity-only",
+      "expectedLocalResult": "pass",
+      "originalRequirementCompletion": false
+    }
+  ],
+  "verificationEvidence": "See delivery evidence/verified-results.json and evidence/tmp/ for actual command exits and full logs. expectedLocalResult fields are assertions, not recorded proof."
+}

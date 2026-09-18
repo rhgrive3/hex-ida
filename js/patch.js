@@ -1,6 +1,11 @@
 /* Binary patching and the small ARM64 patch assembler. */
 import { parseOperands } from './arm64.js';
 
+export function instructionPatchArchitectureSupported(value) {
+  const architecture = String(value || '').toLowerCase();
+  return architecture === 'arm64' || architecture === 'arm64e';
+}
+
 function integerBigInt(value, name) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -14,6 +19,24 @@ function integerBigInt(value, name) {
 }
 function canonicalAddress(value) { try { return integerBigInt(value, 'address').toString(); } catch { return null; } }
 
+// Patch bytes are literal integers 0..255: TypedArray conversion would coerce
+// schema-invalid values (256 -> 0, -1 -> 255, 1.5 -> 1, '1' -> 1) into a
+// different valid byte, so the stored patch would no longer match the
+// caller's request (#5311). Existing Uint8Array input is copied as-is.
+function patchBytes(value, name) {
+  if (value instanceof Uint8Array) return Uint8Array.from(value);
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array of integers 0..255 or a Uint8Array`);
+  const out = new Uint8Array(value.length);
+  for (let i = 0; i < value.length; i++) {
+    const byte = value[i];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new TypeError(`${name}[${i}] must be an integer 0..255`);
+    }
+    out[i] = byte;
+  }
+  return out;
+}
+
 export class PatchSet {
   constructor() { this.items = new Map(); }
   get size() { return this.items.size; }
@@ -21,8 +44,8 @@ export class PatchSet {
   add(fileOffset, before, after, meta) {
     const offset = integerBigInt(fileOffset, 'fileOffset');
     if (offset < 0n) throw new RangeError('fileOffset must be non-negative');
-    const beforeBytes = Uint8Array.from(before || []);
-    const afterBytes = Uint8Array.from(after || []);
+    const beforeBytes = patchBytes(before, 'before');
+    const afterBytes = patchBytes(after, 'after');
     if (!beforeBytes.length || beforeBytes.length !== afterBytes.length) throw new RangeError('patch before/after must have the same non-zero length');
     const end = offset + BigInt(afterBytes.length);
     for (const item of this.items.values()) {
@@ -96,7 +119,10 @@ export function assemble(text, at) {
     // encoding silently rewrote the mnemonic — `movz x0, x1` assembled to the
     // ORR alias of `mov x0, x1` (#5798).
     if (mn === 'movz' && imm == null) return { error: 'movz の右側は即値（#0〜#65535）で指定してください。' };
-    if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d); }
+    const shiftError = checkMoveWideShift(mn, ops, dst.bits);
+    if (shiftError) return { error: shiftError };
+    const hw = ops[1].shift ? Number(ops[1].shift.amount) / 16 : 0;
+    if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (hw << 21) | (Number(imm) << 5) | d); }
     const srcReg = regInfo(ops[1]); const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };
     if (dst.bits !== srcReg.bits) return { error: 'mov の左右は同じ幅（w同士 / x同士）で指定してください。' };
@@ -132,6 +158,18 @@ function checkOperandArity(mn, ops) {
   if (/^b\.\w+$/.test(mn)) return ops.length === 1 ? null : '条件分岐は飛び先 1 個で指定してください。';
   return null;
 }
+function checkMoveWideShift(mn, ops, dstBits) {
+  const movMsg = 'mov はレジスタ 2 個か、レジスタと即値（#0〜#65535）で指定してください。';
+  const movzMsg = 'movz はレジスタと即値（#0〜#65535）に LSL #0/#16/#32/#48（W 形式は #0/#16）を指定してください。';
+  const msg = mn === 'movz' ? movzMsg : movMsg;
+  if (ops[0] && ops[0].shift) return msg;
+  const sh = ops[1] && ops[1].shift;
+  if (!sh) return null;
+  if (mn === 'mov') return msg;
+  if (sh.op !== 'lsl' || !Number.isInteger(sh.amount) || sh.amount < 0 || sh.amount > 48 || sh.amount % 16 !== 0) return msg;
+  if (dstBits === 32 && sh.amount > 16) return msg;
+  return null;
+}
 function regNum(op) { if (!op || op.k !== 'reg') return null; if (op.cls === 'zr' || op.cls === 'sp') return 31; if (op.cls !== 'gp') return null; return op.num; }
 function regInfo(op) { const num = regNum(op); if (num == null) return null; return { num, bits: op.bits === 32 ? 32 : 64, sp: op.cls === 'sp', zr: op.cls === 'zr' }; }
 function immOf(op) { if (!op) return null; if (op.k === 'imm') return op.value; if (op.k === 'other' && /^0x[0-9a-f]+$/.test(op.text)) return BigInt(op.text); return null; }
@@ -164,8 +202,8 @@ export function validatePatchRange(region, addr, length, fileSize, instruction =
   if (!region) return { error: 'コードのセクションが見つかりません。' };
   let a;
   try { a = integerBigInt(addr, 'address'); } catch { return { error: 'アドレスが不正です。' }; }
-  const n = Number(length);
-  if (!Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
+  const n = length;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
   if (instruction && ((a - region.vmAddr) % 4n !== 0n || n !== 4)) return { error: '命令の位置と長さは 4 バイト境界で指定してください。' };
   const rel = a - region.vmAddr; if (rel < 0n || rel + BigInt(n) > region.size) return { error: 'アドレスがコードのセクション範囲外です。' };
   const offset = region.fileOffset + rel;

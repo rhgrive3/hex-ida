@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseCil, probeCil, readCompressedInt } from '../../../js/managed/cil/parser.js';
+import { parseCil, probeCil } from '../../../js/managed/cil/parser.js';
+import { readCompressedInt } from '../../../js/managed/cil/parser-base.js';
 
 console.log('[phase11] running cil adversarial tests...');
 
@@ -34,7 +35,10 @@ assert.equal(probeCil(nativePeWithFalseMetadata).supported, false);
 assert.throws(() => parseCil(nativePeWithFalseMetadata), /cil-unsupported-binary/);
 
 const falseBody = new Uint8Array([0x12, 0x02, 0x03, 0x58, 0x2a]);
-for (const [label, offset] of [['metadata', 0x3f0], ['resource', 0x820]]) {
+// The metadata probe sits in the #GUID stream: changing a GUID leaves the
+// metadata tables and their referenced signatures intact while still placing
+// plausible method-header bytes inside the metadata root.
+for (const [label, offset] of [['metadata', 0x530], ['resource', 0x820]]) {
   const poisoned = new Uint8Array(realCil);
   poisoned.set(falseBody, offset);
   const parsed = parseCil(poisoned, { binaryId: `false-${label}-header` });

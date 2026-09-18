@@ -62,10 +62,10 @@ test('#6012: same substring discipline holds for the Darwin arm64 classifier', (
 
 test('#6012: real pointer spellings still classify as pointers', () => {
   for (const classify of [aapcs64, darwin]) {
-    const starred = classify('Foo *');
+    const starred = classify('Foo *', { bits:64, bytes:8 });
     assert.equal(starred.pointer, true);
     assert.ok(!starred.aggregate, 'pointer declarator wins over the aggregate path');
-    const token = classify('class');
+    const token = classify('class', { bits:64, bytes:8 });
     assert.equal(token.pointer, true);
   }
 });
@@ -74,7 +74,7 @@ test('#6012: explicit pointer metadata keeps priority over type text', () => {
   for (const classify of [aapcs64, darwin]) {
     const explicit = classify('value_t');
     assert.equal(explicit.aggregate, true);
-    const flagged = classify('value_t', { pointer:true });
+    const flagged = classify('value_t', { pointer:true, bits:64, bytes:8 });
     assert.equal(flagged.pointer, true);
     assert.equal(flagged.aggregate ?? false, false);
   }

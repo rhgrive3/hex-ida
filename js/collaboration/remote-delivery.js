@@ -1,4 +1,4 @@
-import { ChangeLog } from './index.js';
+import { ChangeLog, compareOperationId } from './index.js';
 
 function assertGate(gate) {
   if (!gate || typeof gate.validate !== 'function' || typeof gate.accept !== 'function') throw new TypeError('RemoteCollaborationGate required');
@@ -12,6 +12,9 @@ function cloneWorking(log) {
     operations: [...log.operations.values()],
     allowRemote: log.allowRemote === true,
     authorizedAuthors: [...log.authorizedAuthors],
+    maxPendingOperations: log.maxPendingOperations,
+    maxPendingOperationsPerActor: log.maxPendingOperationsPerActor,
+    maxPendingBytes: log.maxPendingBytes,
   });
   working.pending = new Map(log.pending);
   return working;
@@ -25,7 +28,7 @@ function drainReadyPending(log, results) {
   let progressed = true;
   while (progressed) {
     progressed = false;
-    for (const [operationId, operation] of [...log.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [operationId, operation] of [...log.pending.entries()].sort(([a], [b]) => compareOperationId(a, b))) {
       if (!operation.causalParents.every((parent) => log.operations.has(parent))) continue;
       // Tombstone-protected operations require an explicit resurrection; merely
       // receiving unrelated envelopes cannot make the same queued SET valid.
@@ -75,12 +78,19 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   log.operations = working.operations;
   log.pending = working.pending;
 
-  const unresolvedOperationIds = [...log.pending.keys()].sort();
+  // #8856 — the retained backlog is budgeted, so the receive summary stays
+  // bounded and deterministic while still reporting the exact retained count.
+  const summary = log.unresolvedOperationSummary();
+  const unresolvedOperationIds = summary.unresolvedOperationIds;
   return Object.freeze({
     status: unresolvedOperationIds.length ? 'accepted-with-pending-dependencies' : 'applied',
     envelopeId: envelope.envelopeId,
     results,
     unresolvedOperationIds,
+    unresolvedCount: summary.unresolvedCount,
+    unresolvedOperationIdsTruncated: summary.unresolvedOperationIdsTruncated,
+    retainedPending: log.retainedPendingUsage(snap.actorIdentity),
+    pendingBudget: log.pendingBudget(),
     stateDigest: log.digest(),
   });
 }

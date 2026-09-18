@@ -36,6 +36,7 @@ for (const [field, kind] of [
         returnIndex: 0,
         [field]: { id: 'forged-identity' },
         offset: '0',
+        addressSpace: 'memory',
       }])),
       /function-summary-invalid-return-provenance-identity/,
     );
@@ -47,6 +48,8 @@ for (const [field, kind] of [
       returnIndex: 0,
       [field]: `${kind}-site-1`,
       offset: '0',
+      // #5242: root/allocation provenance carries its storage space.
+      addressSpace: 'memory',
     }]));
     const malformed = {
       ...canonical,

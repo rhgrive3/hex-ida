@@ -6,6 +6,7 @@ import { routeIntent, shouldRunPlanner } from '../routing/intent.js';
 import { selectToolWindow } from './tool-window.js';
 import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../budget/wire.js';
 import { createHexToolRegistry } from '../tools/index.js';
+import { sealPersistedConfirmedEnvelope } from '../session-core/persisted-confirmed.js';
 import {
   addressString, assertLiveBindingsUnchanged, claimedAddresses, compactCandidate, deterministicDecision,
   createMonotonicClock, ensureRunning, finalAnswerAuthorityEvidence, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
@@ -506,8 +507,8 @@ export async function executeTurn(input = {}, options = {}) {
       await persistWithBindingCheck(() => this.sessionStore.update(session.id, {
         effectiveScope: scopeController.effectiveScope, hypotheses: hypothesisStore.all(),
         confirmedFindings: typeof evidenceStore.byStatus === 'function'
-          ? evidenceStore.byStatus('verified')
-          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.persistedActions(),
+          ? sealPersistedConfirmedEnvelope(evidenceStore.byStatus('verified'))
+          : sealPersistedConfirmedEnvelope([]), proposedActions: proposalStore.persistedActions(),
         lastActivity: activity[activity.length - 1] || null,
       }));
       result.sessionId = session.id;

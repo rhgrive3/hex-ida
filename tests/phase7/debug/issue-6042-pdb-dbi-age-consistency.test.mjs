@@ -12,13 +12,14 @@ import { isDebugRecordAuthoritative } from '../../../js/analysis/debug/provider.
 const GUID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
 
 function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64, dbiVersionSignature = -1, dbiVersionHeader = 19990903 } = {}) {
-  const blockSize = 64;
+  const blockSize = 512;
   const blockCount = 6;
   const bytes = new Uint8Array(blockSize * blockCount);
   const view = new DataView(bytes.buffer);
   const magic = new TextEncoder().encode('Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0');
   bytes.set(magic, 0);
   view.setUint32(32, blockSize, true);
+  view.setUint32(36, 1, true); // FreeBlockMapBlock: spec-legal value (#5672)
   view.setUint32(40, blockCount, true);
   view.setUint32(44, 32, true);
   view.setUint32(52, 1, true);

@@ -24,24 +24,84 @@
  */
 
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
+import { mergeOriginSets } from '../../core/identity/origin.js';
+import { deepFreeze as deepFreezeSummaryView, stableDigest as summaryStableDigest, createEntityId as summaryEntityId } from '../../core/identity/index.js';
+import { assertWorldScope as assertSummaryWorld, assertAssumptionSet as assertSummaryAssumptions } from '../../core/identity/world.js';
+import { assertScopedAnalysisWork as assertSummaryWork, workStopStatus as summaryWorkStopStatus, AnalysisWorkStopped as SummaryWorkStopped } from '../../core/budgets/scoped-work.js';
+import { ResourceBudget as SummaryResourceBudget, BudgetExceededError as SummaryBudgetExceededError } from '../../core/budgets/index.js';
+import { snapshotContractData as strictSummaryData, recordFields as strictSummaryFields, exactInteger as strictSummaryInteger,
+  exactString as strictSummaryString, stringSet as strictSummaryStrings } from '../../core/identity/structured.js';
+import { summaryIdentityMatches as summaryIdentityMatchesForDemand } from './contract.js';
 import {
   EFFECT_SOURCES,
+  createDirectCall,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
   functionSummaryDigest,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
 } from './contract.js';
 
-export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
+import { substituteReturnAlternatives, RETURN_FACT_LIMIT } from './return-equations.js';
 
+const summaryIdentityMatches = summaryIdentityMatchesForDemand;
+
+export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.4.0';
+
+/**
+ * Classic A3 solver resource contract (#8872).
+ *
+ * `maxEffectsPerSummary` already bounded memory read/write rows, and `transfers`
+ * bounds demand-mode payloads, but the three other transitively propagated
+ * dimensions — `escapes`, `unknownCallEffects`, `registerEffects` — had no fence at
+ * all. An ordinary acyclic call chain therefore retained Θ(N²) summary rows while
+ * still publishing `complete`, and a 2,200-function chain OOMed a 512 MiB heap
+ * below the advertised `maxComponents`/`maxNodes` graph bounds.
+ *
+ * Two independent resources close that hole on the canonical budget owner:
+ * rows published and kept resident, and rows touched while composing. Crossing
+ * either one fails closed to `truncated` with `budget-exhausted`; a summary is
+ * never allowed to keep `complete` authority after a fact was dropped.
+ */
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
   maxComponents: 4096,
   maxEffectsPerSummary: 512,
+  maxTransitiveRowsPerSummary: 2048,
+  maxResidentSummaryRows: 262144,
+  maxSummaryMergeRows: 8388608,
+  maxWorkItems: 2000000,
 });
 
+export const SUMMARY_PAYLOAD_RESOURCES = Object.freeze({
+  residentRows: 'residentSummaryRows',
+  mergeRows: 'summaryMergeRows',
+});
+
+/** Rows/provenance members the published summary keeps alive. */
+function summaryResidentRows(summary) {
+  let rows = (summary.escapes?.length || 0) + (summary.unknownCallEffects?.length || 0)
+    + (summary.registerEffects?.length || 0)
+    + (summary.memoryReadRegions?.length || 0) + (summary.memoryWriteRegions?.length || 0);
+  // Nested provenance is retained just as surely as a top-level row. Counting only
+  // `escapes.length` lets one logical escape carry an ever-growing evidence list
+  // through every solved suffix while the resident ledger still reports one row.
+  for (const escape of summary.escapes || []) rows += escape.evidenceIds?.length || 0;
+  for (const unknown of summary.unknownCallEffects || []) {
+    rows += unknown.targetEntityIds?.length || 0;
+    rows += unknown.evidenceIds?.length || 0;
+  }
+  return rows;
+}
+
 function fail(code) { throw new TypeError(code); }
+
+function budgetInteger(value, fallback, key) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(`interprocedural-invalid-budget-${key}`);
+  return value;
+}
 
 /**
  * Condenses the call graph into strongly connected components.
@@ -51,11 +111,14 @@ function fail(code) { throw new TypeError(code); }
  * exactly the bottom-up order the solve wants.
  */
 export function condenseCallGraph(roots, successorsOf, {
-  maxComponents = INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents,
-  maxNodes = Math.max(10000, maxComponents),
-  maxEdges = Math.max(50000, maxNodes * 4),
+  maxComponents,
+  maxNodes,
+  maxEdges,
   signal = null,
 } = {}) {
+  maxComponents = budgetInteger(maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  maxNodes = budgetInteger(maxNodes, Math.max(10000, maxComponents), 'maxNodes');
+  maxEdges = budgetInteger(maxEdges, Math.max(50000, maxNodes * 4), 'maxEdges');
   const index = new Map();
   const low = new Map();
   const onStack = new Set();
@@ -269,40 +332,123 @@ function strongestSource(left, right) {
   return leftRank <= rightRank ? left : right;
 }
 
+function weakestSource(left, right) {
+  const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
+  const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
+  return leftRank >= rightRank ? left : right;
+}
+
 function compareCodeUnitStrings(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function mergeEscapes(values) {
+/**
+ * Grow a transitive dimension only while the summary's own row budget has room.
+ * Returning `truncated` is mandatory: a dropped distinct fact is an
+ * under-approximation of a may-analysis, so the caller must lose `complete`
+ * authority rather than silently keep a prefix (#8872).
+ */
+function boundedPush(target, incoming, limit) {
+  let truncated = false;
+  for (const value of incoming) {
+    if (target.length >= limit) { truncated = true; break; }
+    target.push(value);
+  }
+  return truncated;
+}
+
+function boundedAddAll(target, incoming, limit) {
+  let truncated = false;
+  for (const value of incoming) {
+    if (target.size >= limit) { truncated = true; break; }
+    target.add(value);
+  }
+  return truncated;
+}
+
+function chargeSortWork(length, charge) {
+  if (typeof charge !== 'function' || length < 2) return;
+  charge(length * Math.ceil(Math.log2(length)));
+}
+
+/** Deterministic capped union without allocating an unbounded concatenation first. */
+function boundedUnion(left, right, limit, normalize, charge = null) {
+  const seen = new Set();
+  const values = [];
+  let truncated = false;
+  const visit = (input) => {
+    for (const value of input || []) {
+      if (typeof charge === 'function') charge(1);
+      const member = normalize(value);
+      if (seen.has(member)) continue;
+      if (values.length >= limit) { truncated = true; return false; }
+      seen.add(member);
+      values.push(member);
+    }
+    return true;
+  };
+  if (visit(left)) visit(right);
+  chargeSortWork(values.length, charge);
+  values.sort(compareCodeUnitStrings);
+  return { values, truncated };
+}
+
+function mergeEscapes(values, limit, charge) {
   const byKey = new Map();
+  let truncated = false;
   for (const escape of values) {
-    const evidenceIds = [...new Set(escape.evidenceIds)].sort();
+    const evidence = boundedUnion([], escape.evidenceIds, limit, (value) => value, charge);
+    if (evidence.truncated) truncated = true;
     const key = JSON.stringify([escape.kind, escape.target ?? null]);
     const prior = byKey.get(key);
     if (!prior) {
-      byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+      byKey.set(key, Object.freeze({ ...escape, evidenceIds: evidence.values }));
       continue;
     }
-    byKey.set(key, Object.freeze({
-      ...prior,
-      evidenceIds: [...new Set([...prior.evidenceIds, ...evidenceIds])].sort(),
-    }));
+    const merged = boundedUnion(prior.evidenceIds, evidence.values, limit, (value) => value, charge);
+    if (merged.truncated) truncated = true;
+    byKey.set(key, Object.freeze({ ...prior, evidenceIds: merged.values }));
   }
-  return [...byKey.entries()]
-    .sort(([left], [right]) => compareCodeUnitStrings(left, right))
-    .map(([, escape]) => escape);
+  const entries = [...byKey.entries()];
+  chargeSortWork(entries.length, charge);
+  entries.sort(([left], [right]) => compareCodeUnitStrings(left, right));
+  return { values: entries.map(([, escape]) => escape), truncated };
+}
+
+
+function mergedRegionProof(left, right) {
+  if (!left || !right || left.id !== right.id || left.kind !== right.kind) return null;
+  try { return { ...left, origin: mergeOriginSets(left.origin, right.origin) }; }
+  catch { return null; }
+}
+
+function effectAddressSpaces(effect) {
+  if (effect.broad) return effect.addressSpaces?.length ? effect.addressSpaces : [];
+  return effect.addressSpaces?.length ? effect.addressSpaces : ['memory'];
 }
 
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
-  let broad = null;
+  const broadByKey = new Map();
   for (const effect of lists.flat()) {
     if (effect.broad) {
-      // One broad effect subsumes every specific one in its address spaces, so
-      // the merge keeps a single broad entry rather than an unbounded list.
-      const spaces = [...new Set([...(broad?.addressSpaces ?? []), ...effect.addressSpaces])].sort();
-      broad = createMemoryEffect({ ...effect, addressSpaces: spaces });
+      // A broad effect is already a coverage claim for every region in each
+      // address space. Keep source and evidence attached to those spaces while
+      // deduping repeated observations; a later broad effect must not rewrite
+      // the authority of an earlier, disjoint space.
+      const spaces = effect.addressSpaces.length ? effect.addressSpaces : [null];
+      for (const addressSpace of spaces) {
+        const key = `${effect.source}\u0000${addressSpace ?? ''}`;
+        const prior = broadByKey.get(key);
+        const addressSpaces = addressSpace == null ? [] : [addressSpace];
+        broadByKey.set(key, createMemoryEffect({
+          ...(prior ?? effect),
+          broad: true,
+          addressSpaces,
+          evidenceIds: [...new Set([...(prior?.evidenceIds ?? []), ...effect.evidenceIds])].sort(),
+        }));
+      }
       continue;
     }
     const key = `${effect.regionId}\u0000${effect.regionKind}`;
@@ -319,34 +465,79 @@ function mergeEffects(lists, cap) {
     byKey.set(key, createMemoryEffect({
       regionId: effect.regionId,
       regionKind: effect.regionKind,
+      region: mergedRegionProof(prior.region ?? null, effect.region ?? null),
       broad: false,
       addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
       source: strongestSource(prior.source, effect.source),
       evidenceIds: [...new Set([...prior.evidenceIds, ...effect.evidenceIds])].sort(),
     }));
   }
-  const specific = [...byKey.values()];
-  if (broad) {
-    const combined = [broad, ...specific];
-    if (combined.length <= effectiveCap) return combined;
-    const dropped = combined.slice(effectiveCap);
-    const allDroppedSpaces = dropped.flatMap((eff) => eff.addressSpaces || []);
-    const mergedSpaces = [...new Set([...(broad.addressSpaces || []), ...allDroppedSpaces])].sort();
-    const finalBroad = createMemoryEffect({ ...broad, addressSpaces: mergedSpaces });
-    return [finalBroad, ...combined.slice(1, effectiveCap)];
+  const specific = [...byKey.values()].sort((left, right) => {
+    const leftKey = `${left.regionId ?? ''}\u0000${left.regionKind}\u0000${SOURCE_AUTHORITY_RANK.get(left.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${left.addressSpaces.join(',')}\u0000${left.evidenceIds.join(',')}`;
+    const rightKey = `${right.regionId ?? ''}\u0000${right.regionKind}\u0000${SOURCE_AUTHORITY_RANK.get(right.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${right.addressSpaces.join(',')}\u0000${right.evidenceIds.join(',')}`;
+    return compareCodeUnitStrings(leftKey, rightKey);
+  });
+  const broad = [...broadByKey.values()].sort((left, right) => {
+    const leftKey = `${SOURCE_AUTHORITY_RANK.get(left.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${left.addressSpaces.join(',')}\u0000${left.evidenceIds.join(',')}`;
+    const rightKey = `${SOURCE_AUTHORITY_RANK.get(right.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${right.addressSpaces.join(',')}\u0000${right.evidenceIds.join(',')}`;
+    return compareCodeUnitStrings(leftKey, rightKey);
+  });
+  const combined = [...broad, ...specific];
+  if (broad.length === 0 && specific.length > effectiveCap) {
+    const spaces = [...new Set(specific.flatMap(effectAddressSpaces))].sort();
+    const evidenceIds = [...new Set(specific.flatMap((effect) => effect.evidenceIds || []))].sort();
+    return [createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: spaces,
+      source: 'unknown-call-fallback',
+      evidenceIds,
+    })];
   }
-  if (specific.length > effectiveCap) {
-    // Rather than truncate a list a consumer would read as exhaustive, collapse
-    // to one broad effect across all present address spaces: less precise, still sound.
-    const spaces = [...new Set(specific.flatMap((eff) => eff.addressSpaces || ['memory']))].sort();
-    return [broadEffect('unknown-call-fallback', spaces.length ? spaces : ['memory'])];
+  if (combined.length > effectiveCap) {
+    // Any entry folded into a new broad claim loses its precise geometry. A
+    // conservative fallback source is therefore required whenever a specific
+    // effect is dropped; broad-only collapse can retain the weakest broad
+    // authority without laundering a stronger source into another space.
+    const kept = combined.slice(0, Math.max(0, effectiveCap - 1));
+    const dropped = combined.slice(kept.length);
+    const droppedSpaces = [...new Set(dropped.flatMap(effectAddressSpaces))].sort();
+    const droppedEvidence = [...new Set(dropped.flatMap((effect) => effect.evidenceIds || []))].sort();
+    const hasSpecific = dropped.some((effect) => !effect.broad);
+    const source = hasSpecific
+      ? 'unknown-call-fallback'
+      : dropped.reduce((current, effect) => weakestSource(current, effect.source), dropped[0]?.source || 'unknown-call-fallback');
+    const finalBroad = createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: droppedSpaces,
+      source,
+      evidenceIds: droppedEvidence,
+    });
+    return [finalBroad, ...kept];
   }
-  return specific;
+  return combined;
 }
 
 function unionKnowledge(values) {
   if (values.some((value) => value === 'unknown')) return 'unknown';
   return values.some((value) => value === true);
+}
+
+/**
+ * `noreturn` is a must-property, so a callee never strengthens it: only a
+ * contribution set in which every side proves divergence publishes `true`, and
+ * a caller that proves a reachable normal return keeps that fact even when one
+ * callee diverges. Where the sides disagree, A3 composition holds no
+ * control-flow proof that the call dominates every return path, so the
+ * composite publishes the explicit conservative `unknown` (#4061).
+ */
+function mustKnowledge(values) {
+  if (values.some((value) => value === 'unknown')) return 'unknown';
+  const diverged = values.some((value) => value === true);
+  const returned = values.some((value) => value === false);
+  if (diverged && returned) return 'unknown';
+  return diverged;
 }
 
 /**
@@ -360,6 +551,7 @@ function unionKnowledge(values) {
 export function solveInterproceduralSummaries({
   roots,
   localSummaries,
+  expectedSummaryDigests = new Map(),
   libraryModels = new Map(),
   budget = {},
   snapshotId = 'snapshot-unbound',
@@ -367,7 +559,25 @@ export function solveInterproceduralSummaries({
   signal = null,
 } = {}) {
   const limits = { ...INTERPROCEDURAL_DEFAULT_BUDGET, ...budget };
-  const locals = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
+  limits.maxComponents = budgetInteger(limits.maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  limits.maxNodes = budgetInteger(limits.maxNodes, null, 'maxNodes');
+  limits.maxEdges = budgetInteger(limits.maxEdges, null, 'maxEdges');
+  limits.maxIterationsPerComponent = budgetInteger(limits.maxIterationsPerComponent,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxIterationsPerComponent, 'maxIterationsPerComponent');
+  limits.maxEffectsPerSummary = budgetInteger(limits.maxEffectsPerSummary,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxEffectsPerSummary, 'maxEffectsPerSummary');
+  limits.maxTransitiveRowsPerSummary = budgetInteger(limits.maxTransitiveRowsPerSummary,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxTransitiveRowsPerSummary, 'maxTransitiveRowsPerSummary');
+  limits.maxResidentSummaryRows = budgetInteger(limits.maxResidentSummaryRows,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxResidentSummaryRows, 'maxResidentSummaryRows');
+  limits.maxSummaryMergeRows = budgetInteger(limits.maxSummaryMergeRows,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxSummaryMergeRows, 'maxSummaryMergeRows');
+  if (limits.maxTransitiveRowsPerSummary < 1) fail('interprocedural-invalid-budget-maxTransitiveRowsPerSummary');
+  const payloadLedger = new SummaryResourceBudget({
+    [SUMMARY_PAYLOAD_RESOURCES.residentRows]: limits.maxResidentSummaryRows,
+    [SUMMARY_PAYLOAD_RESOURCES.mergeRows]: limits.maxSummaryMergeRows,
+  }, { name: 'interprocedural-summary-payload' });
+  const sources = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
 
@@ -383,6 +593,47 @@ export function solveInterproceduralSummaries({
   if (signal?.aborted) {
     return { summaries: new Map(), components: [], status: status('partial', 'cancelled'), iterations: 0 };
   }
+
+  if (!(expectedSummaryDigests instanceof Map)) fail('interprocedural-expected-digests-required-map');
+  if (!Number.isSafeInteger(limits.maxWorkItems) || limits.maxWorkItems < 0) fail('interprocedural-invalid-work-budget');
+  const workBudget = new SummaryResourceBudget({ workUnits:limits.maxWorkItems }, { name:'interprocedural-summary' });
+  const checkpoint = () => {
+    if (signal?.aborted) throw new SummaryWorkStopped('cancelled', 'summary-cancelled');
+    workBudget.consume('workUnits');
+  };
+  // Pin only the reachable source summaries. Invalid/stale envelopes are
+  // explicit conservative placeholders, never re-stamped as exact facts.
+  const pinned = new Map();
+  const locals = {
+    has:id => sources.has(id),
+    get(id) {
+      if (pinned.has(id)) return pinned.get(id);
+      let source = sources.get(id);
+      if (!source || source.functionId !== id) return null;
+      // #6208's legacy API also accepts versionless EFFECT-only constructor
+      // inputs. Never upgrade old wire versions, equation data or return facts.
+      if (snapshotId === 'snapshot-unbound' && source.schemaVersion == null && source.contractVersion == null
+        && source.returnEquations == null && !source.returnValues?.length && !source.returnProvenance?.length) {
+        try { source = createFunctionSummary(source); } catch { /* rejected below */ }
+      }
+      // Preserve the legacy unbound effect-only API. It cannot certify a
+      // return from a different snapshot: composeReturns still requires an
+      // exact snapshot match. Explicit snapshot callers always reject stale
+      // sources before graph discovery or effect composition.
+      const expected = { functionId:id, ...(snapshotId === 'snapshot-unbound' ? {} : { snapshotId }) };
+      const digestValid = !expectedSummaryDigests.has(id)
+        || typeof expectedSummaryDigests.get(id) === 'string';
+      if (expectedSummaryDigests.has(id)) expected.digest = expectedSummaryDigests.get(id);
+      const local = digestValid && summaryIdentityMatches(source, expected)
+        ? createFunctionSummary(source)
+        : createFunctionSummary({ functionId:id, unknownCallEffects:[createUnknownCallEffect({
+          callSiteId:id, reason:'summary-stale', targetEntityIds:[id] })],
+        memoryReadRegions:[broadEffect('unknown-call-fallback')],
+        memoryWriteRegions:[broadEffect('unknown-call-fallback')], status:status('partial', 'evidence-missing') });
+      pinned.set(id, local);
+      return local;
+    },
+  };
 
   // A summary is usable for a function only when the map key and the
   // producer-declared identity agree. A mis-keyed reachable callee is treated
@@ -420,6 +671,18 @@ export function solveInterproceduralSummaries({
   let totalIterations = 0;
   let worstStopReason = null;
   let worstCompleteness = 'complete';
+  const failClosedPayload = (error) => {
+    // Rows are charged only for what has already been materialized, so the
+    // process can never be pushed past the fence by the report itself. Nothing
+    // partial is published: an incomplete solve answers with no summaries.
+    const stop = {
+      resource: error?.resource ?? SUMMARY_PAYLOAD_RESOURCES.residentRows,
+      used: Number.isSafeInteger(error?.used) ? error.used : null,
+      limit: Number.isSafeInteger(error?.limit) ? error.limit : null,
+    };
+    return { summaries: new Map(), components, iterations: totalIterations,
+      status: status('truncated', 'budget-exhausted'), budgetStop: stop };
+  };
 
   for (const component of components) {
     if (signal?.aborted) {
@@ -431,6 +694,7 @@ export function solveInterproceduralSummaries({
     let iterations = 0;
     let changed = true;
     let converged = true;
+    let groundUnresolved = false;
     const componentDigests = new Map();
 
     // Members of a recursive component start at the bottom of the effect
@@ -440,21 +704,46 @@ export function solveInterproceduralSummaries({
     // only the fixed point is ever published. A component that does not reach
     // one is republished conservatively below, never left in its optimistic
     // intermediate state.
-    while (changed) {
-      if (iterations >= limits.maxIterationsPerComponent) { converged = false; break; }
-      iterations += 1;
-      totalIterations += 1;
-      changed = false;
-      for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId });
-        const digest = functionSummaryDigest(next);
-        if (componentDigests.get(functionId) !== digest) {
-          componentDigests.set(functionId, digest);
-          solved.set(functionId, next);
+    try {
+      while (changed) {
+        checkpoint();
+        if (iterations >= limits.maxIterationsPerComponent) { converged = false; break; }
+        iterations += 1;
+        totalIterations += 1;
+        changed = false;
+        for (const functionId of component) {
+          checkpoint();
+          let next;
+          try {
+            next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, checkpoint, groundUnresolved, payloadLedger });
+          } catch (error) {
+            if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+            throw error;
+          }
+          const digest = functionSummaryDigest(next);
+          if (componentDigests.get(functionId) !== digest) {
+            componentDigests.set(functionId, digest);
+            solved.set(functionId, next);
+            changed = true;
+          }
+        }
+        if (!changed && recursive && !groundUnresolved
+          && component.some(id => hasEmptyReturnPositions(solved.get(id)))) {
+          // Bottom is private, not a proof of noreturn. Revisit these empty
+          // positions as unknown in THIS SCC transfer before publication.
+          groundUnresolved = true;
           changed = true;
         }
+        if (!recursive) break;
       }
-      if (!recursive) break;
+      checkpoint();
+    } catch (error) {
+      if (!(error instanceof SummaryBudgetExceededError) && !(error instanceof SummaryWorkStopped)) throw error;
+      // A stop in the middle of an SCC must not leak its optimistic members.
+      for (const id of component) solved.delete(id);
+      const cancelled = signal?.aborted || error.status === 'cancelled';
+      return { summaries:solved, components, iterations:totalIterations,
+        status:status(cancelled ? 'partial' : 'truncated', cancelled ? 'cancelled' : 'budget-exhausted') };
     }
 
     if (!converged) {
@@ -463,12 +752,31 @@ export function solveInterproceduralSummaries({
       // recursion-unconverged effect, so callers see a bounded incomplete
       // result instead of a plausible-looking complete one (P7-INV-010).
       for (const functionId of component) {
-        solved.set(functionId, composeSummary({
-          functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true,
-        }));
+        let republished;
+        try {
+          republished = composeSummary({
+            functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true, payloadLedger,
+          });
+        } catch (error) {
+          if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+          throw error;
+        }
+        solved.set(functionId, republished);
       }
       worstStopReason = 'iteration-limit';
       worstCompleteness = weakestCompleteness(worstCompleteness, 'truncated');
+    }
+
+    // Resident charge: every summary this component publishes stays alive in
+    // `solved` for the rest of the solve, so it is charged once here, after the
+    // fixed point, rather than per iteration.
+    try {
+      for (const functionId of component) {
+        payloadLedger.consume(SUMMARY_PAYLOAD_RESOURCES.residentRows, summaryResidentRows(solved.get(functionId)));
+      }
+    } catch (error) {
+      if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+      throw error;
     }
   }
 
@@ -487,10 +795,91 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
+function hasEmptyReturnPositions(summary) {
+  if (!summary?.returnEquations) return false;
+  const positions = new Set(summary.returnProvenance.map(fact => fact.returnIndex ?? 0));
+  return summary.returnEquations.sites.some(site => !positions.has(site.returnIndex));
+}
+
+// Reused df98376ae transfer: the local equation describes expressions; only
+// the canonical SCC's current callee state can discover their return roots.
+function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved) {
+  const unknowns = () => [...new Set([
+    ...local.returnProvenance.map(fact => fact.returnIndex ?? 0),
+    ...(local.returnEquations?.sites ?? []).map(site => site.returnIndex),
+  ])].sort((a, b) => a - b).map(returnIndex => ({ kind:'unknown', returnIndex }));
+  if (!summaryIdentityMatches(local, { functionId:local.functionId, snapshotId })
+    || local.status.completeness !== 'complete' || local.unknownCallEffects.length) return unknowns();
+  if (!local.returnEquations) return local.returnProvenance;
+  const facts = new Map();
+  const add = fact => { facts.set(JSON.stringify(fact), fact); };
+  const direct = new Map(local.directCalls.map(call => [call.callSiteId, call]));
+  const indirect = new Map(local.indirectCallSets.map(call => [call.callSiteId, call]));
+  for (const row of local.returnEquations.rows) {
+    checkpoint();
+    if (row.kind === 'fact') { add(row.fact); }
+    else {
+      const call = direct.get(row.callSiteId), set = indirect.get(row.callSiteId);
+      const targets = call?.targetEntityIds ?? set?.candidateEntityIds ?? [];
+      if ((!call && !set?.exhaustive) || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) {
+        add({ kind:'unknown', returnIndex:row.returnIndex });
+      } else for (const target of targets) {
+        checkpoint();
+        if (!summaryIdentityMatches(locals.get(target), { functionId:target, snapshotId })) {
+          add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+        }
+        const callee = solved.get(target);
+        if (!callee && component.includes(target)) continue; // private bottom
+        if (!summaryIdentityMatches(callee, { functionId:target, snapshotId })
+          || callee.status.completeness !== 'complete' || callee.unknownCallEffects.length) {
+          add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+        }
+        const alternatives = callee.returnProvenance.filter(fact => (fact.returnIndex ?? 0) === row.callReturnIndex);
+        if (!alternatives.length && (groundUnresolved || !component.includes(target)
+          || !callee.returnEquations?.sites.some(site => site.returnIndex === row.callReturnIndex))) {
+          add({ kind:'unknown', returnIndex:row.returnIndex });
+        }
+        for (const alternative of alternatives) {
+          for (const fact of substituteReturnAlternatives(alternative, row.arguments, row.returnIndex, row.offset, checkpoint)) add(fact);
+          if (facts.size > RETURN_FACT_LIMIT) return unknowns();
+        }
+      }
+    }
+    if (facts.size > RETURN_FACT_LIMIT) return unknowns();
+  }
+  return [...facts.values()];
+}
+
+function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false,
+  checkpoint = () => {}, groundUnresolved = false, payloadLedger = null }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
   if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
+  // #8872: the classic solver passes a row fence plus the shared payload ledger.
+  // The resumable demand session has its own per-transfer payload/lifetime fences
+  // and does not supply these, so its behavior is deliberately unchanged.
+  const rowLimit = Number.isSafeInteger(limits.maxTransitiveRowsPerSummary) && limits.maxTransitiveRowsPerSummary >= 1
+    ? limits.maxTransitiveRowsPerSummary : Number.POSITIVE_INFINITY;
+  let payloadTruncated = false;
+  const chargeMergeRows = (rows) => {
+    if (payloadLedger === null || !(rows > 0)) return;
+    payloadLedger.consume(SUMMARY_PAYLOAD_RESOURCES.mergeRows, rows > 0 ? rows : 0);
+  };
+  const takeRows = (target, incoming) => {
+    if (!incoming || incoming.length === 0) return;
+    chargeMergeRows(incoming.length);
+    if (boundedPush(target, incoming, rowLimit)) payloadTruncated = true;
+  };
+  const takeSetRows = (target, incoming) => {
+    if (!incoming || incoming.length === 0) return;
+    chargeMergeRows(incoming.length);
+    if (boundedAddAll(target, incoming, rowLimit)) payloadTruncated = true;
+  };
+  const addRow = (target, value) => {
+    chargeMergeRows(1);
+    if (target.length >= rowLimit) { payloadTruncated = true; return; }
+    target.push(value);
+  };
 
   // A local P7-3a summary records a placeholder for every call it could not
   // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
@@ -529,19 +918,25 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
 
   const reads = [replaceCallFallbacks ? local.memoryReadRegions.filter(notCallFallback) : local.memoryReadRegions];
   const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
-  const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
+  const unknowns = [];
+  if (!replaceCallFallbacks) takeRows(unknowns, local.unknownCallEffects);
   const calleeStatuses = [];
+  const registerEffects = new Set();
+  takeSetRows(registerEffects, local.registerEffects);
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
-  const escapes = [...local.escapes];
+  const escapes = [];
+  takeRows(escapes, local.escapes);
 
   const accumulateCallee = (callee) => {
     reads.push(callee.memoryReadRegions);
     writes.push(callee.memoryWriteRegions);
-    escapes.push(...callee.escapes);
+    chargeMergeRows(callee.memoryReadRegions.length + callee.memoryWriteRegions.length);
+    takeRows(escapes, callee.escapes);
+    takeSetRows(registerEffects, callee.registerEffects);
     // Keep provenance-bearing unresolved effects and control-flow knowledge in
     // lockstep with the memory dimensions for every resolved call edge.
-    unknowns.push(...callee.unknownCallEffects);
+    takeRows(unknowns, callee.unknownCallEffects);
     noreturn.push(callee.noreturn);
     mayThrow.push(callee.mayThrow);
     calleeStatuses.push(callee.status);
@@ -573,13 +968,15 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         // callee, so it can never override contradictory binary evidence.
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
-        escapes.push(...validatedModel.escapes);
+        chargeMergeRows(validatedModel.memoryReadRegions.length + validatedModel.memoryWriteRegions.length);
+        takeRows(escapes, validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
-      unknowns.push(createUnknownCallEffect({
+      reads.push([broadEffect('unknown-call-fallback')]);
+      addRow(unknowns, createUnknownCallEffect({
         callSiteId: call.callSiteId,
         reason: locals.has(target) ? 'summary-missing' : 'library-model-missing',
         targetEntityIds: [target],
@@ -604,13 +1001,15 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       if (validatedModel) {
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
-        escapes.push(...validatedModel.escapes);
+        chargeMergeRows(validatedModel.memoryReadRegions.length + validatedModel.memoryWriteRegions.length);
+        takeRows(escapes, validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
-      unknowns.push(createUnknownCallEffect({
+      reads.push([broadEffect('unknown-call-fallback')]);
+      addRow(unknowns, createUnknownCallEffect({
         callSiteId: set.callSiteId,
         reason: locals.has(candidate) ? 'summary-missing' : 'library-model-missing',
         targetEntityIds: [candidate],
@@ -620,8 +1019,9 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     }
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       if (!unknowns.some((unknown) => unknown.callSiteId === set.callSiteId)) {
-        unknowns.push(createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
+        addRow(unknowns, createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
       }
     }
   }
@@ -629,7 +1029,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   if (unconverged) {
     writes.push([broadEffect('unknown-call-fallback')]);
     reads.push([broadEffect('unknown-call-fallback')]);
-    unknowns.push(createUnknownCallEffect({ callSiteId: functionId, reason: 'recursion-unconverged' }));
+    addRow(unknowns, createUnknownCallEffect({ callSiteId: functionId, reason: 'recursion-unconverged' }));
   }
 
   const unknownsByKey = new Map();
@@ -643,11 +1043,16 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     // Same call site and reason means one logical unresolved call; the target
     // and evidence payloads must union rather than last-wins, or every
     // candidate but the final one vanishes from the published provenance.
+    const targetEntityIds = boundedUnion(
+      prior.targetEntityIds, unknown.targetEntityIds, rowLimit, (value) => value, chargeMergeRows);
+    const evidenceIds = boundedUnion(
+      prior.evidenceIds, unknown.evidenceIds, rowLimit, (value) => value, chargeMergeRows);
+    if (targetEntityIds.truncated || evidenceIds.truncated) payloadTruncated = true;
     unknownsByKey.set(key, createUnknownCallEffect({
       callSiteId: unknown.callSiteId,
       reason: unknown.reason,
-      targetEntityIds: [...prior.targetEntityIds, ...unknown.targetEntityIds],
-      evidenceIds: [...prior.evidenceIds, ...unknown.evidenceIds],
+      targetEntityIds: targetEntityIds.values,
+      evidenceIds: evidenceIds.values,
     }));
   }
   const dedupedUnknowns = [...unknownsByKey.values()];
@@ -656,29 +1061,379 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     hasUnknown ? (unconverged ? 'truncated' : 'partial') : 'complete',
     hasUnknown ? (unconverged ? 'iteration-limit' : 'evidence-missing') : null,
   );
+  const publishedDirectCalls = replaceCallFallbacks
+    ? local.directCalls.map((call) => call.effectSource === 'unknown-call-fallback' && resolvedCallSites.has(call.callSiteId)
+      ? createDirectCall({
+        callSiteId: call.callSiteId,
+        targetEntityIds: call.targetEntityIds,
+        summaryId: call.summaryId,
+        effectSource: 'proven-summary',
+      })
+      : call)
+    : local.directCalls;
+
+  const baseStatus = calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus;
+  const localInput = local.status;
+  const relaxLocalFloor = replaceCallFallbacks
+    && local.unknownCallEffects.length > 0
+    && localInput?.completeness === 'partial'
+    && localInput?.stopReason === 'evidence-missing';
+  const flooredCompleteness = relaxLocalFloor || !localInput?.completeness
+    ? baseStatus.completeness
+    : weakestCompleteness(baseStatus.completeness, localInput.completeness);
+  const composedStatus = flooredCompleteness === baseStatus.completeness
+    ? baseStatus
+    : createAnalysisStatus({
+      snapshotId: baseStatus.snapshotId,
+      analyzerId: baseStatus.analyzerId,
+      analyzerVersion: baseStatus.analyzerVersion,
+      completeness: flooredCompleteness,
+      budgetClass: baseStatus.budgetClass,
+      stopReason: baseStatus.stopReason ?? localInput?.stopReason ?? 'evidence-missing',
+      evidenceIds: [...(baseStatus.evidenceIds ?? []), ...(localInput?.evidenceIds ?? [])],
+      dependencyIds: [...(baseStatus.dependencyIds ?? []), ...(localInput?.dependencyIds ?? [])],
+    });
+
+  const mergedEscapes = mergeEscapes(escapes, rowLimit, chargeMergeRows);
+  if (mergedEscapes.truncated) payloadTruncated = true;
+  const mergedReads = mergeEffects(reads, limits.maxEffectsPerSummary);
+  const mergedWrites = mergeEffects(writes, limits.maxEffectsPerSummary);
+  // `createFunctionSummary()` detaches/freezes every published row. Charge that
+  // copy before invoking the constructor so nested provenance cannot escape the
+  // work ledger merely because it dedupes to one logical top-level escape.
+  let detachRows = mergedEscapes.values.length + dedupedUnknowns.length + registerEffects.size
+    + mergedReads.length + mergedWrites.length;
+  for (const escape of mergedEscapes.values) detachRows += escape.evidenceIds?.length || 0;
+  for (const unknown of dedupedUnknowns) {
+    detachRows += unknown.targetEntityIds?.length || 0;
+    detachRows += unknown.evidenceIds?.length || 0;
+  }
+  chargeMergeRows(detachRows);
+
+  // #8872: dropping any distinct transitive row (escape / unknown-call /
+  // register effect / provenance member) is an under-approximation of a
+  // may-analysis, so this summary can no longer claim `complete`. Failing closed
+  // here keeps the per-summary fence from silently truncating while still
+  // publishing full authority — the same rule the resident/merge ledgers enforce
+  // by returning no summaries at all (P7-INV-010, guardrail "unknown stays explicit").
+  const publishedStatus = payloadTruncated
+    ? createAnalysisStatus({
+      snapshotId: composedStatus.snapshotId,
+      analyzerId: composedStatus.analyzerId,
+      analyzerVersion: composedStatus.analyzerVersion,
+      completeness: weakestCompleteness(composedStatus.completeness, 'truncated'),
+      budgetClass: composedStatus.budgetClass,
+      stopReason: composedStatus.completeness === 'complete'
+        ? 'budget-exhausted'
+        : (composedStatus.stopReason ?? 'budget-exhausted'),
+      evidenceIds: composedStatus.evidenceIds,
+      dependencyIds: composedStatus.dependencyIds,
+    })
+    : composedStatus;
 
   return createFunctionSummary({
     functionId,
     inputs: local.inputs,
     returnValues: local.returnValues,
-    // Return provenance is a local return-expression fact. Composition must
-    // preserve it exactly once the component converges; otherwise the solved
-    // A3 summary becomes less informative than its local input. An unconverged
-    // optimistic state is never allowed to publish exact provenance.
-    returnProvenance: unconverged ? [] : local.returnProvenance,
-    registerEffects: local.registerEffects,
-    memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
-    memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
-    escapes: mergeEscapes(escapes),
+    // Unknown effects and nonconvergence cannot publish strong return facts.
+    returnProvenance: unconverged || hasUnknown ? []
+      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved),
+    returnEquations: local.returnEquations,
+    returnSourceDigest: local.returnSourceDigest,
+    registerEffects: [...registerEffects],
+    memoryReadRegions: mergedReads,
+    memoryWriteRegions: mergedWrites,
+    escapes: mergedEscapes.values,
     allocations: local.allocations,
     frees: local.frees,
-    directCalls: local.directCalls,
+    directCalls: publishedDirectCalls,
     indirectCallSets: local.indirectCallSets,
     unknownCallEffects: dedupedUnknowns,
-    noreturn: hasUnknown ? 'unknown' : unionKnowledge(noreturn),
+    noreturn: hasUnknown ? 'unknown' : mustKnowledge(noreturn),
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
+    status: publishedStatus,
   });
+}
+
+/* SCPA demand execution: same transfer function, separately owned publication. */
+export const DEMAND_SUMMARY_SESSION_VERSION = '1.0.0';
+const DEMAND_SUMMARY_OUTPUT_BYTES = 2 * 1024 * 1024;
+const DEMAND_SUMMARY_OUTPUT_ROWS = 64;
+const DEMAND_SUMMARY_TOTAL_LIMITS = Object.freeze({ workUnits: 2000000, residentBytes: 32 * 1024 * 1024,
+  bytesRead: 64 * 1024 * 1024, calls: 4096, nodes: 65536, edges: 262144, results: 4096,
+  artifactsMaterialized: 1024, pagesFetched: 4096, queueOperations: 1000000, transfers: 32768, steps: 128 });
+
+/**
+ * A single-writer, resumable execution of this owner's SCC transfer. Optimistic
+ * recursive states are PRIVATE. A pause between two members of an SCC exposes
+ * none of that SCC, unlike copying the old solver's working map mid-iteration.
+ * Session checkpoints are diagnostic/restart hints, never canonical summaries.
+ *
+ * v1 is deliberately context-insensitive. Context specialization needs actual
+ * argument/object substitution by this owner, not a new label on the same fact.
+ */
+export class DemandSummarySession {
+  #world; #assumptions; #snapshotId; #limits; #locals; #models; #components;
+  #successors; #settled = new Map(); #active = null; #component = 0;
+  #iterations = 0; #transfers = 0; #busy = false; #closed = false; #id;
+  #assertCurrent; #roots; #inputDigest; #statusFactory;
+  #ledger; #terminalReason = null; #settledSizes = new Map(); #settledDigests = new Map();
+
+  constructor(token, state) {
+    if (token !== DEMAND_SUMMARY_CONSTRUCTOR) fail('demand-summary-use-prepare');
+    this.#world = state.world; this.#assumptions = state.assumptions;
+    this.#snapshotId = state.snapshotId; this.#limits = state.limits;
+    this.#locals = state.locals; this.#models = state.models;
+    this.#components = state.components; this.#successors = state.successors;
+    this.#roots = state.roots; this.#inputDigest = state.inputDigest;
+    this.#assertCurrent = state.assertCurrent; this.#id = state.id; this.#ledger = state.ledger;
+    this.#statusFactory = (completeness, stopReason) => createAnalysisStatus({
+      snapshotId: state.snapshotId, analyzerId: INTERPROCEDURAL_ANALYZER_ID,
+      analyzerVersion: INTERPROCEDURAL_ANALYZER_VERSION, completeness,
+      budgetClass: 'interactive', stopReason,
+    });
+  }
+  get id() { return this.#id; }
+  get done() { return this.#component >= this.#components.length; }
+  get resumable() { return !this.#closed && !this.done && this.#terminalReason === null; }
+  #consume(resource, amount = 1) {
+    try { this.#ledger.consume(resource, amount); }
+    catch (error) {
+      if (error instanceof SummaryBudgetExceededError) this.#terminalReason = `session-${resource}-budget`;
+      throw error;
+    }
+  }
+  #charge(work, resource, amount = 1) {
+    // Separate per-invocation and lifetime scopes both use ResourceBudget.
+    // The lifetime ledger cannot be reset by consuming a new continuation.
+    work.charge(resource, amount); this.#consume(resource, amount);
+  }
+  #current() {
+    if (this.#closed) throw new Error('demand-summary-session-closed');
+    // A host closure checks immutable input identities/negative-dependency
+    // epochs. It is not supplied over the AI or plugin RPC interface.
+    if (this.#assertCurrent && this.#assertCurrent() !== true) {
+      this.close(); throw new Error('demand-summary-input-stale');
+    }
+  }
+  #beginComponent() {
+    const members = this.#components[this.#component];
+    const activeValues = new Map();
+    const solved = { get: (id) => activeValues.get(id) ?? this.#settled.get(id) };
+    this.#active = { members, values: activeValues, solved, digests: new Map(), sizes: new Map(),
+      position: 0, iteration: 1, changed: false, conservative: false, groundUnresolved: false,
+      recursive: members.length > 1 || this.#successors.get(members[0]).includes(members[0]) };
+    this.#iterations++;
+  }
+  #publishComponent() {
+    const active = this.#active;
+    // No await, event-loop yield or consumer callback in this atomic commit.
+    for (const id of active.members) {
+      this.#settled.set(id, active.values.get(id));
+      this.#settledDigests.set(id, active.digests.get(id));
+      this.#settledSizes.set(id, active.sizes.get(id));
+    }
+    this.#active = null; this.#component++;
+  }
+  #view(executionStatus, cost) {
+    // A diagnostic result must remain bounded even after timeout. Digests and
+    // retained payload sizes were computed before publication, not in this
+    // finalizer; no expensive stringification occurs after a cancelled step.
+    const values = [], omittedFunctionIds = [];
+    let outputBytes = 0;
+    let completeness = this.done ? 'complete' : 'partial';
+    let reason = this.done ? null : 'dependency-missing';
+    for (const [functionId, summary] of this.#settled) {
+      completeness = weakestCompleteness(completeness, summary.status.completeness);
+      reason ??= summary.status.stopReason;
+      const bytes = this.#settledSizes.get(functionId) ?? DEMAND_SUMMARY_OUTPUT_BYTES + 1;
+      if (values.length >= DEMAND_SUMMARY_OUTPUT_ROWS || outputBytes + bytes > DEMAND_SUMMARY_OUTPUT_BYTES) {
+        omittedFunctionIds.push(functionId); continue;
+      }
+      outputBytes += bytes;
+      values.push({ functionId, summary, digest: this.#settledDigests.get(functionId) });
+    }
+    values.sort((a, b) => a.functionId < b.functionId ? -1 : a.functionId > b.functionId ? 1 : 0);
+    omittedFunctionIds.sort();
+    if (omittedFunctionIds.length) { completeness = weakestCompleteness(completeness, 'partial'); reason = 'budget-exhausted'; }
+    if (executionStatus !== 'completed' && executionStatus !== 'paused') {
+      completeness = weakestCompleteness(completeness, 'partial');
+      reason = executionStatus === 'stale' ? 'dependency-mismatch' : executionStatus;
+    }
+    if (completeness === 'complete') reason = null;
+    return deepFreezeSummaryView({ schema: 'demand-summary-result/v1', sessionId: this.#id,
+      worldId: this.#world.id, assumptionsId: this.#assumptions.id, snapshotId: this.#snapshotId,
+      context: 'context-insensitive', inputDigest: this.#inputDigest,
+      executionStatus, status: this.#statusFactory(completeness, reason),
+      done: this.done, resumable: this.resumable, terminalReason: this.#terminalReason,
+      summaries: values, requestedRoots: this.#roots,
+      output: { complete: omittedFunctionIds.length === 0, omittedFunctionIds, estimatedBytes: outputBytes,
+        maximumBytes: DEMAND_SUMMARY_OUTPUT_BYTES, maximumRows: DEMAND_SUMMARY_OUTPUT_ROWS,
+        recovery: 'request-a-narrower-root-scope-or-read-settled-summary-through-host' },
+      unresolvedRoots: this.#roots.filter((id) => !this.#settled.has(id)),
+      components: { settled: this.#component, total: this.#components.length,
+        activeMembers: this.#active?.members ?? [], activePublished: false },
+      iterations: this.#iterations, transfers: this.#transfers, cost,
+      cumulativeBudget: this.#ledger.snapshot() });
+  }
+  async step(work, { maximumTransfers = 256 } = {}) {
+    assertSummaryWork(work);
+    strictSummaryInteger(maximumTransfers, 'demand-summary-step-budget', { min: 1, max: 65536 });
+    if (this.#busy) fail('demand-summary-concurrent-step');
+    this.#current(); this.#busy = true;
+    let transferred = 0;
+    try {
+      if (this.#terminalReason !== null) return this.#view('budget-exhausted', work.cost());
+      this.#consume('steps');
+      while (!this.done && transferred < maximumTransfers) {
+        work.checkpoint(); this.#current();
+        if (!this.#active) this.#beginComponent();
+        const active = this.#active, functionId = active.members[active.position];
+        const local = this.#locals.get(functionId);
+        // Per-function cost includes caller effects/targets. A single transfer
+        // still has the owner's maxEffectsPerSummary cap, not an unbounded SMT.
+        const weight = 1 + local.memoryReadRegions.length + local.memoryWriteRegions.length
+          + local.directCalls.reduce((n, call) => n + 1 + call.targetEntityIds.length, 0)
+          + local.indirectCallSets.reduce((n, call) => n + 1 + call.candidateEntityIds.length, 0);
+        this.#charge(work, 'workUnits', weight); this.#consume('transfers');
+        const next = composeSummary({ functionId, locals: this.#locals, models: this.#models,
+          solved: active.solved, component: active.members, limits: this.#limits,
+          status: this.#statusFactory, snapshotId: this.#snapshotId, unconverged: active.conservative,
+          groundUnresolved:active.groundUnresolved, checkpoint:() => this.#charge(work, 'workUnits') });
+        let bounded;
+        try { bounded = strictSummaryData(next, { allowBigInt: true, maxBytes: 1048576, maxNodes: 32768 }); }
+        catch (error) {
+          if (typeof error?.code !== 'string' || !error.code.startsWith('analysis-contract-') || !error.code.includes('budget')) throw error;
+          this.#terminalReason = 'summary-transfer-payload-budget';
+          throw new SummaryWorkStopped('budget-exhausted', this.#terminalReason);
+        }
+        const payloadBytes = 512 + JSON.stringify(bounded, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2;
+        this.#charge(work, 'residentBytes', payloadBytes);
+        const digest = functionSummaryDigest(next);
+        if (active.digests.get(functionId) !== digest) {
+          active.digests.set(functionId, digest); active.sizes.set(functionId, payloadBytes); active.values.set(functionId, next); active.changed = true;
+        }
+        active.position++; transferred++; this.#transfers++;
+        if (active.position === active.members.length) {
+          if (!active.conservative && active.recursive && !active.changed && !active.groundUnresolved
+            && active.members.some(id => hasEmptyReturnPositions(active.values.get(id)))) {
+            active.groundUnresolved = true;
+            active.changed = true;
+          }
+          work.checkpoint(); this.#current();
+          if (active.conservative || !active.recursive || !active.changed) this.#publishComponent();
+          else {
+            active.position = 0; active.changed = false;
+            if (active.iteration >= this.#limits.maxIterationsPerComponent) active.conservative = true;
+            else { active.iteration++; this.#iterations++; }
+          }
+        }
+        await work.yieldIfNeeded();
+      }
+      this.#current();
+      return this.#view(this.done ? 'completed' : 'paused', work.cost());
+    } catch (error) {
+      if (error?.message === 'demand-summary-input-stale') return this.#view('stale', work.cost());
+      const stopped = summaryWorkStopStatus(error, work.signal);
+      if (!stopped) throw error;
+      return this.#view(stopped, work.cost());
+    } finally { this.#busy = false; }
+  }
+  /** Returns ONLY settled owner summaries, never the active SCC work map. */
+  summary(functionId) { this.#current(); return this.#settled.get(functionId) ?? null; }
+  checkpoint() {
+    this.#current();
+    return deepFreezeSummaryView({ schema: 'demand-summary-restart-hint/v1', sessionId: this.#id,
+      inputDigest: this.#inputDigest, worldId: this.#world.id, assumptionsId: this.#assumptions.id,
+      settledComponentCount: this.#component, settledFunctionIds: [...this.#settled.keys()].sort(),
+      activeIteration: this.#active?.iteration ?? null, canonicalAuthority: false,
+      restorePolicy: 'restart-from-pinned-inputs; no optimistic-state-import' });
+  }
+  close() {
+    this.#closed = true; this.#active = null; this.#settled.clear(); this.#settledSizes.clear(); this.#settledDigests.clear();
+    this.#locals.clear(); this.#models.clear(); this.#successors.clear();
+  }
+}
+const DEMAND_SUMMARY_CONSTRUCTOR = Symbol('demand-summary-constructor');
+
+/**
+ * Prepare a bounded demand subgraph. Callers supply only their query frontier;
+ * no whole-program materialization is requested here. Canonical transfer and
+ * model validation remain the existing functions in this module.
+ */
+export async function prepareDemandSummarySession({ roots, localSummaries, libraryModels = new Map(),
+  world, assumptions, snapshotId, work, limits = {}, assertCurrent = null,
+  context = 'context-insensitive' } = {}) {
+  assertSummaryWorld(world); assertSummaryAssumptions(assumptions, world); assertSummaryWork(work);
+  strictSummaryString(snapshotId, 'demand-summary-snapshot');
+  if (context !== 'context-insensitive') return deepFreezeSummaryView({ status: 'unsupported', reason: 'context-substitution-owner-unavailable', session: null });
+  if (assertCurrent !== null && typeof assertCurrent !== 'function') fail('demand-summary-current-check');
+  const pinnedRoots = strictSummaryStrings(roots, 'demand-summary-roots', 256);
+  if (!pinnedRoots.length || !(localSummaries instanceof Map) || !(libraryModels instanceof Map)) fail('demand-summary-input-map');
+  const options = strictSummaryData(limits);
+  strictSummaryFields(options, ['maxIterationsPerComponent', 'maxComponents', 'maxEffectsPerSummary', 'maxNodes', 'maxEdges'], 'demand-summary-limit-fields');
+  const caps = {
+    maxIterationsPerComponent: strictSummaryInteger(options.maxIterationsPerComponent ?? 16, 'demand-summary-iterations', { min: 1, max: 256 }),
+    maxComponents: strictSummaryInteger(options.maxComponents ?? 1024, 'demand-summary-components', { min: 1, max: 8192 }),
+    maxEffectsPerSummary: strictSummaryInteger(options.maxEffectsPerSummary ?? 512, 'demand-summary-effects', { min: 1, max: 4096 }),
+    maxNodes: strictSummaryInteger(options.maxNodes ?? 4096, 'demand-summary-nodes', { min: 1, max: 16384 }),
+    maxEdges: strictSummaryInteger(options.maxEdges ?? 16384, 'demand-summary-edges', { min: 1, max: 131072 }),
+  };
+  const locals = new Map(), models = new Map(), successors = new Map(), queue = [...pinnedRoots], queued = new Set(queue);
+  let cursor = 0, edges = 0;
+  while (cursor < queue.length) {
+    work.charge('nodes'); work.charge('workUnits'); work.charge('residentBytes', 1024);
+    if (locals.size >= caps.maxNodes) return { status: 'budget-exhausted', reason: 'demand-summary-node-cap', session: null };
+    const id = queue[cursor++], source = localSummaries.get(id);
+    if (!summaryIdentityMatches(source, { functionId: id, snapshotId })) {
+      if (pinnedRoots.includes(id)) return { status: 'unsupported', reason: 'demand-summary-root-identity', session: null };
+      continue;
+    }
+    const detachedSource = strictSummaryData(source, { allowBigInt: true, maxBytes: 1048576, maxNodes: 32768 });
+    work.charge('residentBytes', JSON.stringify(detachedSource, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2);
+    const local = createFunctionSummary(detachedSource); // preserve the sole owner contract
+    locals.set(id, local);
+    const targets = [...new Set([...local.directCalls.flatMap((call) => call.targetEntityIds),
+      ...local.indirectCallSets.flatMap((call) => call.candidateEntityIds)])].sort();
+    edges += targets.length;
+    work.charge('edges', targets.length); work.charge('workUnits', targets.length);
+    if (edges > caps.maxEdges) return { status: 'budget-exhausted', reason: 'demand-summary-edge-cap', session: null };
+    const adjacent = [];
+    for (const target of targets) {
+      if (summaryIdentityMatches(localSummaries.get(target), { functionId: target, snapshotId })) {
+        adjacent.push(target);
+        if (!queued.has(target)) { queued.add(target); queue.push(target); work.charge('queueOperations'); }
+      } else if (!localSummaries.has(target) && libraryModels.has(target)) {
+        const model = strictSummaryData(libraryModels.get(target), { allowBigInt: true, maxBytes: 1048576 });
+        work.charge('residentBytes', JSON.stringify(model, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2);
+        if (validateLibraryModel(model, { targetEntityId: target, snapshotId })) models.set(target, model);
+      }
+    }
+    successors.set(id, adjacent);
+    await work.yieldIfNeeded();
+  }
+  work.checkpoint();
+  const condensed = condenseCallGraph(pinnedRoots, (id) => successors.get(id) ?? [], { ...caps, signal: work.signal });
+  work.charge('workUnits', locals.size + edges);
+  if (condensed.truncated || condensed.cancelled) return { status: condensed.cancelled ? 'cancelled' : 'budget-exhausted', reason: 'demand-summary-condensation-incomplete', session: null };
+  if (assertCurrent && assertCurrent() !== true) return { status: 'stale', reason: 'demand-summary-input-stale', session: null };
+  const input = { snapshotId, roots: pinnedRoots, context, limits: caps, worldId: world.id, assumptionsId: assumptions.id,
+    localDigests: [...locals].map(([id, summary]) => [id, functionSummaryDigest(summary)]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+    models: [...models].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0) };
+  const inputDigest = summaryStableDigest(input);
+  const id = summaryEntityId({ binaryId: world.binarySet[0].binaryId, kind: 'demand-summary-session-input', identity: input });
+  const ledger = new SummaryResourceBudget(DEMAND_SUMMARY_TOTAL_LIMITS, { name: 'demand-summary-session' });
+  // Preparation is part of the lifetime cost, including source reads charged
+  // by the containing query. Counting shared preparation twice is conservative;
+  // silently erasing it at the first resume would not be.
+  try { for (const [resource, used] of Object.entries(work.cost().used)) ledger.consume(resource, used); }
+  catch (error) {
+    if (!(error instanceof SummaryBudgetExceededError)) throw error;
+    return { status: 'budget-exhausted', reason: 'demand-summary-preparation-total-budget', session: null, cost: work.cost() };
+  }
+  const session = new DemandSummarySession(DEMAND_SUMMARY_CONSTRUCTOR, { world, assumptions, snapshotId, limits: caps,
+    locals, models, successors, components: condensed.components, roots: pinnedRoots, inputDigest, id, assertCurrent, ledger });
+  return { status: 'prepared', session, inputDigest, cost: work.cost() };
 }

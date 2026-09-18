@@ -18,8 +18,21 @@ function strictToken(value, code) {
   if (!out) throw new TypeError(code);
   return out;
 }
-function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+function addressValue(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (/^(?:[+-]?\d+|0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+)$/.test(normalized)) {
+      try { return BigInt(normalized); } catch { /* fall through to the contract error */ }
+    }
+  }
+  throw new TypeError(code);
+}
+
+function exactInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
 }
 
 // `rawBytes` are the architectural authority for every decoded field, so each
@@ -32,6 +45,13 @@ const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8Array.prototype),
   Symbol.toStringTag,
 )?.get;
+const UINT8_ARRAY_CONSTRUCTOR = Uint8Array;
+const UINT8_ARRAY_SET = UINT8_ARRAY_CONSTRUCTOR.prototype.set;
+const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(UINT8_ARRAY_CONSTRUCTOR.prototype),
+  'byteLength',
+)?.get;
+
 
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
@@ -43,17 +63,29 @@ function isUint8ArrayView(value) {
 
 function rawBytesOf(input, expectedLength) {
   if (isUint8ArrayView(input)) {
-    if (input.byteLength !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
-    return Uint8Array.from(input);
+    let length;
+    try {
+      length = UINT8_ARRAY_BYTE_LENGTH_GETTER.call(input);
+    } catch {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
+    if (length !== expectedLength) {
+      throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+    }
+    try {
+      const snapshot = new UINT8_ARRAY_CONSTRUCTOR(length);
+      UINT8_ARRAY_SET.call(snapshot, input);
+      return snapshot;
+    } catch {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    }
   }
   if (!Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
-  if (input.length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
-  const bytes = new Uint8Array(expectedLength);
-  for (let index = 0; index < expectedLength; index += 1) {
+  const length = input.length;
+  if (length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+  const bytes = new UINT8_ARRAY_CONSTRUCTOR(length);
+  for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
-    /* A getter is not a stable byte authority: reading it can observe or
-     * mutate state, so reject accessor-backed array entries before invoking
-     * user code. */
     if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
       throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
     }
@@ -76,8 +108,8 @@ function rawBytesOf(input, expectedLength) {
  */
 export function createRiscv64DecodedInstruction(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid');
-  const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
-  const size = Number(input.size ?? input.length);
+  const address = addressValue(input.address, 'riscv64-decoded-instruction-invalid-address');
+  const size = exactInteger(input.size ?? input.length, 'riscv64-decoded-instruction-invalid-length');
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
   const rawBytes = rawBytesOf(input.rawBytes ?? [], size);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
@@ -88,24 +120,29 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const mode = strictToken(input.mode === undefined ? 'rv64imc' : input.mode, 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
-  const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
-  if (!Number.isSafeInteger(instructionAlignment) || ![2,4].includes(instructionAlignment)) {
+  const instructionAlignment = exactInteger(
+    input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2),
+    'riscv64-decoded-instruction-invalid-instruction-alignment',
+  );
+  if (![2,4].includes(instructionAlignment)) {
     throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
 
-  // ISA profile metadata must agree with the C-extension capability the
-  // record itself asserts (#5999). A non-boolean value is schema-invalid, and
-  // either boolean that disagrees with the decode mode is contradictory
-  // evidence; neither may be laundered into a canonical profile flag.
+  // ISA/profile evidence must agree: `rv64im` is the no-C profile and
+  // `rv64imc` carries compressed capability. Do not booleanize structured
+  // input, because a truthy non-boolean would launder contradictory evidence
+  // into a canonical record (#5999).
   let compressedInstructions = null;
   if (input.compressedInstructions != null) {
     if (typeof input.compressedInstructions !== 'boolean') {
       throw new TypeError('riscv64-decoded-instruction-invalid-compressed-instructions');
     }
     if (input.compressedInstructions !== (mode === 'rv64imc')) {
-      throw new TypeError('riscv64-decoded-instruction-compressed-profile-contradiction');
+      throw new TypeError(mode === 'rv64imc'
+        ? 'riscv64-decoded-instruction-compressed-profile-contradiction'
+        : 'riscv64-decoded-instruction-compressed-capability-conflict');
     }
     compressedInstructions = input.compressedInstructions;
   }
@@ -118,12 +155,8 @@ export function createRiscv64DecodedInstruction(input = {}) {
     architecture: 'riscv64',
     mode,
     instructionAlignment,
-    ...(input.isaIdentity == null ? {} : {
-      isaIdentity:strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity'),
-    }),
-    ...(input.isaEvidence == null ? {} : {
-      isaEvidence:strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence'),
-    }),
+    ...(input.isaIdentity == null ? {} : { isaIdentity: strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity') }),
+    ...(input.isaEvidence == null ? {} : { isaEvidence: strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence') }),
     ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
@@ -147,9 +180,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     compressed: fields.supported ? fields.compressed === true : null,
     detailAvailable: fields.supported === true,
     detailStatus: fields.supported ? 'complete' : 'unsupported-encoding',
-    ...(input.instructionId == null ? {} : {
-      instructionId:strictToken(input.instructionId, 'riscv64-decoded-instruction-invalid-instruction-id'),
-    }),
+    ...(input.instructionId == null ? {} : { instructionId: strictToken(input.instructionId, 'riscv64-decoded-instruction-invalid-instruction-id') }),
     ...(input.origin == null ? {} : { origin: input.origin }),
   });
 }

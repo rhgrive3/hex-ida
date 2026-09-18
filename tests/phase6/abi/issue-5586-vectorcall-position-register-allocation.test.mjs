@@ -17,8 +17,9 @@ test('position-carrying vectors map to their argument position registers', () =>
     callingConvention:'vectorcall',
     args:[int(), vector(128), int(), vector(128), vector(256), flt(), int()],
   } });
+  // Positional shadow slots mean g sits at 32 + 8·(6−4) = 48 (#6003).
   const regs = result.arguments.map((entry) => entry.reg ?? `stack:${entry.offset}`);
-  assert.deepEqual(regs, ['rcx', 'xmm1', 'r8', 'xmm3', 'ymm4', 'xmm5', 'stack:32']);
+  assert.deepEqual(regs, ['rcx', 'xmm1', 'r8', 'xmm3', 'ymm4', 'xmm5', 'stack:48']);
   assert.equal(result.partial, false);
 });
 
@@ -101,7 +102,7 @@ test('a seventh-position scalar FP argument is an indirect stack pointer', () =>
   assert.equal(result.stackArgsMayContainPointers, true);
 });
 
-
+  
 test('an unproven HVA keeps a later HVA non-exact', () => {
   const laterHVA = {
     hva:true, bits:256, bytes:32,
@@ -122,7 +123,7 @@ test('an unproven HVA keeps a later HVA non-exact', () => {
   assert.equal(result.partial, true);
 });
 
-
+  
 test('wide indirect vectors do not reserve positional vector registers', () => {
   const hva4 = {
     hva:true, bits:512, bytes:64,
@@ -144,8 +145,8 @@ test('indirect scalar FP arguments use non-overlapping eight-byte stack slots', 
     callingConvention:'vectorcall',
     args:[int(), int(), int(), int(), int(), int(), flt(), { type:'double', floating:true, bits:64 }],
   } });
-  // The fifth and sixth integer arguments already occupy the first two
-  // caller-stack slots, so the position-six/seven FP pointers follow them.
+  // Positions 4/5 pass on the stack (integer overflow from the standard x64
+  // half), positions 6/7 continue after them — never compacted (#6003).
   assert.equal(result.arguments[6].offset, 48);
   assert.equal(result.arguments[7].offset, 56);
   assert.equal(result.arguments[6].calleeEntryOffset, 56);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { buildMinimalDex } from './dex-parser.test.mjs';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running DEX verifier regression #1143...');
 
@@ -8,6 +9,7 @@ async function validate(mutator) {
   const bytes = buildMinimalDex();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   mutator?.(bytes, view);
+  applyDexIntegrity(bytes);
   const frontend = new DexFrontend();
   const image = await frontend.open(bytes);
   const methods = [];
@@ -115,8 +117,9 @@ function hasError(report, code) {
   const bytes = buildMinimalDex();
   bytes[0x126] = 0x00; // concrete encoded_method with code_off = 0
   bytes[0x127] = 0x00;
+  const frontend = new DexFrontend();
   await assert.rejects(
-    () => new DexFrontend().open(bytes),
+    () => frontend.open(bytes),
     /dex-code-item-required-for-concrete-method/,
   );
 }

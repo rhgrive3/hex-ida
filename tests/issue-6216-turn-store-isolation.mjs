@@ -111,10 +111,12 @@ async function waitFor(entered, running, message) {
   releaseAPlan();
   const a = await turnA;
 
-  assert.equal(a.evidence.length, 1, 'A result must contain one planner evidence record');
-  assert.equal(a.evidence[0].sourceData.sourceId, 'plan-A', 'A result must use only A planner evidence');
-  assert.equal(b.evidence.length, 1, 'B result must contain one planner evidence record');
-  assert.equal(b.evidence[0].sourceData.sourceId, 'plan-B', 'B result must use only B planner evidence');
+  const aPlannerEvidence = a.evidence.filter((item) => item.sourceData?.sourceId === 'plan-A');
+  const bPlannerEvidence = b.evidence.filter((item) => item.sourceData?.sourceId === 'plan-B');
+  assert.equal(aPlannerEvidence.length, 1, 'A result must contain its planner evidence record');
+  assert.equal(bPlannerEvidence.length, 1, 'B result must contain its planner evidence record');
+  assert.equal(a.evidence.some((item) => item.sourceData?.sourceId === 'plan-B'), false, 'A result must not contain B planner evidence');
+  assert.equal(b.evidence.some((item) => item.sourceData?.sourceId === 'plan-A'), false, 'B result must not contain A planner evidence');
   assert.deepEqual(a.hypotheses.map((item) => item.id), ['hyp-A'], 'A result must use only A hypotheses');
   assert.deepEqual(b.hypotheses.map((item) => item.id), ['hyp-B'], 'B result must use only B hypotheses');
   assert.equal(a.hypotheses.some((item) => item.id === 'hyp-B'), false);
@@ -179,7 +181,10 @@ async function waitFor(entered, running, message) {
         }
         const evidenceId = 'live-evidence';
         stores.evidenceStore.add({ id: evidenceId, kind: 'provider', status: 'supported', title: 'live evidence', sourceTool: 'test-provider' });
-        const proposal = proposalFor(stores, live ? 'B' : 'A', evidenceId);
+        const proposalEvidence = stores.evidenceStore.ingestPlan(planFor(`proposal-${label}`))
+          .find((item) => item.status === 'verified');
+        assert.ok(proposalEvidence, 'proposal fixture must use deterministic verified evidence');
+        const proposal = proposalFor(stores, live ? 'B' : 'A', proposalEvidence.id);
         return decisionFor(label, { evidenceId, proposalId: proposal.id });
       },
     },
@@ -237,7 +242,10 @@ async function waitFor(entered, running, message) {
         }
         const evidenceId = `${label.toLowerCase()}-evidence`;
         stores.evidenceStore.add({ id: evidenceId, kind: 'provider', status: 'supported', title: `${label} evidence`, sourceTool: 'test-provider' });
-        const proposal = proposalFor(stores, isJob ? 'A' : 'B', evidenceId);
+        const proposalEvidence = stores.evidenceStore.ingestPlan(planFor(`proposal-${label}`))
+          .find((item) => item.status === 'verified');
+        assert.ok(proposalEvidence, 'proposal fixture must use deterministic verified evidence');
+        const proposal = proposalFor(stores, isJob ? 'A' : 'B', proposalEvidence.id);
         return decisionFor(label, { evidenceId, proposalId: proposal.id });
       },
     },

@@ -61,7 +61,7 @@ export const ARM64_A64_DECODER_IDENTITY_LOCK = Object.freeze({
     lastName:'tlbi',
     sha256:'6b108b95bda1750cfbcde30a684dc8a8154e1fbd9e6aaa9dfeb3f87cd033be58',
   }),
-  machineEffectsSemanticVersion:'7',
+  machineEffectsSemanticVersion:'8',
 });
 
 export const ARM64_A64_LOCKED_PROFILE = Object.freeze({

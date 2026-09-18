@@ -50,8 +50,16 @@ function traceEventEpochAuthority(value) {
 
 function debugSessionId(value) {
   if (value == null) return `debug:${nextSession++}`;
-  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
-  return value;
+  if (typeof value !== 'string') throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  const text = value.trim();
+  if (!text) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  return text;
+}
+
+function sessionLookupId(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
 }
 
 export class DebugSession {
@@ -61,6 +69,9 @@ export class DebugSession {
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
     this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null; this._connectPromise=null; this._lifecycleGeneration=1;
+    // #9008: bounded capture for explicitly next-generation events emitted by
+    // the adapter's own setEpoch transition; replayed when the epoch commits.
+    this._handoffCapture=null;
   }
   _connectIsCurrent(generation) { return !this.closed && this._lifecycleGeneration===generation; }
   async _cleanupStaleConnect() {
@@ -173,7 +184,18 @@ export class DebugSession {
       epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
     }
     if (epoch == null) return { ok:false, reason:'event-epoch-invalid' };
-    if (epoch !== this.epoch) return { ok:false, reason:'event-epoch-mismatch' };
+    if (epoch !== this.epoch) {
+      // #9008: an explicit next-generation event observed inside the adapter
+      // handoff window of newEpoch() is captured (wire-safe form) for replay at
+      // commit instead of being silently discarded; it still reports the current
+      // mismatch to the caller because it is not yet part of committed state.
+      if (this._handoffCapture != null && epoch === this._handoffCapture.epoch
+        && safeEvent != null && typeof safeEvent === 'object') {
+        if (this._handoffCapture.events.length >= 4096) this._handoffCapture.overflowed = true;
+        else this._handoffCapture.events.push(safeEvent);
+      }
+      return { ok:false, reason:'event-epoch-mismatch' };
+    }
     return { ok:true, present:true, value:safeEvent };
   }
   acceptEvent(event, sourceEpoch = null) {
@@ -198,9 +220,22 @@ export class DebugSession {
   newEpoch() {
     if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
     const next = this.epoch + 1;
-    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    // #9008: open the bounded handoff capture around the external transition;
+    // a failed transition discards the buffer (epoch stays committed-current),
+    // an overflowing one fails closed, and a successful commit replays the
+    // captured next-generation events after the trace reset.
+    const capture = { epoch: next, events: [], overflowed: false };
+    this._handoffCapture = capture;
+    try {
+      if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    } finally {
+      this._handoffCapture = null;
+    }
+    if (capture.overflowed) throw new DebugAdapterError('runtime-epoch-handoff-overflow','next-generation events exceeded the handoff buffer; the epoch transition fails closed');
     this.epoch = next;
-    this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
+    this.cancelAll('session-epoch-changed'); this.traces.clear();
+    for (const event of capture.events) this.acceptEvent(event);
+    return this.epoch;
   }
   controller() {
     if(this.closed) throw new DebugAdapterError('session-closed','cannot mint a controller on a closed debug session');
@@ -242,8 +277,15 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
+    // Reserve anonymous ids in this manager's live namespace. Explicit ids
+    // remain caller-owned and still fail on a real duplicate; the counter is
+    // monotonic, so an id is not reused after close during this process (#5933).
+    const requested={...options};
+    if(requested.id==null){
+      do{ requested.id=`debug:${nextSession++}`; }while(this.sessions.has(requested.id));
+    }
     const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
+    const session=new DebugSession(adapter,{...requested,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }
@@ -251,7 +293,7 @@ export class DebugSessionManager {
     if(this.sessions.get(session.id)===session)this.sessions.delete(session.id);
     if(this.current===session)this.current=null;
   }
-  get(id){return this.sessions.get(id)||null;}
+  get(id){const key=sessionLookupId(id);return key==null?null:(this.sessions.get(key)||null);}
   switch(id){
     const next=this.get(id);if(!next)throw new DebugAdapterError('session-not-found',`debug session not found: ${id}`);
     // Selecting a session is UI/manager state and must not invalidate execution state.

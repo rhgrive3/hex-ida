@@ -1,22 +1,39 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { PatchSet } from '../patch.js';
 
 export const REBUILD_PLAN_VERSION = 'hex-rebuild-plan-v1';
 export const REBUILD_LEVELS = Object.freeze(['R0', 'R1', 'R2', 'R3', 'R4', 'R5']);
+// Publication accepts only validation artifacts emitted by this module. A
+// caller-controlled status plus matching identity strings are not evidence
+// that the output ever passed the validator.
+const CANONICAL_REBUILD_VALIDATIONS = new WeakSet();
 
-function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
+function canonicalValidation(value) {
+  const frozen = deepFreeze(value);
+  CANONICAL_REBUILD_VALIDATIONS.add(frozen);
+  return frozen;
+}
+
+function isCanonicalValidation(value) {
+  return !!value && typeof value === 'object' && CANONICAL_REBUILD_VALIDATIONS.has(value);
+}
+const BASELINE_REBUILD_VALIDATORS = Object.freeze([
+  'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
+]);
+
+function identity(value, code) { if (typeof value !== 'string') throw new TypeError(code); const text = value.trim(); if (!text) throw new TypeError(code); return text; }
 function explicitBigInt(value, code) {
   if (typeof value === 'number') { if (!Number.isSafeInteger(value)) throw new TypeError(code); return BigInt(value); }
   if (typeof value === 'bigint') return value;
   if (typeof value === 'string' && value.trim()) return BigInt(value);
   throw new TypeError(code);
 }
-function bytes(value) { if (value instanceof Uint8Array) return value; if (value instanceof ArrayBuffer) return new Uint8Array(value); if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); if (Array.isArray(value)) return Uint8Array.from(value); throw new TypeError('rebuild-bytes-required'); }
-function hashBytes(value) { return `bytes:${stableDigest(Array.from(bytes(value)))}`; }
+function bytes(value) { if (value instanceof Uint8Array) return value; if (value instanceof ArrayBuffer) return new Uint8Array(value); if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); if (Array.isArray(value)) { for (const byte of value) { if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError('rebuild-byte-invalid'); } return Uint8Array.from(value); } throw new TypeError('rebuild-bytes-required'); }
+function hashBytes(value) { return `bytes:${stableDigestBytes(bytes(value))}`; }
 function clone(value) { if (typeof structuredClone === 'function') return structuredClone(value); if (Array.isArray(value)) return value.map(clone); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)])); return value; }
 function sortedStrings(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function impactValidators(impact) {
-  const validators = new Set(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
+  const validators = new Set(BASELINE_REBUILD_VALIDATORS);
   if (impact?.layoutMoving) validators.add('layout');
   if (impact?.relocations) validators.add('relocations');
   if (impact?.branchRanges) validators.add('branch-ranges');
@@ -26,26 +43,46 @@ function impactValidators(impact) {
   return [...validators].sort();
 }
 
+function rebuildPlanId(plan) {
+  return `rebuild-plan:${stableDigest({ ...plan, planId: null })}`;
+}
+
+function assertRebuildPlanIntegrity(plan) {
+  if (!plan || plan.schemaVersion !== REBUILD_PLAN_VERSION) throw new TypeError('rebuild-plan-schema-invalid');
+  if (!Array.isArray(plan.operations)) throw new TypeError('rebuild-plan-operations-invalid');
+  if (typeof plan.planId !== 'string' || plan.planId !== rebuildPlanId(plan)) throw new TypeError('rebuild-plan-integrity-invalid');
+  if (!Array.isArray(plan.requiredValidators)
+    || plan.requiredValidators.some((validator) => typeof validator !== 'string' || !validator)
+    || new Set(plan.requiredValidators).size !== plan.requiredValidators.length) {
+    throw new TypeError('rebuild-plan-validators-invalid');
+  }
+  const required = new Set(plan.requiredValidators);
+  for (const validator of impactValidators(plan.impact)) {
+    if (!required.has(validator)) throw new TypeError('rebuild-plan-baseline-validators-invalid');
+  }
+  return plan.requiredValidators;
+}
+
 export function createRebuildPlan(input = {}) {
-  const binaryId = required(input.binaryId, 'rebuild-binary-id-required');
-  const sourceHash = required(input.sourceHash, 'rebuild-source-hash-required');
-  const loaderVersion = required(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
+  const binaryId = identity(input.binaryId, 'rebuild-binary-id-required');
+  const sourceHash = identity(input.sourceHash, 'rebuild-source-hash-required');
+  const loaderVersion = identity(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
   if (!Array.isArray(input.operations)) throw new TypeError('rebuild-operations-required');
   const operations = input.operations.map((operation) => {
     const offset = explicitBigInt(operation.offset ?? operation.fileOffset, 'rebuild-operation-offset-invalid');
     const before = bytes(operation.before || []), after = bytes(operation.after || []);
     if (offset < 0n || !before.length || before.length !== after.length) throw new TypeError('rebuild-operation-same-size-precondition-required');
-    return { id: String(operation.id || `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
+    return { id: operation.id == null ? `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}` : identity(operation.id, 'rebuild-operation-id-invalid'), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
   }).sort((a, b) => BigInt(a.offset) < BigInt(b.offset) ? -1 : BigInt(a.offset) > BigInt(b.offset) ? 1 : a.id.localeCompare(b.id));
   for (let i = 1; i < operations.length; i++) { const previous = operations[i - 1], current = operations[i]; if (BigInt(current.offset) < BigInt(previous.offset) + BigInt(previous.before.length)) throw new TypeError('rebuild-overlapping-operations'); }
   const impact = { sourceRanges: clone(input.impact?.sourceRanges || operations.map((operation) => ({ offset: operation.offset, length: operation.before.length }))), sections: clone(input.impact?.sections || []), layoutMoving: input.impact?.layoutMoving === true, relocations: input.impact?.relocations === true, branchRanges: input.impact?.branchRanges === true, unwind: input.impact?.unwind === true, importsExports: input.impact?.importsExports === true, signature: input.impact?.signature === true };
   const plan = { schemaVersion: REBUILD_PLAN_VERSION, planId: null, binaryId, sourceHash, loaderVersion, operations, expectedOriginalState: clone(input.expectedOriginalState || { sourceHash }), layoutEffects: clone(input.layoutEffects || { sizeChange: false }), relocationEffects: clone(input.relocationEffects || {}), branchRangeEffects: clone(input.branchRangeEffects || {}), unwindEffects: clone(input.unwindEffects || {}), signatureEffects: clone(input.signatureEffects || {}), impact, unresolvedRisks: sortedStrings(input.unresolvedRisks), requiredValidators: impactValidators(impact), authority: 'L3-explicit-proposal', publication: 'not-published' };
-  plan.planId = `rebuild-plan:${stableDigest(plan)}`;
+  plan.planId = rebuildPlanId(plan);
   return deepFreeze(plan);
 }
 
 export function adaptPatchSetToRebuildPlan(patchSet, input = {}) {
-  if (!(patchSet instanceof PatchSet) && !patchSet?.list) throw new TypeError('PatchSet required');
+  if (!(patchSet instanceof PatchSet) && typeof patchSet?.list !== 'function') throw new TypeError('PatchSet required');
   const operations = patchSet.list().map((item) => ({ id: `patch:${item.offset.toString()}`, offset: item.offset, before: item.before, after: item.after, address: item.addr, provenance: { source: 'PatchSet' } }));
   return createRebuildPlan({ ...input, operations });
 }
@@ -55,23 +92,32 @@ async function sourceBytes(source) {
   return bytes(source);
 }
 
-export async function materializeRebuildPlan(plan, source, options = {}) {
-  if (!plan || plan.schemaVersion !== REBUILD_PLAN_VERSION) throw new TypeError('rebuild-plan-schema-invalid');
-  const original = await sourceBytes(source);
-  if (options.signal?.aborted) return { status: 'cancelled', reason: 'cancelled-before-materialization', planId: plan.planId };
-  if (plan.sourceHash && plan.sourceHash !== hashBytes(original) && options.allowSourceHashMismatch !== true) return { status: 'rejected', reason: 'source-identity-mismatch', planId: plan.planId, expected: plan.sourceHash, observed: hashBytes(original) };
+function applyRebuildOperations(plan, original, cancelReason = () => null) {
   const output = original.slice();
   const touched = [];
   for (const operation of plan.operations) {
-    if (options.signal?.aborted) return { status: 'cancelled', reason: 'cancelled-during-materialization', planId: plan.planId };
+    const cancelled = cancelReason();
+    if (cancelled) return { status: 'cancelled', reason: cancelled, planId: plan.planId };
     const offset = Number(BigInt(operation.offset));
     const before = Uint8Array.from(operation.before), after = Uint8Array.from(operation.after);
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + before.length > original.length) return { status: 'rejected', reason: 'operation-out-of-range', operationId: operation.id, planId: plan.planId };
     for (let i = 0; i < before.length; i++) if (original[offset + i] !== before[i]) return { status: 'rejected', reason: 'expected-original-state-mismatch', operationId: operation.id, planId: plan.planId };
     output.set(after, offset); touched.push({ offset, length: after.length });
   }
-  return { status: 'materialized', planId: plan.planId, sourceHash: hashBytes(original), outputHash: hashBytes(output), bytes: output, touched, temporary: true, publication: 'not-published' };
+  return { status: 'materialized', output, touched };
 }
+
+export async function materializeRebuildPlan(plan, source, options = {}) {
+  assertRebuildPlanIntegrity(plan);
+  const original = await sourceBytes(source);
+  if (options.signal?.aborted) return { status: 'cancelled', reason: 'cancelled-before-materialization', planId: plan.planId };
+  if (plan.sourceHash && plan.sourceHash !== hashBytes(original) && options.allowSourceHashMismatch !== true) return { status: 'rejected', reason: 'source-identity-mismatch', planId: plan.planId, expected: plan.sourceHash, observed: hashBytes(original) };
+  const applied = applyRebuildOperations(plan, original, () => (options.signal?.aborted ? 'cancelled-during-materialization' : null));
+  if (applied.status !== 'materialized') return applied;
+  return { status: 'materialized', planId: plan.planId, sourceHash: hashBytes(original), outputHash: hashBytes(applied.output), bytes: applied.output, touched: applied.touched, temporary: true, publication: 'not-published' };
+}
+
+function bytesEqual(a, b) { return a.length === b.length && a.every((value, index) => value === b[index]); }
 
 function unchangedRegions(original, output, touched) {
   const ranges = [...touched].sort((a, b) => a.offset - b.offset); let cursor = 0;
@@ -83,13 +129,22 @@ function unchangedRegions(original, output, touched) {
 function validatorResult(validator, status, reason = null) {
   return { validator, status, ...(reason ? { reason } : {}) };
 }
+const VALIDATOR_SUCCESS_STATUSES = new Set(['passed', 'valid']);
+const VALIDATOR_FAILURE_STATUSES = new Set(['failed', 'invalid', 'rejected', 'error', 'unsupported', 'unavailable']);
+function validatorPassed(result) {
+  if (result === true) return true;
+  if (!result || typeof result !== 'object') return false;
+  if (result.ok === false || VALIDATOR_FAILURE_STATUSES.has(result.status)) return false;
+  if (VALIDATOR_SUCCESS_STATUSES.has(result.status)) return true;
+  return result.ok === true && result.status === undefined;
+}
 
 async function runValidatorOracle(name, output, plan, materialized, options) {
   const oracle = options.validators?.[name];
   if (typeof oracle !== 'function') return validatorResult(name, 'unavailable', 'validator-oracle-unavailable');
   try {
     const result = await oracle(output, { plan, materialized });
-    if (result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid') return validatorResult(name, 'passed');
+    if (validatorPassed(result)) return validatorResult(name, 'passed');
     return validatorResult(name, 'failed', result?.reason || 'validator-rejected-output');
   } catch (error) {
     return validatorResult(name, 'failed', error?.message || String(error));
@@ -97,9 +152,20 @@ async function runValidatorOracle(name, output, plan, materialized, options) {
 }
 
 export async function validateRebuildOutput(plan, materialized, options = {}) {
-  if (!materialized || materialized.status !== 'materialized') return { status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null };
+  let required;
+  try {
+    required = assertRebuildPlanIntegrity(plan);
+  } catch (error) {
+    return canonicalValidation({
+      status: 'invalid',
+      reason: error?.message || 'rebuild-plan-integrity-invalid',
+      planId: plan?.planId || null,
+      validators: [],
+      failures: [{ validator: 'plan-integrity', reason: error?.message || 'rebuild-plan-integrity-invalid' }],
+    });
+  }
+  if (!materialized || materialized.status !== 'materialized') return canonicalValidation({ status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null });
   const output = materialized.bytes;
-  const required = Array.isArray(plan?.requiredValidators) ? plan.requiredValidators : [];
   const results = new Map();
 
   const sourcePreconditionPassed = materialized.planId === plan.planId
@@ -119,8 +185,22 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (options.original != null) {
     try {
       const original = await sourceBytes(options.original);
-      const passed = unchangedRegions(original, output, materialized.touched || []);
-      results.set('unchanged-regions', validatorResult('unchanged-regions', passed ? 'passed' : 'failed', passed ? null : 'promised-unchanged-region-differed'));
+      const applied = applyRebuildOperations(plan, original);
+      const declared = Array.isArray(materialized.touched) ? materialized.touched : null;
+      let reason = null;
+      if (applied.status !== 'materialized') {
+        reason = `plan-operations-not-applicable:${applied.reason}`;
+      } else if (declared === null) {
+        reason = 'materialized-touched-not-declared';
+      } else if (declared.length !== applied.touched.length
+        || !applied.touched.every((range, index) => declared[index]?.offset === range.offset && declared[index]?.length === range.length)) {
+        reason = 'materialized-touched-not-plan-canonical';
+      } else if (materialized.outputHash !== hashBytes(applied.output) || !bytesEqual(bytes(output), applied.output)) {
+        reason = 'materialized-output-not-plan-derived';
+      } else if (!unchangedRegions(original, output, declared)) {
+        reason = 'promised-unchanged-region-differed';
+      }
+      results.set('unchanged-regions', validatorResult('unchanged-regions', reason ? 'failed' : 'passed', reason));
     } catch (error) {
       results.set('unchanged-regions', validatorResult('unchanged-regions', 'failed', error?.message || String(error)));
     }
@@ -131,7 +211,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (typeof options.loaderReparse === 'function') {
     try {
       const result = await options.loaderReparse(output);
-      const passed = result?.status !== 'unsupported' && result?.ok !== false;
+      const passed = validatorPassed(result);
       results.set('loader-reparse', validatorResult('loader-reparse', passed ? 'passed' : 'failed', passed ? null : (result?.reason || 'loader-rejected-output')));
     } catch (error) {
       results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));
@@ -160,7 +240,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   const validators = required.map((validator) => results.get(validator) || validatorResult(validator, 'unavailable', 'validator-not-run'));
   const failures = validators.filter((entry) => entry.status !== 'passed').map((entry) => ({ validator: entry.validator, reason: entry.reason || `validator-${entry.status}` }));
   const valid = validators.length === required.length && validators.every((entry) => entry.status === 'passed');
-  return {
+  return canonicalValidation({
     status: valid ? 'valid' : 'invalid',
     planId: plan.planId,
     outputHash: materialized.outputHash,
@@ -168,15 +248,41 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
     failures,
     signatureConsequences: { status: plan.impact.signature ? 'changed-or-unknown' : 'unchanged-by-declared-operation' },
     independentDifferential,
-  };
+  });
 }
 
 export async function publishRebuildOutput(materialized, validation, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'materialization-not-complete' };
   if (!validation || validation.status !== 'valid') return { status: 'rejected', reason: 'validation-not-green' };
-  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
-  const promoted = await options.promote(materialized.bytes, validation);
-  return { status: 'published', outputHash: materialized.outputHash, result: promoted };
+  if (!isCanonicalValidation(validation)) return { status: 'rejected', reason: 'validation-artifact-untrusted' };
+  if (validation.planId !== materialized.planId || validation.outputHash !== materialized.outputHash) {
+    return { status: 'rejected', reason: 'validation-target-mismatch' };
+  }
+  let publicationBytes, observedOutputHash;
+  try {
+    publicationBytes = bytes(materialized.bytes).slice();
+    observedOutputHash = hashBytes(publicationBytes);
+  } catch (error) { return { status: 'rejected', reason: 'materialized-output-invalid', detail: String(error?.message || error) }; }
+  if (observedOutputHash !== validation.outputHash) return { status: 'rejected', reason: 'materialized-output-tampered' };
+  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: observedOutputHash };
+  let promoted;
+  try {
+    promoted = await options.promote(publicationBytes, validation);
+  } catch (error) {
+    return { status: 'rejected', reason: 'promotion-failed', detail: String(error?.message || error), outputHash: observedOutputHash };
+  }
+  if (!promoted) return { status: 'not-published', reason: 'promotion-commit-unproven', outputHash: observedOutputHash };
+  if (typeof promoted === 'object') {
+    const promoterStatus = promoted.status == null ? null : String(promoted.status).toLowerCase();
+    if (promoted.committed === false || promoterStatus === 'rejected' || promoterStatus === 'failed' || promoterStatus === 'not-published') {
+      return { status: 'rejected', reason: promoted.reason || 'promotion-rejected', result: promoted, outputHash: observedOutputHash };
+    }
+    if (promoted.committed !== true) return { status: 'not-published', reason: 'promotion-commit-unproven', result: promoted, outputHash: observedOutputHash };
+    if (promoted.outputHash != null && String(promoted.outputHash) !== String(observedOutputHash)) {
+      return { status: 'rejected', reason: 'promotion-output-mismatch', result: promoted, outputHash: observedOutputHash };
+    }
+  }
+  return { status: 'published', outputHash: observedOutputHash, result: promoted };
 }
 
 export function rebuildSupportTruth({ format, operation, architecture, relocationClass, validatorCoverage, proof } = {}) {

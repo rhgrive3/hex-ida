@@ -340,6 +340,8 @@ function commandVersion(id) {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
     shell: false,
+    timeout: 10000,
+    killSignal: 'SIGKILL',
   });
   if (result.error || result.status !== 0) fail('strip-tool-unavailable', id);
   const output = String(result.stdout || result.stderr || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean);
@@ -377,6 +379,8 @@ function applyRecognizedStrip({ debugArtifactPath, outputPath, stripTool }) {
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
       shell: false,
+    timeout: 10000,
+    killSignal: 'SIGKILL',
     });
     if (result.error || result.status !== 0) {
       const diagnostic = String(result.stderr || result.error?.message || '').trim().slice(0, 300);
@@ -561,6 +565,8 @@ export function validateTwinManifest(manifest, options = {}) {
         encoding: 'utf8',
         maxBuffer: 4 * 1024 * 1024,
         shell: false,
+    timeout: 10000,
+    killSignal: 'SIGKILL',
       });
       if (result.error || result.status !== 0) fail('strip-replay-failed', String(result.stderr || result.error?.message || '').trim().slice(0, 300));
       // Keep a separate name in the workspace so the replay path is explicit

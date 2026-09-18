@@ -35,6 +35,6 @@ const unclassified = createMemoryRegionRef({
   origin,
 });
 
-assert.equal(aliasMemoryRegions(stack, external), 'no', 'only explicit storage-class proof separates local stack from external entry memory');
+assert.equal(aliasMemoryRegions(stack, external), 'may', 'storage class alone does not prove that stack and external entry memory are disjoint');
 assert.notEqual(aliasMemoryRegions(stack, unclassified), 'no', 'an arbitrary rooted pointer remains conservative against stack');
 console.log('semantic-v2 proven storage-class alias separation: PASS');

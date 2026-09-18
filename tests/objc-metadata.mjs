@@ -22,8 +22,10 @@ p64(0x1000 + 32, 0);
 p64(0x1000 + 40, 0);
 p64(0x1000 + 48, 0);
 p64(0x1000 + 56, 0);
-p32(0x1000 + 64, 72);          // protocol_t size: fixed layout is fully readable
-p32(0x1000 + 68, 0);           // protocol flags
+// protocol_t is self-describing: #3979 made the size/flags pair (at +0x40 on
+// LP64) mandatory for a complete layout, so a real protocol_t must declare it.
+p32(0x1000 + 64, 72);          // size
+p32(0x1000 + 68, 0);           // flags
 str(0x1800, 'CoinProviding');
 
 p32(0x1100, 24); p32(0x1104, 1);
@@ -70,6 +72,15 @@ assert.equal(parsed.categories[0].methods[0].imp, 0x3000n);
 assert.equal(parsed.protocols[0].completeness.complete, true);
 assert.equal(parsed.categories[0].completeness.complete, true);
 assert.equal(parsed.completeness.complete, true);
+
+// An observed name/method prefix alone is not complete protocol_t evidence.
+{
+  p32(0x1000 + 64, 0);
+  const malformed = await parseObjcExtendedMetadata(read, sections, opts);
+  assert.equal(malformed.protocols[0].completeness.complete, false);
+  assert.equal(malformed.completeness.complete, false);
+  p32(0x1000 + 64, 72);
+}
 
 // #1793: a pointer-table section with trailing non-pointer bytes is not complete.
 {

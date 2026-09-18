@@ -34,6 +34,20 @@ function strictMachineInteger(value) {
   try { return BigInt(value.trim()); } catch { return null; }
 }
 
+export function validateCanonicalArguments(argumentsList) {
+  if (!Array.isArray(argumentsList)) throw new DebugAdapterError('invalid-experiment', 'experiment case arguments must be an array');
+  return argumentsList.map((value, index) => {
+    if (value == null) return 0n;
+    const canonical = strictMachineInteger(value);
+    if (canonical == null
+      || (typeof value === 'string' && value.trim() !== value)
+      || (typeof value === 'string' && !/^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value))) {
+      throw new DebugAdapterError('invalid-experiment', `experiment case argument ${index} must be a bigint, safe integer, or strict integer string`);
+    }
+    return canonical;
+  });
+}
+
 function normalizeInteger(value, bits, signed) {
   const width = BigInt(bits);
   const mod = 1n << width;
@@ -41,6 +55,12 @@ function normalizeInteger(value, bits, signed) {
   if (n < 0n) n += mod;
   if (signed && n >= (1n << (width - 1n))) n -= mod;
   return n;
+}
+
+function fieldWidthBits(raw) {
+  if (raw == null) return 64;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 8 || raw > 64 || raw % 8 !== 0) return null;
+  return raw;
 }
 
 // Machine-integer boundary for caller-provided experiment values: an unsafe
@@ -91,14 +111,20 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   else if (op === 'or') result = x | v;
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
-  result = normalizeInteger(result, bits, signed);
   if (hypothesis.clampMin != null && result < machineIntegerOrThrow(hypothesis.clampMin, 'clampMin')) result = machineIntegerOrThrow(hypothesis.clampMin, 'clampMin');
   if (hypothesis.clampMax != null && result > machineIntegerOrThrow(hypothesis.clampMax, 'clampMax')) result = machineIntegerOrThrow(hypothesis.clampMax, 'clampMax');
   return normalizeInteger(result, bits, signed);
 }
 
+function explicitIdentifier(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new DebugAdapterError('invalid-hypothesis', `${name} must be a non-empty string`);
+  return value;
+}
+
 export function compileExperiment(hypothesis, options = {}) {
   if (!hypothesis || typeof hypothesis !== 'object') throw new DebugAdapterError('invalid-hypothesis','hypothesis must be an object');
+  const hypothesisId = explicitIdentifier(hypothesis.id, 'hypothesis.id');
   const functionAddress = asAddress(hypothesis.functionAddress ?? hypothesis.function ?? options.functionAddress, 'functionAddress');
   const fieldOffset = hypothesis.fieldOffset == null ? null : asAddress(hypothesis.fieldOffset, 'fieldOffset');
   const fieldSize = integerInRange(hypothesis.fieldSize, 8, 1, 8, 'fieldSize');
@@ -109,22 +135,35 @@ export function compileExperiment(hypothesis, options = {}) {
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
-  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
+  const customInputs = options.inputs != null;
+  if (customInputs && !Array.isArray(options.inputs)) throw new DebugAdapterError('invalid-experiment-input', 'options.inputs must be an array');
+  const inputs = customInputs ? options.inputs : generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];
-  for (const item of inputs) {
-    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
-    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = BigInt(item.value);
-    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value, fieldBits, signed) : null;
+  const inputIds = new Set();
+  for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
+    const item = inputs[inputIndex];
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}] must be an object`);
+    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) {
+      if (customInputs) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].kind is not valid for this experiment`);
+      continue;
+    }
+    if (typeof item.id !== 'string' || item.id.trim() === '') throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].id must be a non-empty string`);
+    if (inputIds.has(item.id)) throw new DebugAdapterError('invalid-experiment-input', `duplicate experiment input id: ${item.id}`);
+    inputIds.add(item.id);
+    const value = strictMachineInteger(item.value);
+    if (value == null) throw new DebugAdapterError('invalid-experiment-input', 'experiment input value must be a machine integer (exact BigInt, safe number, or integer string)');
+    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = value;
+    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, value, fieldBits, signed) : null;
     cases.push({
-      id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
-      input:{ arguments:args, scalar:BigInt(item.value) },
+      id:`${hypothesisId ?? 'hypothesis'}:${item.id}`,
+      input:{ arguments:args, scalar:value },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
       expected: expected == null ? null : { field:{ offset:fieldOffset, value:expected, bits:fieldBits, signed } },
     });
   }
   return {
-    id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
+    id:hypothesisId ?? `experiment:${functionAddress.toString(16)}`,
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
     // An explicit hypothesis binding wins over an options override so callers
     // cannot silently re-label a hypothesis onto a different binary; identity
@@ -136,13 +175,13 @@ export function compileExperiment(hypothesis, options = {}) {
 
 function observedFieldValue(observation, offset) {
   const after = (observation && observation.memoryAfter) || [];
-  const final = after.find((f) => f && f.offset != null && BigInt(f.offset) === offset);
-  if (final && final.value != null) return { observed:true, value:final.value, source:'final-state' };
+  const final = after.find((f) => f && f.offset != null && strictMachineInteger(f.offset) === offset);
+  if (final && final.value != null) return { observed:true, value:final.value, source:'final-state', size:final.size };
   const deltas = (observation && observation.memoryDelta) || [];
   let touched = null;
-  for (const delta of deltas) if (delta && delta.offset != null && BigInt(delta.offset) === offset && delta.after != null) touched=delta;
-  if (touched) return { observed:true, value:touched.after, source:'delta-final' };
-  return { observed:false, value:null, source:null };
+  for (const delta of deltas) if (delta && delta.offset != null && strictMachineInteger(delta.offset) === offset && delta.after != null) touched=delta;
+  if (touched) return { observed:true, value:touched.after, source:'delta-final', size:touched.size };
+  return { observed:false, value:null, source:null, size:null };
 }
 
 export function compareExpected(caseSpec, observation) {
@@ -151,10 +190,23 @@ export function compareExpected(caseSpec, observation) {
   const stop = observation && observation.stop && observation.stop.kind;
   if (stop === 'fault' || stop === 'exception' || stop === 'timeout' || stop === 'unsupported' || stop === 'cancelled') return { status:'unsupported', reason:`execution-${stop}` };
   if (expected.field) {
+    const bits = fieldWidthBits(expected.field.bits);
+    if (bits == null) return { status:'inconclusive', reason:'invalid-expected-field-bits', expected:expected.field.value };
     const offset = BigInt(expected.field.offset);
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
-    const bits = Number(expected.field.bits || 64);
+    // #5578: the observation width is part of the field contract —
+    // compileExperiment() watches exactly fieldBits/8 bytes. An under-width,
+    // over-width, or unknown-width observation must never produce the strong
+    // supported/contradicted verdicts; only an exactly-wide observation may.
+    const expectedBytes = bits / 8;
+    const entrySize = Number(actual.size);
+    if (!Number.isSafeInteger(entrySize) || entrySize <= 0) {
+      return { status:'inconclusive', reason:'observed-field-width-unknown', expected:expected.field.value };
+    }
+    if (entrySize !== expectedBytes) {
+      return { status:'inconclusive', reason:'observed-field-width-mismatch', observedWidth:entrySize, expectedWidth:expectedBytes, expected:expected.field.value };
+    }
     const signed = expected.field.signed !== false;
     const observed = normalizeInteger(actual.value, bits, signed);
     const wanted = normalizeInteger(expected.field.value, bits, signed);
@@ -208,23 +260,26 @@ export class HypothesisVerifier {
     if (maxCases < planned) reasons.push('max-cases');
     let cancelled = false, stoppedOnContradiction = false;
     for (const testCase of experiment.cases.slice(0,maxCases)) {
-      let observation;
+      let observation, launchCanonicalInput = null;
       if (options.signal && options.signal.aborted) {
         observation = { stop:{ kind:'cancelled', message:String(options.signal.reason || 'cancelled') }, memoryDelta:[], memoryAfter:[], returnValue:null };
       } else {
         const objectMemory = (testCase.initialState.fields || []).map((f) => ({ offset:f.offset, size:f.size, value:f.value }));
         try {
-          await this.adapter.launch({ address:experiment.functionAddress, arguments:testCase.input.arguments, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          const canonicalArgs = validateCanonicalArguments(testCase.input?.arguments);
+          const launchResult = await this.adapter.launch({ address:experiment.functionAddress, arguments:canonicalArgs, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          launchCanonicalInput = launchResult?.canonicalInput || null;
           observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
-          const kind = code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
+          const kind = options.signal && options.signal.aborted ? 'cancelled' :
+            code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
             (code === 'oob' || code === 'permission' || code === 'fault' || code === 'mmio-unknown') ? 'fault' : 'exception';
           observation = { stop:{ kind, message:(error && error.message) || String(error) }, memoryDelta:[], memoryAfter:[], returnValue:null };
         }
       }
       const comparison = compareExpected(testCase, observation);
-      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison }) : null;
+      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison, launchCanonicalInput }) : null;
       results.push({ case:testCase, observation, comparison, evidence });
       if (comparison.status === 'unsupported' && observation.stop && observation.stop.kind === 'cancelled') { cancelled=true; reasons.push('cancelled'); break; }
       if (options.stopOnContradiction !== false && comparison.status === 'contradicted') { stoppedOnContradiction=true; reasons.push('stop-on-contradiction'); break; }

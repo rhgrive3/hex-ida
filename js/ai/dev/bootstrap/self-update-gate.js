@@ -19,6 +19,10 @@ export const DEV_SELF_UPDATE_HISTORY_KIND = 'runtime-activation-required';
 const COMMIT = /^[0-9a-f]{40}$/;
 const BUILD_ID = /^[0-9a-f]{24}$/;
 
+const ACTIVATION_ARGUMENT_KEYS = Object.freeze([
+  'expectedCommit', 'expectedBuildId', 'expectedUserscriptVersion', 'capabilities', 'reason', 'requireReinitialization',
+]);
+
 /* Reading the active identity and withdrawing a wrong expectation are how the
    gate is satisfied or corrected, and winding an in-flight Worker down is
    cleanup rather than a capability proof. None of them may ever be gated. */
@@ -52,22 +56,38 @@ export class DevSelfUpdateGate {
   get activeIdentity() { return this.#active; }
 
   /* Arm the gate for a source change that is merged but not yet running. */
-  requireActivation({ expectedCommit, expectedBuildId, expectedUserscriptVersion = null, capabilities = [], reason = null, requireReinitialization = false, clear = false } = {}) {
+  requireActivation(args = {}) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      throw new TypeError('Dev self-update gate: activation arguments must be a plain object.');
+    }
+    for (const key of Object.keys(args)) {
+      if (!ACTIVATION_ARGUMENT_KEYS.includes(key)) {
+        throw new TypeError(`dev-self-update-gate-unexpected-argument-field:${String(key).slice(0, 64)}`);
+      }
+    }
+    const {
+      expectedCommit, expectedBuildId, expectedUserscriptVersion = null,
+      capabilities = [], reason = null, requireReinitialization = false,
+    } = args;
     /* A mistyped expectation must not be able to brick the Dev tool surface
        for the rest of the page session, so the declaring side can withdraw it. */
-    if (clear === true) return this.clear(reason);
+    /* Every throwing normalization runs before any state commit: a rejected
+       activation must leave the gate exactly as it was. */
     const expected = Object.freeze({
       commit: assertCommit(expectedCommit, 'expectedCommit'),
       buildId: assertBuildId(expectedBuildId, 'expectedBuildId'),
       userscriptVersion: optionalText(expectedUserscriptVersion, 'expectedUserscriptVersion'),
     });
+    const nextCapabilities = new Set(assertCapabilities(capabilities));
+    const nextReason = optionalText(reason, 'reason');
+    const nextRequireReinitialization = requireReinitialization === true;
     this.#expected = expected;
-    this.#capabilities = new Set(assertCapabilities(capabilities));
-    this.#reason = optionalText(reason, 'reason');
+    this.#capabilities = nextCapabilities;
+    this.#reason = nextReason;
     /* Anything observed before the update was observed on the old runtime. */
     this.#active = null;
     this.#observed = false;
-    this.#requireReinitialization = requireReinitialization === true;
+    this.#requireReinitialization = nextRequireReinitialization;
     this.#reinitialized = false;
     this.#mismatches = ['not-observed'];
     return this.status();
@@ -127,12 +147,17 @@ export class DevSelfUpdateGate {
     });
   }
 
+  clearActivationExpectation(reason = null) {
+    return this.clear(reason);
+  }
+
   clear(reason = null) {
+    const nextReason = optionalText(reason, 'reason');
     this.#expected = null;
     this.#active = null;
     this.#capabilities = new Set();
     this.#mismatches = [];
-    this.#reason = optionalText(reason, 'reason');
+    this.#reason = nextReason;
     this.#observed = false;
     this.#requireReinitialization = false;
     this.#reinitialized = false;
@@ -176,7 +201,8 @@ function assertCapabilities(value) {
   if (value == null) return [];
   if (!Array.isArray(value)) throw new TypeError('capabilities must be an array of tool names.');
   return value.map((item) => {
-    const name = String(item || '').trim();
+    if (typeof item !== 'string') throw new TypeError('capabilities entries must be non-empty tool names.');
+    const name = item.trim();
     if (!name) throw new TypeError('capabilities entries must be non-empty tool names.');
     return name;
   });

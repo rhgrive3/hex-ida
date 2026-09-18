@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -31,7 +31,7 @@ jobs:
         env:
           TARGET_SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -46,3 +46,10 @@ jobs:
         run: npm run core:test
       - name: CI development-mode contract
         run: node tests/ci-development-mode.mjs
+      - name: MachineEffects prerequisite contract
+        run: node tests/ci/issue-8299-machine-effects-prerequisites.test.mjs
+
+      - name: Final-head admission unit contract
+        run: |
+          node tests/ci/final-head-admission-6570.test.mjs
+          node tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs

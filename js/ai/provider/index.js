@@ -1,7 +1,9 @@
 import { AIError } from '../schema.js';
-import { requestJSON } from '../transport.js';
+import { readBoundedText, requestJSON } from '../transport.js';
 import { validateModelDecision } from '../validation.js';
 import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
+
+const CAPABILITIES_MAX_RESPONSE_BYTES = 64 * 1024;
 
 export class AIProvider {
   constructor({ capabilities } = {}) {
@@ -34,19 +36,27 @@ export class WorkerAIProvider extends AIProvider {
     this.capabilitiesPrepared = false;
     this.capabilitiesPromise = null;
     this.capabilitiesController = null;
+    this.capabilitiesFlight = null;
     this.capabilitiesWaiters = 0;
+    // null means capability truth has not been verified yet (#5086).
+    this.configured = null;
   }
 
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
-    if (!this.capabilitiesPromise) {
+    if (options.signal?.aborted) throw interruptionError(options.signal);
+    if (!this.capabilitiesPromise || this.capabilitiesFlight?.retired) {
       const controller = new AbortController();
+      const flight = { controller, retired: false };
+      this.capabilitiesFlight = flight;
       this.capabilitiesController = controller;
       const promise = this.#loadCapabilities({ timeoutMs: options.timeoutMs, signal: controller.signal })
         .finally(() => {
-          if (this.capabilitiesPromise === promise) this.capabilitiesPromise = null;
-          if (this.capabilitiesController === controller) this.capabilitiesController = null;
+          if (this.capabilitiesFlight === flight) {
+            this.capabilitiesPromise = null;
+            this.capabilitiesController = null;
+            this.capabilitiesFlight = null;
+          }
         });
       this.capabilitiesPromise = promise;
     }
@@ -54,6 +64,16 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   #waitForCapabilities(promise, signal) {
+    /* #5144: the waiter is accounted only after the signal contract is proven
+       usable. A malformed truthy signal used to increment capabilitiesWaiters
+       and then throw synchronously inside the executor below, leaking a ghost
+       waiter that permanently disabled shared-preflight cancellation. */
+    if (signal
+      && (typeof signal.addEventListener !== 'function'
+        || typeof signal.removeEventListener !== 'function'
+        || typeof signal.aborted !== 'boolean')) {
+      throw new TypeError('signal must be an AbortSignal.');
+    }
     this.capabilitiesWaiters += 1;
     let released = false;
     const release = (cancelled = false) => {
@@ -61,38 +81,46 @@ export class WorkerAIProvider extends AIProvider {
       released = true;
       this.capabilitiesWaiters = Math.max(0, this.capabilitiesWaiters - 1);
       if (cancelled && this.capabilitiesWaiters === 0 && this.capabilitiesPromise === promise) {
+        if (this.capabilitiesFlight) this.capabilitiesFlight.retired = true;
         this.capabilitiesController?.abort(signal?.reason ?? 'cancelled');
       }
     };
     if (!signal) return promise.finally(() => release(false));
     return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        signal.removeEventListener('abort', onAbort);
-        release(true);
-        reject(new AIError('cancelled', 'AI investigation was cancelled.'));
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-        return;
+      try {
+        const onAbort = () => {
+          signal.removeEventListener('abort', onAbort);
+          release(true);
+          reject(interruptionError(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        promise.then(
+          (value) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            resolve(value);
+          },
+          (error) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            reject(error);
+          },
+        );
+      } catch (error) {
+        /* The waiter count must be reusable no matter what the wiring throws:
+           release before rejecting so cancellation accounting cannot leak. */
+        release(false);
+        reject(error);
       }
-      promise.then(
-        (value) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          resolve(value);
-        },
-        (error) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          reject(error);
-        },
-      );
     });
   }
 
   async #loadCapabilities(options = {}) {
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
     if (typeof this.fetchImpl !== 'function') { this.capabilitiesPrepared = true; return this.getCapabilities(); }
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
@@ -102,15 +130,33 @@ export class WorkerAIProvider extends AIProvider {
     try {
       const response = await this.fetchImpl(this.capabilitiesEndpoint, { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
       if (!response?.ok) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
-      const text = await response.text();
-      if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+      // Capability discovery is optional, but its 64 KiB budget is a hard
+      // transport bound: reject a declared oversize before materializing any body.
+      const contentLength = Number(response.headers?.get?.('content-length'));
+      if (contentLength > CAPABILITIES_MAX_RESPONSE_BYTES) {
+        controller.abort('response-too-large');
+        try { await response.body?.cancel?.('response-too-large'); } catch { /* best effort */ }
+        this.capabilitiesPrepared = true;
+        return this.getCapabilities();
+      }
+      // Missing/untrusted Content-Length still stays bounded by the shared
+      // streaming reader, which cancels on the first chunk crossing the cap.
+      const text = await readBoundedText(response, CAPABILITIES_MAX_RESPONSE_BYTES, controller);
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
+      if (typeof payload?.configured === 'boolean') this.configured = payload.configured;
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {
-      if (options.signal?.aborted || (controller.signal.aborted && controller.signal.reason !== 'timeout')) throw new AIError('cancelled', 'AI investigation was cancelled.');
+      // response-too-large is our own conservative-fallback sentinel, not a
+      // caller cancellation. Explicit/shared cancellation must still reject.
+      if (options.signal?.aborted
+          || (controller.signal.aborted
+            && controller.signal.reason !== 'timeout'
+            && controller.signal.reason !== 'response-too-large')) {
+        throw interruptionError(options.signal || controller.signal);
+      }
       // Capability discovery must not make the provider unavailable. A failed or
       // timed-out preflight falls back to the conservative built-in budget.
       this.capabilitiesPrepared = true;
@@ -123,13 +169,13 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   async nextTurn(request, options = {}) {
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
     if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
     this.controllers.add(controller);
     try {
-      if (controller.signal.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+      if (controller.signal.aborted) throw interruptionError(options.signal || controller.signal);
       const response = await requestJSON(this.endpoint, {
         sessionId: request.sessionId || null,
         mode: request.mode,
@@ -158,4 +204,12 @@ export class WorkerAIProvider extends AIProvider {
 function deriveCapabilitiesEndpoint(endpoint) {
   const value = String(endpoint || '/api/ai/turn');
   return value.endsWith('/turn') ? `${value.slice(0, -5)}/capabilities` : '/api/ai/capabilities';
+}
+
+function interruptionError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }

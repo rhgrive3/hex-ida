@@ -20,6 +20,12 @@ function extractRegisterAccesses(bundle) {
     for (const op of bundle.operations) {
       if (op.kind === "register-read" && op.register?.registerId) reads.add(op.register.registerId);
       if (op.kind === "register-write" && op.register?.registerId) writes.add(op.register.registerId);
+      if (op.kind === "flag-read" && op.flag?.flagId) reads.add(op.flag.flagId.toLowerCase());
+      if (op.kind === "flag-write" && op.flag?.flagId) writes.add(op.flag.flagId.toLowerCase());
+      if (op.kind === "intrinsic") {
+        for (const register of op.effectSummary?.registersRead ?? []) reads.add(register);
+        for (const register of op.effectSummary?.registersWritten ?? []) writes.add(register);
+      }
     }
   }
   return {
@@ -29,12 +35,20 @@ function extractRegisterAccesses(bundle) {
 }
 
 function extractMemoryAccesses(bundle) {
+  // Counts declared effects/access entries, not runtime bus transactions.
+  // An all/unknown intrinsic scope must not appear as zero memory effects.
+  const summaryCount = (summary) => !summary || summary.scope === "none" ? 0
+    : summary.scope === "accesses" ? (summary.accesses?.length ?? 0) : 1;
   let reads = 0;
   let writes = 0;
   if (bundle && Array.isArray(bundle.operations)) {
     for (const op of bundle.operations) {
       if (op.kind === "memory-read") reads++;
       if (op.kind === "memory-write") writes++;
+      if (op.kind === "intrinsic") {
+        reads += summaryCount(op.effectSummary?.memoryRead);
+        writes += summaryCount(op.effectSummary?.memoryWrite);
+      }
     }
   }
   return { reads, writes };
@@ -84,13 +98,17 @@ export function evaluateX86Long64ClosureMatrix(decodedWitnessRows, dispatchFunct
     const instruction = item.instruction;
     const prefixKind = classifyX86Long64WitnessPrefix(instruction.rawBytes);
 
-    const outcome = dispatchFunction(instruction, { closureMatrixTerminal: true });
+    // Observe the default product; the verifier must not opt into a stronger
+    // terminalization policy than the runtime it claims to measure.
+    const outcome = dispatchFunction(instruction);
     const isDispatch = outcome != null && typeof outcome === "object" && "ownerId" in outcome && "result" in outcome;
     const effect = isDispatch ? outcome.result : outcome;
     const ownerId = isDispatch ? outcome.ownerId : (effect ? String(effect.metadata?.family || "unowned").toLowerCase() : "unowned");
 
     const validOwner = CANONICAL_OWNERS_SET.has(ownerId);
-    const completeness = effect?.completeness ?? (validOwner && effect != null ? "exact" : "unowned");
+    const completeness = effect == null || !validOwner ? "unowned"
+      : ["exact", "exact-with-intrinsic", "partial"].includes(effect.completeness)
+        ? effect.completeness : "partial";
 
     if (byCompleteness[completeness] != null) byCompleteness[completeness]++;
     else byCompleteness.unowned++;
@@ -114,7 +132,8 @@ export function evaluateX86Long64ClosureMatrix(decodedWitnessRows, dispatchFunct
       prefixKind,
       ownerId: validOwner ? ownerId : "unowned",
       completeness,
-      partialReason: completeness === "partial" ? (effect?.unknownEffects?.reason ?? "unknown-effects") : null,
+      partialReason: completeness === "partial" ? (effect?.unknownEffects?.reason
+        ?? (effect?.completeness === "partial" ? "unknown-effects" : "invalid-or-missing-completeness")) : null,
       requiredFeature,
       registersRead: regAccess.reads,
       registersWritten: regAccess.writes,

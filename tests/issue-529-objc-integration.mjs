@@ -22,6 +22,7 @@ const model = {
     },
     { name: 'ChildData', addr: 0x1010n, superName: 'PlayerData', protocols: [], methods: [], classMethods: [] },
     { name: 'OtherData', addr: 0x1020n, superName: null, protocols: [], methods: [{ selector: 'debugName', imp: 0x2100n, types: '@16@0:8' }], classMethods: [] },
+    { name: 'UnrelatedData', addr: 0x1030n, superName: null, protocols: [], methods: [], classMethods: [] },
   ],
   categories: [{
     name: 'Debug', className: 'PlayerData', protocols: [{ name: 'Trackable' }],
@@ -57,16 +58,21 @@ assert.equal(category.resolved?.typeEncoding, '@16@0:8');
 assert.equal(index.methodsByIMP.get('4608')?.[0]?.source, 'category');
 
 // A known receiver must not fall back to the same selector on another
-// unrelated class. An unknown receiver keeps current-image candidates as
-// conservative evidence because its superclass hierarchy is unavailable.
+// unrelated class.
 const wrongReceiver = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'debugName' });
 assert.equal(wrongReceiver.resolved?.imp, 0x1200n, 'subclass should inherit category method on superclass');
-const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'NoSuchClass', selector: 'debugName' });
+const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'UnrelatedData', selector: 'debugName' });
 assert.equal(unrelatedReceiver.resolved, null);
-assert.equal(unrelatedReceiver.candidates.length, 2);
-assert.deepEqual(new Set(unrelatedReceiver.candidates.map((entry) => entry.imp)), new Set([0x1200n, 0x2100n]));
-assert.equal(unrelatedReceiver.partial, true);
-assert.match(unrelatedReceiver.reason, /hierarchy is unavailable or incomplete/);
+assert.equal(unrelatedReceiver.candidates.length, 0);
+assert.equal(unrelatedReceiver.partial, undefined);
+
+// A class absent from this image may inherit from a linked runtime class.
+// #6076 preserves inconclusive candidates instead of proving their absence.
+const unknownReceiver = resolveObjcDispatch(index, { receiverType: 'NoSuchClass', selector: 'debugName' });
+assert.equal(unknownReceiver.resolved, null);
+assert.equal(unknownReceiver.partial, true);
+assert.deepEqual(new Set(unknownReceiver.candidates.map((x) => x.imp)), new Set([0x1200n, 0x2100n]));
+assert.match(unknownReceiver.reason, /hierarchy is unavailable or incomplete/);
 
 // Inheritance narrowing remains valid for ordinary class methods.
 const inherited = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'baseOnly' });

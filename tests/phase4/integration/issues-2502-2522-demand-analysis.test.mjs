@@ -28,7 +28,7 @@ async function testMachOSelectedSliceSingleFlight() {
   const readsAfterFirst = spy.reads.length;
   assert.ok(readsAfterFirst > 0, 'first selected-slice parse must read source bytes');
   const second = await parseMachOSource(spy, options);
-  assert.equal(second, first, 'same source/slice must reuse the immutable BinaryImage artifact');
+  assert.notEqual(second, first, 'same source/slice must reuse the parsed artifact without sharing a mutable BinaryImage result');
   assert.equal(spy.reads.length, readsAfterFirst, 'cached selected slice must not re-read source bytes');
 }
 
@@ -60,7 +60,7 @@ function testCanonicalWiring() {
   assert.match(runtime, /RECOGNITION_INPUTS_CHANGED/, 'recognition must reject publication after input-version races');
   assert.match(runtime, /function installCancellableFunctionDiscovery\(app\)/, 'function discovery must have one runtime owner');
   assert.match(runtime, /entry\.request(?:\?\.|\.)cancel\?\.\(\)/, 'last discovery waiter must cancel its producer');
-  assert.match(runtime, /const key = recognitionInputKey\(app\)[\s\S]*const after = recognitionInputKey\(app\)[\s\S]*after === key/,
+  assert.match(runtime, /const key = recognitionInputKey\(app\)[\s\S]*after\s*=\s*recognitionInputKey\(app\)[\s\S]*after === key/,
     'recognition must publish only when start/end input identity matches');
 
   const service = source('js/analysis/investigation-service.js');

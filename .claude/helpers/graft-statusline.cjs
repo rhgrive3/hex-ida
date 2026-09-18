@@ -24,10 +24,15 @@ function globalRoot() {
 
 function candidates() {
   const out = [];
-  if (BAKED) out.push(BAKED);
+  // Same precedence contract as graft-hooks.cjs (#5895): explicit override,
+  // then the checkout's own @nanonets/graft, then global resolution, and the
+  // baked absolute path only as the historical compat fallback.
+  const override = process.env.GRAFT_CLAUDE_DIR;
+  if (override) out.push(override);
   const local = fromPkg(dir); if (local) out.push(local);
   const legacy = fromPkg(path.join(path.dirname(process.execPath), '..', 'lib')); if (legacy) out.push(legacy);
   const gr = globalRoot(); if (gr) out.push(path.join(gr, '@nanonets', 'graft', 'dist', 'claude'));
+  if (BAKED) out.push(BAKED);
   return out;
 }
 

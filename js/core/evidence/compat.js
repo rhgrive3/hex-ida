@@ -1,8 +1,16 @@
 import { createEvidenceNode, EvidenceGraph } from './index.js';
 import { createOriginSet } from '../identity/origin.js';
 
+/* #5277: family authority reads only primitive-string provenance. Template
+   interpolation laundered structured (Array/Object/boolean/number) source
+   fields into canonical family tokens; malformed provenance must fall back to
+   the default family instead. */
+function familyToken(value) {
+  return typeof value === 'string' ? value.toLowerCase() : '';
+}
+
 function familyFor(record = {}) {
-  const text = `${record.sourceTool || record.source || ''} ${record.kind || ''}`.toLowerCase();
+  const text = `${familyToken(record.sourceTool || record.source)} ${familyToken(record.kind)}`;
   if (text.includes('runtime') || record.source === 'runtime') return 'RuntimeEvidence';
   if (text.includes('symbolic') || text.includes('solver')) return 'SymbolicEvidence';
   if (text.includes('signature') || text.includes('fingerprint')) return 'SignatureEvidence';
@@ -107,9 +115,14 @@ export function canonicalEvidenceToLegacyAi(node) {
   const canonical = createEvidenceNode(node);
   if (canonical.family === 'Claim') throw new TypeError('evidence-compat-claim-not-ai-record');
   const payload = canonical.payload || {};
-  const status = ['verified', 'supported', 'hypothesis', 'unknown'].includes(payload.status)
+  // Canonical deterministic authority owns the verified boundary. Legacy payload
+  // status may preserve weaker labels, but must never mint or suppress it.
+  const payloadStatus = ['verified', 'supported', 'hypothesis', 'unknown'].includes(payload.status)
     ? payload.status
-    : (canonical.deterministic === true ? 'verified' : 'supported');
+    : null;
+  const status = canonical.deterministic === true
+    ? 'verified'
+    : (payloadStatus === 'verified' ? 'supported' : (payloadStatus ?? 'supported'));
 
   const out = {
     id: canonical.id,

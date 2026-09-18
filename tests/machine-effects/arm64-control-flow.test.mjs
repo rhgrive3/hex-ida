@@ -46,6 +46,16 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
 }
 
 {
+  const bundle = lift('bl', 'opaque', { address:0x4110n });
+  assert.equal(bundle.completeness, 'exact', 'legacy assembly BL symbol is an exact direct symbolic call');
+  assert.deepEqual(bundle.controlEffect.target, { kind:'symbolic-code-reference', name:'opaque' });
+  assert.equal(bundle.metadata.symbolicTarget, 'opaque');
+  assert.equal(bundle.metadata.direct, true);
+  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['x30', 'pstate.btype']);
+  assert.equal(bundle.controlEffect.fallthrough.value, String(0x4114));
+}
+
+{
   const bundle = lift('blr', 'x9', { address: 0x4200n });
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'call');

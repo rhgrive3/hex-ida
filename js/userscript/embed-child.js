@@ -7,13 +7,15 @@ import {
 } from './embed-protocol.js';
 import {
   announceEmbedChildBootstrapReady,
+  matchesEmbedGeneration,
+  matchesEmbedSandboxToken,
   normalizeEmbedProvider,
   normalizeSandboxToken,
   readEmbedGeneration,
   readEmbedProvider,
 } from './embed-bootstrap.js';
 import { createEmbedBridgeProxy } from './embed-bridge-proxy.js';
-import { createDevWorkerParentRpcClient } from './dev/parent-rpc.js';
+import { startChildAuth } from '../auth/runtime.js';
 import { setUiRoot } from '../ui-root.js';
 
 export const EMBED_PATH = '/embed/chatgpt';
@@ -70,8 +72,8 @@ export function waitForEmbedParentAttach(options = {}) {
       if (!originAllowed(allowedOrigins, event?.origin)) return;
       const data = event?.data;
       if (!isAttachLike(data)) return;
-      if (String(data.generation || '') !== generation) return;
-      if (sandboxToken && String(data.sandboxToken || '').toLowerCase() !== sandboxToken) return;
+      if (!matchesEmbedGeneration(data.generation, generation)) return;
+      if (sandboxToken && !matchesEmbedSandboxToken(data.sandboxToken, sandboxToken)) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) {
         settle(new Error('embed parent attach protocol/version mismatch'));
         return;
@@ -104,7 +106,8 @@ export async function startEmbedChildRuntime(options = {}) {
     return module.installProtectedWorkers();
   });
   const createBridge = options.createEmbedBridgeProxy || createEmbedBridgeProxy;
-  const createDevClient = options.createDevWorkerParentRpcClient || createDevWorkerParentRpcClient;
+  const createDevClient = options.createDevWorkerParentRpcClient;
+  const initializeAuth = options.startChildAuth || startChildAuth;
   const importApp = options.importApp || (() => import('../app.js'));
   const importUx = options.importUx || (() => import('../ux.js'));
   const sendReady = options.sendEmbedReady || sendEmbedReady;
@@ -126,9 +129,10 @@ export async function startEmbedChildRuntime(options = {}) {
     allowedOrigins: options.allowedOrigins,
   }));
   const bridge = stageSync('embed bridge proxy', () => createBridge({ port: attach.port }));
-  const devWorkerClient = createOptionalDevWorkerClient(createDevClient, attach.port);
+  // The optional factory is an existing isolated-test seam, never the production default.
+  const devWorkerClient = createDevClient ? createOptionalDevWorkerClient(createDevClient, attach.port) : null;
   globalObject.__HEX_CHATGPT_BRIDGE__ = bridge;
-  globalObject.__HEX_DEV_WORKER_CLIENT__ = devWorkerClient;
+  if (devWorkerClient) globalObject.__HEX_DEV_WORKER_CLIENT__ = devWorkerClient;
   globalObject.__HEX_API_BASE__ = locationRef.origin;
   globalObject.__HEX_AI_PROVIDER__ = readInitialProvider(locationRef, globalObject);
 
@@ -139,6 +143,8 @@ export async function startEmbedChildRuntime(options = {}) {
   });
   stageSync('embed canonical CSS', () => installCanonicalCss(documentRef, cssText));
   await stage('embed protected workers', () => installWorkers());
+  const authContext = await initializeAuth({ port: attach.port, apiOrigin: locationRef.origin });
+  try {
   await stage('embed app import', () => importApp());
   await stage('embed ux import', () => importUx());
   await stage('embed app readiness', () => waitReady({
@@ -148,7 +154,8 @@ export async function startEmbedChildRuntime(options = {}) {
     requiredSelectors: options.requiredSelectors,
   }));
   stageSync('embed ready', () => sendReady(attach.port, { nonce: attach.nonce }));
-  return Object.freeze({ bridge, devWorkerClient, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null });
+  return Object.freeze({ bridge, devWorkerClient: devWorkerClient || authContext.childExtension?.workerClient || null, authContext, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null, close() { authContext.close(); bridge.close?.(); devWorkerClient?.close?.(); } });
+  } catch (error) { authContext.close(); throw error; }
 }
 
 export function installCanonicalCss(documentRef, cssText) {

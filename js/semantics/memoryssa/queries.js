@@ -6,7 +6,6 @@ import {
 import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
 import {
-  canonicalMemorySsaProducerDigest,
   canonicalMemorySsaProducerSemanticIrDigest,
   isCanonicalMemorySsaProducerArtifact,
 } from './build.js';
@@ -16,14 +15,15 @@ import {
   CANONICAL_ALIAS_ISSUER_VERSIONS,
   CANONICAL_STORE_VALUE_ISSUER,
   MEMORY_SSA_PROOF_VERSION,
+  canonicalAccessBinding,
   canonicalAccessBindingForMetadata,
   canonicalAccessBindingDigest,
   canonicalAccessProofDigest,
   canonicalAliasProofDigest,
+  canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
-  canonicalIdentityDigest,
-  canonicalProducerValueDigest,
 } from './proof.js';
+import { snapshotIdIdentity } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
@@ -37,6 +37,12 @@ function positiveInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
   return value;
 }
+function validId(value, code) {
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
+  if (!text || text !== value) fail(code);
+  return text;
+}
 function analysisObject(memorySsa) {
   if (!memorySsa || typeof memorySsa !== 'object') fail('memory-ssa-query-analysis-required');
   return memorySsa;
@@ -48,23 +54,28 @@ function useMap(memorySsa) {
   return new Map(analysisObject(memorySsa).uses.map((use) => [use.id, use]));
 }
 function useFrom(memorySsa, useOrId) {
-  if (useOrId && typeof useOrId === 'object') return useOrId;
-  const use = useMap(memorySsa).get(String(useOrId));
+  let id;
+  if (typeof useOrId === 'string') {
+    id = validId(useOrId, 'memory-ssa-query-use-id-required');
+  } else if (useOrId && typeof useOrId === 'object') {
+    id = validId(useOrId.id, 'memory-ssa-query-use-id-required');
+  } else {
+    fail('memory-ssa-query-use-id-required');
+  }
+  const use = useMap(memorySsa).get(id);
   if (!use) fail('memory-ssa-query-use-not-found');
   return use;
 }
 
-function semanticIrDigestForArtifact(artifact, ir) {
-  return canonicalMemorySsaProducerSemanticIrDigest(artifact, ir) ?? stableDigest(ir);
-}
-
 export function getMemoryDefinition(memorySsa, definitionId) {
-  const definition = definitionMap(memorySsa).get(String(definitionId));
+  const id = validId(definitionId, 'memory-ssa-query-definition-id-required');
+  const definition = definitionMap(memorySsa).get(id);
   return definition ?? null;
 }
 
 export function getMemoryUse(memorySsa, useId) {
-  return useMap(memorySsa).get(String(useId)) ?? null;
+  const id = validId(useId, 'memory-ssa-query-use-id-required');
+  return useMap(memorySsa).get(id) ?? null;
 }
 
 export function reachingMemoryDefinition(memorySsa, useOrId) {
@@ -91,7 +102,6 @@ export function reachingConcreteStore(memorySsa, useOrId) {
  */
 
 const FORWARD_EXACT = 'exact';
-const DEFAULT_FORWARDING_MAX_ITERATIONS = 4194304;
 const FORWARD_NON_EXACT = new Set([
   'unknown',
   'partial',
@@ -108,6 +118,7 @@ const MEMORY_BARRIER_KINDS = new Set([
   'intrinsic-clobber',
   'memory-phi',
 ]);
+const DEFAULT_FORWARDING_MAX_ITERATIONS = 4194304;
 
 // A fact is issued for this precise semantic purpose.  Downstream gates pass
 // the same context together with the load identity; a fact copied to another
@@ -154,8 +165,8 @@ class CanonicalMemoryForwardingFact {
 /*
  * One compatibility projection may ask about the same immutable producer
  * artifact twice for a stack load: once for ordinary byte forwarding and once
- * for the operand-shaped legacy projection.  Keep the validated producer
- * indexes for that one projection lifecycle.  The private brand and exact
+ * for the operand-shaped legacy projection. Keep the validated producer
+ * indexes for that one projection lifecycle. The private brand and exact
  * artifact identity make this a producer-owned snapshot, rather than a cache
  * for caller-owned mutable or serialized values.
  */
@@ -411,13 +422,12 @@ export function createCanonicalMemoryForwardingSession(memorySsa, options = {}) 
     const usesById = new Map((memorySsa.uses ?? []).map((use) => [String(use.id), use]));
     const definitionsById = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
     const regionsById = new Map((memorySsa.regions ?? []).map((region) => [String(region.id), region]));
-    const session = new CanonicalMemoryForwardingSession(memorySsa, options.ir ?? null, {
+    return new CanonicalMemoryForwardingSession(memorySsa, options.ir ?? null, {
       usesById,
       definitionsById,
       regionsById,
       metadataById,
     });
-    return session;
   } catch {
     // The ordinary query remains the fail-closed path for malformed producer
     // handoffs and preserves its typed non-exact result.
@@ -453,7 +463,7 @@ function forwardingStatusFromSession(session, options) {
     throw new ForwardingStop('stale', 'memoryssa-stale-function');
   }
   if (artifact.snapshotId != null && options.snapshotId != null
-      && String(artifact.snapshotId) !== String(options.snapshotId)) {
+      && snapshotIdIdentity(artifact.snapshotId) !== snapshotIdIdentity(options.snapshotId)) {
     throw new ForwardingStop('stale', 'memoryssa-stale-snapshot');
   }
   if (options.memorySsaBuildVersion != null
@@ -696,7 +706,7 @@ function forwardingCanonicalAliasProofIsValid(proof, relation, context = {}) {
   const identity = context.memorySsa?.identity;
   if (!forwardingObject(proof.identity)
       || String(proof.identity.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
-      || String(proof.identity.digest ?? '') !== canonicalIdentityDigest(identity ?? null)) return false;
+      || String(proof.identity.digest ?? '') !== stableDigest(identity ?? null)) return false;
   const provenance = proof.provenance;
   if (!forwardingObject(provenance)
       || String(provenance.functionId ?? '') !== String(context.memorySsa?.functionId ?? '')
@@ -705,13 +715,13 @@ function forwardingCanonicalAliasProofIsValid(proof, relation, context = {}) {
       || !Array.isArray(provenance.sourceEntityIds)
       || provenance.sourceEntityIds.length === 0
       || provenance.leftRegionId == null || provenance.rightRegionId == null) return false;
-  if (context.expectedRightRegionId != null
-      && String(provenance.rightRegionId) !== String(context.expectedRightRegionId)) return false;
   const expectedRegions = context.expectedRegionIds ?? [];
   if (expectedRegions.length > 0) {
     const actual = new Set([String(provenance.leftRegionId), String(provenance.rightRegionId)]);
     for (const regionId of expectedRegions) if (!actual.has(String(regionId))) return false;
   }
+  if (context.expectedRightRegionId != null
+      && String(provenance.rightRegionId) !== String(context.expectedRightRegionId)) return false;
   const expectedSources = context.expectedSourceEntityIds ?? [];
   const actualSources = new Set(provenance.sourceEntityIds.map(String));
   if (expectedSources.some((sourceId) => sourceId == null || !actualSources.has(String(sourceId)))
@@ -771,43 +781,66 @@ function forwardingCanonicalAliasProofIsValid(proof, relation, context = {}) {
 function forwardingAliasProofIsMust(proof, context = {}, depth = 0) {
   if (!forwardingObject(proof) || depth > 8) return false;
   if (Array.isArray(proof.alternatives)) {
+    const expectedRightRegionId = context.expectedRightRegionId
+      ?? context.expectedRegionIds?.at(-1)
+      ?? null;
     return proof.alternatives.length > 0
       && proof.alternatives.every((alternative) => forwardingObject(alternative)
         && String(alternative.relation ?? '') === 'must'
-        && forwardingAliasProofIsMust(alternative.proof, context, depth + 1));
+        && forwardingAliasProofIsMust(alternative.proof, {
+          ...context,
+          ...(expectedRightRegionId == null ? {} : {
+            expectedRegionIds: [expectedRightRegionId],
+            expectedRightRegionId,
+          }),
+        }, depth + 1));
   }
   return forwardingCanonicalAliasProofIsValid(proof, 'must', context);
 }
 
-function forwardingProofHasRightRegion(proof, expectedRegionId, depth = 0) {
+/*
+ * A MAY region result is a canonical disjunction, not permission to skip the
+ * region. The builder emits either one canonical MAY proof or an alternatives
+ * envelope when it combines source-region answers. Validate every alternative
+ * against the same artifact/load identity so a caller cannot relabel an
+ * unproven or unknown alternative as a safe MAY result.
+ */
+function forwardingAliasProofIsMay(proof, context = {}, depth = 0) {
   if (!forwardingObject(proof) || depth > 8) return false;
-  if (Array.isArray(proof.alternatives)) {
-    return proof.alternatives.some((alternative) =>
-      forwardingProofHasRightRegion(alternative?.proof, expectedRegionId, depth + 1));
+  if (!Array.isArray(proof.alternatives)) {
+    return forwardingCanonicalAliasProofIsValid(proof, 'may', context);
   }
-  return String(proof.provenance?.rightRegionId ?? '') === String(expectedRegionId ?? '');
+  if (proof.alternatives.length === 0) return false;
+  const relations = proof.alternatives.map((alternative) => String(alternative?.relation ?? ''));
+  if (relations.some((relation) => !['must', 'may', 'no'].includes(relation))) return false;
+  // An alternatives envelope must still describe a MAY result. In
+  // particular, an all-MUST/all-NO envelope cannot be relabeled by a caller.
+  if (relations.every((relation) => relation === 'must')
+      || relations.every((relation) => relation === 'no')) return false;
+  const expectedRightRegionId = context.expectedRightRegionId
+    ?? context.expectedRegionIds?.at(-1)
+    ?? null;
+  const alternativeContext = expectedRightRegionId == null ? context : {
+    ...context,
+    expectedRegionIds: [expectedRightRegionId],
+    expectedRightRegionId,
+  };
+  return proof.alternatives.every((alternative) => {
+    if (!forwardingObject(alternative)) return false;
+    if (alternative.relation === 'must') {
+      return forwardingAliasProofIsMust(alternative.proof, alternativeContext, depth + 1);
+    }
+    if (alternative.relation === 'no') {
+      return forwardingAliasProofIsNo(alternative.proof, alternativeContext, depth + 1);
+    }
+    return forwardingCanonicalAliasProofIsValid(alternative.proof, 'may', alternativeContext);
+  });
 }
 
-/* `read-reaches-write` combines every source-region view of the read with
- * every source-region view of the store. Each alternative is canonical, but
- * only one alternative needs to end at the selected reaching definition's
- * region. Validate all alternatives and require that selected endpoint. */
-function forwardingAliasProofIsMustAtReachingDefinition(proof, context, expectedRegionId) {
-  if (!forwardingObject(proof)) return false;
-  if (!Array.isArray(proof.alternatives)) {
-    return forwardingCanonicalAliasProofIsValid(proof, 'must', {
-      ...context,
-      expectedRightRegionId: expectedRegionId,
-    });
-  }
-  const alternativeContext = { ...context };
-  delete alternativeContext.expectedRegionIds;
-  delete alternativeContext.expectedRightRegionId;
-  return proof.alternatives.length > 0
-    && proof.alternatives.every((alternative) => forwardingObject(alternative)
-      && String(alternative.relation ?? '') === 'must'
-      && forwardingAliasProofIsMust(alternative.proof, alternativeContext))
-    && forwardingProofHasRightRegion(proof, expectedRegionId);
+function forwardingAliasProofIsMayOrMust(proof, relation, context = {}) {
+  if (relation === 'must') return forwardingAliasProofIsMust(proof, context);
+  if (relation === 'may') return forwardingAliasProofIsMay(proof, context);
+  return false;
 }
 
 function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
@@ -825,7 +858,7 @@ function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
       && expectedRegionId != null
       && String(proof.regionId ?? '') === String(expectedRegionId)
       && String(proof.functionId ?? '') === String(context.memorySsa?.functionId ?? '')
-      && String(proof.identityDigest ?? '') === canonicalIdentityDigest(context.memorySsa?.identity ?? null)
+      && String(proof.identityDigest ?? '') === stableDigest(context.memorySsa?.identity ?? null)
       && forwardingObject(proof.evidence)
       && proof.evidence.source === 'canonical-semantic-stack-root'
       && proof.evidence.root === 'canonical-stack-root'
@@ -842,49 +875,21 @@ function forwardingAliasProofIsNo(proof, context = {}, depth = 0) {
       });
   }
   if (Array.isArray(proof.alternatives)) {
+    const expectedRightRegionId = context.expectedRightRegionId
+      ?? context.expectedRegionIds?.at(-1)
+      ?? null;
     return proof.alternatives.length > 0
       && proof.alternatives.every((alternative) => forwardingObject(alternative)
         && String(alternative.relation ?? '') === 'no'
-        && forwardingAliasProofIsNo(alternative.proof, context, depth + 1));
+        && forwardingAliasProofIsNo(alternative.proof, {
+          ...context,
+          ...(expectedRightRegionId == null ? {} : {
+            expectedRegionIds: [expectedRightRegionId],
+            expectedRightRegionId,
+          }),
+        }, depth + 1));
   }
   return forwardingCanonicalAliasProofIsValid(proof, 'no', context);
-}
-
-/*
- * A MAY region result is a canonical disjunction, not permission to skip the
- * region.  The builder emits either one canonical MAY proof or an alternatives
- * envelope when it combined source-region answers.  Validate every
- * alternative against the same artifact/load identity so a caller cannot
- * relabel an unproven or unknown alternative as a safe MAY result.
- */
-function forwardingAliasProofIsMay(proof, context = {}, depth = 0) {
-  if (!forwardingObject(proof) || depth > 8) return false;
-  if (!Array.isArray(proof.alternatives)) {
-    return forwardingCanonicalAliasProofIsValid(proof, 'may', context);
-  }
-  if (proof.alternatives.length === 0) return false;
-  const relations = proof.alternatives.map((alternative) => String(alternative?.relation ?? ''));
-  if (relations.some((relation) => !['must', 'may', 'no'].includes(relation))) return false;
-  // An alternatives envelope must still describe a MAY result.  In
-  // particular, an all-MUST/all-NO envelope cannot be relabeled by a caller.
-  if (relations.every((relation) => relation === 'must')
-      || relations.every((relation) => relation === 'no')) return false;
-  return proof.alternatives.every((alternative) => {
-    if (!forwardingObject(alternative)) return false;
-    if (alternative.relation === 'must') {
-      return forwardingAliasProofIsMust(alternative.proof, context, depth + 1);
-    }
-    if (alternative.relation === 'no') {
-      return forwardingAliasProofIsNo(alternative.proof, context, depth + 1);
-    }
-    return forwardingCanonicalAliasProofIsValid(alternative.proof, 'may', context);
-  });
-}
-
-function forwardingAliasProofIsMayOrMust(proof, relation, context = {}) {
-  if (relation === 'must') return forwardingAliasProofIsMust(proof, context);
-  if (relation === 'may') return forwardingAliasProofIsMay(proof, context);
-  return false;
 }
 
 function forwardingRawRange(raw, domainFallback = null) {
@@ -1069,7 +1074,7 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
       || String(proof.sourceEntityId ?? '') !== String(definition.sourceEntityId ?? '')
       || !String(proof.valueId ?? '').trim()
       || String(proof.identity?.functionId ?? '') !== String(memorySsa.functionId ?? '')
-      || String(proof.identity?.digest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)
+      || String(proof.identity?.digest ?? '') !== stableDigest(memorySsa.identity ?? null)
       || !forwardingObject(proof.issuer)
       || proof.issuer.type !== 'canonical-semantic-value-provider'
       || String(proof.issuer.id ?? '') !== CANONICAL_STORE_VALUE_ISSUER
@@ -1255,7 +1260,43 @@ function forwardingCheckSourceNode(node, memory, role, { requireComplete = false
   }
 }
 
-function forwardingStatusFromArtifact(memorySsa, options) {
+/*
+ * Issue #8979: repeated load-forwarding queries over the same immutable
+ * producer artifact must not re-digest the whole Semantic IR, re-verify the
+ * canonical MemorySSA digest, re-run full validation, or rebuild the
+ * access-metadata / use / region indexes for every load.  The cache below is
+ * WeakMap-keyed by the exact deep-frozen canonical producer artifact, so a
+ * caller-owned mutable or cloned object can never receive or serve a cached
+ * precomputation.  The first query over an (artifact, ir, check-shape) tuple
+ * performs the full gate and validation; later identical-identity queries
+ * reuse the verified result and the artifact-derived views.  Every guard the
+ * full path checks is either a property of the frozen artifact itself (stable
+ * across calls by construction) or part of the cached key, so bypassing the
+ * re-derivation cannot accept a stale, tampered, or mismatched context.
+ */
+const forwardingPrecomputations = new WeakMap();
+const NO_FORWARDING_CFG = Symbol('memoryssa-forwarding-no-cfg');
+
+function forwardingGateOptionKey(options) {
+  if (Object.hasOwn(options, 'currentIdentity')) return null;
+  let snapshotPart;
+  try {
+    snapshotPart = options.snapshotId == null ? '\u0000s' : `s${String(snapshotIdIdentity(options.snapshotId))}`;
+  } catch {
+    return null;
+  }
+  return [
+    options.functionId == null ? '\u0000f' : `f${String(options.functionId)}`,
+    snapshotPart,
+    options.memorySsaBuildVersion == null ? '\u0000b' : `b${String(options.memorySsaBuildVersion)}`,
+  ].join('|');
+}
+
+function forwardingValidationBudgetKey(options) {
+  return options.validationBudget == null ? '\u0000default' : String(options.validationBudget);
+}
+
+function forwardingStatusFromArtifactFull(memorySsa, options) {
   if (options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
   const deadlineMs = forwardingDeadlineMs(options);
   if (deadlineMs != null && Date.now() >= deadlineMs) {
@@ -1325,8 +1366,11 @@ function forwardingStatusFromArtifact(memorySsa, options) {
   if (options.functionId != null && String(artifact.functionId) !== String(options.functionId)) {
     throw new ForwardingStop('stale', 'memoryssa-stale-function');
   }
+  // Exact canonical token comparison. `String()` on either side let a structured
+  // snapshot (`['S-1']`, a custom `toString()` object) match the primitive id it
+  // coerced to, so a stale artifact passed the ownership/staleness boundary (#8804).
   if (artifact.snapshotId != null && options.snapshotId != null
-      && String(artifact.snapshotId) !== String(options.snapshotId)) {
+      && snapshotIdIdentity(artifact.snapshotId) !== snapshotIdIdentity(options.snapshotId)) {
     throw new ForwardingStop('stale', 'memoryssa-stale-snapshot');
   }
   if (options.memorySsaBuildVersion != null
@@ -1354,7 +1398,8 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     if (artifact.functionId == null || String(identity.functionId) !== String(artifact.functionId)) {
       throw new ForwardingStop('stale', 'memoryssa-identity-function-mismatch');
     }
-    if (artifact.snapshotId == null || String(identity.snapshotId) !== String(artifact.snapshotId)) {
+    if (artifact.snapshotId == null
+        || snapshotIdIdentity(identity.snapshotId) !== snapshotIdIdentity(artifact.snapshotId)) {
       throw new ForwardingStop('stale', 'memoryssa-identity-snapshot-mismatch');
     }
     if (artifact.buildVersion != null && String(identity.memorySsaBuildVersion) !== String(artifact.buildVersion)) {
@@ -1385,12 +1430,12 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     if (!forwardingObject(options.ir)
         || String(options.ir.functionId ?? '') !== String(artifact.functionId)
         || String(options.ir.contractVersion ?? '') !== String(identity.semanticIrContractVersion)
-        || semanticIrDigestForArtifact(artifact, options.ir) !== String(identity.semanticIrDigest)) {
+        || stableDigest(options.ir) !== String(identity.semanticIrDigest)) {
       throw new ForwardingStop('stale', 'memoryssa-canonical-ir-identity-mismatch');
     }
   }
   if (typeof artifact.canonicalDigest !== 'string' || !artifact.canonicalDigest.trim()
-      || artifact.canonicalDigest !== canonicalMemorySsaProducerDigest(artifact)) {
+      || artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact)) {
     throw new ForwardingStop('stale', 'memoryssa-canonical-digest-mismatch');
   }
   // The artifact's serialized identity is not an authority for itself. Exact
@@ -1406,8 +1451,57 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     const currentIdentity = options.currentIdentity;
     if (!forwardingObject(currentIdentity)
         || currentIdentity === artifact.identity
-        || stableDigest(currentIdentity) !== canonicalIdentityDigest(artifact.identity)) {
+        || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
       throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
+    }
+  }
+}
+
+function forwardingStatusFromArtifact(memorySsa, options) {
+  const canonicalArtifact = forwardingObject(memorySsa)
+    && isCanonicalMemorySsaProducerArtifact(memorySsa)
+    && Object.isFrozen(memorySsa);
+  const ir = options.ir;
+  const irCacheable = ir == null || (forwardingObject(ir) && Object.isFrozen(ir));
+  const gateKey = canonicalArtifact && irCacheable && !options.skipValidation
+    && options.accessMetadata == null
+    && options.consumerId === CANONICAL_MEMORY_FORWARDING_CONSUMER
+    && options.purpose === CANONICAL_MEMORY_FORWARDING_PURPOSE
+    ? forwardingGateOptionKey(options) : null;
+  if (gateKey != null) {
+    if (options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
+    const deadlineMs = forwardingDeadlineMs(options);
+    if (deadlineMs != null && Date.now() >= deadlineMs) {
+      throw new ForwardingStop('budget-limited', 'memory-forwarding-deadline-exhausted');
+    }
+    const pre = forwardingPrecomputations.get(memorySsa);
+    if (pre != null && pre.gateKey === gateKey && pre.gateOk
+      && (ir == null ? pre.irNullOk : (pre.irOk != null && pre.irOk.has(ir)))) {
+      return;
+    }
+  }
+  forwardingStatusFromArtifactFull(memorySsa, options);
+  if (gateKey != null) {
+    let pre = forwardingPrecomputations.get(memorySsa);
+    if (pre == null || pre.gateKey !== gateKey || !pre.gateOk) {
+      pre = {
+        gateKey,
+        gateOk: true,
+        irNullOk: false,
+        irOk: null,
+        useIndex: null,
+        regionById: null,
+        metadataIndex: null,
+        validatedOk: false,
+        validatedCfg: null,
+        validatedBudget: null,
+      };
+      forwardingPrecomputations.set(memorySsa, pre);
+    }
+    if (ir == null) pre.irNullOk = true;
+    else {
+      if (pre.irOk == null) pre.irOk = new WeakSet();
+      pre.irOk.add(ir);
     }
   }
 }
@@ -1563,12 +1657,12 @@ function forwardingAccessProofIsCanonical(proof, metadata, memory, memorySsa = n
     && typeof issuer.version === 'string' && issuer.version === MEMORY_SSA_PROOF_VERSION
     && forwardingObject(proof.identity)
     && String(proof.identity.functionId ?? '') === String(memorySsa?.functionId ?? '')
-    && String(proof.identity.digest ?? '') === canonicalIdentityDigest(memorySsa?.identity ?? null)
+    && String(proof.identity.digest ?? '') === stableDigest(memorySsa?.identity ?? null)
     && forwardingObject(provenance)
     && String(provenance.functionId ?? '') === String(memorySsa?.functionId ?? '')
     && String(provenance.sourceEntityId ?? '') === String(sourceId)
     && metadata?.origin != null
-    && String(provenance.sourceOriginDigest ?? '') === canonicalProducerValueDigest(metadata.origin)
+    && String(provenance.sourceOriginDigest ?? '') === stableDigest(metadata.origin)
     && typeof proof.architectureId === 'string' && proof.architectureId.trim().length > 0
     && typeof proof.family === 'string' && proof.family.trim().length > 0
     && Number(proof.widthBits) === forwardingWidthBits(memory)
@@ -1588,7 +1682,7 @@ function forwardingAccessProofIsCanonical(proof, metadata, memory, memorySsa = n
     && (memory.ordering == null || memory.ordering === 'unknown')
     && forwardingObject(proof.evidence)
     && typeof proof.evidence.source === 'string' && proof.evidence.source.trim().length > 0
-    && String(proof.evidence.memoryAccessDigest ?? '') === canonicalProducerValueDigest(memory)
+    && String(proof.evidence.memoryAccessDigest ?? '') === stableDigest(memory)
     && String(proof.proofDigest ?? '') === canonicalAccessProofDigest(proof);
   return valid;
 }
@@ -1679,7 +1773,7 @@ function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage,
       optionsIdentity: options.currentIdentity ?? null,
       consumerId: options.consumerId ?? null,
       purpose: options.purpose ?? null,
-      canonicalIrDigest: options.ir == null ? null : semanticIrDigestForArtifact(memorySsa, options.ir),
+      canonicalIrDigest: options.ir == null ? null : stableDigest(options.ir),
     }),
     functionId: memorySsa.functionId,
     snapshotId: memorySsa.snapshotId ?? options.snapshotId ?? null,
@@ -1704,7 +1798,7 @@ function forwardingCapabilityDetails(artifact, use, context, options) {
     loadNodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
     loadEntityId: String(context.useMeta?.memorySsaEntityId ?? use.id),
     loadRegionId: String(use.regionId ?? ''),
-    snapshotId: artifact.snapshotId == null ? null : String(artifact.snapshotId),
+    snapshotId: artifact.snapshotId == null ? null : snapshotIdIdentity(artifact.snapshotId),
     consumerId: options.consumerId,
     purpose: options.purpose,
   };
@@ -1716,7 +1810,7 @@ function forwardingRegisterExactFact(fact, artifact, use, context) {
     artifact,
     useId: String(use.id),
     sourceEntityId: String(use.sourceEntityId ?? ''),
-    snapshotId: String(artifact.snapshotId ?? ''),
+    snapshotId: snapshotIdIdentity(artifact.snapshotId) ?? '',
     artifactDigest: String(fact.artifactDigest ?? ''),
     identityDigest: String(fact.identity?.digest ?? ''),
     nodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
@@ -1752,7 +1846,7 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
       || expected.consumerId !== binding.consumerId
       || expected.purpose !== binding.purpose
       || String(expected.artifactDigest ?? '') !== binding.artifactDigest
-      || String(expected.snapshotId ?? '') !== binding.snapshotId
+      || (snapshotIdIdentity(expected.snapshotId) ?? '') !== binding.snapshotId
       || String(expected.useId ?? '') !== binding.useId
       || String(expected.sourceEntityId ?? '') !== binding.sourceEntityId
       || String(expected.nodeId ?? '') !== binding.nodeId
@@ -1763,8 +1857,8 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
     if (!forwardingObject(artifact)
         || !isCanonicalMemorySsaProducerArtifact(artifact)
         || String(artifact.canonicalDigest ?? '') !== binding.artifactDigest
-        || String(canonicalMemorySsaProducerDigest(artifact)) !== binding.artifactDigest
-        || String(artifact.snapshotId ?? '') !== binding.snapshotId
+        || String(canonicalMemorySsaDigest(artifact)) !== binding.artifactDigest
+        || (snapshotIdIdentity(artifact.snapshotId) ?? '') !== binding.snapshotId
         || String(fact.artifactDigest ?? '') !== binding.artifactDigest
         || String(fact.identity?.digest ?? '') !== binding.identityDigest
         || String(fact.useId ?? '') !== binding.useId
@@ -1885,7 +1979,8 @@ function forwardingExactOperand(stores, context, state) {
   const overlapping = stores.filter((store) => forwardingOverlap(store.range, context.loadRange));
   if (overlapping.length !== 1) return null;
   const [store] = overlapping;
-  if (store.storeWidthBits !== context.loadWidthBits
+  if (store.value?.value != null
+      || store.storeWidthBits !== context.loadWidthBits
       || store.range.domain !== context.loadRange.domain
       || store.range.start !== context.loadRange.start
       || store.range.end !== context.loadRange.end
@@ -1894,7 +1989,7 @@ function forwardingExactOperand(stores, context, state) {
   return store;
 }
 
-function forwardingLoadContext(memorySsa, use, options, metadataById, regionById, sourceById) {
+function forwardingLoadContext(memorySsa, use, options, metadataById, regionById, sourceById, { requireAliasProof = true } = {}) {
   const useMeta = metadataById.get(String(use.id));
   if (!useMeta || useMeta.entityKind !== 'use' || useMeta.regionId !== String(use.regionId)
       || useMeta.sourceKind !== 'load' || useMeta.role !== 'read' || useMeta.broad === true) {
@@ -1928,18 +2023,18 @@ function forwardingLoadContext(memorySsa, use, options, metadataById, regionById
   if (!loadRange) throw new ForwardingStop('unknown', 'memory-forwarding-load-range-unproven');
   forwardingCheckRangeWidth(loadRange, loadWidthBits, 'memory-forwarding-load-range-width-mismatch');
   forwardingCheckRangeBinding(loadRange, loadRegion, loadMemory, useMeta, loadSource, use.sourceEntityId, 'load');
-  if (use.aliasRelation !== 'must') throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-unproven');
-  if (useMeta.aliasRelation !== 'must') {
-    throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-proof-unproven');
-  }
-  const reachingDefinition = (memorySsa.definitions ?? [])
-    .find((definition) => String(definition?.id ?? '') === String(use.reachingDefinitionId ?? ''));
-  const reachingRegionId = reachingDefinition?.regionId ?? use.regionId;
-  if (!forwardingAliasProofIsMustAtReachingDefinition(useMeta.aliasProof, {
-    memorySsa,
-    expectedSourceEntityIds: [use.sourceEntityId],
-  }, reachingRegionId)) {
-    throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-proof-missing');
+  if (requireAliasProof) {
+    if (use.aliasRelation !== 'must') throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-unproven');
+    if (useMeta.aliasRelation !== 'must') {
+      throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-proof-unproven');
+    }
+    if (!forwardingAliasProofIsMust(useMeta.aliasProof, {
+      memorySsa,
+      expectedRegionIds: [use.regionId],
+      expectedSourceEntityIds: [use.sourceEntityId],
+    })) {
+      throw new ForwardingStop('unknown', 'memory-forwarding-load-alias-proof-missing');
+    }
   }
   return { useMeta, loadSource, loadMemory, loadWidthBits, loadRegion, loadRange };
 }
@@ -1978,7 +2073,7 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
       || String(proof.regionId ?? '') !== String(use.regionId ?? '')
       || expectedBuildVersion == null
       || String(proof.buildVersion ?? '') !== String(expectedBuildVersion)
-      || String(proof.identityDigest ?? '') !== canonicalIdentityDigest(memorySsa.identity ?? null)) {
+      || String(proof.identityDigest ?? '') !== stableDigest(memorySsa.identity ?? null)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-coverage-proof-invalid');
   }
   const proofRange = forwardingRawRange(proof.loadRange, context.loadRange.domain);
@@ -2003,7 +2098,7 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
       if (!forwardingAliasProofIsMust(item.aliasProof, {
         memorySsa,
         expectedUseId: use.id,
-        expectedRegionIds: [regionId],
+        expectedRegionIds: [use.regionId, regionId],
         expectedRightRegionId: regionId,
         expectedSourceEntityIds: [use.sourceEntityId],
       })) {
@@ -2023,7 +2118,7 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
       if (!forwardingAliasProofIsNo(item.aliasProof, {
         memorySsa,
         expectedUseId: use.id,
-        expectedRegionIds: [regionId],
+        expectedRegionIds: [use.regionId, regionId],
         expectedRightRegionId: regionId,
         expectedSourceEntityIds: [use.sourceEntityId],
       })) {
@@ -2078,56 +2173,6 @@ function forwardingCoverageStateForUse(memorySsa, use, context, coverage, state)
   }));
 }
 
-/*
- * Operand identity is queried for one current load. Other loads still belong
- * to the authenticated producer index, but an unrelated unresolved PHI must
- * not become a hidden operand fallback's acceptance authority. Check their
- * row/index shape and identity bindings here; the selected row receives the
- * complete alias/range/definition proof above.
- */
-function forwardingCoverageRowShapeForUse(memorySsa, use, coverage) {
-  if (!forwardingObject(coverage)
-      || String(coverage.useId ?? '') !== String(use.id)
-      || String(coverage.nodeId ?? '') !== String(use.sourceEntityId ?? '')
-      || String(coverage.regionId ?? '') !== String(use.regionId ?? '')
-      || !['complete', 'partial'].includes(String(coverage.coverageState ?? ''))
-      || !Array.isArray(coverage.regionAliasStates)
-      || coverage.regionAliasStates.length !== (memorySsa.regions ?? []).length
-      || !Array.isArray(coverage.regionStates)) return false;
-  const regionIds = new Set((memorySsa.regions ?? []).map((region) => String(region?.id ?? '')));
-  const aliasIds = new Set();
-  for (const item of coverage.regionAliasStates) {
-    const regionId = String(item?.regionId ?? '');
-    if (!regionId || !regionIds.has(regionId) || aliasIds.has(regionId)
-        || !['must', 'may', 'no'].includes(String(item.aliasRelation ?? ''))) return false;
-    aliasIds.add(regionId);
-  }
-  if (aliasIds.size !== regionIds.size) return false;
-  const stateIds = new Set();
-  for (const item of coverage.regionStates) {
-    const regionId = String(item?.regionId ?? '');
-    if (!regionId || !regionIds.has(regionId) || stateIds.has(regionId)
-        || !['must', 'may'].includes(String(item.aliasRelation ?? ''))) return false;
-    stateIds.add(regionId);
-    if (item.definitionId != null && !String(item.definitionId).trim()) return false;
-  }
-  const proof = coverage.proof;
-  const expectedBuildVersion = memorySsa.buildVersion
-    ?? memorySsa.identity?.memorySsaBuildVersion
-    ?? null;
-  return forwardingObject(proof)
-    && proof.kind === 'memoryssa-byte-state'
-    && String(proof.version ?? '') === MEMORY_SSA_PROOF_VERSION
-    && String(proof.functionId ?? '') === String(memorySsa.functionId ?? '')
-    && String(proof.useId ?? '') === String(use.id)
-    && String(proof.nodeId ?? '') === String(use.sourceEntityId ?? '')
-    && String(proof.regionId ?? '') === String(use.regionId ?? '')
-    && expectedBuildVersion != null
-    && String(proof.buildVersion ?? '') === String(expectedBuildVersion)
-    && String(proof.identityDigest ?? '') === canonicalIdentityDigest(memorySsa.identity ?? null)
-    && (coverage.loadRange == null || forwardingObject(coverage.loadRange));
-}
-
 function forwardingCoverageStates(memorySsa, use, context, options, state, metadataById, regionById, sourceById) {
   if (!Array.isArray(memorySsa.byteCoverage)) {
     // Without the producer's complete cross-region index there is no proof
@@ -2150,15 +2195,13 @@ function forwardingCoverageStates(memorySsa, use, context, options, state, metad
     seenUseIds.add(coverageUseId);
     const coverageUse = usesById.get(coverageUseId);
     if (!coverageUse) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-use-missing');
-    if (options.requireOperand === true && coverageUseId !== String(use.id)) {
-      if (!forwardingCoverageRowShapeForUse(memorySsa, coverageUse, coverage)) {
-        throw new ForwardingStop('unknown', 'memory-forwarding-coverage-row-malformed');
-      }
-      continue;
-    }
     const coverageContext = coverageUseId === String(use.id)
       ? context
-      : forwardingLoadContext(memorySsa, coverageUse, options, metadataById, regionById, sourceById);
+      // A cross-region coverage row is a producer index, not a second exact
+      // forwarding request. Its load alias may be unknown while the selected
+      // use remains exact; validate the row's own region proofs below without
+      // requiring that unrelated use to pass the primary alias gate.
+      : forwardingLoadContext(memorySsa, coverageUse, options, metadataById, regionById, sourceById, { requireAliasProof: false });
     const states = forwardingCoverageStateForUse(memorySsa, coverageUse, coverageContext, coverage, state);
     if (coverageUseId === String(use.id)) selectedStates = states;
   }
@@ -2170,7 +2213,7 @@ function regionByIdForCoverage(memorySsa, regionId) {
   return (memorySsa.regions ?? []).some((region) => String(region.id) === regionId);
 }
 
-function forwardingCollect(memorySsa, use, context, options, metadataById, regionById, sourceById, state, definitionsById = null) {
+function forwardingCollect(memorySsa, use, context, options, metadataById, regionById, sourceById, state) {
   const states = forwardingCoverageStates(
     memorySsa,
     use,
@@ -2181,14 +2224,12 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
     regionById,
     sourceById,
   );
-  const definitions = definitionsById
-    ?? new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+  const definitions = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
   if (!states.every((item) => item.regionId && item.definitionId)) {
     throw new ForwardingStop('unknown', 'memory-forwarding-region-state-malformed');
   }
   const seenRegions = new Set();
   const stores = [];
-  const storeKeys = new Set();
   const visitedByRegion = new Set();
   for (const stateItem of states) {
     forwardingScanTick(state);
@@ -2219,7 +2260,6 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
     const region = regionById.get(stateItem.regionId);
     if (!region) throw new ForwardingStop('unknown', 'memory-forwarding-state-region-missing');
     const chainInfo = forwardingDefinitionChain(memorySsa, stateItem.definitionId, state);
-    let sawConcreteDefinition = false;
     let priorStoreOrder = null;
     for (let index = 0; index < chainInfo.chain.length; index++) {
       forwardingScanTick(state);
@@ -2238,7 +2278,6 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
       // would reject every otherwise valid definition chain before reaching
       // the proven stores.
       if (definition.kind === 'entry') continue;
-      sawConcreteDefinition = true;
       const memory = forwardingAccessFromMetadata(metadata, source);
       if (source) {
         const sourceMemory = forwardingSourceAccess(source);
@@ -2264,71 +2303,7 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
         // on an ordinary definition is equally unproven and must fail closed.
         throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-range-unproven`);
       }
-      const overlapsLoad = forwardingOverlap(range, context.loadRange);
-      if (!overlapsLoad) {
-        if (stateMay) {
-          // A MAY region can be discharged only by a fully authenticated,
-          // ordinary precise store whose canonical range is disjoint.  A
-          // barrier, entry state, or malformed store cannot be hidden behind
-          // the disjointness claim.
-          if ((MEMORY_BARRIER_KINDS.has(definition.kind) && definition.kind !== 'may-alias-clobber')
-              || !['memory-def', 'may-alias-clobber'].includes(String(definition.kind))) {
-            throw new ForwardingStop('unknown', 'memory-forwarding-may-region-definition-unproven');
-          }
-          const definitionRelation = definition.kind === 'memory-def' ? 'must' : 'may';
-          const definitionProofValid = definitionRelation === 'must'
-            ? definition.aliasRelation === 'must'
-              && forwardingObject(definition.proof)
-              && definition.proof.kind === 'must-alias-memory-write'
-              && String(definition.proof.version ?? '') === MEMORY_SSA_PROOF_VERSION
-              && definition.proof.aliasRelation === 'must'
-              && forwardingAliasProofIsMust(definition.proof.providerProof, {
-                memorySsa,
-                expectedRegionIds: [stateItem.regionId, stateItem.regionId],
-                expectedSourceEntityIds: [definition.sourceEntityId],
-              })
-            : definition.aliasRelation === 'may'
-              && forwardingObject(definition.proof)
-              && definition.proof.kind === 'conservative-memory-clobber'
-              && String(definition.proof.version ?? '') === MEMORY_SSA_PROOF_VERSION
-              && definition.proof.aliasRelation === 'may'
-              && forwardingAliasProofIsMay(definition.proof.providerProof, {
-                memorySsa,
-                expectedRegionIds: [stateItem.regionId, stateItem.regionId],
-                expectedSourceEntityIds: [definition.sourceEntityId],
-              });
-          if (!definitionProofValid
-              || !metadata
-              || metadata.entityKind !== 'definition'
-              || metadata.regionId !== String(definition.regionId)
-              || metadata.sourceKind !== 'store'
-              || metadata.role !== 'write'
-              || metadata.broad === true
-              || metadata.aliasRelation !== definitionRelation
-              || !forwardingAliasProofIsMayOrMust(metadata.aliasProof, definitionRelation, {
-                memorySsa,
-                expectedRegionIds: [stateItem.regionId],
-                expectedSourceEntityIds: [metadata.sourceEntityId],
-              })) {
-            throw new ForwardingStop('unknown', 'memory-forwarding-may-region-store-proof-unproven');
-          }
-          forwardingCheckSourceBinding(metadata, definition.sourceEntityId, 'store');
-          const disjointStoreWidthBits = forwardingCheckAccess(memory, 'store', metadata, memorySsa);
-          forwardingCheckRangeWidth(range, disjointStoreWidthBits, 'memory-forwarding-store-range-width-mismatch');
-          forwardingCheckRangeBinding(range, region, memory, metadata, source, definition.sourceEntityId, 'store');
-          if (String(definition.id) === String(stateItem.definitionId)
-              && (!Number.isSafeInteger(stateItem.order) || stateItem.order !== metadata.order)) {
-            throw new ForwardingStop('unknown', 'memory-forwarding-store-order-unproven');
-          }
-        }
-        continue;
-      }
-      if (stateMay) {
-        // The region identity is only MAY-related to this load.  Any write
-        // whose canonical bytes overlap therefore remains an unresolved
-        // clobber, even when its local definition is otherwise a must store.
-        throw new ForwardingStop('unknown', 'memory-forwarding-may-region-overlap');
-      }
+      if (!forwardingOverlap(range, context.loadRange)) continue;
       if (MEMORY_BARRIER_KINDS.has(definition.kind)) {
         throw new ForwardingStop('unknown', `memory-forwarding-${definition.kind}-barrier`);
       }
@@ -2374,35 +2349,15 @@ function forwardingCollect(memorySsa, use, context, options, metadataById, regio
         throw new ForwardingStop('unknown', 'memory-forwarding-store-order-conflict');
       }
       priorStoreOrder = order;
-      // A single Semantic IR store may be represented by one MemorySSA
-      // definition per canonical region view. Validate each view above, then
-      // count the same source/access/range once for byte assignment; otherwise
-      // equivalent region views look like two same-order writes and force an
-      // unnecessary unknown result.
-      const storeKey = stableStringify({
-        sourceEntityId: definition.sourceEntityId,
-        accessIndex: metadata.accessIndex,
-        range: {
-          domain: range.domain,
-          start: range.start.toString(),
-          end: range.end.toString(),
-        },
+      stores.push({
+        definition,
+        metadata,
+        source,
+        range,
+        value,
+        storeWidthBits,
+        order,
       });
-      if (!storeKeys.has(storeKey)) {
-        storeKeys.add(storeKey);
-        stores.push({
-          definition,
-          metadata,
-          source,
-          range,
-          value,
-          storeWidthBits,
-          order,
-        });
-      }
-    }
-    if (stateMay && !sawConcreteDefinition) {
-      throw new ForwardingStop('unknown', 'memory-forwarding-may-region-entry-unproven');
     }
   }
   return stores;
@@ -2462,25 +2417,40 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
   try {
     const session = forwardingSessionFor(memorySsa, options);
     if (session) forwardingStatusFromSession(session, options);
-    else forwardingStatusFromArtifact(memorySsa, options);
-    const validated = session ? null : validateMemorySsa(memorySsa, {
-      signal: options.signal,
-      budget: options.validationBudget,
-      cfg: options.cfg,
-    });
+    forwardingStatusFromArtifact(memorySsa, options);
+    const pre = forwardingObject(memorySsa) && isCanonicalMemorySsaProducerArtifact(memorySsa)
+      && Object.isFrozen(memorySsa)
+      ? forwardingPrecomputations.get(memorySsa) : null;
+    const validationKey = forwardingValidationBudgetKey(options);
+    const validationCfg = options.cfg ?? NO_FORWARDING_CFG;
+    let validated;
+    if (pre != null && pre.validatedOk && pre.validatedCfg === validationCfg
+        && pre.validatedBudget === validationKey) {
+      validated = memorySsa;
+    } else {
+      validated = validateMemorySsa(memorySsa, {
+        signal: options.signal,
+        budget: options.validationBudget,
+        cfg: options.cfg,
+      });
+      if (pre != null) {
+        pre.validatedOk = true;
+        pre.validatedCfg = validationCfg;
+        pre.validatedBudget = validationKey;
+      }
+    }
     // Preserve the producer-published object when validation succeeds.  The
     // validator may return a normalized overlay, but that new object must not
     // silently lose the private producer binding required for exactness.
     const artifact = isCanonicalMemorySsaProducerArtifact(memorySsa)
       ? memorySsa
       : (validated ?? memorySsa);
+    if (pre != null && pre.useIndex == null && artifact === memorySsa && Array.isArray(artifact.uses)) {
+      pre.useIndex = new Map(artifact.uses.map((use) => [use.id, use]));
+    }
     const use = useOrId && typeof useOrId === 'object'
-      ? (session
-        ? CanonicalMemoryForwardingSession.usesById(session).get(String(useOrId.id ?? ''))
-        : useMap(artifact).get(String(useOrId.id ?? '')))
-      : (session
-        ? CanonicalMemoryForwardingSession.usesById(session).get(String(useOrId))
-        : useFrom(artifact, useOrId));
+      ? (pre != null && pre.useIndex != null ? pre.useIndex : useMap(artifact)).get(String(useOrId.id ?? ''))
+      : useFrom(artifact, useOrId);
     if (!use || typeof use !== 'object') throw new ForwardingStop('unknown', 'memory-forwarding-use-missing');
     const definitions = Array.isArray(artifact.definitions) ? artifact.definitions : null;
     const uses = Array.isArray(artifact.uses) ? artifact.uses : null;
@@ -2493,31 +2463,26 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       iterations: 0,
       maxDefinitions: forwardingPositiveInteger(options.budget?.maxDefinitions ?? 262144, 'memory-forwarding-invalid-definition-budget'),
       maxBytes: forwardingPositiveInteger(options.budget?.maxBytes ?? options.budget?.maxWorkItems ?? 1048576, 'memory-forwarding-invalid-byte-budget'),
-      maxIterations: forwardingPositiveInteger(options.maxIterations ?? options.budget?.maxIterations ?? DEFAULT_FORWARDING_MAX_ITERATIONS, 'memory-forwarding-invalid-iteration-budget'),
+      maxIterations: forwardingPositiveInteger(options.maxIterations ?? options.budget?.maxIterations ?? 4194304, 'memory-forwarding-invalid-iteration-budget'),
       deadlineMs: forwardingDeadlineMs(options),
     };
-    const regionById = session
-      ? CanonicalMemoryForwardingSession.regionsById(session)
-      : new Map(regions.map((region) => [String(region.id), region]));
-    const metadataById = session
-      ? CanonicalMemoryForwardingSession.metadataById(session)
-      : forwardingMetadataIndex(artifact, state);
     const sourceById = forwardingSourceMap(options);
+    if (pre != null && artifact === memorySsa) {
+      if (pre.regionById == null) {
+        pre.regionById = new Map(regions.map((region) => [String(region.id), region]));
+      }
+      if (pre.metadataIndex == null) {
+        pre.metadataIndex = forwardingMetadataIndex(artifact, state);
+      }
+    }
+    const regionById = pre != null && pre.regionById != null ? pre.regionById : new Map(regions.map((region) => [String(region.id), region]));
+    const metadataById = pre != null && pre.metadataIndex != null
+      ? pre.metadataIndex
+      : forwardingMetadataIndex(artifact, state);
     context = forwardingLoadContext(artifact, use, options, metadataById, regionById, sourceById);
-    const stores = forwardingCollect(
-      artifact,
-      use,
-      context,
-      options,
-      metadataById,
-      regionById,
-      sourceById,
-      state,
-      session ? CanonicalMemoryForwardingSession.definitionsById(session) : null,
-    );
+    const stores = forwardingCollect(artifact, use, context, options, metadataById, regionById, sourceById, state);
     const operandStore = forwardingExactOperand(stores, context, state);
-    if (operandStore && (options.requireOperand === true
-      || operandStore.value?.value == null)) {
+    if (operandStore) {
       const coverage = Array.isArray(artifact.byteCoverage)
         ? artifact.byteCoverage.find((item) => String(item.useId) === String(use.id))
         : null;
@@ -2639,7 +2604,9 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
 export const reconstructMemoryValue = forwardMemoryValue;
 
 export function memoryUsesOfDefinition(memorySsa, definitionOrId) {
-  const definitionId = typeof definitionOrId === 'object' ? definitionOrId.id : String(definitionOrId);
+  const definitionId = typeof definitionOrId === 'object' && definitionOrId
+    ? validId(definitionOrId.id, 'memory-ssa-query-definition-id-required')
+    : validId(definitionOrId, 'memory-ssa-query-definition-id-required');
   const byId = useMap(memorySsa);
   const indexed = memorySsa.defUseLinks?.find((link) => link.definitionId === definitionId)?.useIds;
   const useIds = indexed ?? memorySsa.uses

@@ -75,4 +75,49 @@ const emptyContext = () => ({ candidateFunctions: [], analyze: async (id) => ({ 
   assert.ok(!result.missingEvidence.includes('timeout'), 'wall forward jump must not time out a fresh run');
 }
 
+// The final deterministic planner must receive only the time left after a
+// model fallback. A real delayed search provider makes that budget observable:
+// a wall-clock-only calculation would grant the full 100ms and complete it.
+{
+  let t = 1000;
+  let searchStarted = 0;
+  let searchCompleted = 0;
+  let searchAborted = 0;
+  const result = await withWallClock(0, () => runAgent({
+    goal: 'read ad',
+    context: {
+      candidateFunctions: [],
+      analyze: async () => ({ instructions: [] }),
+      searchFunctions: (_term, options = {}) => {
+        searchStarted++;
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            searchCompleted++;
+            resolve({ results: [], complete: true });
+          }, 50);
+          options.signal?.addEventListener('abort', () => {
+            searchAborted++;
+            clearTimeout(timer);
+          }, { once: true });
+        });
+      },
+    },
+    timeoutMs: 100,
+    maxToolCalls: 32,
+    monotonicNow: () => t,
+    llm: {
+      async next() {
+        t += 80;
+        return { tool: 'invalid_tool_for_final_planner_test', args: [] };
+      },
+    },
+  }));
+  assert.equal(searchStarted, 1, 'final planner must enter the real search provider path');
+  assert.equal(searchAborted, 1, 'final planner must abort the provider at the remaining deadline');
+  assert.equal(searchCompleted, 0, 'final planner must not receive the full original timeout');
+  assert.equal(result.plan?.partial, true, 'final planner must report a remaining-budget cutoff');
+  assert.equal(result.plan?.exhausted, true, 'final planner must expose the exhausted budget');
+  assert.ok(result.plan?.missingEvidence.includes('timeout'), 'planner timeout must be observable in its result');
+}
+
 console.log('stage2 agent-monotonic-clock-6086: PASS');

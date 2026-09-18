@@ -154,10 +154,12 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
 
   const probe = provider.probe();
   assert.equal(probe.authoritative, true);
-  assert.equal(probe.completeness.complete, true);
+  assert.equal(probe.completeness.complete, false);
   assert.equal(probe.completeness.parsed, 2);
+  assert.deepEqual(probe.completeness.reasons, ['go-runtime-types-unscanned']);
   assert.equal(probe.identity.toolchainVersion, 'go1.20+');
-  assert.equal(probe.identity.verdict, 'matched-authoritative');
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.deepEqual(probe.identity.coverage?.recordKinds, ['symbol']);
 
   const syms = provider.symbols();
   assert.equal(syms.records.length, 2);
@@ -383,7 +385,7 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
   typeBuf[22] = 8; // fieldAlign
   typeBuf[23] = 25; // struct
 
-  const desc = parseGoTypeDescriptor(typeBuf, 0, { ptrSize: 8, little: true });
+  const desc = parseGoTypeDescriptor(typeBuf, 0, { ptrSize: 8, little: true, version: '1.23.2' });
   assert.equal(desc.kind, 'struct');
   assert.equal(desc.size, 24);
   assert.equal(desc.ptrdata, 8);
@@ -392,3 +394,12 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
 
 assert.equal(GO_PCLNTAB_MAGICS[0xfffffff1].version, '1.20+');
 console.log('Go Metadata Provider tests passed.');
+
+// Keep focused Go regressions in the required metadata:test denominator.
+await import('./issue-5373-go-name-uvarint-overflow.mjs');
+await import('./issue-4875-go-abi-type-str-offset.mjs');
+await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');
+
+await import('./issue-5347-go-rtype-nameoff.test.mjs');
+
+await import('./issue-7879-go-runtime-types-completeness.mjs');

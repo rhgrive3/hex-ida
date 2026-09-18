@@ -50,7 +50,7 @@ const wasmBundles = [
     consumedValues: [{ id: 'table_idx', bits: 32 }],
     callEffects: [{ dispatchKind: 'indirect', unresolved: true }],
     completeness: 'partial',
-    unknownEffects: [{ reason: 'indirect-call-target-unknown', categories: ['control'] }],
+    unknownEffects: [{ category: 'control', reason: 'indirect-call-target-unknown' }],
   }),
   // host_import call (external boundary)
   createVMEffectBundle({
@@ -61,7 +61,7 @@ const wasmBundles = [
     mnemonic: 'call',
     callEffects: [{ target: 'env.imported_api', dispatchKind: 'host-import', unresolved: true }],
     completeness: 'partial',
-    unknownEffects: [{ reason: 'external-host-call', categories: ['other'] }],
+    unknownEffects: [{ category: 'other', reason: 'external-host-call' }],
   }),
   // return
   createVMEffectBundle({
@@ -152,7 +152,7 @@ const dexBundles = [
     locationReads: [{ kind: 'register', index: 0, bits: 32 }],
     callEffects: [{ target: 'LTarget;->process()V', dispatchKind: 'virtual', unresolved: true }],
     completeness: 'partial',
-    unknownEffects: [{ reason: 'virtual-dispatch-target-uncertain', categories: ['control'] }],
+    unknownEffects: [{ category: 'control', reason: 'virtual-dispatch-target-uncertain' }],
   }),
   // native JNI call
   createVMEffectBundle({
@@ -163,7 +163,7 @@ const dexBundles = [
     mnemonic: 'jni_native_method',
     callEffects: [{ target: 'LNative;->computeNative()V', dispatchKind: 'jni-native', unresolved: true }],
     completeness: 'partial',
-    unknownEffects: [{ reason: 'jni-native-call-unresolved', categories: ['other'] }],
+    unknownEffects: [{ category: 'other', reason: 'jni-native-call-unresolved' }],
   }),
   // return-void
   createVMEffectBundle({

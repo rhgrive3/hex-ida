@@ -231,8 +231,8 @@ test('HEX-C1-02 positive: complete callee yields precise joined target set (arg 
 test('HEX-C1-02 positive: complete callee yields precise target for root and allocation provenance', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8' },
-      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8', addressSpace: 'memory' },
+      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
@@ -441,8 +441,8 @@ test('HEX-C1-02 matrix axis 11: unknown provenance kind stays unresolved', () =>
 test('HEX-C1-02 matrix axis 12: points-to budget overflow falls back to conservative top', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0' },
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0', addressSpace: 'memory' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
@@ -497,7 +497,12 @@ test('HEX-C1-02 matrix axis 13a: self-recursive callee summary bounded by fixed 
   const pointsTo = result.pointsTo.get('call_ret');
   if (!pointsTo.top) {
     const argSet = result.pointsTo.get('arg0');
-    assert.deepEqual([...pointsTo.targets].sort(), [...argSet.targets].sort());
+    const resultOrigin = fixture.ir.values.find((value) => value.id === 'call_ret').origin.instructionIds;
+    // Root and offset are preserved, but the call-result representation and
+    // provenance are additional facts needed by a subsequent pointer spill.
+    assert.deepEqual([...pointsTo.targets].sort(), argSet.targets.map((target) => ({
+      ...target, widthBits:64, evidenceIds:[...new Set([...target.evidenceIds, ...resultOrigin])].sort(),
+    })).sort());
   } else {
     assert.ok(pointsTo.lossReasons.includes('unresolved-call'));
   }

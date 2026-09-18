@@ -1,5 +1,5 @@
 import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
-import { createOriginSet } from '../../core/identity/origin.js';
+import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
   SEMANTIC_IR_SCHEMA_VERSION,
@@ -12,6 +12,7 @@ import {
   fail,
   nonEmpty,
   object,
+  positiveInteger,
   requiredOrigin,
   serializable,
   sortedUniqueStrings,
@@ -142,6 +143,11 @@ function cloneReferenceTarget(value) {
 function cacheReferenceReads(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object'
     || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  // Only this producer-owned, recursively checked immutable payload is safe
+  // to retain. Proxying it would discard the normalizer's ownership brand and
+  // copy/normalize the whole provenance tree again for each semantic entity.
+  // Caller-owned frozen objects, accessors and mutable children still capture.
+  if (isReusableOriginSet(value)) return value;
   const cached = seen.get(value);
   if (cached) return cached;
   const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
@@ -199,6 +205,7 @@ function countReferences(nodes, values, blocks) {
       count = addReferenceCount(count, arrayLength(node[key]));
     }
     if (node.memory) count = addReferenceCount(count, 1);
+    if (node.metadata?.returnControlTarget?.valueId != null) count = addReferenceCount(count, 1);
     count = addReferenceCount(count, summaryReferenceCount(node.call));
     count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
   }
@@ -229,10 +236,31 @@ function countRawReferences(blocks, values, nodes, seen) {
       count = addReferenceCount(count, arrayLength(nodeView[key]));
     }
     if (nodeView.memory != null) count = addReferenceCount(count, 1);
+    if (nodeView.metadata?.returnControlTarget?.valueId != null) count = addReferenceCount(count, 1);
     count = addReferenceCount(count, summaryReferenceCount(nodeView.call, seen));
     count = addReferenceCount(count, summaryReferenceCount(nodeView.intrinsic, seen));
   }
   return count;
+}
+
+function sameStringSequence(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function callInputsMatchNode(node) {
+  const argumentInputs = node.call.arguments;
+  // An unresolved call with no target or argument summary may still carry
+  // opaque generic inputs for conservative accounting. There is no embedded
+  // I/O claim to contradict in that shape, so preserve the legacy boundary.
+  if (node.call.targetEntityIds.length === 0
+    && node.call.targetValueIds.length === 0
+    && argumentInputs.length === 0) return true;
+  // Direct calls and enriched indirect calls keep the target separate from
+  // the ABI argument list; ABI-neutral lowering may also expose the target as
+  // the leading generic input. Both are canonical, but no third value may
+  // appear in either representation.
+  if (sameStringSequence(node.inputs, argumentInputs)) return true;
+  return sameStringSequence(node.inputs, [...node.call.targetValueIds, ...argumentInputs]);
 }
 
 function validateNormalizedFunction(out, options) {
@@ -271,15 +299,69 @@ function validateNormalizedFunction(out, options) {
   }
   if (placedNodes.size !== out.nodes.length) fail('semantic-ir-unplaced-node');
 
+  // Same-block uses must follow their definition: a block is a linear node
+  // list, so no control-flow arrangement can make a later node dominate an
+  // earlier one. A use whose definition sits later in the same block is a
+  // non-dominant forward reference and can never be a complete function
+  // boundary obligation (#5410).
+  const nodePositionsByBlock = new Map();
+  for (const block of out.blocks) {
+    const positions = new Map();
+    block.nodeIds.forEach((nodeId, index) => positions.set(nodeId, index));
+    nodePositionsByBlock.set(block.id, positions);
+  }
+
   for (const node of out.nodes) {
     for (const id of node.inputs) if (!valueById.has(id)) fail('semantic-ir-dangling-value-id');
+    if (node.metadata?.returnControlTarget?.state === 'resolved') {
+      const target = valueById.get(node.metadata.returnControlTarget.valueId);
+      if (!target) fail('semantic-ir-dangling-return-control-target-value-id');
+      if (target.machineType.kind !== 'bitvector' && target.machineType.kind !== 'address') {
+        fail('semantic-ir-invalid-return-control-target-machine-type');
+      }
+    }
+    const positions = nodePositionsByBlock.get(node.blockId);
+    const usedValueIds = [
+      ...node.inputs,
+      ...(node.metadata?.returnControlTarget?.state === 'resolved' ? [node.metadata.returnControlTarget.valueId] : []),
+      ...(node.memory ? [node.memory.addressExpr.valueId] : []),
+      ...(node.call ? (node.call.memoryRead.accesses ?? []).concat(node.call.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+      ...(node.intrinsic ? (node.intrinsic.memoryRead.accesses ?? []).concat(node.intrinsic.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+    ];
+    for (const id of usedValueIds) {
+      const value = valueById.get(id);
+      if (!value || value.definitionNodeId == null) continue;
+      const definitionNode = nodeById.get(value.definitionNodeId);
+      if (!definitionNode || definitionNode.blockId !== node.blockId) continue;
+      const definitionPosition = positions.get(definitionNode.id);
+      if (definitionPosition != null && definitionPosition >= positions.get(node.id)) {
+        fail('semantic-ir-value-use-before-definition-in-block');
+      }
+    }
     for (const id of node.outputs) {
       const value = valueById.get(id);
       if (!value) fail('semantic-ir-dangling-value-id');
       if (value.kind !== 'definition' || value.definitionNodeId !== node.id) fail('semantic-ir-output-definition-mismatch');
     }
+    if (node.kind === 'zext' || node.kind === 'sext') {
+      // Canonical extension type relation (#4576): a zext/sext may exist as a
+      // canonical exact operation only when its declared source/target widths
+      // equal the machine types on both sides. This is the non-bypassable
+      // boundary check; the lowering-side guard stays as defense in depth.
+      const fromBits = positiveInteger(node.attributes?.fromBits, 'semantic-ir-extension-width-attributes-required');
+      const toBits = positiveInteger(node.attributes?.toBits, 'semantic-ir-extension-width-attributes-required');
+      if (toBits < fromBits) fail('semantic-ir-extension-width-relation-invalid');
+      if (node.inputs.length !== 1 || node.outputs.length !== 1) fail('semantic-ir-extension-operand-count-invalid');
+      const extensionInput = valueById.get(node.inputs[0]);
+      const extensionOutput = valueById.get(node.outputs[0]);
+      if (!extensionInput || !extensionOutput) fail('semantic-ir-dangling-value-id');
+      if (extensionInput.machineType.widthBits !== fromBits) fail('semantic-ir-extension-input-width-mismatch');
+      if (extensionOutput.machineType.widthBits !== toBits) fail('semantic-ir-extension-output-width-mismatch');
+    }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
+      if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.call.returns)) fail('semantic-ir-call-output-mismatch');
       for (const id of [...node.call.targetValueIds, ...node.call.arguments, ...node.call.returns]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-call-value-id');
       }
@@ -290,6 +372,8 @@ function validateNormalizedFunction(out, options) {
       }
     }
     if (node.intrinsic) {
+      if (!sameStringSequence(node.inputs, node.intrinsic.inputs)) fail('semantic-ir-intrinsic-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.intrinsic.outputs)) fail('semantic-ir-intrinsic-output-mismatch');
       for (const id of [...node.intrinsic.inputs, ...node.intrinsic.outputs]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-intrinsic-value-id');
       }
@@ -308,7 +392,10 @@ function validateNormalizedFunction(out, options) {
     if (!node || !node.outputs.includes(value.id)) fail('semantic-ir-value-definition-mismatch');
   }
 
-  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete');
+  // A node-local unknown payload is explicit unknown evidence even on an
+  // ordinary node, so it must keep the function from claiming completeness
+  // (defense in depth alongside the constructor's own conflict check; #5390).
+  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete' || node.unknown != null);
   if (out.completeness === 'complete' && (hasUnknownNode || out.unknowns.length)) fail('semantic-ir-completeness-conflict');
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }
@@ -341,7 +428,7 @@ export function createSemanticIrFunction(input, options = {}) {
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
     blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
     values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
-    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads), options)).sort((a, b) => compareCodeUnit(a.id, b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)

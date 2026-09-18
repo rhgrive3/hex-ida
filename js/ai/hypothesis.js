@@ -31,9 +31,17 @@ export class HypothesisStore {
       return previous;
     }
 
-    const supportEvidenceIds = knownIds(input.supportEvidenceIds, this.evidenceStore);
-    const contradictionEvidenceIds = knownIds(input.contradictionEvidenceIds, this.evidenceStore);
-    let status = HYPOTHESIS_STATUSES.includes(input.status) ? input.status : 'open';
+    const supportEvidenceIds = Object.hasOwn(input, 'supportEvidenceIds')
+      ? knownIds(input.supportEvidenceIds, this.evidenceStore)
+      : previous?.supportEvidenceIds || [];
+    const contradictionEvidenceIds = Object.hasOwn(input, 'contradictionEvidenceIds')
+      ? knownIds(input.contradictionEvidenceIds, this.evidenceStore)
+      : previous?.contradictionEvidenceIds || [];
+    const hasStatusUpdate = Object.hasOwn(input, 'status');
+    const requestedStatus = hasStatusUpdate ? input.status : null;
+    let status = hasStatusUpdate
+      ? (HYPOTHESIS_STATUSES.includes(requestedStatus) ? requestedStatus : 'open')
+      : previous?.status || 'open';
 
     /* `verified` and `rejected` are application verdicts, not model vocabulary.
        Even a real verified evidence ID cannot prove that an arbitrary new claim
@@ -68,8 +76,9 @@ export class HypothesisStore {
       updatedAt: now,
     };
     if (!record.claim) return null;
-    this.records.set(id, record);
-    return record;
+    const stored = freezeRecord(record);
+    this.records.set(id, stored);
+    return stored;
   }
 
   reject(id, contradictionEvidenceIds = []) {
@@ -96,4 +105,15 @@ function knownIds(ids, store) {
 
 function clamp(value) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+}
+
+function freezeRecord(record) {
+  // Hypothesis records are authority-bearing state. Freeze the record and its
+  // mutable collection fields before publishing it through any accessor or
+  // upsert return value, so callers cannot bypass verify()/reject() by mutating
+  // a leaked reference (#4434).
+  Object.freeze(record.supportEvidenceIds);
+  Object.freeze(record.contradictionEvidenceIds);
+  Object.freeze(record.missingEvidence);
+  return Object.freeze(record);
 }

@@ -166,10 +166,10 @@ const LC_REEXPORT_DYLIB = 0x8000001f;
 const LC_LAZY_LOAD_DYLIB = 0x20;
 const LC_LOAD_UPWARD_DYLIB = 0x80000023;
 const LC_SEGMENT_64 = 0x19;
+const LC_CODE_SIGNATURE = 0x1d;
 const LC_DYLD_INFO = 0x22;
 const LC_DYLD_INFO_ONLY = 0x80000022;
 const LC_FUNCTION_STARTS = 0x26;
-const LC_CODE_SIGNATURE = 0x1d;
 const LC_DATA_IN_CODE = 0x29;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_VERSION_MIN_IPHONEOS = 0x25;
@@ -362,7 +362,26 @@ function parseThin(bytes, opts) {
         requireExactCommandSize(cmdsize, 48, 'LC_DYLD_INFO');
         dyldInfos.push(parseDyldInfo(r, p));
       }
-      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, cmdsize, image);
+      else if (cmd === LC_BUILD_VERSION) {
+        if (cmdsize < 24) throw new Error(`invalid LC_BUILD_VERSION size ${cmdsize}`);
+        parseBuildVersion(r, p, cmdsize, image, metadataBudget);
+      }
+      else if (cmd === LC_CODE_SIGNATURE) {
+        // Presence is a load-command declaration, never cryptographic proof.
+        image.metadata.signatureState = 'code-signature-present';
+        if (image.metadata.codeSignature) {
+          image.metadata.codeSignature.complete = false;
+          throw new Error('duplicate LC_CODE_SIGNATURE');
+        }
+        image.metadata.codeSignature = { source: 'LC_CODE_SIGNATURE', complete: false, cryptographicVerification: false };
+        requireExactCommandSize(cmdsize, 16, 'LC_CODE_SIGNATURE');
+        const declaration = dataCommand(r, p);
+        Object.assign(image.metadata.codeSignature, declaration);
+        const rangeValid = declaration.size > 0 && BigInt(declaration.offset) + BigInt(declaration.size) <= r.lengthBigInt;
+        image.metadata.codeSignature.rangeValid = rangeValid;
+        if (!rangeValid) throw new Error('LC_CODE_SIGNATURE data range is empty or exceeds file');
+        image.metadata.codeSignature.complete = true;
+      }
       else if (cmd === LC_ENCRYPTION_INFO || cmd === LC_ENCRYPTION_INFO_64) {
         // encryption_info_command is 20 bytes; the 64-bit variant adds a pad
         // field (24). cryptid != 0 marks an encrypted (App Store FairPlay)
@@ -700,7 +719,7 @@ function parseDylib(r, p, cmdsize, image, isId) {
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
 }
-function parseBuildVersion(r, p, cmdsize, image) {
+function parseBuildVersion(r, p, cmdsize, image, budget) {
   const ntools = r.u32(p + 20);
   const required = 24 + ntools * 8;
   if (!Number.isSafeInteger(required) || required > cmdsize) {
@@ -709,7 +728,16 @@ function parseBuildVersion(r, p, cmdsize, image) {
   const platform = r.u32(p + 8);
   const minos = r.u32(p + 12);
   const sdk = r.u32(p + 16);
-  image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk), source: 'LC_BUILD_VERSION' };
+  const tools = [];
+  for (let i = 0; i < ntools; i++) {
+    if (!budget.take({ records: 1, objects: 1, operations: 2, estimatedHeapBytes: 128 }, 'build-tool-version')) break;
+    const q = p + 24 + i * 8, rawVersion = r.u32(q + 4);
+    tools.push({ tool: r.u32(q), version: version32(rawVersion), rawVersion });
+  }
+  image.metadata.buildVersion = {
+    platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk), source: 'LC_BUILD_VERSION',
+    ntools, tools, toolsComplete: tools.length === ntools, provenanceVerified: false,
+  };
   image.platform = platformName(platform) || image.platform;
 }
 

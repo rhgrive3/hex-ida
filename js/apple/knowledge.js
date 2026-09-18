@@ -23,6 +23,8 @@ export const APPLE_KNOWLEDGE_MATRIX_VERSION = '2026.09';
 const DYLD_CACHE_HEADER_PREFIX_SIZE = 104;
 const DYLD_CACHE_MAPPING_SIZE = 32;
 const MAX_DYLD_CACHE_MAPPINGS = 4096;
+const DYLD_CACHE_IMAGE_INFO_SIZE = 32;
+const MAX_DYLD_CACHE_IMAGES = 65536;
 const MAX_SIGNATURE_BLOBS = 4096;
 const MAX_SOURCE_BACKED_SIGNATURE_BYTES = 256 * 1024;
 const MAX_APPLE_IDENTITY_BYTES = 64 * 1024 * 1024;
@@ -268,6 +270,26 @@ export function parseDyldSharedCache(input, options = {}) {
       dataSize: codeSignatureSize,
       containerOffset: sourceOffset,
     });
+  }
+
+  if (imagesCount > MAX_DYLD_CACHE_IMAGES) return dyldMalformed('images-count-unreasonable', { magic, architecture, imagesCount, sourceOffset });
+  if (imagesCount !== 0 || imagesOffset !== 0) {
+    const imagesBytes = imagesCount * DYLD_CACHE_IMAGE_INFO_SIZE;
+    if (imagesCount === 0 || imagesOffset < DYLD_CACHE_HEADER_PREFIX_SIZE || !rangeFits(bytes.length, imagesOffset, imagesBytes)) {
+      return dyldMalformed('images-table-range-invalid', { magic, architecture, imagesOffset, imagesCount, sourceOffset });
+    }
+  }
+
+  if (slideInfoOffset !== 0n || slideInfoSize !== 0n) {
+    if (slideInfoOffset === 0n || slideInfoSize === 0n || slideInfoOffset > BigInt(bytes.length) || slideInfoSize > BigInt(bytes.length) - slideInfoOffset) {
+      return dyldMalformed('slide-info-range-invalid', { magic, architecture, slideInfoOffset, slideInfoSize, sourceOffset });
+    }
+  }
+
+  if (localSymbolsOffset !== 0n || localSymbolsSize !== 0n) {
+    if (localSymbolsOffset === 0n || localSymbolsSize === 0n || localSymbolsOffset > BigInt(bytes.length) || localSymbolsSize > BigInt(bytes.length) - localSymbolsOffset) {
+      return dyldMalformed('local-symbols-range-invalid', { magic, architecture, localSymbolsOffset, localSymbolsSize, sourceOffset });
+    }
   }
 
   const reasons = [];

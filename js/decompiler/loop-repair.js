@@ -84,6 +84,13 @@ function discoverPostTestInduction(result, loop, ordinal) {
     if (!init && prior.const != null) init = prior;
     if (!init) continue;
 
+    // A constant initializer does not by itself prove recurrence. Unknown or
+    // out-of-loop BIN provenance must fail closed; only an explicit in-loop
+    // definition (or the validated PHI path above) can authorize the rewrite.
+    const hasLoopCarriedState = prior.def?.op === OP.PHI
+      || (prior.def?.op === OP.BIN && prior.def.block != null && loop.nodes.has(prior.def.block));
+    if (phi == null && !hasLoopCarriedState) continue;
+
     return {
       loop, phi, value: prior, inside: updated,
       name: ordinal ? `i${ordinal}` : 'i', init, step,
@@ -183,7 +190,10 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
 
     result.lines.splice(range.start, range.end - range.start, ...replacement);
     result.pseudocode = result.lines.map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
-    result.warnings = (result.warnings || []).filter((w) => !/control-flow edge/.test(w));
+    // Warnings are currently aggregate strings without edge identity. A successful
+    // repair proves only this loop/back-edge was rewritten, so deleting every
+    // control-flow warning would hide unrelated unresolved edges (#5135). Preserve
+    // them fail-closed until diagnostics carry enough identity for scoped removal.
     result.ctx = { ...(result.ctx || {}), loopRepair: iv0.discoveredFrom || 'ssa-post-test' };
     return result;
   }

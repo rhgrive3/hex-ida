@@ -98,7 +98,7 @@ function buildFixture({ olderOverlappingMayStore = false } = {}) {
     },
     {
       id: 'n_branch',
-      kind: 'branch',
+      kind: 'switch',
       blockId: 'b0',
       inputs: [],
       outputs: [],
@@ -116,7 +116,7 @@ function buildFixture({ olderOverlappingMayStore = false } = {}) {
     },
     {
       id: 'n_path',
-      kind: 'const',
+      kind: 'barrier',
       blockId: 'b2',
       inputs: [],
       outputs: [],
@@ -228,7 +228,7 @@ function buildFixture({ olderOverlappingMayStore = false } = {}) {
       evidenceIds: [`fixture-${nodeId}-${right.id}`],
       proof: {
         analyzerId: 'phase7.alias.solver',
-        analyzerVersion: '1.1.0',
+        analyzerVersion: '1.1.1',
         completeness: 'complete',
         stopReason: null,
       },

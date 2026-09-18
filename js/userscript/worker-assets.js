@@ -7,47 +7,59 @@ export async function prepareUserscriptWorkers({
   if (globalThis.__HEX_WORKER_RUNTIME__) return globalThis.__HEX_WORKER_RUNTIME__;
   if (!origin || !manifest) throw new Error('Hex userscript worker manifest is unavailable.');
 
-  const base = new URL(String(origin));
-  const classicPaths = [...new Set(manifest.classicAssets || [])];
-  const sourceEntries = await Promise.all(classicPaths.map(async (path) => {
-    const response = await gmFetch(assetURL(base, path));
-    if (!response.ok) throw new Error(`Could not load Hex worker asset ${path} (${response.status}).`);
-    return [path, await response.text()];
-  }));
-  const sources = new Map(sourceEntries);
-
-  const wasmResponse = await gmFetch(assetURL(base, manifest.wasm || 'capstone.wasm'));
-  if (!wasmResponse.ok) throw new Error(`Could not load capstone.wasm (${wasmResponse.status}).`);
-  const wasmBlobURL = URL.createObjectURL(new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' }));
-
   const workerURLs = new Map();
-  const classicBlobURLs = [];
+  const createdBlobURLs = [];
+  let ownedByRuntime = false;
+  try {
+    const base = new URL(String(origin));
+    const classicPaths = [...new Set(manifest.classicAssets || [])];
+    const sourceEntries = await Promise.all(classicPaths.map(async (path) => {
+      const response = await gmFetch(assetURL(base, path));
+      if (!response.ok) throw new Error(`Could not load Hex worker asset ${path} (${response.status}).`);
+      return [path, await response.text()];
+    }));
+    const sources = new Map(sourceEntries);
 
-  /* A blob Worker is explicitly allowed by ChatGPT's worker-src policy. Avoid
-     relying on a second CSP decision for importScripts(blob:...) inside that
-     worker: inline the classic dependency graph into the entry blob instead.
-     importScripts executes synchronously in the same global scope, so literal
-     local dependencies preserve their execution order when expanded in place. */
-  for (const path of manifest.classicEntries || []) {
-    let source = inlineImportScripts(path, sources);
-    source = capstonePrelude(wasmBlobURL) + '\n' + source;
-    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-    classicBlobURLs.push(url);
-    workerURLs.set(path, url);
+    const wasmResponse = await gmFetch(assetURL(base, manifest.wasm || 'capstone.wasm'));
+    if (!wasmResponse.ok) throw new Error(`Could not load capstone.wasm (${wasmResponse.status}).`);
+    const wasmBlobURL = URL.createObjectURL(new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' }));
+    createdBlobURLs.push(wasmBlobURL);
+
+    /* A blob Worker is explicitly allowed by ChatGPT's worker-src policy. Avoid
+       relying on a second CSP decision for importScripts(blob:...) inside that
+       worker: inline the classic dependency graph into the entry blob instead.
+       importScripts executes synchronously in the same global scope, so literal
+       local dependencies preserve their execution order when expanded in place. */
+    for (const path of manifest.classicEntries || []) {
+      let source = inlineImportScripts(path, sources);
+      source = capstonePrelude(wasmBlobURL) + '\n' + source;
+      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      createdBlobURLs.push(url);
+      workerURLs.set(path, url);
+    }
+
+    for (const [logicalPath, bundlePath] of Object.entries(manifest.moduleBundles || {})) {
+      const response = await gmFetch(assetURL(base, bundlePath));
+      if (!response.ok) throw new Error(`Could not load Hex module worker ${logicalPath} (${response.status}).`);
+      const source = await response.text();
+      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      createdBlobURLs.push(url);
+      workerURLs.set(logicalPath, url);
+    }
+
+    const runtime = installWorkerOverride(base, workerURLs, { revoke: createdBlobURLs });
+    ownedByRuntime = runtime?.workers === workerURLs;
+    if (ownedByRuntime) globalThis.__HEX_WORKER_RUNTIME__ = runtime;
+    return runtime;
+  } finally {
+    if (!ownedByRuntime) revokeBlobURLs(createdBlobURLs);
   }
+}
 
-  for (const [logicalPath, bundlePath] of Object.entries(manifest.moduleBundles || {})) {
-    const response = await gmFetch(assetURL(base, bundlePath));
-    if (!response.ok) throw new Error(`Could not load Hex module worker ${logicalPath} (${response.status}).`);
-    const source = await response.text();
-    workerURLs.set(logicalPath, URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+function revokeBlobURLs(urls) {
+  for (const url of new Set(urls)) {
+    try { URL.revokeObjectURL(url); } catch {}
   }
-
-  const runtime = installWorkerOverride(base, workerURLs, {
-    revoke: [wasmBlobURL, ...classicBlobURLs, ...new Set(workerURLs.values())],
-  });
-  globalThis.__HEX_WORKER_RUNTIME__ = runtime;
-  return runtime;
 }
 
 function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
@@ -74,13 +86,16 @@ function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
       if (cleaned) return;
       cleaned = true;
       if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
-      for (const url of new Set(revoke)) {
-        try { URL.revokeObjectURL(url); } catch { /* best effort */ }
-      }
+      revokeBlobURLs(revoke);
       if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
     },
   };
-  addEventListener('pagehide', () => runtime.cleanup(), { once: true });
+  try {
+    addEventListener('pagehide', () => runtime.cleanup(), { once: true });
+  } catch (error) {
+    if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
+    throw error;
+  }
   return runtime;
 }
 

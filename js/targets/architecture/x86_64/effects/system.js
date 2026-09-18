@@ -44,6 +44,8 @@ const FIXED_OPCODE = Object.freeze({
   cmc:Object.freeze([0xf5]),
   cld:Object.freeze([0xfc]),
   std:Object.freeze([0xfd]),
+  lahf:Object.freeze([0x9f]),
+  sahf:Object.freeze([0x9e]),
 });
 
 function rawEncodingState(instruction) {
@@ -101,7 +103,13 @@ function crossVendorPrefixPolicy(state, family, { memoryOperand = false } = {}) 
     return prefixes.length === 1 && prefixes[0] === 0xf3;
   }
 
-  // For system instructions without explicit memory operands, the only
+  // Intel SDM Vol. 1 §3.3.7 and AMD APM Vol. 2 §2.5.2 specify null
+  // CS/DS/ES/SS prefixes in long mode. The dedicated AH flag-transfer proof
+  // covers each single null prefix; combinations remain unproved here.
+  if ((family === 'lahf' || family === 'sahf') && prefixes.length === 1
+      && [0x26, 0x2e, 0x36, 0x3e].includes(prefixes[0])) return true;
+
+  // For other system instructions without explicit memory operands, the only
   // cross-vendor optional prefix we exact-model is one final REX byte. Both
   // Intel and AMD specify a meaningless REX as ignored in 64-bit mode.
   if (!memoryOperand) {
@@ -672,6 +680,111 @@ function liftSimpleFlagControl(ctx, family) {
   });
 }
 
+function liftAhFlagTransfer(ctx, family) {
+  if (!liveEncodingMatches(ctx.instruction, family)) return malformedPartial(ctx, family);
+  if (ctx.operands.length !== 0) {
+    return ctx.partial(`x86-${family}-unexpected-explicit-operands`, ['registers','flags','other'], {
+      metadata:{ family:'system', operation:family, operandCount:ctx.operands.length },
+    });
+  }
+  // Intel SDM LAHF/SAHF: AH carries SF:ZF:0:AF:0:PF:1:CF. The
+  // register is implicit, so even REX.B does not select SPL or R8B.
+  // Use the canonical AH view to preserve both AL and RAX[63:16].
+  const fields = [['CF',0], ['PF',2], ['AF',4], ['ZF',6], ['SF',7]];
+  if (family === 'lahf') {
+    let value = ctx.constant(8, 2n);
+    for (const [flag, lsb] of fields) {
+      value = ctx.valueOp('insert', [value, ctx.readFlag(flag)], 8, { lsb, widthBits:1 });
+    }
+    ctx.writeRegister('ah', value);
+  } else {
+    const value = ctx.readRegister('ah');
+    for (const [flag, lsb] of fields) {
+      ctx.writeFlag(flag, ctx.valueOp('extract', [value], 1, { lsb, widthBits:1 }), {
+        operation:family, definedness:'defined', sourceView:'ah', sourceBit:lsb,
+      });
+    }
+  }
+  return ctx.finish({
+    family:'system',
+    possibleFaults:[invalidOpcodeFault(family, {
+      feature:'CPUID.80000001H:ECX[0]', requiredValue:1, faultWhen:'feature-bit-clear',
+      rule:'in long-64 mode, #UD when LAHF/SAHF support is absent; no transfer commits on fault',
+    })],
+    metadata:{
+      operation:family, encodingValidated:true, implicitRegister:'ah',
+      normalCompletionOnly:true, noHostFeatureAssumption:true,
+      flagsModified:family === 'sahf' ? fields.map(([flag]) => flag) : [],
+      flagsPreserved:family === 'lahf' ? 'all' : 'all-except-CF-PF-AF-ZF-SF',
+    },
+  });
+}
+
+function liftRandom(ctx, family) {
+  const state = rawEncodingState(ctx.instruction);
+  // One optional operand-size override, followed by at most one final REX.
+  // In particular F2/F3/LOCK, duplicate prefixes and memory ModRM forms do
+  // not authorize a register transfer. REX.W takes precedence over 66.
+  const prefixes = [...state.prefixes];
+  if (prefixes[0] === 0x66) prefixes.shift();
+  const prefixValid = prefixes.length === 0 || (prefixes.length === 1 && isRex(prefixes[0]));
+  const regField = family === 'rdrand' ? 6 : 7;
+  const modrm = state.body[2];
+  if (!prefixValid || state.body.length !== 3 || state.body[0] !== 0x0f || state.body[1] !== 0xc7
+      || (modrm >>> 6) !== 3 || ((modrm >>> 3) & 7) !== regField) return malformedPartial(ctx, family);
+  const bits = state.rex != null && (state.rex & 8) ? 64 : state.operandSize66 ? 16 : 32;
+  const index = (modrm & 7) | (state.rex != null && (state.rex & 1) ? 8 : 0);
+  const physical = ['rax','rcx','rdx','rbx','rsp','rbp','rsi','rdi',
+    'r8','r9','r10','r11','r12','r13','r14','r15'][index];
+  const destination = ctx.operands[0];
+  if (ctx.operands.length !== 1 || destination?.type !== 'register'
+      || destination.access !== 'write'
+      || destination.register.physicalId !== physical || destination.register.viewBits !== bits
+      || destination.widthBits !== bits || destination.register.lsb !== 0) {
+    return malformedPartial(ctx, family, `x86-${family}-destination-encoding-mismatch`);
+  }
+
+  // Hardware randomness is intrinsically nondeterministic, not a pure call
+  // or a function of the old destination. The two outputs are the returned
+  // value and hardware CF; zero is a valid successful value.
+  // Intel SDM Vol.2B RDRAND/RDSEED; AMD APM Vol.3 rev.3.35 pp.299-300.
+  // AMD specifies a zero failure result for RDSEED, but only an invalid
+  // result for RDRAND. Do not import Intel's RDRAND zero guarantee into the
+  // vendor-neutral target, or infer entropy quality from CF=1.
+  const [sample, ready] = systemIntrinsic(ctx, `x86.system.${family}`, [], [bits,1], {
+    registersRead:[EXECUTION_ENV, 'sys:x86.random-generator-state'],
+    registersWritten:[physical, 'sys:x86.random-generator-state',
+      'rflags.cf','rflags.of','rflags.sf','rflags.zf','rflags.af','rflags.pf'],
+    determinism:'nondeterministic',
+    metadata:{
+      ...virtualizationMetadata(family),
+      outputs:['hardware-returned-value','hardware-carry-success'],
+      outputWidthBits:bits, noHostConstant:true, noEntropyQualityClaim:true,
+      failureDestination:family === 'rdseed' ? 'zero' : 'implementation-dependent-invalid: Intel zero; AMD unspecified',
+      successDoesNotImplyNonzero:true, retryLoopNotSynthesized:true,
+    },
+  });
+  const value = family === 'rdseed'
+    ? ctx.valueOp('select', [ready, sample, ctx.constant(bits, 0n)], bits)
+    : sample;
+  ctx.writeRegister(destination, value);
+  ctx.writeFlag('CF', ready, { operation:family, definedness:'defined', source:'hardware-success-not-value-test' });
+  for (const flag of ['OF','SF','ZF','AF','PF']) {
+    ctx.writeFlag(flag, ctx.constant(1, 0n), { operation:family, definedness:'fixed', fixedValue:0 });
+  }
+  return ctx.finish({
+    family:'system',
+    possibleFaults:[invalidOpcodeFault(family, {
+      feature:family === 'rdrand' ? 'CPUID.01H:ECX[30]' : 'CPUID.07H.0:EBX[18]',
+      requiredValue:1, faultWhen:'feature-bit-clear',
+      rule:'#UD when the instruction feature is unavailable; no destination or flag transfer commits on fault',
+    })],
+    metadata:{ operation:family, encodingValidated:true, widthBits:bits,
+      normalCompletionOnly:true, noHostFeatureAssumption:true, privileged:false,
+      flagsModified:['CF','OF','SF','ZF','AF','PF'], flagsPreserved:'all-except-CF-OF-SF-ZF-AF-PF' },
+  });
+}
+
 const EXTENDED_SYSTEM_NAMES = new Set([
   'bndcl', 'bndcn', 'bndcu', 'bndldx', 'bndmk', 'bndmov', 'bndstx',
   'clac', 'stac', 'cldemote', 'clflush', 'clflushopt', 'clgi', 'stgi', 'clrssbsy', 'clts', 'clwb', 'clzero',
@@ -815,6 +928,8 @@ export function liftX86SystemEffects(instruction, context = {}) {
   const ctx = createX86EffectContext(instruction, context);
 
   if (SIMPLE_FLAG_CONTROLS[family]) return liftSimpleFlagControl(ctx, family);
+  if (family === 'lahf' || family === 'sahf') return liftAhFlagTransfer(ctx, family);
+  if (family === 'rdrand' || family === 'rdseed') return liftRandom(ctx, family);
   if (FENCES.has(family)) return liftFence(ctx, family);
   if (family === 'pause') {
     if (!pauseEncodingMatches(ctx.instruction)) {

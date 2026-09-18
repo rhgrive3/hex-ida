@@ -15,10 +15,6 @@ function createStore(binding = () => ({ binaryId: 'bin-a', projectId: 'project-a
   return new ProposalStore({ evidenceStore, binding });
 }
 
-function createProjectApp() {
-  return { projectAnnotations: [], workspace: { autosave: () => true } };
-}
-
 function createProjectProposal(store, id, after = 'approved') {
   return store.create({
     kind: 'project-annotation',
@@ -34,7 +30,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [] };
   const executor = new CapabilityExecutor({ catalog, app });
   await expectApprovalFailure(executor.execute(
     'annotation.project',
@@ -45,13 +41,15 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  let saves = 0;
+  const app = { projectAnnotations: [], workspace: { autosave: () => { saves += 1; return true; } } };
   const store = createStore();
   const capabilityExecutor = new CapabilityExecutor({ catalog, app });
   const proposalExecutor = new ProposalExecutor({ store, capabilityExecutor, app });
   const proposal = createProjectProposal(store, 'approved');
   const result = await proposalExecutor.approveAndApply(proposal.id);
   assert.equal(result.proposal.status, 'applied');
+  assert.equal(saves, 1, 'approved project annotation must use the durable workspace persistence adapter');
   assert.equal(app.projectAnnotations.length, 1);
   assert.equal(app.projectAnnotations[0].id, 'approved');
   assert.equal(app.projectAnnotations[0].value, 'approved');
@@ -155,8 +153,8 @@ async function expectApprovalFailure(promise) {
   let executionBefore = null;
   await store.apply(proposal.id, {
     approvalToken,
-    // Patch bytes are canonicalized to plain arrays when the proposal is
-    // created; stale-state comparison must use the same wire representation.
+    // ProposalExecutor's patch backend exposes the current bytes as a plain
+    // array, matching the canonical payload used for the stale-state check.
     currentState: Array.from(firstBefore),
     apply: (item, authorization) => {
       executionBefore = Array.from(item.before);
@@ -168,11 +166,11 @@ async function expectApprovalFailure(promise) {
     },
   });
   assert.deepEqual(executionBefore, [0x90], 'stale-state revision and execution payload must come from one snapshot');
-  assert.equal(beforeReads, 1, 'snapshotting and RegExp restoration must share the one captured before value');
+  assert.equal(beforeReads, 1, 'create() must snapshot caller-owned before once for both payload and revision authority');
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [], workspace: { autosave: () => true } };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'snapshot', 'safe');
@@ -199,7 +197,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [] };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-capability');
@@ -217,7 +215,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [] };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-args');
@@ -235,7 +233,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [] };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'wrong-id');
@@ -253,7 +251,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = createProjectApp();
+  const app = { projectAnnotations: [], workspace: { autosave: () => true } };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'single-use');
@@ -272,7 +270,7 @@ async function expectApprovalFailure(promise) {
 
 {
   let binding = { binaryId: 'bin-a', projectId: 'project-a', runtimeSessionId: null };
-  const app = createProjectApp();
+  const app = { projectAnnotations: [] };
   const store = createStore(() => binding);
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'binding-drift');

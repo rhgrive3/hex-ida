@@ -3,6 +3,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { auditMachineEffectsHistory } from './prerequisites.mjs';
+
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { arm64MachineEffectFamilies } from '../../../js/targets/architecture/arm64/effects/index.js';
 import {
@@ -426,6 +428,7 @@ export function loadA2DenominatorInventory(file = DEFAULT_A2_DENOMINATOR_PATH) {
 }
 
 export function validateA2DenominatorInventory(inventory = loadA2DenominatorInventory()) {
+  auditMachineEffectsHistory({ cwd: ROOT });
   if (inventory.oracleRole !== 'production-effect-registry-denominator-with-explicit-profile-gaps') fail('a2-denominator-oracle-role-invalid');
   if (inventory.scope?.unitGranularity !== 'production-decoder-effect-family') fail('a2-denominator-granularity-invalid');
   if (inventory.scope?.fullIsaCoverageIncluded !== false) fail('a2-denominator-must-not-claim-full-isa');

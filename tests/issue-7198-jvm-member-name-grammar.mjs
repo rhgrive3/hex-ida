@@ -1,6 +1,7 @@
-// Regression for #7198: JVM field/method declaration names must satisfy the
-// JVMS unqualified-name grammar — '.', ';', '[', '/' rejected; '<'/'>' only
-// allowed as the exact <init>/<clinit> method names; never in field names.
+// Regression for #7198/#7462: JVM field/method declaration names must satisfy
+// the JVMS unqualified-name grammar — '.', ';', '[', '/' are rejected; '<'/'>'
+// are restricted to the exact <init>/<clinit> method names, but are valid in
+// field names.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -67,9 +68,13 @@ test('#7198 <init>/<clinit> method names stay accepted', () => {
   }
 });
 
-test('#7198 field names reject . ; [ / and angle brackets', () => {
-  for (const bad of ['a/b', 'x.y', 'a;b', 'a[b', '<f>', 'f>']) {
+test('#7198/#7462 field names reject . ; [ / but allow angle brackets', () => {
+  for (const bad of ['a/b', 'x.y', 'a;b', 'a[b']) {
     assert.throws(() => parseJvm(makeClass(bad, { method: false })), (error) => /member-name|invalid-field/.test(error?.message ?? ''), bad);
+  }
+  for (const valid of ['<x>', 'x>y', '<init>', '<clinit>']) {
+    const image = parseJvm(makeClass(valid, { method: false }), { binaryId: `p-7462-field-${valid}` });
+    assert.equal(image.fields[0].name, valid);
   }
 });
 

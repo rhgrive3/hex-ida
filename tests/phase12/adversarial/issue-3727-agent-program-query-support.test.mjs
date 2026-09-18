@@ -46,7 +46,7 @@ test('Issue #3727: xrefs fail closed when either Program source is unavailable',
 test('Issue #3727: supported complete-empty queries and upstream incompleteness keep existing semantics', async () => {
   const completeTools = createAgentTools({
     program: {
-      functionRange() { return { start: 0x1000n, end: 0x1100n }; },
+      functionRange(address) { return { start: address, end: address + 0x100n }; },
       callersOf() { return []; },
       calleesOf() { return []; },
       refSitesTo() { return []; },

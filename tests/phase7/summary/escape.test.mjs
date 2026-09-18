@@ -59,15 +59,19 @@ test('a frame nothing publishes is proven non-escaping', () => {
   assert.equal(escape.status.completeness, 'complete');
 });
 
-test('escape evidence proves separation A2 alone cannot', () => {
-  // The caller cannot hold a pointer into a frame it never saw.
+test('escape evidence proves separation A2 alone cannot (#8809 sync)', () => {
+  // #8809 sync: #4977 made non-escaping-separation require both roots to be
+  // proven non-escaping. Here only the frame root is proven; the incoming
+  // argument's escape state is not, so the solver must stay `may` — the very
+  // asymmetry the test name describes. The reason-code proof path remains
+  // exercised by pointsto/issue-4977-nonescaping-both-roots.
   const result = aliasOf('frame-non-escaping', 'node_st_slot', 'node_st_arg');
-  assert.equal(result.relation, 'no');
-  assert.ok(result.reasonCodes.includes('distinct-non-escaping-allocation'));
+  assert.equal(result.relation, 'may');
+  assert.ok(!result.reasonCodes.includes('distinct-non-escaping-allocation'));
 });
 
-test('publishing the frame withdraws exactly that separation', () => {
-  // Same query, same shape, one extra store: the proof must disappear.
+test('publishing the frame withdraws non-escape evidence', () => {
+  // Same query, same shape, one extra store: the non-escape proof disappears.
   const { escape } = escapeOf('frame-escapes-through-argument');
   assert.ok(escape.escapes.some((record) => record.reason === 'stored-through-argument'));
   assert.equal(escape.nonEscapingRoots.size, 0);
@@ -104,11 +108,14 @@ test('cancellation yields no non-escaping roots', () => {
   assert.equal(escape.nonEscapingRoots.size, 0);
 });
 
-test('only a call with a proven summary preserves a non-escape proof', () => {
-  // Passing a pointer to a callee whose effects are known does not publish it;
-  // every other boundary does.
-  assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason: 'passed-to-known-call', boundary: 'known-call' })), false);
-  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
+test('every observed escape fact invalidates a non-escape proof (#5362)', () => {
+  // Full recompute revokes the non-escape proof of a root passed to a
+  // complete known call — the record's root joins `escapedRoots` exactly like
+  // any other reason. The incremental invalidation policy must be the same
+  // contract, so `passed-to-known-call` is no longer spared: an invalidation
+  // that kept the proof would disagree with a fresh analysis of the same
+  // revision.
+  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-known-call', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
     assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason, boundary: 'unknown' })), true, reason);
   }
 });

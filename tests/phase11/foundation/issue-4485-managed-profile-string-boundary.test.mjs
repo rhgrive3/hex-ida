@@ -19,7 +19,8 @@ const validInput = {
 };
 const profile = createManagedTargetProfile(validInput);
 assert.equal(profile.frontendId, 'wasm');
-assert.equal(profile.id, 'managed-profile:wasm:1:core-3.0');
+// #5401: the readable triple is bound to a digest of the semantic tail.
+assert.ok(profile.id.startsWith('managed-profile:wasm:1:core-3.0:'), profile.id);
 assert.deepEqual(profile.featureSet, ['multi-memory', 'simd']);
 assert.equal(validateManagedTargetProfile(profile), true);
 
@@ -54,7 +55,7 @@ for (const field of ['formatVersion', 'vmSpecEdition']) {
     );
   }
 }
-assert.equal(createManagedTargetProfile({ frontendId: 'wasm', formatVersion: 7, vmSpecEdition: 3 }).id, 'managed-profile:wasm:7:3');
+assert.ok(createManagedTargetProfile({ frontendId: 'wasm', formatVersion: 7, vmSpecEdition: 3 }).id.startsWith('managed-profile:wasm:7:3:'));
 
 for (const value of [['runtime-1'], { value: 'runtime-1' }, true, 1, '']) {
   assert.throws(

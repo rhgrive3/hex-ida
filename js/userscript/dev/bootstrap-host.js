@@ -1,7 +1,7 @@
 const PROTOCOL = 'hex.dev.bootstrap-host-v1';
 const MAX_HANDOFF_BYTES = 16 * 1024;
 
-export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = globalThis.window } = {}) {
+export function installDevBootstrapHost({ host, runtimeIdentity, authorize = null, windowRef = globalThis.window } = {}) {
   if (!host || typeof host.reload !== 'function') throw new TypeError('Dev bootstrap host requires a reloadable sandbox host.');
   const identity = normalizeRuntimeIdentity(runtimeIdentity);
   let handoff = null;
@@ -18,7 +18,16 @@ export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = glo
     };
   }
 
+  let authorizationPending = false;
   function onMessage(event) {
+    if (!authorize) { handleMessage(event); return; }
+    const current = currentFrameIdentity();
+    if (closed || authorizationPending || event?.origin !== 'null' || !current || event.source !== current.iframe.contentWindow || event.data?.protocol !== PROTOCOL || !['hex.dev.bootstrap.handoff-request', 'hex.dev.bootstrap.reload-request'].includes(event.data?.type)) return;
+    authorizationPending = true;
+    void Promise.resolve().then(() => authorize()).then(() => handleMessage(event)).catch(() => {}).finally(() => { authorizationPending = false; });
+  }
+
+  function handleMessage(event) {
     if (closed || event?.origin !== 'null') return;
     const current = currentFrameIdentity();
     if (!current || event.source !== current.iframe.contentWindow) return;
@@ -44,16 +53,50 @@ export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = glo
       const next = normalizeHandoff(data.handoff);
       reloadAccepted = true;
       handoff = next;
+      const attempt = {
+        frame: current.iframe,
+        generation: current.generation,
+        sandboxToken: current.sandboxToken,
+      };
       current.iframe.contentWindow.postMessage({
         protocol: PROTOCOL,
         type: 'hex.dev.bootstrap.reload-accepted',
-        generation: current.generation,
-        sandboxToken: current.sandboxToken,
+        generation: attempt.generation,
+        sandboxToken: attempt.sandboxToken,
       }, '*');
       setTimeout(() => {
-        if (!closed) void host.reload();
+        if (!closed) startReload(attempt);
       }, 0);
     }
+  }
+
+  function startReload(attempt) {
+    let pending;
+    try {
+      pending = host.reload();
+    } catch {
+      settleReload(attempt, false);
+      return;
+    }
+    Promise.resolve(pending).then(
+      () => settleReload(attempt, true),
+      () => settleReload(attempt, false),
+    );
+  }
+
+  function settleReload(attempt, succeeded) {
+    if (closed || succeeded || !reloadAccepted) return;
+    reloadAccepted = false;
+    const current = currentFrameIdentity();
+    if (!current || current.iframe !== attempt.frame || current.generation !== attempt.generation || current.sandboxToken !== attempt.sandboxToken) return;
+    try {
+      attempt.frame.contentWindow.postMessage({
+        protocol: PROTOCOL,
+        type: 'hex.dev.bootstrap.reload-failed',
+        generation: attempt.generation,
+        sandboxToken: attempt.sandboxToken,
+      }, '*');
+    } catch {}
   }
 
   windowRef.addEventListener('message', onMessage);

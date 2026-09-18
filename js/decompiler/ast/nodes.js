@@ -61,23 +61,31 @@ export function mergeSource(...sources) {
   }
   return out;
 }
-export function node(kind, props = {}, source = null) { return { kind, ...props, source: sourceOf(source || props.source) }; }
+export function node(kind, props = {}, source = null) {
+  // `kind` is the node's category, decided by the constructor — props (and
+  // any extra metadata routed through them) must never redefine it (#4150).
+  return { ...props, kind, source: sourceOf(source || props.source) };
+}
+// Structural/semantic fields are constructor-owned: metadata spread through
+// `extra` is applied first and every constructor-owned field is re-asserted
+// after it, so `{ kind:'forged', effect:'call', signed:true }` in extra can no
+// longer rewrite the node category or effect semantics (#4150).
 export const expr = {
   constant(value, bits = 64, signed = null, source = null) { return node('const', { value: BigInt(value), bits: Number(bits || 64), signed, effect: 'pure' }, source); },
   floatConstant(value, bits = 64, source = null) { return node('float-const', { value:Number(value), bits:Number(bits || 64), signed:null, floating:true, effect:'pure' }, source); },
-  variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { name, bits: Number(bits || 64), signed, effect: 'pure', ...extra }, source); },
-  unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { op, arg, bits, signed, effect: effectOf(arg), ...extra }, mergeSource(source, arg?.source)); },
-  binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source)); },
+  variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { ...extra, name, bits: Number(bits || 64), signed, effect: 'pure' }, source); },
+  unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { ...extra, op, arg, bits, signed, effect: effectOf(arg) }, mergeSource(source, arg?.source)); },
+  binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { ...extra, op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)) }, mergeSource(source, left?.source, right?.source)); },
   compare(op, left, right, signed = null, source = null, extra = {}) {
     const comparisonDomain = extra.comparisonDomain ?? ((left?.floating === true || right?.floating === true || left?.kind === 'float-const' || right?.kind === 'float-const') ? 'floating' : 'integer');
-    return node('compare', { op, left, right, bits: 1, signed: false, compareSigned: signed, comparisonDomain, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source));
+    return node('compare', { ...extra, op, left, right, bits: 1, signed: false, compareSigned: signed, comparisonDomain, effect: maxEffect(effectOf(left), effectOf(right)) }, mergeSource(source, left?.source, right?.source));
   },
   select(condition, whenTrue, whenFalse, bits = whenTrue?.bits || whenFalse?.bits || 64, signed = null, source = null) { return node('select', { condition, whenTrue, whenFalse, bits, signed, effect: maxEffect(effectOf(condition), effectOf(whenTrue), effectOf(whenFalse)) }, mergeSource(source, condition?.source, whenTrue?.source, whenFalse?.source)); },
-  call(callee, args = [], bits = 64, source = null, extra = {}) { return node('call', { callee, args: args.slice(), bits, signed: null, effect: 'call', ...extra }, mergeSource(source, ...args.map((a) => a?.source))); },
-  load(location, bits = 64, source = null, extra = {}) { return node('load', { location, bits, signed: extra.signed ?? null, effect: extra.volatile ? 'volatile' : 'read', ...extra }, source); },
-  field(base, name, offset = 0n, bits = 64, source = null, extra = {}) { return node('field', { base, name, offset: BigInt(offset || 0), bits, signed: extra.signed ?? null, effect: effectOf(base), ...extra }, mergeSource(source, base?.source)); },
-  index(base, index, scale = 1, bits = 64, source = null, extra = {}) { return node('index', { base, index, scale, bits, signed: extra.signed ?? null, effect: maxEffect(effectOf(base), effectOf(index)), ...extra }, mergeSource(source, base?.source, index?.source)); },
-  intrinsic(name, args = [], bits = 64, signed = null, source = null, extra = {}) { return node('intrinsic', { name, args: args.slice(), bits, signed, effect: maxEffect(...args.map(effectOf)), ...extra }, mergeSource(source, ...args.map((a) => a?.source))); },
+  call(callee, args = [], bits = 64, source = null, extra = {}) { return node('call', { ...extra, callee, args: args.slice(), bits, signed: null, effect: 'call' }, mergeSource(source, ...args.map((a) => a?.source))); },
+  load(location, bits = 64, source = null, extra = {}) { return node('load', { ...extra, location, bits, signed: extra.signed ?? null, effect: extra.volatile ? 'volatile' : 'read' }, source); },
+  field(base, name, offset = 0n, bits = 64, source = null, extra = {}) { return node('field', { ...extra, base, name, offset: BigInt(offset || 0), bits, signed: extra.signed ?? null, effect: effectOf(base) }, mergeSource(source, base?.source)); },
+  index(base, index, scale = 1, bits = 64, source = null, extra = {}) { return node('index', { ...extra, base, index, scale, bits, signed: extra.signed ?? null, effect: maxEffect(effectOf(base), effectOf(index)) }, mergeSource(source, base?.source, index?.source)); },
+  intrinsic(name, args = [], bits = 64, signed = null, source = null, extra = {}) { return node('intrinsic', { ...extra, name, args: args.slice(), bits, signed, effect: maxEffect(...args.map(effectOf)) }, mergeSource(source, ...args.map((a) => a?.source))); },
 };
 const EFFECT_RANK = { pure: 0, read: 1, call: 2, write: 3, volatile: 4, unknown: 5 };
 export function maxEffect(...effects) { let best = 'pure'; for (const effect of effects.flat()) if ((EFFECT_RANK[effect] ?? 5) > (EFFECT_RANK[best] ?? 0)) best = effect || 'unknown'; return best; }
@@ -152,6 +160,28 @@ function loadValueIdentity(n) {
   return `anon:${id}`;
 }
 
+const anonymousVarIds = new WeakMap();
+let nextAnonymousVarId = 1;
+function anonymousVarIdentity(n) {
+  let id = anonymousVarIds.get(n);
+  if (id == null) { id = nextAnonymousVarId++; anonymousVarIds.set(n, id); }
+  return `anon:${id}`;
+}
+function canonicalVarScalar(v) {
+  return canonicalIdentity(v, { allowString: true });
+}
+function varValueIdentity(n) {
+  const source = n?.source || null;
+  const rawDefs = source?.ssaDefs ?? source?.ssaDef;
+  const defs = rawDefs == null ? [] : (Array.isArray(rawDefs) ? rawDefs : [rawDefs]);
+  const id = n?.ssaId == null ? null : canonicalVarScalar(n.ssaId);
+  const canonicalDefs = defs.map(canonicalVarScalar);
+  const hasRawIdentity = n?.ssaId != null || rawDefs != null;
+  if (!hasRawIdentity) return anonymousVarIdentity(n);
+  if (id === null || canonicalDefs.length !== 1 || canonicalDefs[0] === null || canonicalDefs[0] !== id) return anonymousVarIdentity(n);
+  return `ssa:${typeof id === 'string' ? `s:${JSON.stringify(id)}` : `n:${id}`}`;
+}
+
 // Post-order canonicalization without recursion. This handles deeply skewed ASTs safely.
 export function structuralKey(root) {
   if (!root) return 'null';
@@ -175,7 +205,7 @@ export function structuralKey(root) {
     switch (n.kind) {
       case 'const': value = `c:${semanticTag(n)}:${n.value}`; break;
       case 'float-const': { const fv=Number.isNaN(n.value)?'NaN':n.value===Infinity?'Infinity':n.value===-Infinity?'-Infinity':Object.is(n.value,-0)?'-0':String(n.value); value=`fc:${semanticTag(n)}:${fv}`; break; }
-      case 'var': value = `v:${n.name}:${semanticTag(n)}`; break;
+      case 'var': value = `v:${n.name}:${semanticTag(n)}:${varValueIdentity(n)}`; break;
       case 'unary': value = `u:${n.op}:${semanticTag(n)}:${k(n.arg)}`; break;
       case 'binary': value = `b:${n.op}:${semanticTag(n)}:${k(n.left)}:${k(n.right)}`; break;
       case 'compare': value = `cmp:${n.op}:${n.compareSigned}:${n.comparisonDomain ?? 'unknown'}:${k(n.left)}:${k(n.right)}`; break;

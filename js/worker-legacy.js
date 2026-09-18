@@ -27,6 +27,12 @@ const HEADER_MAX = 4 * 1024 * 1024;  // cap on load-command area we will read
 
 const SYMBOL_MAX = 400_000;          // シンボルはこれ以上読まない（メモリ保護）
 const STRTAB_MAX = 48 * 1024 * 1024;
+// #8838: cap the raw data_in_code_entry[] payload we're willing to read. Each
+// record is 8 bytes; 8 MiB bounds ~1M entries, well past anything a real
+// Mach-O file declares. Anything larger is truncated and the excluded range
+// set is treated as incomplete (function starts are then not blessed as
+// complete exact evidence).
+const DATA_IN_CODE_MAX = 8 * 1024 * 1024;
 /* 文字列一覧の上限。20000 で切っていたころは、The Battle Cats の
    メソッド名 37161 本のうち 17161 本が黙って消えていた（＝機能の 46%）。
    1 本あたり数十バイトなので、この数でも数十 MB には届かない。 */
@@ -452,19 +458,52 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     };
   }
   const info = slice.info;
-  const base = slice.offset;
+  const base = BigInt(slice.offset ?? 0n);
+  // Production slices always carry the selected-slice size (readSlice() sets
+  // it from the fat arch entry or the whole file). Synthetic analyzeSlice
+  // callers that inject only `info` keep the legacy whole-file view.
+  const sliceSpanValue = slice.size ?? info.sliceSize ?? null;
+  const sliceSpan = sliceSpanValue == null ? null : BigInt(sliceSpanValue);
   let capped = false;
+  if (info.loadCommandStringsCapped) capped = true;
   let sym = null;
+  /**
+   * Slice-relative reader gate. Load-command file ranges name bytes inside the
+   * *selected* embedded Mach-O image, so a range that is not wholly inside
+   * `[0, slice.size)` must never be read from the outer container. Otherwise a
+   * fat slice can point its linkedit commands past its own end and import
+   * another slice's bytes as its own exact evidence (#8835). The subtraction
+   * form rejects `offset + length` integer wrap.
+   */
+  const sliceRelativeRange = (offset, length) => {
+    const rel = BigInt(offset);
+    const len = BigInt(length);
+    if (sliceSpan != null && (rel < 0n || len < 0n || rel > sliceSpan || len > sliceSpan - rel)) return null;
+    return base + rel;
+  };
 
   if (info.symtab && info.symtab.nsyms > 0) {
     const entry = info.is64 ? 16 : 12;
     let nsyms = info.symtab.nsyms;
     if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
-    const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
+    /* A string table beyond STRTAB_MAX is truncated below: symbols past the
+     * clamp parse as '' and vanish from definedSymbols(). That budget cut is
+     * an incompleteness the result must report, not hide (#5372). */
+    if (info.symtab.strsize > STRTAB_MAX) capped = true;
     const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
-    const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
-    if (symBuf.length >= entry && strBuf.length) {
-      try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+    // Both tables are slice-relative: entries and the string bytes they name
+    // must live inside the selected slice (#8835).
+    const symStart = sliceRelativeRange(info.symtab.symoff, BigInt(nsyms) * BigInt(entry));
+    const strStart = sliceRelativeRange(info.symtab.stroff, strLen);
+    if (symStart == null || strStart == null) {
+      capped = true;
+    } else {
+      const symBuf = await readRange(symStart, nsyms * entry);
+      const strBuf = await readRange(strStart, strLen);
+      if (symBuf.length >= entry && strBuf.length) {
+        try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+        if (sym && sym.capped) capped = true;
+      }
     }
   }
 
@@ -473,13 +512,24 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0, ext: d.ext });
     if (info.dysymtab && info.dysymtab.nindirectsyms > 0) {
       const n = Math.min(info.dysymtab.nindirectsyms, SYMBOL_MAX);
-      const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
-      if (ind.length >= 4) {
-        try {
-          for (const s of MachO.stubSymbols(info, ind, sym)) {
-            entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
-          }
-        } catch { /* 壊れていても他は返す */ }
+      const indStart = sliceRelativeRange(info.dysymtab.indirectsymoff, n * 4);
+      if (indStart == null) {
+        // The indirect-symbol table is not this slice's; never import foreign
+        // stub/GOT identities (#8835).
+        capped = true;
+      } else {
+        const ind = await readRange(indStart, n * 4);
+        if (ind.length >= 4) {
+          try {
+            const stubList = MachO.stubSymbols(info, ind, sym);
+            for (const s of stubList) {
+              entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
+            }
+            // Indirect-symbol expansion hit its aggregate budget: symbol discovery
+            // is capped and must not be reported as complete (#8800).
+            if (stubList.truncated) capped = true;
+          } catch { /* 壊れていても他は返す */ }
+        }
       }
     }
   }
@@ -511,22 +561,84 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
 
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
+  let functionStartsPartialReason = null;
+  let functionStartsCapped = false;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
+
+  // #8838: decode LC_DATA_IN_CODE so a declared data range inside __text can
+  // never be promoted to exact function-start authority. A missing or unread
+  // table is a legitimate no-op; a table that overflows the read clamp or
+  // contains an out-of-slice entry means we can no longer prove the exclusion
+  // set is complete, so function starts must not be blessed as complete.
+  let dataInCodeRanges = [];
+  let dataInCodeIncomplete = false;
+  if (info.dataInCode && info.dataInCode.datasize > 0) {
+    const declared = info.dataInCode.datasize;
+    const diceClamped = declared > DATA_IN_CODE_MAX;
+    const diceStart = sliceRelativeRange(info.dataInCode.dataoff, declared);
+    if (diceStart == null) {
+      // The declared exclusion table is not this slice's: we can no longer
+      // prove which ranges inside __text are data, so function starts must not
+      // be blessed as complete (#8835).
+      capped = true;
+      dataInCodeIncomplete = true;
+    } else {
+      const diceBuf = await readRange(diceStart, Math.min(declared, DATA_IN_CODE_MAX));
+      try {
+        const entries = MachO.parseDataInCode(diceBuf, info);
+        dataInCodeRanges = entries.map((e) => [e[0], e[1]]);
+        if (entries.truncated) dataInCodeIncomplete = true;
+      } catch { dataInCodeIncomplete = true; }
+    }
+    if (diceClamped) dataInCodeIncomplete = true;
+  }
+
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
-    const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
-                                Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
-    try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
-      const seeds = list.slice();
-      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
-      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
-      slice.functionStarts = seeds;
-      funcs = new BigUint64Array(seeds.length);
-      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
-      functionStartsExact = list.length > 0 && list.complete === true;
-    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); }
+    const declared = info.functionStarts.datasize;
+    const clampLimit = 8 * 1024 * 1024;
+    const clamped = declared > clampLimit;
+    const startsStart = sliceRelativeRange(info.functionStarts.dataoff, declared);
+    if (startsStart == null) {
+      // #8835: the slice-relative payload is outside the selected slice. Its
+      // bytes belong to another image (or container padding), so nothing read
+      // from there may become exact function-boundary authority for this slice.
+      capped = true;
+      functionStartsCapped = true;
+      functionStartsPartialReason = 'slice-out-of-range';
+    } else {
+      const buf = await readRange(startsStart, Math.min(declared, clampLimit));
+      if (clamped) {
+        // #8822: a clamped prefix is not a complete ULEB stream. Even if the
+        // prefix's last byte happens to be a valid terminator, the suffix was
+        // never read, so the whole stream is not evidence. Never bless a prefix.
+        capped = true;
+        functionStartsCapped = true;
+        functionStartsPartialReason = 'clamp-truncated';
+      }
+      try {
+        const list = MachO.parseFunctionStarts(buf, info.textVM,
+          { regions: slice.regions || [], architecture: info.architecture || 'arm64',
+            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId) });
+        // Positive ULEB deltas make `list` strictly increasing. Insert the entry
+        // seed in place instead of copy + linear membership scan + full re-sort.
+        if (info.entry != null) {
+          let lo = 0, hi = list.length;
+          while (lo < hi) { const mid = (lo + hi) >>> 1; if (list[mid] < info.entry) lo = mid + 1; else hi = mid; }
+          if (list[lo] !== info.entry) list.splice(lo, 0, info.entry);
+        }
+        slice.functionStarts = list;
+        funcs = new BigUint64Array(list.length);
+        for (let i = 0; i < list.length; i++) funcs[i] = list[i];
+        functionStartsExact = !clamped && !dataInCodeIncomplete
+          && list.length > 0 && list.complete === true;
+        if (list.truncated) { functionStartsCapped = true; capped = true; }
+        if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
+        else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
+          functionStartsPartialReason = 'data-in-code-incomplete';
+      } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
+    }
   }
 
   if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
@@ -558,8 +670,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:false,
-      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated'||functionStartsCapped,
+      reasons:functionStartsExact ? [] : (functionStartsPartialReason
+        ? ['no-complete-lc-function-starts', 'function-starts:' + functionStartsPartialReason]
+        : ['no-complete-lc-function-starts']) },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
@@ -638,9 +752,18 @@ function sanitizeStubPointer(v, base) {
 async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId) {
   const out = new Set();
   if (!slice) return out;
+  let truncationReason = null;
+  let work = 0;
+  const seenSpans = new Set();   // #8770: exact-duplicate file-backed spans scanned at most once
   const methodSections = (slice.regions || []).filter((r) => r.section === '__objc_methlist' && r.size > 0n);
   for (const r of methodSections) {
     if (r.size > 16n * 1024n * 1024n) continue;
+    const spanKey = `${r.fileOffset}:${r.size}`;
+    if (seenSpans.has(spanKey)) continue;
+    seenSpans.add(spanKey);
+    const entries = Number(r.size >> 2n);
+    if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
+    work += entries;
     let buf;
     try { buf = await readRange(r.fileOffset, Number(r.size)); }
     catch { continue; }
@@ -674,9 +797,14 @@ async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestI
       /* Dedicated method lists are packed consecutively/aligned. Skip the body
          we just validated so entry payload cannot be reinterpreted as a header. */
       p += bytes - 4;
+      /* #8770: observe cancellation with bounded latency inside a large section
+         rather than only after it completes. */
+      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
     }
-    if (cancelled(requestId)) return out;
+    if (truncationReason === 'cancelled') break;
+    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
   }
+  if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
 }
 
@@ -713,17 +841,32 @@ async function readMappedVM(slice, vm, len) {
 async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
   const out = new Set();
   if (!slice || imageBase == null) return out;
+  let truncationReason = null;
+  let work = 0;
+  const seenSpans = new Set();   // #8770: exact-duplicate file-backed spans scanned at most once
   for (const r of slice.regions || []) {
     if (r.section !== '__init_offsets' || r.size <= 0n || r.size > 4n * 1024n * 1024n) continue;
+    /* regionsFrom() preserves every valid section descriptor, so N descriptors
+       can alias one physical byte span. The Set only deduplicated output; each
+       alias still re-read and re-walked the whole span. Canonicalize the physical
+       span so byte-identical aliases cost one scan. */
+    const spanKey = `${r.fileOffset}:${r.size}`;
+    if (seenSpans.has(spanKey)) continue;
+    seenSpans.add(spanKey);
+    const entries = Number(r.size >> 2n);
+    if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
+    work += entries;
     let b;
     try { b = await readRange(r.fileOffset, Number(r.size)); } catch { continue; }
     const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
     for (let p = 0; p + 4 <= b.byteLength; p += 4) {
       const target = BigInt(imageBase) + BigInt(dv.getUint32(p, true));
       if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
     }
-    if (cancelled(requestId)) break;
+    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
   }
+  if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
 }
 
@@ -738,14 +881,34 @@ async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
  * optional initialization/vtable records). Unknown/future layouts are skipped
  * rather than guessed.
  */
+/* #8764: aggregate walk budget for the Swift reflection helper. Aliased
+ * __swift5_types entries resolve to the SAME physical descriptor; without a
+ * cache every alias re-read and re-walked a full (up to 4096-entry) VTable,
+ * so ~65 KiB of metadata cost ~8.7s while the final Set deduplicated the
+ * identical results afterwards. One shared budget is charged before each
+ * distinct-descriptor parse and before each VTable walk (never after output
+ * insertion), and exhaustion is reported as truncated/incomplete evidence. */
+const SWIFT_REFLECTION_WORK_MAX = 200_000;
+
+/* #8770: aggregate uint32-entry budget for the exact-metadata helpers that walk
+ * __init_offsets / __objc_methlist sections. The Swift helper above already
+ * bounded repeated-descriptor walks; the same accounting applies here so that
+ * repeated/partially-overlapping section descriptors around one small physical
+ * span cannot multiply total byte/entry work proportionally to their count. */
+const LEGACY_METADATA_WORK_MAX = 2_000_000;
+
 async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
   const out = new Set();
   if (!slice) return out;
+  let truncationReason = null;
+  const markTruncated = (reason) => { if (!truncationReason) truncationReason = reason; };
+  const descriptorTargets = new Map();   // desc address -> resolved targets (negative cache included)
+  let work = 0;
   const typeSections = (slice.regions || []).filter((r) => r.section === '__swift5_types' && r.size > 0n);
   const addRelative = (field, raw) => {
-    if (!raw) return;
+    if (!raw) return null;
     const target = field + BigInt(raw);
-    if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+    return (target >= lo && target < hi && !(target & 3n)) ? target : null;
   };
   for (const sec of typeSections) {
     if (sec.size > 16n * 1024n * 1024n) continue;
@@ -757,64 +920,89 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
       if (!rel) continue;
       const field = sec.vmAddr + BigInt(p);
       const desc = field + BigInt(rel);
-      const head = await readMappedVM(slice, desc, 20);
-      if (!head) continue;
-      const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-      const flags = hv.getUint32(0, true);
-      const kind = flags & 0x1f; // class=16, struct=17, enum=18
-      if (kind !== 16 && kind !== 17 && kind !== 18) continue;
+      let targets = descriptorTargets.get(desc);
+      if (targets === undefined) {
+        if (++work > SWIFT_REFLECTION_WORK_MAX) { markTruncated('work-limit'); return finish(); }
+        targets = [];
+        const head = await readMappedVM(slice, desc, 20);
+        if (head) {
+          const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+          const flags = hv.getUint32(0, true);
+          const kind = flags & 0x1f; // class=16, struct=17, enum=18
+          if (kind === 16 || kind === 17 || kind === 18) {
+            // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
+            const accessor = addRelative(desc + 12n, hv.getInt32(12, true));
+            if (accessor != null) targets.push(accessor);
 
-      // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
-      addRelative(desc + 12n, hv.getInt32(12, true));
+            const generic = !!(flags & 0x80);
+            const specific = (flags >>> 16) & 0xffff;
+            const metadataInit = specific & 0x3;
+            const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
+            const fixedSize = kind === 16 ? 44 : 28;
 
-      const generic = !!(flags & 0x80);
-      const specific = (flags >>> 16) & 0xffff;
-      const metadataInit = specific & 0x3;
-      const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
-      const fixedSize = kind === 16 ? 44 : 28;
+            // For non-generic/non-resilient descriptors the initialization record is
+            // the first trailing object. Singleton init is 3 relative int32 fields;
+            // foreign init is one compact relative completion-function pointer.
+            if (!generic && !resilientSuperclass && metadataInit === 1) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
+                if (t != null) targets.push(t);
+              }
+            } else if (!generic && !resilientSuperclass && metadataInit === 2) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
+                if (t != null) targets.push(t);
+              }
+            }
 
-      // For non-generic/non-resilient descriptors the initialization record is
-      // the first trailing object. Singleton init is 3 relative int32 fields;
-      // foreign init is one compact relative completion-function pointer.
-      if (!generic && !resilientSuperclass && metadataInit === 1) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
-        }
-      } else if (!generic && !resilientSuperclass && metadataInit === 2) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
-        }
-      }
-
-      // Simple class descriptors place VTableDescriptorHeader immediately
-      // after the 44-byte fixed record: uint32 offset, uint32 count, then
-      // {flags, relative-impl} method descriptors.
-      const hasVTable = kind === 16 && !!(specific & (1 << 15));
-      if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
-        const vh = await readMappedVM(slice, desc + 44n, 8);
-        if (vh) {
-          const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
-          const count = vv.getUint32(4, true);
-          if (count <= 4096) {
-            const methods = await readMappedVM(slice, desc + 52n, count * 8);
-            if (methods) {
-              const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
-              for (let i = 0; i < count; i++) {
-                const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
-                addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+            // Simple class descriptors place VTableDescriptorHeader immediately
+            // after the 44-byte fixed record: uint32 offset, uint32 count, then
+            // {flags, relative-impl} method descriptors.
+            const hasVTable = kind === 16 && !!(specific & (1 << 15));
+            if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
+              const vh = await readMappedVM(slice, desc + 44n, 8);
+              if (vh) {
+                const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
+                const count = vv.getUint32(4, true);
+                if (count <= 4096) {
+                  if (work + count > SWIFT_REFLECTION_WORK_MAX) {
+                    markTruncated('vtable-work-limit');
+                    descriptorTargets.set(desc, targets);
+                    for (const t of targets) out.add(t);
+                    return finish();
+                  }
+                  work += count;
+                  const methods = await readMappedVM(slice, desc + 52n, count * 8);
+                  if (methods) {
+                    const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
+                    for (let i = 0; i < count; i++) {
+                      const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
+                      const t = addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+                      if (t != null) targets.push(t);
+                    }
+                  }
+                }
               }
             }
           }
         }
+        descriptorTargets.set(desc, targets);   // negatives cached too: repeated bad aliases stay bounded
+        /* Results of a re-aliased descriptor are already in the Set; only the
+         * first parse of a physical descriptor merges into the output. */
+        for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId)) return out;
+      if (cancelled(requestId)) return finish();
     }
   }
-  return out;
+  function finish() {
+    if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
+    return out;
+  }
+  return finish();
 }
 
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
@@ -861,12 +1049,23 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+  let unwindMetadataTruncated = false;
+  let unwindMetadataReason = null;
+  let swiftMetadataTruncated = false;
+  let swiftMetadataReason = null;
+  let legacyMetadataTruncated = false;
+  let legacyMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
-      for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
-        if (a >= lo && a < hi && found.size < cap) found.add(a);
+      const remaining = Math.max(0, cap - found.size);
+      if (remaining > 0) {
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId) });
+        for (const a of unwindStarts) if (a >= lo && a < hi && found.size < cap) found.add(a);
+        if (unwindStarts.truncated) { unwindMetadataTruncated = true; unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
       }
+      await yieldToQueue();
+      if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
@@ -874,18 +1073,27 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   /* Objective-C method-list IMPs are exact metadata evidence independent of
      LC_FUNCTION_STARTS. They are especially important for tiny accessors that
      are never reached by a direct BL. */
-  for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) {
+  const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId);
+  for (const a of methodStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
+  if (methodStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason = 'objc-methodlist-' + (methodStarts.truncationReason || 'truncated'); }
 
-  for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) {
+  const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId);
+  for (const a of initStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
-  for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) {
+  if (initStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason ||= 'legacy-init-' + (initStarts.truncationReason || 'truncated'); }
+  const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+  for (const a of swiftStarts) {
     if (found.size >= cap) break;
     found.add(a);
+  }
+  if (swiftStarts.truncated) {
+    swiftMetadataTruncated = true;
+    swiftMetadataReason = 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated');
   }
 
   /*
@@ -1296,8 +1504,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated || swiftMetadataTruncated || legacyMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason || swiftMetadataReason || legacyMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {
@@ -1421,7 +1629,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       if (kind === Words.KIND.LITERAL) {
         const t = Words.literalTarget(w, pc);
         if (t != null) addRef(pc, t, 1);
-        provenance.kill(w & 0x1f);
+        if (!Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
         continue;
       }
 
@@ -1441,7 +1649,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         // writing d8/q8 must not destroy an address held in x8.  Integer pair
         // loads/RMWs may overwrite two GP results, while exclusive stores also
         // write a separate status register.
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -1451,7 +1659,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
 
     pos += n * 4;
@@ -1484,7 +1692,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   };
 
   function addRef(pc, target, k) {
-    if (target == null || target <= 0n || refsCapped) return;
+    if (target == null || refsCapped) return;
     void lo; void hi;
     if (nRefs === refFrom.length && !growRefs()) refsCapped = memoryCapped = true;
     if (nRefs < refFrom.length) {
@@ -1969,6 +2177,26 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
 const UTF8 = new TextDecoder('utf-8', { fatal: false });
 const MAX_STRING_CHARS = 400;
 
+/** Well-formed UTF-8 sequence length (RFC 3629): lead-byte second-byte
+ * constraints included. 0 = invalid, -1 = truncated tail (more blocks needed). */
+function utf8WellFormedLength(buf, i) {
+  const c = buf[i];
+  if (c < 0x80) return 1;
+  let need = 0, lo = 0x80, hi = 0xbf;
+  if (c >= 0xc2 && c <= 0xdf) need = 1;
+  else if (c === 0xe0) { need = 2; lo = 0xa0; }
+  else if ((c >= 0xe1 && c <= 0xec) || c === 0xee || c === 0xef) need = 2;
+  else if (c === 0xed) { need = 2; hi = 0x9f; }
+  else if (c === 0xf0) { need = 3; lo = 0x90; }
+  else if (c >= 0xf1 && c <= 0xf3) need = 3;
+  else if (c === 0xf4) { need = 3; hi = 0x8f; }
+  else return 0;
+  if (i + need >= buf.length) return -1;
+  if (buf[i + 1] < lo || buf[i + 1] > hi) return 0;
+  for (let k = 2; k <= need; k++) if ((buf[i + k] & 0xc0) !== 0x80) return 0;
+  return need + 1;
+}
+
 /**
  * 「そこに置いてある 1 本の文字列」を読む。読めなければ空文字。
  *
@@ -1981,19 +2209,14 @@ function decodeUtf8Text(bytes) {
   let n = 0;
   while (n < bytes.length) {
     const c = bytes[n];
-    let need;
     if (c < 0x80) {
       if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13)) break;
-      need = 0;
-    } else if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
-    else break;
-    if (n + need >= bytes.length) break;
-    let ok = true;
-    for (let k = 1; k <= need; k++) if ((bytes[n + k] & 0xc0) !== 0x80) { ok = false; break; }
-    if (!ok) break;
-    n += need + 1;
+      n += 1;
+      continue;
+    }
+    const len = utf8WellFormedLength(bytes, n);
+    if (len <= 0) break;
+    n += len;
   }
   if (!n) return '';
   return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
@@ -2010,33 +2233,31 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
   let runBytes = [];
+  let runDropped = 0;          // 表示budgetで保存できなかった run の残り bytes (#5381)
 
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
+      // Keep the raw run's byte extent: the display text is a decoded,
+      // control-escaped string whose .length is not an address span (#5698).
+      const byteLength = runBytes.length + runDropped;
       const text = UTF8.decode(new Uint8Array(runBytes))
         .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
-        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
+        const entry = { addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength };
+        if (runDropped > 0) entry.truncated = true;
+        out.push(entry);
       }
     }
     runStart = -1;
     runBytes = [];
+    runDropped = 0;
   };
 
   /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
   const utf8Len = (buf, i) => {
     const c = buf[i];
     if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13 ? 1 : 0;
-    let need = 0;
-    if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
-    else return 0;
-    if (i + need >= buf.length) return -1;               // 続きは次の塊にある
-    for (let k = 1; k <= need; k++) {
-      if ((buf[i + k] & 0xc0) !== 0x80) return 0;
-    }
-    return need + 1;
+    return utf8WellFormedLength(buf, i);
   };
 
   let carry = new Uint8Array(0);
@@ -2059,9 +2280,11 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
       const n = utf8Len(buf, i);
       if (n === -1 && !last) break;                      // 途中で切れた。次の塊と合わせる
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart < 0) { runStart = baseOff + i; runBytes = []; }
-      if (runBytes.length < MAX_STRING_CHARS * 4) {
+      if (runStart < 0) { runStart = baseOff + i; runBytes = []; runDropped = 0; }
+      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
         for (let k = 0; k < n; k++) runBytes.push(buf[i + k]);
+      } else {
+        runDropped += n;
       }
       i += n - 1;
     }
@@ -2174,7 +2397,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
             if (out.length >= cap) break;
           }
         }
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -2184,7 +2407,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, out.length);

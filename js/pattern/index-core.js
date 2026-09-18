@@ -1,4 +1,5 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { fnv64ByteView, fnv64Hex } from '../core/identity/fnv64.js';
 import { createResourceBudget } from '../phase12/resource-budget.js';
 
 export const PATTERN_LANGUAGE_VERSION = 'hex-pattern-language-v1';
@@ -16,41 +17,180 @@ const PRIMITIVES = new Map([
 
 function text(value) { return String(value ?? ''); }
 function list(value) { return Array.isArray(value) ? value : []; }
+
+// #8841: pattern compilation admitted caller input only after recursive
+// hashing/freezing/cloning, so a deep or wide object graph could exhaust the
+// native stack or materialize huge transient state before any budget existed.
+// One iterative bounded admission pass now precedes every canonicalizing
+// recursion over caller-controlled pattern input.
+export const PATTERN_COMPILE_MAX_NODES = 50_000;
+export const PATTERN_COMPILE_MAX_DEPTH = 512;
+export const PATTERN_COMPILE_MAX_CONTENT_BYTES = 4 * 1024 * 1024;
+export const PATTERN_SOURCE_MAX_TEXT_BYTES = 256 * 1024;
+export const PATTERN_SOURCE_MAX_TOKENS = 20_000;
+export const PATTERN_TYPE_MAX_NESTING = 65;
+export const PATTERN_SHAPE_MAX_CHILDREN = 10_000;
+
+export function admitCompiledGraph(root) {
+  const stack = [[root, 0]];
+  const seen = new WeakSet();
+  let nodes = 0;
+  let contentBytes = 0;
+  while (stack.length) {
+    const [value, depth] = stack.pop();
+    if (depth > PATTERN_COMPILE_MAX_DEPTH) fail('pattern-source-depth-exceeded');
+    nodes += 1;
+    if (nodes > PATTERN_COMPILE_MAX_NODES) fail('pattern-source-node-limit');
+    const type = typeof value;
+    if (type === 'string') {
+      contentBytes += value.length;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value === null || type !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (ArrayBuffer.isView(value)) {
+      contentBytes += value.byteLength;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value instanceof ArrayBuffer) {
+      contentBytes += value.byteLength;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value instanceof Date || value instanceof Error) continue;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) stack.push([value[index], depth + 1]);
+      continue;
+    }
+    if (value instanceof Map) {
+      for (const [key, entry] of value) { stack.push([key, depth + 1]); stack.push([entry, depth + 1]); }
+      continue;
+    }
+    if (value instanceof Set) {
+      for (const entry of value) stack.push([entry, depth + 1]);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      contentBytes += key.length;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      stack.push([value[key], depth + 1]);
+    }
+  }
+}
+
+const NUMBER_TOKEN_RE = /(?:0x[0-9a-f]+|[0-9]+)/iy;
+const IDENTIFIER_TOKEN_RE = /[A-Za-z_][A-Za-z0-9_.-]*/y;
 function tokenize(source) {
   const tokens = []; let i = 0;
   while (i < source.length) {
+    if (tokens.length > PATTERN_SOURCE_MAX_TOKENS) fail('pattern-source-token-limit');
     if (/\s/.test(source[i])) { i++; continue; }
     if (source.startsWith('//', i)) { const end = source.indexOf('\n', i + 2); i = end < 0 ? source.length : end + 1; continue; }
     const char = source[i];
     if ('{}[]():;,*<>'.includes(char)) { tokens.push({ type: char, value: char }); i++; continue; }
     if (char === '"' || char === "'") { const quote = char; let value = ''; i++; while (i < source.length && source[i] !== quote) { if (source[i] === '\\') { i++; if (i >= source.length) throw new SyntaxError('pattern unterminated string'); } value += source[i++]; } if (source[i] !== quote) throw new SyntaxError('pattern unterminated string'); i++; tokens.push({ type: 'string', value }); continue; }
-    const number = /^(?:0x[0-9a-f]+|[0-9]+)/i.exec(source.slice(i));
+    NUMBER_TOKEN_RE.lastIndex = i;
+    const number = NUMBER_TOKEN_RE.exec(source);
     if (number) { tokens.push({ type: 'number', value: number[0] }); i += number[0].length; continue; }
-    const identifier = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(source.slice(i));
+    IDENTIFIER_TOKEN_RE.lastIndex = i;
+    const identifier = IDENTIFIER_TOKEN_RE.exec(source);
     if (identifier) { tokens.push({ type: 'identifier', value: identifier[0] }); i += identifier[0].length; continue; }
     throw new SyntaxError(`pattern unexpected character: ${char}`);
   }
+  if (tokens.length > PATTERN_SOURCE_MAX_TOKENS) fail('pattern-source-token-limit');
   tokens.push({ type: 'eof', value: '' });
   return tokens;
 }
 
+// Deterministic, content-complete snapshot identity for a raw-byte source. It
+// walks the byte view with indexed reads in constant space, so hashing an
+// arbitrarily large buffer never boxes one JS number per byte nor builds a
+// decimal JSON string (the pre-budget amplification removed by #8749). The
+// two-limb structure mirrors `stableDigest` so a raw digest keeps the same
+// hex-string shape used everywhere else, and every byte (including bytes the
+// pattern never reads) feeds the result.
+export function byteViewDigest(bytes) {
+  const primary = fnv64ByteView(bytes);
+  const secondary = fnv64ByteView(bytes, 0xcbf29ce4, 0x84222325);
+  return fnv64Hex(primary.low, primary.high) + fnv64Hex(secondary.low, secondary.high);
+}
+
+// Pattern Language identity is derived before the evaluator/compile resource
+// budget exists, so a caller-supplied structured AST/options value must not be
+// handed to the materializing generic identity helper unmeasured (#8749). This
+// is an O(nodes) early-bail accounting of raw binary/string payloads, not a
+// repository-wide identity rewrite.
+const PATTERN_IDENTITY_MAX_INPUT_BYTES = 8 * 1024 * 1024;
+const PATTERN_IDENTITY_MAX_INPUT_NODES = 500_000;
+function identityInputTooLarge(code, reason) {
+  const error = new TypeError(code);
+  error.code = code;
+  error.patternIdentityStop = reason;
+  throw error;
+}
+function assertBoundedIdentityInput(value, code) {
+  let bytes = 0;
+  let nodes = 0;
+  const stack = [value];
+  const seen = new WeakSet();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (typeof current === 'string') {
+      bytes += current.length;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (ArrayBuffer.isView(current)) {
+      bytes += current.byteLength;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (current instanceof ArrayBuffer) {
+      bytes += current.byteLength;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      nodes += 1;
+      if (nodes > PATTERN_IDENTITY_MAX_INPUT_NODES) identityInputTooLarge(code, 'nodes');
+      if (Array.isArray(current)) {
+        for (let index = current.length - 1; index >= 0; index -= 1) stack.push(current[index]);
+      } else {
+        for (const key in current) stack.push(current[key]);
+      }
+    }
+  }
+}
+
 export function parsePattern(source) {
-  if (source && typeof source === 'object') return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast: source, source: stableDigest(source) });
+  if (source && typeof source === 'object') {
+    assertBoundedIdentityInput(source, 'pattern-identity-input-too-large');
+    admitCompiledGraph(source);
+    return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast: source, source: stableDigest(source) });
+  }
   const raw = text(source).trim();
   if (!raw) throw new SyntaxError('pattern source is empty');
+  if (raw.length > PATTERN_SOURCE_MAX_TEXT_BYTES) fail('pattern-source-text-limit');
   if (raw.startsWith('{') || raw.startsWith('[')) {
     let ast;
     try { ast = JSON.parse(raw); } catch (error) { throw new SyntaxError(`pattern JSON malformed: ${error.message}`); }
+    admitCompiledGraph(ast);
     return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast, source: raw });
   }
   const tokens = tokenize(raw); let cursor = 0;
   const peek = () => tokens[cursor];
   const take = (type, value = null) => { const token = tokens[cursor]; if (token.type !== type || value != null && token.value !== value) throw new SyntaxError(`pattern expected ${value || type}`); cursor++; return token; };
-  const parseType = () => {
+  const parseType = (depth = 0) => {
+    if (depth > PATTERN_TYPE_MAX_NESTING) fail('pattern-type-nesting-too-deep');
     const base = take('identifier').value;
     let type = PRIMITIVES.has(base) ? { kind: 'primitive', name: base } : { kind: 'named', name: base };
-    if (peek().type === '<') { take('<'); const target = parseType(); take('>'); type = { kind: base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset', space: 'file', target }; }
-    if (peek().type === '[') { take('['); const count = peek().type === 'number' ? Number(take('number').value) : take('identifier').value; take(']'); type = { kind: 'array', element: type, count }; }
+    if (peek().type === '<') { take('<'); const target = parseType(depth + 1); take('>'); type = { kind: base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset', space: 'file', target }; }
+    if (peek().type === '[') { take('['); const count = peek().type === 'number' ? Number(take('number').value) : take('identifier').value; take(']'); type = { kind: 'array', element: type, count }; return type; }
     return type;
   };
   take('identifier', 'struct'); const name = take('identifier').value; take('{'); const fields = [];
@@ -67,7 +207,7 @@ function validateExpression(expression, depth = 0) {
   if (op === 'const') return;
   if (op === 'ref') { if (typeof expression.path !== 'string' || !expression.path) fail('pattern-expression-ref-invalid'); return; }
   if (op === 'not') return validateExpression(expression.arg, depth + 1);
-  if (['and', 'or'].includes(op)) { if (!Array.isArray(expression.args) || !expression.args.length) fail('pattern-expression-args-invalid'); expression.args.forEach((item) => validateExpression(item, depth + 1)); return; }
+  if (['and', 'or'].includes(op)) { if (!Array.isArray(expression.args) || !expression.args.length || expression.args.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-expression-args-invalid'); expression.args.forEach((item) => validateExpression(item, depth + 1)); return; }
   validateExpression(expression.left, depth + 1); validateExpression(expression.right, depth + 1);
 }
 
@@ -79,11 +219,12 @@ function validateType(type, depth = 0, names = new Set()) {
   if (type.kind === 'array') {
     const countType = typeof type.count;
     if (countType === 'number') {
-      if (!Number.isSafeInteger(type.count) || type.count < 0) fail('pattern-array-count-invalid');
+      if (!isArrayCountNumber(type.count)) fail('pattern-array-count-invalid');
     } else if (countType === 'string') {
       if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
     } else if (type.count && countType === 'object' && !Array.isArray(type.count)) {
       validateExpression(type.count);
+      if (type.count.op === 'const' && !isArrayCountNumber(type.count.value)) fail('pattern-array-count-invalid');
     } else {
       fail('pattern-array-count-invalid');
     }
@@ -91,9 +232,9 @@ function validateType(type, depth = 0, names = new Set()) {
   }
   if (type.kind === 'pointer' || type.kind === 'offset') { if (typeof type.space !== 'string' || !type.space) fail('pattern-address-space-required'); validateType(type.target, depth + 1, names); return; }
   if (type.kind === 'conditional') { validateExpression(type.when); validateType(type.then, depth + 1, names); if (type.else) validateType(type.else, depth + 1, names); return; }
-  if (type.kind === 'union') { if (!list(type.options).length) fail('pattern-union-empty'); type.options.forEach((item) => validateType(item, depth + 1, names)); return; }
+  if (type.kind === 'union') { const options = list(type.options); if (!options.length) fail('pattern-union-empty'); if (options.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-union-options-invalid'); options.forEach((item) => validateType(item, depth + 1, names)); return; }
   if (type.kind === 'enum') { validateType(type.base, depth + 1, names); return; }
-  if (type.kind === 'bitfield') { validateType(type.base, depth + 1, names); if (!Array.isArray(type.fields)) fail('pattern-bitfield-fields-invalid'); return; }
+  if (type.kind === 'bitfield') { validateType(type.base, depth + 1, names); if (!Array.isArray(type.fields) || type.fields.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-bitfield-fields-invalid'); return; }
   fail(`pattern-type-kind-unsupported:${type.kind}`);
 }
 
@@ -101,6 +242,7 @@ export function typeCheckPattern(parsed) {
   const input = parsed?.ast ? parsed : parsePattern(parsed);
   const ast = input.ast;
   const structs = ast.kind === 'module' ? list(ast.structs) : [ast];
+  if (ast.kind === 'module' && structs.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-module-structs-invalid');
   // Named types form one namespace: the evaluator resolves duplicates
   // last-wins, so accepting them here would let definition order silently
   // decide the canonical layout of a shared type name.
@@ -117,8 +259,11 @@ export function typeCheckPattern(parsed) {
 
 export function compilePattern(source, options = {}) {
   const parsed = typeCheckPattern(parsePattern(source));
+  assertBoundedIdentityInput(parsed.ast, 'pattern-identity-input-too-large');
   const sourceHash = stableDigest(parsed.ast);
   const compileOptions = { targetAddressSpace: options.targetAddressSpace || 'file', semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
+  assertBoundedIdentityInput(compileOptions, 'pattern-identity-input-too-large');
+  admitCompiledGraph(compileOptions.options);
   return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
 }
 
@@ -131,13 +276,19 @@ function toBytes(value) {
 function createSource(input, options = {}) {
   const bytes = toBytes(input);
   if (bytes) {
-    const snapshotId = options.snapshotId || stableDigest(Array.from(bytes));
+    const snapshotId = options.snapshotId || byteViewDigest(bytes);
     return { snapshotId, size: bytes.byteLength, read(offset, length, space = 'file') { if (space !== 'file') throw new Error('pattern-address-space-unavailable'); const at = Number(offset), n = Number(length); if (!Number.isSafeInteger(at) || !Number.isSafeInteger(n) || at < 0 || n < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range'); return bytes.slice(at, at + n); } };
   }
-  if (input && typeof input.read === 'function') return { snapshotId: String(input.snapshotId || options.snapshotId || ''), size: input.size ?? null, read: (offset, length, space) => input.read(offset, length, { space }) };
+  if (input && typeof input.read === 'function') return {
+    snapshotId: String(input.snapshotId || options.snapshotId || ''),
+    size: input.size ?? null,
+    read: (offset, length, space, signal = null) => input.read(offset, length, signal ? { space, signal } : { space }),
+  };
   throw new TypeError('pattern ByteSource is required');
 }
 function safeNumber(value, code = 'pattern-integer-overflow') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) fail(code); return number; }
+function isArrayCountNumber(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+function arrayCountNumber(value) { if (!isArrayCountNumber(value)) fail('pattern-array-count-invalid'); return value; }
 function primitiveValue(raw, name) { return typeof raw === 'bigint' && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw; }
 function provenance(ctx, offset, length, space = 'file') { return { patternId: ctx.patternId, snapshotId: ctx.source.snapshotId, space, offset: String(offset), length: String(length) }; }
 function fieldValue(type, value, ctx, offset, length, space = 'file', extra = {}) { return { type: type.kind === 'primitive' ? type.name : type.kind, value, provenance: provenance(ctx, offset, length, space), ...extra }; }
@@ -193,8 +344,8 @@ function knownExpression(expression, values) {
 }
 
 function staticSize(type, ctx, values = {}, resolving = new Set()) {
-  if (type.kind === 'primitive') return PRIMITIVES.get(type.name).bytes;
-  if (type.kind === 'pointer' || type.kind === 'offset') return 8;
+  if (type.kind === 'primitive') return BigInt(PRIMITIVES.get(type.name).bytes);
+  if (type.kind === 'pointer' || type.kind === 'offset') return 8n;
   if (type.kind === 'named') {
     if (resolving.has(type.name)) return null;
     const target = ctx.types?.get(type.name);
@@ -205,11 +356,11 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
   }
   if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values, resolving);
   if (type.kind === 'array' && Number.isSafeInteger(type.count)) {
-    if (type.count === 0) return 0;
-    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * type.count;
+    if (type.count === 0) return 0n;
+    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * BigInt(type.count);
   }
   if (type.kind === 'struct') {
-    let total = 0;
+    let total = 0n;
     for (const field of type.fields) {
       if (field.when) {
         const state = knownExpression(field.when, values);
@@ -226,7 +377,7 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
     const state = knownExpression(type.when, values);
     if (!state.known) return null;
     if (state.value) return staticSize(type.then, ctx, values, resolving);
-    return type.else ? staticSize(type.else, ctx, values, resolving) : 0;
+    return type.else ? staticSize(type.else, ctx, values, resolving) : 0n;
   }
   if (type.kind === 'union') {
     // A fixed-alternative union occupies at least its largest alternative
@@ -250,7 +401,15 @@ function consumedSize(type, result, ctx, values) {
   const length = result?.provenance?.length;
   if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
   const size = staticSize(type, ctx, values);
-  return size == null ? null : { size: BigInt(size) };
+  return size == null ? null : { size };
+}
+
+async function consumedSizeAsync(type, result, ctx, values) {
+  if (typeof result?.[ARRAY_CONSUMED_SIZE] === 'function') return await result[ARRAY_CONSUMED_SIZE]();
+  const length = result?.provenance?.length;
+  if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
+  const size = staticSize(type, ctx, values);
+  return size == null ? null : { size };
 }
 
 function readType(type, offset, space, ctx, values, depth = 0) {
@@ -274,12 +433,12 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     const pointer = readType({ kind: 'primitive', name: 'u64le' }, offset, space, ctx, values, depth + 1); if (pointer.status) return pointer;
     const address = pointer.value; const targetSpace = type.space;
     const out = fieldValue(type, address, ctx, offset, 8, space, { targetSpace, lazy: true });
-    out.dereference = () => readType(type.target, safeNumber(address), targetSpace, ctx, values, depth + 1);
+    out.dereference = () => readType(type.target, address, targetSpace, ctx, values, depth + 1);
     return out;
   }
   if (type.kind === 'array') {
     const countValue = typeof type.count === 'number' ? type.count : typeof type.count === 'string' ? valueAt(values, type.count) : evaluateExpression(type.count, values);
-    const count = safeNumber(countValue, 'pattern-array-count-invalid');
+    const count = arrayCountNumber(countValue);
     const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
     const elementSize = staticSize(type.element, ctx, values);
     const elementOffsets = [];
@@ -292,7 +451,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
           continue;
         }
         if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
-        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * BigInt(elementSize);
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * elementSize;
         const item = readType(type.element, at, space, ctx, values, depth + 1);
         if (item.status) return item;
         const measured = consumedSize(type.element, item, ctx, values);
@@ -307,7 +466,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     };
     out[ARRAY_CONSUMED_SIZE] = () => {
       if (count === 0) return { size: 0n };
-      if (elementSize != null) return { size: BigInt(elementSize) * BigInt(count) };
+      if (elementSize != null) return { size: elementSize * BigInt(count) };
       const result = ensureElements(count - 1);
       if (result?.status) return result;
       return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };
@@ -342,6 +501,101 @@ function readType(type, offset, space, ctx, values, depth = 0) {
   fail('pattern-type-unsupported');
 }
 
+
+async function readTypeAsync(type, offset, space, ctx, values, depth = 0) {
+  if (!ctx.budget.checkDepth(depth) || !ctx.budget.consumeNodes()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'resource-limit' };
+  if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+  if (type.kind === 'primitive') {
+    const spec = PRIMITIVES.get(type.name); if (!spec) fail('pattern-primitive-unsupported');
+    if (!ctx.budget.consumeBytes(spec.bytes)) return { status: 'partial', reason: ctx.budget.stopped.reason };
+    const bytes = await ctx.source.read(offset, spec.bytes, space, ctx.signal);
+    if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const value = primitiveValue(spec.read(view, 0), type.name);
+    return fieldValue(type, value, ctx, offset, spec.bytes, space);
+  }
+  if (type.kind === 'named') {
+    const target = ctx.types.get(type.name);
+    if (!target) fail(`pattern-type-unknown:${type.name}`);
+    return readTypeAsync(target, offset, space, ctx, values, depth + 1);
+  }
+  if (type.kind === 'enum') { const result = await readTypeAsync(type.base, offset, space, ctx, values, depth + 1); return result.status ? result : { ...result, type: 'enum', enumName: type.name || null }; }
+  if (type.kind === 'bitfield') { const result = await readTypeAsync(type.base, offset, space, ctx, values, depth + 1); return result.status ? result : { ...result, type: 'bitfield', fields: type.fields }; }
+  if (type.kind === 'conditional') return evaluateExpression(type.when, values) ? readTypeAsync(type.then, offset, space, ctx, values, depth + 1) : type.else ? readTypeAsync(type.else, offset, space, ctx, values, depth + 1) : fieldValue(type, null, ctx, offset, 0, space, { absent: true });
+  if (type.kind === 'pointer' || type.kind === 'offset') {
+    const pointer = await readTypeAsync({ kind: 'primitive', name: 'u64le' }, offset, space, ctx, values, depth + 1); if (pointer.status) return pointer;
+    const address = pointer.value; const targetSpace = type.space;
+    const out = fieldValue(type, address, ctx, offset, 8, space, { targetSpace, lazy: true });
+    out.dereference = () => readTypeAsync(type.target, address, targetSpace, ctx, values, depth + 1);
+    return out;
+  }
+  if (type.kind === 'array') {
+    const countValue = typeof type.count === 'number' ? type.count : typeof type.count === 'string' ? valueAt(values, type.count) : evaluateExpression(type.count, values);
+    const count = arrayCountNumber(countValue);
+    const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
+    const elementSize = staticSize(type.element, ctx, values);
+    const elementOffsets = [];
+    const elementLengths = [];
+    const ensureElements = async (through) => {
+      let next = BigInt(offset);
+      for (let j = 0; j <= through; j++) {
+        if (out.materialized[j]) {
+          if (elementSize == null) next = elementOffsets[j] + elementLengths[j];
+          continue;
+        }
+        if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * elementSize;
+        const item = await readTypeAsync(type.element, at, space, ctx, values, depth + 1);
+        if (item.status) return item;
+        const measured = await consumedSizeAsync(type.element, item, ctx, values);
+        if (measured?.status) return measured;
+        if (measured?.size == null) return { status: 'partial', reason: 'pattern-array-layout-unknown' };
+        out.materialized[j] = item;
+        elementOffsets[j] = at;
+        elementLengths[j] = measured.size;
+        if (elementSize == null) next = at + measured.size;
+      }
+      return out.materialized[through] || null;
+    };
+    let expansionTail = Promise.resolve();
+    const serializeExpansion = (work) => {
+      const result = expansionTail.then(work, work);
+      expansionTail = result.then(() => undefined, () => undefined);
+      return result;
+    };
+    out[ARRAY_CONSUMED_SIZE] = () => serializeExpansion(async () => {
+      if (count === 0) return { size: 0n };
+      if (elementSize != null) return { size: elementSize * BigInt(count) };
+      const result = await ensureElements(count - 1);
+      if (result?.status) return result;
+      return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };
+    });
+    out.expand = (index) => {
+      const i = safeNumber(index, 'pattern-array-index-invalid');
+      if (i >= count) throw new RangeError('pattern-array-index-out-of-range');
+      if (out.materialized[i]) return Promise.resolve(out.materialized[i]);
+      return serializeExpansion(() => ensureElements(i));
+    };
+    return out;
+  }
+  if (type.kind === 'union') {
+    const options = [];
+    for (const item of type.options) options.push(await readTypeAsync(item, offset, space, ctx, values, depth + 1));
+    const unionSize = staticSize(type, ctx, values);
+    if (unionSize == null) return { status: 'partial', reason: 'pattern-union-size-unproven' };
+    return fieldValue(type, options[0]?.value ?? null, ctx, offset, unionSize, space, { alternatives: options });
+  }
+  if (type.kind === 'struct') {
+    const fields = {}; let cursor = BigInt(offset); const localValues = { ...values };
+    for (const field of type.fields) {
+      if (field.when && !evaluateExpression(field.when, localValues)) { fields[field.name] = fieldValue(field.type, null, ctx, cursor, 0, space, { absent: true }); continue; }
+      const relative = field.at == null ? 0 : safeNumber(typeof field.at === 'number' ? field.at : valueAt(localValues, field.at), 'pattern-field-offset-invalid');
+      const fieldOffset = cursor + BigInt(relative); const result = await readTypeAsync(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; const measured = field.at == null ? await consumedSizeAsync(field.type, result, ctx, localValues) : null; if (measured?.status) return measured; localValues[field.name] = result; if (field.at == null && measured?.size != null) cursor += measured.size;
+    }
+    const size = cursor - BigInt(offset); return fieldValue(type, fields, ctx, offset, size, space, { fields });
+  }
+  fail('pattern-type-unsupported');
+}
+
 export function evaluatePattern(compiled, byteSource, options = {}) {
   const pattern = compiled?.patternId ? compiled : compilePattern(compiled, options);
   const source = createSource(byteSource, options);
@@ -357,6 +611,19 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   return { status: 'complete', patternId: pattern.patternId, snapshotId: source.snapshotId, value: result, budget: budget.snapshot() };
 }
 
-export function evaluatePatternAsync(compiled, byteSource, options = {}) { return Promise.resolve(evaluatePattern(compiled, byteSource, options)); }
+export async function evaluatePatternAsync(compiled, byteSource, options = {}) {
+  const pattern = compiled?.patternId ? compiled : compilePattern(compiled, options);
+  const source = createSource(byteSource, options);
+  if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');
+  const budget = options.budget || createResourceBudget({ maxBytes: options.maxBytes || 4 * 1024 * 1024, maxNodes: options.maxNodes || 50_000, maxEntries: options.maxEntries || 50_000, maxDepth: options.maxDepth || 64, signal: options.signal });
+  const structs = pattern.ast.kind === 'module' ? pattern.ast.structs : [pattern.ast];
+  const typeMap = new Map(structs.filter((item) => item?.name).map((item) => [item.name, item]));
+  const root = pattern.ast.kind === 'module' ? typeMap.get(pattern.ast.root || structs[0]?.name) : pattern.ast;
+  const ctx = { patternId: pattern.patternId, source, budget, types: typeMap, signal: options.signal || null };
+  const initialValues = pattern.ast.constants && typeof pattern.ast.constants === 'object' ? { constants: pattern.ast.constants } : {};
+  const result = await readTypeAsync(root, 0n, options.addressSpace || 'file', ctx, initialValues, 0);
+  if (result.status === 'partial' || budget.stopped) return { status: 'partial', reason: result.reason || budget.stopped.reason, patternId: pattern.patternId, snapshotId: source.snapshotId, value: null, budget: budget.snapshot() };
+  return { status: 'complete', patternId: pattern.patternId, snapshotId: source.snapshotId, value: result, budget: budget.snapshot() };
+}
 
 export function patternSupportTruth() { return Object.freeze({ parser: 'supported', evaluator: 'bounded', mutation: 'unsupported', network: 'unsupported', arbitraryJavaScript: 'unsupported', authority: 'L2-evidence' }); }

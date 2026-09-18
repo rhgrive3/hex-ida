@@ -5,309 +5,147 @@
  *
  * Canonical v2 projections are excluded: their MemorySSA facts remain the sole
  * authority. Ambiguous, cyclic, mismatched, or unproven stack loads stay loads.
- * The legacy reachingStore pointer is only a candidate: publication still
- * needs the physical same-block LOAD/STORE layout and source binding below.
  */
-import {
-  memoryMutationCollides,
-  memoryMutationDescriptor,
-} from './passes/stack-return-recovery.js';
+import { mergeSource, structuralKey } from './ast/nodes.js';
+import { expressionOriginHistory } from './rewrite/engine.js';
+import { readExpressionHistoryConsumer } from './pipeline-core.js';
+import { captureRecoveryIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { exactLegacySameBlockStackStore } from './passes/legacy-stack-recovery.js';
 
-function positiveAccessSize(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+export { exactLegacySameBlockStackStore } from './passes/legacy-stack-recovery.js';
+
+const valueHistories = new WeakMap();
+export function readLegacyStackValueHistory(entry, ir) {
+  const binding = valueHistories.get(entry);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(entry, key)?.value;
+  return data('expression') === binding.expression && data('valueId') === binding.valueId
+    && binding.isCurrent() ? binding : null;
 }
 
-function ownData(object, key) {
-  if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
-    return { present:false, valid:true, value:undefined };
+const source = inst => ({ address:inst.address, row:inst.row, ir:inst.id, ssaDef:inst.dst?.id,
+  ssaUses:(inst.args || []).map(arg => arg?.value?.id).filter(id => id != null) });
+const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+function retain(trace, records) {
+  for (const record of records) {
+    if (trace.records.has(record)) continue;
+    if (trace.records.size < trace.maximum) trace.records.add(record);
+    else trace.truncated = true;
   }
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(object, key);
-    if (!descriptor) return { present:false, valid:true, value:undefined };
-    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-      return { present:true, valid:false, value:undefined };
-    }
-    return { present:true, valid:true, value:descriptor.value };
-  } catch {
-    return { present:true, valid:false, value:undefined };
-  }
 }
 
-function valueOf(object, key) {
-  const field = ownData(object, key);
-  return field.present && field.valid ? field.value : undefined;
-}
-
-function validRow(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function idKey(value) {
-  if (typeof value === 'string' && value.length > 0) return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
-  return null;
-}
-
-function stackLocation(object) {
-  const location = valueOf(object, 'loc');
-  if (!location || typeof location !== 'object') return null;
-  const kind = valueOf(location, 'kind');
-  const key = valueOf(location, 'key');
-  const size = valueOf(location, 'size');
-  if (typeof kind !== 'string' || typeof key !== 'string' || key.length === 0) return null;
-  return { kind, key, size };
-}
-
-function instructionOp(instruction) {
-  const op = valueOf(instruction, 'op');
-  return typeof op === 'string' ? op : null;
-}
-
-function instructionRow(instruction) {
-  const field = ownData(instruction, 'row');
-  return field.present && field.valid && validRow(field.value) ? field.value : null;
-}
-
-function instructionBlock(instruction) {
-  const field = ownData(instruction, 'block');
-  return field.present && field.valid && validRow(field.value) ? field.value : null;
-}
-
-function arrayField(object, key) {
-  const field = ownData(object, key);
-  if (!field.present) return { ok:true, value:[] };
-  return { ok:field.valid && Array.isArray(field.value), value:field.valid && Array.isArray(field.value) ? field.value : [] };
-}
-
-function sourceIds(node, control) {
-  const source = valueOf(node, 'source');
-  const ids = arrayField(source, 'ir');
-  if (!ids.ok) return null;
-  const keys = [];
-  try {
-    for (const id of ids.value) {
-      if (control?.isAborted?.()) return null;
-      const key = idKey(id);
-      if (key == null) return null;
-      keys.push(key);
-    }
-  } catch {
-    return null;
-  }
-  return keys;
-}
-
-function valueArgument(instruction) {
-  const args = valueOf(instruction, 'args');
-  if (!Array.isArray(args) || !args.length) return null;
-  const argument = args[0];
-  const field = ownData(argument, 'value');
-  return field.present && field.valid ? field.value || null : null;
-}
-
-export function legacyRecoveryControl(opts) {
-  const callback = ownData(opts, 'shouldAbort');
-  const deadline = ownData(opts, 'deadline');
-  const deterministic = ownData(opts, 'deterministicTransforms');
-  const timeBudget = ownData(opts, 'decompilerTimeBudgetMs');
-  const workBudget = ownData(opts, 'decompilerNodeBudget');
-  if (deterministic.present && (!deterministic.valid || typeof deterministic.value !== 'boolean')) {
-    return { isAborted:() => true };
-  }
-  const validDeadline = deadline.present && deadline.valid && typeof deadline.value === 'number'
-    && (Number.isFinite(deadline.value) || deadline.value === Infinity);
-  if (deadline.present && !validDeadline) return { isAborted:() => true };
-  const validTimeBudget = timeBudget.present && timeBudget.valid && typeof timeBudget.value === 'number'
-    && Number.isFinite(timeBudget.value) && timeBudget.value >= 0;
-  const validWorkBudget = workBudget.present && workBudget.valid && typeof workBudget.value === 'number'
-    && Number.isSafeInteger(workBudget.value) && workBudget.value >= 0;
-  const started = globalThis.performance?.now ? globalThis.performance.now() : Date.now();
-  // Malformed and omitted time budgets retain the finite default below;
-  // only explicit deterministic mode disables the wall-clock deadline.
-  const callerTimeBudget = validTimeBudget ? timeBudget.value : 50;
-  const derivedDeadline = deterministic.value === true ? Infinity : started + callerTimeBudget;
-  const effectiveDeadline = validDeadline ? Math.min(deadline.value, derivedDeadline) : derivedDeadline;
-  const maxWork = validWorkBudget ? workBudget.value : 12000;
-  const callbackFunction = callback.present && callback.valid && typeof callback.value === 'function'
-    ? callback.value : null;
-  let cancelled = callback.present && (!callback.valid || typeof callback.value !== 'function');
-  let work = 0;
-  return {
-    isAborted() {
-      if (cancelled) return true;
-      if (deterministic.value !== true) {
-        const clock = globalThis.performance?.now ? globalThis.performance.now() : Date.now();
-        if (clock >= effectiveDeadline) { cancelled = true; return true; }
-      }
-      if (work >= maxWork) { cancelled = true; return true; }
-      work += 1;
-      if (!callbackFunction) return false;
-      try {
-        if (callbackFunction() === true) { cancelled = true; return true; }
-      } catch { cancelled = true; return true; }
-      return false;
-    },
-  };
-}
-
-export function exactLegacySameBlockStackStore(load, ir, opts = {}, control = legacyRecoveryControl(opts)) {
-  if (control.isAborted()) return null;
-  const loadOp = instructionOp(load);
-  const loadLocation = stackLocation(load);
-  const reaching = ownData(load, 'reachingStore');
-  if (loadOp !== 'load' || !loadLocation || loadLocation.kind !== 'stack'
-      || !loadLocation.key || !reaching.present || !reaching.valid) return null;
-  const store = reaching.value;
-  const storeOp = instructionOp(store);
-  const storeLocation = stackLocation(store);
-  const loadBlock = instructionBlock(load);
-  const storeBlock = instructionBlock(store);
-  const loadRow = instructionRow(load);
-  const storeRow = instructionRow(store);
-  if (storeOp !== 'store' || !storeLocation || storeLocation.kind !== 'stack'
-      || storeLocation.key !== loadLocation.key || loadBlock == null || storeBlock == null
-      || storeBlock !== loadBlock || storeRow == null || loadRow == null || storeRow >= loadRow) return null;
-  const storeSize = positiveAccessSize(storeLocation.size);
-  const loadSize = positiveAccessSize(loadLocation.size);
-  if (storeSize == null || storeSize !== loadSize) return null;
-
-  const blocks = arrayField(ir, 'blocks');
-  if (!blocks.ok || loadBlock >= blocks.value.length) return null;
-  const block = blocks.value[loadBlock];
-  const instructions = arrayField(block, 'insts');
-  if (!instructions.ok) return null;
-  let storeOccurrences = 0;
-  let loadOccurrences = 0;
-  for (const instruction of instructions.value) {
-    if (control.isAborted()) return null;
-    if (instruction === store) storeOccurrences += 1;
-    if (instruction === load) loadOccurrences += 1;
-  }
-  if (storeOccurrences !== 1 || loadOccurrences !== 1) return null;
-  const memoryRows = new Set();
-  const memoryMutations = new Map();
-  const physicalLoads = new Map();
-  for (const inst of instructions.value) {
-    if (control.isAborted()) return null;
-    const op = instructionOp(inst);
-    const row = instructionRow(inst);
-    const location = stackLocation(inst);
-    // A malformed STORE is an unknown memory effect even when its row getter
-    // would otherwise have been ignored as an unrelated instruction.
-    if (op === 'store' && row == null) return null;
-    if (row == null) {
-      if (op === 'call' || op === 'clobber' || op === 'unknown') return null;
-      continue;
-    }
-    if (op === 'load') {
-      const loadDescriptor = memoryMutationDescriptor(inst);
-      const mutations = memoryMutations.get(row) || [];
-      if (!loadDescriptor || mutations.some((mutation) => memoryMutationCollides(loadDescriptor, mutation))) return null;
-      const loads = physicalLoads.get(row) || [];
-      loads.push(loadDescriptor);
-      physicalLoads.set(row, loads);
-    } else if (['store', 'call', 'clobber', 'unknown'].includes(op)) {
-      if (memoryRows.has(row)) return null;
-      const mutation = memoryMutationDescriptor(inst);
-      if (!mutation) return null;
-      const loads = physicalLoads.get(row) || [];
-      if (loads.some((load) => memoryMutationCollides(load, mutation))) return null;
-      memoryRows.add(row);
-      const mutations = memoryMutations.get(row) || [];
-      mutations.push(mutation);
-      memoryMutations.set(row, mutations);
-    }
-    if (inst === store || inst === load) continue;
-    if (row <= storeRow || row >= loadRow) continue;
-    if (op === 'call' || op === 'clobber' || op === 'unknown') return null;
-    if (op === 'store') {
-      const mutation = memoryMutationDescriptor(inst);
-      if (!mutation || mutation.broad || mutation.key === loadLocation.key) return null;
-    }
-  }
-  return store;
-}
-
-function exactLegacyStore(result, load, node, opts = {}, control = legacyRecoveryControl(opts)) {
-  const loadLocation = stackLocation(load);
-  const nodeLocation = valueOf(node, 'location');
-  const nodeKey = valueOf(nodeLocation, 'key');
-  if (instructionOp(load) !== 'load' || !loadLocation || loadLocation.kind !== 'stack'
-      || typeof nodeKey !== 'string' || loadLocation.key !== nodeKey) return null;
-  const instructionsField = ownData(result?.ir, 'instructions');
-  if (!instructionsField.present || !instructionsField.valid || !Array.isArray(instructionsField.value)) return null;
-  const instructions = instructionsField.value;
-  let loadOccurrences = 0;
-  for (const candidate of instructions) {
-    if (control.isAborted()) return null;
-    if (candidate === load) loadOccurrences += 1;
-  }
-  if (loadOccurrences !== 1) return null;
-  const ids = sourceIds(node, control);
-  const loadId = idKey(valueOf(load, 'id'));
-  if (!ids || loadId == null || !ids.includes(loadId)) return null;
-  const reaching = ownData(load, 'reachingStore');
-  if (!reaching.present || !reaching.valid) return null;
-  let reachingOccurrences = 0;
-  for (const candidate of instructions) {
-    if (control.isAborted()) return null;
-    if (candidate === reaching.value) reachingOccurrences += 1;
-  }
-  if (reachingOccurrences !== 1) return null;
-  return exactLegacySameBlockStackStore(load, result.ir, opts, control);
-}
-
-function exactStoredExpression(result, value, astById, active = new Set(), opts = {}, control = legacyRecoveryControl(opts)) {
-  if (control.isAborted()) return null;
+function exactStoredExpression(value, astById, result, stores, localHistories, trace, active = new Set(), opts = {}) {
   if (!value) return null;
-  const valueId = valueOf(value, 'id');
-  const key = idKey(valueId);
-  if (key == null) return null;
+  const key = value.id ?? value;
   if (active.has(key)) return null;
-  const entry = astById.get(valueId);
+  const entry = astById.get(value.id);
   const node = entry?.expression ?? null;
   if (!node) return null;
-  const nodeLocation = valueOf(node, 'location');
-  if (valueOf(node, 'kind') !== 'load' || valueOf(nodeLocation, 'kind') !== 'stack') return node;
+  if (node.kind !== 'load' || node.location?.kind !== 'stack') {
+    const local = localHistories.get(entry);
+    if (local?.expression === node) { retain(trace, local.records); return node; }
+    const prior = readLegacyStackValueHistory(entry, result.ir);
+    if (prior) { retain(trace, prior.records); trace.priors.add(prior); }
+    return node;
+  }
 
-  const definition = valueOf(value, 'def');
-  const store = exactLegacyStore(result, definition, node, opts, control);
+  const load = value.def;
+  if (load?.op !== 'load' || load.loc?.kind !== 'stack' || load.loc.key !== node.location?.key) return null;
+  const store = exactLegacySameBlockStackStore(load, result.ir, opts);
   if (!store) return null;
-  const stored = valueArgument(store);
+  const stored = store.args?.[0]?.value;
   if (!stored) return null;
 
+  const consumer = stores.get(String(store.id));
+  if (consumer && consumer.expression === astById.get(stored.id)?.expression) {
+    retain(trace, consumer.records); trace.priors.add(consumer);
+  }
+
   active.add(key);
-  const resolved = exactStoredExpression(result, stored, astById, active, opts, control);
+  const resolved = exactStoredExpression(stored, astById, result, stores, localHistories, trace, active, opts);
   active.delete(key);
+  if (resolved && resolved !== node) {
+    if (trace.records.size >= trace.maximum || trace.remainingNew <= 0) trace.truncated = true;
+    else {
+      trace.remainingNew--;
+      retain(trace, [Object.freeze({
+        rule:'legacy-stack-value-materialization', phase:'memory-ssa', valueId:value.id,
+        before:structuralKey(node), after:structuralKey(resolved),
+        evidence:Object.freeze({ kind:'legacy-reaching-store', detail:'existing legacy semantic-value materialization from its reaching-store chain' }),
+        originHistory:expressionOriginHistory({ source:mergeSource(node.source, source(load), source(store)) }, resolved),
+      })]);
+    }
+  }
   return resolved;
 }
 
-export function materializeLegacyExactStackValues(result, opts = {}) {
+export function materializeLegacyExactStackValues(result, options = undefined) {
+  // The core captures this policy before callbacks. A scalar proof preparation
+  // retains the pre-materialization value; memory recovery is outside its scope.
+  if (result?.proofOnlyRewrites === true) return result;
   if (!result?.ir || !Array.isArray(result?.semanticAst?.values)) return result;
   if (result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
 
-  const control = legacyRecoveryControl(opts);
-  if (control.isAborted()) return result;
-  const astById = new Map();
-  for (const entry of result.semanticAst.values) {
-    if (control.isAborted()) return result;
-    astById.set(valueOf(entry, 'valueId'), entry);
+  const astById = new Map(result.semanticAst.values.map((entry) => [entry.valueId, entry]));
+  const opts = (options ?? result.opts) || {}, stores = new Map(), localHistories = new Map();
+  for (const node of result.cAst?.body || []) {
+    if (node.semantic?.op !== 'store') continue;
+    const id = String(node.semantic.ir), binding = readExpressionHistoryConsumer(node.semantic, result.ir);
+    stores.set(id, stores.has(id) ? null : binding);
   }
-  const replacements = [];
+  const maximum = cap(opts.renderProvenanceBudget?.maxTransformRecords, 1024);
+  const maxConsumers = cap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096);
+  const retained = new Set(result.rewriteProof || []), added = [], transitions = [], priors = new Set();
+  const reasons = new Set(result.expressionBindingBudget?.reasons || []);
   for (const value of result.ir.values ?? []) {
-    if (control.isAborted()) return result;
-    const entry = astById.get(valueOf(value, 'id'));
-    const entryExpression = valueOf(entry, 'expression');
-    const expressionLocation = valueOf(entryExpression, 'location');
-    if (valueOf(entryExpression, 'kind') !== 'load' || valueOf(expressionLocation, 'kind') !== 'stack') continue;
-    const resolved = exactStoredExpression(result, value, astById, new Set(), opts, control);
-    if (!resolved || (valueOf(resolved, 'kind') === 'load' && valueOf(valueOf(resolved, 'location'), 'kind') === 'stack')) continue;
-    replacements.push([entry, resolved]);
-  }
-  if (control.isAborted()) return result;
-  for (const [entry, resolved] of replacements) {
-    if (control.isAborted()) return result;
+    const entry = astById.get(value?.id);
+    if (entry?.expression?.kind !== 'load' || entry.expression.location?.kind !== 'stack') continue;
+    const trace = { maximum, remainingNew:Math.max(0, maximum - added.length), records:new Set(), priors:new Set(), truncated:false };
+    const before = entry.expression;
+    const resolved = exactStoredExpression(value, astById, result, stores, localHistories, trace, new Set(), opts);
+    if (!resolved || (resolved.kind === 'load' && resolved.location?.kind === 'stack')) continue;
     entry.expression = resolved;
+    for (const record of trace.records) {
+      if (retained.has(record)) continue;
+      if (added.length < maximum) { retained.add(record); added.push(record); }
+      else trace.truncated = true;
+    }
+    if (trace.truncated) reasons.add('legacy-value-history-budget');
+    for (const prior of trace.priors) priors.add(prior);
+    if (transitions.length < maxConsumers) {
+      const records = Object.freeze([...trace.records].filter(record => retained.has(record)));
+      transitions.push({ entry, before, records });
+      localHistories.set(entry, { expression:resolved, records });
+    } else reasons.add('legacy-value-binding-budget');
+  }
+  if (added.length) result.rewriteProof = [...(result.rewriteProof || []), ...added];
+  // One current observation over the actual completed transitions. Local
+  // dependencies above never require recursive observer closures or repeated
+  // whole-graph observations for every semantic value.
+  if (transitions.length) publishValueHistory(result, transitions, priors, opts, reasons);
+  if (reasons.size) {
+    result.expressionBindingBudget ??= { consumers:0, edges:0, reasons:new Set() };
+    for (const reason of reasons) result.expressionBindingBudget.reasons.add(reason);
+    result.expressionHistoryBinding = Object.freeze({ ...result.expressionHistoryBinding,
+      completeness:'incomplete', reasons:Object.freeze([...reasons].sort()) });
   }
   return result;
+}
+
+function publishValueHistory(result, transitions, priors, opts, reasons) {
+  try {
+    const observation = captureRecoveryIrData(result.ir, [
+      transitions.map(item => [item.before, item.entry.expression, item.records]),
+      [...priors].map(prior => [prior.expression, prior.records]),
+    ], opts.shouldAbort);
+    if (observation.metrics.edges > cap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges)
+        || transitions.length > cap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096)) {
+      reasons.add('legacy-value-binding-budget'); return;
+    }
+    if (![...priors].every(prior => prior.isCurrent())) { reasons.add('stale-legacy-value-history'); return; }
+    for (const { entry, records } of transitions) valueHistories.set(entry, Object.freeze({
+      ir:result.ir, valueId:entry.valueId, expression:entry.expression, records,
+      isCurrent:() => observation.matches(),
+    }));
+  } catch { reasons.add('legacy-value-observation-unavailable'); }
 }

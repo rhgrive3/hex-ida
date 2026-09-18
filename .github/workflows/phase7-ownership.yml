@@ -14,6 +14,10 @@ on:
       - 'tools/validation/phase-ownership/phase7.json'
       - 'reports/phase7/**'
       - '.github/workflows/phase7-ownership.yml'
+      - 'tools/validation/phase5-ownership.mjs'
+      - 'tools/validation/scpa-integration-ownership.mjs'
+      - 'tools/validation/phase-ownership/scpa-integration.json'
+      - 'tests/ci/scpa-integration-ownership.test.mjs'
   workflow_dispatch:
     inputs:
       base:
@@ -45,11 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Validate the Phase 7 ownership manifest itself
@@ -61,7 +65,23 @@ jobs:
           HEAD_REF: ${{ github.head_ref || github.event.inputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          if [[ "$HEAD_REF" == "codex/lane5-6633-abi-a8b2" ]]; then
+          if [[ "$HEAD_REF" == "feat/analysis-roadmap-v8-current-main-20260907" || "$HEAD_REF" == "integration-candidate/local-handover-20260914" || "$HEAD_REF" == "codex/analysis-remaining-20260914" ]]; then
+            FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \
+              --branch "$HEAD_REF" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "feat/scpa-functional-acceptance-20260912" ]]; then
+            node --test tests/ci/scpa-integration-ownership.test.mjs
+            FILES_JSON="$(node tools/validation/scpa-integration-ownership.mjs \
+              --branch "$HEAD_REF" --phase 7 \
+              --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "integration-candidate/benchmark-auth-20260914" ]]; then
+            # Validate every foreign path before passing the Phase 7-owned subset.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "codex/lane5-6633-abi-a8b2" ]]; then
             # #6975 intentionally pairs a Phase 7 production-path regression
             # with the ABI/Phase 6 owner slice. The exact helper rejects every
             # foreign path except that declared three-file slice before the
@@ -84,6 +104,110 @@ jobs:
             # #7079 pairs Phase 7 analysis fixes with four explicitly-owned
             # Semantic IR/AI/config paths. The exact helper rejects every
             # foreign path outside that list before Phase 7 validation.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "dev-agent-hardening/integration/issue-batch-20260909" ]]; then
+            # #7535 is the exact living integration route for the reviewed
+            # seven-component union. The helper enumerates every foreign
+            # path and returns only the Phase 7-owned subset for validation.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/batch-4075-owner12" ]]; then
+            # #8536 pairs Phase 7 query changes with App/Backend shared integration.
+            # Reject every foreign path except the exact declared surface first.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "consolidated-owner3" ]]; then
+            # PR #8492 exact cross-lane projection.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner2" ]]; then
+            # PR #8414: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner3" ]]; then
+            # PR #8415: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner5" ]]; then
+            # PR #8417: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner8" ]]; then
+            # PR #8418: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner6" ]]; then
+            # PR #8419: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "batch-20260912-owner4" ]]; then
+            # PR #8420: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/batch-4126-owner8" ]]; then
+            # PR #8510: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/batch-3-5621-5900-8428-8366-7689" ]]; then
+            # PR #8519: exact cross-lane projection; reject undeclared foreign paths.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "dependabot/github_actions/github-actions-436ea2ae3a" ]]; then
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/main-gate-recovery-20260913" ]]; then
+            # The gate-repair candidate carries Phase 7 fixtures alongside
+            # independently-owned gate changes. Enumerate every foreign path
+            # through the exact route before validating the Phase 7 subset.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "codex/issue-campaign-20260914-lane-13-batch-02" ]]; then
+            # PR #8958 combines one Phase 7 regression with query,
+            # recognition, and Phase 12 owner slices. Reject any undeclared
+            # foreign path before projecting the Phase 7 subset.
             FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
               --branch "$HEAD_REF" \
               --base-sha "$BASE_SHA" \
@@ -112,6 +236,21 @@ jobs:
               echo "Phase 7 aggregate validation found no Phase 7-owned changes" >&2
               exit 1
             fi
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "fix/batch-10-issues-20260915" ]]; then
+            # PR #8936: exact cross-lane projection; every foreign path is enumerated.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "codex/issue-campaign-20260914-lane-02-batch-04" ]]; then
+            # PR #9006 (lane-02 batch-04): exact cross-lane projection; every
+            # foreign path is enumerated before the Phase 7-owned subset runs.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
             node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
           else
             node tools/validation/phase7-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"

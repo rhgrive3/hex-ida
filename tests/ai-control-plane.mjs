@@ -38,7 +38,8 @@ const identityB = resolveBinaryIdentity({ binaryFingerprint: { hash: 'B' }, bina
 const snapshotA = { binaryId: identityA.id, binaryIdentity: identityA, legacyBinaryId: identityA.legacyId, projectIdentity: null };
 const snapshotB = { binaryId: identityB.id, binaryIdentity: identityB, legacyBinaryId: identityB.legacyId, projectIdentity: null };
 assert.equal(sessionMatchesSnapshot({ binaryId: identityA.id, binaryIdentity: identityA }, snapshotB), false, 'same legacy name must not equate different strong content identities');
-assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), true, 'legacy-only sessions remain upgrade-compatible');
+assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), false,
+  '#8967: a filename:slice legacy binding alone must not be promoted to a strong snapshot identity');
 assert.throws(() => assertLiveBindingsUnchanged({ binaryIdentity: identityB }, snapshotA), /binary changed/i, 'mid-turn same-name binary replacement must fail closed');
 
 // B2: UI bridge rebinds a stale session once, but never bypasses a live scope/binding failure via local fallback.
@@ -87,6 +88,19 @@ assert.equal(auto.effectiveScope, 'selection');
 auto.ensureForIntent('find-behaviour');
 assert.equal(auto.effectiveScope, 'binary');
 assert.equal(auto.expansions.length, 1);
+
+// #4173: optional expansion observers are callable-only; malformed values must not break scope state transitions.
+for (const onExpand of [true, {}, []]) {
+  const guardedAuto = new ScopeController(fnSnap, 'auto', { onExpand });
+  assert.equal(guardedAuto.expandTo('binary', 'search needed'), true);
+  assert.equal(guardedAuto.effectiveScope, 'binary');
+  assert.equal(guardedAuto.expansions.length, 1);
+}
+const expansionEvents = [];
+const observedAuto = new ScopeController(fnSnap, 'auto', { onExpand:event => expansionEvents.push(event) });
+assert.equal(observedAuto.expandTo('binary', 'search needed'), true);
+assert.equal(expansionEvents.length, 1);
+assert.equal(expansionEvents[0], observedAuto.expansions[0]);
 
 // G/H: phase-specific windows stay small but discovery can reach deep tools.
 const names = ['search_functions','search_strings','lookup_known_function','lookup_signature','get_function','get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees','get_related_functions','verify_field_update','get_runtime_observations','verify_runtime_hypothesis'];
@@ -197,12 +211,13 @@ assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.r
   };
   const common = {
     request: { mode: 'chat', style: 'analyst', scope: 'auto' }, decision, plan: null,
-    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: Date.now(),
+    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: 100, monotonicNow: () => 125,
     registry: { analysisStats: { disassembly: 0 }, accounting: { cost: 0 } },
     snapshot: snap, effectiveScope: 'selection',
   };
   const providerFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
   assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
+  assert.equal(providerFailure.usage.elapsedMs, 25, 'finalize timestamps must share the injected monotonic clock origin');
   const modelTimeout = await runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
   assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
   const budgetFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });

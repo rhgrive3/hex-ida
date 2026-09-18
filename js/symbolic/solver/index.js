@@ -14,3 +14,4 @@ export * from './bitblast-backend.js';
 export * from './tiered-backend.js';
 export * from './worker-backend.js';
 export * from './heuristic-backend.js';
+export * from './tiered-worker-backend.js';

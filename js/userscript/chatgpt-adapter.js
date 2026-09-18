@@ -442,7 +442,7 @@ export class ChatGPTConversationRouter {
   findConversationLink(conversation) {
     for (const node of this.adapter.all('conversationLink')) {
       const href = String(node.getAttribute?.('href') || '');
-      if (href === `/c/${conversation.id}` || href.includes(`/c/${conversation.id}`)) return node;
+      if (conversationIdentity(href)?.id === String(conversation?.id || '')) return node;
     }
     return null;
   }

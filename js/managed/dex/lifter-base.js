@@ -1,9 +1,56 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBundle, createVMEffectBudgetTracker, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeDexInstructionBoundary } from './instruction-boundary.js';
+import { dexMethodDefinitions } from './method-definitions.js';
 
 function fail(code) { throw new TypeError(code); }
+
+// ART's Generic JNI trampoline acquires the synchronization object before the
+// JNI call and releases it on both normal and abrupt completion
+// (ArtMethod::IsSynchronized covers ACC_SYNCHRONIZED | ACC_DECLARED_SYNCHRONIZED).
+// Until the shared VMEffect schema can encode implicit method monitors
+// losslessly, synchronized methods must fail closed instead of collapsing into
+// plain-method-equivalent exact semantics (#7896; #7854 JVM precedent).
+const SYNCHRONIZED_MONITOR_REASON = 'dex-synchronized-method-monitor-unrepresented';
+const DEX_ACC_STATIC = 0x0008;
+const DEX_ACC_SYNCHRONIZED = 0x0020;
+const DEX_ACC_DECLARED_SYNCHRONIZED = 0x0020000;
+
+function applySynchronizedMethodSemantics(lifted, accessFlags, options = {}) {
+  if ((accessFlags & (DEX_ACC_SYNCHRONIZED | DEX_ACC_DECLARED_SYNCHRONIZED)) === 0) return lifted;
+
+  const firstBundle = lifted.bundles[0] ?? null;
+  const alreadyMarked = firstBundle?.unknownEffects?.some((effect) =>
+    effect?.reason === SYNCHRONIZED_MONITOR_REASON) === true;
+  const bundles = firstBundle ? [{
+    ...firstBundle,
+    completeness: firstBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknownEffects: alreadyMarked
+      ? firstBundle.unknownEffects
+      : [...firstBundle.unknownEffects, {
+        category: 'other',
+        reason: SYNCHRONIZED_MONITOR_REASON,
+      }],
+  }, ...lifted.bundles.slice(1)] : lifted.bundles;
+
+  return createVMEffectFunction({
+    ...lifted,
+    bundles,
+    aggregateCompleteness: lifted.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+    metadata: {
+      ...lifted.metadata,
+      synchronization: {
+        kind: 'implicit-dex-monitor',
+        monitor: (accessFlags & DEX_ACC_STATIC) !== 0 ? 'declaring-class' : 'receiver',
+        acquire: 'method-entry',
+        release: 'normal-or-abrupt-exit',
+        reentrant: true,
+        completeness: 'unrepresented',
+      },
+    },
+  }, options);
+}
 
 export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const methodDef = dexImage.methods[methodIdx];
@@ -11,15 +58,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
   const methodId = createManagedMethodId(dexImage.moduleId, methodIdx, methodDef.name);
 
-  // Find class and direct/virtual method entry to check codeOff and accessFlags
+  // Resolve codeOff/accessFlags from the shared method-definition authority (built
+  // once per frozen image, O(1) lookup) instead of linearly re-scanning every class'
+  // direct/virtual method arrays on each method decode (#8976).
   let codeOff = 0;
   let accessFlags = 0;
-  for (const cls of dexImage.classes) {
-    const dm = cls.directMethods.find((m) => m.methodIdx === methodIdx);
-    if (dm) { codeOff = dm.codeOff; accessFlags = dm.accessFlags; break; }
-    const vm = cls.virtualMethods.find((m) => m.methodIdx === methodIdx);
-    if (vm) { codeOff = vm.codeOff; accessFlags = vm.accessFlags; break; }
-  }
+  const definitionEntry = dexMethodDefinitions(dexImage).get(methodIdx);
+  if (definitionEntry) { codeOff = definitionEntry.codeOff; accessFlags = definitionEntry.accessFlags; }
 
   const isNative = (accessFlags & 0x0100) !== 0; // ACC_NATIVE
   if (isNative || codeOff === 0) {
@@ -39,13 +84,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       controlEffects: [{ kind: 'return' }],
       completeness: 'exact',
     });
-    return createVMEffectFunction({
+    return applySynchronizedMethodSemantics(createVMEffectFunction({
       methodId,
       profileId: dexImage.vmSpecEdition,
       frontendId: 'dex',
       bundles: [bundle],
       aggregateCompleteness: 'exact',
-    });
+    }), accessFlags, options);
   }
 
   const u8 = dexImage.rawBytes;
@@ -87,8 +132,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const bundles = [];
   let pc = 0; // code unit offset
   let opSeq = 0;
+  // #8725: admit the operation budget while materializing, as Wasm already
+  // does, so an over-budget method fails closed before building its full bundle
+  // graph instead of only in createVMEffectFunction() afterward.
+  const budget = createVMEffectBudgetTracker(options);
 
   while (pc < insnsSize) {
+    budget.chargeOperation();
     const codeUnitOffset = pc * 2; // byte offset relative to code start
     const opByteOffset = insnsStart + codeUnitOffset;
     const boundary = decodeDexInstructionBoundary(view, insnsStart, pc, insnsSize);
@@ -106,6 +156,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     let memoryEffects = [];
     let callEffects = [];
     let controlEffects = [];
+    let possibleExceptions = [];
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
@@ -344,16 +395,33 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
           const kinds = { 0x6e: 'virtual', 0x6f: 'super', 0x70: 'direct', 0x71: 'static', 0x72: 'interface' };
           const targetMeth = dexImage.methods[methIdx] || { name: `m_${methIdx}` };
+          const targetResolved = Array.isArray(dexImage.methods) && methIdx < dexImage.methods.length;
           mnemonic = `invoke-${kinds[opcode]}`;
 
           for (const reg of argRegs) {
             locationReads.push({ kind: 'register', index: reg, bits: 32 });
           }
-          callEffects.push({
+          const callEffect = {
             target: `${targetMeth.classType}->${targetMeth.name}`,
             dispatchKind: kinds[opcode],
             argRegisters: argRegs,
-          });
+          };
+          if (opcode === 0x72) {
+            // invoke-interface resolves through the RECEIVER's implemented
+            // interfaces, not the enclosing class's (#7620 R2 review). This
+            // lifter has no receiver register-type authority, so the sound
+            // projection is the module-wide decoded interface edge set as
+            // candidate evidence with dispatch left unresolved — a receiver
+            // may implement interfaces this file never declares. No per-site
+            // assignability fact is published from caller authority.
+            callEffect.interfaceTypes = dexImage.classes
+              .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
+            callEffect.unresolved = true;
+          }
+          if (targetResolved && callEffect.unresolved !== true) {
+            callEffect.targetMethodId = createManagedMethodId(dexImage.moduleId, methIdx, targetMeth.name);
+          }
+          callEffects.push(callEffect);
         }
         break;
 
@@ -373,6 +441,19 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
+          // The arithmetic result is the value bound to the destination
+          // register; without an explicit produced value the shared bridge has
+          // no result identity for the locationWrite and falls back to an
+          // operand read value, so `add-int v0,v1,v2` would leave v0 equal to
+          // v2 instead of v1+v2 (#1136).
+          producedValues.push({ bits: 32 });
+          // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
+          // the divisor (vCC) is zero — a specified exceptional path the
+          // bundle must carry instead of publishing exception-free exact
+          // semantics (#7975; wasm #1134 vocabulary).
+          if (opcode === 0x93 || opcode === 0x94) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -385,6 +466,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vA, bits: 32 });
           locationReads.push({ kind: 'register', index: vB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vA, bits: 32 });
+          if (opcode === 0xb3 || opcode === 0xb4) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -401,6 +485,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
           producedValues.push({ bits: 32, constant: lit8 });
+          if (opcode === 0xdb || opcode === 0xdc) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -434,7 +521,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,
@@ -444,7 +531,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     if (boundary.stop) break;
   }
 
-  return createVMEffectFunction({
+  return applySynchronizedMethodSemantics(createVMEffectFunction({
     methodId,
     profileId: dexImage.vmSpecEdition,
     frontendId: 'dex',
@@ -455,5 +542,5 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       outsSize,
     },
     exceptionRegions,
-  }, options);
+  }, options), accessFlags, options);
 }

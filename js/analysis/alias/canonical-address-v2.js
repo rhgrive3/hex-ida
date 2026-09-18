@@ -2,6 +2,7 @@ import {
   CANONICAL_ADDRESS_DERIVATION_VERSION,
   GENERIC_ROOT_DESCRIPTOR_KINDS,
   canonicalAddressProofToRegionEvidence,
+  canonicalRootIdentity,
   deriveCanonicalAddressProof as deriveCanonicalAddressProofCore,
   sameCanonicalAddressProof,
 } from './canonical-address-v2-core.js';
@@ -10,6 +11,7 @@ export {
   CANONICAL_ADDRESS_DERIVATION_VERSION,
   GENERIC_ROOT_DESCRIPTOR_KINDS,
   canonicalAddressProofToRegionEvidence,
+  canonicalRootIdentity,
   sameCanonicalAddressProof,
 };
 

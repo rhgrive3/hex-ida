@@ -15,6 +15,10 @@ function nonEmpty(value, code) {
   if (!text) fail(code);
   return text;
 }
+function canonicalNonEmpty(value, code) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) fail(code);
+  return value;
+}
 function textOrIndex(value, code) {
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value) || value < 0) fail(code);
@@ -44,7 +48,18 @@ export function createManagedTargetProfile(input) {
   
   const options = input.options ? input.options : {};
   const decodingOptionsHash = stableDigest(options);
-  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition);
+  // All identity-defining semantic configuration participates in the
+  // canonical id (#5401): feature set, validation policy, decoding options,
+  // runtime hint and frontend semantic version are part of the identity
+  // denominator, so semantically different profiles cannot collide.
+  const semanticTail = {
+    frontendSemanticVersion,
+    featureSet,
+    runtimeVersionHint,
+    validationPolicy,
+    decodingOptionsHash,
+  };
+  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition, semanticTail);
 
   return deepFreeze({
     id,
@@ -60,39 +75,50 @@ export function createManagedTargetProfile(input) {
 }
 
 export function validateManagedTargetProfile(profile) {
-  if (!profile || typeof profile !== 'object') fail('managed-profile-invalid');
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) fail('managed-profile-invalid');
   if (typeof profile.frontendId !== 'string' || !FRONTEND_SET.has(profile.frontendId)) {
     fail('managed-profile-unsupported-frontend');
   }
   if (!profile.id || typeof profile.id !== 'string') fail('managed-profile-missing-id');
-  if (profile.frontendSemanticVersion !== undefined
-      && (typeof profile.frontendSemanticVersion !== 'string' || !profile.frontendSemanticVersion.trim())) {
-    fail('managed-profile-invalid-version');
-  }
-  if (profile.formatVersion !== undefined
-      && (typeof profile.formatVersion !== 'string' || !profile.formatVersion.trim())) {
-    fail('managed-profile-invalid-format-version');
-  }
-  if (profile.vmSpecEdition !== undefined
-      && (typeof profile.vmSpecEdition !== 'string' || !profile.vmSpecEdition.trim())) {
-    fail('managed-profile-invalid-spec-edition');
-  }
-  if (profile.featureSet !== undefined
-      && (!Array.isArray(profile.featureSet)
-        || profile.featureSet.some((value) => typeof value !== 'string' || !value.trim()))) {
+
+  // A validating profile must have the same required canonical shape emitted
+  // by createManagedTargetProfile(). Do not substitute constructor defaults
+  // while validating published identity (#5296): an under-specified object
+  // must fail before identity re-derivation.
+  canonicalNonEmpty(profile.frontendSemanticVersion, 'managed-profile-invalid-version');
+  canonicalNonEmpty(profile.formatVersion, 'managed-profile-invalid-format-version');
+  canonicalNonEmpty(profile.vmSpecEdition, 'managed-profile-invalid-spec-edition');
+  if (!Array.isArray(profile.featureSet)) fail('managed-profile-invalid-feature-set');
+  const canonicalFeatureSet = sortedUniqueStrings(profile.featureSet);
+  if (canonicalFeatureSet.length !== profile.featureSet.length
+      || canonicalFeatureSet.some((value, index) => value !== profile.featureSet[index])) {
     fail('managed-profile-invalid-feature-set');
   }
-  if (profile.runtimeVersionHint != null
-      && (typeof profile.runtimeVersionHint !== 'string' || !profile.runtimeVersionHint.trim())) {
-    fail('managed-profile-runtime-version-hint-invalid');
+  if (profile.runtimeVersionHint != null) {
+    canonicalNonEmpty(profile.runtimeVersionHint, 'managed-profile-runtime-version-hint-invalid');
   }
-  if (profile.validationPolicy !== undefined
-      && (typeof profile.validationPolicy !== 'string' || !profile.validationPolicy.trim())) {
-    fail('managed-profile-invalid-validation-policy');
-  }
-  if (profile.decodingOptionsHash !== undefined
-      && (typeof profile.decodingOptionsHash !== 'string' || !profile.decodingOptionsHash.trim())) {
+  canonicalNonEmpty(profile.validationPolicy, 'managed-profile-invalid-validation-policy');
+  if (typeof profile.decodingOptionsHash !== 'string'
+      || !/^[0-9a-f]{32}$/.test(profile.decodingOptionsHash)) {
     fail('managed-profile-invalid-options-hash');
   }
+
+  // The published id must be the canonical identity of the validated
+  // published content, so a tampered or stale id cannot alias a different
+  // configuration (#5401/#5296).
+  const semanticTail = {
+    frontendSemanticVersion: profile.frontendSemanticVersion,
+    featureSet: canonicalFeatureSet,
+    runtimeVersionHint: profile.runtimeVersionHint ?? null,
+    validationPolicy: profile.validationPolicy,
+    decodingOptionsHash: profile.decodingOptionsHash,
+  };
+  const canonicalId = createManagedTargetProfileId(
+    profile.frontendId,
+    profile.formatVersion,
+    profile.vmSpecEdition,
+    semanticTail,
+  );
+  if (profile.id !== canonicalId) fail('managed-profile-identity-mismatch');
   return true;
 }

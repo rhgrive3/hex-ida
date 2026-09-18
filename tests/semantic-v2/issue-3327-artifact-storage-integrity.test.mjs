@@ -11,6 +11,7 @@ const validRecord = () => ({
   entityId: null,
   runtimeSnapshotId: null,
   canonicalConfigHash: 'hash',
+  optionsHash: 'options-hash',
   payloadChecksum: 'sum',
   payloadSize: 0,
   versions: {

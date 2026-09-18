@@ -27,9 +27,9 @@ export const TYPE_SCC_DEFAULT_LIMITS = Object.freeze({
  *   cancelled: boolean
  * }}
  */
-function positiveLimit(value, fallback, code) {
-  if (value == null) return fallback;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+function nonNegativeLimit(value, fallback, code) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(code);
   }
   return value;
@@ -41,31 +41,50 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
   maxEdges: rawMaxEdges,
   signal = null,
 } = {}) {
-  const maxComponents = positiveLimit(rawMaxComponents, TYPE_SCC_DEFAULT_LIMITS.maxComponents, 'type-scc-invalid-component-limit');
-  const maxNodes = positiveLimit(rawMaxNodes, TYPE_SCC_DEFAULT_LIMITS.maxNodes, 'type-scc-invalid-node-limit');
-  const maxEdges = positiveLimit(rawMaxEdges, TYPE_SCC_DEFAULT_LIMITS.maxEdges, 'type-scc-invalid-edge-limit');
+  const maxComponents = nonNegativeLimit(rawMaxComponents, TYPE_SCC_DEFAULT_LIMITS.maxComponents, 'type-scc-invalid-component-limit');
+  const maxNodes = nonNegativeLimit(rawMaxNodes, TYPE_SCC_DEFAULT_LIMITS.maxNodes, 'type-scc-invalid-node-limit');
+  const maxEdges = nonNegativeLimit(rawMaxEdges, TYPE_SCC_DEFAULT_LIMITS.maxEdges, 'type-scc-invalid-edge-limit');
   const index = new Map();
   const low = new Map();
   const onStack = new Set();
   const stack = [];
   const components = [];
+  const selfEdges = new Set();
   let counter = 0;
   let truncated = false;
-  let traversedEdges = 0;
+  let enumeratedEdges = 0;
 
-  const roots = [...new Set(entityIds)].sort();
+  const cancelledResult = () => ({
+    components,
+    recursiveComponents: [],
+    isRecursiveMap: new Map(),
+    sccMembersMap: new Map(),
+    truncated: true,
+    cancelled: true,
+  });
+
+  // Bounded root admission (#8905): the previous `[...new Set(entityIds)].sort()`
+  // eagerly materialized the entire caller iterable before the Tarjan loop could
+  // observe `maxNodes` or `AbortSignal`, so a generator with 100k roots and
+  // `maxNodes: 1` still allocated every one of them and an already-aborted
+  // signal still drained the stream. Enumeration is now globally bounded by
+  // `maxNodes` (the Tarjan node budget): each pulled item counts as admission
+  // work, cancellation is observed between items, and pulling one item past
+  // `maxNodes` truncates the enumeration without allocating the tail. Within
+  // the budget the sorted root set is identical to the previous eager path.
+  if (signal?.aborted) return cancelledResult();
+  const rootSet = new Set();
+  let rootAdmissions = 0;
+  for (const id of entityIds) {
+    rootAdmissions += 1;
+    if (rootAdmissions > maxNodes) { truncated = true; break; }
+    rootSet.add(id);
+    if (signal?.aborted) return cancelledResult();
+  }
+  const roots = [...rootSet].sort();
 
   for (const root of roots) {
-    if (signal?.aborted) {
-      return {
-        components,
-        recursiveComponents: [],
-        isRecursiveMap: new Map(),
-        sccMembersMap: new Map(),
-        truncated: true,
-        cancelled: true,
-      };
-    }
+    if (signal?.aborted) return cancelledResult();
     if (index.has(root)) continue;
     if (index.size >= maxNodes) {
       truncated = true;
@@ -74,16 +93,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
 
     const work = [{ node: root, successors: null, state: 0 }];
     while (work.length > 0) {
-      if (signal?.aborted) {
-        return {
-          components,
-          recursiveComponents: [],
-          isRecursiveMap: new Map(),
-          sccMembersMap: new Map(),
-          truncated: true,
-          cancelled: true,
-        };
-      }
+      if (signal?.aborted) return cancelledResult();
 
       const frame = work[work.length - 1];
       if (frame.successors == null) {
@@ -93,23 +103,33 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
         stack.push(frame.node);
         onStack.add(frame.node);
 
+        // Bounded materialization (#5271): raw dependency discovery consumes
+        // one global edge-work budget across the whole graph. Duplicate items
+        // still cost work, and cancellation is observed between yielded items.
+        let overBudget = false;
         let succs = [];
         try {
-          succs = [...new Set(dependenciesOf(frame.node) ?? [])].sort();
+          const seen = new Set();
+          for (const item of dependenciesOf(frame.node) ?? []) {
+            if (signal?.aborted) return cancelledResult();
+            enumeratedEdges += 1;
+            if (enumeratedEdges > maxEdges) { overBudget = true; break; }
+            seen.add(item);
+          }
+          if (seen.has(frame.node)) selfEdges.add(frame.node);
+          succs = [...seen].sort();
         } catch {
           truncated = true;
           succs = [];
         }
         frame.successors = succs;
-      }
-
-      if (frame.state < frame.successors.length) {
-        traversedEdges += 1;
-        if (traversedEdges > maxEdges) {
+        if (overBudget) {
           truncated = true;
           break;
         }
+      }
 
+      if (frame.state < frame.successors.length) {
         const next = frame.successors[frame.state];
         frame.state += 1;
 
@@ -157,18 +177,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
 
   for (const component of components) {
     const isMulti = component.length > 1;
-    let hasSelfEdge = false;
-    if (!isMulti && component.length === 1) {
-      const node = component[0];
-      let succs = [];
-      try {
-        succs = [...dependenciesOf(node) ?? []];
-      } catch {
-        truncated = true;
-        succs = [];
-      }
-      hasSelfEdge = succs.includes(node);
-    }
+    const hasSelfEdge = !isMulti && component.length === 1 && selfEdges.has(component[0]);
 
     const isRecursive = isMulti || hasSelfEdge;
     if (isRecursive) recursiveComponents.push(component);

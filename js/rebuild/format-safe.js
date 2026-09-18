@@ -1,4 +1,4 @@
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { createRebuildTransaction } from './transaction-v2.js';
 
 /**
@@ -31,6 +31,10 @@ const MACHO64_MAGIC = 0xfeedfacf;
 const MACHO_X86_64_CPU = 0x01000007;
 const MACHO_ARM64_CPU = 0x0100000c;
 const MACHO_LC_SEGMENT_64 = 0x19;
+const MACHO_SECTION_TYPE = 0xff;
+const MACHO_S_ZEROFILL = 0x1;
+const MACHO_S_GB_ZEROFILL = 0xc;
+const MACHO_S_THREAD_LOCAL_ZEROFILL = 0x12;
 const MACHO64_HEADER_SIZE = 32;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_CODE_SIGNATURE = 0x1d;
@@ -57,7 +61,7 @@ function bytesOf(value, code = 'format-safe-bytes-required') {
 }
 
 function digestBytes(value) {
-  return `bytes:${stableDigest(Array.from(bytesOf(value)))}`;
+  return `bytes:${stableDigestBytes(bytesOf(value))}`;
 }
 
 function sameBytes(left, right) {
@@ -113,8 +117,7 @@ function text(bytes) {
 function bytesDigestMasked(bytes, offset, length) {
   const masked = bytesOf(bytes);
   ensureRange(masked, offset, length);
-  masked.fill(0, offset, offset + length);
-  return stableDigest(Array.from(masked));
+  return stableDigestBytes(masked, 0, masked.length, offset, offset + length);
 }
 
 function elfSections(bytes, header) {
@@ -252,7 +255,12 @@ function parsePe(bytes) {
   let certificateTableOffset = 0;
   let certificateTableSize = 0;
   if (optional.numberOfRvaAndSizes > 4) {
-    ensureRange(bytes, dataDirectoryOffset, 5 * 8, 'format-safe-pe-data-directory-truncated');
+    /* Microsoft PE/COFF: probing the Data Directory must not read past
+     * SizeOfOptionalHeader. NumberOfRvaAndSizes alone is not a boundary
+     * authority — with a minimal header the Certificate Table entry would
+     * alias section-table bytes (#5568). The optional header was already
+     * range-checked in-file, so header containment implies file bounds. */
+    if (dataDirectoryOffset + 5 * 8 > optionalOffset + optionalHeaderSize) fail('format-safe-pe-data-directory-truncated');
     certificateTableOffset = u32(bytes, dataDirectoryOffset + 4 * 8);
     certificateTableSize = u32(bytes, dataDirectoryOffset + 4 * 8 + 4);
     if ((certificateTableOffset === 0) !== (certificateTableSize === 0)) fail('format-safe-pe-certificate-directory-invalid');
@@ -307,12 +315,14 @@ function parseMacho(bytes) {
     if (command === MACHO_LC_SEGMENT_64) {
       if (size < 72) fail('format-safe-macho-segment-command-invalid');
       const segmentName = text(bytes.slice(offset + 8, offset + 24));
+      const vmaddr = boundedNumber(u64(bytes, offset + 24));
+      const vmsize = boundedNumber(u64(bytes, offset + 32));
       const fileOffset = boundedNumber(u64(bytes, offset + 40));
       const fileSize = boundedNumber(u64(bytes, offset + 48));
       const sectionCount = u32(bytes, offset + 64);
       if (size !== 72 + sectionCount * 80) fail('format-safe-macho-segment-section-table-invalid');
       ensureRange(bytes, fileOffset, fileSize, 'format-safe-macho-segment-file-range-invalid');
-      const segment = { commandIndex: index, name: segmentName, fileOffset, fileSize, sectionCount };
+      const segment = { commandIndex: index, name: segmentName, vmaddr, vmsize, fileOffset, fileSize, sectionCount };
       segments.push(segment);
       for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
         const sectionOffset = offset + 72 + sectionIndex * 80;
@@ -328,7 +338,9 @@ function parseMacho(bytes) {
         const reserved1 = u32(bytes, sectionOffset + 68);
         const reserved2 = u32(bytes, sectionOffset + 72);
         const reserved3 = u32(bytes, sectionOffset + 76);
-        if (sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
+        const sectionType = flags & MACHO_SECTION_TYPE;
+        const zeroFill = sectionType === MACHO_S_ZEROFILL || sectionType === MACHO_S_GB_ZEROFILL || sectionType === MACHO_S_THREAD_LOCAL_ZEROFILL;
+        if (!zeroFill && sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
         sections.push({
           index: sections.length,
           commandIndex: index,
@@ -345,7 +357,7 @@ function parseMacho(bytes) {
           reserved1,
           reserved2,
           reserved3,
-          data: bytes.slice(dataOffset, dataOffset + sectionSize),
+          data: zeroFill ? new Uint8Array() : bytes.slice(dataOffset, dataOffset + sectionSize),
           headerOffset: sectionOffset,
         });
       }
@@ -585,7 +597,29 @@ function machoSectionSizePlan(source, image, mutation) {
   const next = image.sections.filter((section) => section.segment === segmentName && section.offset > target.offset).sort((left, right) => left.offset - right.offset)[0];
   const nextSectionOffset = next?.offset ?? segment.fileOffset + segment.fileSize;
   if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
-  const availableGap = nextSectionOffset - (target.offset + target.size);
+  let availableGap = nextSectionOffset - (target.offset + target.size);
+  /* Mach-O section file offsets and VM addresses are independent invariants:
+     extending within the file gap can still drive the section's VM range into
+     the next section's address range. Sections are identified by their owning
+     LC_SEGMENT_64 command (commandIndex), not by the segment name string, and
+     the source state must be overlap-free against every same-segment section
+     before any extension is planned (#5001). */
+  const segmentSections = image.sections.filter((section) => section.commandIndex === target.commandIndex);
+  for (const section of segmentSections) {
+    if (section === target || !section.size) continue;
+    if (section.address < target.address + target.size && target.address < section.address + section.size) {
+      fail('format-safe-macho-layout-source-vm-overlap');
+    }
+  }
+  const nextByAddress = segmentSections
+    .filter((section) => section.address > target.address)
+    .sort((left, right) => left.address - right.address)[0];
+  if (nextByAddress) {
+    const availableVmGap = nextByAddress.address - (target.address + target.size);
+    if (availableVmGap < availableGap) availableGap = availableVmGap;
+  }
+  const segmentVmAvailable = (segment.vmaddr + segment.vmsize) - (target.address + target.size);
+  if (segmentVmAvailable < availableGap) availableGap = segmentVmAvailable;
   const requestedSize = integerInRange(mutation.size, target.size + 1, target.size + availableGap, 'format-safe-macho-layout-size-invalid');
   const sectionHeaderOffset = target.headerOffset;
   return {
@@ -700,6 +734,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     operations,
     impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
+    ...(input.discoveryArtifact == null ? {} : { discoveryArtifact: input.discoveryArtifact }),
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,
   });
@@ -811,7 +846,9 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     }
     if (safeState.kind === 'macho-section-size') {
       if (format !== 'macho' || transaction.operations?.length !== 1 || transaction.impact?.layoutMoving !== true) return reject('format-safe-macho-layout-operation-invalid');
-      const expected = machoSectionSizePlan(source, sourceImage, safeState);
+      let expected;
+      try { expected = machoSectionSizePlan(source, sourceImage, safeState); }
+      catch (error) { return reject(String(error?.message || 'format-safe-macho-layout-plan-invalid')); }
       const canonicalExpectedOperations = expected.operations.map((operation) => ({
         ...operation,
         offset: String(operation.offset),
@@ -840,7 +877,8 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
       const sourceSegment = sourceImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       const outputSegment = outputImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       if (!sourceSegment || !outputSegment || sourceSegment.name !== outputSegment.name || sourceSegment.fileOffset !== outputSegment.fileOffset
-        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount) return reject('format-safe-macho-segment-changed');
+        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount
+        || sourceSegment.vmaddr !== outputSegment.vmaddr || sourceSegment.vmsize !== outputSegment.vmsize) return reject('format-safe-macho-segment-changed');
       const maskedSourceDigest = bytesDigestMasked(source, safeState.sectionHeaderOffset + 40, 8);
       const maskedOutputDigest = bytesDigestMasked(candidate, safeState.sectionHeaderOffset + 40, 8);
       if (maskedSourceDigest !== maskedOutputDigest) return reject('format-safe-macho-unchanged-bytes-differ');

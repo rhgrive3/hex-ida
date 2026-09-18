@@ -11,6 +11,7 @@ import {
 } from './aapcs64.js';
 
 const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
+const DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT = 8;
 
 function callPrototypeOf(insn, opts) {
   // Calls may arrive through the production functionPrototype field while
@@ -269,6 +270,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         ? {
           index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true, bits:64, bytes:8,
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          pieces:[{ pieceIndex:0, order:0, reg, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
         }
@@ -276,6 +278,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           index, location:'stack', offset:stackPointerOffset, bytes:8,
           abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          pieces:[{ pieceIndex:0, order:0, stackOffset:stackPointerOffset, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
           ...(forceStack ? { variadicAnonymous:true } : {}),
@@ -384,9 +387,16 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     }
 
-    const stackAlignmentBytes = c.homogeneous
+    const naturalStackAlignmentBytes = c.homogeneous
       ? Math.max(c.elementBytes ?? 1, c.explicitAlignmentBytes ?? 0)
       : c.alignmentBytes;
+    /* Apple ARM64 fixed stack arguments use compact natural alignment, but
+     * the anonymous variadic area follows the Stage C word-slot cursor.  Once
+     * an argument is proven anonymous, round its start to at least one LP64
+     * word without changing the fixed-argument packing before the boundary. */
+    const stackAlignmentBytes = forceStack
+      ? Math.max(DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT, naturalStackAlignmentBytes)
+      : naturalStackAlignmentBytes;
     stackOffset = alignUp(stackOffset, stackAlignmentBytes);
     /* Apple ARM64 stack arguments consume compact slots of their natural
      * layout, not 8-byte-padded registers ("Function arguments may consume
@@ -395,9 +405,16 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
      * offsets 0/4/8/12) and the next argument starts right after it, so the
      * per-member slot width is the element's own size, never a widened 8. */
     const homogeneousStackElementBytes = c.homogeneous ? (c.elementBytes ?? 0) : null;
+    /* Darwin aggregates occupy their natural layout size on the stack; only
+     * the next argument's own alignment moves the cursor. The former
+     * Math.max(8, …) widening padded every aggregate to a full slot, pushing
+     * later arguments past bytes the callee never reserved (#5607). */
     const stackBytes = c.homogeneous ? Math.max(c.bytes ?? 0, homogeneousStackElementBytes * c.members)
-      : c.aggregate ? Math.max(8, Math.ceil((c.aggregateBytes ?? c.bytes) / 8) * 8)
+      : c.aggregate ? Math.max(1, c.aggregateBytes ?? c.bytes)
         : c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
+    const stackSlotBytes = forceStack
+      ? alignUp(stackBytes, DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT)
+      : stackBytes;
     const entry = {
       index,
       location:'stack',
@@ -428,12 +445,11 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       } : {}),
       possible:false,
       mustUse:true,
-      compactDarwinSlot:true,
-      ...(forceStack ? { variadicAnonymous:true } : {}),
+      ...(forceStack ? { variadicAnonymous:true } : { compactDarwinSlot:true }),
     };
     stackArguments.push(entry);
     arguments_.push(entry);
-    stackOffset += stackBytes;
+    stackOffset += stackSlotBytes;
     if (c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers = true;
   }
 
@@ -538,7 +554,7 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
     compactArgumentSlots:true,
     argumentSlotBytes:null,
     variadicAnonymousArguments:'stack-only',
-    variadicStackSlotAlignment:8,
+    variadicStackSlotAlignment:DARWIN_VARIADIC_STACK_SLOT_ALIGNMENT,
     reservedRegisters:Object.freeze(['x18']),
     narrowIntegerArguments:'caller-extends-to-32',
     vaListKind:'char-pointer',

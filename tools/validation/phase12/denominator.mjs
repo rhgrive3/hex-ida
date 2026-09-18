@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import './recognition-probe-realm.mjs';
+import { fireTrustedApprovalGesture, hostRecognitionCapability } from './recognition-probe-realm.mjs';
 import * as packageEnvelope from '../../../js/phase12/package-envelope.js';
 import * as recognition from '../../../js/knowledge/phase12-recognition.js';
 import * as rules from '../../../js/knowledge/phase12-rules.js';
@@ -200,8 +202,15 @@ function checkSourceCollection(check, root, failures, id) {
   let matches;
   try { matches = [...scoped.matchAll(new RegExp(check.regex, 'g'))].map((item) => item[1]); }
   catch { failures.push(`${id}:source-regex-invalid`); return; }
-  const observed = check.unique === false ? matches : [...new Set(matches)];
-  const expected = check.unique === false ? (check.expected || []) : [...new Set(check.expected || [])];
+  const observedRaw = check.unique === false ? matches : [...new Set(matches)];
+  const expectedRaw = check.unique === false ? (check.expected || []) : [...new Set(check.expected || [])];
+  // `ordered: false` compares the collected reasons as a branch-aware set: the
+  // same rejection class may legitimately be enforced at several boundaries
+  // (for example the raw-binary preflight now runs before snapshot), so emission
+  // order is not authoritative. Set membership still is — any removal, rename,
+  // or addition is still reported, so this does not weaken the fail-closed gate.
+  const observed = check.ordered === false ? [...new Set(observedRaw)].sort() : observedRaw;
+  const expected = check.ordered === false ? [...new Set(expectedRaw)].sort() : expectedRaw;
   if (!equal(observed, expected)) failures.push(`${id}:source-collection-drift:${JSON.stringify({ observed, expected })}`);
 }
 
@@ -262,8 +271,21 @@ function behaviorRecognitionOutcomes() {
   const truncated = recognition.createMatchResult({ sourceEntityId: 'source', packageEntryId: 'entry', candidateSearchTruncated: true });
   if (truncated.completeness === 'partial') observed.add('truncated-partial');
   if (!recognition.recognitionCanClaimUnique(ambiguous) && !recognition.recognitionCanClaimUnique(truncated)) observed.add('no-unique-claim');
-  const fact = recognition.promoteKnowledgeSuggestion(suggestion, { actorId: 'denominator-user', approvalToken: { approved: true, targetMatchId: suggestion.id } });
-  if (fact.authority === 'L4-local-canonical' && fact.confirmation === 'user-confirmed') observed.add('local-promotion');
+  // #5216: local promotion is minted only through a host approval control's
+  // module-minted approval surface, driven by a browser-trusted gesture,
+  // while the host carries a project binding (required host identity,
+  // review R2 round 5). This probe runs in the trusted Node runner realm
+  // (recognition-probe-realm.mjs), which simulates exactly the UA gesture
+  // delivery; caller-fabricated approval evidence (approvalToken /
+  // approvalGrant / approvalAuthority) is rejected outright.
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'denominator-project', capability: hostRecognitionCapability() });
+  let approved = false;
+  const control = recognition.createRecognitionApprovalControl(suggestion, { actorId: 'denominator-user', onApproved: () => { approved = true; } });
+  fireTrustedApprovalGesture(control.surface, 'click');
+  if (approved) {
+    const fact = recognition.promoteKnowledgeSuggestion(suggestion, { actorId: 'denominator-user' });
+    if (fact.authority === 'L4-local-canonical' && fact.confirmation === 'user-confirmed') observed.add('local-promotion');
+  }
   return observed;
 }
 

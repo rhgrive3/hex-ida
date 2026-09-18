@@ -1,9 +1,10 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation, projectAnnotationCommitList } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
-import { stripSecrets } from './ai/session-core/index.js';
+import { stripSecrets, createInvestigationSession, isValidSessionId } from './ai/session-core/index.js';
+import { PatchSet } from './patch.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
@@ -12,6 +13,24 @@ const MAX_DIFF_FUNCTIONS=350000;
 const PROJECT_LANGUAGES=new Set(['ja','en']);
 const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
+const IDENTITY_INTEGER_FIELDS=new Set(['sliceIndex','sliceOffset','sliceSize']);
+const IDENTITY_STRING_FIELDS=new Set(['uuid','architecture']);
+function canonicalizeIdentityField(field,value){
+  if(typeof value==='bigint'){
+    if(IDENTITY_INTEGER_FIELDS.has(field))return {state:'match',token:'i:'+value.toString()};
+    return {state:'invalid'};
+  }
+  if(typeof value==='number'){
+    if(IDENTITY_INTEGER_FIELDS.has(field)&&Number.isSafeInteger(value))return {state:'match',token:'i:'+String(value)};
+    return {state:'invalid'};
+  }
+  if(typeof value==='string'){
+    if(IDENTITY_STRING_FIELDS.has(field))return {state:'match',token:'s:'+value};
+    return {state:'invalid'};
+  }
+  if(value==null)return {state:'absent'};
+  return {state:'invalid'};
+}
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
 function asBigInt(value){try{return value==null?null:BigInt(value);}catch{return null;}}
@@ -63,9 +82,12 @@ export function sameProjectIdentity(project, identity){
   const a=project.binary.metadata||{}, b=identity.metadata||{};
   const keys=['sliceIndex','sliceOffset','sliceSize','uuid','architecture'];
   for(const key of keys){
-    if(b[key]==null)continue;
-    if(a[key]==null)return {ok:false,reason:'slice-identity-incomplete',field:key};
-    if(keyOf(a[key])!==keyOf(b[key]))return {ok:false,reason:'slice-identity-mismatch',field:key};
+    const projectValue=canonicalizeIdentityField(key,a[key]);
+    const liveValue=canonicalizeIdentityField(key,b[key]);
+    if(projectValue.state==='invalid'||liveValue.state==='invalid')return {ok:false,reason:'slice-identity-mismatch',field:key};
+    if(liveValue.state==='absent')continue;
+    if(projectValue.state==='absent')return {ok:false,reason:'slice-identity-incomplete',field:key};
+    if(projectValue.token!==liveValue.token)return {ok:false,reason:'slice-identity-mismatch',field:key};
   }
   return {ok:true};
 }
@@ -89,6 +111,9 @@ function safeFindings(app){
 function safeEvidence(app){
   const report=app?.autoReport?.report||null;
   return (report?.deep||[]).slice(0,MAX_PROJECT_FINDINGS);
+}
+function safeProjectAnnotations(app){
+  return (Array.isArray(app?.projectAnnotations)?app.projectAnnotations:[]).slice(0,MAX_PROJECT_FINDINGS);
 }
 function aiTurns(){
   const session=globalThis.window?.__hexAi?.session||globalThis.window?.__hexUi?.assistant?.session||null;
@@ -132,6 +157,7 @@ export function snapshotWorkspace(app, identity){
     bookmarks:bookmarks.slice(-500),
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
+    projectAnnotations:safeProjectAnnotations(app),
     evidence:safeEvidence(app),
     investigationSessions:safeSessions,
     agentAnswers:safeTurns.filter((t)=>t.role==='assistant'&&t.status==='done'),
@@ -156,83 +182,180 @@ export function applyWorkspaceProject(app, project){
   // also used directly by local restore and integration code (#5953).
   const navigation=normalizeNavigation(project.navigation??{});
   const replaceVars = project.user?.varsPresent !== false;
-  notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
-  for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
-  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
-  notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
-  notes.dirty=true;
-  if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
-  app.patches.clear();
+  // Validate-then-commit (#5646): every imported patch is staged into a
+  // throwaway PatchSet BEFORE any live state is touched. PatchSet.add is the
+  // authority on byte shape and overlap, and a mid-import throw used to leave
+  // notes replaced+persisted and the old patch set cleared. If staging fails,
+  // the import fails with the workspace untouched.
+  const stagedPatches=[];
+  const staging=new PatchSet();
   for(const p of project.user.patches||[]){
     if(p?.offset==null)continue;
-    app.patches.add(BigInt(p.offset),p.before||[],p.after||[],{addr:p.addr??null,label:p.label??null,reason:p.reason??null});
+    const meta={addr:p.addr??null,label:p.label??null,reason:p.reason??null};
+    staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
+    stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
   }
-  if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
-  if(project.findings?.confirmed?.length||project.findings?.evidence?.length){
-    app.autoReport={
-      report:{confirmed:project.findings.confirmed||[],settled:project.findings.confirmed||[],deep:project.findings.evidence||[],pinned:project.findings.confirmed||[],notes:['restored-project']},
-      key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
-    };
-  }
-  if(Array.isArray(project.findings?.investigationSessions)){
-    const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
+  const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
+  const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
+  const stagedTypes=[];
+  for(const entry of project.user.types||[])if(entry?.key)stagedTypes.push([String(entry.key),String(entry.value||'')]);
+  const stagedVars=[];
+  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)stagedVars.push([String(entry.key),String(entry.value||'')]);
+  const stagedStructs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
+
+  // Preflight the investigation sessions BEFORE any mutation (#8961). `register`
+  // only publishes records that already pass `createInvestigationSession`, whose
+  // `requireBindingId` rejects a malformed `binaryId`/`projectId`; a throw here
+  // therefore cannot leave a partially-imported workspace, and `notes.save()` is
+  // never reached for a structurally invalid project. The register loop below
+  // consumes exactly this validated candidate set so the success path is unchanged.
+  const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
+  const sessionStore = app?.aiRuntime?.sessionStore || null;
+  const canRegisterSessions = !!(sessionStore && typeof sessionStore.register === 'function' && sessionStore.sessions instanceof Map);
+  const sessionCandidates = [];
+  if(canRegisterSessions && Array.isArray(project.findings?.investigationSessions)){
     for(const session of project.findings.investigationSessions){
-      if(session && typeof session === 'object'){
-        const sessionBinaryId = session.binaryId || null;
-        // Saved sessions may carry the raw hash or the strong
-        // `content:<hash>[:<slice>]` identity; both bind to the current
-        // binary, a raw comparison drops the strong ones (#5652).
-        if(sessionBinaryId && currentHash && !sessionMatchesBinaryHash(sessionBinaryId, currentHash)) continue;
-        if(session.id && app?.aiRuntime?.sessionStore?.register){
-          app.aiRuntime.sessionStore.register(session);
+      if(!session || typeof session !== 'object' || !session.id) continue;
+      const sessionBinaryId = session.binaryId || null;
+      if(sessionBinaryId && currentHash && !sessionMatchesBinaryHash(sessionBinaryId, currentHash)) continue;
+      if(!isValidSessionId(session.id)) continue; // `register` would no-op; do not validate a record it will drop.
+      // Throws (before any live mutation) on a malformed binding identity.
+      sessionCandidates.push({ id: session.id, record: createInvestigationSession(session) });
+    }
+  }
+
+  // Full-transaction boundary (#8961): snapshot every live collection this
+  // function mutates, then apply + persist inside a try. If ANY step throws —
+  // a storage-quota `notes.save()` failure or a later fallible publish — the
+  // live AND durable workspace are restored to their pre-import semantic state
+  // before the error propagates, so a failed import never leaves split state
+  // (the #5646 residual where `notes.save()` was only locally staged).
+  const previous = {
+    names:[...notes.names.entries()],
+    comments:[...notes.comments.entries()],
+    types:[...notes.types.entries()],
+    vars:[...notes.vars.entries()],
+    structs:Array.isArray(notes.structs)?notes.structs.slice():[],
+    dirty:notes.dirty,
+    patches:patchEntries(app.patches),
+    autoReport:app.autoReport,
+    projectAnnotations:app.projectAnnotations,
+    lastGoal:app.lastGoal,
+    navEntries:app.navigation?app.navigation.entries:null,
+    navIndex:app.navigation?app.navigation.index:null,
+    navBookmarks:app.navigation?app.navigation.bookmarks:null,
+    bookmarks:typeof app.bookmarks?.list==='function'?app.bookmarks.list():null,
+    lang:app?.prefs?.lang,
+    explain:app?.prefs?.explain,
+    textSize:app?.prefs?.textSize,
+    currentFunction:app?.store?.get?.('currentAddress')??null,
+  };
+  const addedSessionIds=[];
+  const restoreMaps=(target,entries)=>{ target.clear(); for(const [k,v] of entries) target.set(k,v); };
+  const rollback=()=>{
+    restoreMaps(notes.names, previous.names);
+    restoreMaps(notes.comments, previous.comments);
+    restoreMaps(notes.types, previous.types);
+    if(replaceVars)restoreMaps(notes.vars, previous.vars);
+    notes.structs=previous.structs;
+    notes.dirty=previous.dirty;
+    if(app.patches?.clear){ app.patches.clear(); for(const p of previous.patches) app.patches.add(p.offset,p.before,p.after,{addr:p.addr,label:p.label,reason:p.reason}); }
+    app.autoReport=previous.autoReport;
+    app.projectAnnotations=previous.projectAnnotations;
+    app.lastGoal=previous.lastGoal;
+    if(app.navigation){
+      if(previous.navEntries!==null)app.navigation.entries=previous.navEntries;
+      if(previous.navIndex!==null)app.navigation.index=previous.navIndex;
+      if(previous.navBookmarks!==null)app.navigation.bookmarks=previous.navBookmarks;
+    }
+    if(previous.bookmarks!==null&&typeof app.bookmarks?.restore==='function'){ try{ app.bookmarks.restore(previous.bookmarks); }catch{ /* best-effort */ } }
+    if(app?.prefs){ app.prefs.lang=previous.lang; app.prefs.explain=previous.explain; app.prefs.textSize=previous.textSize; }
+    if(previous.currentFunction!=null&&app?.store?.set){ try{ app.store.set({ currentAddress: previous.currentFunction }); }catch{ /* best-effort */ } }
+    // Undo session records this call published before the failure (memory only;
+    // `register` never durably persists, so no queued delete is needed).
+    if(canRegisterSessions)for(const id of addedSessionIds)sessionStore.sessions.delete(id);
+    // Re-persist the restored note state so durable storage matches memory.
+    try{ notes.save(); }catch{ /* the rethrow still signals the failed import */ }
+  };
+
+  try {
+    notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
+    for(const [address,value] of stagedNames)notes.names.set(address,value);
+    for(const [address,value] of stagedComments)notes.comments.set(address,value);
+    for(const [key,value] of stagedTypes)notes.types.set(key,value);
+    if(replaceVars)for(const [key,value] of stagedVars)notes.vars.set(key,value);
+    notes.structs=stagedStructs;
+    notes.dirty=true;
+    app.patches.clear();
+    for(const [offset,before,after,meta] of stagedPatches)app.patches.add(offset,before,after,meta);
+    if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
+    const findings=project.findings;
+    if(findings&&typeof findings==='object'&&!Array.isArray(findings)
+      &&(Array.isArray(findings.confirmed)||Array.isArray(findings.evidence))){
+      const confirmed=Array.isArray(findings.confirmed)?findings.confirmed:[];
+      const evidence=Array.isArray(findings.evidence)?findings.evidence:[];
+      // Normalized empty arrays are an explicit replacement state (#3658), so
+      // an import must clear a report from the previously bound project.
+      app.autoReport=confirmed.length||evidence.length?{
+        report:{confirmed,settled:confirmed,deep:evidence,pinned:confirmed,notes:['restored-project']},
+        key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
+      }:null;
+    }
+    app.projectAnnotations=Array.isArray(project.projectAnnotations)?project.projectAnnotations.slice():[];
+    for(const candidate of sessionCandidates){
+      if(sessionStore.register(candidate.record))addedSessionIds.push(candidate.record.id);
+      else if(sessionStore.sessions.has(candidate.id))addedSessionIds.push(candidate.id);
+    }
+    // Restore last query
+    if(navigation.lastQuery){
+      app.lastGoal = { text: navigation.lastQuery };
+    }
+    // Restore navigation history & cursor
+    const history=navigation.history||[];
+    if(app.navigation&&history.length){
+      app.navigation.entries=app.navigation.limit>0?history.slice(-app.navigation.limit):[];
+      const droppedHistoryCount=history.length-app.navigation.entries.length;
+      const cursor = navigation.cursorIndex;
+      app.navigation.index = (app.navigation.entries.length > 0 && cursor != null && !isNaN(Number(cursor)))
+        ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)-droppedHistoryCount))
+        : app.navigation.entries.length - 1;
+      app.navigation.onChange?.(app.navigation.snapshot());
+    }
+    // Restore currentFunction if present and within valid range
+    if(navigation.currentFunction != null){
+      const curAddr = navigation.currentFunction;
+      if(typeof app.goToAddress === 'function'){
+        // Saved positions can live in any region of the active slice. Route the
+        // restore through the app-level navigation so the owning region gets
+        // selected (secondary code sections, data regions, ...); invalid
+        // addresses stay silently skipped exactly as before (#5944).
+        const regions=app.store?.get?.('regions')||[];
+        const target=regions.find((r)=>r.size>0n&&curAddr>=r.vmAddr&&curAddr<r.vmAddr+r.size);
+        if(target)app.goToAddress(curAddr,{history:false});
+      }else{
+        const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+        if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+          app.store?.set?.({ currentAddress: curAddr });
+          app.viewer?.goToAddress?.(curAddr);
         }
       }
     }
-  }
-  // Restore last query
-  if(navigation.lastQuery){
-    app.lastGoal = { text: navigation.lastQuery };
-  }
-  // Restore navigation history & cursor
-  const history=navigation.history||[];
-  if(app.navigation&&history.length){
-    app.navigation.entries=history.slice(-app.navigation.limit);
-    const droppedHistoryCount=history.length-app.navigation.entries.length;
-    const cursor = navigation.cursorIndex;
-    app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
-      ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)-droppedHistoryCount))
-      : app.navigation.entries.length - 1;
-    app.navigation.onChange?.(app.navigation.snapshot());
-  }
-  // Restore currentFunction if present and within valid range
-  if(navigation.currentFunction != null){
-    const curAddr = navigation.currentFunction;
-    if(typeof app.goToAddress === 'function'){
-      // Saved positions can live in any region of the active slice. Route the
-      // restore through the app-level navigation so the owning region gets
-      // selected (secondary code sections, data regions, ...); invalid
-      // addresses stay silently skipped exactly as before (#5944).
-      const regions=app.store?.get?.('regions')||[];
-      const target=regions.find((r)=>r.size>0n&&curAddr>=r.vmAddr&&curAddr<r.vmAddr+r.size);
-      if(target)app.goToAddress(curAddr,{history:false});
-    }else{
-      const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
-      if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
-        app.store?.set?.({ currentAddress: curAddr });
-        app.viewer?.goToAddress?.(curAddr);
-      }
+    // Restore bookmarks
+    const bookmarks=project.navigation?.bookmarks||project.user?.bookmarks||[];
+    if(bookmarks.length){
+      if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
+      if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
     }
+    // Apply imported analysis settings only after the rest of the project restore succeeds.
+    applyWorkspaceAnalysisSettings(app,project.analysis?.settings);
+    // Commit durability last (#8961): every fallible in-memory step already
+    // succeeded, so a storage failure here is the only post-mutation risk and
+    // it is fully rolled back before it propagates.
+    if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
+  } catch (error) {
+    rollback();
+    throw error;
   }
-  // Restore bookmarks
-  const bookmarks=project.navigation?.bookmarks||project.user?.bookmarks||[];
-  if(bookmarks.length){
-    if(app.navigation)app.navigation.bookmarks=bookmarks.slice(-500);
-    if(app.bookmarks?.restore)app.bookmarks.restore(bookmarks);
-  }
-  // Apply imported analysis settings only after the rest of the project restore succeeds.
-  applyWorkspaceAnalysisSettings(app,project.analysis?.settings);
   return true;
 }
 
@@ -327,10 +450,13 @@ export class ProductWorkspace{
     const revision=this.bindingRevision, request=++this.baselineSequence;
     const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const ownedBackend=!backend, other=backend||this.backendFactory();
-    const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
-    if(signal?.aborted)throwIfAborted(signal);
-    signal?.addEventListener('abort',onAbort,{once:true});
+    let disposed=false, listenerRegistered=false;
+    const disposeOwned=()=>{if(ownedBackend&&!disposed){disposed=true;other?.dispose?.();}};
+    const onAbort=disposeOwned;
     try{
+      throwIfAborted(signal);
+      if(signal){listenerRegistered=true;signal.addEventListener('abort',onAbort,{once:true});}
+      throwIfAborted(signal);
       const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
@@ -344,8 +470,8 @@ export class ProductWorkspace{
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
       this.diffState=null;this.busy=null;return this.baseline;
-    }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
-    finally{signal?.removeEventListener('abort',onAbort);}
+    }catch(error){disposeOwned();throw error;}
+    finally{if(listenerRegistered)signal.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
     if(this.busy)return this.busy;

@@ -15,6 +15,63 @@ const MAX_SANDBOX_OUTPUT_MESSAGES = 256;
 const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;
 const MAX_SANDBOX_OUTPUT_PER_SECOND = 96;
 
+/*
+ * One binary transport-size contract for every sandbox estimator (#8668/#8694).
+ *
+ * structuredClone() transports an ArrayBuffer view's complete backing store,
+ * never just its visible view length, so a 1-byte view over an oversized buffer
+ * must cost the backing store. This single function is textually injected into
+ * the Worker prelude and used directly by the host estimators so the realms
+ * cannot drift again.
+ *
+ * Returns null when the value is not a binary container, -1 when its transport
+ * cost is unmeasurable (callers must fail closed), otherwise the transported
+ * byte count. `buffers` deduplicates aliased backing stores because cloning one
+ * value graph carries a single copy of each distinct ArrayBuffer.
+ */
+function binaryTransportBytes(value, buffers, N) {
+  let bytes = null;
+  let backing = null;
+  try {
+    bytes = N.bufferByteLength(value);
+  } catch {
+    if (!N.isView(value)) return null;
+    try { backing = N.typedArrayBuffer(value); }
+    catch { try { backing = N.dataViewBuffer(value); } catch {} }
+    if (backing == null) return -1;
+    try { bytes = N.bufferByteLength(backing); } catch { return -1; }
+  }
+  if (typeof bytes !== 'number' || !(bytes >= 0) || bytes % 1 !== 0) return -1;
+  const owner = backing === null ? value : backing;
+  if (N.has(buffers, owner)) return 0;
+  N.add(buffers, owner);
+  return bytes;
+}
+
+/*
+ * Builds the tamper-resistant accessor bag for the shared binary transport
+ * contract from whichever realm evaluates it, so the page, the sandbox iframe,
+ * and the untrusted Worker all apply the same policy to their own intrinsics.
+ */
+function createBinaryTransportNatives() {
+  return Object.freeze({
+    bufferByteLength: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+    ),
+    typedArrayBuffer: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+    ),
+    dataViewBuffer: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+    ),
+    isView: ArrayBuffer.isView.bind(ArrayBuffer),
+    has: Function.prototype.call.bind(Set.prototype.has),
+    add: Function.prototype.call.bind(Set.prototype.add),
+  });
+}
+
+const BINARY_TRANSPORT_NATIVES = createBinaryTransportNatives();
+
 const WORKER_PRELUDE = String.raw`
 (() => {
   "use strict";
@@ -43,6 +100,8 @@ const WORKER_PRELUDE = String.raw`
   const nativeDataViewBuffer = Function.prototype.call.bind(
     Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
   );
+  const BINARY_TRANSPORT_NATIVES_FOR_WORKER = (${createBinaryTransportNatives.toString()})();
+  ${binaryTransportBytes.toString()}
   for (const name of [
     'fetch', 'WebSocket', 'EventSource', 'XMLHttpRequest', 'Worker',
     'SharedWorker', 'importScripts', 'WebTransport', 'BroadcastChannel'
@@ -149,27 +208,19 @@ const WORKER_PRELUDE = String.raw`
   // same budget instead of letting it bypass print().
   try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
-  const measure = (value, seen = new Set(), limit = MAX_ARGUMENT_UNITS + 1) => {
+  const measure = (value, seen = new NativeSet(), limit = MAX_ARGUMENT_UNITS + 1, buffers = new NativeSet()) => {
     if (limit <= 0 || value == null) return 0;
     const type = typeof value;
     if (type === 'string') return Math.min(limit, value.length * 2);
     if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-    if (type !== 'object' || nativeSetHas(seen, value)) return 0;
+    if (type !== 'object') return 0;
+    const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES_FOR_WORKER);
+    if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
+    if (nativeSetHas(seen, value)) return 0;
     nativeSetAdd(seen, value);
     let n = 16;
     const isArray = nativeArrayIsArray(value);
-    const isView = nativeArrayBufferIsView(value);
-    let isArrayBuffer = false;
-    try { nativeArrayBufferByteLength(value); isArrayBuffer = true; } catch {}
-    if (isView) {
-      let buffer = null;
-      try { buffer = nativeTypedArrayBuffer(value); }
-      catch { try { buffer = nativeDataViewBuffer(value); } catch {} }
-      if (!buffer) { nativeSetDelete(seen, value); return limit; }
-      try { nativeArrayBufferByteLength(buffer); }
-      catch { nativeSetDelete(seen, value); return limit; }
-    }
-    if (!isArray && !isView && !isArrayBuffer) {
+    if (!isArray) {
       let proto;
       try { proto = nativeGetPrototypeOf(value); }
       catch { nativeSetDelete(seen, value); return limit; }
@@ -189,14 +240,12 @@ const WORKER_PRELUDE = String.raw`
         nativeSetDelete(seen, value);
         return limit;
       }
-      if (!isView) {
-        const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
-        if (!isIndex) {
-          n += Math.min(limit - n, key.length * 2);
-          if (n >= limit) break;
-        }
+      const isIndex = isArray && key !== '4294967295' && key === '' + (key >>> 0);
+      if (!isIndex) {
+        n += Math.min(limit - n, key.length * 2);
+        if (n >= limit) break;
       }
-      n += measure(descriptor.value, seen, limit - n);
+      n += measure(descriptor.value, seen, limit - n, buffers);
       if (n >= limit) break;
     }
     nativeSetDelete(seen, value);
@@ -349,7 +398,11 @@ const WORKER_POSTLUDE = String.raw`
 `;
 
 function workerProgram(source, mode, index, expectedDefinition) {
-  const user = JSON.stringify(String(source || ''));
+  if (typeof source !== 'string') throw new TypeError('sandbox source must be a primitive string');
+  if (mode !== 'script' && mode !== 'discover' && mode !== 'plugin') {
+    throw new TypeError('sandbox mode must be script, discover, or plugin');
+  }
+  const user = JSON.stringify(source);
   const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
   const expected = expectedDefinition === undefined ? 'null' : JSON.stringify(expectedDefinition);
   let body;
@@ -417,8 +470,11 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   let publicOutputBytes = 0;
   let publicOutputWindow = Date.now();
   let publicOutputWindowCount = 0;
+  const BINARY_TRANSPORT_NATIVES_FOR_FRAME = (${createBinaryTransportNatives.toString()})();
+  ${binaryTransportBytes.toString()}
   const publicOutputSize = (value) => {
     const seen = new Set();
+    const buffers = new Set();
     const stack = [value];
     let bytes = 0;
     let nodes = 0;
@@ -430,8 +486,12 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
       if (typeof x === 'boolean') { bytes += 4; continue; }
       if (typeof x === 'undefined') { bytes += 4; continue; }
-      if (x instanceof ArrayBuffer) { bytes += x.byteLength; continue; }
-      if (ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+      const binary = binaryTransportBytes(x, buffers, BINARY_TRANSPORT_NATIVES_FOR_FRAME);
+      if (binary !== null) {
+        if (binary < 0) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+        bytes += binary;
+        continue;
+      }
       if (typeof x !== 'object') return PUBLIC_OUTPUT_MAX_BYTES + 1;
       if (seen.has(x)) continue;
       seen.add(x);
@@ -557,13 +617,13 @@ const FRAME = `<!doctype html><meta charset="utf-8">
 })();
 </script>`;
 
-function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
+function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1, buffers = new Set()) {
   if (limit <= 0 || value == null) return 0;
   const type = typeof value;
   if (type === 'string') return Math.min(limit, value.length * 2);
   if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
-  if (value instanceof ArrayBuffer) return value.byteLength;
-  if (ArrayBuffer.isView(value)) return value.byteLength;
+  const binary = binaryTransportBytes(value, buffers, BINARY_TRANSPORT_NATIVES);
+  if (binary !== null) return binary < 0 ? limit : Math.min(limit, binary);
   if (type !== 'object' || seen.has(value)) return 0;
   seen.add(value);
   let n = 16;
@@ -575,7 +635,7 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
         n += Math.min(limit - n, key.length * 2);
         if (n >= limit) break;
       }
-      n += valueSize(value[key], seen, limit - n);
+      n += valueSize(value[key], seen, limit - n, buffers);
       if (n >= limit) break;
     }
   } else {
@@ -585,7 +645,7 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
     }
     if (n < limit) {
       for (const item of Object.values(value)) {
-        n += valueSize(item, seen, limit - n);
+        n += valueSize(item, seen, limit - n, buffers);
         if (n >= limit) break;
       }
     }
@@ -672,6 +732,12 @@ function normalizeSandboxTimeout(timeout) {
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal, expectedDefinition }) {
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
+  }
+  if (typeof source !== 'string') {
+    return Promise.resolve({ error: '実行ソースが無効です。' });
+  }
+  if (mode !== 'script' && mode !== 'discover' && mode !== 'plugin') {
+    return Promise.resolve({ error: '実行モードが無効です。' });
   }
   const safeIndex = normalizeSandboxIndex(mode, index);
   if (safeIndex == null) {
@@ -779,7 +845,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         return;
       }
       if (m.t === 'ready') {
-        const start = { t: 'start', source: String(source || ''), mode, index: safeIndex };
+        const start = { t: 'start', source, mode, index: safeIndex };
         if (safeExpectedDefinition !== undefined) start.expectedDefinition = safeExpectedDefinition;
         channel.port1.postMessage(start);
       } else if (m.t === 'print') {

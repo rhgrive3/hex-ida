@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/ghidra-differential.yml'
       - 'js/decompile.js'
+      - 'js/decompile-*.js'
       - 'js/decompiler/**'
       - 'js/arm64.js'
       - 'js/types.js'
@@ -18,6 +19,41 @@ on:
       - 'js/targets/architecture/**'
       - 'js/semantics/effects/**'
       - 'js/semantics/compat/**'
+      - 'js/semantics/ir/**'
+      - 'js/semantics/cfg/**'
+      - 'js/semantics/ssa/**'
+      - 'js/semantics/memoryssa/**'
+      - 'js/semantics/memory-access-provider.js'
+      - 'js/analysis/**'
+      - 'js/targets/abi/**'
+      # Other production dependencies reached by compiler-truth/decompile.
+      # The trigger contract checks this closure on every PR fast gate.
+      - 'js/abi/aapcs64/**'
+      - 'js/api-cross-binary-families.js'
+      - 'js/apple/**'
+      - 'js/architecture/compat/**'
+      - 'js/blocks-base.js'
+      - 'js/cfg.js'
+      - 'js/comprehend.js'
+      - 'js/core/artifacts/contracts.js'
+      - 'js/core/artifacts/dependencies.js'
+      - 'js/core/identity/**'
+      - 'js/expr.js'
+      - 'js/i18n.js'
+      - 'js/ir-base.js'
+      - 'js/ir-public-base.js'
+      - 'js/legacy-stack-compat-repair.js'
+      - 'js/metadata/**'
+      - 'js/objc*.js'
+      - 'js/patch.js'
+      - 'js/range-domain.js'
+      - 'js/rtti.js'
+      - 'js/swift.js'
+      - 'js/swift-context.js'
+      - 'js/symbolic/**'
+      - 'js/types-legacy.js'
+      - 'js/ui-root.js'
+      - 'js/ui/explain/arm64-operands.js'
       - 'tools/decompiler/**'
       - 'tools/benchmark/**'
       - 'tools/validation/machine-effects/**'
@@ -26,6 +62,7 @@ on:
       - '!tests/machine-effects/run.mjs'
       - 'tests/benchmark-baseline*'
       - 'tests/issue-458-ghidra-trigger.mjs'
+      - 'tests/ci-development-mode.mjs'
       - 'package.json'
   workflow_dispatch:
 
@@ -47,20 +84,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Workflow trigger contract
         run: node tests/issue-458-ghidra-trigger.mjs
 
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache official Ghidra
         id: ghidra-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/hex-ghidra-${{ env.GHIDRA_VERSION }}
           key: ghidra-${{ runner.os }}-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_BUILD_DATE }}
@@ -107,7 +144,7 @@ jobs:
 
       - name: Upload differential diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ghidra-compiler-truth-differential
           path: |

@@ -1,5 +1,6 @@
 import { deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
+import { analyzeSemanticDominance } from '../cfg/index.js';
 
 export const SEMANTIC_SSA_CONTRACT_VERSION = '2.0.0';
 export const SEMANTIC_SSA_DEFINITION_KINDS = Object.freeze([
@@ -16,6 +17,48 @@ export const SEMANTIC_SSA_DEFAULT_BUDGET = Object.freeze({
 });
 
 const DEF_KINDS = new Set(SEMANTIC_SSA_DEFINITION_KINDS);
+const VIRTUAL_ENTRY_PREDECESSOR_BASE = '@semantic-ssa-virtual-entry';
+
+export function semanticSsaVirtualEntryPredecessor(cfg) {
+  const ids = new Set((cfg?.blocks ?? []).map((block) => block.id));
+  let candidate = VIRTUAL_ENTRY_PREDECESSOR_BASE;
+  let suffix = 0;
+  while (ids.has(candidate)) candidate = `${VIRTUAL_ENTRY_PREDECESSOR_BASE}#${++suffix}`;
+  return candidate;
+}
+
+export function semanticSsaPhiPredecessors(cfg, blockId) {
+  const block = (cfg?.blocks ?? []).find((candidate) => candidate.id === blockId);
+  if (!block) return [];
+  const predecessors = block.predecessors.slice();
+  if (blockId === cfg.entryBlockId && predecessors.length > 0) {
+    predecessors.push(semanticSsaVirtualEntryPredecessor(cfg));
+  }
+  return predecessors.sort();
+}
+
+export function analyzeSemanticSsaDominance(cfg, options = {}) {
+  const dominance = analyzeSemanticDominance(cfg, options);
+  const entry = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
+  if (!entry || entry.predecessors.length === 0) return dominance;
+
+  // Model the external function-entry edge as a virtual predecessor without
+  // mutating the caller-visible CFG. In the augmented graph, every real
+  // dominator of a reachable backedge predecessor has the real entry block in
+  // its dominance frontier. This includes the entry itself for self/backedges.
+  const reachable = new Set(dominance.reachable);
+  const frontier = Object.fromEntries(Object.entries(dominance.dominanceFrontier)
+    .map(([blockId, ids]) => [blockId, new Set(ids)]));
+  for (const predecessor of entry.predecessors) {
+    if (!reachable.has(predecessor)) continue;
+    for (const dominator of dominance.dominators[predecessor] ?? []) {
+      frontier[dominator]?.add(cfg.entryBlockId);
+    }
+  }
+  const dominanceFrontier = Object.fromEntries(Object.entries(frontier)
+    .map(([blockId, ids]) => [blockId, [...ids].sort()]));
+  return deepFreeze({ ...dominance, dominanceFrontier });
+}
 
 function fail(code) { throw new TypeError(code); }
 function object(value, code) {
@@ -141,6 +184,20 @@ function cfgMaps(cfg) {
   return { blocks: new Map((cfg.blocks ?? []).map((block) => [block.id, block])) };
 }
 
+function dominanceFor(cfg, cache) {
+  if (!cfg) return null;
+  if (!cache.has(cfg)) {
+    try {
+      cache.set(cfg, analyzeSemanticDominance(cfg));
+    } catch {
+      // A CFG that cannot answer dominance keeps phi-edge validation at the
+      // predecessor-membership level; everything else still fails closed.
+      cache.set(cfg, null);
+    }
+  }
+  return cache.get(cfg);
+}
+
 export function createSemanticSsaContract(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ssa-invalid-contract');
@@ -213,6 +270,8 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   const cfgInfo = cfgMaps(cfg);
+  // Dominance is computed at most once per contract validation (#5413).
+  const dominanceCache = new Map();
   const useIds = new Set();
   for (const use of uses) {
     assertNotAborted(options);
@@ -241,11 +300,31 @@ export function createSemanticSsaContract(input, options = {}) {
     if (!block) fail('semantic-ssa-invalid-definition-block');
     const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
     if (new Set(incomingPreds).size !== incomingPreds.length) fail('semantic-ssa-duplicate-phi-predecessor');
+    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
+    const hasVirtualEntry = definition.blockId === cfg.entryBlockId && block.predecessors.length > 0;
     for (const pred of incomingPreds) {
+      if (hasVirtualEntry && pred === virtualEntryPredecessor) continue;
       if (!block.predecessors.includes(pred)) fail('semantic-ssa-phi-predecessor-not-in-cfg');
     }
-    if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
+    if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(semanticSsaPhiPredecessors(cfg, definition.blockId))) {
       fail('semantic-ssa-phi-predecessor-set-incomplete');
+    }
+    // Each phi argument must be available on its own edge (#5413): the
+    // argument's definition block must be the predecessor itself or dominate
+    // it. A branch-local value attributed to the opposite predecessor (which
+    // it does not dominate) is not canonical SSA. Definitions without a
+    // block stay unpinned.
+    const dominance = dominanceFor(cfg, dominanceCache);
+    for (const incoming of definition.incoming) {
+      const prior = definitionByValue.get(incoming.valueId);
+      if (hasVirtualEntry && incoming.predecessorBlockId === virtualEntryPredecessor) {
+        if (!['entry-seed', 'implicit-undef'].includes(prior?.proof?.kind)) fail('semantic-ssa-entry-phi-seed-required');
+        if (prior?.blockId !== cfg.entryBlockId) fail('semantic-ssa-entry-phi-seed-block-mismatch');
+        continue;
+      }
+      if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
+      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
+      if (!dominators?.includes(prior.blockId)) fail('semantic-ssa-phi-incoming-edge-mismatch');
     }
   }
 

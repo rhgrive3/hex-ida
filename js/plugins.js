@@ -11,6 +11,7 @@ import { stableDigest } from './core/identity/index.js';
 
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
+export const PLUGIN_INSTALL_DEADLINE_MS = 15000;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
 
 // A persisted v3 manifest must be provably derived from the source it claims:
@@ -30,6 +31,38 @@ function selectedPluginIsBound(plugin, installation) {
   return !!definition
     && definition.name === plugin.name
     && definition.description === plugin.description;
+}
+
+/* Plugin identity is persisted state: only canonical primitives may enter the
+   installation/plugin ID namespaces (#5655). A structured or coerced
+   installationId would alias a real installation's Map key, and a coerced
+   enabled/definition index would enable a definition the user never did. */
+function canonicalInstallationId(value, fallback = null) {
+  if (typeof value === 'string' && value.trim()) return value;
+  return fallback;
+}
+function canonicalPluginIndex(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+function canonicalEnabledIndexSet(values) {
+  if (!Array.isArray(values)) return null;
+  const enabled = new Set();
+  for (const value of values) {
+    const index = canonicalPluginIndex(value);
+    if (index == null) continue;
+    enabled.add(index);
+  }
+  return enabled;
+}
+function canonicalRestoredDefinitions(definitions) {
+  if (!Array.isArray(definitions) || definitions.length === 0) return null;
+  for (const def of definitions) {
+    if (!def || typeof def !== 'object' || Array.isArray(def)) return null;
+    if (canonicalPluginIndex(def.index) == null) return null;
+    if (def.name !== undefined && typeof def.name !== 'string') return null;
+    if (def.description !== undefined && typeof def.description !== 'string') return null;
+  }
+  return definitions;
 }
 let fallbackInstallSeq = 1;
 
@@ -123,61 +156,71 @@ export class PluginHost {
       if (!Array.isArray(list)) return;
       const legacySeen = new Set();
       for (const p of list) {
-        if (!p || typeof p.source !== 'string') continue;
-        // v3 manifest fast path: restore registry directly without sandbox execution
-        if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
-          // #6080: the fast path is only sound while the persisted definitions
-          // are provably the discovery result of the persisted source. A
-          // manifest without (or failing) the source/definitions binding falls
-          // back to real discovery so the executed defs[index] always matches
-          // the displayed metadata.
-          if (!manifestIsBound(p)) {
-            await this.install(p.source, p.origin || '保存されたもの', {
-              silent: true,
-              installationId: p.installationId,
-              enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+        try {
+          if (!p || typeof p.source !== 'string') continue;
+          /* A present-but-malformed installationId would alias a canonical
+             installation's Map key; skipping the entry beats laundering it (#5655). */
+          if (p.installationId != null && canonicalInstallationId(p.installationId) == null) continue;
+          // v3 manifest fast path: restore registry directly without sandbox execution
+          if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+            const definitions = canonicalRestoredDefinitions(p.definitions);
+            // #6080: the fast path is only sound while the persisted definitions
+            // are provably the discovery result of the persisted source. A
+            // manifest without (or failing) the source/definitions binding falls
+            // back to real discovery so the executed defs[index] always matches
+            // the displayed metadata.
+            // #5482: the fast path is likewise bound by install()'s source byte
+            // cap — an oversized persisted source must never restore directly
+            // into the canonical registry just because its digest is
+            // self-consistent.
+            if (definitions == null || !manifestIsBound(p)
+              || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
+              await this.install(p.source, p.origin || '保存されたもの', {
+                silent: true,
+                installationId: p.installationId,
+                enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+              });
+              continue;
+            }
+            const installationId = canonicalInstallationId(p.installationId, newInstallId());
+            const enabled = canonicalEnabledIndexSet(p.enabledIndexes)
+              ?? new Set(definitions.map((def) => def.index));
+            const all = definitions.map((def) => ({
+              id: `${installationId}:${def.index}`,
+              installationId,
+              name: def.name,
+              description: def.description,
+              index: def.index,
+              source: p.source,
+              origin: p.origin || '保存されたもの',
+            }));
+            const added = all.filter((plugin) => enabled.has(plugin.index));
+            this.plugins.push(...added);
+            this.installations.set(installationId, {
+              v: 3,
+              installationId,
+              source: p.source,
+              origin: p.origin || '保存されたもの',
+              definitions,
+              enabledIndexes: Array.from(enabled),
+              sourceDigest: p.sourceDigest,
+              definitionsDigest: p.definitionsDigest,
             });
             continue;
           }
-          const installationId = String(p.installationId);
-          const enabled = Array.isArray(p.enabledIndexes)
-            ? new Set(p.enabledIndexes.map(Number).filter(Number.isInteger))
-            : new Set(p.definitions.map((d) => d.index));
-          const all = p.definitions.map((def) => ({
-            id: `${installationId}:${def.index}`,
-            installationId,
-            name: def.name,
-            description: def.description,
-            index: def.index,
-            source: p.source,
-            origin: p.origin || '保存されたもの',
-          }));
-          const added = all.filter((plugin) => enabled.has(plugin.index));
-          this.plugins.push(...added);
-          this.installations.set(installationId, {
-            v: 3,
-            installationId,
-            source: p.source,
-            origin: p.origin || '保存されたもの',
-            definitions: p.definitions,
-            enabledIndexes: Array.from(enabled),
-            sourceDigest: p.sourceDigest,
-            definitionsDigest: p.definitionsDigest,
-          });
-          continue;
-        }
 
-        /* v1/v2 legacy fallback */
-        if (!p.installationId) {
-          const legacyKey = `${p.origin || ''}\u0000${p.source}`;
-          if (legacySeen.has(legacyKey)) continue;
-          legacySeen.add(legacyKey);
-        }
-        await this.install(p.source, p.origin || '保存されたもの', {
-          silent: true,
-          installationId: p.installationId || newInstallId(),
-          enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
-        });
+          /* v1/v2 legacy fallback */
+          if (!p.installationId) {
+            const legacyKey = `${p.origin || ''}\u0000${p.source}`;
+            if (legacySeen.has(legacyKey)) continue;
+            legacySeen.add(legacyKey);
+          }
+          await this.install(p.source, p.origin || '保存されたもの', {
+            silent: true,
+            installationId: p.installationId || newInstallId(),
+            enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+          });
+        } catch { continue; }
       }
     } catch { /* corrupted plugin storage is isolated */ }
   }
@@ -232,10 +275,8 @@ export class PluginHost {
     });
     if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
 
-    const installationId = String(opts.installationId || newInstallId());
-    const enabled = Array.isArray(opts.enabledIndexes)
-      ? new Set(opts.enabledIndexes.map(Number).filter(Number.isInteger))
-      : null;
+    const installationId = canonicalInstallationId(opts.installationId, newInstallId());
+    const enabled = canonicalEnabledIndexSet(opts.enabledIndexes);
     const definitions = (discovered.value || []).map((def, index) => ({
       index,
       name: def.name,
@@ -280,18 +321,57 @@ export class PluginHost {
     return { ok: true, added, installationId };
   }
 
-  async installFromUrl(url) {
-    let text;
-    try {
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+  async installFromUrl(url, options = {}) {
+    // #8940: the byte cap only advances when the server actually produces bytes,
+    // so a host that never returns headers, or returns headers then stalls the
+    // body stream, left the returned Promise pending forever and pinned the
+    // install workflow. Bound the whole remote exchange with a deadline and honor
+    // a caller-supplied AbortSignal; both abort the fetch and reject the read.
+    const deadlineMs = Number.isFinite(options.timeoutMs) ? Math.max(0, options.timeoutMs) : PLUGIN_INSTALL_DEADLINE_MS;
+    const controller = new AbortController();
+    const callerSignal = options.signal ?? null;
+    let timer = null;
+    let rejectBailout = null;
+    const TIMEOUT = new Error('PLUGIN_TIMEOUT');
+    // A single "bailout" promise rejects the race on EITHER the deadline or a
+    // caller abort, so cancellation is prompt even when a remote fetch ignores
+    // the AbortSignal (never-resolving headers or a stalled body reader).
+    const bailout = new Promise((_, reject) => { rejectBailout = reject; });
+    const onCallerAbort = () => {
+      controller.abort(callerSignal.reason ?? new Error('PLUGIN_ABORT'));
+      rejectBailout(callerSignal.reason ?? new Error('PLUGIN_ABORT'));
+    };
+    if (callerSignal) {
+      if (callerSignal.aborted) return { error: 'キャンセルされました。', aborted: true };
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    if (Number.isFinite(deadlineMs)) {
+      timer = setTimeout(() => {
+        controller.abort(TIMEOUT);
+        rejectBailout(TIMEOUT);
+      }, deadlineMs);
+    }
+    const exchange = (async () => {
+      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
       if (!res.ok) return { error: '取り寄せられませんでした（' + res.status + '）。' };
-      text = await boundedResponseText(res);
+      return { ok: true, source: await boundedResponseText(res), origin: url, needsConfirmation: true };
+    })();
+    // Never leave the losing side of the race as an unhandled rejection: a
+    // deadline/caller abort aborts the fetch, but a stalled reader that ignores
+    // the signal must not crash the process after we have already returned.
+    exchange.catch(() => {});
+    try {
+      return await Promise.race([exchange, bailout]);
     } catch (err) {
       if (err?.message === 'PLUGIN_TOO_LARGE') return { error: 'プラグインが大きすぎます（512 KB まで）。' };
       if (err?.message === 'PLUGIN_UNBOUNDED_RESPONSE') return { error: 'サイズを安全に確認できない応答だったため読み込みませんでした。' };
+      if (callerSignal?.aborted) return { error: 'キャンセルされました。', aborted: true };
+      if (err?.message === 'PLUGIN_TIMEOUT' || err?.name === 'AbortError') return { error: '取り寄せがタイムアウトしました。', timeout: true };
       return { error: '取り寄せに失敗しました: ' + ((err && err.message) || err) };
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
     }
-    return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
   remove(id) {

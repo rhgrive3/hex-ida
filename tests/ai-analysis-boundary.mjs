@@ -77,4 +77,6 @@ await import('./issue-3364-wait-retry-abort-race.mjs');
 await import('./issue-3384-glossary-onopen-callability.mjs');
 await import('./issue-3387-3305-agent-runtime-boundaries.mjs');
 await import('./issues-6311-6312-ai-budget.mjs');
+await import('./issue-5412-struct-field-target-authority.mjs');
+await import('./issue-5383-open-evidence-null-guard.mjs');
 // Exact-head CI retrigger marker; no runtime effect.

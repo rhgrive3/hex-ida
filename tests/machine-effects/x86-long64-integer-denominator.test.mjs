@@ -51,9 +51,9 @@ function cloneDecoded(decoded, detailPatch = {}) {
 const identity = validateX86Long64IntegerDenominator();
 assert.equal(identity.valid, true);
 assert.equal(identity.denominatorId, 'x86_64:long-64:effect-family:integer:v1');
-assert.equal(identity.encodingCaseCount, 57294);
-assert.equal(identity.integerOwnedCaseCount, 56666);
-assert.equal(identity.memoryDelegationCaseCount, 628);
+assert.equal(identity.encodingCaseCount, 56780);
+assert.equal(identity.integerOwnedCaseCount, 56154);
+assert.equal(identity.memoryDelegationCaseCount, 626);
 assert.deepEqual(identity.operandWidths, [8,16,32,64]);
 
 test('finite long-64 integer denominator decodes completely and every integer-owned case lifts non-partially', async () => {
@@ -95,8 +95,6 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
   const session = await createCapstoneX86Session();
   try {
     for (const [bytes, family, fromBits, toBits, physical, policy, decoderSourceWidthBits = null] of [
-      [[0x66,0x0f,0xb7,0xc3], 'movzx', 16,16,'rax','preserve-unaffected'],
-      [[0x66,0x0f,0xbf,0xc3], 'movsx', 16,16,'rax','preserve-unaffected'],
       [[0x66,0x63,0xc3], 'movsxd', 16,16,'rax','preserve-unaffected',32],
       [[0x63,0xc3], 'movsxd', 32,32,'rax','zero-extend-32'],
       [[0x48,0x63,0xc3], 'movsxd', 32,64,'rax','replace'],
@@ -111,6 +109,22 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
       const [write] = writes(bundle, physical);
       assert.ok(write, `${family} ${toBits} physical write`);
       assert.equal(write.metadata.writePolicy, policy);
+    }
+
+    // Operand-size override admits 16->16 MOVZX/MOVSX. These forms preserve
+    // the upper physical register bits, as verified by the native oracle.
+    for (const [bytes, family] of [
+      [[0x66,0x0f,0xb7,0xc3], 'movzx'],
+      [[0x66,0x0f,0xbf,0xc3], 'movsx'],
+    ]) {
+      const decoded = one(session, bytes);
+      assert.equal(decoded.instructionFamily, family);
+      const result = liftX86IntegerEffects({ ...decoded, instructionId:`extend:${family}:16-to-16` });
+      assert.equal(result.completeness, 'exact');
+      assert.equal(result.metadata.fromBits, 16);
+      assert.equal(result.metadata.toBits, 16);
+      const [write] = writes(result, 'rax');
+      assert.equal(write.metadata.writePolicy, 'preserve-unaffected');
     }
 
     const highByte = effect(session,[0x88,0xdc],'partial:ah'); // mov ah, bl

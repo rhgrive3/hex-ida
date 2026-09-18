@@ -13,10 +13,10 @@ const MAX_CONTEXT_CHARS = 2048;
 const MAX_INLINE_SCRIPT_MATCHES = 5;
 const MAX_INLINE_CONTEXT_CHARS = 1024;
 const MAX_INLINE_EXCERPT_CHARS = 8 * 1024;
-const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)/i;
-const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)/i;
+const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|api[-_]?key)/i;
+const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)/i;
 const SAFE_HTML_ATTRIBUTE = /^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i;
-const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
+const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 export class ParentPageInspector {
@@ -217,7 +217,10 @@ function describeScript(node, index, currentOrigin) {
 
 function selectLoadedScript(scripts, args) {
   if (args.index != null) {
-    const index = boundedInteger(args.index, 0, Math.max(0, scripts.length - 1), 0);
+    if (!Number.isSafeInteger(args.index) || args.index < 0 || args.index >= scripts.length) {
+      throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded external page script.');
+    }
+    const index = args.index;
     const node = scripts[index];
     return node ? { node, index } : null;
   }

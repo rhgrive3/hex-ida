@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PREF_KEY = 'hexviewer.prefs.v1';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -64,11 +65,106 @@ export async function closeSheets(page) {
   }
 }
 
+/**
+ * Wait for a visible UI node's finite CSS animations and geometry to settle.
+ * Layout changes such as orientation are debounced by the product, so callers
+ * may also require the expected data-layout before the stable-frame check.
+ * The assertions that follow still own the exact viewport bounds.
+ */
+export async function waitForLayoutReady(page, selector, expectedLayout = null, timeout = 2000) {
+  await page.evaluate(async ({ targetSelector, targetLayout, timeoutMs }) => {
+    const started = performance.now();
+    const nextFrame = () => new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      requestAnimationFrame(finish);
+      // Keep the bounded readiness loop progressing if a backgrounded page
+      // suppresses animation frames; this is a polling fallback, not the
+      // readiness condition.
+      setTimeout(finish, 50);
+    });
+    let previous = null;
+    let stableFrames = 0;
+    const rectSnapshot = (rect) => [rect.x, rect.y, rect.width, rect.height, rect.right, rect.bottom]
+      .map((value) => Number.isFinite(value) ? value.toFixed(4) : String(value)).join('|');
+    const activeFiniteAnimations = (node) => {
+      let animations = [];
+      try { animations = node.getAnimations?.({ subtree: true }) || []; } catch { animations = node.getAnimations?.() || []; }
+      return animations.filter((animation) => {
+        const timing = animation.effect?.getComputedTiming?.();
+        return timing?.iterations !== Infinity && (animation.playState === 'running' || animation.playState === 'pending');
+      });
+    };
+    while (performance.now() - started <= timeoutMs) {
+      const node = document.querySelector(targetSelector);
+      if (!node) throw new Error(`Cannot wait for missing layout node: ${targetSelector}`);
+      const expected = targetLayout == null || node.dataset.layout === targetLayout;
+      const visible = !node.hidden && getComputedStyle(node).display !== 'none';
+      const active = activeFiniteAnimations(node);
+      if (expected && visible && active.length === 0) {
+        const current = rectSnapshot(node.getBoundingClientRect());
+        if (current === previous) stableFrames += 1;
+        else { previous = current; stableFrames = 1; }
+        if (stableFrames >= 2) return;
+      } else {
+        previous = null;
+        stableFrames = 0;
+      }
+      await nextFrame();
+    }
+    const node = document.querySelector(targetSelector);
+    const rect = node?.getBoundingClientRect();
+    throw new Error(`Timed out waiting for ${targetSelector} layout (${targetLayout || 'any'}): ${rect ? rectSnapshot(rect) : 'missing'}`);
+  }, { targetSelector: selector, targetLayout: expectedLayout, timeoutMs: timeout });
+}
+
 /** A booted page with the product UI and the assistant installed. */
-export async function openApp(browser, { width, height, sample = false } = {}) {
+export async function openApp(browser, {
+  width,
+  height,
+  sample = false,
+  onboarding = false,
+  cleanupOnboarding = false,
+  controlWelcomeTimer = false,
+} = {}) {
   const context = await browser.newContext({
     viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600,
   });
+  /*
+   * Assistant tests are not onboarding tests. Seed the persisted preference
+   * before app.js constructs App so its delayed welcome-guide timer cannot
+   * race the first launcher interaction. The explicit onboarding mode below
+   * keeps that product path covered without letting it interfere with the
+   * assistant suite.
+   */
+  await context.addInitScript(({ key, guideSeen, controlTimer }) => {
+    try { localStorage.setItem(key, JSON.stringify({ guideSeen })); } catch { /* storage may be unavailable on about:blank */ }
+    if (!controlTimer) return;
+    const pending = [];
+    const state = { welcomeScheduled: 0, welcomeReleased: 0 };
+    const nativeSetTimeout = window.setTimeout;
+    window.__hexWelcomeTimerState = state;
+    window.__hexReleaseWelcomeGuide = () => {
+      const next = pending.shift();
+      if (!next) return false;
+      state.welcomeReleased++;
+      next.handler(...next.args);
+      return true;
+    };
+    window.setTimeout = function controlledWelcomeTimer(handler, delay, ...args) {
+      const source = typeof handler === 'function' ? String(handler) : '';
+      if (delay === 300 && source.includes('showWelcome')) {
+        state.welcomeScheduled++;
+        pending.push({ handler, args });
+        return 0;
+      }
+      return nativeSetTimeout.call(this, handler, delay, ...args);
+    };
+  }, { key: PREF_KEY, guideSeen: !onboarding, controlTimer: controlWelcomeTimer });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -79,8 +175,11 @@ export async function openApp(browser, { width, height, sample = false } = {}) {
   });
   await page.goto(page.__baseUrl || context.__baseUrl || global.__hexBaseUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.__hexUi && !!window.__hexAi, null, { timeout: 20000 });
-  await page.waitForTimeout(250);
-  await closeSheets(page);
+  if (!onboarding || cleanupOnboarding) {
+    await page.waitForTimeout(250);
+    await closeSheets(page);
+    if (controlWelcomeTimer) await page.evaluate(() => { window.__hexWelcomeInitialCleanupComplete = true; });
+  }
   if (sample) {
     await page.evaluate(() => window.__app.openSample());
     await page.waitForFunction(() => !!window.__app.store.get('fileInfo'), null, { timeout: 30000 });

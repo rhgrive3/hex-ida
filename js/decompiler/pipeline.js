@@ -1,173 +1,99 @@
-import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
-import { exactLegacySameBlockStackStore, legacyRecoveryControl } from './legacy-exact-return-repair.js';
+import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage, readCopiedConditionalRegions } from './pipeline-core.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn, recoverCommittedPhiSpillSnapshots } from './passes/stack-return-recovery.js';
-import { expr, mapChildren, sourceOf } from './ast/nodes.js';
+import { recoverLegacySameBlockStackSpills } from './passes/legacy-stack-recovery.js';
+import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
-import { applyPhase8Projection } from './phase8/projection.js';
+import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
+import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
+import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
+import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
+import { createQueryGuard } from '../symbolic/memory/query-state.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
 
-export { buildExpressionForTesting, rewriteExpressionWithProof } from './pipeline-core.js';
-export { exactLegacySameBlockStackStore };
+export { buildExpressionForTesting } from './pipeline-core.js';
+export { exactLegacySameBlockStackStore } from './passes/legacy-stack-recovery.js';
 
-function ownData(object, key) {
-  if (object == null || (typeof object !== 'object' && typeof object !== 'function')) {
-    return { present:false, valid:true, value:undefined };
+// Only this existing producer issues a usable projection. Neither a serialized
+// AST nor a caller-supplied valueId map establishes the IR -> rendered binding.
+const producerProjections = new WeakMap();
+function producerIrRoots(result) {
+  const irValues = queryArray(queryRecord(result?.ir,null,128).values ?? [],null,10000);
+  const byId = new Map();
+  for (const value of irValues) {
+    const id = queryRecord(value,null,128).id;
+    if (id == null || byId.has(id)) throw new TypeError('projection-ir-value-identity-invalid');
+    byId.set(id,value);
   }
+  const rendered = queryArray(queryRecord(result?.semanticAst,null,128).values ?? [],null,10000);
+  const roots = [];
+  for (const item of rendered) {
+    const valueId = queryRecord(item,null,64).valueId;
+    if (!byId.has(valueId)) throw new TypeError('projection-ir-value-binding-missing');
+    roots.push(byId.get(valueId));
+  }
+  return Object.freeze(roots);
+}
+function sameProducerIrRoots(result, expected) {
+  const current = producerIrRoots(result);
+  return current.length === expected.length && current.every((value,index) => value === expected[index]);
+}
+function rememberProducerProjection(result, options) {
+  if (options.phase8PrepareProof !== true || !result?.semanticAst || !result?.cAst) return result;
   try {
-    const descriptor = Object.getOwnPropertyDescriptor(object, key);
-    if (!descriptor) return { present:false, valid:true, value:undefined };
-    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-      return { present:true, valid:false, value:undefined };
-    }
-    return { present:true, valid:true, value:descriptor.value };
-  } catch {
-    return { present:true, valid:false, value:undefined };
-  }
+    const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
+    const irRoots = producerIrRoots(result);
+    const irObservation = captureRecoveryIrData(result.ir,irRoots,options.shouldAbort);
+    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
+      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
+  } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
+  return result;
 }
-
-function fieldValue(object, key) {
-  const field = ownData(object, key);
-  return field.present && field.valid ? field.value : undefined;
+export function producerExpressionToken(result, expression) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst ? record.observation.tokenOf(expression) : null;
 }
-
-function valueOf(arg) {
-  const field = ownData(arg, 'value');
-  return field.present && field.valid ? field.value || null : null;
+/** Sticky policy of an actual prepared producer, not caller/result metadata.
+ * Full freshness/admission checks remain at the existing proof boundaries. */
+export function producerUsesProofOnlyRewrites(result) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst && record?.proofOnlyRewrites === true;
 }
-
-function idKey(value) {
-  if (typeof value === 'string' && value.length > 0) return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
-  return null;
-}
-
-function validRow(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function validBits(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function positiveSize(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-    && value <= Math.floor(Number.MAX_SAFE_INTEGER / 8) ? value : null;
-}
-
-function arrayField(object, key) {
-  const field = ownData(object, key);
-  if (!field.present) return { ok:true, value:[] };
-  return { ok:field.valid && Array.isArray(field.value), value:field.valid && Array.isArray(field.value) ? field.value : [] };
-}
-
-function safeDataProperties(object) {
-  const copy = {};
-  if (object == null || (typeof object !== 'object' && typeof object !== 'function')) return copy;
-  let keys;
-  try { keys = Reflect.ownKeys(object); } catch { return copy; }
-  for (const key of keys) {
-    if (typeof key !== 'string') continue;
-    const field = ownData(object, key);
-    if (field.present && field.valid) copy[key] = field.value;
-  }
-  return copy;
-}
-
-function validTimeBudget(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function validWorkBudget(value) {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function boundedPipelineOptions(options) {
-  const safe = safeDataProperties(options);
-  for (const [key, valid] of [
-    ['decompilerTimeBudgetMs', validTimeBudget],
-    ['decompilerNodeBudget', validWorkBudget],
-    ['decompilerIterationCap', validWorkBudget],
-    ['phase8TimeBudgetMs', validTimeBudget],
-    ['phase8WorkBudget', validWorkBudget],
-  ]) {
-    const field = ownData(options, key);
-    if (field.present && (!field.valid || !valid(field.value))) return { blocked:true, options:safe };
-    if (field.present && field.value === 0
-        && (key !== 'decompilerTimeBudgetMs' || fieldValue(options, 'deterministicTransforms') !== true)) {
-      return { blocked:true, options:safe };
-    }
-  }
-  return { blocked:false, options:safe };
-}
-
-function sourceIds(node, control) {
-  const source = fieldValue(node, 'source');
-  const field = ownData(source, 'ir');
-  if (!field.present) return [];
-  if (!field.valid || !Array.isArray(field.value)) return null;
-  const ids = [];
+export function isProducerProjection(result) {
   try {
-    for (const id of field.value) {
-      if (control?.isAborted?.()) return null;
-      const key = idKey(id);
-      if (key == null) return null;
-      ids.push(key);
+    const raw = queryRecord(result,null,256), record = producerProjections.get(raw.semanticAst);
+    return !!record && record.ir===raw.ir && record.cAst===raw.cAst
+      && sameProducerIrRoots(raw,record.irRoots) && record.irObservation.matches() && record.observation.matches();
+  } catch { return false; }
+}
+
+/** Resolve actual SSA input objects through this producer's observed value/AST
+ * relation. No caller-provided ID/name map can stand in for either endpoint. */
+export function readProducerInputExpressions(result, values) {
+  try {
+    if (!isProducerProjection(result)) return null;
+    const requested = queryArray(values, null, 4096);
+    const record = producerProjections.get(result.semanticAst), byValue = new Map();
+    for (const [index, value] of record.irRoots.entries()) {
+      byValue.set(value, byValue.has(value) ? null : result.semanticAst.values[index].expression);
     }
-  } catch {
-    return null;
-  }
-  return ids;
+    const inputs = [];
+    for (const value of requested) {
+      const fields = queryRecord(value), expression = byValue.get(value);
+      if (fields.kind !== 'arg' || !expression || expression.effect !== 'pure' || expression.bits !== fields.bits) return null;
+      const token = record.observation.tokenOf(expression);
+      if (token == null) return null;
+      inputs.push(Object.freeze({ value, expression, token }));
+    }
+    return Object.freeze(inputs);
+  } catch { return null; }
 }
 
-function addressKey(value) {
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
-  return null;
-}
-
-function strictSource(node) {
-  const source = fieldValue(node, 'source');
-  const read = (key, converter) => {
-    const field = ownData(source, key);
-    if (!field.present) return [];
-    if (!field.valid || !Array.isArray(field.value)) return null;
-    const values = [];
-    try {
-      for (const value of field.value) {
-        const converted = converter(value);
-        if (converted == null) return null;
-        values.push(converted);
-      }
-    } catch { return null; }
-    return values;
-  };
-  const rows = read('rows', (value) => validRow(value) ? value : null);
-  const addresses = read('addresses', addressKey);
-  const ir = read('ir', idKey);
-  if (rows == null || addresses == null || ir == null) return null;
-  return { ...sourceOf({ rows, addresses, ir }), rows, addresses, ir };
-}
-
-function recoveryAborted(opts) {
-  const callback = ownData(opts, 'shouldAbort');
-  const deadline = ownData(opts, 'deadline');
-  const deterministic = ownData(opts, 'deterministicTransforms');
-  if (deterministic.present && (!deterministic.valid || typeof deterministic.value !== 'boolean')) return true;
-  if (deadline.present && (!deadline.valid || typeof deadline.value !== 'number'
-      || (!Number.isFinite(deadline.value) && deadline.value !== Infinity))) return true;
-  if (deterministic.value !== true && deadline.present) {
-    const clock = globalThis.performance?.now ? globalThis.performance.now() : Date.now();
-    if (clock >= deadline.value) return true;
-  }
-  if (!callback.present) return false;
-  if (!callback.valid || typeof callback.value !== 'function') return true;
-  try { return callback.value() === true; } catch { return true; }
-}
+function valueOf(arg) { return arg?.value || null; }
 
 const INVERSE_CONDITION = {
   eq:'ne', ne:'eq', hs:'lo', lo:'hs', cs:'cc', cc:'cs',
@@ -223,21 +149,14 @@ function normalizeConditionalSelectAliases(ir) {
 
 function constrainSemanticValueWidths(result) {
   if (!result?.semanticAst?.values || !result?.ir?.values) return result;
-  const irValues = new Map();
-  for (const value of result.ir.values) {
-    const id = idKey(fieldValue(value, 'id'));
-    if (id == null) continue;
-    if (irValues.has(id)) irValues.set(id, null);
-    else irValues.set(id, value);
-  }
+  const irValues = new Map((result.ir.values || []).map((value) => [value.id, value]));
   for (const item of result.semanticAst.values) {
-    const valueId = idKey(fieldValue(item, 'valueId'));
-    const value = valueId == null ? null : irValues.get(valueId);
-    const node = fieldValue(item, 'expression');
-    const targetBits = fieldValue(value, 'bits');
-    const sourceBits = fieldValue(node, 'bits');
-    if (!node || !validBits(targetBits) || !validBits(sourceBits) || sourceBits <= targetBits) continue;
-    item.expression = expr.unary('trunc', node, targetBits, fieldValue(value, 'signed') ?? fieldValue(node, 'signed') ?? null, fieldValue(node, 'source'),
+    const value = irValues.get(item.valueId);
+    const node = item.expression;
+    const targetBits = Number(value?.bits || 0);
+    const sourceBits = Number(node?.bits || 0);
+    if (!node || !targetBits || !sourceBits || sourceBits <= targetBits) continue;
+    item.expression = expr.unary('trunc', node, targetBits, value?.signed ?? node.signed ?? null, node.source,
       { fromBits: sourceBits, proof: 'SSA value width after Memory-SSA substitution' });
   }
   return result;
@@ -283,17 +202,8 @@ function canonicalScalarReturnRegister(result, opts = {}) {
 }
 
 function latestReturnStackLoad(ir, ret, returnRegister) {
-  const instructions = arrayField(ir, 'instructions');
-  const retArgs = arrayField(ret, 'args');
-  if (!instructions.ok || !retArgs.ok) return null;
-  const explicit = valueOf(retArgs.value[0]);
-  const explicitDefinition = fieldValue(explicit, 'def');
-  const explicitLocation = fieldValue(explicitDefinition, 'loc');
-  if (fieldValue(explicitDefinition, 'op') === 'load' && fieldValue(explicitLocation, 'kind') === 'stack'
-      && instructions.value.filter((instruction) => instruction === explicitDefinition).length === 1
-      && validRow(fieldValue(explicitDefinition, 'row')) && validRow(fieldValue(explicitDefinition, 'block'))) {
-    return { value: explicit, load: explicitDefinition };
-  }
+  const explicit = valueOf(ret?.args?.[0]);
+  if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
 
   // For implicit ABI returns, only the actual latest reaching definition of the
   // canonical return register may authorize a stack-load re-anchor. A
@@ -302,200 +212,31 @@ function latestReturnStackLoad(ir, ret, returnRegister) {
   // RISC-V it is the hardwired zero register.
   if (!returnRegister) return null;
   let value = null, bestRow = -Infinity;
-  const values = arrayField(ir, 'values');
-  const retRow = fieldValue(ret, 'row');
-  if (!values.ok || !validRow(retRow)) return null;
-  for (const candidate of values.value) {
-    const def = fieldValue(candidate, 'def');
-    const defRow = fieldValue(def, 'row');
-    const defBlock = fieldValue(def, 'block');
-    if (fieldValue(candidate, 'reg') !== returnRegister || !def || defRow >= retRow
-        || !validRow(defRow) || !validRow(defBlock)
-        || instructions.value.filter((instruction) => instruction === def).length !== 1) continue;
-    if (defRow > bestRow) { value = candidate; bestRow = defRow; }
+  for (const candidate of ir?.values || []) {
+    const def = candidate?.def;
+    if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
+    if (def.row > bestRow) { value = candidate; bestRow = def.row; }
   }
-  const valueDefinition = fieldValue(value, 'def');
-  return fieldValue(valueDefinition, 'op') === 'load'
-    && fieldValue(fieldValue(valueDefinition, 'loc'), 'kind') === 'stack'
-    ? { value, load:valueDefinition } : null;
+  return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
 }
 
 function reanchorExactStackReturn(result, opts = {}) {
   if (!result?.semanticAst || !result?.ir) return result;
-  const instructions = arrayField(result.ir, 'instructions');
-  if (!instructions.ok) return result;
-  const ret = [...instructions.value].reverse().find((inst) => fieldValue(inst, 'op') === 'ret');
+  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
   const returnRegister = canonicalScalarReturnRegister(result, opts);
   const found = ret ? latestReturnStackLoad(result.ir, ret, returnRegister) : null;
-  const load = found?.load;
-  const loadLocation = fieldValue(load, 'loc');
-  const loadKey = fieldValue(loadLocation, 'key');
-  if (!load || typeof loadKey !== 'string' || loadKey.length === 0) return result;
+  if (!found?.load?.loc?.key) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   if (!output) return result;
-  const { value } = found;
-  const valueBitsField = ownData(value, 'bits');
-  const loadSizeField = ownData(loadLocation, 'size');
-  const instructionSizeField = ownData(load, 'size');
-  if (valueBitsField.present && (!valueBitsField.valid || !validBits(valueBitsField.value))) return result;
-  const loadSize = loadSizeField.present ? loadSizeField : instructionSizeField;
-  if (loadSize.present && (!loadSize.valid || positiveSize(loadSize.value) == null)) return result;
-  const bits = valueBitsField.present ? valueBitsField.value : loadSize.present ? loadSize.value * 8 : 64;
-  const loadId = fieldValue(load, 'id');
-  const valueId = fieldValue(value, 'id');
-  output.expression = expr.load({ kind:'stack', key:loadKey, name:fieldValue(loadLocation, 'name') || `stack_${loadKey}`, text:fieldValue(loadLocation, 'name') || `stack_${loadKey}` },
-    bits, {
-      address:fieldValue(load, 'address'), row:fieldValue(load, 'row'), ir:loadId, ssaDef:valueId ?? null,
+  const { value, load } = found;
+  output.expression = expr.load({ kind:'stack', key:load.loc.key, name:load.loc.name || `stack_${load.loc.key}`, text:load.loc.name || `stack_${load.loc.key}` },
+    value?.bits || Number((load.size || 8) * 8), {
+      address:load.address, row:load.row, ir:load.id, ssaDef:value?.id ?? null,
       evidence:[{ reason:'SSA return stack load re-anchor' }],
-    }, { signed:fieldValue(load, 'signed') ?? fieldValue(value, 'signed') ?? null });
+    }, { signed:load.signed ?? value?.signed ?? null });
   return result;
 }
 
-/* Legacy-v1 keeps its historical MemorySSA `reachingStore` pointer. Use that
- * existing proof only for a trivially ordered same-block fixed-stack spill.
- * No CFG/path inference is added here, and any call/unknown barrier keeps the
- * load explicit. This is intentionally narrower than canonical v2 forwarding. */
-function recoverLegacySameBlockStackSpills(result, opts = {}, control = legacyRecoveryControl(opts)) {
-  if (!result?.semanticAst || !result?.ir || result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
-  if (control.isAborted()) return result;
-  const instructionById = new Map();
-  for (const inst of result.ir.instructions || []) {
-    if (control.isAborted()) return result;
-    const id = idKey(fieldValue(inst, 'id'));
-    if (id == null) continue;
-    if (instructionById.has(id)) instructionById.set(id, null);
-    else instructionById.set(id, inst);
-  }
-  const expressions = new Map();
-  for (const item of result.semanticAst.values || []) {
-    if (control.isAborted()) return result;
-    const id = idKey(fieldValue(item, 'valueId'));
-    if (id != null) expressions.set(id, fieldValue(item, 'expression'));
-  }
-  const active = new Set();
-  let scanAborted = false;
-
-  const rewrite = (node, depth = 0) => {
-    if (control.isAborted()) { scanAborted = true; return node; }
-    if (!node || depth > 64) return node;
-    const nodeLocation = fieldValue(node, 'location');
-    const nodeKey = fieldValue(nodeLocation, 'key');
-    if (fieldValue(node, 'kind') === 'load' && fieldValue(nodeLocation, 'kind') === 'stack'
-        && typeof nodeKey === 'string' && nodeKey.length > 0) {
-      const ids = sourceIds(node, control);
-      if (!ids || ids.length !== 1) return node;
-      const load = instructionById.get(ids[0]);
-      const loadLocation = fieldValue(load, 'loc');
-      if (!load || fieldValue(load, 'op') !== 'load'
-          || fieldValue(loadLocation, 'key') !== nodeKey) return node;
-      const store = exactLegacySameBlockStackStore(load, result.ir, opts, control);
-      const args = fieldValue(store, 'args');
-      const storedValue = Array.isArray(args) ? valueOf(args[0]) : null;
-      if (!storedValue) return node;
-      const key = idKey(fieldValue(storedValue, 'id'));
-      if (key == null) return node;
-      if (active.has(key)) return node;
-      const replacement = expressions.get(key);
-      if (!replacement) return node;
-      active.add(key);
-      let resolved = rewrite(replacement, depth + 1);
-      active.delete(key);
-      if (scanAborted) return node;
-      const storeSize = fieldValue(fieldValue(store, 'loc'), 'size');
-      const storeBits = typeof storeSize === 'number' && Number.isSafeInteger(storeSize) && storeSize > 0
-        && storeSize <= Math.floor(Number.MAX_SAFE_INTEGER / 8) ? storeSize * 8 : 0;
-      const resolvedBits = typeof resolved?.bits === 'number' && Number.isSafeInteger(resolved.bits)
-        && resolved.bits > 0 ? resolved.bits : storeBits;
-      if (storeBits > 0 && resolvedBits > storeBits) {
-        resolved = expr.unary('trunc', resolved, storeBits, resolved.signed ?? null, {
-          address:fieldValue(store, 'address'),
-          row:fieldValue(store, 'row'),
-          ir:fieldValue(store, 'id'),
-          evidence:[{ reason:`exact ${storeBits}-bit legacy stack store width` }],
-        }, { fromBits:resolvedBits });
-      }
-      return resolved;
-    }
-    return mapChildren(node, (child) => rewrite(child, depth + 1));
-  };
-
-  const valueChanges = [];
-  for (const item of result.semanticAst.values || []) {
-    if (control.isAborted()) return result;
-    const original = fieldValue(item, 'expression');
-    const resolved = rewrite(original);
-    if (scanAborted) return result;
-    if (resolved !== original) valueChanges.push({ item, original, resolved });
-    const id = idKey(fieldValue(item, 'valueId'));
-    if (id != null) expressions.set(id, resolved);
-  }
-  const outputChanges = [];
-  for (const output of result.semanticAst.outputs || []) {
-    if (control.isAborted()) return result;
-    const original = fieldValue(output, 'expression');
-    if (!original) continue;
-    const resolved = rewrite(original);
-    if (scanAborted) return result;
-    if (resolved !== original) outputChanges.push({ output, original, resolved });
-  }
-
-  const nodeChanges = [];
-  for (const node of result.cAst?.body || []) {
-    if (control.isAborted()) return result;
-    const semantic = fieldValue(node, 'semantic');
-    const text = fieldValue(node, 'text');
-    if (!(fieldValue(semantic, 'op') === 'return'
-      || (typeof text === 'string' && /^return\b/.test(text.trim())))) continue;
-    const expression = fieldValue(semantic, 'expression');
-    if (!expression) continue;
-    const resolved = rewrite(expression);
-    if (scanAborted) return result;
-    if (resolved !== expression) nodeChanges.push({ node, expression, resolved, text:node.text });
-  }
-  const rollback = () => {
-    for (const { item, original } of valueChanges) item.expression = original;
-    for (const { output, original } of outputChanges) output.expression = original;
-    for (const { node, expression, text } of nodeChanges) {
-      if (node.semantic) node.semantic.expression = expression;
-      node.text = text;
-    }
-  };
-  if (control.isAborted()) return result;
-  for (const { item, resolved } of valueChanges) {
-    if (control.isAborted()) { rollback(); return result; }
-    item.expression = resolved;
-  }
-  for (const { output, resolved } of outputChanges) {
-    if (control.isAborted()) { rollback(); return result; }
-    output.expression = resolved;
-  }
-  for (const { node, resolved } of nodeChanges) {
-    if (control.isAborted()) { rollback(); return result; }
-    if (node.semantic) node.semantic.expression = resolved;
-    node.text = `return ${printExpression(resolved)};`;
-  }
-  if (control.isAborted()) {
-    rollback();
-    return result;
-  }
-  const printedChanged = nodeChanges.length > 0;
-  if (!printedChanged) return result;
-  const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
-  const printed = printProgram(result.cAst, { columnWidth });
-  if (control.isAborted()) {
-    rollback();
-    return result;
-  }
-  result.pseudocode = printed.text;
-  result.sourceMap = printed.mapping;
-  result.lines = result.cAst.body.map((node) => ({
-    kind:node.kind, indent:node.indent, text:node.text,
-    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
-    note:null, source:node.source,
-  }));
-  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:printed.mapping.length };
-  return result;
-}
 
 /* When a return stack LOAD has a proven same-slot reaching STORE, the spill
  * STORE remains proof provenance but does not own the reconstructed C return
@@ -503,137 +244,69 @@ function recoverLegacySameBlockStackSpills(result, opts = {}, control = legacyRe
  * statement-level source row; every other source/proof entry is preserved. */
 function reanchorRecoveredReturnSource(result, opts = {}) {
   if (!result?.ir || !result?.cAst) return result;
-  const instructionField = ownData(result.ir, 'instructions');
-  const bodyField = ownData(result.cAst, 'body');
-  if (!instructionField.present || !instructionField.valid || !Array.isArray(instructionField.value)
-      || !bodyField.present || !bodyField.valid || !Array.isArray(bodyField.value)) return result;
-  const instructions = instructionField.value;
-  const ret = [...instructions].reverse().find((inst) => fieldValue(inst, 'op') === 'ret');
-  const retRow = fieldValue(ret, 'row');
-  if (!ret || !validRow(retRow)) return result;
-
-  const storeForFact = (load, fact) => {
-    if (!fact || !load) return null;
-    const contributorField = ownData(fact, 'contributingDefinitionIds');
-    if (!contributorField.present || !contributorField.valid || !Array.isArray(contributorField.value)) return null;
-    const contributors = new Set();
-    for (const definitionId of contributorField.value) {
-      const key = idKey(definitionId);
-      if (key == null) return null;
-      contributors.add(key);
-    }
-    const loadLocation = fieldValue(load, 'loc');
-    const loadKey = fieldValue(loadLocation, 'key');
-    if (typeof loadKey !== 'string' || loadKey.length === 0) return null;
-    const matches = instructions.filter((candidate) => {
-      const location = fieldValue(candidate, 'loc');
-      const memDef = fieldValue(candidate, 'memDef');
-      const extra = fieldValue(candidate, 'extra');
-      const definitionId = fieldValue(memDef, 'definitionId') ?? fieldValue(extra, 'memoryDefinitionId');
-      return fieldValue(candidate, 'op') === 'store'
-        && fieldValue(location, 'kind') === 'stack'
-        && fieldValue(location, 'key') === loadKey
-        && validRow(fieldValue(candidate, 'row'))
-        && idKey(definitionId) != null
-        && contributors.has(idKey(definitionId));
-    });
-    return matches.length === 1 ? matches[0] : null;
-  };
-
-  const changes = [];
-  for (const node of bodyField.value) {
-    if (recoveryAborted(opts)) return result;
-    const semantic = fieldValue(node, 'semantic');
-    const text = fieldValue(node, 'text');
-    const isReturn = fieldValue(semantic, 'op') === 'return'
-      || (typeof text === 'string' && /^return\b/.test(text.trim()));
-    if (!isReturn || (typeof text === 'string' && /\blocal_[0-9A-F]+\b/i.test(text))) continue;
-    const current = strictSource(node);
-    if (!current) continue;
-    const sourceRows = new Set(current.rows);
+  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
+  if (!ret) return result;
+  let changed = false;
+  for (const node of result.cAst.body || []) {
+    if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
+    if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
+    const current = sourceOf(node.source);
+    const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
-    for (const inst of instructions) {
-      if (recoveryAborted(opts)) return result;
-      const location = fieldValue(inst, 'loc');
-      const row = fieldValue(inst, 'row');
-      if (fieldValue(inst, 'op') !== 'load' || fieldValue(location, 'kind') !== 'stack'
-          || !validRow(row) || row >= retRow || !sourceRows.has(row)) continue;
-      const directReaching = ownData(inst, 'reachingStore');
-      let store = null;
-      if (directReaching.present && directReaching.valid && directReaching.value
-          && instructions.filter((candidate) => candidate === directReaching.value).length === 1) {
-        const directLocation = fieldValue(directReaching.value, 'loc');
-        if (fieldValue(directReaching.value, 'op') === 'store'
-            && fieldValue(directLocation, 'kind') === 'stack'
-            && fieldValue(directLocation, 'key') === fieldValue(location, 'key')) {
-          store = directReaching.value;
-        }
-      } else {
-        const extra = fieldValue(inst, 'extra');
-        const fact = fieldValue(inst, 'memoryForwarding') ?? fieldValue(extra, 'memoryForwarding');
-        try {
-          if (fact && isCanonicalExactMemoryForwarding(fact,
-            canonicalMemoryForwardingContextForLoad(fact, inst,
-              fieldValue(inst, 'memoryForwardingContext') ?? fieldValue(extra, 'memoryForwardingContext')))) {
-            store = storeForFact(inst, fact);
-          }
-        } catch { store = null; }
-      }
-      const storeRow = fieldValue(store, 'row');
-      if (!store || !validRow(storeRow) || !sourceRows.has(storeRow)) continue;
-      if (!load || row > fieldValue(load, 'row')) load = inst;
+    for (const inst of result.ir.instructions || []) {
+      if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
+      if (!sourceRows.has(String(inst.row))) continue;
+      const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
+      const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
+        canonicalMemoryForwardingContextForLoad(fact, inst,
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
+        ? (result.ir.instructions || []).find((candidate) => {
+          const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+          return candidate?.op === 'store'
+            && candidate?.loc?.kind === 'stack'
+            && candidate.loc.key === inst.loc.key
+            && candidate.row != null
+            && definitionId != null
+            && fact.contributingDefinitionIds?.includes(String(definitionId));
+        })
+        : null);
+      if (!store || store.row == null) continue;
+      if (!sourceRows.has(String(store.row))) continue;
+      if (!load || inst.row > load.row) load = inst;
     }
-    const spillFact = fieldValue(load, 'memoryForwarding')
-      ?? fieldValue(fieldValue(load, 'extra'), 'memoryForwarding');
-    let spill = null;
-    const directSpill = ownData(load, 'reachingStore');
-    if (directSpill.present && directSpill.valid && directSpill.value
-        && instructions.filter((candidate) => candidate === directSpill.value).length === 1) {
-      const loadLocation = fieldValue(load, 'loc');
-      const spillLocation = fieldValue(directSpill.value, 'loc');
-      if (fieldValue(directSpill.value, 'op') === 'store'
-          && fieldValue(spillLocation, 'kind') === 'stack'
-          && fieldValue(spillLocation, 'key') === fieldValue(loadLocation, 'key')) {
-        spill = directSpill.value;
-      }
-    } else {
-      try {
-        if (load && spillFact && isCanonicalExactMemoryForwarding(spillFact,
-          canonicalMemoryForwardingContextForLoad(spillFact, load,
-            fieldValue(load, 'memoryForwardingContext') ?? fieldValue(fieldValue(load, 'extra'), 'memoryForwardingContext')))) {
-          spill = storeForFact(load, spillFact);
-        }
-      } catch { spill = null; }
-    }
-    const spillRow = fieldValue(spill, 'row');
-    const loadRow = fieldValue(load, 'row');
-    if (!load || !spill || !validRow(spillRow) || !validRow(loadRow)) continue;
+    const spillFact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
+    const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
+      canonicalMemoryForwardingContextForLoad(spillFact, load,
+        load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
+      ? (result.ir.instructions || []).find((candidate) => {
+        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+        return candidate?.op === 'store'
+          && candidate?.loc?.kind === 'stack'
+          && candidate.loc.key === load.loc.key
+          && candidate.row != null
+          && definitionId != null
+          && spillFact.contributingDefinitionIds.includes(String(definitionId));
+      })
+      : null);
+    if (!load || !spill) continue;
+    const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
     const alignedIr = current.ir.length === current.rows.length;
-    changes.push({ node, previous:fieldValue(node, 'source'), next:{
+    node.source = {
       ...current,
-      rows:current.rows.filter((row) => row !== spillRow),
+      rows:current.rows.filter((row) => String(row) !== spillRow),
       addresses:alignedAddresses
-        ? current.addresses.filter((_, index) => current.rows[index] !== spillRow)
+        ? current.addresses.filter((_, index) => String(current.rows[index]) !== spillRow)
         : current.addresses,
       ir:alignedIr
-        ? current.ir.filter((_, index) => current.rows[index] !== spillRow)
+        ? current.ir.filter((_, index) => String(current.rows[index]) !== spillRow)
         : current.ir,
       evidence:[...(current.evidence || []), { reason:'eliminated stack spill is proof-only provenance' }],
-    }});
+    };
+    changed = true;
   }
-  if (recoveryAborted(opts) || !changes.length) return result;
-  for (const change of changes) change.node.source = change.next;
-  if (recoveryAborted(opts)) {
-    for (const change of changes) change.node.source = change.previous;
-    return result;
-  }
-  const columnWidth = fieldValue(opts, 'columnWidth') || fieldValue(opts, 'prettyColumnWidth') || 88;
-  const printed = printProgram(result.cAst, { columnWidth });
-  if (recoveryAborted(opts)) {
-    for (const change of changes) change.node.source = change.previous;
-    return result;
-  }
+  if (!changed) return result;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
   result.sourceMap = printed.mapping;
   result.lines = result.cAst.body.map((node) => ({
@@ -645,13 +318,24 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   return result;
 }
 
-function fullPhase8Projection(result, model, opts) {
-  if (opts.phase8Optimize !== true || !result?.semantic || !result?.ir) return result;
+function fullPhase8Projection(result, model, opts, interactiveStage) {
+  if (!result?.semantic || !result?.ir) return result;
+  if (opts.phase8Optimize !== true) {
+    // The intermediate representation API and explicit proof preparation keep
+    // their existing pre-projection endpoint. Product presentation facades
+    // request the final map; a zero history allowance still disables history.
+    if (opts.renderProvenance !== true || opts.phase8PrepareProof === true
+        || opts.renderProvenanceBudget?.maxTransformRecords === 0) return result;
+    // Projection is part of ordinary presentation, not permission to run the
+    // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
+    return interactiveStage?.ledger?.published === true && interactiveStage.analysis
+      ? applyPhase8Projection(result, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true }) : result;
+  }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
     {
-      stages:PHASE8_ALL_STAGES,
-      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:Number(opts.phase8TimeBudgetMs) } : {}),
+      stages:opts.phase8RegionErasurePlan ? ['rendering'] : PHASE8_ALL_STAGES,
+      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:opts.phase8TimeBudgetMs } : {}),
       ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
       shouldAbort:opts.shouldAbort,
       budgetClass:'standard',
@@ -675,26 +359,216 @@ function fullPhase8Projection(result, model, opts) {
     },
   };
   if (stage.ledger?.published !== true || stage.ledger?.completeness !== 'complete' || !stage.analysis) return updated;
+  // The region plan binds the actual prepared producer object. Adding stage
+  // metadata must not replace that endpoint before its owned projection runs.
+  if (opts.phase8RegionErasurePlan) {
+    const projected = applyPhase8Projection(result, stage.analysis, opts);
+    return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
+  }
   updated = applyPhase8Projection(updated, stage.analysis, opts);
   return updated;
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
-  const bounded = boundedPipelineOptions(opts);
-  if (bounded.blocked) return result;
-  const safeOpts = bounded.options;
+  const proofOnlyRewrites = opts.phase8ProofOnlyRewrites === true;
   const restore = normalizeConditionalSelectAliases(result?.ir);
-  let core;
+  let core, interactiveStage;
   try {
     // The final Phase 8 path executes the full optimizer set once below, after
     // the existing representation pipeline reaches its stable AST. The core is
     // kept on its interactive/canonical lane here so the optimizer is not run
     // twice and does not borrow the PassManager rewrite deadline.
-    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...safeOpts, phase8Optimize:false }));
+    core = enhanceCore(result, model, { ...opts, phase8Optimize:false,phase8ProofOnlyRewrites:proofOnlyRewrites });
+    interactiveStage = readRepresentationStage(core);
+    core = constrainSemanticValueWidths(core);
   } finally { restore(); }
-  const reanchored = reanchorExactStackReturn(recoverCommittedPhiSpillSnapshots(core, safeOpts), safeOpts);
-  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, safeOpts);
-  const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, safeOpts);
-  const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, safeOpts), safeOpts);
-  return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, safeOpts), model, safeOpts);
+  if (proofOnlyRewrites) {
+    // Recovery uses additional optional scalar rewrite engines and may remove
+    // memory-bearing statements. Preserve the pre-recovery view while this
+    // proof path is restricted to independently checked total scalar values.
+    const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+    return rememberProducerProjection(fullPhase8Projection(core, model, prepared, interactiveStage), prepared);
+  }
+  const reanchored = reanchorExactStackReturn(recoverCommittedPhiSpillSnapshots(core, opts), opts);
+  const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
+  const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
+  const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared, interactiveStage),prepared);
+}
+
+const CONDITION_OPTIMIZATION_OPTIONS = new Set(['conditionalBranch','identity','timeoutMs','signal','isCancelled',
+  'getCurrentIdentity','now','addressBits','endian','backendTier','phase8TimeBudgetMs','phase8WorkBudget',
+  'requireProofOnlyRewrites']);
+
+// Compose the existing region issuers through the same public optimizer. The
+// request selects one actual branch; it cannot supply a proof or a replacement
+// AST. Each child retains its own bounded resources under one outer deadline.
+async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites, fail, started) {
+  let guard;
+  try {
+    if (Object.keys(submitted).some(key => !CONDITION_OPTIMIZATION_OPTIONS.has(key))) return fail('unsupported-condition-optimization-option');
+    guard = createQueryGuard(submitted, {}); guard.check();
+    if (submitted.phase8TimeBudgetMs != null && (typeof submitted.phase8TimeBudgetMs !== 'number'
+      || !Number.isFinite(submitted.phase8TimeBudgetMs) || submitted.phase8TimeBudgetMs < 0)
+      || submitted.phase8WorkBudget != null && (!Number.isSafeInteger(submitted.phase8WorkBudget)
+        || submitted.phase8WorkBudget < 0 || submitted.phase8WorkBudget > 1000000)) return fail('invalid-condition-stage-budget');
+    const semantic = { addressBits:submitted.addressBits ?? 64, endian:submitted.endian ?? 'little', backendTier:submitted.backendTier ?? 'tiered' };
+    if (!Number.isSafeInteger(semantic.addressBits) || semantic.addressBits < 1 || semantic.addressBits > 64
+      || !['little','big'].includes(semantic.endian) || !['tiered','exhaustive'].includes(semantic.backendTier)) return fail('invalid-condition-semantic-options');
+    const prior = readProjectedProvedCondition(result, submitted.conditionalBranch, guard.identity);
+    if (prior) {
+      const reused = { ...result, proofOptimization:Object.freeze({ status:'complete', reason:null, adopted:0,
+        rewritePolicy:proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection',
+        scope:'conditional-predicate-only', armErasureAuthorized:false, conditionPlanId:prior.planId,
+        targetDecisions:Object.freeze([Object.freeze({ branchId:submitted.conditionalBranch.id,
+          disposition:'already-adopted', reason:'current-committed-conditional-predicate', queryHash:prior.queryHash })]),
+        decisionCoverage:Object.freeze({ requested:1, complete:true }), phase8OptimizeStage:null,
+        elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started }) };
+      guard.check();
+      if (!isProducerProjection(result) || readProjectedProvedCondition(result, submitted.conditionalBranch, guard.identity) !== prior) {
+        return fail('stale-condition-projection');
+      }
+      return reused;
+    }
+    const [{ prepareConditionalRegionStructure }, { prepareConditionalRegionCondition },
+      { prepareConditionalRegionReachability }, { prepareConditionalRegionErasure, readConditionalRegionErasure }] = await Promise.all([
+      import('./phase8/conditional-region-structure.js'), import('./phase8/conditional-region-condition.js'),
+      import('./phase8/conditional-region-reachability.js'), import('./phase8/conditional-region-erasure.js'),
+    ]);
+    guard.check();
+    const carrier = readProjectedConditionalRegions(result.cAst, result.ir)
+      || (result.phase8Projection == null ? readCopiedConditionalRegions(result.cAst, result.ir) : null);
+    const matches = carrier?.regions.filter(item => item.original.branch === submitted.conditionalBranch) ?? [];
+    if (matches.length !== 1) return fail('unbound-conditional-branch');
+    const lifecycle = () => ({ identity:guard.identity, timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+      signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
+    const structure = prepareConditionalRegionStructure(matches[0].original.record, result.ir, lifecycle());
+    if (structure.status !== 'complete') return fail(structure.reason ?? 'condition-structure-unavailable');
+    const conditionPlan = await prepareConditionalRegionCondition(structure, result, { ...lifecycle(), ...semantic });
+    guard.check();
+    if (conditionPlan.status !== 'complete') return fail(conditionPlan.reason ?? 'condition-proof-unavailable');
+    const reachability = await prepareConditionalRegionReachability(structure, result.ir, { ...lifecycle(), ...semantic });
+    guard.check();
+    if (reachability.status !== 'complete') return fail(reachability.reason ?? 'condition-reachability-unavailable');
+    const plan = prepareConditionalRegionErasure(structure, reachability, result.ir,
+      { ...lifecycle(), conditionPlan, projection:result });
+    if (plan.status !== 'complete') return fail(plan.reason ?? 'condition-plan-unavailable');
+    const current = () => {
+      guard.check();
+      return isProducerProjection(result) && readConditionalRegionErasure(plan, result.ir, guard.identity) === plan;
+    };
+    // Persistent display bindings must not retain this preparation deadline.
+    // The issued plan and final boundary separately enforce query freshness.
+    const aborted = () => { try { return submitted.signal?.aborted === true || submitted.isCancelled?.() === true
+      || submitted.signal?.aborted === true; } catch { return true; } };
+    if (!current()) return fail('stale-condition-plan');
+    const projected = fullPhase8Projection(result, null, { phase8Optimize:true, phase8RegionErasurePlan:plan,
+      // The public conditional optimizer owns only the header rewrite. Body
+      // erasure requires the explicit region-rendering authority path.
+      phase8RegionErasureBody:false,
+      phase8ProofIdentity:guard.identity, phase8ProofOnlyRewrites:proofOnlyRewrites,
+      phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
+      phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });
+    if (!current() || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete'
+      || projected.cAst === result.cAst || projected.renderProvenance?.completeness !== 'complete') return fail('condition-projection-withheld');
+    const applied = projected.rewriteProof?.filter(record => record.rule === 'project-proved-conditional-predicate'
+      && record.evidence?.planId === conditionPlan.planId) ?? [];
+    if (applied.length !== 1) return fail('condition-projection-not-rendered');
+    const decision = Object.freeze({ branchId:submitted.conditionalBranch.id, disposition:'adopted',
+      reason:'committed-and-rendered-conditional-predicate', queryHash:conditionPlan.queryHash });
+    const proofOptimization = Object.freeze({ status:'complete', reason:null, adopted:1,
+      rewritePolicy:proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection',
+      scope:'conditional-predicate-only', armErasureAuthorized:false, planId:plan.planId, conditionPlanId:conditionPlan.planId,
+      targetDecisions:Object.freeze([decision]), decisionCoverage:Object.freeze({ requested:1, complete:true }),
+      phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
+      elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started });
+    const final = rememberProducerProjection({ ...projected, proofOptimization },
+      { phase8PrepareProof:true, phase8ProofOnlyRewrites:proofOnlyRewrites, shouldAbort:aborted });
+    if (!current() || aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
+    return final;
+  } catch (error) { return fail(guard?.reason() ?? error.reason ?? 'invalid-or-unsupported-condition-optimization'); }
+}
+
+/** Demand-driven asynchronous proof path. The representation result comes from
+ * the existing decompiler; publication uses the existing Phase 8 stage and final
+ * projection, never a second optimizer or an in-place IR rewrite. */
+export async function optimizeSemanticDecompilation(result, options = {}) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  let submitted, original = {}, preparedPlan = null, rewritePolicy = 'unavailable';
+  const normalizeFailureReason = reason => {
+    // The lower symbolic query uses `deadline` internally; expose the stable
+    // optimizer-level vocabulary at the public proof boundary.
+    if (reason === 'deadline') return 'deadline-exceeded';
+    // Auxiliary bitfield views are unsupported machine instructions when the
+    // scalar bridge cannot preserve their declared width.
+    if (reason === 'unknown-semantic:scalar-input-width-mismatch'
+        && original?.ir?.instructions?.some(inst => inst?.op === 'bfx' || inst?.op === 'bfi')) {
+      return 'unsupported-instruction';
+    }
+    return reason;
+  };
+  const fail = rawReason => { const reason = normalizeFailureReason(rawReason); return {...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+    rewritePolicy,
+    targetDecisions:Object.freeze((preparedPlan?.targetDecisions ?? []).map(decision => Object.freeze({ ...decision,
+      disposition:'unknown', reason }))),
+    decisionCoverage:Object.freeze({ requested:preparedPlan?.decisionCoverage?.requested ?? null, complete:false }),
+    phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})}; };
+  try {
+    submitted = queryRecord(options);
+    original = queryRecord(result,null,256);
+    if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return fail('semantic-projection-required');
+    if (!isProducerProjection(result)) return fail('unissued-or-stale-projection');
+    const proofOnlyRewrites = producerUsesProofOnlyRewrites(result);
+    rewritePolicy = proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection';
+    if (submitted.requireProofOnlyRewrites === true && !proofOnlyRewrites) return fail('proof-only-preparation-required');
+    if (Object.hasOwn(submitted, 'conditionalBranch')) {
+      preparedPlan = { targetDecisions:[{ branchId:queryRecord(submitted.conditionalBranch).id ?? null }],
+        decisionCoverage:{ requested:1 } };
+      return await optimizeConditionalPredicate(result, submitted, proofOnlyRewrites, fail, started);
+    }
+    // Snapshot request scope before any asynchronous work. The prepared plan
+    // will separately bind the exact execution-relevant IR graph.
+    const identity = queryRecord(submitted.identity);
+    const rawValues = queryArray(queryRecord(original.ir,null,128).values ?? []);
+    const auto=[];
+    for(const value of rawValues) {
+      const fields=queryRecord(value), definition=fields.def==null?null:queryRecord(fields.def);
+      if(fields.const==null && ['bin','un','cmp','mov','sel','bfx','bfi'].includes(definition?.op)) auto.push(value);
+    }
+    const targets = queryArray(submitted.targets ?? auto);
+    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    preparedPlan = plan;
+    const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
+    if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');
+    // Keep hot-loop cancellation checks O(1). Full IR/proof freshness is
+    // revalidated by admission and the final publication boundary.
+    const aborted = () => {try {if(submitted.signal?.aborted)return true;const stopped=submitted.isCancelled?.()===true;return stopped || submitted.signal?.aborted===true;} catch {return true;}};
+    // fullPhase8Projection is also the synchronous production callsite. The
+    // plan is opt-in and never reaches the ordinary interactive stage.
+    const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,
+      phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
+      phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    const applied = projected.phase8Projection?.transforms.filter(t=>['solver-constant','solver-scalar'].includes(t.kind)) ?? [];
+    const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
+      if (decision.disposition !== 'selected') return decision;
+      const adopted = applied.some(transform => transform.valueId === decision.valueId && transform.queryHash === decision.queryHash);
+      return Object.freeze({ ...decision, disposition:adopted ? 'adopted' : 'unknown',
+        reason:adopted ? 'committed-and-rendered-scalar-projection' : 'selected-projection-not-rendered' });
+    }));
+    const proofOptimization = Object.freeze({status:'complete',reason:null,
+      rewritePolicy,
+      adopted:applied.length,targetDecisions,decisionCoverage:plan.decisionCoverage,
+      planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
+      phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
+      elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
+    const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,shouldAbort:aborted});
+    if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');
+    return final;
+  } catch { return fail('invalid-or-unsupported-proof-optimization'); }
 }

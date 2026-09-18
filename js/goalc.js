@@ -34,7 +34,7 @@ import { pick } from './i18n.js';
  */
 const ACTIONS = [
   { id: 'increase', ja: '増える', en: 'increases',
-    re: /増え|増や|加算|足し|足す|加える|上がる|貰|もら|獲得|入手|付与|報酬|\badd(s|ed|ing)?\b|increas|\bgain/i },
+    re: /増え|増や|加算|足し|足す|加える|上がる|貰|もら|獲得|入手|付与|\badd(s|ed|ing)?\b|increas|\bgain/i },
   { id: 'decrease', ja: '減る', en: 'decreases',
     re: /減ら|減る|減っ|引く|消費|失う|下がる|喰らう|くらう|被ダメ|\bsub(tract)?\b|decreas|reduce|\bspend|consume|\blose\b/i },
   { id: 'decide', ja: '決める', en: 'decides',

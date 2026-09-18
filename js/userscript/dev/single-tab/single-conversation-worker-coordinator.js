@@ -1,5 +1,6 @@
 import { DEV_WORKER_FAILURE, DEV_WORKER_STATE } from '../../../ai/dev/workers/contracts.js';
 import { waitFor } from '../../chatgpt-adapter.js';
+import { canonicalWorkerIdentity, optionalWorkerIdentity } from '../frame-mesh/worker-identity.js';
 
 const EVENT_QUEUE_LIMIT = 128;
 const SUPERVISOR_CLAIM_TIMEOUT_MS = 30000;
@@ -44,8 +45,8 @@ export class SingleConversationWorkerCoordinator {
   async discover() { return Object.freeze([this.advertisement()]); }
 
   async claim({ runId, workerId } = {}) {
-    const normalizedRun = required(runId, 'runId');
-    const normalizedWorker = required(workerId, 'workerId');
+    const normalizedRun = canonicalWorkerIdentity(runId, 'runId');
+    const normalizedWorker = canonicalWorkerIdentity(workerId, 'workerId');
     if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
     if (this.claiming) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already being claimed.');
     if (this.claimed) {
@@ -166,7 +167,9 @@ export class SingleConversationWorkerCoordinator {
 
   waitEvent({ events, runId = null } = {}, { signal } = {}) {
     const wanted = normalizeEvents(events);
-    const normalizedRun = runId == null ? null : String(runId);
+    let normalizedRun;
+    try { normalizedRun = optionalWorkerIdentity(runId, 'runId'); }
+    catch (error) { return Promise.reject(error); }
     const queuedIndex = this.events.findIndex((event) => matches(event, wanted, normalizedRun));
     if (queuedIndex >= 0) return Promise.resolve(this.events.splice(queuedIndex, 1)[0]);
     if (signal?.aborted) return Promise.reject(abortError(signal.reason));
@@ -402,11 +405,10 @@ export class SingleConversationWorkerCoordinator {
 
   assertClaim(args = {}) {
     if (!this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No logical Worker is currently claimed.');
-    if (args.workerId != null && String(args.workerId) !== this.claimed.workerId) {
-      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested workerId does not own the single-tab Worker slot.');
-    }
-    if (args.runId != null && String(args.runId) !== this.claimed.runId) {
-      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested runId does not own the single-tab Worker slot.');
+    const runId = canonicalWorkerIdentity(args.runId, 'runId');
+    const workerId = canonicalWorkerIdentity(args.workerId, 'workerId');
+    if (runId !== this.claimed.runId || workerId !== this.claimed.workerId) {
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested claim identity does not own the single-tab Worker slot.');
     }
     return this.claimed;
   }
@@ -438,7 +440,7 @@ function anchorSignature(anchors) {
   return (anchors || []).map((anchor) => `${String(anchor?.id || '')}\u0000${String(anchor?.text || '').replace(/\s+/g, ' ').trim()}`).join('\u0001');
 }
 function matches(event, wanted, runId) {
-  return wanted.has(event.type) && (runId == null || String(event.data?.runId || '') === runId);
+  return wanted.has(event.type) && (runId == null || event.data?.runId === runId);
 }
 function normalizeEvents(events) {
   if (!Array.isArray(events) || !events.length) throw new TypeError('waitEvent.events must be a non-empty array.');

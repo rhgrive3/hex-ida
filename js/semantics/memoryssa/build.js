@@ -20,6 +20,7 @@ import {
   MEMORY_SSA_ALIAS_RELATIONS,
   MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
+  canonicalSnapshotId,
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
@@ -30,11 +31,12 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
   createCanonicalIdentityDigestMemo,
+  isCanonicalAccessProvider,
   MEMORY_SSA_PROOF_VERSION,
   registerCanonicalMemorySsaIdentities,
 } from './proof.js';
 
-export const MEMORY_SSA_BUILD_VERSION = '1.0.1';
+export const MEMORY_SSA_BUILD_VERSION = '1.0.2';
 export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
   ...MEMORY_SSA_DEFAULT_BUDGET,
   maxAliasQueries: 1048576,
@@ -59,9 +61,9 @@ class CanonicalMemorySsaArtifact {
   }
 }
 
-// Only the exact producer object is eligible for cross-query reuse.  The
+// Only the exact producer object is eligible for cross-query reuse. The
 // builder publishes this privately branded object after deep-freezing it, so
-// its digest cannot become stale.  Unbranded or unfrozen values deliberately
+// its digest cannot become stale. Unbranded or unfrozen values deliberately
 // take the ordinary recomputation path and never gain identity authority from
 // this cache.
 const canonicalMemorySsaDigestCache = new WeakMap();
@@ -233,8 +235,8 @@ function memoryRangeProof(memorySsaEntityId, sourceEntityId, regionId, range, me
   };
 }
 
-function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId, identityDigestMemo) {
-  const identityDigest = identityDigestMemo.digest(identity);
+function canonicalStackNoEscapeProof(identity, functionId, useId, nodeId, regionId, identityDigestMemo = null) {
+  const identityDigest = identityDigestMemo?.digest?.(identity) ?? stableDigest(identity ?? null);
   const proof = {
     kind: 'canonical-memory-stack-no-escape',
     version: MEMORY_SSA_PROOF_VERSION,
@@ -375,7 +377,7 @@ function disjointIntervalReason(leftRegion, rightRegion) {
   return 'disjoint-memory-ranges';
 }
 
-function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId, identityDigestMemo) {
+function rangeDisjointAlias(descriptor, sourceRegion, targetRegion, relation, purpose, identity, functionId, identityDigestMemo = null) {
   // Region identity is the canonical storage root.  For a non-identical
   // precise region, however, an instruction displacement can place the
   // actual access wholly outside that root's interval.  Refine only this
@@ -598,6 +600,31 @@ function nodesByIdForStack(irFunction) {
   return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
 }
 
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
+  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+  if (callIndex < 0) return true;
+  const stores = (upstream) => {
+    const list = [
+      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+        addressValueId: access.addressExpr?.valueId,
+        storedValueId: access.valueId ?? null,
+      })),
+    ];
+    return list;
+  };
+  for (let index = 0; index < callIndex; index++) {
+    const upstream = orderedNodes[index];
+    if (!upstream) continue;
+    for (const store of stores(upstream)) {
+      const stored = store.storedValueId;
+      if (stored == null || !stackValues.derives(stored)) continue;
+      if (!stackValues.derives(store.addressValueId)) return true;
+    }
+  }
+  return false;
+}
+
 function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
@@ -646,7 +673,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -675,18 +703,20 @@ function addRegion(regionById, region) {
   if (prior && stableStringify(prior) !== stableStringify(normalized)) fail('memory-ssa-build-conflicting-region-id');
   regionById.set(normalized.id, normalized);
 }
-function unreachableRoots(cfg, options) {
+function unreachableComponents(cfg, options) {
   const reachable = new Set(reachableBlocks(cfg, cfg.entryBlockId, { signal: options.signal }));
   const unreachable = cfg.blocks.map((block) => block.id).filter((id) => !reachable.has(id)).sort();
   const unreachableSet = new Set(unreachable);
   const byId = new Map(cfg.blocks.map((block) => [block.id, block]));
   const roots = new Set([cfg.entryBlockId]);
+  const componentSeedByBlock = new Map();
   const seen = new Set();
   for (const seed of unreachable) {
     if (seen.has(seed)) continue;
     roots.add(seed);
     const stack = [seed];
     seen.add(seed);
+    componentSeedByBlock.set(seed, seed);
     while (stack.length) {
       const id = stack.pop();
       const block = byId.get(id);
@@ -697,11 +727,12 @@ function unreachableRoots(cfg, options) {
       for (const next of neighbors) {
         if (seen.has(next)) continue;
         seen.add(next);
+        componentSeedByBlock.set(next, seed);
         stack.push(next);
       }
     }
   }
-  return roots;
+  return Object.freeze({ roots, componentSeedByBlock });
 }
 function mapEqual(left, right, regionIds) {
   if (!left || !right) return false;
@@ -745,16 +776,16 @@ function effectSummary(descriptor, relation) {
   }
   return jsonSafe(out);
 }
-function memoryAccessProof(descriptor, options, identity, identityDigestMemo) {
-  const raw = typeof options?.accessProofForDescriptor === 'function'
-    ? options.accessProofForDescriptor(descriptor)
-    : null;
+function memoryAccessProof(descriptor, options, identity, identityDigestMemo = null) {
+  const provider = options?.accessProofForDescriptor;
+  const raw = isCanonicalAccessProvider(provider) ? provider(descriptor) : null;
   return canonicalAccessProof({
     raw,
     descriptor,
     identity,
     identityDigestMemo,
     functionId: identity?.functionId ?? descriptor?.node?.functionId ?? null,
+    providerCallback: provider,
   });
 }
 
@@ -779,7 +810,30 @@ function canonicalConstantValue(semanticValue) {
  * proof: the compatibility layer must not infer a value from projected
  * instructions or recreate a second data-flow engine.
  */
-function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, active = new Set()) {
+/*
+ * Index scalar-SSA renamed uses by source entity and renamed definitions by
+ * value id once per build so store-proof resolution does not rescan the full
+ * arrays for every store (issue #8982).  The maps keep exactly the same
+ * first-match-in-array-order and proof-kind predicates as the previous linear
+ * `find` scans; they only make them O(1) per lookup.
+ */
+function buildScalarSsaIndex(scalarSsa) {
+  const usesBySource = new Map();
+  for (const use of scalarSsa?.uses ?? []) {
+    if (use?.proof?.kind !== 'renamed-use') continue;
+    const key = String(use.sourceEntityId);
+    if (!usesBySource.has(key)) usesBySource.set(key, use);
+  }
+  const definitionsByValue = new Map();
+  for (const definition of scalarSsa?.definitions ?? []) {
+    if (definition?.kind !== 'definition' || definition?.proof?.kind !== 'renamed-definition') continue;
+    const key = String(definition.valueId);
+    if (!definitionsByValue.has(key)) definitionsByValue.set(key, definition);
+  }
+  return { usesBySource, definitionsByValue };
+}
+
+function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, active = new Set(), scalarIndex = null) {
   const id = String(valueId ?? '');
   if (!id || active.has(id)) return null;
   active.add(id);
@@ -795,16 +849,14 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
     return null;
   }
   if (definition.kind === 'state-read') {
-    const scalarUse = scalarSsa?.uses?.find((use) => String(use.sourceEntityId) === String(definition.id)
-      && use.proof?.kind === 'renamed-use') ?? null;
-    const scalarDefinition = scalarUse == null ? null : scalarSsa?.definitions?.find((candidate) =>
-      String(candidate.valueId) === String(scalarUse.valueId)
-      && candidate.kind === 'definition'
-      && candidate.proof?.kind === 'renamed-definition') ?? null;
+    const index = scalarIndex ?? buildScalarSsaIndex(scalarSsa);
+    const scalarUse = scalarSsa?.uses == null ? null : index.usesBySource.get(String(definition.id)) ?? null;
+    const scalarDefinition = scalarUse == null || scalarSsa?.definitions == null ? null
+      : index.definitionsByValue.get(String(scalarUse.valueId)) ?? null;
     const sourceSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId ?? null;
     const source = sourceSemanticValueId == null ? null : valuesById.get(String(sourceSemanticValueId));
     const sourceConstant = source == null ? null
-      : canonicalScalarConstant(source.id, valuesById, nodesById, scalarSsa, active);
+      : canonicalScalarConstant(source.id, valuesById, nodesById, scalarSsa, active, scalarIndex ?? index);
     if (sourceConstant) {
       active.delete(id);
       return {
@@ -823,7 +875,7 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
     active.delete(id);
     return null;
   }
-  const input = canonicalScalarConstant(definition.inputs[0], valuesById, nodesById, scalarSsa, active);
+  const input = canonicalScalarConstant(definition.inputs[0], valuesById, nodesById, scalarSsa, active, scalarIndex);
   if (!input) {
     active.delete(id);
     return null;
@@ -841,7 +893,7 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
   return { ...input, value, widthBits: outputWidth };
 }
 
-function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null, identityDigestMemo = null) {
+function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null, scalarIndex = null, identityDigestMemo = null) {
   if (node?.kind !== 'store' || !Array.isArray(node.inputs) || node.inputs.length !== 2) return null;
   const addressValueId = memoryAddressExpr(node.memory)?.valueId ?? null;
   if (addressValueId == null || String(node.inputs[0]) !== String(addressValueId)) return null;
@@ -865,7 +917,7 @@ function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsa
   }
   if (semanticValue.machineType?.kind !== 'bitvector'
       || Number(semanticValue.machineType?.widthBits) !== widthBits) return null;
-  const resolved = canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa);
+  const resolved = canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, new Set(), scalarIndex);
   if (!resolved || resolved.widthBits !== widthBits) return null;
   return canonicalStoreValueProof({
     semanticValue,
@@ -909,6 +961,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes);
   const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
   const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
+  const irNodeById = new Map((irFunction.nodes ?? []).map((candidate) => [String(candidate.id), candidate]));
+  const scalarSsaIndex = options.ssa == null ? null : buildScalarSsaIndex(options.ssa);
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
@@ -925,6 +979,13 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
   // below; copying or re-signing its fields cannot copy that binding.
+  // Snapshot provenance is validated before it is published or jsonSafe'd: the
+  // identity block survives structured values, and a structured `snapshotId`
+  // there would otherwise be re-coerced by every consumer that compares it
+  // against the artifact (#8804).
+  if (options.identity?.snapshotId != null) {
+    canonicalSnapshotId(options.identity.snapshotId, 'memory-ssa-identity-snapshot-id-invalid');
+  }
   const identity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
@@ -1085,19 +1146,44 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const cfgBlockById = new Map(cfg.blocks.map((block) => [block.id, block]));
   const irBlockById = new Map(irFunction.blocks.map((block) => [block.id, block]));
   const traversal = deterministicTraversal(cfg, { signal: options.signal, includeUnreachable: true });
-  const syntheticRoots = unreachableRoots(cfg, options);
-  const initialState = new Map(entryDefinitionIds);
+  const unreachableInfo = unreachableComponents(cfg, options);
+  const syntheticRoots = unreachableInfo.roots;
+  const componentSeedByBlock = unreachableInfo.componentSeedByBlock;
+  const componentSeeds = [...new Set(componentSeedByBlock.values())].sort();
+  const unreachableEntryDefinitionIds = new Map(componentSeeds.map((componentSeed) => [
+    componentSeed,
+    new Map(regionIds.map((regionId) => [
+      regionId,
+      entityId('memdef', {
+        functionId: irFunction.functionId,
+        regionId,
+        blockId: componentSeed,
+        kind: 'unreachable-entry',
+      }),
+    ])),
+  ]));
+  const seedDefinitionIdFor = (blockId, regionId) => {
+    const componentSeed = componentSeedByBlock.get(blockId);
+    return componentSeed == null
+      ? entryDefinitionIds.get(regionId)
+      : unreachableEntryDefinitionIds.get(componentSeed).get(regionId);
+  };
+  const initialStateFor = (blockId) => new Map(regionIds.map((regionId) => [
+    regionId,
+    seedDefinitionIdFor(blockId, regionId),
+  ]));
   const inStateByBlock = new Map();
-  const outStateByBlock = new Map(cfg.blocks.map((block) => [block.id, cloneState(initialState)]));
+  const outStateByBlock = new Map(cfg.blocks.map((block) => [block.id, initialStateFor(block.id)]));
 
   const mergeBlockState = (blockId) => {
     const block = cfgBlockById.get(blockId);
     const state = new Map();
     for (const regionId of regionIds) {
       tick();
-      const candidates = block.predecessors.map((pred) => outStateByBlock.get(pred)?.get(regionId) ?? entryDefinitionIds.get(regionId));
-      if (syntheticRoots.has(blockId)) candidates.push(entryDefinitionIds.get(regionId));
-      if (!candidates.length) candidates.push(entryDefinitionIds.get(regionId));
+      const candidates = block.predecessors.map((pred) => outStateByBlock.get(pred)?.get(regionId)
+        ?? seedDefinitionIdFor(pred, regionId));
+      if (syntheticRoots.has(blockId)) candidates.push(seedDefinitionIdFor(blockId, regionId));
+      if (!candidates.length) candidates.push(seedDefinitionIdFor(blockId, regionId));
       const unique = [...new Set(candidates)];
       state.set(regionId, unique.length === 1 ? unique[0] : phiId(blockId, regionId));
     }
@@ -1150,7 +1236,10 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       id,
       kind: 'entry',
       regionId: region.id,
-      blockId: cfg.entryBlockId,
+      // This is boundary memory, not an instruction in the CFG entry block.
+      // It also seeds unreachable roots, which the live entry cannot dominate.
+      // Keep real writes and phis pinned to their actual defining blocks.
+      blockId: null,
       previousDefinitionIds: [],
       incoming: [],
       aliasRelation: null,
@@ -1164,6 +1253,28 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       proof: { kind: 'initial-memory-version' },
     });
   }
+  for (const region of regions) {
+    for (const componentSeed of componentSeeds) {
+      const id = unreachableEntryDefinitionIds.get(componentSeed).get(region.id);
+      addDefinition({
+        id,
+        kind: 'entry',
+        regionId: region.id,
+        blockId: null,
+        previousDefinitionIds: [],
+        incoming: [],
+        aliasRelation: null,
+        sourceEntityId: irFunction.functionId,
+        origin: transformOrigin(irFunction.origin, {
+          ruleId: 'unreachable-initial-memory-version',
+          consumedEntityIds: [irFunction.functionId, componentSeed],
+          producedEntityIds: [id],
+          proofKind: 'unreachable-initial-memory-version',
+        }),
+        proof: { kind: 'unreachable-initial-memory-version', seedBlockId: componentSeed },
+      });
+    }
+  }
   for (const blockId of traversal) {
     const block = cfgBlockById.get(blockId);
     for (const regionId of regionIds) {
@@ -1173,7 +1284,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         predecessorBlockId: pred,
         definitionId: outStateByBlock.get(pred).get(regionId),
       }));
-      const previousDefinitionIds = syntheticRoots.has(blockId) ? [entryDefinitionIds.get(regionId)] : [];
+      const previousDefinitionIds = syntheticRoots.has(blockId)
+        ? [seedDefinitionIdFor(blockId, regionId)]
+        : [];
       const baseOrigin = irBlockById.get(blockId)?.origin ?? irFunction.origin;
       addDefinition({
         id: expectedPhiId,
@@ -1317,7 +1430,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
               ? (() => {
                 const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])), identityDigestMemo)
+                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, irNodeById, scalarSsaIndex, identityDigestMemo)
                   : null;
                 return canonicalValue == null ? {} : { canonicalValue };
               })()
@@ -1372,7 +1485,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             irFunction.functionId,
             event.id,
             options.ssa,
-            new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])),
+            irNodeById,
+            scalarSsaIndex,
             identityDigestMemo,
           );
           return canonicalValue == null ? {} : { canonicalValue };
@@ -1447,7 +1561,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       nodeId: input.nodeId,
       regionId: input.regionId,
       loadRange,
-      identityDigest: identityDigestMemo.digest(identity),
+      identityDigest: stableDigest(identity),
     };
     return {
       useId: input.useId,
@@ -1497,7 +1611,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       functionId: irFunction.functionId,
       semanticIrDigest: identity?.semanticIrDigest ?? null,
     }),
-    ...(options.snapshotId == null ? {} : { snapshotId: String(options.snapshotId) }),
+    ...(options.snapshotId == null ? {} : { snapshotId: canonicalSnapshotId(options.snapshotId) }),
     useDefLinks,
     defUseLinks,
     accessMetadata,
@@ -1506,13 +1620,11 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     blockStates,
   };
   const canonicalDigest = canonicalMemorySsaDigest(artifact);
-  const published = deepFreeze(new CanonicalMemorySsaArtifact({
+  const unpublished = {
     ...artifact,
     canonicalDigest,
-  }));
-  // The digest was computed from the exact payload immediately before its
-  // private publication and deep freeze. Seed the producer-owned cache so
-  // the first consumer query does not repeat that full serialization pass.
+  };
+  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
   canonicalMemorySsaDigestCache.set(published, canonicalDigest);
   if (isCanonicalSemanticIrFunction(irFunction)) {
     const semanticIrDigest = canonicalSemanticIrDigest(irFunction);

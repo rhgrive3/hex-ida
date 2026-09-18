@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
-import { createAnalysisState, INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
 
 /**
  * A minimal IR carrying exactly the canonical facts the identity pass declares
@@ -65,12 +66,14 @@ test('cancellation observed after a pass still withholds the whole ledger', () =
 
 test('an incomplete optimizer run cannot overwrite a prior complete result', () => {
   const ir = { ...CONTEXT.ir, blocks: [{ id: 'entry', index: 0 }] };
-  const seed = seedAnalysisState(ir);
+  const state = seedAnalysisState(ir);
   const priorRanges = Object.freeze({ completeness: 'complete', marker: 'authoritative' });
-  const state = createAnalysisState({
-    ...Object.fromEntries(seed.available().map(key => [key, seed.get(key)])),
-    ranges: priorRanges,
-  });
+  // Seed through the production transaction boundary. __write was removed
+  // when state mutation became private; restoring that hook would bypass the
+  // same authority boundary this regression is meant to protect.
+  assert.equal(Object.hasOwn(state, '__write'), false);
+  publishFixtureAnalyses(state, { ranges: priorRanges });
+  assert.equal(state.get('ranges'), priorRanges);
   const before = state.snapshot();
   const { ledger, analysis } = runPhase8Vertical({
     ...CONTEXT,

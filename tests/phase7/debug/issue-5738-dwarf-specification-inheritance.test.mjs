@@ -18,6 +18,8 @@ const addr = (v) => { const out = []; for (let i = 0; i < 8; i++) out.push(Numbe
 const ref4 = (v) => [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff];
 
 const abbrev = Uint8Array.from([
+  // 0 (root): compile_unit, no children
+  ...uleb(9), 0x11, 0x00, 0x00, 0x00,
   // 1: subprogram declaration: name/string, type/ref4, declaration/flag_present,
   // external/flag_present
   ...uleb(1), 0x2e, 0x00,
@@ -56,13 +58,15 @@ const abbrev = Uint8Array.from([
 ]);
 
 function buildDebugInfo(specTarget) {
-  // DIE A @ 0x0b: declaration "C::f", type -> base DIE
-  const dieA = [...uleb(1), ...str('C::f'), ...ref4(35)];
-  // DIE B @ 0x15: definition via specification -> A, low_pc 0x1000, high_pc 0x10
+  // Root DIE @ 0x0b: compile_unit (code 9)
+  const rootDie = [...uleb(9)];
+  // DIE A @ 0x0c: declaration "C::f", type -> base DIE
+  const dieA = [...uleb(1), ...str('C::f'), ...ref4(36)];
+  // DIE B: definition via specification -> A, low_pc 0x1000, high_pc 0x10
   const dieB = [...uleb(2), ...ref4(specTarget), ...addr(0x1000n), 0x10];
-  // DIE C @ 0x23: base type "int"
+  // DIE C: base type "int"
   const dieC = [...uleb(3), ...str('int'), 4, 5];
-  const debug_info = Uint8Array.from([0, 0, 0, 0, 0x04, 0x00, 0, 0, 0, 0, 8, ...dieA, ...dieB, ...dieC]);
+  const debug_info = Uint8Array.from([0, 0, 0, 0, 0x04, 0x00, 0, 0, 0, 0, 8, ...rootDie, ...dieA, ...dieB, ...dieC]);
   new DataView(debug_info.buffer).setUint32(0, debug_info.length - 4, true);
   return debug_info;
 }
@@ -105,8 +109,8 @@ function probe(debug_info) {
 }
 
 test('#5738: definition DIE inherits its name through DW_AT_specification', () => {
-  const { symbols } = probe(buildDebugInfo(0x0b));
-  const definition = symbols.find((r) => r.entityId === 'dwarf_die_21');
+  const { symbols } = probe(buildDebugInfo(0x0c));
+  const definition = symbols.find((r) => r.entityId === 'dwarf_die_22');
   assert.ok(definition, 'the definition DIE is present');
   assert.equal(definition.name, 'C::f', 'the name is inherited from the specification target');
   assert.equal(definition.address, '0x1000');
@@ -115,15 +119,15 @@ test('#5738: definition DIE inherits its name through DW_AT_specification', () =
 });
 
 test('#5738: definition DIE reaches its type through the specification chain', () => {
-  const { types } = probe(buildDebugInfo(0x0b));
-  const definition = types.find((r) => r.entityId === 'dwarf_die_21');
+  const { types } = probe(buildDebugInfo(0x0c));
+  const definition = types.find((r) => r.entityId === 'dwarf_die_22');
   assert.ok(definition, 'the definition participates in the type records');
   assert.equal(definition.descriptor.claim.name, 'int', 'the type is inherited through the specification target');
 });
 
 test('#5738: a dangling DW_AT_specification fails the record closed', () => {
   const { symbols } = probe(buildDebugInfo(0x7777));
-  const definition = symbols.find((r) => r.entityId === 'dwarf_die_21');
+  const definition = symbols.find((r) => r.entityId === 'dwarf_die_22');
   assert.ok(definition);
   assert.equal(definition.descriptor.complete, false, 'an unresolved specification is not complete evidence');
 });

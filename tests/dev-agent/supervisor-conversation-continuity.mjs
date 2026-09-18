@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -7,6 +8,7 @@ import { installChatGPTWebBridge } from '../../js/userscript/chatgpt-bridge.js';
 import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
 await testDevSupervisorRunReusesSessionWithinHexConversation();
+await testWaitingHumanResumeRequiresConcreteConversationIdentity();
 await testDelayedConversationIdentityStaysOnOneSupervisorChat();
 await testUnboundSupervisorSurfaceNeverCreatesAnotherChat();
 await testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization();
@@ -14,13 +16,28 @@ await testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
 
+async function testWaitingHumanResumeRequiresConcreteConversationIdentity() {
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage:null });
+  const waitingRun = { status:'WAITING_HUMAN', hexConversationId:null };
+  settings.setLastRun(waitingRun);
+  const engine = new DevSupervisorEngineV0({ supervisor:{}, settings });
+
+  assert.equal(engine.resumableHumanRun({ conversationId:null }), null);
+  assert.equal(engine.resumableHumanRun({}), null);
+
+  waitingRun.hexConversationId = 'hex-chat-waiting';
+  assert.equal(engine.resumableHumanRun({ conversationId:'hex-chat-waiting' }), waitingRun);
+  assert.equal(engine.resumableHumanRun({ conversationId:'hex-chat-other' }), null);
+  assert.equal(engine.resumableHumanRun({}), null);
+}
+
 async function testDevSupervisorRunReusesSessionWithinHexConversation() {
-  const settings = new DevAgentUiSettings({ storage: null });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: null });
   settings.setAgentProfile('dev');
   settings.setDecisionPolicy('yolo');
 
   let sequence = 0;
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     idFactory: (kind) => `${kind}-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',
   });
@@ -158,7 +175,7 @@ async function testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization(
   assert.deepEqual(harness.claimAnchor(), harness.turnA, 'claim must initially capture Supervisor turn A');
 
   harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
-  const result = await coordinator.send({ workerId: 'send-anchor-worker', instruction: 'run delegated task' });
+  const result = await coordinator.send({ runId: 'send-anchor-run', workerId: 'send-anchor-worker', instruction: 'run delegated task' });
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(controller.currentConversation().id, supervisor.id);
@@ -178,7 +195,7 @@ async function testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualizat
   harness.seedWorkerConversation();
   harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
 
-  const result = await coordinator.followup({ workerId: 'followup-anchor-worker', text: 'continue delegated task' });
+  const result = await coordinator.followup({ runId: 'followup-anchor-run', workerId: 'followup-anchor-worker', text: 'continue delegated task' });
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(navigation.at(-2).conversation.id, worker.id, 'followup must first return to the retained Worker conversation');
@@ -199,7 +216,7 @@ async function testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualizatio
   harness.setSupervisorAnchors([harness.turnB]);
   harness.setStrictSupervisorUnavailable(true);
 
-  const released = await coordinator.release({ workerId: 'release-anchor-worker' });
+  const released = await coordinator.release({ runId: 'release-anchor-run', workerId: 'release-anchor-worker' });
 
   assert.equal(released.claimed, false);
   assert.equal(released.role, 'available');

@@ -59,10 +59,14 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
   const effectivePointerFormat = pointerFormat ?? classList?.pointerFormat ?? classList?.pointer_format ?? null;
   const binaryImage = runtimeSections?.binaryImage || null;
   const validateImplementation=createImplementationValidator(runtimeSections,binaryImage);
+  // The provider declares the target architecture on runtimeSections; the
+  // legacy and extended parsers must resolve one pointer ABI from the same
+  // evidence or an ILP32 image would be half-read as LP64 (#8280).
   const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, effectivePointerFormat, {
     signal: options?.signal || null,
     priority: options?.priority || 'idle',
     ...(options || {}),
+    ...(runtimeSections?.architecture != null ? { architecture: runtimeSections.architecture } : {}),
     validateImplementation,
     requireImplementationProof:true,
   });
@@ -102,6 +106,12 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
     if (!seen.has(key)) { seen.add(key); names.push(entry); }
   }
   const legacyClasses = base.completeness?.classes || { present: !!classList, complete: false };
+  if (!classList) {
+    // Extended records remain useful, but no class table means the unified
+    // runtime model cannot certify class coverage from category references.
+    legacyClasses.complete = false;
+    legacyClasses.reasons = [...(legacyClasses.reasons || []), 'objc-classlist-missing'];
+  }
   const extended = extra.completeness || {};
   const runtimeCompleteness = {
     classes: legacyClasses,

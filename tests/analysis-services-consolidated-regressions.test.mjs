@@ -4,6 +4,7 @@ import { InvestigationService, __investigationInternalsForTests } from '../js/an
 import { STRING_SCAN_BUDGET } from '../js/string-budget.js';
 import { PROGRAM_MERGE_LIMITS } from '../js/program.js';
 import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
+import { createAnalysisSnapshot } from '../js/analysis/query/snapshot.js';
 import { canonicalClaimVerdict, createProductSurfaceQueries } from '../js/analysis/query/product-surface.js';
 
 const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completenessFor } = __investigationInternalsForTests;
@@ -369,7 +370,7 @@ const { budgetConfig, captureAnalysisBinding, analysisBindingCurrent, completene
 
 // --- Test 11: #4308 verdictFilter rejects unknown verdicts ---
 {
-  const snapshot = { snapshotId: 'snap-1', binaryId: 'bin-1' };
+  const snapshot = createAnalysisSnapshot({ binaryId: 'bin-1', analysisEpoch: 1 });
   const app = {
     analysisQueries: {
       snapshot: () => snapshot,

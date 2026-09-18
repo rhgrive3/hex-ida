@@ -1,34 +1,42 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
 import { createProductSurfaceQueries } from '../../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../../js/analysis/query/snapshot.js';
 
-// The historical wrapper imported a root fixture that was never committed.
-// Exercise the actual product query here so the Phase 7 denominator is runnable.
-const snapshot = Object.freeze({ snapshotId: 'confidence-6109', analysisEpoch: 1 });
-async function classification(confidence) {
-  return createProductSurfaceQueries({
-    analysisQueries: { snapshot: async () => snapshot },
-    recognition: { records: [{ address: 4096n, classification: 'GAME_LOGIC', confidence }] },
-    analyzeFunctionAt: async () => null,
-  }).classification(snapshot, '0x1000');
+// Keep the focused #6109 product-query regression inside the required Phase 7
+// denominator. Self-contained canonical snapshot: the product surface enforces
+// the canonical AnalysisSnapshot contract (#5344), so a fixture envelope built
+// ad hoc would be rejected before the confidence assertions run.
+
+const SNAPSHOT = createAnalysisSnapshot({ binaryId:'issue-6109', analysisEpoch:1 });
+
+function appFor(confidence, local = null) {
+  return {
+    analysisQueries:{ snapshot:async () => SNAPSHOT },
+    recognition:{ records:[{ address:0x1000n, classification:'APPLICATION', confidence, evidence:[] }] },
+    analyzeFunctionAt:async () => local,
+  };
 }
 
-test('#6109 classification preserves finite numeric confidence in [0, 1]', async () => {
-  for (const confidence of [0, 0.25, 1]) {
-    const result = await classification(confidence);
-    assert.equal(result.value.confidence, confidence);
-    assert.equal(result.value.base.confidence, confidence);
-    assert.equal(result.status.completeness, 'partial');
-  }
-});
+async function classification(confidence, local = null) {
+  const query = createProductSurfaceQueries(appFor(confidence, local));
+  return query.classification(SNAPSHOT, 0x1000n);
+}
 
-test('#6109 classification rejects coerced and out-of-range confidence', async () => {
-  let coercions = 0;
-  for (const confidence of [undefined, null, true, false, '1', [1], NaN, Infinity, -Infinity, -0.1, 1.1,
-    { valueOf() { coercions++; return 1; }, toString() { coercions++; return '1'; } }]) {
-    const result = await classification(confidence);
-    assert.equal(result.value.confidence, 0);
-    assert.equal(result.value.base.confidence, 0);
-  }
-  assert.equal(coercions, 0);
-});
+for (const confidence of [0, 0.35, 1]) {
+  const result = await classification(confidence);
+  assert.equal(result.value.confidence, confidence);
+  assert.equal(result.value.base.confidence, confidence);
+}
+
+for (const confidence of [true, '0.9', ['0.9'], {}, Infinity, NaN, 2, -1]) {
+  const result = await classification(confidence);
+  assert.equal(result.value.confidence, 0);
+  assert.equal(result.value.base.confidence, 0);
+}
+
+// The sanitized base record must remain safe even when semantic refinement runs.
+const refined = await classification(true, { model:{ instructions:[], blocks:[] }, semanticFacts:{} });
+assert.equal(refined.value.base.confidence, 0);
+assert.notEqual(refined.value.base.confidence, true);
+
+console.log('issue #6109 product classification confidence validation: PASS');

@@ -10,10 +10,20 @@ function abortError(signal) {
 
 export function parseMetadataFileInWorker(file, options = {}) {
   const signal = options.signal ?? null;
+  if (signal != null && (typeof signal !== 'object'
+      || typeof signal.addEventListener !== 'function'
+      || typeof signal.removeEventListener !== 'function')) {
+    return Promise.reject(new TypeError('IL2CPP metadata signal must be AbortSignal-compatible.'));
+  }
   const workerFactory = options.workerFactory || (() => new Worker(new URL('./il2cpp-worker.js', import.meta.url), { type:'module' }));
   if (signal?.aborted) return Promise.reject(abortError(signal));
   const id = sequence++;
-  const worker = workerFactory();
+  let worker;
+  try {
+    worker = workerFactory();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
@@ -25,6 +35,10 @@ export function parseMetadataFileInWorker(file, options = {}) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     worker.onmessage = (event) => {
       const message = event.data || {};
       if (message.id !== id) return;

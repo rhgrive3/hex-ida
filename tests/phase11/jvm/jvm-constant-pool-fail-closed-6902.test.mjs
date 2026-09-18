@@ -32,7 +32,10 @@ assert.doesNotThrow(()=>parseJvmCore(buildClass([...base,utf8('orphan'),utf8('()
 
 // REF_newInvokeSpecial may only target a void-returning constructor.
 function constructorFixture(descriptor){return [...base,utf8('<init>'),utf8(descriptor),cpNameAndType(5,6),cpMethodref(2,7),cpMethodHandle(8,8)];}
-assert.throws(()=>parseJvm(buildClass(constructorFixture('()I'))),/jvm-invalid-cp-methodhandle-constructor-descriptor/);
+// The §4.4.2 Methodref invariant (#7405) now rejects a non-void <init>
+// Methodref directly in the constant-pool pass, before the MethodHandle
+// closure check can observe it.
+assert.throws(()=>parseJvm(buildClass(constructorFixture('()I'))),/jvm-invalid-cp-methodref-init-return-type/);
 assert.doesNotThrow(()=>parseJvm(buildClass(constructorFixture('()V'))));
 
 // BootstrapMethods references are typed: MethodHandle target + loadable constants only.

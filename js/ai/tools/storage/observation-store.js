@@ -1,4 +1,5 @@
 import { CursorCodec, shortHash, stableSerialize } from '../paging/cursor.js';
+import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -15,6 +16,25 @@ function textIdentity(value) {
   return String(value);
 }
 
+// Unresolved identity is not a shared cache authority (#5887): two contexts
+// whose binary/analysis identity cannot be resolved must never share a
+// deterministic binding key, so each unresolved context object gets its own
+// non-persistent nonce folded into the key. The nonce is stable per context
+// instance (turn-to-turn continuity inside one unresolved context is
+// preserved) but never crosses a setContext() switch to a different context
+// object. Resolved (complete) bindings keep the exact legacy key layout.
+const UNKNOWN_CONTEXT_NONCES = new WeakMap();
+let UNKNOWN_CONTEXT_NONCE_SEQUENCE = 0;
+function unknownContextNonce(context) {
+  if (!context || typeof context !== 'object') return `ephemeral-${++UNKNOWN_CONTEXT_NONCE_SEQUENCE}`;
+  let nonce = UNKNOWN_CONTEXT_NONCES.get(context);
+  if (nonce == null) {
+    nonce = String(++UNKNOWN_CONTEXT_NONCE_SEQUENCE);
+    UNKNOWN_CONTEXT_NONCES.set(context, nonce);
+  }
+  return nonce;
+}
+
 export function analysisBinding(context = {}, extra = {}) {
   const binaryIdentity = textIdentity(
     extra.binaryIdentity ?? context.binaryIdentity ?? context.binaryId ?? context.binary?.identity ?? context.binary?.id ?? context.binary?.uuid ??
@@ -29,8 +49,13 @@ export function analysisBinding(context = {}, extra = {}) {
     context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
   ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
-  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
-  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
+  const missing = [];
+  if (binaryIdentity === 'binary:unknown') missing.push('binaryIdentity');
+  if (analysisRevision === 'analysis:0') missing.push('analysisRevision');
+  const complete = missing.length === 0;
+  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession })
+    + (complete ? '' : `:u${unknownContextNonce(context)}`);
+  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, complete, missing, key };
 }
 
 function parsePath(path) {
@@ -54,12 +79,95 @@ function atPath(root, path) {
 }
 
 function boundedLimit(value, fallback = 100, max = 500) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
+  // Paging budgets are schema numbers: structured values must never coerce
+  // into a page limit authority (#5428).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
+
+// Observation admission is a trust boundary: a cached record's evidence was
+// verified against the exact content admitted here, so the store must own an
+// immutable snapshot instead of a caller reference (#8826). The budgets below
+// keep that ownership fix from becoming a new resource-exhaustion boundary:
+// a result that cannot be snapshotted inside them is admitted fail-closed as
+// non-cacheable and non-evidence-authoritative rather than aliased.
+const SNAPSHOT_MAX_DEPTH = 64;
+const SNAPSHOT_MAX_NODES = 200_000;
+const SNAPSHOT_MAX_STRING_CHARS = 1_000_000;
+const SNAPSHOT_MAX_TOTAL_CHARS = 4_000_000;
+const SNAPSHOT_SCALAR_METADATA_KEYS = ['truncated', 'reason'];
+
+function ownSnapshot(value) {
+  const clones = new Map();
+  const ancestors = new Set();
+  const budget = { nodes: 0, chars: 0 };
+  function walk(input, depth) {
+    if (depth > SNAPSHOT_MAX_DEPTH) throw new Error('observation-snapshot-too-deep');
+    if (input === null) return null;
+    const kind = typeof input;
+    if (kind === 'boolean' || kind === 'number' || kind === 'undefined') return input;
+    if (kind === 'bigint') return `0x${input.toString(16)}`;
+    if (kind === 'string') {
+      if (input.length > SNAPSHOT_MAX_STRING_CHARS) throw new Error('observation-snapshot-string-limit');
+      budget.chars += input.length;
+      if (budget.chars > SNAPSHOT_MAX_TOTAL_CHARS) throw new Error('observation-snapshot-string-limit');
+      return input;
+    }
+    if (kind !== 'object') throw new Error('observation-snapshot-unavailable');
+    if (Array.isArray(input)) {
+      // arrays fall through below
+    } else {
+      const prototype = Object.getPrototypeOf(input);
+      if (prototype !== Object.prototype && prototype !== null) throw new Error('observation-snapshot-unavailable');
+    }
+    if (ancestors.has(input)) throw new Error('observation-snapshot-cycle');
+    const existing = clones.get(input);
+    if (existing) return existing;
+    budget.nodes += 1;
+    if (budget.nodes > SNAPSHOT_MAX_NODES) throw new Error('observation-snapshot-budget');
+    ancestors.add(input);
+    let copy;
+    if (Array.isArray(input)) {
+      copy = [];
+      clones.set(input, copy);
+      for (let i = 0; i < input.length; i += 1) {
+        copy.push(walk(input[i], depth + 1));
+        budget.nodes += 1;
+        if (budget.nodes > SNAPSHOT_MAX_NODES) throw new Error('observation-snapshot-budget');
+      }
+      // Bounded-scan markers ride on non-enumerable array properties; keep
+      // them inside the same owned snapshot so a cache hit or detail read
+      // cannot lose the completeness signal the evidence was created with.
+      for (const key of SNAPSHOT_SCALAR_METADATA_KEYS) {
+        if (input[key] !== undefined) {
+          Object.defineProperty(copy, key, {
+            value: walk(input[key], depth + 1),
+            enumerable: false,
+            configurable: false,
+            writable: false,
+          });
+        }
+      }
+    } else {
+      copy = {};
+      clones.set(input, copy);
+      for (const [key, item] of Object.entries(input)) {
+        Object.defineProperty(copy, key, {
+          value: walk(item, depth + 1),
+          enumerable: true,
+          configurable: false,
+          writable: false,
+        });
+      }
+    }
+    ancestors.delete(input);
+    return Object.freeze(copy);
+  }
+  return walk(value, 0);
+}
 
 const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
 
@@ -84,8 +192,9 @@ function observationRefKey(detailRef) {
 }
 
 function finiteConfiguredNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number !== 0 ? number : fallback;
+  // Retention budgets are schema numbers: only a primitive finite number is
+  // an explicit configured value; strings/arrays/booleans fall back (#5428).
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0 ? value : fallback;
 }
 
 function pageValue(value, offset, limit) {
@@ -112,6 +221,28 @@ function pageValue(value, offset, limit) {
     };
   }
   return { value, total: value == null ? 0 : 1, returned: value == null ? 0 : 1, offset: 0, nextOffset: null, kind: 'scalar' };
+}
+
+function sourceCompleteness(fullResult, selected) {
+  const root = completenessOf(fullResult);
+  if (root.complete === false || selected === fullResult) return root;
+  const selectedCompleteness = completenessOf(selected);
+  return selectedCompleteness.complete === false ? selectedCompleteness : root;
+}
+
+function detailCompleteness(page, source) {
+  const pageComplete = page.nextOffset == null;
+  const sourceComplete = source.complete !== false;
+  const pageCoverage = page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1;
+  return {
+    // Exhausting a page cannot upgrade a source that was already bounded or
+    // otherwise incomplete. Keep the source reason ahead of page navigation.
+    complete: sourceComplete && pageComplete,
+    returned: page.returned,
+    total: page.total,
+    coverage: sourceComplete ? pageCoverage : source.coverage,
+    reason: sourceComplete ? (pageComplete ? null : 'result-limit') : source.reason,
+  };
 }
 
 export class ObservationStore {
@@ -146,6 +277,10 @@ export class ObservationStore {
 
   cacheKey(tool, args, extra = {}) {
     const binding = this.binding(extra);
+    // The binding key already carries the per-context-instance nonce for
+    // unresolved identity (#5887): same context keeps its own cache authority,
+    // a different context never shares it. Complete bindings keep the legacy
+    // deterministic key byte-for-byte.
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
@@ -156,9 +291,24 @@ export class ObservationStore {
     try { return this.get(id, requestedScope, requestedBoundary); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, cacheable = deterministic, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
-    const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
+    // Admit an owned, deeply frozen snapshot (#8826): a caller that keeps and
+    // mutates the result object must never be able to change what a later
+    // cache hit or detailRef resolution presents as previously verified data.
+    let admittedResult = fullResult;
+    let admittedArgs = args;
+    let snapshotOwned = true;
+    try {
+      admittedResult = ownSnapshot(fullResult);
+      admittedArgs = ownSnapshot(args);
+    } catch {
+      // Fail closed: an unsnapshottable/over-budget result stays observable
+      // for this call only — never cache-reusable and never evidence-
+      // authoritative (the registry enforces the latter half).
+      snapshotOwned = false;
+    }
+    const cacheKey = snapshotOwned && deterministic && cacheable ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
@@ -168,7 +318,7 @@ export class ObservationStore {
     this.sequence += 1;
     const id = `obs_${binding.key}_${this.sequence.toString(36)}_${shortHash(`${Date.now()}:${Math.random()}`)}`;
     const record = {
-      id, tool: String(tool || 'unknown'), arguments: args, fullResult, binding,
+      id, tool: String(tool || 'unknown'), arguments: admittedArgs, fullResult: admittedResult, snapshotOwned, binding,
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
       effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
@@ -227,6 +377,7 @@ export class ObservationStore {
     const safeLimit = boundedLimit(limit);
     const selected = atPath(record.fullResult, effectivePath);
     const page = pageValue(selected, offset, safeLimit);
+    const completeness = detailCompleteness(page, sourceCompleteness(record.fullResult, selected));
     const nextCursor = page.nextOffset == null ? null : this.cursorCodec.encode({
       kind: 'observation-detail', bindingKey: currentBinding.key, detailRef: record.id,
       path: effectivePath, offset: page.nextOffset,
@@ -236,13 +387,7 @@ export class ObservationStore {
       tool: record.tool,
       path: effectivePath,
       data: page.value,
-      completeness: {
-        complete: page.nextOffset == null,
-        returned: page.returned,
-        total: page.total,
-        coverage: page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1,
-        reason: page.nextOffset == null ? null : 'result-limit',
-      },
+      completeness,
       continuation: nextCursor ? { cursor: nextCursor } : null,
       origin: {
         tool: record.tool,

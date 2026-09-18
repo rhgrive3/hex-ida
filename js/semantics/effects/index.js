@@ -10,6 +10,7 @@ export const MACHINE_EFFECT_DEFAULT_BUDGET = Object.freeze({
   maxIntrinsicValues: 4096,
   maxIntrinsicRegisters: 4096,
   maxIntrinsicControlEffects: 256,
+  maxIntrinsicMemoryAccesses: 4096,
 });
 
 export const MACHINE_EFFECT_COMPLETENESS = Object.freeze([
@@ -113,9 +114,7 @@ function snapshotOwnEnumerableData(input, allowed, label, unexpectedCode) {
     fail(`machine-effects-${label}-snapshot-failed`);
   }
   if (isArray) fail(`machine-effects-${label}-required`);
-  if (prototype !== Object.prototype && prototype !== null) {
-    fail(`machine-effects-${label}-invalid-prototype`);
-  }
+  if (prototype !== Object.prototype && prototype !== null) fail(`machine-effects-${label}-invalid-prototype`);
   const snapshot = Object.create(null);
   for (const key of keys) {
     if (typeof key !== 'string' || !allowed.has(key)) {
@@ -167,9 +166,6 @@ function snapshotSerializableData(value, code, seen = new WeakSet()) {
     if (lengthDescriptor == null || !Object.hasOwn(lengthDescriptor, 'value')
       || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) fail(code);
     arrayLength = lengthDescriptor.value;
-    // Sparse arrays are not exact serializable conditions. Copying only their
-    // enumerable indices would silently discard trailing holes and change the
-    // published condition. Check shape before allocating or visiting elements.
     if (keys.length !== arrayLength + 1) fail(code);
   }
   seen.add(value);
@@ -183,10 +179,10 @@ function snapshotSerializableData(value, code, seen = new WeakSet()) {
     catch { fail(code); }
     if (descriptor == null || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) fail(code);
     Object.defineProperty(out, key, {
-      value: snapshotSerializableData(descriptor.value, code, seen),
-      enumerable: true,
-      configurable: true,
-      writable: true,
+      value:snapshotSerializableData(descriptor.value, code, seen),
+      enumerable:true,
+      configurable:true,
+      writable:true,
     });
   }
   seen.delete(value);
@@ -509,7 +505,7 @@ export function createMemoryAccess(input, options = {}) {
   if (atomic != null) out.atomic = atomic;
   if (input.ordering != null) {
     out.ordering = enumValue(input.ordering, SETS.orderings, 'machine-effects-invalid-memory-ordering');
-    if (atomic === false) fail('machine-effects-ordering-requires-atomic-access');
+    if (atomic !== true) fail('machine-effects-ordering-requires-atomic-access');
   }
   return deepFreeze(out);
 }
@@ -560,7 +556,8 @@ function normalizeIntrinsicMemoryScope(input, options = {}) {
   if (scope !== 'all' && input.spaces != null) fail('machine-effects-intrinsic-memory-spaces-not-allowed');
   const out = { scope };
   if (scope === 'accesses') {
-    const accesses = array(input.accesses, 'machine-effects-intrinsic-memory-accesses-required').map((access) => createMemoryAccess(access, options));
+    const accesses = boundedArray(input.accesses, 'machine-effects-intrinsic-memory-accesses-required', options, 'maxIntrinsicMemoryAccesses')
+      .map((access) => createMemoryAccess(access, options));
     if (accesses.length === 0) fail('machine-effects-intrinsic-memory-accesses-required');
     out.accesses = accesses;
   }
@@ -621,11 +618,11 @@ export function createUndefinedResultDescriptor(input) {
       : 'machine-effects-undefined-result-condition-not-allowed');
   }
   const out = {
-    schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION,
+    schemaVersion:UNDEFINED_RESULT_SCHEMA_VERSION,
     widthBits,
-    mask: `0x${mask.toString(16).padStart(Math.ceil(widthBits / 4), '0')}`,
-    class: resultClass,
-    reason: nonEmpty(input.reason, 'machine-effects-undefined-result-reason-required'),
+    mask:`0x${mask.toString(16).padStart(Math.ceil(widthBits / 4), '0')}`,
+    class:resultClass,
+    reason:nonEmpty(input.reason, 'machine-effects-undefined-result-reason-required'),
   };
   if (conditionRequired) out.condition = snapshotSerializableData(input.condition, 'machine-effects-invalid-undefined-result-condition');
   return deepFreeze(out);
@@ -683,24 +680,24 @@ export function createMachineOperation(input, options = {}) {
   }
 
   if (undefinedResultProperty.present) {
-    const descriptor = createUndefinedResultDescriptor(undefinedResultProperty.value);
-    const results = kind === 'value' ? out.outputs
-      : kind === 'intrinsic' ? out.effectSummary.outputs
-        : kind === 'memory-read' ? [out.value] : [];
-    const inputs = kind === 'value' ? out.inputs
-      : kind === 'intrinsic' ? out.effectSummary.inputs : [];
-    if (results.length !== 1 || resultWidthBits(results[0]) !== descriptor.widthBits) {
-      fail('machine-effects-undefined-result-output-width-mismatch');
-    }
-    if (descriptor.condition != null && Object.hasOwn(descriptor.condition, 'operandIndex')) {
-      const operandIndex = descriptor.condition.operandIndex;
-      if (!Number.isSafeInteger(operandIndex) || operandIndex < 0) {
-        fail('machine-effects-invalid-undefined-result-condition-operand');
-      }
-      if (operandIndex >= inputs.length) fail('machine-effects-undefined-result-condition-operand-out-of-range');
-    }
-    out.undefinedResult = descriptor;
+  const descriptor = createUndefinedResultDescriptor(undefinedResultProperty.value);
+  const results = kind === 'value' ? out.outputs
+    : kind === 'intrinsic' ? out.effectSummary.outputs
+      : kind === 'memory-read' ? [out.value] : [];
+  const inputs = kind === 'value' ? out.inputs
+    : kind === 'intrinsic' ? out.effectSummary.inputs : [];
+  if (results.length !== 1 || resultWidthBits(results[0]) !== descriptor.widthBits) {
+    fail('machine-effects-undefined-result-output-width-mismatch');
   }
+  if (descriptor.condition != null && Object.hasOwn(descriptor.condition, 'operandIndex')) {
+    const operandIndex = descriptor.condition.operandIndex;
+    if (!Number.isSafeInteger(operandIndex) || operandIndex < 0) {
+      fail('machine-effects-invalid-undefined-result-condition-operand');
+    }
+    if (operandIndex >= inputs.length) fail('machine-effects-undefined-result-condition-operand-out-of-range');
+  }
+  out.undefinedResult = descriptor;
+}
   if (input.metadata != null) out.metadata = serializable(input.metadata, 'machine-effects-invalid-operation-metadata');
   const frozen = deepFreeze(out);
   CANONICAL_OPERATIONS.add(frozen);

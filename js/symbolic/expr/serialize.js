@@ -16,11 +16,12 @@ import {
   createBv,
   createFreshSymbol,
   restoreFreshSymbol,
+  withSymbolAllocatorTransaction,
   createUnknownSemantic,
   createUnary,
   createBinary,
   createCompare,
-  createConnectiveFromArgs,
+  createConnective,
   createIte,
   createExtract,
   createConcat,
@@ -180,9 +181,12 @@ function assertConsistentFreshSymbolDeclaration(seen, plain) {
 // Deserialization is an untrusted-input boundary: the DAG walker must run
 // inside an explicit depth/node budget instead of relying on the native call
 // stack, so oversized inputs fail as domain errors rather than synchronous
-// RangeErrors (#5489).
+// RangeErrors (#5489). #8753 extends the same authority to embedded payloads
+// (unknown-semantic `detail`), hex scalar magnitudes, and falsy children,
+// none of which were previously charged to the budget.
 export const EXPR_DAG_MAX_DEPTH = 1024;
 export const EXPR_DAG_MAX_NODES = 1_048_576;
+export const EXPR_DAG_MAX_SCALAR_BYTES = 64 * 1024 * 1024;
 
 function dagBudgetGuard(plain, depth, budget) {
   if (depth > EXPR_DAG_MAX_DEPTH) {
@@ -194,9 +198,61 @@ function dagBudgetGuard(plain, depth, budget) {
   }
 }
 
-function reserveCanonicalFreshSymbolIds(plain, seen = new Map(), depth = 0, budget = { nodes: 0 }) {
-  if (!plain || typeof plain !== 'object') return;
+function chargeScalarBytes(budget, size) {
+  budget.bytes += size;
+  if (budget.bytes > EXPR_DAG_MAX_SCALAR_BYTES) {
+    throw new TypeError(`plainToExpr: expression DAG scalar byte budget exceeded (>${EXPR_DAG_MAX_SCALAR_BYTES})`);
+  }
+}
+
+// A canonical width-N BV literal never needs more than ceil(N/4) hex digits,
+// so an over-long digit run is provably non-canonical and must be rejected
+// before any BigInt conversion (which is superlinear in digit count).
+function maxCanonicalHexDigits(width) {
+  return Math.ceil(width / 4);
+}
+
+function hexPreview(value) {
+  if (typeof value !== 'string') return String(value);
+  if (value.length <= 72) return JSON.stringify(value);
+  return `"${value.slice(0, 64)}…(${value.length} hex characters)"`;
+}
+
+// `detail` is caller-controlled payload that later becomes JSON.stringify's
+// recursion input; admit it iteratively under the same depth/node/byte
+// budgets instead of letting an embedded object bypass them.
+function admitDetailPayload(detail, budget) {
+  if (typeof detail === 'string') {
+    chargeScalarBytes(budget, detail.length);
+    return;
+  }
+  if (!detail || typeof detail !== 'object') return;
+  const stack = [[detail, 1]];
+  while (stack.length > 0) {
+    const [value, depth] = stack.pop();
+    dagBudgetGuard(value, depth, budget);
+    if (typeof value === 'string') {
+      chargeScalarBytes(budget, value.length);
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push([item, depth + 1]);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      chargeScalarBytes(budget, key.length);
+      stack.push([value[key], depth + 1]);
+    }
+  }
+}
+
+function reserveCanonicalFreshSymbolIds(plain, seen = new Map(), depth = 0, budget = { nodes: 0, bytes: 0 }) {
+  // Falsy child slots count as traversal work too (#8753): charge before the
+  // early return so an oversized null/undefined array cannot be walked for
+  // free in this pass either.
   dagBudgetGuard(plain, depth, budget);
+  if (!plain || typeof plain !== 'object') return;
   switch (plain.kind) {
     case EXPR_KIND.FRESH_SYMBOL:
       assertConsistentFreshSymbolDeclaration(seen, plain);
@@ -228,9 +284,12 @@ function reserveCanonicalFreshSymbolIds(plain, seen = new Map(), depth = 0, budg
   }
 }
 
-function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
-  if (!plain) return null;
+function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0, bytes: 0 }) {
+  // Falsy children are still serialized input work: charge them to the node
+  // budget before short-circuiting so an oversized array cannot be walked
+  // without the documented budget error (#8753).
   dagBudgetGuard(plain, depth, budget);
+  if (!plain) return null;
   const sort = sortFromPlain(plain);
 
   switch (plain.kind) {
@@ -242,17 +301,23 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
         return createBool(plain.value);
       }
       if (typeof plain.value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(plain.value)) {
-        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${hexPreview(plain.value)}`);
+      }
+      if (plain.value.length - 2 > maxCanonicalHexDigits(sort.width)) {
+        throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${hexPreview(plain.value)}`);
       }
       {
+        chargeScalarBytes(budget, plain.value.length);
         const value = createBv(sort.width, BigInt(plain.value));
         if (plain.value !== `0x${value.value.toString(16)}`) {
-          throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${JSON.stringify(plain.value)}`);
+          throw new TypeError(`deserializeExprDag: BV const value must be a canonical hex string starting with 0x, got ${hexPreview(plain.value)}`);
         }
         return value;
       }
 
     case EXPR_KIND.FRESH_SYMBOL:
+      if (typeof plain.name === 'string') chargeScalarBytes(budget, plain.name.length);
+      if (typeof plain.symbolId === 'string') chargeScalarBytes(budget, plain.symbolId.length);
       // Restore the saved canonical symbolId. Discarding a present malformed ID
       // would silently rebind the serialized symbol to a fresh identity. Only
       // legacy payloads where the ID is missing or a blank string may allocate
@@ -269,6 +334,8 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
       return restoreFreshSymbol(sort, plain.name, plain.symbolId, plain.meta || {});
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
+      if (typeof plain.reason === 'string') chargeScalarBytes(budget, plain.reason.length);
+      admitDetailPayload(plain.detail, budget);
       return createUnknownSemantic(sort, plain.reason, plain.detail);
 
     case EXPR_KIND.UNARY:
@@ -281,7 +348,7 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
       return createCompare(plain.op, plainNodeToExpr(plain.left, depth + 1, budget), plainNodeToExpr(plain.right, depth + 1, budget));
 
     case EXPR_KIND.CONNECTIVE:
-      return createConnectiveFromArgs(plain.op, plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
+      return createConnective(plain.op, plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
 
     case EXPR_KIND.ITE:
       return createIte(plainNodeToExpr(plain.cond, depth + 1, budget), plainNodeToExpr(plain.thenExpr, depth + 1, budget), plainNodeToExpr(plain.elseExpr, depth + 1, budget));
@@ -301,13 +368,18 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
 }
 
 export function plainToExpr(plain) {
-  // The symbol-reservation pass and materialization pass are two traversals of
-  // the same logical DAG. Keep independent work counters so the public node
-  // budget describes input nodes rather than being consumed twice (#5489).
-  const reserveBudget = { nodes: 0 };
-  reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
-  const materializeBudget = { nodes: 0 };
-  return plainNodeToExpr(plain, 0, materializeBudget);
+  // The reservation and materialization passes both mint/advance global fresh
+  // symbol ids, so run them as one allocator transaction: a throw from either
+  // pass must roll the counter back and cannot deplete the id space (#5149).
+  return withSymbolAllocatorTransaction(() => {
+    // The symbol-reservation pass and materialization pass are two traversals of
+    // the same logical DAG. Keep independent work counters so the public node
+    // budget describes input nodes rather than being consumed twice (#5489).
+    const reserveBudget = { nodes: 0, bytes: 0 };
+    reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
+    const materializeBudget = { nodes: 0, bytes: 0 };
+    return plainNodeToExpr(plain, 0, materializeBudget);
+  });
 }
 
 export function serializeExprDag(node, options = {}) {

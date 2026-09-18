@@ -1,5 +1,6 @@
 /* Swift ABI metadata intelligence. */
 import { pagedReader } from './objc-legacy.js';
+import { parseSwiftGenericContext, parseSwiftCaptureSection } from './swift-context.js';
 
 const MAX_NAME = 512;
 const DEFAULT_BUDGET = 20000;
@@ -11,6 +12,9 @@ function u64(b, o = 0) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) 
 function rel(fieldAddress, raw) { return raw ? BigInt(fieldAddress) + BigInt(raw) : null; }
 
 async function exact(read, addr, len) { if (addr == null || len <= 0) return null; const b = await read(BigInt(addr), len); return b && b.length >= len ? b.subarray(0, len) : null; }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function cstring(read, addr, max = MAX_NAME) {
   if (addr == null) return null;
   const b = await read(BigInt(addr), max, true); if (!b || !b.length) return null;
@@ -18,6 +22,38 @@ async function cstring(read, addr, max = MAX_NAME) {
   for (; end < b.length && b[end]; end++) if (b[end] < 0x20 || b[end] === 0x7f) return null;
   if (!end || end === b.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
+}
+
+// Swift native pointer width is an architectural ABI fact, not a container
+// property: arm64_32 is a 64-bit Mach-O file class (MH_MAGIC_64,
+// LC_SEGMENT_64, nlist_64) with 4-byte native pointers (watchOS ILP32). Swift
+// absolute symbolic references, indirect relative references, and witness-table
+// entries are all `sizeof(void*)` words, so a known architecture must never be
+// silently parsed with the LP64 default (#8309).
+const SWIFT_ARCH_POINTER_BYTES = new Map([
+  ['arm64', 8], ['arm64e', 8], ['x86_64', 8], ['ppc64', 8],
+  ['arm64_32', 4], ['arm', 4], ['armv6', 4], ['armv7', 4], ['armv7s', 4], ['armv7k', 4],
+  ['x86', 4], ['i386', 4], ['ppc', 4],
+]);
+
+// Strict canonical lookup for a declared architecture. An unrecognized ABI is
+// not silently widened to LP64: callers get a typed failure instead.
+export function swiftNativePointerBytes(architecture) {
+  if (architecture == null) return null;
+  const bytes = SWIFT_ARCH_POINTER_BYTES.get(String(architecture).trim().toLowerCase());
+  if (bytes == null) throw new TypeError('swift-unknown-pointer-abi');
+  return bytes;
+}
+
+// Effective pointer width for a parser call: an explicit primitive width wins
+// (schema-validated, #5871); otherwise the architecture's ABI width; only a call
+// with no ABI information at all falls back to LP64. `null` means the ABI is
+// declared but unsupported, so the caller must fail closed instead of reading a
+// possibly fabricated 8-byte pointer.
+function swiftPointerBytesFor(options = {}) {
+  if ((options.pointerBytes ?? options.pointerSize) != null) return canonicalPointerBytes(options);
+  if (options.architecture == null) return 8;
+  return SWIFT_ARCH_POINTER_BYTES.get(String(options.architecture).trim().toLowerCase()) ?? null;
 }
 
 function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
@@ -46,7 +82,8 @@ function swiftMangledFragment(bytes) {
 export async function readSwiftMangledName(read, address, options = {}) {
   if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
-  const pointerBytes = canonicalPointerBytes(options);
+  const pointerBytes = swiftPointerBytesFor(options);
+  if (pointerBytes == null) return { complete:false, reason:'unknown-pointer-abi', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   let bytes;
   try { bytes = await read(BigInt(address), maxBytes, true); } catch { bytes = null; }
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
@@ -66,10 +103,11 @@ export async function readSwiftMangledName(read, address, options = {}) {
       }
       const payload = bytes.subarray(i + 1, i + 1 + payloadBytes);
       const referenceAddress = base + BigInt(i);
+      const relativeFieldAddress = base + BigInt(i + 1);
       let candidateTarget = null, rawTarget = null;
       if (byte <= 0x17) {
         relativeReferenceSeen = true;
-        candidateTarget = referenceAddress + BigInt(i32(payload, 0));
+        candidateTarget = relativeFieldAddress + BigInt(i32(payload, 0));
       } else {
         rawTarget = payloadBytes === 8 ? u64(payload, 0) : BigInt(u32(payload, 0));
       }
@@ -79,14 +117,14 @@ export async function readSwiftMangledName(read, address, options = {}) {
         try {
           const resolved = await resolver({ kind:byte, address:referenceAddress, candidateTarget, rawTarget, payloadBytes:Array.from(payload) });
           if (resolved != null) resolvedTarget = BigInt(resolved);
-        } catch { resolvedTarget = null; }
+        } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
       } else if (byte >= 0x18) {
         const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
         if (typeof pointerResolver === 'function') {
           try {
             const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
             if (resolved != null) resolvedTarget = BigInt(resolved);
-          } catch { resolvedTarget = null; }
+          } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
         }
       }
       refs.push({ kind:byte, address:referenceAddress, relative:byte <= 0x17, payloadBytes:Array.from(payload), candidateTarget, rawTarget, resolvedTarget, resolved:resolvedTarget != null });
@@ -150,6 +188,42 @@ function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) {
   return Math.max(1, Math.min(Math.floor(value), max));
 }
 
+/*
+ * Nested metadata materializations (FieldDescriptor rows, protocol requirements,
+ * vtable entries, witness-table entries) were each capped by an independent
+ * per-parent allowance, so nominal types that alias the *same* FieldDescriptor
+ * re-read, re-decode and re-retain its full record set once per type. The
+ * per-scan limit therefore multiplied against the top-level type budget instead
+ * of composing with it (#8726). A parse-wide nested state carries one aggregate
+ * record allowance and one address-keyed cache of already-parsed nested
+ * materializations; every nested row charged against it either fits or flips the
+ * model's completeness to false with a deterministic reason. Callers without a
+ * nested state keep the previous per-scan behavior (standalone helper API).
+ */
+function createSwiftNestedState(budget) {
+  return {
+    cap: normalizeBudget(budget, DEFAULT_BUDGET, 100000),
+    used: 0,
+    exhausted: false,
+    fieldCache: new Map(),
+  };
+}
+function chargeNestedRows(state, count) {
+  if (!state || !(count > 0)) return true;
+  if (state.used + count > state.cap) { state.exhausted = true; return false; }
+  state.used += count;
+  return true;
+}
+function freezeFieldRows(scan) {
+  if (scan.fields) for (const row of scan.fields) {
+    if (row.mangledTypeEncoding) Object.freeze(row.mangledTypeEncoding);
+    Object.freeze(row);
+  }
+  Object.freeze(scan.fields);
+  Object.freeze(scan.completeness);
+  return scan;
+}
+
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
   if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, partial: null, unsupported: false, components: [] };
@@ -200,11 +274,28 @@ export async function parseSwiftNominalDescriptor(read, address) {
   const addr = BigInt(address);
   const prefix = await exact(read, addr, 20); if (!prefix) return null;
   const flags = u32(prefix, 0), kind = contextKind(flags); if (!['class','struct','enum'].includes(kind)) return null;
+  // Only the zero format/version byte is supported. Nonzero reserved bits
+  // must not borrow today's descriptor layout or publish authoritative types.
+  if (((flags >>> 8) & 0xff) !== 0) return null;
   const name = await relativeString(read, addr + 8n, i32(prefix, 8)); if (!name) return null;
   const out = { runtime:'swift', kind, address:addr, flags, name, parent:rel(addr+4n,i32(prefix,4)), metadataAccessor:rel(addr+12n,i32(prefix,12)), fieldDescriptor:rel(addr+16n,i32(prefix,16)), generic:!!(flags&0x80), unique:!!(flags&0x40), fields:[], methods:[], vtable:[], warnings:[] };
   if (kind === 'class') {
     const tail = await exact(read, addr + 20n, 24); if (!tail) return null;
     out.superclassType = rel(addr + 20n, i32(tail, 0)); out.metadataNegativeSizeInWords = u32(tail,4); out.metadataPositiveSizeInWords=u32(tail,8); out.numImmediateMembers=u32(tail,12); out.numFields=u32(tail,16); out.fieldOffsetVectorOffset=u32(tail,20);
+  } else if (kind === 'enum') {
+    // EnumDescriptor tail layout differs from StructDescriptor (Swift runtime
+    // Metadata.h): NumPayloadCasesAndPayloadSizeOffset packs the payload case
+    // count in the low 24 bits and the payload-size offset word in the high 8
+    // bits, followed by NumEmptyCases. Reading this as struct NumFields /
+    // FieldOffsetVectorOffset deterministically misdecoded every valid enum
+    // descriptor (#5209), so enums keep their own ABI fields and never grow
+    // struct semantics.
+    const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
+    const numPayloadCasesAndPayloadSizeOffset = u32(tail, 0);
+    out.numPayloadCases = numPayloadCasesAndPayloadSizeOffset & 0x00ffffff;
+    out.payloadSizeOffset = numPayloadCasesAndPayloadSizeOffset >>> 24;
+    out.numEmptyCases = u32(tail, 4);
+    out.numCases = out.numPayloadCases + out.numEmptyCases;
   } else {
     const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
     out.numFields=u32(tail,0); out.fieldOffsetVectorOffset=u32(tail,4);
@@ -221,6 +312,12 @@ export async function parseSwiftNominalDescriptor(read, address) {
  */
 export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096, options = {}) {
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
+  const nested = options?.parseNested || null;
+  const cacheKey = address == null ? null : String(address);
+  if (nested && cacheKey !== null) {
+    const hit = nested.fieldCache.get(cacheKey);
+    if (hit) return hit;
+  }
   const completeness = {
     present: address != null, declared: null, scanned: 0, parsed: 0,
     capped: false, unreadableEntries: 0, invalidHeader: false, complete: true, reason: null,
@@ -236,6 +333,11 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
   completeness.declared=count;
   if (recordSize<12) { completeness.invalidHeader=true; completeness.complete=false; completeness.reason='descriptor-record-size-invalid'; return finish([]); }
   if (count>limit) { completeness.capped=true; completeness.complete=false; completeness.reason='descriptor-count-exceeds-budget'; return finish([]); }
+  // Aggregate charge happens before any record is materialized so a shared
+  // descriptor never retains N copies across aliasing owners (#8726).
+  if (nested && !chargeNestedRows(nested, count)) {
+    completeness.complete=false; completeness.reason='nested-record-budget-exhausted'; return finish([]);
+  }
   completeness.declared=count;
   const out=[];
   for(let i=0;i<count;i++){
@@ -265,7 +367,16 @@ export async function parseSwiftFieldDescriptorScan(read, address, budget = 4096
     });
   }
   completeness.scanned=count;completeness.parsed=out.length;
-  return finish(out);
+  const result = finish(out);
+  if (nested && cacheKey !== null) {
+    // Cache only complete successful parses; a partial scan must not be reused.
+    if (result.completeness.complete) {
+      const frozen = freezeFieldRows(result);
+      nested.fieldCache.set(cacheKey, frozen);
+      return frozen;
+    }
+  }
+  return result;
 }
 
 export async function parseSwiftFieldDescriptor(read, address, budget = 4096, options = {}) {
@@ -276,10 +387,17 @@ export async function parseSwiftProtocolDescriptor(read,address){const addr=BigI
 
 const SWIFT_GENERIC_REQUIREMENT_BYTES=12;
 const SWIFT_PROTOCOL_REQUIREMENT_BYTES=8;
-function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:kind>=1&&kind<=6};}
-async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
+/* ProtocolRequirementFlags::Kind (swiftlang/swift include/swift/ABI/MetadataValues.h):
+   kinds 1..8 are function requirements invoked through the witness table —
+   7 = AssociatedTypeAccessFunction, 8 = AssociatedConformanceAccessFunction.
+   Kind 0 (BaseProtocol) is a non-callable pointer entry and 9..15 are
+   reserved/unmodeled, so they must stay fail-closed (#5374). */
+const SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS=new Set([1,2,3,4,5,6,7,8]);
+function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS.has(kind)};}
+async function parseSwiftProtocolRequirements(read,protocol,budget=4096,nested=null){
   const declared=Number(protocol?.numRequirements||0),signature=Number(protocol?.numRequirementsInSignature||0),limit=normalizeBudget(budget,4096,100000);
   if(!Number.isInteger(declared)||declared<0||!Number.isInteger(signature)||signature<0||declared>limit)return{requirements:[],complete:false,reason:'protocol-requirement-budget'};
+  if(nested && !chargeNestedRows(nested,declared)) return {requirements:[],complete:false,reason:'nested-record-budget-exhausted'};
   const start=BigInt(protocol.address)+24n+BigInt(signature*SWIFT_GENERIC_REQUIREMENT_BYTES),requirements=[];
   for(let i=0;i<declared;i++){
     const at=start+BigInt(i*SWIFT_PROTOCOL_REQUIREMENT_BYTES),b=await exact(read,at,SWIFT_PROTOCOL_REQUIREMENT_BYTES);
@@ -291,9 +409,10 @@ async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
 }
 
 async function resolveAbsolutePointer(read,address,options={}) {
-  const b=await exact(read,address,8); if(!b)return null; const raw=u64(b);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
+  const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch{return null;}}
+  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
 }
 
@@ -307,14 +426,15 @@ async function resolveRelativeIndirectablePointer(read,fieldAddress,raw,options=
 
 export async function parseSwiftConformanceDescriptor(read,address,options={}){
   const addr=BigInt(address),b=await exact(read,addr,16);if(!b)return null;
-  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
+  const rawWitness=i32(b,8),witnessTableKind=rawWitness&3,witnessTableBase=rel(addr+8n,rawWitness&~3);
+  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=witnessTableKind===0?witnessTableBase:null, flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
   if(protocol==null||rawTypeRef==null)return null;
   let typeRef=null, objcClassName=null, objcClassReference=null;
   if(typeReferenceKind===0) typeRef=rawTypeRef;
   else if(typeReferenceKind===1) typeRef=await resolveAbsolutePointer(read,rawTypeRef,options);
   else if(typeReferenceKind===2) objcClassName=await cstring(read,rawTypeRef);
   else if(typeReferenceKind===3) objcClassReference=rawTypeRef;
-  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
+  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16)),genericWitnessTable:!!(flags&(1<<17))};
 }
 
 const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
@@ -326,8 +446,8 @@ async function discoverSwiftClassVTables(read,types,budget){
     const specific=(Number(type.flags)>>>16)&0xffff;
     if(!(specific&SWIFT_CLASS_HAS_VTABLE))continue;
     const metadataInit=specific&0x3,resilient=!!(specific&SWIFT_CLASS_RESILIENT_SUPERCLASS);
-    if(type.generic||resilient||metadataInit!==0){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable layout is not proof-safe for automatic projection.`);continue;}
-    const headerAddress=BigInt(type.address)+44n,h=await exact(read,headerAddress,8);
+    if((type.generic&&type.genericContext?.complete!==true)||resilient||metadataInit!==0){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable layout is not proof-safe for automatic projection.`);continue;}
+    const headerAddress=type.generic?type.genericContext.endAddress:BigInt(type.address)+44n,h=await exact(read,headerAddress,8);
     if(!h){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable header is unreadable.`);continue;}
     const vtableOffset=u32(h,0),count=u32(h,4);
     if(count>4096||count>budget){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable count exceeds analysis budget.`);continue;}
@@ -337,14 +457,19 @@ async function discoverSwiftClassVTables(read,types,budget){
   return{seeds,complete,warnings};
 }
 
-export async function parseSwiftVTable(read,address,count,budget=4096){const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000)),out=[];let at=BigInt(address);for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const flags=u32(b,0),impl=rel(at+4n,i32(b,4));out.push({index:i,flags,impl,kind:flags&0x0f,instance:!!(flags&0x10),dynamic:!!(flags&0x20),async:!!(flags&0x40)});}return out;}
+export async function parseSwiftVTable(read,address,count,budget=4096,nested=null){const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000));if(nested && !chargeNestedRows(nested,n))return [];const out=[];let at=BigInt(address);for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const flags=u32(b,0),impl=rel(at+4n,i32(b,4));out.push({index:i,flags,impl,kind:flags&0x0f,instance:!!(flags&0x10),dynamic:!!(flags&0x20),async:!!(flags&0x40)});}return out;}
 
 export async function parseSwiftWitnessTable(read,address,count,budget=4096,options={}){
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
-  const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000)),out=[];let at=BigInt(address);
+  const nested=options?.parseNested??null;
+  const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000));
+  if(nested && !chargeNestedRows(nested,n))return [];
+  const out=[];let at=BigInt(address);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return out;
+  const stride=BigInt(pointerBytes);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const raw=u64(b);let target=null;
-    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch{target=null;}}else if(options.allowRawPointers===true)target=raw;}
+  for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
+    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
   }return out;
 }
@@ -361,31 +486,76 @@ async function relativePointerSection(read,range,budget,parser,options={}){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
     const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b){unreadableEntries++;break;}
     scanned++;const target=rel(field,i32(b,0));if(target==null){invalidEntries++;continue;}
-    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch{invalidEntries++;}
+    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch(error){if(isCancellationError(error))throw error;invalidEntries++;}
   }
   const capped=declared>budget,complete=misalignedBytes===0&&!capped&&unreadableEntries===0&&invalidEntries===0&&scanned===declared&&items.length===declared;
   return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};
 }
 
+const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;
+
+// #8737 helpers: canonical-address identity index + fail-closed lookup. The
+// descriptor `address` is a BigInt; `String()` of it is the single canonical key,
+// computed once per record at index time rather than inside an inner-loop scan.
+// A second distinct record at the same canonical address is marked ambiguous so
+// it can never be promoted to a unique authoritative identity.
+function indexByCanonicalAddress(items,map,ambiguous){
+  for(const item of items){const key=item?.address==null?null:String(item.address);if(key==null)continue;
+    if(map.has(key)){if(map.get(key)!==item)ambiguous.add(key);}else map.set(key,item);}
+}
+function resolveCanonicalAddress(map,ambiguous,raw){
+  if(raw==null)return null;const key=String(raw);if(ambiguous.has(key))return null;
+  const found=map.get(key);return found===undefined?null:found;
+}
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const signal=opts.signal??null;
   if(signal?.aborted)return null;
+  // Native pointer width is one authority for the whole model: conformance
+  // indirect pointers, absolute type references and witness-table entries all
+  // use the same architectural width (#8309).
+  const pointerBytes=swiftPointerBytesFor(opts);
   const get=typeof opts.reader==='function'?opts.reader:pagedReader(read,opts.pageBytes||65536,opts.maxPages||96,{signal});
   const budget=normalizeBudget(opts.budget,DEFAULT_BUDGET,100000), typeSec=sectionRange(sections,['__swift5_types']), protoSec=sectionRange(sections,['__swift5_protos']), confSec=sectionRange(sections,['__swift5_proto']);
+  // One parse-wide aggregate allowance covers every nested materialization
+  // (field rows, protocol requirements, vtable entries, witness entries). A
+  // shared FieldDescriptor is scanned once and reused across aliasing owners;
+  // the model's completeness fails closed when the aggregate is exhausted.
+  const parseNested = createSwiftNestedState(budget);
   const typeScan=await relativePointerSection(get,typeSec,budget,(r,a)=>parseSwiftNominalDescriptor(r,a,opts),{signal}), protoScan=await relativePointerSection(get,protoSec,budget,parseSwiftProtocolDescriptor,{signal}), confScan=await relativePointerSection(get,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts),{signal});
   if(signal?.aborted)return null;
   const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
   const warnings=[];
+  // #8737: resolve cross-record type/protocol identity through O(1) address
+  // indexes built once, instead of a fresh linear .find() scan per conformance
+  // and per auto-vtable owner. Duplicate canonical addresses that carry distinct
+  // parsed descriptors are ambiguous and fail closed rather than promoting a
+  // silent last-write-wins identity.
+  const typesByAddress=new Map(), protocolsByAddress=new Map();
+  const ambiguousTypeAddrs=new Set(), ambiguousProtoAddrs=new Set();
+  indexByCanonicalAddress(types,typesByAddress,ambiguousTypeAddrs);
+  indexByCanonicalAddress(protocols,protocolsByAddress,ambiguousProtoAddrs);
+  let joinWork=0;
+  const joinBudget=10_000_000;
+  const genericContexts=[];
+  let genericContextsComplete=true,genericRemaining=Math.min(budget,4096);
+  for(const type of types){
+    if(signal?.aborted)return null;
+    if(type.generic!==true)continue;
+    if(genericRemaining<=0){genericContextsComplete=false;continue;}
+    const context=await parseSwiftGenericContext(get,type,{...opts,budget:genericRemaining,readMangledName:readSwiftMangledName});
+    if(context){genericContexts.push(context);type.genericContext=context;genericRemaining-=1+context.parameters.length+context.requirements.length;if(!context.complete)genericContextsComplete=false;}
+  }
+  const captures=await parseSwiftCaptureSection(get,sectionRange(sections,['__swift5_capture']),{...opts,readMangledName:readSwiftMangledName});
   for(const p of protocols){
     if(signal?.aborted)return null;
-    const scan=await parseSwiftProtocolRequirements(get,p,Math.min(budget,4096));
+    const scan=await parseSwiftProtocolRequirements(get,p,Math.min(budget,4096),parseNested);
     p.requirements=scan.requirements;
     p.requirementsComplete=scan.complete;
     if(!scan.complete){protoScan.completeness.complete=false;protoScan.completeness.invalidEntries++;warnings.push(`Swift protocol ${p.name||p.address}: requirement metadata is partial (${scan.reason||'unknown'}).`);}
   }
   for(const t of types)if(t.fieldDescriptor!=null){try{
     if(signal?.aborted)return null;
-    const fieldScan=await parseSwiftFieldDescriptorScan(get,t.fieldDescriptor,Math.min(budget,4096),opts);
+    const fieldScan=await parseSwiftFieldDescriptorScan(get,t.fieldDescriptor,Math.min(budget,4096),{...opts,parseNested});
     t.fields=fieldScan.fields;
     if(!fieldScan.completeness.complete){
       typeScan.completeness.complete=false;typeScan.completeness.invalidEntries++;
@@ -401,28 +571,31 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const vtableSeedMap=new Map();for(const v of autoVtables.seeds)vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);for(const v of opts.vtables||[])vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);
   const vtables=[];let vtablesComplete=autoVtables.complete;for(const v of vtableSeedMap.values()){
     if(signal?.aborted)return null;
-    const methods=await parseSwiftVTable(get,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}
+    const methods=await parseSwiftVTable(get,v.address,v.count,budget,parseNested),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);joinWork++;const owner=joinWork>joinBudget?null:resolveCanonicalAddress(typesByAddress,ambiguousTypeAddrs,v.typeAddress);if(owner){owner.vtable=methods;owner.methods=methods;}else if(joinWork>joinBudget){vtablesComplete=false;warnings.push(`Swift vtable ${v.address}: type identity-resolution join budget exhausted, so auto-vtable projection is not proof-safe.`);}else if(v.typeAddress!=null&&ambiguousTypeAddrs.has(String(v.typeAddress))){vtablesComplete=false;warnings.push(`Swift vtable ${v.address}: type address ${v.typeAddress} is ambiguous across duplicate descriptors, so owner association is not proof-safe.`);}
   }
   const witnessTables=[];let witnessTablesComplete=true;
   const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
   for(const c of conformances){
     if(signal?.aborted)return null;
+    if((c.witnessTableKind??0)!==0){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table representation is not a concrete table, so automatic projection is not proof-safe.`);continue;}
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
-    const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
-    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
+    joinWork+=2;if(joinWork>joinBudget){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: type/protocol identity-resolution join budget exhausted, so automatic projection is not proof-safe.`);continue;}
+    const protocol=resolveCanonicalAddress(protocolsByAddress,ambiguousProtoAddrs,c.protocol),type=c.typeReferenceKind<=1&&c.typeRef!=null?resolveCanonicalAddress(typesByAddress,ambiguousTypeAddrs,c.typeRef):null;
+    if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
+    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||c.genericWitnessTable===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;
-    const seed={address:c.witnessTable,count:requirements.length,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
+    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*BigInt(pointerBytes),typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
     witnessSeeds.push(seed);seedAddresses.add(c.witnessTable.toString());
   }
   for(const w of witnessSeeds){
     if(signal?.aborted)return null;
-    const entries=await parseSwiftWitnessTable(get,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
+    const entries=await parseSwiftWitnessTable(get,w.entriesAddress??w.address,w.count,budget,{...opts,parseNested}),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
   }
-  const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
+  const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete},genericContexts:{complete:genericContextsComplete},captures:captures.completeness};
   completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
-  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings};
+  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,genericContexts,captureDescriptors:captures.descriptors,completeness,complete:completeness.complete,warnings};
 }
 
 function preferredTypeName(t){return t.qualifiedName||t.fullName||(t.moduleName&&t.name?`${t.moduleName}.${t.name}`:t.name)||null;}
@@ -459,7 +632,10 @@ export function buildSwiftRuntimeIndex(model={}){
   finalizeUniqueNames(protocolNameCandidates,protocolsByName,namesProven);
   for(const c of model.conformances||[]){const type=c.typeReferenceKind<=1&&c.typeRef!=null?typesByAddress.get(c.typeRef.toString())||null:null,proto=protocolsByAddress.get(c.protocol?.toString())||null,typeKey=canonicalTypeKey(type),protoKey=canonicalProtocolKey(proto);if(typeKey){let a=conformancesByType.get(typeKey);if(!a){a=[];conformancesByType.set(typeKey,a);}a.push({...c,typeName:preferredTypeName(type),typeIdentity:typeKey,protocolName:preferredProtocolName(proto||{}),protocolIdentity:protoKey});if(protoKey)witnessesByPair.set(`${typeKey}:${protoKey}`,c);}}
   for(const v of model.vtables||[]){const owner=typesByAddress.get(String(v.typeAddress))||(v.typeName?typesByName.get(v.typeName):null),key=canonicalTypeKey(owner);if(key)vtablesByType.set(key,v.methods||[]);}for(const t of model.types||[]){const key=canonicalTypeKey(t);if(key&&t.vtable?.length)vtablesByType.set(key,t.vtable);}
-  return{runtime:'swift',model,typesByAddress,typesByName,typesBySimpleName,protocolsByAddress,protocolsByName,protocolsBySimpleName,conformancesByType,vtablesByType,witnessesByPair};
+  const genericContextsByType=new Map(),captureDescriptorsByAddress=new Map();
+  for(const context of model.genericContexts||[]){const key=String(context.typeAddress),rows=genericContextsByType.get(key)||[];rows.push(context);genericContextsByType.set(key,rows);}
+  for(const descriptor of model.captureDescriptors||[]){const key=String(descriptor.address),rows=captureDescriptorsByAddress.get(key)||[];rows.push(descriptor);captureDescriptorsByAddress.set(key,rows);}
+  return{runtime:'swift',model,typesByAddress,typesByName,typesBySimpleName,protocolsByAddress,protocolsByName,protocolsBySimpleName,conformancesByType,vtablesByType,witnessesByPair,genericContextsByType,captureDescriptorsByAddress};
 }
 
 export function resolveSwiftDispatch(index,call={}){

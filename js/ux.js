@@ -2,6 +2,7 @@
 import { installHardenedProductUI as installProductUI } from './ui/product-hardened.js';
 import { installCanonicalProductEvidence } from './ui/product-evidence-hardened.js';
 import { installViewerDragReturnGuard } from './ui/viewer-gesture-guard.js';
+import { installDyldRuntimeNavigation } from './ui/dyld-runtime-navigation.js';
 import { closeMenu } from './ui.js';
 import { installDemandDrivenAnalysis } from './analysis/demand-driven-runtime.js';
 import { installSharedAppArtifacts } from './analysis/shared-app-artifacts.js';
@@ -74,7 +75,10 @@ function boot() {
   installViewerDragReturnGuard(window.__app.viewer);
   retireLegacyActionDom();
   const ui = installCanonicalProductEvidence(window.__app, installProductUI(window.__app));
-  if (ui) migrateRootControls(ui);
+  if (ui) {
+    migrateRootControls(ui);
+    installDyldRuntimeNavigation(window.__app);
+  }
 }
 
 if (document.readyState === 'loading') {

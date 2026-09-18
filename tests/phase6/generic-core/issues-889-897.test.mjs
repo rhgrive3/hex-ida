@@ -2,44 +2,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/riscv64/effects/control.js';
+import { decodeRiscv64InstructionWord } from '../../../js/targets/architecture/riscv64/instruction-word.js';
 import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 
-function u32le(value) {
-  return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
-}
-
-function encodeJal(rd, immediate) {
-  const imm = Number(immediate);
-  const word = ((imm & 0x100000) << 11)
-    | ((imm & 0x000ff000))
-    | ((imm & 0x00000800) << 9)
-    | ((imm & 0x000007fe) << 20)
-    | (Number(rd.slice(1)) << 7)
-    | 0x6f;
-  return u32le(word);
-}
-
-function encodeJalr(rd, rs1, immediate) {
-  const word = ((Number(immediate) & 0xfff) << 20)
-    | (Number(rs1.slice(1)) << 15)
-    | (Number(rd.slice(1)) << 7)
-    | 0x67;
-  return u32le(word);
+function rvRawBytes(op, { rd = 'x0', rs1 = 'x0', imm = 0n } = {}) {
+  const registerNumber = (name) => BigInt(Number(name.slice(1)));
+  let word = 0n;
+  if (op === 'jal') {
+    const bits = (value, high, low) => (value >> BigInt(low)) & ((1n << BigInt(high - low + 1)) - 1n);
+    word = ((bits(imm, 20, 20)) << 31n) | ((bits(imm, 10, 1)) << 21n) | ((bits(imm, 11, 11)) << 20n) | ((bits(imm, 19, 12)) << 12n) | (registerNumber(rd) << 7n) | 0x6fn;
+  } else if (op === 'jalr') {
+    word = ((imm & 0xfffn) << 20n) | (registerNumber(rs1) << 15n) | (registerNumber(rd) << 7n) | 0x67n;
+  } else {
+    throw new TypeError(`no canonical encoding for fixture op ${op}`);
+  }
+  return Uint8Array.from([
+    Number(word & 0xffn),
+    Number((word >> 8n) & 0xffn),
+    Number((word >> 16n) & 0xffn),
+    Number((word >> 24n) & 0xffn),
+  ]);
 }
 
 function rv(op, fields = {}, address = 0x1000n) {
-  const rawBytes = op === 'jal'
-    ? encodeJal(fields.rd, fields.imm)
-    : encodeJalr(fields.rd, fields.rs1, fields.imm);
   return {
     instructionId:`${op}-${address.toString(16)}`,
     contractVersion:'riscv64-decoded-instruction/v1',
     address,
     size:4,
     length:4,
+    rawBytes: rvRawBytes(op, fields),
     mode:'rv64imc',
     instructionAlignment:2,
-    rawBytes,
     origin:{ instructionIds:[`${op}-${address.toString(16)}`] },
     fields:{ supported:true, compressed:false, op, ...fields },
   };
@@ -63,6 +57,22 @@ test('issue #889: non-RAS link registers do not become ABI calls', () => {
 
   const realCall = liftRiscv64ControlEffects(rv('jalr', { rd:'x1', rs1:'x10', imm:0n }));
   assert.equal(realCall.controlEffect.kind, 'call');
+
+  for (const instruction of [
+    rv('jal', { rd:'x6', imm:8n }),
+    rv('jal', { rd:'x1', imm:8n }),
+    rv('jal', { rd:'x5', imm:8n }),
+    rv('jalr', { rd:'x6', rs1:'x10', imm:0n }),
+    rv('jalr', { rd:'x1', rs1:'x10', imm:0n }),
+    rv('jalr', { rd:'x1', rs1:'x10', imm:12n }),
+  ]) {
+    const decoded = decodeRiscv64InstructionWord(instruction.rawBytes);
+    assert.equal(decoded.supported, true);
+    assert.equal(decoded.op, instruction.fields.op);
+    assert.equal(decoded.rd, instruction.fields.rd);
+    assert.equal(decoded.imm, instruction.fields.imm);
+    if (decoded.op === 'jalr') assert.equal(decoded.rs1, instruction.fields.rs1);
+  }
 });
 
 test('issue #897: authoritative noreturn call has no normal CFG successor', () => {

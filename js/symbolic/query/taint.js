@@ -1,57 +1,65 @@
-/** Query surface for canonical taint analysis records. */
-
-import { stableDigest } from '../../core/identity/index.js';
-import { hasUnknownTaint, TAINT_STATUS, TAINT_VERSION, taintDigest, unknownTaint } from '../taint/lattice.js';
-
-function keyOf(value) {
-  if (value == null) return null;
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
-  if (typeof value === 'object') return value.id != null ? String(value.id) : value.symbolId != null ? String(value.symbolId) : null;
-  return null;
+import {queryRecord} from '../memory/data-input.js';
+import { symbolicExecute } from '../executor.js';
+import { createTaintFlow } from '../taint/flow.js';
+import { QueryFailure, sameMemoryIdentity, monotonicNow, boundedLimit } from '../memory/query-state.js';
+import { projectTaint } from '../projection/taint.js';
+import { isExecutionResult } from '../memory/execution-snapshot.js';
+const issued=new WeakMap();
+export function isTaintQueryResult(result,identity,modelIdentity) {
+  const state=issued.get(result);
+  if(!state)return false;
+  if(identity === undefined) identity = result.identity;if(modelIdentity === undefined) modelIdentity = result.modelIdentity;
+  if(!sameMemoryIdentity(result.identity,identity)||result.modelIdentity!==modelIdentity) return false;
+  try {
+    const valid=!state.signal?.aborted && !state.isCancelled?.()
+      && (!state.getCurrentModelIdentity || result.modelIdentity === state.getCurrentModelIdentity())
+      && (!state.getCurrentIdentity || sameMemoryIdentity(result.identity,state.getCurrentIdentity()))
+      && isExecutionResult(state.execution,result.identity,state.ir);
+    return valid && !state.signal?.aborted;
+  } catch { return false; }
 }
-
-function lookup(analysis, key) {
-  const id = keyOf(key);
-  if (id == null) return null;
-  if (analysis?.store && typeof analysis.store.getValue === 'function') {
-    const value = analysis.store.getValue(key) || analysis.store.getValue(id) || analysis.store.values?.get(`id:${id}`) || null;
-    if (value) return value;
+/** Run first-class taint through the real bounded executor and its byte memory. */
+export function queryTaint(ir,inputOptions={}) {
+  const start=monotonicNow();let flow,execution,options={};
+  try {
+    const submitted=queryRecord(inputOptions,null,128);
+    options=Object.freeze({...submitted,
+      ...(submitted.memory!=null?{memory:queryRecord(submitted.memory)}:{}),
+      ...(submitted.execution!=null?{execution:queryRecord(submitted.execution)}:{})});
+    flow=createTaintFlow(options);
+    const checkModel=()=> { try { if(options.getCurrentModelIdentity && options.getCurrentModelIdentity()!==options.models.modelIdentity) throw new QueryFailure('stale-model'); } catch {throw new QueryFailure('stale-model');} };
+    checkModel();
+    // All phases share the outer allowance; executor/byte-memory sublimits may
+    // narrow it, but must not restart a fresh 250ms clock during preflight.
+    const remaining = Math.floor(flow.remainingMilliseconds());
+    const memoryTimeout = Math.min(remaining, boundedLimit(options.memory?.timeoutMs, 250, 5000, 'memory.timeoutMs'));
+    const executionTimeout = Math.min(remaining, boundedLimit(options.execution?.timeoutMs, 250, 5000, 'execution.timeoutMs'));
+    execution=symbolicExecute(ir,{...options.execution,timeoutMs:executionTimeout,memoryObservations:options.memoryObservations??options.execution?.memoryObservations,captureValues:true,signal:options.signal,isCancelled:options.isCancelled,
+      byteMemory:{...options.memory,timeoutMs:memoryTimeout,now:options.now,identity:options.identity,signal:options.signal,isCancelled:options.isCancelled,
+        getCurrentIdentity:options.getCurrentIdentity,labelDomain:flow.labels},_taint:flow});
+    flow.check(); checkModel();
+    if(execution.status!=='complete' && /budget|deadline|cancel|stale/.test(execution.reason ?? '')) throw new QueryFailure(execution.reason);
+    const data=flow.solve({partial:execution.status!=='complete'});
+    const result=Object.freeze({schemaVersion:'hex-taint-query/v1',identity:flow.identity,
+      modelIdentity:options.models.modelIdentity,models:options.models,
+      status:execution.status==='complete'?'complete':'partial',reason:execution.reason,
+      ...data,execution,metrics:Object.freeze({...flow.metrics(),queryMilliseconds:monotonicNow()-start})});
+    const lifecycle={ir,execution,getCurrentIdentity:options.getCurrentIdentity,getCurrentModelIdentity:options.getCurrentModelIdentity,signal:options.signal,isCancelled:options.isCancelled};
+    issued.set(result,lifecycle);
+    const projection=projectTaint(result);
+    flow.check(); checkModel();
+    const final=Object.freeze({...result,evidence:projection.evidence,graph:projection.graph,
+      metrics:Object.freeze({...flow.metrics(),queryMilliseconds:monotonicNow()-start})});
+    // Final metrics may invoke the clock. No capability is published after
+    // cancellation, model drift or IR mutation at that observer boundary.
+    checkModel(); flow.check();
+    if(!isExecutionResult(execution,flow.identity,ir) || options.signal?.aborted) throw new QueryFailure('stale-or-cancelled-publication');
+    issued.set(final,lifecycle);return final;
+  } catch(error) {
+    if(!(error instanceof QueryFailure)) throw error;
+    return Object.freeze({schemaVersion:'hex-taint-query/v1',identity:flow?.identity??null,
+      modelIdentity:options.models?.modelIdentity??null,status:'partial',reason:error.reason,
+      sinks:Object.freeze([]),values:Object.freeze([]),edges:Object.freeze([]),evidence:null,graph:null,
+      metrics:Object.freeze({...flow?.metrics(),queryMilliseconds:monotonicNow()-start})});
   }
-  if (analysis?.taints instanceof Map) return analysis.taints.get(id) ?? null;
-  if (analysis?.taints && typeof analysis.taints === 'object') return analysis.taints[id] ?? analysis.taints[`id:${id}`] ?? null;
-  return null;
-}
-
-export function queryTaint(analysis, value, options = {}) {
-  if (!analysis || typeof analysis !== 'object' || analysis.version !== TAINT_VERSION) {
-    const unknown = unknownTaint('taint-analysis-missing', { valueId: keyOf(value) });
-    return Object.freeze({ status: 'unknown', exact: false, value: unknown, reason: 'taint-analysis-missing' });
-  }
-  if (analysis.status !== TAINT_STATUS.COMPLETE || analysis.complete !== true
-      || analysis.memoryUnknown === true || analysis.unknownAlias === true || analysis.incompleteAlias === true
-      || analysis.stats?.status && analysis.stats.status !== TAINT_STATUS.COMPLETE) {
-    const reason = analysis.memoryUnknown === true || analysis.unknownAlias === true || analysis.incompleteAlias === true
-      ? 'taint-memory-alias-incomplete'
-      : analysis.status === TAINT_STATUS.COMPLETE ? 'taint-analysis-incomplete' : `taint-${analysis.status || 'unknown'}`;
-    const unknown = unknownTaint(reason, { valueId: keyOf(value) });
-    return Object.freeze({ status: analysis.status || 'unknown', exact: false, value: unknown, reason });
-  }
-  const taint = lookup(analysis, value);
-  if (!taint) {
-    const unknown = unknownTaint('taint-value-not-recorded', { valueId: keyOf(value) });
-    return Object.freeze({ status: 'unknown', exact: false, value: unknown, reason: 'taint-value-not-recorded' });
-  }
-  return Object.freeze({ status: hasUnknownTaint(taint) ? 'unknown' : 'exact', exact: !hasUnknownTaint(taint), value: taint, reason: hasUnknownTaint(taint) ? taint.reasons?.[0] || 'taint-unknown' : null, provenance: options.includeProvenance === false ? null : taint.provenance });
-}
-
-export const queryTaintAt = queryTaint;
-
-export function explainTaint(analysis, value) {
-  const queried = queryTaint(analysis, value);
-  return Object.freeze({
-    ...queried,
-    valueId: keyOf(value),
-    digest: taintDigest(queried.value),
-    analysisDigest: analysis ? stableDigest({ status: analysis.status, stats: analysis.stats ?? null }) : null,
-  });
 }

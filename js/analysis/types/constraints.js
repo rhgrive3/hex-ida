@@ -86,7 +86,7 @@ const LAYER_SET = new Set(TYPE_LAYERS);
 const HARD_SET = new Set(HARD_CONSTRAINT_KINDS);
 const SOFT_SET = new Set(SOFT_EVIDENCE_KINDS);
 const ORIGIN_SET = new Set(CONSTRAINT_ORIGINS);
-const NUMERIC_DESCRIPTOR_FIELDS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
+const NUMERIC_DESCRIPTOR_FIELDS = new Set(['widthBits', 'sizeBytes', 'totalSizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -125,46 +125,69 @@ function canonicalInteger(val) {
   try { return BigInt(val.trim()); } catch { return null; }
 }
 
-function snapshotDescriptor(descriptor) {
-  const seen = new WeakMap();
-  const active = new WeakSet();
-  const visit = (value) => {
-    if (value == null || typeof value !== 'object') return value;
+// One descriptor bound also limits downstream canonical serialization's tree
+// expansion. Unique-node limits alone do not bound a highly shared DAG.
+export const TYPE_DESCRIPTOR_LIMITS = Object.freeze({ nodes:4096, expandedNodes:16384, depth:64, stringLength:4096 });
+function snapshotDescriptor(descriptor, layer) {
+  const seen = new WeakMap(), active = new WeakSet(), costs = new WeakMap(), heights = new WeakMap();
+  let nodes = 0, expanded = 0;
+  const reserve = (amount) => {
+    if (expanded + amount > TYPE_DESCRIPTOR_LIMITS.expandedNodes) fail('type-claim-descriptor-expansion-budget');
+    expanded += amount;
+  };
+  const visit = (value, depth = 0) => {
+    if (depth > TYPE_DESCRIPTOR_LIMITS.depth) fail('type-claim-descriptor-depth-budget');
+    if (value == null || typeof value !== 'object') {
+      if (typeof value === 'string' && value.length > TYPE_DESCRIPTOR_LIMITS.stringLength) fail('type-claim-descriptor-string-budget');
+      if (typeof value === 'bigint' && value.toString(16).length > 1024) fail('type-claim-descriptor-integer-budget');
+      if (typeof value === 'function' || typeof value === 'symbol' || (typeof value === 'number' && !Number.isFinite(value))) fail('type-claim-descriptor-invalid');
+      reserve(1); return value;
+    }
     if (active.has(value)) fail('type-claim-descriptor-cycle');
-    if (seen.has(value)) return seen.get(value);
-
-    let isArray;
-    let descriptors;
+    if (seen.has(value)) {
+      if (depth + heights.get(value) > TYPE_DESCRIPTOR_LIMITS.depth) fail('type-claim-descriptor-depth-budget');
+      reserve(costs.get(value)); return seen.get(value);
+    }
+    if (nodes >= TYPE_DESCRIPTOR_LIMITS.nodes) fail('type-claim-descriptor-node-budget');
+    nodes++;
+    let isArray, descriptors;
     try {
       isArray = Array.isArray(value);
+      const proto = Object.getPrototypeOf(value);
+      if (!isArray && proto !== Object.prototype && proto !== null) fail('type-claim-descriptor-invalid');
       descriptors = Object.getOwnPropertyDescriptors(value);
-    } catch {
-      fail('type-claim-descriptor-invalid');
+    } catch { fail('type-claim-descriptor-invalid'); }
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length > TYPE_DESCRIPTOR_LIMITS.nodes) fail('type-claim-descriptor-node-budget');
+    if (isArray) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length > TYPE_DESCRIPTOR_LIMITS.nodes || length !== keys.length - 1) fail('type-claim-descriptor-array-budget');
+      for (let i = 0; i < length; i++) if (!Object.hasOwn(descriptors,String(i))) fail('type-claim-descriptor-invalid');
     }
-
-    const out = isArray ? [] : {};
-    seen.set(value, out);
-    active.add(value);
+    const start = expanded;reserve(1);
+    const out = isArray ? [] : {};seen.set(value,out);active.add(value);
+    let height = 0;
     try {
-      for (const key of Reflect.ownKeys(descriptors)) {
+      for (const key of keys) {
         if (isArray && key === 'length') continue;
         const property = descriptors[key];
-        if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
-          fail('type-claim-descriptor-accessor');
+        if (typeof key !== 'string' || !property.enumerable) fail('type-claim-descriptor-invalid');
+        if (!Object.hasOwn(property,'value')) fail('type-claim-descriptor-accessor');
+        if (key === 'abiProfile' && property.value != null && typeof property.value !== 'string') fail('abi-profile-invalid');
+        if (layer === 'structural' && (key === 'targetEntityId' || key === 'elementEntityId')
+            && property.value != null && canonicalDependencyIdentity(property.value) == null) {
+          fail('structural-identity-invalid');
         }
-        Object.defineProperty(out, key, { ...property, value: visit(property.value) });
-      }
-      if (isArray) {
-        const length = descriptors.length;
-        if (!length || !Object.prototype.hasOwnProperty.call(length, 'value')) {
-          fail('type-claim-descriptor-invalid');
+        if (layer === 'structural' && NUMERIC_DESCRIPTOR_FIELDS.has(key) && property.value != null
+            && canonicalInteger(property.value) == null) {
+          fail(`structural-${({sizeBytes:'size',alignBytes:'align',strideBytes:'stride',totalSizeBytes:'total-size',widthBits:'width'})[key] ?? key}-invalid`);
         }
-        Object.defineProperty(out, 'length', length);
+        const child = visit(property.value,depth + 1);
+        height = Math.max(height,1 + ((property.value && typeof property.value === 'object') ? heights.get(property.value) : 0));
+        Object.defineProperty(out,key,{value:child,enumerable:true,configurable:true,writable:true});
       }
-    } finally {
-      active.delete(value);
-    }
-    return out;
+    } finally { active.delete(value); }
+    costs.set(value,expanded - start);heights.set(value,height);return out;
   };
   return visit(descriptor);
 }
@@ -201,34 +224,195 @@ function numericValuesDiffer(left, right) {
   return left !== right;
 }
 
-function canonicalDescriptorString(layer, descriptor) {
+export function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
-function validateDescriptor(layer, descriptor) {
-  if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
-  if (layer === 'structural') {
-    if (descriptor.offset != null) {
-      const offset = toBigInt(descriptor.offset, null);
-      if (offset == null || offset < 0n) fail('structural-offset-invalid');
-    }
-    if (descriptor.sizeBytes != null) {
-      const size = toBigInt(descriptor.sizeBytes, null);
-      if (size == null || size <= 0n) fail('structural-size-invalid');
-    }
-    if (descriptor.alignBytes != null) {
-      const align = toBigInt(descriptor.alignBytes, null);
-      if (align == null || align <= 0n) fail('structural-align-invalid');
-    }
-    if (descriptor.strideBytes != null) {
-      const stride = toBigInt(descriptor.strideBytes, null);
-      if (stride == null || stride <= 0n) fail('structural-stride-invalid');
-    }
-    if (descriptor.length != null) {
-      const len = toBigInt(descriptor.length, null);
-      if (len == null || len < 0n) fail('structural-length-invalid');
+export function canonicalDependencyIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+const STRUCTURAL_IDENTITY_FIELDS = Object.freeze(['targetEntityId', 'elementEntityId']);
+
+function validateStructuralIdentityFields(node) {
+  if (node == null || typeof node !== 'object') return;
+  for (const field of STRUCTURAL_IDENTITY_FIELDS) {
+    const value = node[field];
+    if (value != null && canonicalDependencyIdentity(value) == null) fail('structural-identity-invalid');
+  }
+}
+
+const NESTED_STRUCTURAL_TYPE_KEYS = Object.freeze(['memberType', 'elementType', 'pointeeType']);
+
+function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const child of value) validateStructuralDescriptorValue(child, seen);
+    return;
+  }
+
+  // Validate semantic type nodes only; unrelated metadata stays outside this contract.
+  validateStructuralIdentityFields(value);
+  const zeroLengthArray = value.kind === 'array' && toBigInt(value.length, null) === 0n;
+
+  if (value.widthBits != null) {
+    const width = toBigInt(value.widthBits, null);
+    if (width == null || width <= 0n) fail('structural-width-invalid');
+  }
+  if (value.offset != null) {
+    const offset = toBigInt(value.offset, null);
+    if (offset == null || offset < 0n) fail('structural-offset-invalid');
+  }
+  if (value.sizeBytes != null) {
+    const size = toBigInt(value.sizeBytes, null);
+    if (size == null || size < 0n || (size === 0n && !zeroLengthArray)) fail('structural-size-invalid');
+  }
+  if (value.totalSizeBytes != null) {
+    const size = toBigInt(value.totalSizeBytes, null);
+    if (size == null || size < 0n || (size === 0n && !zeroLengthArray)) fail('structural-total-size-invalid');
+  }
+  if (value.sizeBytes != null && value.totalSizeBytes != null
+    && toBigInt(value.sizeBytes, null) !== toBigInt(value.totalSizeBytes, null)) {
+    fail('structural-total-size-conflict');
+  }
+  if (value.alignBytes != null) {
+    const align = toBigInt(value.alignBytes, null);
+    if (align == null || align <= 0n) fail('structural-align-invalid');
+  }
+  if (value.strideBytes != null) {
+    const stride = toBigInt(value.strideBytes, null);
+    if (stride == null || stride <= 0n) fail('structural-stride-invalid');
+  }
+  if (value.length != null) {
+    const length = toBigInt(value.length, null);
+    if (length == null || length < 0n) fail('structural-length-invalid');
+  }
+
+  if (value.kind === 'array') {
+    const stride = toBigInt(value.strideBytes, null);
+    const length = toBigInt(value.length, null);
+    const elementSize = toBigInt(value.elementType?.sizeBytes, null);
+    if (stride != null && elementSize != null && stride < elementSize) fail('structural-array-stride-conflict');
+    const size = toBigInt(value.totalSizeBytes ?? value.sizeBytes, null);
+    if (size != null && stride != null && length != null && size !== stride * length) {
+      fail('structural-array-size-conflict');
     }
   }
+  if (value.members != null) {
+    if (!Array.isArray(value.members)) fail('structural-members-invalid');
+    for (const member of value.members) {
+      if (!member || typeof member !== 'object' || Array.isArray(member)) fail('structural-member-invalid');
+    }
+  }
+  if (value.kind === 'union' && Array.isArray(value.members)) {
+    for (const member of value.members) {
+      if (toBigInt(member.offset, 0n) !== 0n) fail('structural-union-offset-invalid');
+    }
+  }
+
+  for (const key of NESTED_STRUCTURAL_TYPE_KEYS) {
+    validateStructuralDescriptorValue(value[key], seen);
+  }
+  if (Array.isArray(value.members)) validateStructuralDescriptorValue(value.members, seen);
+}
+
+function canonicalizeStructuralValue(value, seen) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (key === 'length') continue;
+      const property = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+        Object.defineProperty(out, key, property);
+        continue;
+      }
+      Object.defineProperty(out, key, {
+        ...property,
+        value: canonicalizeStructuralValue(property.value, seen),
+      });
+    }
+    if (descriptors.length) Object.defineProperty(out, 'length', descriptors.length);
+    return out;
+  }
+
+  const out = {};
+  seen.set(value, out);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const property = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+      Object.defineProperty(out, key, property);
+      continue;
+    }
+    const child = key === 'members' && Array.isArray(property.value)
+      ? canonicalizeStructuralMembersInternal(property.value, seen)
+      : canonicalizeStructuralValue(property.value, seen);
+    Object.defineProperty(out, key, { ...property, value: child });
+  }
+  return out;
+}
+
+function canonicalizeStructuralMembersInternal(members, seen) {
+  if (seen.has(members)) return seen.get(members);
+  const canonical = [];
+  seen.set(members, canonical);
+
+  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    for (const member of members) canonical.push(canonicalizeStructuralValue(member, seen));
+    return canonical;
+  }
+
+  const sorted = members.map((rawMember) => {
+    const member = canonicalizeStructuralValue(rawMember, seen);
+    return {
+      member,
+      offset: canonicalInteger(member.offset ?? 0),
+      canonical: canonicalDescriptorString('structural', member),
+    };
+  }).sort((left, right) => {
+    if (left.offset != null && right.offset != null) {
+      if (left.offset < right.offset) return -1;
+      if (left.offset > right.offset) return 1;
+    } else if (left.offset != null) {
+      return -1;
+    } else if (right.offset != null) {
+      return 1;
+    }
+    return left.canonical.localeCompare(right.canonical);
+  });
+
+  let previous = null;
+  for (const entry of sorted) {
+    if (entry.canonical === previous) continue;
+    canonical.push(entry.member);
+    previous = entry.canonical;
+  }
+  return canonical;
+}
+
+export function canonicalizeStructuralMembers(members) {
+  if (!Array.isArray(members)) return members;
+  return canonicalizeStructuralMembersInternal(members, new WeakMap());
+}
+
+function canonicalizeStructuralDescriptor(descriptor) {
+  return canonicalizeStructuralValue(descriptor, new WeakMap());
+}
+
+function validateDescriptor(layer, descriptor) {
+  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    fail('type-claim-descriptor-required');
+  }
+  if (layer === 'structural') validateStructuralDescriptorValue(descriptor);
 }
 
 /**
@@ -243,10 +427,11 @@ export function createTypeClaim(input = {}) {
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
   const descriptor = input.descriptor ?? null;
   if (descriptor == null) fail('type-claim-descriptor-required');
+  const snapshot = snapshotDescriptor(descriptor, layer);
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: snapshotDescriptor(descriptor),
+    descriptor: layer === 'structural' ? canonicalizeStructuralDescriptor(snapshot) : snapshot,
   };
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
@@ -309,8 +494,11 @@ export function createSoftEvidence(input = {}) {
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
   const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
-  const weight = Number(input.weight ?? 0.5);
-  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
+  const rawWeight = input.weight ?? 0.5;
+  if (typeof rawWeight !== 'number' || !Number.isFinite(rawWeight) || rawWeight < 0 || rawWeight > 1) {
+    fail('soft-evidence-invalid-weight');
+  }
+  const weight = rawWeight;
   return deepFreeze({
     kind,
     origin,
@@ -361,6 +549,118 @@ function memberTypesConflict(aType, bType) {
   return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
 }
 
+function memberFactsConflict(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return false;
+  if (key != null && NUMERIC_DESCRIPTOR_FIELDS.has(key)) {
+    const a = canonicalInteger(left);
+    const b = canonicalInteger(right);
+    return a == null || b == null || a !== b;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return true;
+
+  // Missing keys are additive partial facts. A key present on both sides must
+  // carry recursively compatible evidence, matching graph.js reconstruction.
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(left, childKey)) continue;
+    if (memberFactsConflict(left[childKey], value, childKey)) return true;
+  }
+  return false;
+}
+
+function aggregateMembersConflict(aMembers, bMembers) {
+  // Preserve exact/canonically-equivalent member sets, including legacy
+  // descriptors whose nested layout is incomplete. Once the sets differ,
+  // however, compatibility needs interval evidence; an unknown interval must
+  // fail closed rather than mint compatibility from absence of proof.
+  if (!Array.isArray(aMembers) || !Array.isArray(bMembers)) {
+    return canonicalDescriptorString('structural', aMembers) !== canonicalDescriptorString('structural', bMembers);
+  }
+  if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
+    && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    const aCanonicalSet = canonicalizeStructuralMembers(aMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    const bCanonicalSet = canonicalizeStructuralMembers(bMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    if (aCanonicalSet.length === bCanonicalSet.length
+      && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
+  }
+
+  const prepare = (members) => {
+    const prepared = [];
+    const seen = new Set();
+    for (const member of members) {
+      if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+      const canonical = canonicalDescriptorString('structural', member);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      if (member.offset == null || member.sizeBytes == null) return null;
+      const start = toBigInt(member.offset, null);
+      const size = toBigInt(member.sizeBytes, null);
+      if (start == null || size == null || start < 0n || size <= 0n) return null;
+      prepared.push({ member, canonical, start, size, end: start + size });
+    }
+    prepared.sort((left, right) => {
+      if (left.start < right.start) return -1;
+      if (left.start > right.start) return 1;
+      if (left.end < right.end) return -1;
+      if (left.end > right.end) return 1;
+      return left.canonical.localeCompare(right.canonical);
+    });
+
+    // A differing aggregate claim cannot safely add facts to an already
+    // internally-overlapping set without a union/overlay model. Exact-equal
+    // sets returned above; otherwise keep the previous fail-closed behavior.
+    for (let index = 1; index < prepared.length; index += 1) {
+      if (prepared[index - 1].end > prepared[index].start) return null;
+    }
+    return prepared;
+  };
+
+  const aPrepared = prepare(aMembers);
+  const bPrepared = prepare(bMembers);
+  if (aPrepared == null || bPrepared == null) return true;
+
+  // Both lists are now canonical, deduplicated, and non-overlapping within
+  // themselves, so a two-pointer sweep checks every cross-list overlap in
+  // O(n log n + m log m) rather than bypassing graph comparison budgets with
+  // an unbounded quadratic member-pair loop.
+  let aIndex = 0;
+  let bIndex = 0;
+  while (aIndex < aPrepared.length && bIndex < bPrepared.length) {
+    const aEntry = aPrepared[aIndex];
+    const bEntry = bPrepared[bIndex];
+    if (aEntry.end <= bEntry.start) {
+      aIndex += 1;
+      continue;
+    }
+    if (bEntry.end <= aEntry.start) {
+      bIndex += 1;
+      continue;
+    }
+
+    if (aEntry.canonical !== bEntry.canonical) {
+      if (aEntry.start === bEntry.start) {
+        if (aEntry.size !== bEntry.size) return true;
+        if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
+          && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+        // Same-slot members are merged recursively by graph.js. Make the
+        // contradiction detector reject exactly the overlapping fact keys
+        // that merger cannot reconcile, while still allowing one-sided facts.
+        if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
+      }
+
+      if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
+      if (memberTypesConflict(aEntry.member.memberType, bEntry.member.memberType)) return true;
+    }
+
+    if (aEntry.end <= bEntry.end) aIndex += 1;
+    if (bEntry.end <= aEntry.end) bIndex += 1;
+  }
+  return false;
+}
+
 /**
  * Do two claims at the same layer conflict?
  *
@@ -402,6 +702,21 @@ export function claimsConflict(left, right) {
     if (aKind != null && bKind != null && aKind !== bKind && aKind !== 'field' && bKind !== 'field') {
       return true;
     }
+
+    // Top-level array claims are complete structural candidates, not field
+    // fragments. Keep their identity intact and compare the array contract
+    // directly before the aggregate interval rules below.
+    if (aKind === 'array' || bKind === 'array') {
+      if (aKind !== bKind) return true;
+      if (a.strideBytes != null && b.strideBytes != null && numericValuesDiffer(a.strideBytes, b.strideBytes)) return true;
+      if (a.length != null && b.length != null && numericValuesDiffer(a.length, b.length)) return true;
+      if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+      if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
+      if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
+      return false;
+    }
+
     // Check total size or alignment mismatch
     if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
     if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
@@ -430,6 +745,18 @@ export function claimsConflict(left, right) {
 
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
+    // A same-offset field is the same storage slot even when its member type
+    // is compatible. Its extent and alignment are still hard layout facts;
+    // compare those before the member-type early return so a width mismatch
+    // cannot be laundered as a compatible type claim (#4423).
+    const sameOffset = a.offset != null && b.offset != null
+      && !numericValuesDiffer(a.offset, b.offset);
+    if (sameOffset) {
+      if (a.sizeBytes != null && b.sizeBytes != null
+        && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null
+        && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    }
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
 
@@ -438,7 +765,7 @@ export function claimsConflict(left, right) {
       return false;
     }
     if (a.members != null && b.members != null) {
-      return canonicalDescriptorString('structural', a.members) !== canonicalDescriptorString('structural', b.members);
+      return aggregateMembersConflict(a.members, b.members);
     }
     if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
       return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);

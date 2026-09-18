@@ -7,6 +7,14 @@ import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/build.js';
+import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+
+// #7467 region-aware write predicate needs the canonical region helpers.
+let regionsModule = null;
+async function awaitImportRegions() {
+  regionsModule ??= await import('../../../js/analysis/alias/regions-v2.js');
+  return regionsModule;
+}
 
 const snapshotId = 'snapshot-summary-boundary';
 const identity = { functionId: 'callee', snapshotId, analyzerId: 'summary-test', analyzerVersion: '1' };
@@ -42,7 +50,7 @@ function pointsTo(callee) {
 }
 
 for (const field of ['argIndex', 'returnIndex']) {
-  for (const [label, value] of [['array', ['0']], ['boolean', true], ['object', { valueOf: () => 0 }],
+  for (const [label, value] of [['array', ['0']], ['boolean', true], ['string', '0'], ['bigint', 0n], ['object', { valueOf: () => 0 }],
     ['negative', -1], ['fraction', 0.5], ['unsafe', Number.MAX_SAFE_INTEGER + 1], ['nan', NaN], ['infinite', Infinity]]) {
     test(`#4314: ${field}/${label} is rejected before return provenance becomes pointer evidence`, () => {
       const raw = copy(); raw.returnProvenance[0][field] = value;
@@ -51,18 +59,6 @@ for (const field of ['argIndex', 'returnIndex']) {
       assert.equal(pointsTo(raw).top, true);
     });
   }
-}
-for (const field of ['argIndex', 'returnIndex']) {
-  test(`#4314: numeric-string ${field} is rejected at the serialized consumer boundary`, () => {
-    const raw = copy();
-    raw.returnProvenance[0][field] = '0';
-    assert.equal(summaryIdentityMatches(raw, identity), false);
-    assert.equal(pointsTo(raw).top, true);
-    // The constructor accepts legacy numeric spellings and canonicalizes them;
-    // only the canonical wire representation is consumable as evidence.
-    const canonical = createFunctionSummary(raw);
-    assert.equal(canonical.returnProvenance[0][field], 0);
-  });
 }
 for (const [label, value] of [['array', ['8']], ['boolean', true], ['object', { valueOf: () => 8 }],
   ['empty', ''], ['blank', '  '], ['fraction', 8.5], ['unsafe', Number.MAX_SAFE_INTEGER + 1], ['nan', NaN], ['infinite', Infinity]]) {
@@ -82,8 +78,8 @@ for (const kind of ['not-a-provenance-kind', '', ['arg']]) {
 }
 for (const [label, row] of [
   ['arg', { kind: 'arg', argIndex: 0, offset: '-8' }],
-  ['root', { kind: 'root', rootEntityId: 'object', offset: '16' }],
-  ['allocation', { kind: 'allocation', allocationSiteId: 'site', offset: '0', returnIndex: 0 }],
+  ['root', { kind: 'root', rootEntityId: 'object', offset: '16', addressSpace: 'memory' }],
+  ['allocation', { kind: 'allocation', allocationSiteId: 'site', offset: '0', returnIndex: 0, addressSpace: 'memory' }],
 ]) {
   test(`#4314: canonical ${label} provenance survives serialization and reaches points-to`, () => {
     const summary = valid({ returnProvenance: [row] });
@@ -132,7 +128,7 @@ for (const [name, mutate] of [
   ['sparse write set', (s) => { s.memoryWriteRegions = new Array(1); }],
   ['sparse provenance', (s) => { s.returnProvenance = new Array(1); }],
   ['noncanonical ID', (s) => { s.inputs = [['arg']]; }],
-  ['unresolved region', (s) => { s.memoryWriteRegions = [createMemoryEffect({})]; }],
+  ['unresolved region', (s) => { s.memoryWriteRegions = [{ regionId:null, regionKind:'unknown', broad:false, addressSpaces:[], source:'proven-summary', evidenceIds:[] }]; }],
 ]) {
   test(`#4320: serialized ${name} cannot prove absence of caller writes`, () => {
     const raw = copy(); mutate(raw);
@@ -141,11 +137,50 @@ for (const [name, mutate] of [
   });
 }
 test('#4320: canonical specific writes remain specific and pure callees remain pure', () => {
-  const specific = valid({ memoryWriteRegions: [{ regionId: 'r', regionKind: 'rooted-offset' }] });
+  const regionAt = (address) => deriveMemoryRegion({
+    binaryId: 'binary-summary-boundary', widthBits: 64,
+    origin: origin('region'), regionEvidence: { kind: 'global-absolute', address },
+  });
+  const region = regionAt(0x1000n);
+  const specific = valid({ memoryWriteRegions: [{ regionId: region.id, regionKind: region.kind, region }] });
   const summary = fold(specific);
   assert.equal(summary.status.completeness, 'complete');
-  assert.equal(summaryMayWriteRegion(summary, 'r'), true);
-  assert.equal(summaryMayWriteRegion(summary, 'other'), false);
+  assert.equal(summaryMayWriteRegion(summary, region), true);
+  assert.equal(summaryMayWriteRegion(summary, regionAt(0x1008n)), false);
+  assert.equal(summaryMayWriteRegion(summary, regionAt(0x1004n)), true, 'partial overlap is still a possible write');
+  assert.equal(summaryMayWriteRegion(summary, 'other'), true, 'an id mismatch alone cannot prove disjoint geometry');
+  assert.equal(summaryIsPure(fold(valid())), true);
+});
+test('#4320: canonical rooted-offset writes remain specific and pure callees remain pure', async () => {
+  // #7467 made summaryMayWriteRegion region-aware: a specific write answers
+  // by canonical region identity (a bare string id no longer matches, and an
+  // under-described region cannot prove absence of writes). Build the region
+  // proof the canonical producer would attach.
+  const { deriveMemoryRegion, isPreciseMemoryRegion } = await awaitImportRegions();
+  const region = deriveMemoryRegion({
+    functionId: null, binaryId: 'binary-summary-boundary', widthBits: 64,
+    addressSpace: null, origin: { instructionIds: ['instruction_r'] },
+    regionEvidence: { kind: 'rooted-offset', rootEntityId: 'r-root', offset: '0' },
+  });
+  assert.ok(isPreciseMemoryRegion(region), 'fixture region must be precise');
+  const other = deriveMemoryRegion({
+    functionId: null, binaryId: 'binary-summary-boundary', widthBits: 64,
+    addressSpace: null, origin: { instructionIds: ['instruction_other'] },
+    regionEvidence: { kind: 'rooted-offset', rootEntityId: 'r-root', offset: '4096' },
+  });
+  assert.ok(isPreciseMemoryRegion(other), 'fixture query region must be precise');
+  const specific = valid({ memoryWriteRegions: [{
+    regionId: region.id, regionKind: 'rooted-offset', region,
+  }] });
+  const summary = fold(specific);
+  assert.equal(summary.status.completeness, 'complete');
+  assert.equal(summaryMayWriteRegion(summary, 'r'), true,
+    'the summary still names region r via its canonical region id');
+  assert.equal(summaryMayWriteRegion(summary, region), true);
+  assert.equal(summaryMayWriteRegion(summary, 'other'), true,
+    'a bare string id cannot prove absence (conservative floor), id match or may-write');
+  assert.equal(summaryMayWriteRegion(summary, other), false,
+    'a precise disjoint region query proves the write is specific');
   assert.equal(summaryIsPure(fold(valid())), true);
 });
 test('#4320: a mutable serialized summary is revalidated without being frozen or cached', () => {
@@ -158,7 +193,7 @@ test('#4320: a mutable serialized summary is revalidated without being frozen or
   assert.equal(summaryIdentityMatches(raw, identity), false);
 });
 test('#4320: metadata cannot add unvalidated pointer authority to a serialized return row', () => {
-  const raw = copy(valid({ returnProvenance: [{ kind: 'root', rootEntityId: 'r' }] }));
+  const raw = copy(valid({ returnProvenance: [{ kind: 'root', rootEntityId: 'r', addressSpace: 'memory' }] }));
   raw.returnProvenance[0].addressSpace = ['io'];
   assert.equal(summaryIdentityMatches(raw, identity), false);
   assert.equal(pointsTo(raw).top, true);

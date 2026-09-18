@@ -7,7 +7,9 @@ import {
   stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
-import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { appendTransform, createTransformRecord, createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { abiResultInvalidState, canonicalAbiEvidence } from '../../targets/abi/evidence.js';
+import { createPhysicalStateVariable } from '../ir/normalize-effects.js';
 import { classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
 import { createPhase7AliasSolver } from '../../analysis/alias/solver.js';
 import { createSemanticCfg } from '../cfg/index.js';
@@ -17,6 +19,7 @@ import {
 } from '../effects/index.js';
 import {
   SEMANTIC_IR_SCHEMA_VERSION,
+  SEMANTIC_IR_DEFAULT_BUDGET,
   createSemanticIrFunction,
   lowerMachineEffectBundleToSemanticIr,
 } from '../ir/index.js';
@@ -29,9 +32,11 @@ import {
 import {
   MEMORY_SSA_BUILD_VERSION,
   buildMemorySsa,
+  canonicalSnapshotId,
   validateMemorySsa,
 } from '../memoryssa/index.js';
-import { projectSemanticIrV2ToLegacyV1 } from './semantic-ir-v2-to-v1.js';
+import { projectSemanticIrV2ToLegacyV1, observeProjectedOperationData, projectedStateTransitionCandidates } from './semantic-ir-v2-to-v1.js';
+import { buildStateProjectionIndex, legacyPublicStateIdentity } from './semantic-ir-v2-to-v1-core.js';
 
 export {
   MACHINE_EFFECTS_V1_COMPAT,
@@ -48,7 +53,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.1.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.7.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -60,6 +65,171 @@ export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
 
 const COMPLETENESS_RANK = Object.freeze({ complete: 0, partial: 1, unknown: 2 });
 const UNKNOWN_CATEGORIES = Object.freeze(['registers', 'flags', 'memory', 'control', 'faults', 'other']);
+
+// Only this pipeline computes and validates the canonical SSA before issuing
+// these local assignment bindings. A public projector given copied SSA cannot
+// acquire them by copying proof descriptions or matching semantic IDs.
+const registerStateBindings = new WeakMap();
+const registerStateContexts = new WeakMap();
+const canonicalStateObligations = new WeakMap();
+const returnFaultBindings = new WeakMap();
+const canonicalFaultObligations = new WeakMap();
+export function projectedCanonicalFaultObligations(projected) {
+  return canonicalFaultObligations.get(projected) ?? null;
+}
+export function projectedReturnFaultBindingCandidate(projected, instruction) {
+  return returnFaultBindings.get(projected)?.get(instruction) ?? null;
+}
+export function projectedReturnFaultBindingCandidates(projected) {
+  return Object.freeze([...(returnFaultBindings.get(projected)?.values() ?? [])]);
+}
+
+// A bundle association issued where canonical nodes and their actual projection
+// coexist. This is not a no-fault proof; the executor and solver still own that.
+function sealReturnFaultBindings(projected, ir, ssa, context, loweredSources) {
+  const obligations = ir.nodes.filter(node => node.attributes?.machineEffects?.possibleFaults?.length);
+  canonicalFaultObligations.set(projected, Object.freeze(obligations));
+  if (!obligations.length || ir.completeness !== 'complete' || projected.functionId !== ir.functionId) return;
+  try {
+    const groups = new Map(), sources = new Map(), records = [], returnUses = new Map(), expectedCounts = new Map();
+    for (const { bundle } of loweredSources.values()) expectedCounts.set(bundle, (expectedCounts.get(bundle) ?? 0) + 1);
+    for (const use of ssa.uses) if (use.proof?.roles?.includes('return-target')) {
+      if (!returnUses.has(use.sourceEntityId)) returnUses.set(use.sourceEntityId, []);
+      returnUses.get(use.sourceEntityId).push(use);
+    }
+    for (const node of ir.nodes) {
+      const lowering = loweredSources.get(node.id);
+      if (!lowering || stableStringify(node.attributes?.machineEffects) !== stableStringify(lowering.node.attributes?.machineEffects)
+          || stableStringify(node.sourceEffectIds) !== stableStringify(lowering.node.sourceEffectIds)) continue;
+      if (!groups.has(lowering.bundle)) groups.set(lowering.bundle, []);
+      groups.get(lowering.bundle).push(node);
+    }
+    for (const source of projected.instructions) {
+      if (!sources.has(source.semanticNodeId)) sources.set(source.semanticNodeId, []);
+      sources.get(source.semanticNodeId).push(source);
+    }
+    for (const [machineBundle, nodes] of groups) {
+      if (nodes.length !== expectedCounts.get(machineBundle) || machineBundle.controlEffect.kind !== 'return'
+          || machineBundle.completeness !== 'exact') continue;
+      const returns = nodes.filter(node => node.kind === 'return');
+      if (returns.length !== 1) continue;
+      const canonicalReturn = returns[0], metadata = canonicalReturn.metadata?.returnControlTarget;
+      const machine = canonicalReturn.attributes?.machineEffects;
+      if (metadata?.state !== 'resolved' || !machine?.possibleFaults?.length
+          || stableStringify(canonicalReturn.attributes?.machineControlEffect) !== stableStringify(machineBundle.controlEffect)
+          || stableStringify(metadata) !== stableStringify(loweredSources.get(canonicalReturn.id).node.metadata?.returnControlTarget)
+          || stableStringify(machine.possibleFaults) !== stableStringify(machineBundle.possibleFaults)) continue;
+      const uses = returnUses.get(canonicalReturn.id);
+      if (uses?.length !== 1 || uses[0].proof.sourceSemanticValueId !== metadata.valueId) continue;
+      const faultIdentity = stableStringify(machine.possibleFaults), members = [];
+      for (const node of nodes) {
+        const candidates = sources.get(node.id), effect = node.attributes?.machineEffects;
+        const source = candidates?.length === 1 ? candidates[0] : null;
+        const op = { 'state-read':'mov', 'state-write':'mov', const:'const', return:'ret' }[node.kind];
+        if (!source || !op || source.op !== op || node.blockId !== canonicalReturn.blockId
+            || node.completeness !== 'complete' || effect?.bundleCompleteness !== 'exact'
+            || effect.architectureId !== machine.architectureId || effect.mode !== machine.mode
+            || stableStringify(effect.possibleFaults) !== faultIdentity
+            || source.extra?.semanticNodeId !== node.id || source.extra?.completeness !== 'complete'
+            || stableStringify(source.extra.attributes) !== stableStringify(node.attributes)) break;
+        members.push(Object.freeze({ source, canonicalNode:node }));
+      }
+      if (members.length !== nodes.length) continue;
+      const source = members.find(member => member.canonicalNode === canonicalReturn).source;
+      const target = source.returnTargetValue, binding = source.extra.returnControlTarget;
+      if (!target || stableStringify(binding) !== stableStringify(metadata)
+          || source.extra.returnControlTargetValueId !== metadata.valueId) continue;
+      // Compaction already recorded the actual target replacement. Consume that
+      // issued transition instead of resolving register/temporary names again.
+      const aliases = projectedStateTransitionCandidates(projected);
+      const alias = aliases?.get(source)?.events.find(event => event.kind === 'resolve-state-alias'
+        && event.object === source && event.key === 'returnTargetValue' && event.path === 'returnTargetValue'
+        && event.before?.semanticValueId === metadata.valueId && event.after === target);
+      if (target.semanticValueId !== metadata.valueId && !(alias && aliases.isCurrent())) continue;
+      const bundle = Object.freeze({ machineBundle, canonicalReturn, source, target, sourceValueId:metadata.valueId,
+        ssaUse:uses[0], instructionId:machine.instructionId, faultIdentity, members:Object.freeze(members) });
+      const bindingCurrent = () => source.returnTargetValue === target && source.extra?.returnControlTarget === binding
+        && source.extra?.returnControlTargetValueId === metadata.valueId;
+      for (const member of members) records.push({ schemaVersion:'hex-projected-return-fault/v1', context,
+        ...member, bundle, beforeInputs:member.source === source ? [target] : [], bindingCurrent });
+    }
+    if (!records.length) return;
+    const isCurrent = observeProjectedOperationData(projected, records);
+    returnFaultBindings.set(projected, new Map(records.map(record => [record.source,
+      Object.freeze({ ...record, beforeInputs:Object.freeze(record.beforeInputs), isCurrent })])));
+  } catch { /* Missing association retains the original canonical fault obligation. */ }
+}
+export function projectedCanonicalStateObligations(projected) {
+  return canonicalStateObligations.get(projected) ?? null;
+}
+export function projectedRegisterStateContext(projected) {
+  return registerStateContexts.get(projected) ?? null;
+}
+export function projectedRegisterStateBindingCandidate(projected, instruction) {
+  return registerStateBindings.get(projected)?.get(instruction) ?? null;
+}
+export function projectedRegisterStateBindingCandidates(projected) {
+  return Object.freeze([...(registerStateBindings.get(projected)?.values() ?? [])]);
+}
+function sealRegisterStateBindings(projected, ir, ssa, context) {
+  // Capture the complete canonical read/write inventory before eligibility
+  // filtering. In particular, a flag-only projection must not look stateless
+  // merely because no register binding can be issued for it.
+  canonicalStateObligations.set(projected, Object.freeze(ir.nodes.filter(node =>
+    ['state-read', 'state-write'].includes(node.kind))));
+  try {
+    if (ir.completeness !== 'complete' || projected.functionId !== ir.functionId) return;
+    const nodes = new Map(ir.nodes.map(node => [node.id, node]));
+    const index = buildStateProjectionIndex(ssa), records = [];
+    for (const source of projected.instructions) {
+      const node = nodes.get(source.semanticNodeId), extra = source.extra;
+      if (!node || !['state-read','state-write'].includes(node.kind)
+          || node.variable?.kind !== 'physical-state' || node.variable.physicalIdentity?.kind !== 'register'
+          || source.op !== 'mov' || source.sub != null || source.args?.length !== 1
+          || extra?.completeness !== 'complete' || !source.dst || source.dst.def !== source) continue;
+      const read = node.kind === 'state-read', key = read ? 'stateRead' : 'stateWrite';
+      if (node.inputs.length !== (read ? 0 : 1) || node.outputs.length !== (read ? 1 : 0)) continue;
+      const fact = read ? index.readUseByNodeId.get(node.id) : index.writeDefinitionByNodeId.get(node.id);
+      const input = source.args[0]?.value, output = source.dst;
+      const proofKey = read ? 'stateReadProof' : 'stateWriteProof';
+      const identity = legacyPublicStateIdentity(node.variable);
+      const machine = node.attributes?.machineEffects;
+      if (!fact || !input || !Number.isSafeInteger(input.bits) || input.bits < 1 || input.bits > 64
+          || output.bits !== input.bits || fact.proof?.machineType?.widthBits !== input.bits
+          || source.args[0].bits != null && source.args[0].bits !== input.bits
+          || extra.publicStateIdentity !== identity || extra.semanticNodeId !== node.id
+          || stableStringify(extra[key]) !== stableStringify(node.variable)
+          || stableStringify(extra[proofKey]) !== stableStringify(fact.proof)
+          || stableStringify(extra.attributes) !== stableStringify(node.attributes)
+          || machine?.bundleCompleteness !== 'exact'
+          || machine.operationKind !== (read ? 'register-read' : 'register-write')) continue;
+      const stateAliases = read && input.semanticSsaValueId !== fact.valueId ? projectedStateTransitionCandidates(projected) : null;
+      const ssaAlias = stateAliases?.get(source)?.events.find(event => event.kind === 'resolve-state-alias'
+        && event.object === source.args[0] && event.key === 'value' && event.path === 'args:0'
+        && event.before?.semanticSsaValueId === fact.valueId && event.after === input);
+      if (read ? input.semanticSsaValueId !== fact.valueId && !(ssaAlias && stateAliases.isCurrent()) || output.semanticValueId !== node.outputs[0]
+          || extra.reachingStateSsaValueId !== fact.valueId || extra.localPhysicalViewProjection === true
+        : fact.kind !== 'definition' || input.semanticValueId !== node.inputs[0]
+          || output.semanticSsaValueId !== fact.valueId || extra.stateSsaDefinitionId !== fact.definitionId) continue;
+      const state = extra[key], proof = extra[proofKey], attributes = extra.attributes, bits = input.bits;
+      // Actual facade writes may change unrelated presentation or ABI fields;
+      // they cannot replace the state assignment's original operands or facts.
+      const bindingCurrent = () => source.op === 'mov' && source.sub == null && source.dst === output
+        && output.def === source && source.args?.length === 1 && source.args[0]?.value === input
+        && input.bits === bits && output.bits === bits && source.extra?.[key] === state
+        && source.extra?.[proofKey] === proof && source.extra?.attributes === attributes
+        && source.extra?.publicStateIdentity === identity && source.extra?.completeness === 'complete';
+      records.push({ schemaVersion:'hex-projected-register-state/v1', context,
+        source, input, output, beforeInputs:[...new Set([input, output, ...(ssaAlias?.beforeInputs ?? [])])], kind:node.kind,
+        state, canonicalNode:node, ssaFact:fact, ssaAlias:ssaAlias ?? null, bindingCurrent });
+    }
+    if (!records.length) return;
+    const isCurrent = observeProjectedOperationData(projected, records);
+    registerStateBindings.set(projected, new Map(records.map(record => [record.source,
+      Object.freeze({ ...record, beforeInputs:Object.freeze(record.beforeInputs), isCurrent })])));
+    registerStateContexts.set(projected, context);
+  } catch { /* Missing bounded producer observation never authorizes state effects. */ }
+}
 
 function fail(code) { throw new TypeError(code); }
 function object(value, code) {
@@ -194,7 +364,31 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     const targets = node.targets.slice(0, -1);
     if (!targets.length) return node;
     changed = true;
-    return { ...node, targets };
+    // A missing fallthrough must not leave a 1-target conditional-branch
+    // (#4585 rejects that cardinality). It must not be laundered into an
+    // ordinary `branch` either: `semanticEdgeKind()` would then publish the
+    // taken target as exact, unconditional control, erasing the unresolved
+    // condition from CFG edge authority. Publish a partial
+    // `unknown-control-effect` projection that keeps the known taken target,
+    // the condition, and the missing-fallthrough evidence, so downstream
+    // reachability/dominance observe unresolved control rather than
+    // fabricated certainty (#8922).
+    return {
+      ...node,
+      kind: 'unknown-control-effect',
+      inputs: [],
+      targets,
+      completeness: 'partial',
+      unknown: {
+        reason: 'semantic-cfg-missing-fallthrough',
+        categories: ['control'],
+        knownParts: {
+          takenTargets: targets,
+          conditionInputs: Array.isArray(node.inputs) ? node.inputs : [],
+          expectedFallthroughAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+        },
+      },
+    };
   });
   return {
     ...fragment,
@@ -253,35 +447,6 @@ function createRegionRootDescriptorProvider(architecturePlugin, architectureId, 
   };
 }
 
-function canonicalMemoryAccessProof(descriptor, architectureId) {
-  const memory = descriptor?.memory;
-  const machineEffects = descriptor?.node?.attributes?.machineEffects;
-  const family = machineEffects?.bundleMetadata?.family;
-  if (!memory || architectureId !== 'arm64' && architectureId !== 'arm64e'
-      || family !== 'arm64-memory') return null;
-  // The target producer deliberately leaves source-level qualifiers unknown at
-  // this boundary. Its ordinary memory-operation contract is the authority
-  // that these accesses are neither volatile nor atomic.
-  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
-  if (memory.atomic === true || memory.volatility === true) return null;
-  return {
-    kind: 'canonical-memory-access-qualifiers',
-    sourceEntityId: String(descriptor.node.id),
-    architectureId: String(architectureId),
-    family,
-    widthBits: Number(memory.widthBits),
-    endian: memory.endian,
-    volatility: false,
-    atomic: false,
-    ordering: 'unknown',
-    evidence: {
-      operationKind: machineEffects.operationKind ?? null,
-      machineFamily: family,
-      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
-    },
-  };
-}
-
 /**
  * Build the explicit Phase 3 migration route. There is deliberately no legacy
  * fallback here: callers either request this route and get a complete/partial/
@@ -291,11 +456,233 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
  * not rediscover CFG structure or parse mnemonics. Stable FunctionId, BlockId,
  * and InstructionId values are minted only through the canonical identity API.
  */
+/**
+ * Observe a declared scalar ABI result before SSA, not by searching rendered
+ * register names after projection. The architectural return target stays in
+ * its original control attributes. This adds a value observation, not a claim
+ * about that value's root, a callee's effects, or aggregate reconstruction.
+ */
+function declaredValuesObservable(ir) {
+  if (ir.completeness === 'complete' && ir.unknowns.length === 0) return true;
+  // A typed call's normal-return value can be observed without settling any
+  // of its memory, control or other state effects. Every other frontier stays
+  // closed, and the original partial status/unknowns are never removed.
+  return ir.completeness === 'partial' && ir.unknowns.length > 0
+    && ir.unknowns.every(item => item.reason === 'call-context-effects-not-enriched')
+    && ir.nodes.filter(node => node.kind === 'call').every(node => node.attributes?.abiCallBinding != null);
+}
+
+// AAPCS64's existing classifier spells a declared argument with the explicit
+// possible/mustUse pair; other registered ABIs also publish exact. Preserve
+// both positive contracts without treating a missing/false flag as authority.
+function declaredExactArgument(argument) {
+  return argument?.possible !== true && argument?.mustUse !== false
+    && (argument?.exact === true || argument?.exact === undefined
+      && argument?.possible === false && argument?.mustUse === true);
+}
+
+function bindDeclaredScalarReturns(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || !declaredValuesObservable(ir)
+    || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
+  let classified, locations;
+  try {
+    adapter.observeFunction?.({ semanticIr:ir });
+    classified = adapter.classifyFunctionReturn?.(options.functionReturn ?? {});
+    if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+      || classified.partial === true || classified.unsupported === true) return ir;
+    locations = adapter.returnLocations?.({ ...(options.functionReturn ?? {}), classified });
+  } catch { return ir; }
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  if (!Array.isArray(locations) || locations.length !== 1) return ir;
+  const location = locations[0];
+  if (location.kind !== 'register' || location.aggregate === true) return ir;
+  const descriptor = architectureRegisterDescriptors(input.architecturePlugin)
+    .find(reg => reg.id === location.reg && reg.kind === 'gp');
+  const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0
+    || !Number.isSafeInteger(location.bits) || location.bits <= 0 || location.bits > widthBits) return ir;
+  const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+  const nodes = [], values = [...ir.values], before = new Map();
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    if (node.kind !== 'return' || node.inputs.length) { nodes.push(node); continue; }
+    const fact = { kind:'abi-return-location', version:1, functionId:ir.functionId,
+      returnNodeId:node.id, abiIdentity:identity, location };
+    const key = stableDigest(fact);
+    const readId = `abi_return_read_${key}`, valueId = `abi_return_value_${key}`;
+    const narrow = location.bits !== widthBits;
+    const truncId = `abi_return_trunc_${key}`, resultId = narrow ? `abi_return_result_${key}` : valueId;
+    const addedIds = narrow ? [readId, truncId] : [readId];
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-return-binding', passVersion:'1.0.0', ruleId:'declared-scalar-result',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...addedIds, valueId, ...(narrow ? [resultId] : [])], preconditions:[fact],
+    }));
+    nodes.push({ id:readId, kind:'state-read', blockId:node.blockId,
+      inputs:[], outputs:[valueId], variable, origin });
+    values.push({ id:valueId, kind:'definition', definitionNodeId:readId,
+      machineType:{ kind:'bitvector', widthBits }, origin });
+    if (narrow) {
+      nodes.push({ id:truncId, kind:'trunc', blockId:node.blockId,
+        inputs:[valueId], outputs:[resultId], origin });
+      values.push({ id:resultId, kind:'definition', definitionNodeId:truncId,
+        machineType:{ kind:'bitvector', widthBits:location.bits }, origin });
+    }
+    before.set(node.id, addedIds);
+    nodes.push({ ...node, inputs:[resultId], origin,
+      attributes:{ ...node.attributes, abiReturnBinding:{ ...fact, valueId:resultId } } });
+  }
+  return createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => [...(before.get(id) ?? []), id]) })),
+  }, options.semanticIrOptions ?? {});
+}
+
+/** Exact full-register formal arguments seed the existing SSA entry model. */
+function bindDeclaredEntryArguments(ir, input, options) {
+  const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!prototype || !adapter || !declaredValuesObservable(ir)) return ir;
+  let classified;
+  try { classified = adapter.classifyArguments?.({ functionPrototype:prototype }); }
+  catch { return ir; }
+  if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+    || classified.partial === true || !Array.isArray(classified.arguments)) return ir;
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const values = [...ir.values];
+  for (const argument of classified.arguments) {
+    assertNotAborted(options);
+    if (argument.location !== 'register' || !declaredExactArgument(argument) || argument.possible === true
+      || argument.aggregate === true || argument.pieces?.length || argument.regs?.length > 1
+      || !Number.isSafeInteger(argument.index) || argument.index < 0) continue;
+    const descriptor = descriptors.find(reg => reg.id === argument.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || argument.bits !== widthBits) continue;
+    // A duplicated physical location is a contradiction, not two formals.
+    if (classified.arguments.filter(item => item.reg === argument.reg).length !== 1) continue;
+    const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+    if (!ir.nodes.some(node => node.variable?.key === variable.key)
+      || ir.values.some(value => value.variableKey === variable.key
+        && ['entry', 'undef', 'unknown'].includes(value.kind))) continue;
+    const fact = { kind:'abi-entry-argument', version:1, functionId:ir.functionId,
+      abiIdentity:identity, argumentIndex:argument.index, variableKey:variable.key,
+      location:{ reg:argument.reg, bits:argument.bits, abiClass:argument.abiClass } };
+    const id = `abi_entry_value_${stableDigest(fact)}`;
+    const origin = appendTransform(ir.origin, createTransformRecord({
+      passId:'semantic-abi-entry-binding', passVersion:'1.0.0', ruleId:'declared-register-argument',
+      proofKind:'canonical-abi-location', consumedEntityIds:[ir.functionId], producedEntityIds:[id], preconditions:[fact],
+    }));
+    values.push({ id, kind:'entry', variableKey:variable.key,
+      machineType:{ kind:'bitvector', widthBits }, origin,
+      metadata:{ argumentIndex:argument.index, abiArgumentBinding:fact } });
+  }
+  return values.length === ir.values.length ? ir : createSemanticIrFunction({ ...ir, values }, options.semanticIrOptions ?? {});
+}
+
+/** Bind normal-return scalar values; do not resolve targets or callee effects. */
+function bindDeclaredCallValues(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || !ir.nodes.some(node => node.kind === 'call')) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const physical = location => {
+    if (location?.aggregate === true) return null;
+    const descriptor = descriptors.find(reg => reg.id === location?.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || location.bits !== widthBits) return null;
+    return { widthBits, variable:createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id }) };
+  };
+  const nodes = [], values = [...ir.values], replacements = new Map();
+  let addedNodes = 0;
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    let raw = null;
+    if (node.kind === 'call' && !node.outputs.length && !node.call.arguments.length && !node.call.returns.length) {
+      try { raw = adapter.classifyCall?.({ node, call:node.call, semanticIr:ir }); } catch { /* unknown */ }
+    }
+    if (!raw || !canonicalAbiEvidence(raw) || abiResultInvalidState(raw) || raw.partial === true
+      || raw.noreturn === true || raw.returnAggregate === true || raw.returnIndirect === true
+      || raw.returnLocations?.length !== 1 || raw.returnLocations[0].kind !== 'register'
+      || !Array.isArray(raw.explicitArguments) || raw.explicitArguments.length > 64
+      || raw.implicitInputs?.length || raw.stackArguments?.length || raw.stackArgsUnknown !== false) {
+      nodes.push(node); continue;
+    }
+    const identity = raw.abiIdentity, snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+    if (identity.architectureId !== input.architecturePlugin.id
+      || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+      || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+      || (identity.functionId != null && identity.functionId !== ir.functionId)
+      || (snapshotId != null && identity.snapshotId !== snapshotId)) { nodes.push(node); continue; }
+    const returned = physical(raw.returnLocations[0]);
+    const args = raw.explicitArguments.map((argument, index) => argument.index === index
+      && argument.location === 'register' && declaredExactArgument(argument) && argument.possible !== true
+      && !argument.pieces?.length && !(argument.regs?.length > 1) ? physical(argument) : null);
+    if (!returned || args.some(argument => !argument)
+      || new Set(args.map(argument => argument.variable.key)).size !== args.length) { nodes.push(node); continue; }
+    // Charge before allocating the expanded graph, not after building an
+    // arbitrarily large set of register observations for the constructor.
+    const growth = args.length + 1;
+    if (ir.nodes.length + addedNodes + growth > (options.semanticIrOptions?.budget?.maxNodes ?? SEMANTIC_IR_DEFAULT_BUDGET.maxNodes)) {
+      fail('semantic-ir-budget-exceeded-maxNodes');
+    }
+    if (values.length + growth > (options.semanticIrOptions?.budget?.maxValues ?? SEMANTIC_IR_DEFAULT_BUDGET.maxValues)) {
+      fail('semantic-ir-budget-exceeded-maxValues');
+    }
+    addedNodes += growth;
+    const fact = { kind:'abi-call-values', version:1, functionId:ir.functionId, callNodeId:node.id,
+      abiIdentity:identity, arguments:raw.explicitArguments, returnLocation:raw.returnLocations[0] };
+    const key = stableDigest(fact), resultId = `abi_call_result_${key}`, writeId = `abi_call_write_${key}`;
+    const readIds = args.map((_, index) => `abi_call_read_${key}_${index}`);
+    const argumentIds = args.map((_, index) => `abi_call_arg_${key}_${index}`);
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-call-binding', passVersion:'1.0.0', ruleId:'declared-scalar-call-values',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...readIds, ...argumentIds, resultId, writeId], preconditions:[fact],
+    }));
+    args.forEach((argument, index) => {
+      nodes.push({ id:readIds[index], kind:'state-read', blockId:node.blockId,
+        inputs:[], outputs:[argumentIds[index]], variable:argument.variable, origin });
+      values.push({ id:argumentIds[index], kind:'definition', definitionNodeId:readIds[index],
+        machineType:{ kind:'bitvector', widthBits:argument.widthBits }, origin });
+    });
+    values.push({ id:resultId, kind:'definition', definitionNodeId:node.id,
+      machineType:{ kind:'bitvector', widthBits:returned.widthBits }, origin });
+    nodes.push({ ...node, inputs:[...new Set([...node.inputs, ...argumentIds])], outputs:[resultId],
+      call:{ ...node.call, arguments:argumentIds, returns:[resultId] }, origin,
+      attributes:{ ...node.attributes, abiCallBinding:{ ...fact, argumentValueIds:argumentIds, returnValueId:resultId } } });
+    // SSA still applies the CALL's broad unknown-state write first. Only the
+    // declared result cell receives the fresh call value on normal continuation.
+    nodes.push({ id:writeId, kind:'state-write', blockId:node.blockId,
+      inputs:[resultId], outputs:[], variable:returned.variable, origin });
+    replacements.set(node.id, [...readIds, node.id, writeId]);
+  }
+  return replacements.size === 0 ? ir : createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => replacements.get(id) ?? [id]) })),
+  }, options.semanticIrOptions ?? {});
+}
+
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-v2-integration-input-required');
   const architecturePlugin = object(input.architecturePlugin, 'semantic-v2-integration-architecture-plugin-required');
   if (typeof architecturePlugin.liftExact !== 'function') fail('semantic-v2-lift-exact-required');
+  if (architecturePlugin.liftDecodedExact != null && typeof architecturePlugin.liftDecodedExact !== 'function') {
+    fail('semantic-v2-lift-decoded-exact-invalid');
+  }
   const architectureId = nonEmpty(architecturePlugin.id, 'semantic-v2-integration-architecture-id-required');
   const architectureSemanticVersion = nonEmpty(architecturePlugin.semanticVersion, 'semantic-v2-integration-architecture-semantic-version-required');
   const decoderSemanticVersion = nonEmpty(input.decoderSemanticVersion, 'semantic-v2-integration-decoder-semantic-version-required');
@@ -359,6 +746,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   }
   const issues = new Map(initialUnknowns.map((unknown) => [stableStringify(unknown), unknown]));
   const bundles = [];
+  const loweredSources = new Map();
   const instructionTelemetry = [];
   let completeness = initialCompleteness;
   let unsupportedInstructionCount = 0;
@@ -395,15 +783,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       });
       const origin = originWithInstruction(item, instructionId, architecturePlugin);
       const decoded = object(item.decoded ?? item, 'semantic-v2-integration-decoded-instruction-required');
-      const prepared = { ...decoded, instructionId, origin, mode };
-      let bundle = architecturePlugin.liftExact(prepared, {
+      const liftContext = {
         ...machineEffectsContext,
         instructionId,
         origin,
         mode,
         signal: options.signal,
         machineEffectsOptions: options.machineEffectsOptions ?? {},
-      });
+      };
+      // A spread copy cannot carry private receiver/decoder object identity.
+      // Let an architecture preserve its original object while binding the
+      // canonical metadata itself. Existing liftExact plugins keep their API.
+      let bundle = architecturePlugin.liftDecodedExact
+        ? architecturePlugin.liftDecodedExact(decoded, liftContext)
+        : architecturePlugin.liftExact({ ...decoded, instructionId, origin, mode }, liftContext);
       if (bundle && typeof bundle.then === 'function') fail('semantic-v2-integration-async-lifter-not-supported');
       if (bundle == null) {
         unsupportedInstructionCount++;
@@ -451,7 +844,11 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       completeness = promotedCompleteness(completeness, fragment.completeness);
       for (const issue of fragment.unknowns) issues.set(stableStringify(issue), issue);
       for (const value of fragment.values) mergeById(values, value, 'semantic-v2-integration-conflicting-value-id');
-      for (const node of fragment.nodes) mergeById(nodes, node, 'semantic-v2-integration-conflicting-node-id');
+      for (const node of fragment.nodes) {
+        mergeById(nodes, node, 'semantic-v2-integration-conflicting-node-id');
+        if (loweredSources.has(node.id) && loweredSources.get(node.id).bundle !== bundle) fail('semantic-v2-integration-conflicting-node-source');
+        loweredSources.set(node.id, { bundle, node });
+      }
       for (const fragmentBlock of fragment.blocks) mergeBlock(fragmentBlock);
       instructionTelemetry.push(deepFreeze({
         instructionId,
@@ -470,7 +867,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     const merged = blocks.get(block.id);
     if (merged && block.origin != null) merged.origin = mergeOriginSets(merged.origin ?? createOriginSet({}), block.origin);
   }
-  const ir = createSemanticIrFunction({
+  const machineIr = createSemanticIrFunction({
     functionId,
     entryBlockId: entryRecord.id,
     blocks: [...blocks.values()],
@@ -480,6 +877,8 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
+  const callIr = bindDeclaredCallValues(machineIr, input, options);
+  const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(callIr, input, options), input, options);
 
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const successorMap = new Map();
@@ -505,7 +904,14 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     for (const nodeId of block.nodeIds) {
       const node = nodeById.get(nodeId);
       if (!node?.targets?.length) continue;
-      node.targets.forEach((to, index) => addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) }));
+      for (let index = 0; index < node.targets.length; index += 1) {
+        const to = node.targets[index];
+        // A conditional branch whose taken and fallthrough arms resolve to the
+        // same block keeps its conditional identity in the IR node; the CFG
+        // successor set must not list that block twice.
+        if (node.kind === 'conditional-branch' && index > 0 && node.targets[index - 1] === to) continue;
+        addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) });
+      }
     }
   }
   const cfg = createSemanticCfg({
@@ -522,7 +928,13 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
 
   const semanticIrDigest = canonicalSemanticIrDigest(ir);
   const scalarSsaDigest = stableDigest(ssa);
-  const snapshotId = String(options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound');
+  // A snapshot id is provenance authority for the MemorySSA artifact and for every
+  // later staleness check, so it is validated as a primitive token instead of being
+  // `String()`-coerced: an Array, a custom `toString()` object, a number or a boolean
+  // must not collapse onto the same snapshot as a real id (#8804).
+  const snapshotId = canonicalSnapshotId(
+    options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound',
+  );
   const semanticIrId = options.memorySsaOptions?.identity?.semanticIrId
     ?? `semantic-ir-${stableDigest({ functionId, semanticIrDigest })}`;
   const scalarSsaId = options.memorySsaOptions?.identity?.scalarSsaId
@@ -554,8 +966,6 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     ...(options.memorySsaOptions ?? {}),
     ssa,
     rootDescriptorProvider,
-    accessProofForDescriptor: options.memorySsaOptions?.accessProofForDescriptor
-      ?? ((descriptor) => canonicalMemoryAccessProof(descriptor, architectureId)),
     identity: {
       ...(options.memorySsaOptions?.identity ?? {}),
       binaryId,
@@ -613,6 +1023,10 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     memorySsa,
     abiAdapter: input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter,
   });
+  const bindingContext = Object.freeze({ binaryId, functionId, snapshotId,
+    architecture:architectureId, semanticsVersion:architectureSemanticVersion });
+  sealRegisterStateBindings(legacyV1, ir, ssa, bindingContext);
+  sealReturnFaultBindings(legacyV1, ir, ssa, bindingContext, loweredSources);
 
   // The wrapper object is immutable, and every canonical v2 artifact is already
   // frozen by its contract constructor. The legacy v1 compatibility projection

@@ -18,8 +18,15 @@ test('support matrix correctly classifies exact, exact-with-assumptions, and uns
   assert.equal(classifyOpSupport(OP.ADDR), TRANSLATION_STATUS.EXACT);
   assert.equal(classifyOpSupport(OP.BIN, { subOp: 'add' }), TRANSLATION_STATUS.EXACT);
   assert.equal(classifyOpSupport(OP.UN, { subOp: 'not' }), TRANSLATION_STATUS.EXACT);
-  assert.equal(classifyOpSupport(OP.CMP), TRANSLATION_STATUS.EXACT);
-  assert.equal(classifyOpSupport(OP.SEL), TRANSLATION_STATUS.EXACT);
+  assert.equal(classifyOpSupport(OP.CMP, { cond: '==' }), TRANSLATION_STATUS.EXACT);
+  assert.equal(classifyOpSupport(OP.SEL, { cond: { id: 'c1', op: OP.CONST, value: 1n } }), TRANSLATION_STATUS.EXACT);
+
+  // #5202: a missing semantic discriminator must not be defaulted (#5202);
+  // BIN/UN/CMP/SEL without their deciding fields are unsupported.
+  assert.equal(classifyOpSupport(OP.BIN, {}), TRANSLATION_STATUS.UNSUPPORTED);
+  assert.equal(classifyOpSupport(OP.UN, {}), TRANSLATION_STATUS.UNSUPPORTED);
+  assert.equal(classifyOpSupport(OP.CMP, {}), TRANSLATION_STATUS.UNSUPPORTED);
+  assert.equal(classifyOpSupport(OP.SEL, {}), TRANSLATION_STATUS.UNSUPPORTED);
 
   // A structural reachingStore pointer is not a MemorySSA value proof. It must
   // remain conservative even when the location is named.

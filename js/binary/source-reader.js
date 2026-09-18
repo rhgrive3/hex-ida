@@ -83,6 +83,19 @@ export class SparseByteBuffer {
     return added;
   }
 
+  cachedSpan(start, end = this.size) {
+    const begin = nonNegativeBigInt(start, 'cached span start');
+    const finish = nonNegativeBigInt(end, 'cached span end');
+    if (finish < begin || finish > this.size) throw new BinaryReadError('read outside file', begin);
+    if (finish === begin) return new Uint8Array();
+    const chunk = this.chunks[this.#firstChunkWithEndAfter(begin)];
+    if (!chunk || chunk.start > begin) return null;
+    const takeEnd = finish < chunk.end ? finish : chunk.end;
+    const from = safeNumber(begin - chunk.start, 'cached span offset');
+    const to = safeNumber(takeEnd - chunk.start, 'cached span end');
+    return chunk.bytes.subarray(from, to);
+  }
+
   subarray(start, end = this.size) {
     const begin = nonNegativeBigInt(start, 'cached read start');
     const finish = nonNegativeBigInt(end, 'cached read end');

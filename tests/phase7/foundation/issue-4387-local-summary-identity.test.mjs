@@ -3,10 +3,13 @@ import test from 'node:test';
 import { createPhase7ArtifactDescriptor, dependencyClassFor } from '../../../js/analysis/artifact-identity.js';
 
 const base = {
+  budgetClass: 'interactive',
   kind: 'phase7.summary.local', binaryId: 'binary-A', functionId: 'caller', architectureId: 'arm64',
   snapshotId: 'snapshot-A', analyzerId: 'phase7.summary.local', analyzerVersion: '1.1.0',
   semanticSchemaVersion: '2', cfgVersion: '2', ssaVersion: '2', memorySsaVersion: '2', architectureSemanticVersion: '1',
-  budgetClass: 'interactive', budgetAffectsCompleteness: true,
+  // #8809 sync: #5751 made the budget generation a required dependency
+  // dimension unless explicitly denied.
+  budgetClass: 'interactive',
 };
 const id = (calleeSummaryIds, overrides = {}) => createPhase7ArtifactDescriptor({ ...base, calleeSummaryIds, ...overrides }).artifactId;
 

@@ -1,575 +1,325 @@
 /**
- * Bounded byte addressed symbolic memory.
- *
- * This module is deliberately a small consumer of the canonical semantic
- * memory facts.  It does not discover aliases or reaching definitions.  A
- * concrete address can use a sparse byte map; the first symbolic address
- * escalates the state to the conservative array tier.  Reads from a hole or
- * from a possibly aliased write stay explicit unknowns.
+ * Finite-trace byte memory, lowered to the canonical Bool/BV DAG (NOT Array sort).
+ * Initial reads implement a single arbitrary function: r_i = ite(a_i=a_j,r_j,...,fresh_i).
+ * Ordered byte writes implement read-over-write. Thus equal addresses cannot acquire
+ * independent initial values, even across forks. The shared arena contains only the
+ * initial function and the query-wide budget; mutable stores are path-local.
  */
-
 import {
-  createBv,
-  createConcat,
-  createExtract,
-  createFreshSymbol,
-  createUnknownSemantic,
-} from '../expr/factory.js';
-import { EXPR_KIND, isBvSort } from '../expr/kinds.js';
-import { computeStructuralHash } from '../expr/hash.js';
-import {
-  CANONICAL_MEMORY_FORWARDING_CONSUMER,
-  CANONICAL_MEMORY_FORWARDING_PURPOSE,
-  forwardMemoryValue,
-  isCanonicalExactMemoryForwarding,
-} from '../../semantics/memoryssa/queries.js';
-import { stableDigest } from '../../core/identity/index.js';
+  bvSort, createBv, createBool, createFreshSymbol, createCompare, createBinary,
+  createIte, createExtract, createConcat,
+} from '../expr/index.js';
+import { inspectMemoryExpressions as collectSymbols } from './expression-contract.js';
+import { createQueryGuard, QueryFailure, boundedLimit, sameMemoryIdentity } from './query-state.js';
 
-export const BYTE_MEMORY_VERSION = 'symbolic-byte-memory-v1';
-
-export const MEMORY_TIER = Object.freeze({
-  CONCRETE: 'concrete',
-  ARRAY: 'array',
-});
-
-export const MEMORY_RESULT_STATUS = Object.freeze({
-  EXACT: 'exact',
-  UNKNOWN: 'unknown',
-  PARTIAL: 'partial',
-  BUDGET_LIMITED: 'budget-limited',
-  CANCELLED: 'cancelled',
-  UNSUPPORTED: 'unsupported',
-});
-
-function fail(message) { throw new TypeError(message); }
-
-function positiveSafeInteger(value, name, fallback) {
-  const selected = value == null ? fallback : value;
-  if (typeof selected !== 'number' || !Number.isSafeInteger(selected) || selected <= 0) {
-    throw new TypeError(`${name} must be a positive primitive safe integer`);
-  }
-  return selected;
-}
-
-function normalizeWidthBits(value, fallback = 8) {
-  const width = value == null ? fallback : value;
-  if (typeof width !== 'number' || !Number.isSafeInteger(width) || width <= 0 || width % 8 !== 0) {
-    throw new TypeError('symbolic-memory-width-must-be-positive-byte-aligned');
-  }
-  return width;
-}
-
-function normalizeEndian(value, fallback = 'little') {
-  const endian = value == null ? fallback : value;
-  if (endian !== 'little' && endian !== 'big') throw new TypeError('symbolic-memory-endian-invalid');
-  return endian;
-}
-
-function parseBigInt(value) {
+const LIMITS = Object.freeze({ concreteMemoryBytes: 65536, symbolicMemoryCells: 4096,
+  storeHistoryEntries: 4096, aliasForks: 16, workItems: 250000,
+  expressionNodes: 100000, allocationUnits: 1000000, memoryObservationRecords: 4096 });
+const states = new WeakMap();
+const noLabels = Object.freeze({ clean: null, unknown: null, join: () => null });
+const sizes = new Set([1, 2, 4, 8]);
+function primitiveInteger(value) {
   if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
-  if (typeof value === 'string' && /^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) {
-    try { return BigInt(value.trim()); } catch { return null; }
-  }
-  return null;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  throw new QueryFailure('unsafe-integer');
 }
-
-function isPlainMap(value) {
-  return value instanceof Map || (value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function entries(value) {
-  if (value instanceof Map) return [...value.entries()];
-  if (value && typeof value === 'object' && !Array.isArray(value)) return Object.entries(value);
+// Structural equality, not a name/string/hash/solver-boolean alias heuristic.
+// Calls are bounded by the validated term size and the query work budget.
+function children(expr) {
+  if (['unary','extract','cast'].includes(expr.kind)) return [expr.arg];
+  if (['binary','compare','concat'].includes(expr.kind)) return [expr.left,expr.right];
+  if (expr.kind === 'connective') return expr.args;
+  if (expr.kind === 'ite') return [expr.cond,expr.thenExpr,expr.elseExpr];
   return [];
 }
-
-function canonicalExpressionAdapter() {
-  return Object.freeze({
-    constant(width, value) { return createBv(width, value); },
-    unknown(width, reason, detail = null) { return createUnknownSemantic({ kind: 'bv', width }, reason, detail); },
-    fresh(width, name, meta = {}) { return createFreshSymbol({ kind: 'bv', width }, name, meta); },
-    isConstant(value) { return value?.kind === EXPR_KIND.CONST && isBvSort(value.sort); },
-    isUnknown(value) { return value?.kind === EXPR_KIND.UNKNOWN_SEMANTIC; },
-    constantValue(value) { return value?.kind === EXPR_KIND.CONST && typeof value.value === 'bigint' ? value.value : null; },
-    widthOf(value) { return isBvSort(value?.sort) ? value.sort.width : null; },
-    extract(value, high, low) {
-      if (high === low && value?.sort?.width === 8) return value;
-      return createExtract(value, high, low);
-    },
-    concat(left, right) { return createConcat(left, right); },
-    structuralKey(value) {
-      // The canonical Expr hash intentionally maps unsupported nodes to an
-      // unknown sentinel.  Memory addresses may still be opaque but distinct
-      // caller identities, so retain a deterministic structural key for
-      // those objects instead of collapsing every pointer into one alias.
-      if (value?.kind && Object.values(EXPR_KIND).includes(value.kind)) return computeStructuralHash(value);
-      return stableDigest(value);
-    },
-  });
-}
-
-function normalizeExpressionAdapter(adapter) {
-  const selected = adapter || canonicalExpressionAdapter();
-  for (const name of ['constant', 'unknown', 'fresh', 'isConstant', 'constantValue', 'widthOf', 'extract', 'concat', 'structuralKey']) {
-    if (typeof selected[name] !== 'function') throw new TypeError(`symbolic-memory-expression-adapter-${name}-missing`);
+export function assertMemoryExpr(expr, guard, width = null) {
+  const available=guard.limits.workItems-guard.metrics().workItems;
+  if(available<1) guard.fail('budget:workItems');
+  const validated=collectSymbols([expr],{maxExprNodes:available,maxExprDepth:128,guard});
+  if(validated.limitExceeded) guard.fail('budget:workItems');
+  if(validated.unsupportedReason||validated.depthExceeded) throw new QueryFailure(validated.unsupportedReason??'expression-depth');
+  const work = [[expr,0]], seen = new Set();
+  while (work.length) {
+    guard.take('workItems');
+    const [node,depth] = work.pop();
+    if (!node || !Object.isFrozen(node) || !Object.isFrozen(node.sort) || depth > 128 ||
+        !['const','fresh_symbol','unary','binary','compare','connective','ite','extract','concat','cast'].includes(node.kind) ||
+        !['bool','bv'].includes(node.sort?.kind)) throw new QueryFailure('unsupported-expression');
+    if (node.sort.kind === 'bv' && (!Number.isSafeInteger(node.sort.width) || node.sort.width < 1 || node.sort.width > 64)) throw new QueryFailure('unsupported-width');
+    if (node.kind==='fresh_symbol' && (typeof node.symbolId!=='string'||!node.symbolId)) throw new QueryFailure('missing-canonical-symbol-id');
+    if (seen.has(node)) continue;
+    seen.add(node);
+    for (const child of children(node)) work.push([child,depth+1]);
   }
-  if (typeof selected.isUnknown !== 'function') {
-    return Object.freeze({ ...selected, isUnknown: (value) => value?.kind === EXPR_KIND.UNKNOWN_SEMANTIC });
+  if (width != null && (expr.sort.kind !== 'bv' || expr.sort.width !== width)) throw new QueryFailure('width-mismatch');
+  return expr;
+}
+function sameTerm(a,b,guard) {
+  const work=[[a,b]],seen=new Map();
+  while(work.length) {
+    guard.take('workItems');
+    const [x,y]=work.pop();if(x===y) continue;
+    if(x.kind!==y.kind||x.sort.kind!==y.sort.kind||x.sort.width!==y.sort.width) return false;
+    if(x.kind==='fresh_symbol') {if(x.symbolId!==y.symbolId) return false;continue;}
+    if(['value','op','high','low','targetWidth'].some(k=>x[k]!==y[k])) return false;
+    if(seen.get(x)?.has(y)) continue;
+    if(!seen.has(x)) seen.set(x,new Set());seen.get(x).add(y);
+    const xs=children(x),ys=children(y);if(xs.length!==ys.length) return false;
+    for(let i=0;i<xs.length;i++) work.push([xs[i],ys[i]]);
   }
-  return selected;
+  return true;
 }
-
-function freezeDetail(detail) {
-  if (detail == null || typeof detail !== 'object') return detail ?? null;
-  try { return Object.freeze(structuredClone(detail)); } catch { return null; }
-}
-
-function result(status, expression, reason = null, detail = null) {
-  return Object.freeze({
-    status,
-    exact: status === MEMORY_RESULT_STATUS.EXACT,
-    expression: expression ?? null,
-    reason,
-    detail: freezeDetail(detail),
-  });
-}
-
-function addressInfo(adapter, address) {
-  const concrete = parseBigInt(address);
-  if (concrete != null) return { kind: 'concrete', value: concrete, key: concrete.toString() };
-
-  if (address?.kind === EXPR_KIND.CONST && typeof address.value === 'bigint') {
-    return { kind: 'concrete', value: address.value, key: address.value.toString() };
+function makeState(arena, copy = null) {
+  const state = { arena, current: new Map(copy?.current ?? []), history: copy?.history.slice() ?? [],
+    mode: copy?.mode ?? 'concrete', symbolicWrites: copy?.symbolicWrites ?? false,
+    parents: copy?.parents ?? null, depth: copy?.depth ?? 0, barrier: copy?.barrier ?? null };
+  const { guard, bits, endian, labels } = arena;
+  const node = (fn) => { guard.take('expressionNodes'); return fn(); };
+  function eq(a,b) {
+    guard.take('workItems');
+    if (a === b || sameTerm(a,b,guard)) return createBool(true);
+    if (a.kind === 'const' && b.kind === 'const') return createBool(a.value === b.value);
+    return node(()=>createCompare('eq',a,b));
   }
-  if (address && typeof address === 'object') {
-    // `address` is an absolute location.  An `offset` belongs to a base
-    // descriptor and must remain symbolic unless a caller has already
-    // canonicalized the complete base+offset expression.
-    const direct = parseBigInt(address.address ?? null);
-    if (direct != null) return { kind: 'concrete', value: direct, key: direct.toString() };
-    if (address.kind === 'unknown' || address.kind === 'may-alias' || address.unknown === true) {
-      return { kind: 'unknown', key: null, expression: address };
+  function choose(condition, yes, no) {
+    if (condition.kind === 'const') return condition.value ? yes : no;
+    return Object.freeze({ expression: node(()=>createIte(condition,yes.expression,no.expression)),
+      label: labels.join(yes.label,no.label) });
+  }
+  function address(value) {
+    if (value && typeof value === 'object') return assertMemoryExpr(value,guard,bits);
+    const n=primitiveInteger(value);
+    if (n<0n || n >= (1n<<BigInt(bits))) throw new QueryFailure('address-out-of-range');
+    return createBv(bits,n);
+  }
+  function access(value,size,options={}) {
+    guard.check(options.identity ?? arena.identity);
+    if (state.barrier) throw new QueryFailure(state.barrier);
+    if (!sizes.has(size)) throw new QueryFailure('unsupported-access-width');
+    if (options.addressSpace != null && options.addressSpace !== arena.identity.addressSpace) throw new QueryFailure('address-space-mismatch');
+    if (options.volatile != null && options.volatile !== false || options.atomic != null && options.atomic !== false) {
+      state.barrier=options.volatile ? 'volatile-barrier' : 'atomic-barrier';
+      throw new QueryFailure(state.barrier);
     }
-    if (address.key != null && typeof address.key === 'string' && address.key.trim()) {
-      return { kind: 'symbolic', key: `location:${address.key}`, expression: address };
-    }
-  }
-  if (address != null && typeof address === 'object') {
-    let key;
-    try { key = adapter.structuralKey(address); } catch { key = null; }
-    if (typeof key === 'string' && key) return { kind: 'symbolic', key: `expr:${key}`, expression: address };
-  }
-  return { kind: 'unknown', key: null, expression: address };
-}
-
-function relationFor(options = {}) {
-  const relation = options.aliasRelation ?? options.relation ?? options.alias?.relation ?? null;
-  if (relation === 'must' || relation === 'no' || relation === 'may' || relation === 'unknown') return relation;
-  if (options.unknownAlias === true || options.mayAlias === true) return 'may';
-  return null;
-}
-
-function normalizeCell(value, adapter, widthBits, index, endian) {
-  const sourceWidth = adapter.widthOf(value);
-  if (sourceWidth == null) {
-    return adapter.unknown(8, 'symbolic-memory-store-value-untyped', { index, widthBits, endian });
-  }
-  if (adapter.isConstant(value)) {
-    const raw = adapter.constantValue(value);
-    const unsigned = BigInt.asUintN(sourceWidth, raw);
-    const shiftIndex = endian === 'little' ? index : (widthBits / 8) - index - 1;
-    return adapter.constant(8, unsigned >> BigInt(shiftIndex * 8));
-  }
-  const shiftIndex = endian === 'little' ? index : (widthBits / 8) - index - 1;
-  const low = shiftIndex * 8;
-  if (low + 8 > sourceWidth) {
-    return adapter.unknown(8, 'symbolic-memory-store-width-mismatch', { index, widthBits, sourceWidth, endian });
-  }
-  return adapter.extract(value, low + 7, low);
-}
-
-function assemble(cells, widthBits, endian, adapter) {
-  const bytes = widthBits / 8;
-  if (cells.every((cell) => adapter.isConstant(cell))) {
-    let value = 0n;
-    for (let index = 0; index < bytes; index++) {
-      const shift = endian === 'little' ? index : bytes - index - 1;
-      value |= BigInt.asUintN(8, adapter.constantValue(cells[index])) << BigInt(shift * 8);
-    }
-    return adapter.constant(widthBits, value);
-  }
-  let expression = null;
-  for (let index = 0; index < bytes; index++) {
-    const cell = cells[index];
-    expression = expression == null
-      ? cell
-      : (endian === 'little' ? adapter.concat(cell, expression) : adapter.concat(expression, cell));
-  }
-  return expression;
-}
-
-function* initialCellMap(initial, adapter, options) {
-  for (const [rawAddress, rawValue] of entries(initial)) {
-    const address = parseBigInt(rawAddress);
-    if (address == null) continue;
-    const wrapper = rawValue && typeof rawValue === 'object' && rawValue.kind == null && 'value' in rawValue;
-    const value = wrapper ? rawValue.value : rawValue;
-    const widthBits = normalizeWidthBits(wrapper ? (rawValue.widthBits ?? options.widthBits ?? 8) : (adapter.widthOf(value) ?? options.widthBits ?? 8), 8);
-    const endian = normalizeEndian(wrapper ? (rawValue.endian ?? options.endian) : options.endian, options.endian ?? 'little');
-    let expression = value;
-    if (!adapter.widthOf(expression)) {
-      const numeric = parseBigInt(value);
-      if (numeric == null) continue;
-      expression = adapter.constant(widthBits, numeric);
-    }
-    const byteCount = widthBits / 8;
-    for (let index = 0; index < byteCount; index++) {
-      yield [address + BigInt(index), normalizeCell(expression, adapter, widthBits, index, endian)];
-    }
-  }
-}
-
-export class ByteMemory {
-  constructor(options = {}) {
-    if (!options || typeof options !== 'object' || Array.isArray(options)) fail('symbolic-memory-options-required');
-    this.version = BYTE_MEMORY_VERSION;
-    this.expression = normalizeExpressionAdapter(options.expression);
-    this.maxConcreteBytes = positiveSafeInteger(options.maxConcreteBytes, 'maxConcreteBytes', 65536);
-    this.maxSymbolicCells = positiveSafeInteger(options.maxSymbolicCells, 'maxSymbolicCells', 4096);
-    this.maxStoreHistory = positiveSafeInteger(options.maxStoreHistory, 'maxStoreHistory', 4096);
-    this.maxAliasForks = positiveSafeInteger(options.maxAliasForks, 'maxAliasForks', 16);
-    this.signal = options.signal ?? null;
-    this.isCancelled = options.isCancelled == null ? (() => false) : options.isCancelled;
-    if (typeof this.isCancelled !== 'function') throw new TypeError('symbolic-memory-isCancelled-must-be-function');
-    this.tier = MEMORY_TIER.CONCRETE;
-    this.cells = new Map();
-    this.symbolicCells = new Map();
-    this.storeHistory = [];
-    this.uncertain = false;
-    this.aliasForks = 0;
-    this._unknownReason = null;
-    for (const [address, value] of initialCellMap(options.initial ?? options.bytes, this.expression, options)) {
-      if (this.signal?.aborted || this.isCancelled()) {
-        this._unknownReason = 'cancelled';
-        break;
-      }
-      const key = address.toString();
-      if (!this.cells.has(key) && this.cells.size >= this.maxConcreteBytes) {
-        this._unknownReason = 'budget-limited';
-        break;
-      }
-      this.cells.set(key, value);
-    }
-  }
-
-  clone() {
-    const copy = Object.create(ByteMemory.prototype);
-    Object.assign(copy, this);
-    copy.cells = new Map(this.cells);
-    copy.symbolicCells = new Map(this.symbolicCells);
-    copy.storeHistory = this.storeHistory.slice();
-    return copy;
-  }
-
-  get status() {
-    if (this._unknownReason === 'cancelled') return MEMORY_RESULT_STATUS.CANCELLED;
-    if (this._unknownReason === 'budget-limited') return MEMORY_RESULT_STATUS.BUDGET_LIMITED;
-    return this.uncertain ? MEMORY_RESULT_STATUS.UNKNOWN : MEMORY_RESULT_STATUS.EXACT;
-  }
-
-  stats() {
-    return Object.freeze({
-      tier: this.tier,
-      concreteMemoryBytes: this.cells.size,
-      symbolicMemoryCells: this.symbolicCells.size,
-      storeHistoryEntries: this.storeHistory.length,
-      aliasForks: this.aliasForks,
-      status: this.status,
+    const a=address(value);
+    if (arena.alignment === 'natural' && size>1 && (a.kind!=='const' || a.value%BigInt(size)!==0n)) throw new QueryFailure('alignment-unproved');
+    if (arena.wrapping === 'reject' && size>1 && (a.kind!=='const' || a.value+BigInt(size)>(1n<<BigInt(bits)))) throw new QueryFailure('address-wrap-unproved');
+    guard.take('allocationUnits',size);
+    return Array.from({length:size},(_,i)=> {
+      if (!i) return a;
+      return a.kind==='const' ? createBv(bits,a.value+BigInt(i)) : node(()=>createBinary('add',a,createBv(bits,BigInt(i))));
     });
   }
-
-  snapshot() {
-    return Object.freeze({
-      version: this.version,
-      tier: this.tier,
-      cells: Object.freeze([...this.cells.entries()].map(([address, value]) => Object.freeze({ address, value }))),
-      symbolicCells: Object.freeze([...this.symbolicCells.entries()].map(([key, value]) => Object.freeze({ key, value }))),
-      uncertain: this.uncertain,
-      reason: this._unknownReason,
-      stats: this.stats(),
-    });
+  function initialByte(a) {
+    guard.take('workItems');
+    if (a.kind==='const' && arena.initial.has(a.value)) return arena.initial.get(a.value);
+    for (const prior of arena.reads) {
+      guard.take('workItems');
+      if (a === prior.address || sameTerm(a,prior.address,guard)) return prior.byte;
+    }
+    guard.take('symbolicMemoryCells'); guard.take('allocationUnits',2);
+    const expression=node(()=>createFreshSymbol(bvSort(8),`mem_${arena.reads.length}`,{queryId:arena.identity.queryId,source:'initial-byte'}));
+    arena.initialSymbols.add(expression);
+    let byte=Object.freeze({expression,label:labels.unknown});
+    // Every earlier read participates, including expressions observed by sibling paths.
+    for (const prior of arena.reads) byte=choose(eq(a,prior.address),prior.byte,byte);
+    for (const [key,known] of arena.initial) byte=choose(eq(a,createBv(bits,key)),known,byte);
+    arena.reads.push(Object.freeze({address:a,byte}));
+    return byte;
   }
-
-  _guard() {
-    if (this._unknownReason === 'cancelled') {
-      return result(MEMORY_RESULT_STATUS.CANCELLED, null, 'analysis-cancelled');
+  function readByte(a, currentState=state) {
+    guard.take('workItems');
+    if (currentState.barrier) throw new QueryFailure(currentState.barrier);
+    if (!currentState.symbolicWrites && !currentState.parents && a.kind==='const' && currentState.current.has(a.value)) return currentState.current.get(a.value);
+    // Check exact last writes before constructing an unnecessary unknown base.
+    let lastExact=-1;
+    for (let i=currentState.history.length-1;i>=0;i--) {
+      const c=eq(a,currentState.history[i].address);
+      if (c.kind==='const' && c.value) { lastExact=i;break; }
     }
-    if (this._unknownReason === 'budget-limited') {
-      return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-budget-exceeded', this.stats());
+    let byte;
+    if (lastExact>=0) byte=currentState.history[lastExact].byte;
+    else if (currentState.parents) {
+      const p=currentState.parents;
+      byte=choose(p.condition,readByte(a,p.yes),readByte(a,p.no));
+      byte=Object.freeze({...byte,label:labels.join(byte.label,p.label)});
+    } else byte=initialByte(a);
+    for (let i=lastExact+1;i<currentState.history.length;i++) {
+      const store=currentState.history[i]; byte=choose(eq(a,store.address),store.byte,byte);
     }
-    if (this.signal?.aborted || this.isCancelled()) {
-      this._unknownReason = 'cancelled';
-      return result(MEMORY_RESULT_STATUS.CANCELLED, null, 'analysis-cancelled');
-    }
-    if (this.aliasForks > this.maxAliasForks) {
-      this._unknownReason = 'budget-limited';
-      return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-alias-fork-budget', this.stats());
-    }
-    if (this.storeHistory.length > this.maxStoreHistory || this.cells.size > this.maxConcreteBytes || this.symbolicCells.size > this.maxSymbolicCells) {
-      this._unknownReason = 'budget-limited';
-      return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-budget-exceeded', this.stats());
-    }
-    return null;
+    return byte;
   }
-
-  _record(history) {
-    if (this.storeHistory.length >= this.maxStoreHistory) {
-      this._unknownReason = 'budget-limited';
-      return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-store-history-budget', this.stats());
+  function outcome(action) {
+    try { const result=action();guard.check();return Object.freeze({...result,identity:arena.identity,mode:state.mode}); }
+    catch(error) {
+      if (!(error instanceof QueryFailure)) throw error;
+      // An unsupported access cannot be followed by an exact observation of stale memory.
+      state.barrier ||= error.reason;
+      return Object.freeze({status:'unknown',reason:error.reason,expression:null,label:labels.unknown,identity:arena.identity,mode:state.mode});
     }
-    this.storeHistory.push(Object.freeze(history));
-    return this._guard();
   }
-
-  _promote() { this.tier = MEMORY_TIER.ARRAY; }
-
-  /*
-   * A byte map is a forwarding cache, not a history of independent worlds.
-   * Once an access may overlap the prior state, every cached byte from that
-   * state is stale.  The store performed after the invalidation may still be
-   * forwarded at its own exact address; callers never get a pre-clobber byte
-   * merely because its symbolic key happens to remain available.
-   */
-  _invalidateForwarding({ concrete = true, symbolic = true } = {}) {
-    if (concrete) this.cells.clear();
-    if (symbolic) this.symbolicCells.clear();
-  }
-
-  seed(address, value, options = {}) {
-    return this.store(address, value, { ...options, initial: true });
-  }
-
-  store(address, value, options = {}) {
-    const guard = this._guard();
-    if (guard) return guard;
-    const suppliedWidth = options.widthBits ?? this.expression.widthOf(value) ?? 8;
-    const widthBits = normalizeWidthBits(suppliedWidth, 8);
-    let storedValue = value;
-    if (this.expression.widthOf(storedValue) == null) {
-      const fromExpression = this.expression.isConstant(storedValue)
-        ? this.expression.constantValue(storedValue)
-        : null;
-      const numeric = fromExpression != null ? fromExpression : parseBigInt(storedValue);
-      storedValue = numeric == null
-        ? this.expression.unknown(widthBits, 'symbolic-memory-store-value-untyped', { widthBits })
-        : this.expression.constant(widthBits, numeric);
-    }
-    const endian = normalizeEndian(options.endian, 'little');
-    const info = addressInfo(this.expression, address);
-    const relation = relationFor(options);
-    const barrier = options.volatile === true || options.atomic === true || options.barrier === true || options.ordering != null;
-    if (barrier) {
-      this._invalidateForwarding();
-      this.uncertain = true;
-      this._unknownReason = options.atomic === true || options.ordering != null ? 'atomic-memory-barrier' : 'volatile-memory-barrier';
-      this._promote();
-      const barrierResult = this._record({ kind: 'barrier', widthBits, endian, address: info.key, reason: this._unknownReason });
-      return barrierResult || result(MEMORY_RESULT_STATUS.UNKNOWN, null, this._unknownReason);
-    }
-    if (relation === 'may' || relation === 'unknown' || info.kind === 'unknown') {
-      this._invalidateForwarding();
-      if (relation !== 'no' && this.aliasForks >= this.maxAliasForks) {
-        this._unknownReason = 'budget-limited';
-        return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-alias-fork-budget', this.stats());
+  const api=Object.freeze({
+    identity:arena.identity, addressBits:bits, endian, wrapping:arena.wrapping,
+    load(value,size,options={}) { return outcome(()=> {
+      const addresses=access(value,size,options);
+      if (addresses.some(a=>a.kind!=='const')) state.mode='bounded-bv';
+      const bytes=addresses.map(a=>readByte(a));
+      const ordered=endian==='little' ? bytes.slice().reverse() : bytes;
+      let expression;
+      if (ordered.every(b=>b.expression.kind==='const')) {
+        expression=createBv(size*8,ordered.reduce((n,b)=>(n<<8n)|b.expression.value,0n));
+      } else expression=ordered.map(b=>b.expression).reduce((left,right)=>node(()=>createConcat(left,right)));
+      assertMemoryExpr(expression,guard,size*8);
+      const label=bytes.map(b=>b.label).reduce((a,b)=>labels.join(a,b),labels.clean);
+      return {status:expression.kind==='const'?'concrete':'symbolic',expression,label,bytes:Object.freeze(bytes)};
+    }); },
+    store(value,size,stored,options={}) { return outcome(()=> {
+      const addresses=access(value,size,options);
+      const expression=stored && typeof stored==='object' ? assertMemoryExpr(stored,guard,size*8) : createBv(size*8,primitiveInteger(stored));
+      guard.take('storeHistoryEntries',size); guard.take('allocationUnits',size);
+      const symbolic=addresses.some(a=>a.kind!=='const');
+      const added=new Set(addresses.filter(a=>a.kind==='const'&&!state.current.has(a.value)).map(a=>a.value));
+      guard.take('concreteMemoryBytes',added.size);
+      if (symbolic || expression.kind!=='const') guard.take('symbolicMemoryCells',size);
+      if (symbolic) { state.mode='bounded-bv';state.symbolicWrites=true; }
+      for(let i=0;i<size;i++) {
+        const lane=endian==='little'?i:size-1-i;
+        const byte=Object.freeze({expression:expression.kind==='const'?createBv(8,expression.value>>BigInt(lane*8)):node(()=>createExtract(expression,lane*8+7,lane*8)),label:options.label ?? labels.unknown});
+        state.history.push(Object.freeze({address:addresses[i],byte}));
+        if(addresses[i].kind==='const') state.current.set(addresses[i].value,byte);
       }
-      if (relation !== 'no') this.aliasForks++;
-      this.uncertain = true;
-      this._unknownReason = relation === 'unknown' || info.kind === 'unknown' ? 'unknown-memory-alias' : 'may-alias-store';
-      this._promote();
-      const unknownResult = this._record({ kind: 'may-alias-store', widthBits, endian, address: info.key, reason: this._unknownReason });
-      return unknownResult || result(MEMORY_RESULT_STATUS.UNKNOWN, null, this._unknownReason);
-    }
-
-    const isSymbolic = info.kind === 'symbolic';
-    if (isSymbolic) {
-      // A symbolic address can overlap every previously forwarded concrete
-      // or symbolic byte.  An explicitly proven NoAlias store is the one
-      // exception: its independent proof keeps the prior forwarding cache.
-      if (relation !== 'no') this._invalidateForwarding();
-      if (relation !== 'no' && this.aliasForks >= this.maxAliasForks) {
-        this._unknownReason = 'budget-limited';
-        return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-alias-fork-budget', this.stats());
-      }
-      if (relation !== 'no') this.aliasForks++;
-      this._promote();
-      // A symbolic write may overlap every concrete byte.  Keep exact
-      // forwarding for the same symbolic address key, but withhold concrete
-      // forwarding until an independent alias proof exists.
-      this.uncertain = true;
-      this._unknownReason = 'symbolic-memory-alias-uncertain';
-    } else if (this.symbolicCells.size && relation !== 'no') {
-      // A concrete write may be the address selected by an earlier symbolic
-      // write.  Keep concrete-to-concrete forwarding, but discard symbolic
-      // cells whose last writer may have been clobbered.
-      this.symbolicCells.clear();
-    }
-    const byteCount = widthBits / 8;
-    const values = [];
-    for (let index = 0; index < byteCount; index++) {
-      const cell = normalizeCell(storedValue, this.expression, widthBits, index, endian);
-      values.push(cell);
-      if (isSymbolic) {
-        const key = `${info.key}:${index}`;
-        if (!this.symbolicCells.has(key) && this.symbolicCells.size >= this.maxSymbolicCells) {
-          this._unknownReason = 'budget-limited';
-          return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-symbolic-cell-budget', this.stats());
-        }
-        this.symbolicCells.set(key, cell);
-      } else {
-        const key = (info.value + BigInt(index)).toString();
-        if (!this.cells.has(key) && this.cells.size >= this.maxConcreteBytes) {
-          this._unknownReason = 'budget-limited';
-          return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-concrete-byte-budget', this.stats());
-        }
-        this.cells.set(key, cell);
-      }
-      const stopped = this._guard();
-      if (stopped) return stopped;
-    }
-    const stopped = this._record({ kind: 'store', address: info.key, widthBits, endian, bytes: values });
-    if (stopped) return stopped;
-    return result(MEMORY_RESULT_STATUS.EXACT, null, null, { tier: this.tier, bytes: byteCount });
+      return {status:'stored'};
+    }); },
+    barrier(reason='unknown-clobber') {
+      guard.check();
+      // Invalidation is irreversible for this state, including malformed labels.
+      const code = typeof reason === 'string' && reason.trim() && reason.length <= 1024
+        ? reason : 'unknown-clobber';
+      state.barrier ||= code;
+      return Object.freeze({status:'unknown',reason:state.barrier});
+    },
+    fork() {
+      guard.check();guard.take('aliasForks');guard.take('allocationUnits',state.current.size+state.history.length);
+      return makeState(arena,state);
+    },
+    check(current) { guard.check(current); if(state.barrier) throw new QueryFailure(state.barrier); },
+    // Executor/translation work shares this query's prechecked resource authority.
+    validateExpression(expression, width = null) { guard.check(); return assertMemoryExpr(expression, guard, width); },
+    chargeExecution(work = 1, allocation = 0) { guard.take('workItems', work); guard.take('allocationUnits', allocation); },
+    chargeMemoryObservations() { guard.take('memoryObservationRecords'); },
+    metrics:guard.metrics,
+  });
+  states.set(api,state);return api;
+}
+export function createByteMemory(options={}) {
+  const guard=createQueryGuard(options,LIMITS);
+  const bits=boundedLimit(options.addressBits,64,64,'addressBits');
+  if(bits<1) throw new TypeError('addressBits must be positive');
+  const endian=options.endian ?? 'little',wrapping=options.wrapping ?? 'reject',alignment=options.alignment ?? 'unaligned';
+  if(!['little','big'].includes(endian)||!['reject','modular'].includes(wrapping)||!['unaligned','natural'].includes(alignment)) throw new TypeError('invalid memory geometry');
+  const labels=options.labelDomain ?? noLabels;
+  const initial=new Map();
+  const entries=options.initialBytes ?? [];
+  if(!Array.isArray(entries)) throw new TypeError('initialBytes must be [address,byte] pairs');
+  // Reserve before walking/allocating a potentially huge caller array.
+  guard.take('concreteMemoryBytes',entries.length);guard.take('allocationUnits',entries.length);
+  for(const entry of entries) {
+    guard.take('workItems');
+    if(!Array.isArray(entry)||entry.length!==2) throw new TypeError('invalid initial byte');
+    const a=primitiveInteger(entry[0]),b=primitiveInteger(entry[1]);
+    if(a<0n||a>=(1n<<BigInt(bits))||b<0n||b>255n||initial.has(a)) throw new TypeError('invalid/duplicate initial byte');
+    initial.set(a,Object.freeze({expression:createBv(8,b),label:labels.clean}));
   }
-
-  write(address, value, options = {}) { return this.store(address, value, options); }
-
-  _loadUnknown(reason, detail = null) {
-    const widthBits = detail?.widthBits ?? 8;
-    return result(MEMORY_RESULT_STATUS.UNKNOWN, this.expression.unknown(widthBits, reason, detail), reason, detail);
-  }
-
-  read(address, widthBits, options = {}) {
-    if (widthBits && typeof widthBits === 'object' && !Array.isArray(widthBits)) {
-      options = { ...widthBits, ...options };
-      widthBits = options.widthBits ?? 8;
-    }
-    const guard = this._guard();
-    if (guard) return guard;
-    const width = normalizeWidthBits(widthBits, 8);
-    const endian = normalizeEndian(options.endian, 'little');
-    const info = addressInfo(this.expression, address);
-    const relation = relationFor(options);
-    const barrier = options.volatile === true || options.atomic === true || options.barrier === true || options.ordering != null;
-    if (barrier) {
-      this._invalidateForwarding();
-      this.uncertain = true;
-      this._unknownReason = options.atomic === true || options.ordering != null ? 'atomic-memory-barrier' : 'volatile-memory-barrier';
-      this._promote();
-      return this._loadUnknown(this._unknownReason, { widthBits: width, endian, tier: this.tier, address: info.key });
-    }
-    if (relation === 'may' || relation === 'unknown' || info.kind === 'unknown') {
-      return this._loadUnknown(relation === 'may' ? 'symbolic-memory-may-alias' : 'unknown-memory-alias', { widthBits: width, endian, tier: this.tier });
-    }
-    if (info.kind === 'symbolic') this._promote();
-    const byteCount = width / 8;
-    const cells = [];
-    for (let index = 0; index < byteCount; index++) {
-      const stopped = this._guard();
-      if (stopped) return stopped;
-      let cell = null;
-      if (info.kind === 'concrete') {
-        cell = this.cells.get((info.value + BigInt(index)).toString()) ?? null;
-      } else {
-        cell = this.symbolicCells.get(`${info.key}:${index}`) ?? null;
-        if (!cell && (options.allowUnconstrainedSymbols === true || options.allowFreshSymbols === true)) {
-          if (this.symbolicCells.size >= this.maxSymbolicCells) {
-            this._unknownReason = 'budget-limited';
-            return result(MEMORY_RESULT_STATUS.BUDGET_LIMITED, null, 'symbolic-memory-symbolic-cell-budget', this.stats());
-          }
-          cell = this.expression.fresh(8, `mem_${info.key}_${index}`, { source: 'symbolic-memory-array', addressKey: info.key, byte: index });
-          this.symbolicCells.set(`${info.key}:${index}`, cell);
-        }
-      }
-      if (cell == null) {
-        return this._loadUnknown(this.uncertain && this._unknownReason
-          ? this._unknownReason
-          : 'symbolic-memory-byte-hole', {
-          widthBits: width,
-          endian,
-          tier: this.tier,
-          address: info.key,
-          missingByte: index,
-        });
-      }
-      if (this.expression.widthOf(cell) !== 8) {
-        return this._loadUnknown('symbolic-memory-byte-malformed', { widthBits: width, endian, missingByte: index });
-      }
-      if (this.expression.isUnknown(cell)) {
-        return this._loadUnknown('symbolic-memory-byte-unknown', { widthBits: width, endian, missingByte: index });
-      }
-      cells.push(cell);
-    }
-    return result(MEMORY_RESULT_STATUS.EXACT, assemble(cells, width, endian, this.expression), null, { tier: this.tier, bytes: byteCount });
-  }
-
-  load(address, widthBits, options = {}) {
-    const loaded = this.read(address, widthBits, options);
-    const requestedWidth = widthBits && typeof widthBits === 'object' && !Array.isArray(widthBits)
-      ? widthBits.widthBits ?? 8
-      : widthBits;
-    return loaded.expression ?? this.expression.unknown(normalizeWidthBits(requestedWidth, 8), loaded.reason || 'symbolic-memory-read-not-exact', loaded.detail);
-  }
+  const arena={guard,identity:guard.identity,bits,endian,wrapping,alignment,initial,labels,reads:[],initialSymbols:new WeakSet(),lifecycle:Object.freeze({signal:options.signal,isCancelled:options.isCancelled,getCurrentIdentity:options.getCurrentIdentity,now:options.now})};
+  return makeState(arena);
+}
+export function joinByteMemory(condition,yes,no,label=null) {
+  const a=states.get(yes),b=states.get(no);
+  if(!a||!b||a.arena!==b.arena) throw new QueryFailure('unrelated-memory-states');
+  const {guard}=a.arena;
+  assertMemoryExpr(condition,guard);
+  if(condition.sort.kind!=='bool') throw new QueryFailure('join-condition-sort');
+  guard.take('aliasForks');guard.take('allocationUnits',a.current.size+a.history.length+b.current.size+b.history.length);
+  if(Math.max(a.depth,b.depth)>=16) guard.fail('budget:merge-depth');
+  // Capture independent states; later writes in either parent cannot mutate the join.
+  const capture=s=>({...s,current:new Map(s.current),history:s.history.slice()});
+  return makeState(a.arena,{current:[],history:[],mode:'bounded-bv',symbolicWrites:true,depth:Math.max(a.depth,b.depth)+1,
+    parents:Object.freeze({condition,yes:capture(a),no:capture(b),label}),barrier:a.barrier||b.barrier});
 }
 
-export const SymbolicByteMemory = ByteMemory;
-
-/**
- * Consume the canonical MemorySSA producer.  A non-exact fact is returned as
- * an explicit non-exact result; callers must not fall back to location names
- * or structural reachingStore links.
+/** Share only a genuine query arena; mutable store histories are independently forked.
+ * Used for paired executions, not restoration from a serialized memory object.
  */
-export function readCanonicalMemory(memorySsa, useOrId, options = {}) {
-  const queryOptions = {
-    ...options,
-    consumerId: options.consumerId ?? CANONICAL_MEMORY_FORWARDING_CONSUMER,
-    purpose: options.purpose ?? CANONICAL_MEMORY_FORWARDING_PURPOSE,
-  };
-  let fact;
-  try {
-    fact = forwardMemoryValue(memorySsa, useOrId, queryOptions);
-  } catch (error) {
-    let widthBits = 8;
-    try { widthBits = normalizeWidthBits(options.widthBits ?? 8, 8); } catch { /* retain bounded fallback */ }
-    return Object.freeze({
-      status: error?.name === 'AbortError' ? MEMORY_RESULT_STATUS.CANCELLED : MEMORY_RESULT_STATUS.UNKNOWN,
-      exact: false,
-      expression: createUnknownSemantic({ kind: 'bv', width: widthBits }, error?.message || 'canonical-memory-forwarding-query-failed'),
-      fact: null,
-    });
+export function forkByteMemoryForExecution(memory, options) {
+  const state = states.get(memory);
+  if (!state || !sameMemoryIdentity(options.identity, state.arena.identity)) throw new QueryFailure('unissued-or-unrelated-memory-state');
+  for (const [key, actual] of [['addressBits',state.arena.bits],['endian',state.arena.endian],
+    ['wrapping',state.arena.wrapping],['alignment',state.arena.alignment]]) {
+    if (options[key] != null && options[key] !== actual) throw new QueryFailure('initial-memory-geometry-mismatch');
   }
-  if (!isCanonicalExactMemoryForwarding(fact, options.context ?? null)) {
-    let widthBits = Number.isSafeInteger(Number(fact?.widthBits)) && Number(fact.widthBits) > 0
-      ? Number(fact.widthBits) : 8;
-    try { widthBits = normalizeWidthBits(widthBits, 8); } catch { widthBits = 8; }
-    const status = Object.values(MEMORY_RESULT_STATUS).includes(fact?.status)
-      ? fact.status : MEMORY_RESULT_STATUS.UNKNOWN;
-    return Object.freeze({
-      status,
-      exact: false,
-      expression: createUnknownSemantic({ kind: 'bv', width: widthBits }, fact?.reason || 'canonical-memory-forwarding-not-exact', {
-        factStatus: fact?.status ?? null,
-        factReason: fact?.reason ?? null,
-      }),
-      fact,
-    });
+  for (const key of ['signal','isCancelled','getCurrentIdentity','now']) {
+    if (options[key] != null && options[key] !== state.arena.lifecycle[key]) throw new QueryFailure('initial-memory-lifecycle-conflict');
   }
-  return Object.freeze({
-    status: MEMORY_RESULT_STATUS.EXACT,
-    exact: true,
-    expression: createBv(Number(fact.widthBits), fact.value),
-    fact,
-  });
+  if (options.limits != null) throw new QueryFailure('initial-memory-budget-override');
+  if (options.timeoutMs != null && options.timeoutMs < state.arena.guard.remainingMilliseconds()) throw new QueryFailure('initial-memory-deadline-conflict');
+  if (options.initialBytes != null || options.labelDomain != null) throw new QueryFailure('initial-memory-options-conflict');
+  return memory.fork();
 }
 
-export function createByteMemory(options = {}) { return new ByteMemory(options); }
+/** Complete concrete write set from an issued state, not from supplied IR labels.
+ * This is a trace summary, not an alias/reaching-definition analysis. */
+export function concreteMemoryWriteFootprint(memory) {
+  const state=states.get(memory);
+  if(!state)throw new QueryFailure('unissued-memory-state');
+  memory.check();
+  if(state.symbolicWrites||state.parents)throw new QueryFailure('symbolic-write-footprint');
+  memory.chargeExecution(state.history.length,state.history.length);
+  const addresses=new Set();
+  for(const write of state.history) {
+    if(write.address.kind!=='const')throw new QueryFailure('symbolic-write-footprint');
+    addresses.add(write.address.value);
+  }
+  memory.check();
+  return Object.freeze([...addresses].sort((a,b)=>a<b?-1:a>b?1:0));
+}
+
+/** Every byte address written by an issued finite trace, including symbolic
+ * addresses. This is a cover of writes, NOT a guessed alias/NoAlias relation.
+ * Duplicates are safe; only identical Expr objects are deduplicated here.
+ * A merged state includes both captured parents so no possible write is lost.
+ */
+export function symbolicMemoryWriteFootprint(memory) {
+  const state = states.get(memory);
+  if (!state) throw new QueryFailure('unissued-memory-state');
+  memory.check();
+  memory.chargeExecution(1, 1);
+  const pending = [state], visited = new Set(), addresses = new Set();
+  while (pending.length) {
+    memory.chargeExecution();
+    const current = pending.pop();
+    if (visited.has(current)) continue;
+    if (current.barrier) throw new QueryFailure(current.barrier);
+    memory.chargeExecution(1, 1);
+    visited.add(current);
+    for (const write of current.history) {
+      memory.chargeExecution();
+      if (!addresses.has(write.address)) {
+        memory.chargeExecution(1, 1);
+        addresses.add(write.address);
+      }
+    }
+    if (current.parents) {
+      memory.chargeExecution(2, 2);
+      pending.push(current.parents.yes, current.parents.no);
+    }
+  }
+  memory.chargeExecution(addresses.size, addresses.size);
+  memory.check();
+  return Object.freeze([...addresses]);
+}
+
+/** The metadata string `source:initial-byte` is not an authority token. */
+export function isMemoryInitialSymbol(memory, symbol) {
+  const state = states.get(memory);
+  return !!state && state.arena.initialSymbols.has(symbol);
+}

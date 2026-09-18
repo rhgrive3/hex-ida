@@ -1,4 +1,5 @@
 import { stableDigest } from "../../core/identity/index.js";
+import { ANALYSIS_COMPLETENESS } from "../status.js";
 import {
   assertAnalysisSnapshot,
   createAnalysisSnapshot,
@@ -6,7 +7,7 @@ import {
   normalizeAnalysisArtifactVersions,
 } from "./snapshot.js";
 
-const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
+const COMPLETENESS = new Set(ANALYSIS_COMPLETENESS);
 const TYPED_ARRAY_MUTATORS = new Set(["set", "copyWithin", "fill", "reverse", "sort"]);
 const TYPED_ARRAY_CALLBACKS = new Set([
   "forEach", "map", "filter", "every", "some", "find", "findIndex", "findLast", "findLastIndex",
@@ -28,7 +29,7 @@ function safeNonNegativeInteger(value) {
 
 function sameSnapshotIdentity(snapshot, current) {
   const currentRevision = safeNonNegativeInteger(current?.projectRevision === undefined ? 0 : current?.projectRevision);
-  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
+  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch === undefined ? 0 : current?.analysisEpoch);
   if (currentRevision == null || currentEpoch == null || typeof current?.binaryId !== "string") return false;
   return current.binaryId === snapshot.binaryId
     && currentRevision === snapshot.projectRevision
@@ -260,6 +261,45 @@ function preserveKnownQueryLimitContinuation(result) {
   });
 }
 
+function snapshotDescriptorValue(descriptors, key) {
+  const descriptor = descriptors[key];
+  if (descriptor == null) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    throw new TypeError("analysis-snapshot-accessor-not-allowed");
+  }
+  return descriptor.value;
+}
+
+function pinValidatedSnapshot(snapshot) {
+  // Acquire caller-owned identity fields once, before validation. This closes
+  // the same-turn validation/read seam for getters and Proxies while retaining
+  // the existing snapshot schema and artifact-version normalization (#5131).
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new TypeError("analysis-snapshot-required");
+  }
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(snapshot);
+  } catch {
+    throw new TypeError("analysis-snapshot-descriptor-read-failed");
+  }
+
+  const pinned = {
+    schemaVersion: snapshotDescriptorValue(descriptors, "schemaVersion"),
+    snapshotId: snapshotDescriptorValue(descriptors, "snapshotId"),
+    binaryId: snapshotDescriptorValue(descriptors, "binaryId"),
+    projectRevision: snapshotDescriptorValue(descriptors, "projectRevision"),
+    analysisEpoch: snapshotDescriptorValue(descriptors, "analysisEpoch"),
+    artifactVersions: normalizeAnalysisArtifactVersions(
+      snapshotDescriptorValue(descriptors, "artifactVersions"),
+    ),
+  };
+  const createdAt = snapshotDescriptorValue(descriptors, "createdAt");
+  if (createdAt != null) pinned.createdAt = createdAt;
+  assertAnalysisSnapshot(pinned);
+  return deepFreezeTree(pinned);
+}
+
 export class AnalysisQueryAPI {
   constructor(adapter) {
     if (!adapter || typeof adapter.currentIdentity !== "function") {
@@ -276,29 +316,30 @@ export class AnalysisQueryAPI {
   }
 
   async #validateAndCheckStale(snapshot, options) {
-    assertAnalysisSnapshot(snapshot);
+    const pinnedSnapshot = pinValidatedSnapshot(snapshot);
     aborted(options);
     const current = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, current)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, current)) {
       throw new AnalysisSnapshotStaleError("Snapshot is stale before query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: current?.analysisEpoch,
       });
     }
+    return pinnedSnapshot;
   }
 
   async #wrapResult(snapshot, executeFn, options) {
-    await this.#validateAndCheckStale(snapshot, options);
-    const result = await executeFn();
+    const pinnedSnapshot = await this.#validateAndCheckStale(snapshot, options);
+    const result = await executeFn(pinnedSnapshot);
     aborted(options);
     const currentAfter = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, currentAfter)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, currentAfter)) {
       throw new AnalysisSnapshotStaleError("Snapshot became stale during query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: currentAfter?.analysisEpoch,
       });
     }
@@ -313,8 +354,8 @@ export class AnalysisQueryAPI {
     const page = frozenQueryValue(result?.page ?? null);
     const cost = frozenQueryValue(result?.cost ?? rawStatus?.cost ?? null);
     return Object.freeze({
-      snapshotId: snapshot.snapshotId,
-      analysisEpoch: snapshot.analysisEpoch,
+      snapshotId: pinnedSnapshot.snapshotId,
+      analysisEpoch: pinnedSnapshot.analysisEpoch,
       completeness,
       value,
       status,
@@ -326,8 +367,8 @@ export class AnalysisQueryAPI {
   async #query(method, snapshot, args, options = {}) {
     return this.#wrapResult(
       snapshot,
-      () => typeof this.adapter[method] === "function"
-        ? this.adapter[method](snapshot, ...args, options)
+      (pinnedSnapshot) => typeof this.adapter[method] === "function"
+        ? this.adapter[method](pinnedSnapshot, ...args, options)
         : unavailable(method),
       options,
     );
@@ -384,6 +425,159 @@ export class AnalysisQueryAPI {
 
   async search(snapshot, query, page = {}, options = {}) {
     return this.#query("search", snapshot, [query, page], options);
+  }
+
+  // Scoped snapshots use an immutable local source identity when a complete
+  // content hash is not already known; ordinary snapshot semantics are unchanged.
+  async scopedSnapshot(options = {}) {
+    return this.snapshot({ ...options, scopedSourceIdentity: true });
+  }
+
+  async knowledgeMatches(snapshot, request = {}, options = {}) {
+    return this.#query("knowledgeMatches", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async applePointerView(snapshot, request = {}, options = {}) {
+    return this.#query("applePointerView", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async appleMetadataView(snapshot, request = {}, options = {}) {
+    return this.#query("appleMetadataView", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async scopedCapabilities(snapshot, request = {}, options = {}) {
+    return this.#query("scopedCapabilities", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async investigationFrontier(snapshot, request = {}, options = {}) {
+    return this.#query("investigationFrontier", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async typeEvidence(snapshot, request = {}, options = {}) {
+    return this.#query("typeEvidence", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async interproceduralQuery(snapshot, request = {}, options = {}) {
+    return this.#query("interproceduralQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async abiInputBindings(snapshot, request = {}, options = {}) {
+    return this.#query("abiInputBindings", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async abiPlacementEvidence(snapshot, request = {}, options = {}) {
+    return this.#query("abiPlacementEvidence", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async explainTransformChain(snapshot, request = {}, options = {}) {
+    return this.#query("explainTransformChain", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async runtimeObservations(snapshot, request = {}, options = {}) {
+    return this.#query("runtimeObservations", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async taskIdiomView(snapshot, request = {}, options = {}) {
+    return this.#query("taskIdiomView", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async inspectConditionalModel(snapshot, request = {}, options = {}) {
+    return this.#query("inspectConditionalModel", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async checkLoopInvariant(snapshot, request = {}, options = {}) {
+    return this.#query("checkLoopInvariant", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async asyncEventOrder(snapshot, request = {}, options = {}) {
+    return this.#query("asyncEventOrder", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async portableIntegerChecks(snapshot, request = {}, options = {}) {
+    return this.#query("portableIntegerChecks", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async blockCaptures(snapshot, request = {}, options = {}) {
+    return this.#query("blockCaptures", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async semanticQuery(snapshot, request = {}, options = {}) {
+    return this.#query("semanticQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async resumeSemanticQuery(snapshot, request = {}, options = {}) {
+    return this.#query("resumeSemanticQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async demandQuery(snapshot, request = {}, options = {}) {
+    return this.#query("demandQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async investigateDemand(snapshot, request = {}, options = {}) {
+    return this.#query("investigateDemand", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async demandInvestigationFrontier(snapshot, request = {}, options = {}) {
+    return this.#query("demandInvestigationFrontier", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async resumeDemandQuery(snapshot, request = {}, options = {}) {
+    return this.#query("resumeDemandQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async explainDemandResult(snapshot, request = {}, options = {}) {
+    return this.#query("explainDemandResult", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async replayDemandResult(snapshot, request = {}, options = {}) {
+    return this.#query("replayDemandResult", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async dispatchTargets(snapshot, request = {}, options = {}) {
+    return this.#query("dispatchTargets", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async objectMemory(snapshot, request = {}, options = {}) {
+    return this.#query("objectMemory", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async referenceSlice(snapshot, request = {}, options = {}) {
+    return this.#query("referenceSlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+  async replayReferenceSlice(snapshot, request = {}, options = {}) {
+    return this.#query("replayReferenceSlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+  async callGraphSlice(snapshot, request = {}, options = {}) {
+    return this.#query("callGraphSlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+  async resumeCallGraphSlice(snapshot, request = {}, options = {}) {
+    return this.#query("resumeCallGraphSlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+  async rangeValueCatalog(snapshot, request = {}, options = {}) {
+    return this.#query("rangeValueCatalog", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+  async refineValueFacts(snapshot, request = {}, options = {}) {
+    return this.#query("refineValueFacts", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async summarySlice(snapshot, request = {}, options = {}) {
+    return this.#query("summarySlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async resumeSummarySlice(snapshot, request = {}, options = {}) {
+    return this.#query("resumeSummarySlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async proofSlice(snapshot, request = {}, options = {}) {
+    return this.#query("proofSlice", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async replayProof(snapshot, request = {}, options = {}) {
+    return this.#query("replayProof", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
+  async cancelScopedQuery(snapshot, request = {}, options = {}) {
+    return this.#query("cancelScopedQuery", snapshot, [request], { ...options, scopedSourceIdentity: true });
   }
 
   async causalPath(snapshot, source, sink, options = {}) {

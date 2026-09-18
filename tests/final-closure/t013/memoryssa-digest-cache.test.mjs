@@ -121,7 +121,7 @@ test('canonical Semantic IR reuse retains cancellation, budget, and clone guards
   const controller = new AbortController();
   controller.abort();
   assert.throws(() => validateSemanticIrFunction(ir, { signal: controller.signal }), /cancelled/);
-  assert.throws(() => validateSemanticIrFunction(ir, { budget: { maxBlocks: 0 } }), /invalid-budget-maxBlocks/);
+  assert.throws(() => validateSemanticIrFunction(ir, { budget: { maxBlocks: 0 } }), /semantic-ir-budget-exceeded-maxBlocks/);
 
   const clone = structuredClone(ir);
   clone.functionId = 'memoryssa-ir-marker-mutated';

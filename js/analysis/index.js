@@ -24,24 +24,29 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
-import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
-  attachDiscoveryArtifactToSearchResult,
   createDiscoveryArtifact,
-  DISCOVERY_ARTIFACT_DEFAULT_BUDGET,
   discoveryArtifactForRebuild,
-  discoveryArtifactResourcePreflight,
-  isDiscoveryRebuildBinding,
+  functionDiscoveryArtifact,
+  isFactoryIssuedDiscoveryArtifact,
   isFactoryIssuedDiscoveryRebuildBinding,
   normalizeDiscoveryArtifactBudget,
   verifyDiscoveryReparse,
 } from './discovery/artifact.js';
+import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
   reachingMemoryDefinition,
 } from '../semantics/memoryssa/queries.js';
 
-export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.0.0';
+export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.1.0';
+
+function requiredSnapshotId(value) {
+  if (typeof value !== 'string') throw new TypeError('phase7-analysis-snapshot-required');
+  const snapshotId = value.trim();
+  if (!snapshotId) throw new TypeError('phase7-analysis-snapshot-required');
+  return snapshotId;
+}
 
 /**
  * Creates the analysis surface for one function's semantic artifacts.
@@ -56,10 +61,12 @@ export function createAnalysisSurface({
   cfg,
   ssa,
   memorySsa,
-  snapshotId = 'snapshot-unbound',
+  snapshotId: rawSnapshotId,
   resolveRegion = null,
   options = {},
 } = {}) {
+  const snapshotId = requiredSnapshotId(rawSnapshotId);
+
   // MemorySSA answers are only published as complete when the binding itself
   // is complete (issues #3127/#3129). The binding-declared completeness is the
   // authority; the legacy option is a fallback, never an override.
@@ -160,11 +167,13 @@ export function createAnalysisSurface({
    * Answers `mayWrite` conservatively whenever the summary cannot prove
    * otherwise, which is what keeps an incomplete summary from reading as pure.
    */
-  function memoryEffects({ regionId = null } = {}) {
+  function memoryEffects({ regionId = null, region = null } = {}) {
     const { summary } = functionSummary();
     if (!summary) return { mayWrite: true, summary: null, status: status('partial', 'evidence-missing') };
+    const regionIdentityMismatch = region != null && regionId != null
+      && (typeof regionId !== 'string' || region?.id !== regionId.trim());
     return {
-      mayWrite: summaryMayWriteRegion(summary, regionId),
+      mayWrite: regionIdentityMismatch ? true : summaryMayWriteRegion(summary, region ?? regionId),
       reads: summary.memoryReadRegions,
       writes: summary.memoryWriteRegions,
       unknownCalls: summary.unknownCallEffects,
@@ -259,30 +268,39 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   const registry = new DiscoveryProducerRegistry();
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
-  const byteIntervals = options.byteIntervals ?? input?.image?.byteIntervals ?? [];
-  const intervalCounts = new Map();
-  if (Array.isArray(byteIntervals)) {
-    for (const interval of byteIntervals) {
-      if (typeof interval?.producerId !== 'string') continue;
-      intervalCounts.set(interval.producerId, (intervalCounts.get(interval.producerId) ?? 0) + 1);
-    }
-  }
-  const { evidence, producerRuns, resourceLimitReason } = registry.collect(
-    input, architectureId, options, intervalCounts,
-  );
-  const externalProducerIds = new Set(
-    producerRuns.filter((run) => run.authorityClass === 'external').map((run) => run.id),
-  );
-  if (evidence.some((item) => item.authority === 'authoritative' && externalProducerIds.has(item.producerId))) {
-    throw new TypeError('discovery-producer-authoritative-evidence-untrusted');
-  }
-  return fuseFunctionCandidates(evidence, {
+  const collected = registry.collect(input, architectureId, options);
+  const fused = fuseFunctionCandidates(collected.evidence, {
     architectureId,
     ...options,
-    producerRuns,
-    byteIntervals,
-    artifactResourceLimitReason: resourceLimitReason,
+    producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },
   });
+  const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));
+  const evidenceCounts = new Map();
+  for (const item of collected.evidence) {
+    evidenceCounts.set(item.producerId, (evidenceCounts.get(item.producerId) ?? 0) + 1);
+  }
+  const producerRuns = collected.producerIds.map((id) => ({
+    id,
+    version: '1.0.0',
+    completeness: collected.truncated ? 'partial' : 'complete',
+    stopReason: collected.truncated ? (collected.stopReason ?? 'evidence-missing') : null,
+    evidenceCount: evidenceCounts.get(id) ?? 0,
+    authorityClass: canonicalProducerIds.has(id) ? 'canonical' : 'external',
+  }));
+  const artifact = createDiscoveryArtifact({
+    evidence: collected.evidence,
+    candidates: fused.candidates,
+    status: fused.status,
+    producerRuns,
+    binding: {
+      binaryId: options.binaryId ?? null,
+      sourceHash: options.sourceHash ?? null,
+      snapshotId: options.snapshotId ?? null,
+      architectureId,
+    },
+    budget: options.artifactBudget ?? {},
+  });
+  return { ...fused, artifact };
 }
 
 import {
@@ -299,13 +317,14 @@ export {
   applyDebugTypesToGraph,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
-  attachDiscoveryArtifactToSearchResult,
   createDiscoveryArtifact,
-  DISCOVERY_ARTIFACT_DEFAULT_BUDGET,
+  functionDiscoveryArtifact,
   discoveryArtifactForRebuild,
-  discoveryArtifactResourcePreflight,
-  isDiscoveryRebuildBinding,
+  isFactoryIssuedDiscoveryArtifact,
   isFactoryIssuedDiscoveryRebuildBinding,
   normalizeDiscoveryArtifactBudget,
   verifyDiscoveryReparse,
 };
+
+// Original-byte discovery materialization reuses the canonical producer/fusion lane.
+export {queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS} from './discovery/layout.js';

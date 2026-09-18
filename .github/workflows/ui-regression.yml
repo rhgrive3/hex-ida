@@ -17,6 +17,7 @@ on:
       - 'js/ai/control/snapshot.js'
       - 'js/ai/dev/ui/controls.js'
       - 'tests/browser.mjs'
+      - 'tests/issue-6262-destroy-resize-timer.mjs'
       - 'tests/ui/**'
       - 'tests/ux.mjs'
       - 'tests/ai-ui-dev-profile.mjs'

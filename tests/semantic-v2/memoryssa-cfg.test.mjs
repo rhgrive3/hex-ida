@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { stableStringify } from '../../js/core/identity/index.js';
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
-import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
+import { createMemoryRegionRef, createMemorySsaContract } from '../../js/semantics/memoryssa/contract.js';
 import { buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
 import { reachingConcreteStore, reachingMemoryDefinition } from '../../js/semantics/memoryssa/queries.js';
 import { validateMemorySsa } from '../../js/semantics/memoryssa/validate.js';
@@ -153,6 +154,10 @@ function phi(memorySsa, blockId) {
   const loopPhi = phi(memorySsa, 'header');
   assert.ok(loopPhi);
   assert.deepEqual(loopPhi.incoming.map((item) => item.predecessorBlockId), ['body', 'entry']);
+  const initial = memorySsa.definitions.find((definition) => definition.kind === 'entry' && definition.regionId === regionA.id);
+  assert.equal(initial.blockId, null, 'boundary memory must not pretend to execute in the live entry block');
+  assert.equal(initial.proof.kind, 'initial-memory-version');
+  assert.equal(loopPhi.incoming.find((item) => item.predecessorBlockId === 'entry').definitionId, initial.id);
   assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'exit_load')).id, loopPhi.id);
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
 }
@@ -175,6 +180,61 @@ function phi(memorySsa, blockId) {
   assert.ok(phi(memorySsa, 'outer_header'));
   assert.ok(phi(memorySsa, 'inner_header'));
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
+}
+
+{
+  const blocks = [
+    { id: 'entry', successors: [{ to: 'live', kind: 'branch' }] },
+    { id: 'live', successors: [{ to: 'join', kind: 'branch' }] },
+    { id: 'dead_root', successors: [{ to: 'join', kind: 'branch' }] },
+    { id: 'join', successors: [] },
+    { id: 'isolated_root', successors: [] },
+  ];
+  const nodes = [
+    makeNode('live_store', 'store', 'live', 'addr_A'),
+    makeNode('live_load', 'load', 'live', 'addr_A'),
+    makeNode('dead_load', 'load', 'dead_root', 'addr_A'),
+    makeNode('join_load', 'load', 'join', 'addr_A'),
+    makeNode('isolated_load', 'load', 'isolated_root', 'addr_A'),
+  ];
+  const { memorySsa, cfg } = build(blocks, nodes, { regions: [regionA, regionMaybe] });
+  const merge = phi(memorySsa, 'join');
+  assert.ok(merge);
+  const deadIncoming = merge.incoming.find((item) => item.predecessorBlockId === 'dead_root');
+  assert.ok(deadIncoming);
+  const deadSeed = memorySsa.definitions.find((definition) => definition.id === deadIncoming.definitionId);
+  assert.equal(deadSeed.kind, 'entry');
+  assert.equal(deadSeed.blockId, null);
+  assert.equal(deadSeed.proof.kind, 'unreachable-initial-memory-version');
+  assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'join_load')).id, merge.id);
+  assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'dead_load')).id, deadSeed.id);
+  const isolatedSeed = reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'isolated_load'));
+  assert.equal(isolatedSeed.kind, 'entry');
+  assert.equal(isolatedSeed.blockId, null);
+  assert.equal(isolatedSeed.proof.kind, 'unreachable-initial-memory-version');
+  assert.notEqual(isolatedSeed.id, deadSeed.id);
+  assert.equal(loadUse(memorySsa, 'dead_load').aliasRelation, 'unknown');
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'dead_load')), null);
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'live_load')).sourceEntityId, 'live_store');
+  const seeds = memorySsa.definitions.filter((definition) => definition.kind === 'entry');
+  assert.equal(seeds.length, 6, 'both regions retain their boundary and two unreachable-component seeds');
+  assert.ok(seeds.every((definition) => definition.blockId === null));
+  for (const region of [regionA, regionMaybe]) {
+    assert.deepEqual(seeds.filter((definition) => definition.regionId === region.id)
+      .map((definition) => definition.proof.seedBlockId ?? 'function-boundary').sort(),
+    ['dead_root', 'function-boundary', 'isolated_root']);
+  }
+  assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
+  const imported = JSON.parse(JSON.stringify({
+    contractVersion: memorySsa.contractVersion,
+    functionId: memorySsa.functionId,
+    regions: memorySsa.regions,
+    definitions: memorySsa.definitions,
+    uses: memorySsa.uses,
+  }));
+  assert.doesNotThrow(() => createMemorySsaContract(imported, { cfg }));
+  const repeated = build(blocks, nodes, { regions: [regionA, regionMaybe] }).memorySsa;
+  assert.equal(stableStringify(memorySsa), stableStringify(repeated));
 }
 
 {
@@ -208,6 +268,36 @@ function phi(memorySsa, blockId) {
   const use = conservative.uses.find((item) => item.sourceEntityId === 'load_without_provider');
   assert.equal(reachingMemoryDefinition(conservative, use).kind, 'unknown-clobber');
   assert.equal(reachingConcreteStore(conservative, use), null);
+}
+
+// Initial memory is a function-wide boundary value, including synthetic roots.
+// A dead predecessor retained by the decoder can feed an otherwise live loop.
+for (const deadLoop of [false, true]) {
+  const blocks = [
+    { id: 'entry', successors: [{ to: 'header', kind: 'branch' }] },
+    { id: 'header', successors: [{ to: 'body', kind: 'conditional-true' }, { to: 'exit', kind: 'conditional-false' }] },
+    { id: 'body', successors: [{ to: 'header', kind: 'branch' }] },
+    { id: 'exit', successors: [] },
+    { id: 'dead', successors: [{ to: deadLoop ? 'dead_header' : 'header', kind: 'branch' }] },
+    ...(deadLoop ? [
+      { id: 'dead_header', successors: [{ to: 'dead_body', kind: 'branch' }] },
+      { id: 'dead_body', successors: [{ to: 'dead_header', kind: 'branch' }] },
+    ] : []),
+  ];
+  const nodes = [
+    makeNode('body_store', 'store', 'body', 'addr_A'),
+    makeNode('exit_load', 'load', 'exit', 'addr_A'),
+    ...(deadLoop ? [makeNode('dead_store', 'store', 'dead_body', 'addr_A')] : []),
+  ];
+  const { memorySsa, cfg } = build(blocks, nodes);
+  const merge = phi(memorySsa, deadLoop ? 'dead_header' : 'header');
+  const initial = memorySsa.definitions.find((definition) => definition.id ===
+    merge.incoming.find((incoming) => incoming.predecessorBlockId === 'dead').definitionId);
+  assert.equal(initial.kind, 'entry');
+  assert.equal(initial.blockId, null, 'initial memory must not pretend to execute in the live entry block');
+  assert.equal(initial.sourceEntityId, functionId);
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'exit_load')), null);
+  assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
 }
 
 console.log('semantic-v2 MemorySSA CFG/loop tests: PASS');

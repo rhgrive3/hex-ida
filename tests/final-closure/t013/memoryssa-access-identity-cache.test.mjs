@@ -99,7 +99,7 @@ const artifact = buildMemorySsa(ir, cfg, {
     evidenceIds: ['t013-cache-alias'],
     proof: {
       analyzerId: 'phase7.alias.solver',
-      analyzerVersion: '1.1.0',
+      analyzerVersion: '1.1.1',
       completeness: 'complete',
       stopReason: null,
     },
