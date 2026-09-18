@@ -203,8 +203,12 @@ program behave like the original on ARM64", all of the following are required:
    frozen like the denominator was.
 6. **Deterministic link and run policy.** Frozen linker flags, frozen runtime
    preamble bytes, per-case timeout, and a documented policy for functions that
-   remain `PARTIAL`/`CRASH` in the artifact (16 cases contain CRASH functions and
-   would be excluded or reported as partial, not silently dropped).
+   remain `PARTIAL`/`CRASH` in the artifact. Denominator: **66 / 160 cases contain
+   at least one CRASH function** (340 CRASH functions in total; case-level artifact
+   states are 66 `CRASH` / 94 `PASS`). A CRASH function carries no pseudocode, so
+   it never enters the reconstructed translation unit; the 66 affected cases would
+   be reported as partial, not silently dropped. (No case is entirely CRASH, and
+   no case is free of pseudocode-bearing functions.)
 
 ## Remaining unknowns
 
