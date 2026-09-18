@@ -39,7 +39,7 @@ Two earlier B1a assumptions need correction after tracing current code.
 | --- | --- | --- |
 | Bootstrap discovery identity | js/analysis/demand-driven-runtime.js | discoveryKey and complete keep their existing meaning |
 | Symbol mutation generation | js/symbols.js addFunctions() | real start additions bump symbols.gen; duplicates are no-ops |
-| ProgramIndex binding | js/program.js and shared-app-artifacts.js | old/in-flight programs bound to the prior symbol generation must not publish current |
+| ProgramIndex binding | js/program.js and shared-app-artifacts.js | `ProgramIndex.gen` currently aliases `symbols.gen`; B1a therefore must additionally bind the exact ProgramIndex/scan evidence it consumed, because generation alone is not an independent call-graph identity |
 | Function analysis cache | js/analyze.js | future keys miss on symbols.gen; transaction also cancels old in-flight work |
 | Investigation binding | js/analysis/investigation-service.js | symbol-generation change makes old bindings stale |
 | AnalysisQuery snapshot | js/analysis/query/app-adapter.js + api.js | current identity lacks a function-topology revision and must gain one |
@@ -69,7 +69,8 @@ Capture at prepare start:
 - symbols.gen;
 - symbols.functionTopologyRevision;
 - digest of the current sorted function-start set;
-- ProgramIndex generation/completeness;
+- ProgramIndex object identity, generation and completeness;
+- canonical digest of the exact direct-call/scan evidence consumed from that ProgramIndex;
 - current AnalysisQuery snapshot identity.
 
 ### Candidate derivation
@@ -81,10 +82,11 @@ Capture at prepare start:
 5. Use fixed finite limits. Missing, stale, incomplete, truncated, cancelled or unconverged closure/summary results carry no authority.
 6. The callee authorizes refinement only when its summary is identity-current, status.completeness is complete, and noreturn is exactly true.
 7. Load the caller's current instruction/CFG projection. The continuation address is the decoded end of the exact call instruction, never a hard-coded +4.
-8. Require that address to be executable and a decoded instruction boundary.
-9. Substitute the proven noreturn behavior by removing only the call's ordinary fallthrough edge. If any other live intra-function CFG predecessor reaches the continuation, reject the candidate.
-10. Require the continuation to lie strictly within the caller's current source/ownership span and not already be a function start.
-11. Canonically sort and deduplicate all candidates.
+8. Require the caller CFG/incoming-edge projection used for reachability to be identity-current and complete. A partial, truncated, capped, cancelled, stale or otherwise incomplete CFG cannot authorize a split from the absence of a predecessor. An implementation may alternatively use a narrower incoming-edge proof only if that proof explicitly establishes complete predecessor coverage for the continuation.
+9. Require the continuation address to be executable and a decoded instruction boundary.
+10. Substitute the proven noreturn behavior by removing only the call's ordinary fallthrough edge. If any other live intra-function CFG predecessor reaches the continuation, reject the candidate.
+11. Require the continuation to lie strictly within the caller's current source/ownership span and not already be a function start.
+12. Canonically sort and deduplicate all candidates.
 
 The producer must finish the whole fixed-budget enumeration before publication. Global truncation means an incomplete proposal and zero topology mutation; never publish a query-order-dependent prefix.
 
@@ -96,7 +98,8 @@ Suggested immutable envelope:
       binding: {
         binaryId, sliceId, analysisEpoch, discoveryKey,
         symbolsGeneration, functionTopologyRevision,
-        startSetDigest, snapshotId, programGeneration
+        startSetDigest, snapshotId, programGeneration,
+        programEvidenceDigest
       },
       status: { completeness: "complete", stopReason: null },
       candidates: [{
@@ -147,7 +150,9 @@ Immediately before the first mutation, re-check all captured identity:
 - same functionTopologyRevision;
 - same start-set digest;
 - same discoveryKey;
+- same ProgramIndex object identity;
 - same ProgramIndex generation;
+- same canonical ProgramIndex/scan evidence digest;
 - AnalysisQuery snapshot still current;
 - proposal status is complete;
 - candidate batch still satisfies local/executable/nonduplicate legality;
@@ -225,6 +230,7 @@ Use a stable transaction identity containing at least:
     + producer id/version
     + base topology revision
     + base start-set digest
+    + ProgramIndex/scan evidence digest
     + proposal digest
     + summary snapshot/digests
 
@@ -246,11 +252,11 @@ Transient failures do not mark the wave completed and can be retried explicitly 
 | local summary/closure exceeds fixed budget | incomplete; no partial commit |
 | callee summary missing/stale/partial/truncated/cancelled/unconverged or noreturn != true | no candidate |
 | target imported/model-only/indirect/ambiguous/not exact local start | no candidate |
-| caller instruction/CFG unavailable or stale | no candidate |
+| caller instruction/CFG unavailable, stale, partial, truncated, capped, cancelled or otherwise incomplete | no candidate; absence of a predecessor is not authoritative |
 | continuation non-executable/not decoded boundary/already a start | reject or no-op |
 | any live predecessor other than removed noreturn fallthrough reaches continuation | reject |
 | continuation outside caller/source span | reject |
-| binary/slice/backend.gen/symbols object/symbols.gen/topology rev/start digest/program gen/discoveryKey/snapshot changes | whole transaction stale; zero mutation |
+| binary/slice/backend.gen/symbols object/symbols.gen/topology rev/start digest/ProgramIndex object/program evidence digest/discoveryKey/snapshot changes | whole transaction stale; zero mutation |
 | global candidate enumeration truncated | zero mutation; report incomplete reason |
 | duplicate/concurrent transaction | exactly one effective commit |
 | old query/session tries to publish after T1 | stale publication rejected |
@@ -279,16 +285,24 @@ A naive "instruction after a local noreturn call is a new function" rule splits 
 
 A valid convention refinement may add 0x1014, but effective ownership for the 0x1000 function must stop at 0x1014. Raw declared end 0x1040 remains source evidence. A consumer must not still return the 0x1000 function as the effective owner for 0x1020.
 
+### 10.3 Partial-CFG predecessor omission false-green
+
+Use the same control flow as 10.1, but force the caller CFG producer to truncate before publishing the `cbnz -> .Lcontinuation` edge while retaining the noreturn call and its ordinary fallthrough. A naive consumer removes the call fallthrough, observes no remaining predecessor and splits `.Lcontinuation`. That is invalid because predecessor absence was inferred from incomplete evidence. The proposal must carry no authority unless the CFG (or a narrower incoming-edge proof) establishes complete predecessor coverage for the continuation.
+
+### 10.4 Same-generation ProgramIndex replacement false-green
+
+Prepare P0 against ProgramIndex object A at `symbols.gen = 7`, with call evidence digest `DA`. Before commit, replace `app.program` with a different ProgramIndex object B constructed under the same `symbols.gen = 7`, with digest `DB != DA`. `ProgramIndex.gen` remains 7 for both, so a generation-only CAS would accept stale call-graph evidence. The transaction must compare the captured ProgramIndex object identity and canonical evidence digest, detect the replacement, and perform zero mutation.
+
 ## 11. Concrete implementation files for a future production lane
 
 No production files are changed by this report.
 
 | File | Future change |
 | --- | --- |
-| new js/analysis/discovery/noreturn-refinement.js | read-only deterministic producer; local direct-call enumeration, summary/CFG gates, immutable proposal |
+| new js/analysis/discovery/noreturn-refinement.js | read-only deterministic producer; local direct-call enumeration, complete-CFG/incoming-edge authority gate, summary gates, immutable proposal with ProgramIndex evidence digest |
 | new js/analysis/discovery/topology-refinement-transaction.js | CAS validate+commit, wave marker and invalidation; no rebuild-v2 dependency |
 | js/symbols.js | functionTopologyRevision, declared-vs-effective boundary separation, atomic batch topology mutator |
-| js/analysis/shared-app-artifacts.js | explicit ensureNoreturnFunctionRefinement() after stable ProgramIndex; single-flight wave; retain programScan |
+| js/analysis/shared-app-artifacts.js | explicit ensureNoreturnFunctionRefinement() after stable ProgramIndex; capture/re-check exact ProgramIndex object and canonical scan/call evidence identity; single-flight wave; retain programScan |
 | js/analysis/query/app-adapter.js | reserved artifactVersions.functionTopology in current snapshot identity |
 | js/analysis/query/scoped-service.js + new shared summary-loader helper | factor canonical local-summary loading so B1a and query summary slices share one owner |
 | js/analysis/summary/interprocedural.js | no transfer-function change expected; reuse existing noreturn lattice/session solver |
@@ -309,18 +323,20 @@ Suggested new location: tests/phase7/function-discovery/.
 
 1. Positive local noreturn: complete local callee, exact direct call, no other CFG predecessor -> one start and one effective split boundary; declared STT_FUNC end preserved.
 2. Live-predecessor counterexample above -> zero starts.
-3. Local-only authority: imported/model-only/indirect noreturn -> zero starts.
-4. Summary fail-closed: unknown/partial/truncated/cancelled/stale/unconverged -> zero starts.
-5. Transaction stale fence: mutate each of backend.gen, symbols.gen, topology revision, program gen, discoveryKey or AnalysisQuery artifact version between prepare/commit -> zero mutation.
-6. Idempotence: same proposal twice -> second added=0 and no generation/revision/cache effect.
-7. Concurrent CAS: two same-base prepares -> exactly one commit.
-8. Cache invalidation: pre-T1 ProgramIndex/query snapshot/summary cannot publish after T1; raw programScan is reused by a fresh ProgramIndex.
-9. Completeness semantics: functionStartsComplete, functionDiscovery.complete, discoveryKey and backend.gen are unchanged by T1.
-10. Cycle guard: instrument backend.guessFunctions; one B1a wave triggers neither another bootstrap discovery nor an automatic second B1a wave.
-11. Exact-span overlap: effective ownership becomes non-overlapping while original declared source end remains available.
-12. Determinism: shuffled raw direct-call records produce the same proposal and transaction digest.
-13. Budget all-or-nothing: forced enumeration/summary closure truncation commits no prefix.
-14. Dependency guard: refinement modules do not import rebuild/transaction-v2.js and materialized binary bytes/source hash stay unchanged.
+3. Partial-CFG predecessor omission: truncate/remove the alternate incoming edge from the published CFG while keeping the noreturn call/fallthrough visible -> zero starts because incomplete CFG cannot prove predecessor absence.
+4. Same-generation ProgramIndex replacement: prepare against object A, replace with object B under identical `symbols.gen`/`ProgramIndex.gen` but different canonical call evidence -> transaction stale, zero mutation.
+5. Local-only authority: imported/model-only/indirect noreturn -> zero starts.
+6. Summary fail-closed: unknown/partial/truncated/cancelled/stale/unconverged -> zero starts.
+7. Transaction stale fence: mutate each of backend.gen, symbols.gen, topology revision, ProgramIndex object/evidence digest, discoveryKey or AnalysisQuery artifact version between prepare/commit -> zero mutation.
+8. Idempotence: same proposal twice -> second added=0 and no generation/revision/cache effect.
+9. Concurrent CAS: two same-base prepares -> exactly one commit.
+10. Cache invalidation: pre-T1 ProgramIndex/query snapshot/summary cannot publish after T1; raw programScan is reused by a fresh ProgramIndex.
+11. Completeness semantics: functionStartsComplete, functionDiscovery.complete, discoveryKey and backend.gen are unchanged by T1.
+12. Cycle guard: instrument backend.guessFunctions; one B1a wave triggers neither another bootstrap discovery nor an automatic second B1a wave.
+13. Exact-span overlap: effective ownership becomes non-overlapping while original declared source end remains available.
+14. Determinism: shuffled raw direct-call records produce the same proposal and transaction digest.
+15. Budget all-or-nothing: forced enumeration/summary closure truncation commits no prefix.
+16. Dependency guard: refinement modules do not import rebuild/transaction-v2.js and materialized binary bytes/source hash stay unchanged.
 
 Existing focused contracts used while producing this report:
 
