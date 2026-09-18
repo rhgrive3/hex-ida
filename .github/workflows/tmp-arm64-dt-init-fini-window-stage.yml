@@ -24,16 +24,33 @@ jobs:
           ref: 1122837fd0644ff2c0996b3dbfc9fa021303d2c8
           fetch-depth: 1
           path: work
-      - name: Apply verified production fix
+      - name: Expand patch
         shell: bash
         run: |
           set -euo pipefail
+          test -s stage/tmp/arm64-dt-window/fix.patch.gz
+          gzip -t stage/tmp/arm64-dt-window/fix.patch.gz
           gzip -dc stage/tmp/arm64-dt-window/fix.patch.gz > /tmp/fix.patch
-          cd work
+          test -s /tmp/fix.patch
+      - name: Apply patch
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name OpenAI
           git config user.email noreply@openai.com
           git am /tmp/fix.patch
+      - name: Verify parent
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
           test "$(git rev-parse HEAD^)" = "1122837fd0644ff2c0996b3dbfc9fa021303d2c8"
+      - name: Verify exact tree
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
           test "$(git rev-parse HEAD^{tree})" = "f6f65ef10e63512207b1ed112fc49ddece2bc9c8"
       - name: Run focused regression
         working-directory: work
