@@ -1,4 +1,5 @@
 import { functionSeedConfidence, isExactFunctionSeed } from './worker-validation.js';
+import { elfLoaderEntrySectionAnalysisWindow } from '../binary/elf-mapping.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -299,11 +300,34 @@ export function analysisFromBinaryImage(image) {
     const rawAddress = rawSeed.address;
     const rawEnd = rawSeed.end;
     const rawSize = rawSeed.size;
+    const rawLoaderEntryContracts = rawSeed.loaderEntryContracts;
 
     const source = rawSource != null ? String(rawSource) : '';
     const sources = Array.isArray(rawSources) ? rawSources.map(String) : undefined;
     const exactFunctionStart = rawExactFunctionStart === true;
     const extentInferred = rawExtentInferred === true;
+    const seedSources = new Set([source, ...(sources || [])]);
+    const loaderContractBackedByMetadata = (contract) => {
+      const record = contract === 'DT_INIT' ? image?.metadata?.dtInit : image?.metadata?.dtFini;
+      if (!record || (record.source !== 'PT_DYNAMIC' && record.source !== 'SHT_DYNAMIC')) return false;
+      try { return u64Address(record.address) === u64Address(rawAddress); }
+      catch { return false; }
+    };
+    const loaderEntryContracts = [...new Set((Array.isArray(rawLoaderEntryContracts) ? rawLoaderEntryContracts : [])
+      .filter((value) => value === 'DT_INIT' || value === 'DT_FINI'))]
+      .filter((value) => value === 'DT_INIT' ? seedSources.has('dt-init') : seedSources.has('dt-fini'))
+      .filter(loaderContractBackedByMetadata)
+      .sort();
+    let analysisWindow = null;
+    // The seed-carried window is only a transport/cache hint. Re-establish its
+    // authority from the BinaryImage's canonical ELF section/PT_LOAD metadata
+    // at the platform boundary so a forged or stale raw seed cannot widen the
+    // decode range. DT_INIT/DT_FINI still gate the fallback; this helper proves
+    // the exact section-start, executable/allocated, and file-backed bounds.
+    if (image?.format === 'elf' && loaderEntryContracts.length && rawAddress != null) {
+      const derived = elfLoaderEntrySectionAnalysisWindow(image, rawAddress);
+      if (derived) analysisWindow = { ...derived };
+    }
 
     const confidenceNorm = functionSeedConfidence(rawConfidence);
     const exactConfidenceNorm = rawExactStartConfidence != null ? functionSeedConfidence(rawExactStartConfidence) : null;
@@ -329,6 +353,8 @@ export function analysisFromBinaryImage(image) {
       extentConfidence,
       end: rawEnd,
       size: rawSize,
+      loaderEntryContracts,
+      analysisWindow,
     });
   }
 
@@ -380,7 +406,10 @@ export function analysisFromBinaryImage(image) {
   const functionProvenance = functions.map((addr) => {
     const seed = seedByAddress.get(addr.toString());
     if (!seed) return { source: 'heuristic', confidence: 0.5, confirmed: false };
-    return { source: seed.source, confidence: seed.effectiveConfidence, confirmed: seed.isExact };
+    const provenance = { source: seed.source, confidence: seed.effectiveConfidence, confirmed: seed.isExact };
+    if (seed.loaderEntryContracts?.length) provenance.loaderEntryContracts = [...seed.loaderEntryContracts];
+    if (seed.analysisWindow) provenance.analysisWindow = { ...seed.analysisWindow };
+    return provenance;
   });
   const nameProvenance = sorted.map((entry) => entry.provenance);
   // This describes every raw provider seed. A heuristic duplicate must keep

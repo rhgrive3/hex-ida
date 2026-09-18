@@ -979,6 +979,20 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/semantic-v2/ir-def-use-ownership.test.mjs",
     "tests/semantic-v2/ir-reachability-cache-ownership.test.mjs",
   ]),
+  // PR #9215 is an exact cross-owner repair: Phase 7 owns the query/discovery
+  // projection while ELF loader evidence, symbol transport, and focused root tests
+  // remain with their canonical owners. Enumerate every foreign path explicitly.
+  "fix/arm64-dt-init-fini-analysis-window": Object.freeze([
+    ".circleci/config.yml",
+    "js/binary/elf-core-original.js",
+    "js/binary/elf-dynamic-original.js",
+    "js/binary/elf-mapping.js",
+    "js/binary/model.js",
+    "js/platform/analysis-result.js",
+    "js/symbols.js",
+    "tests/issue-2409-function-extent-boundary.mjs",
+    "tests/issue-9203-elf-loader-entry-analysis-window.mjs",
+  ]),
 });
 
 function phase7Owned(file, patterns) {

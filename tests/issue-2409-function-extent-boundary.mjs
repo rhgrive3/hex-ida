@@ -40,7 +40,12 @@ assert.match(appSource, /complete:false[^}]*reason:'function-end-unproven'/);
 assert.match(appSource, /provenance:'executable-region\+analysis-window'/);
 assert.doesNotMatch(appSource, /fn\.end!=null\?BigInt\(fn\.end\):regionEnd/);
 const adapterSource = await readFile(new URL('../js/analysis/query/app-adapter.js', import.meta.url), 'utf8');
-assert.match(adapterSource, /if \(fn\.end == null\) return \{ ok:false, reason:'function-end-unproven'/);
+// The adapter remains fail-closed for generic unknown extents. Its only direct
+// exception is the typed loader-entry section window; it must not fall back to
+// a generic next-start or executable-region end.
+assert.match(adapterSource, /functionAnalysisWindow\?\.\(fn\.start\)/);
+assert.match(adapterSource, /windowEnd = loaderWindow\?\.end \?\? null/);
+assert.match(adapterSource, /complete:false, reason:'function-end-unproven'/);
 assert.doesNotMatch(adapterSource, /fn\.end == null \? regionEnd : BigInt\(fn\.end\)/);
 
 console.log('issue #2409 function extent boundary: PASS');
