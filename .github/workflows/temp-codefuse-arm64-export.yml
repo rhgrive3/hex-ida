@@ -1,0 +1,32 @@
+name: temp-codefuse-arm64-export
+
+on:
+  push:
+    branches:
+      - tmp-codefuse-arm64-export
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch sparse CodeFuse ARM64 corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/codefuse-ai/CodeFuse-DeBench.git codefuse
+          cd codefuse
+          git sparse-checkout set --no-cone             '/build/arm64/**'             '/build/successful_builds.json'             '/decompiled/ida_out/arm64/**'             '/decompiled/ghidra_out/arm64/**'             '/decompiled/retdec_out/arm64/**'             '/decompiled/angr_out/arm64/**'             '/decompiled/BinaryAI_out/arm64/**'             '/src/**'
+          mkdir -p ../codefuse-arm64
+          cp -a build decompiled src ../codefuse-arm64/
+          git rev-parse HEAD > ../codefuse-arm64/CODEFUSE_COMMIT
+          printf 'files=%s\n' "$(find ../codefuse-arm64 -type f | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ARM64 corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: codefuse-arm64-corpus
+          path: codefuse-arm64
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 1
