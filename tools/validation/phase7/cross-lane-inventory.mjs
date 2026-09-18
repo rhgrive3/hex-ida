@@ -913,6 +913,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // fails closed if the integration grows unexpectedly.
   "integration/arch-defects-progress-20260918": Object.freeze([
     ".circleci/config.yml",
+    ".github/workflows/ghidra-differential.yml",
     "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
     "js/ir-base.js",
     "js/ir.js",

@@ -24,6 +24,7 @@ on:
       - 'js/semantics/ssa/**'
       - 'js/semantics/memoryssa/**'
       - 'js/semantics/memory-access-provider.js'
+      - 'js/semantics/def-use.js'
       - 'js/analysis/**'
       - 'js/targets/abi/**'
       # Other production dependencies reached by compiler-truth/decompile.
