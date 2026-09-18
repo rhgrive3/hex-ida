@@ -243,6 +243,10 @@ const crossingProbe = await adapterRangeProbe(crossingSymbols);
 assert.equal(crossingProbe.requestedLength, 0x10,
   'query adapter must not decode across a nearer known function start');
 
+const nameAgnostic = indexed(parseELF(buildElf64({ loaderTag:DT_INIT, functionName:'plain_runtime_hook' })));
+assert.equal(nameAgnostic.symbols.functionWindowBound(TEXT_VA), TEXT_VA + 0x40n,
+  'DT_INIT authority must not depend on an _init/.fini function or section name');
+
 const ordinary = indexed(parseELF(buildElf64({ includeLoaderTag:false, functionName:'ordinary' })));
 assert.equal(ordinary.symbols.functionAt(TEXT_VA)?.end, null);
 assert.equal(ordinary.symbols.functionWindowBound(TEXT_VA), null, 'ordinary executable section start must not receive loader fallback');
@@ -282,13 +286,16 @@ const loaderSegment = {
   fileSize:0x100n,
   perms:{ read:true, write:false, execute:true },
 };
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ arch:'arm64', metadata:{ type:3 }, sections:[loaderSection], segments:[loaderSegment] }, TEXT_VA)?.end,
+  TEXT_VA + 0x40n,
+  'control: canonical ARM64 section/PT_LOAD mapping must authorize the bounded window');
 assert.equal(elfLoaderEntrySectionAnalysisWindow({ arch:'x64', metadata:{ type:3 }, sections:[loaderSection], segments:[loaderSegment] }, TEXT_VA), null,
 'non-ARM64 ELF loader entries must not receive the ARM64 analysis-window fallback');
-assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections:[
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ arch:'arm64', metadata:{ type:3 }, sections:[
   { ...loaderSection, fileOffset:0x900n },
 ], segments:[loaderSegment] }, TEXT_VA), null,
 'mismatched section/PT_LOAD file offsets must fail closed');
-assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections:[loaderSection], segments:[
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ arch:'arm64', metadata:{ type:3 }, sections:[loaderSection], segments:[
   loaderSegment,
   { ...loaderSegment, fileOffset:0x200n },
 ] }, TEXT_VA), null,
@@ -324,6 +331,7 @@ assert.equal(selfDeclaredSymbols.functionAnalysisWindow(TEXT_VA), null,
 
 const forgedImage = {
   format:'elf',
+  arch:'arm64',
   metadata:{ type:3, functionDiscovery:{ complete:true } },
   sections:[], segments:[], symbols:[], exports:[], imports:[],
   functions:[{
