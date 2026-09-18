@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$#" -gt 2 ]]; then
+  echo "unexpected CircleCI impact arguments: expected mode and path pattern only" >&2
+  exit 2
+fi
+
 mode="${1:-}"
 pattern="${2:-}"
 
