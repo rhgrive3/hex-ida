@@ -1,117 +1,126 @@
-# 02 — Hex first divergence for the 320 UNSUPPORTED rows (stage 3)
+# 02 — First divergence for the 320 UNSUPPORTED rows (stage 3)
 
-Representative binary: `1/1_clang_O0_g` (`…9600e39…0135ce.bin`).
-Checkout: `05c93a1c9` + investigation commits (production code untouched).
-Method: code read + read-only product probe via
-`tools/validation/public-benchmark/node-worker.mjs` transport
-(`installNodeWorkerTransport`), `Backend.open → analyze → SymbolIndex →
-ensureFunctions/ensureProgram → AnalysisQueryAPI.decompile` — the same
-`product-host.mjs → subject.mjs` path the benchmark uses.
+The 320 rows do **not** fail in instruction decoding. They fail earlier at the
+function-range authority boundary.
 
-## End-to-end chain (first failure first)
+## Pipeline trace
 
-1. **Loader / symbol records.** ELF `STT_FUNC _init @0x860 size 0` and
-   `_fini @0x2a84 size 0` pass start authority but carry no extent.
-   `js/binary/elf-mapping.js:321-326` (`elfFunctionExtentRejection` returns
-   null for `size <= 0`, i.e. "no claim", not "proven empty"), and
-   `js/binary/elf-core-original.js:839-842` mints the seed with
-   `size: extentRejection ? null : (size || null)` — BigInt `0n` is falsy, so a
-   published `st_size == 0` becomes `size: null`. Seed: start proven
-   (`exactFunctionStart: true`, `functionStartEvidence: ELF STT_FUNC …`),
-   extent absent.
-2. **Seed merge.** `js/binary/model.js:1109-1135` (`functionSeed`) keeps
-   `end: null`; `mergeFunctionSeeds` `1254-1274` derives `end` only from
-   `size`, explicit `end`, or — for missing extents — `next-function-start`
-   **iff both sides have `function_starts` sources** (`1262`). Our seeds have
-   source `symbol`, so no `next-function-start` inference fires even though the
-   next discovered start after `0x860` is `0x940`. Result: `funcEnds[0x860] ==
-   null`, `funcEnds[0x2a84] == null`.
-3. **Discovery projection.** `functions` query lists 74 functions including
-   `0x860` and `0x2a84` with `end: null`
-   (`js/analysis/query/app-adapter.js:609-612` `rowAt`: `end: fn?.end ?? null`).
-   The subject records exactly this (`tools/validation/public-benchmark/
-   subject.mjs:39-46`): `address decimal, name $x, end null`.
-4. **Range gate (FIRST DIVERGENCE).** Every decompile goes through
-   `rangeFor` (`js/analysis/query/app-adapter.js:227-258`):
-   `fn.end == null → {ok: false, reason: 'function-end-unproven'}` (`246`).
-   `produceFunction` (`449-451`) converts that to
-   `unsupported(id, 'function-end-unproven')` (`142-144`:
-   `{value: null, status: {completeness: 'unsupported', reason}}`).
-   `App.validatedFunctionRange` (`js/app.js:1383-1399`) agrees: `fn.end == null`
-   → try `functionWindowBound`, which is null here → `ok: false,
-   reason: 'function-end-unproven'`. Measured on both addresses.
-5. **Decompile surface (reason masking).** `decompile` (`app-adapter.js:900-916`)
-   calls `loadFunction` → gets the unsupported above (`value: null`), finds no
-   `value.decompiler` and no `value.model`, and returns
-   `unsupported(id, 'decompiler-projection-unavailable')` (`909`). That is the
-   *surfaced* reason in a live query; the *first* reason is
-   `function-end-unproven`. The benchmark subject then maps `value == null` to
-   per-function `state: UNSUPPORTED`
-   (`subject.mjs:43`: `value ? … : 'UNSUPPORTED'`) with
-   `completeness: 'unsupported'`, `pseudocode: null` — exactly the 320 rows
-   (`end null, state UNSUPPORTED, completeness unsupported`).
+1. **ELF loader establishes an exact function start.**
 
-Measured probe (representative binary, this checkout):
+   Every target address has a zero-size `STT_FUNC GLOBAL HIDDEN` symbol
+   (`_init` or `_fini`) in an executable, file-backed section.
 
-- `total funcs 74`; `near 0x860: [0x860, 0x940]`; `near 0x2a84: [0x2a84]`
-- `nameAt(0x860) == $x`, `nameAt(0x2a84) == $x`; `functionAt().end == null` both
-- `functionWindowBound == null` both (so the `App` fallback also fails)
-- `validatedFunctionRange → {ok: false, reason: 'function-end-unproven'}` both
-- `decompile → {valueNull: true, completeness: 'unsupported',
-  reason: 'decompiler-projection-unavailable'}` both
+   `js/binary/elf-core-original.js` accepts the exact start and creates a
+   `functionSeed(... exactFunctionStart:true ...)`. Because ELF `st_size == 0`,
+   the seed carries no positive `size` or `end`.
 
-## The five prompt questions, answered narrowly
+   `DT_INIT` gives an additional exact-start producer for every init address.
+   Current ELF dynamic parsing does not publish the symmetric `DT_FINI` seed,
+   but the `_fini` STT_FUNC already establishes the fini start.
 
-- **Why is function end null?** Zero-size `STT_FUNC` gives start authority with
-  no extent (`elf-core-original.js:842`); no unwind/`function_starts`/exception
-  seed supplies an extent; `mergeFunctionSeeds` next-start inference requires
-  `function_starts` sources on both sides and does not fire for `symbol`
-  seeds. `SymbolIndex._functionEnd` (`js/symbols.js:311-320`) therefore returns
-  null, and `functionAt` (`390-403`) reports `{start, end: null}` for the exact
-  start. This is fail-closed extent handling (#2409/#2458 contract), not a
-  decoder failure — the bytes decode fine (`llvm-objdump` shows them).
-- **Mapping display vs semantic seed.** The discovered function's *existence*
-  comes from the `STT_FUNC` seed (provenance `symbol`, confidence 0.995). Its
-  *displayed name* `$x` comes from the same-address naming projection winning
-  for the AAELF64 mapping marker (`exact(0x860) == $x`; transport dedupes
-  same-address entries keeping the first, `js/worker-legacy.js:548-560` pattern;
-  C lane `fix/arch-symbol-ranking` re-ranks FUNC over zero-size local
-  STT_NOTYPE without touching seeds/extents). Naming and seeding are separate
-  projections over the same address — conflating them is the exact error the
-  prompt warns against.
-- **`.init`/`.fini` special-section semantics.** The two functions are the only
-  occupants of their sections (`.init` holds `_init` + crtn tail `$x@0x870`;
-  `.fini` holds `_fini` + tail `$x@0x2a90`; next discovered start after `.init`
-  is `.plt@0x880`/`.text@0x940`, not a continuation). A naive "extend to next
-  function start" would swallow `.plt` — the measured `windowBound == null`
-  (cross-region containment, `js/symbols.js:339-367`) is the guard refusing that.
-  Correct section-bound end (`0x878` / `0x2a98`) exists in section headers but no
-  symbol/unwind authority claims it, so the pipeline refuses to invent it.
-- **Fallthrough / return / boundary.** Both bodies end with `ldp; ret` tails
-  (at `0x870`/`0x2a90`, under the `$x` label), so a return-terminated scan
-  *could* find a boundary — but the product's range contract requires *proven*
-  extent (`function-end-unproven` fail-closed), not a heuristic scan. No
-  fallthrough into the next section is involved; the issue is purely unproven
-  extent, not control flow.
-- **Section-wide function treatment.** The product does **not** treat the whole
-  `.init`/`.fini` section as one function extent: it keeps the FUNC seed (start
-  only) and the mapping markers as names, with no extent. IDA instead emits one
-  row per section (`.init_proc`/`.term_proc`). The two tools agree on *address*
-  (matched rows) and disagree on *extent authority policy*.
+2. **Seed/result projection preserves "start known, extent unknown".**
 
-## "Would fixing the name to FUNC enable decompile?" — No (not assumed, measured)
+   `analysisFromBinaryImage()` only emits a positive `funcEnd` from a
+   trustworthy seed `end` or `size`. The zero-size FUNC records therefore
+   become function starts whose end is null.
 
-Name and extent are independent fields. The range gate checks `fn.end`, never
-`fn.name`. After C's ranking fix the rows would display `_init`/`_fini` but
-`end` stays null through the identical seed/merge path, so `rangeFor` still
-returns `function-end-unproven` and `decompile` still returns
-`value: null / unsupported`. Re-verify after C lands by re-running the probe:
-expected `nameAt → _init/_fini`, `end → null`, `decompile → unsupported`
-unchanged. Any extent fix is a separate, deliberately-scoped decision (section-
-bound extent authority), not a consequence of renaming.
+   The accepted C-lane name-ranking fix changes only the canonical display name:
+   FUNC identity outranks the local zero-size STT_NOTYPE mapping marker, so
+   `_init` / `_fini` wins over `$x`. No extent is created by that fix.
 
-## Production code: unchanged
+3. **No same-region next-start window exists.**
 
-`git diff --name-only BASE..HEAD` contains only
-`reports/investigations/unsupported-semantics/*`. All file:line refs above are
-reads. No loader/seed/range/decompile behavior was modified in this worktree.
+   `SymbolIndex.functionWindowBound()` uses a proved end or a later function
+   start in the same canonical executable region. The init/fini entries are the
+   only function starts in their tiny dedicated sections, so the next discovered
+   function is in another section and cannot bound them.
+
+4. **FIRST DIVERGENCE: function range is rejected.**
+
+   `App.validatedFunctionRange()` sees `fn.end == null`, asks
+   `functionWindowBound()`, receives null, and returns:
+
+   ```
+   { ok:false, reason:"function-end-unproven" }
+   ```
+
+   `createAppAnalysisQueryAdapter()` applies the same fail-closed range rule
+   before invoking the ARM64 analyzer. No decompiler model is produced.
+
+5. **The public decompile query surfaces UNSUPPORTED.**
+
+   The decompile surface receives no model/presentation and returns an
+   unsupported response. In the frozen benchmark build the surfaced reason is
+   `decompiler-projection-unavailable`; the earlier causal reason is
+   `function-end-unproven`.
+
+   `tools/validation/public-benchmark/subject.mjs` maps a null decompile value to
+   per-function `state: UNSUPPORTED`, which is exactly how the 320 rows enter
+   the report.
+
+## Focused runtime reproductions
+
+Four cases spanning both compilers, multiple optimization levels and debug
+settings were replayed through the same `product-host.mjs → AnalysisQueryAPI`
+path used by the benchmark.
+
+| case | target | region | validated range | decompile |
+|---|---:|---|---|---|
+| `1/1_clang_O0_g` | init `0x860` | `.init` | `function-end-unproven` | unsupported |
+| `1/1_clang_O0_g` | fini `0x2a84` | `.fini` | `function-end-unproven` | unsupported |
+| `3/3_gcc_O3_no_g` | init `0x990` | `.init` | `function-end-unproven` | unsupported |
+| `3/3_gcc_O3_no_g` | fini `0x2298` | `.fini` | `function-end-unproven` | unsupported |
+| `5-1/5-1_clang_Os_g` | init `0xd48` | `.init` | `function-end-unproven` | unsupported |
+| `5-1/5-1_clang_Os_g` | fini `0x1498` | `.fini` | `function-end-unproven` | unsupported |
+| `7/7_gcc_O2_g` | init `0x848` | `.init` | `function-end-unproven` | unsupported |
+| `7/7_gcc_O2_g` | fini `0x130c` | `.fini` | `function-end-unproven` | unsupported |
+
+All eight focused targets had `fn.end == null` and no pseudocode.
+
+The corpus-wide artifact check independently shows the same output shape for all
+320 rows: `end:null`, `state:UNSUPPORTED`, `completeness:unsupported`,
+`pseudocode:null`.
+
+## What the failure is — and is not
+
+It is **not**:
+
+- an AArch64 decoder failure,
+- a lifter/semantic-op unsupported instruction,
+- caused by the displayed `$x` name,
+- evidence that the addresses are IDA-only synthetic inventions.
+
+It **is**:
+
+- a boundary-authority limitation for real loader-designated runtime functions
+  whose ELF FUNC symbols have zero size,
+- intentionally fail-closed rather than inventing a generic section end,
+- a real pseudocode-coverage gap under the current frozen benchmark scope.
+
+The fact that the fail-closed policy is deliberate does not make the observable
+coverage gap disappear. It means the repair must preserve the authority contract
+instead of applying a generic "section start means whole-section function" rule.
+
+## Safe generalized repair surface
+
+A generic executable-region fallback is too broad. The evidence supports a much
+narrower design:
+
+1. Parse and retain **both** `DT_INIT` and `DT_FINI` as loader-designated
+   function-entry evidence.
+2. When such an address is exactly the start of its containing executable,
+   fully file-backed section, allow the section end to act as an **analysis
+   window**, not as a claimed exact function extent.
+3. Publish the result as incomplete/partial with provenance such as
+   `elf-dynamic-init-fini+section-window` and reason
+   `function-end-unproven`; do not upgrade it to a proved extent.
+4. Keep the rule binary-grounded. Do not key it on `.init_proc`,
+   `.term_proc`, `$x`, benchmark addresses, or compiler names.
+5. Add synthetic ELF fixtures that cover DT_INIT, DT_FINI, co-located mapping
+   symbols, zero-sized FUNC records, a non-init executable section start
+   counterexample, and a malformed/non-file-backed section counterexample.
+
+This would let the analyzer produce partial pseudocode for the runtime entry while
+remaining honest that ELF did not publish a positive FUNC extent.
+
+Production code is intentionally unchanged by this investigation branch.
