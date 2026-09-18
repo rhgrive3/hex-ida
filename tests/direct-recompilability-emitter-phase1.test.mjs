@@ -88,6 +88,18 @@ test('semantic renderer emits no local declaration when no body local needs one'
   assert.equal(result.lines.some((line) => line.kind === 'decl'), false);
 });
 
+test('a real stack slot with width alone does not authorize a fabricated local type', () => {
+  const { model, opts } = modelOf([
+    { mn: 'str', ops: 'x0, [sp, #-0x10]' },
+    { mn: 'ret', ops: '' },
+  ], { name: 'unknown_local_type' });
+  const result = decompileSemantic(model, opts);
+  assert.equal(result.types.locals[0]?.slot, 'var_m10');
+  assert.equal(result.types.locals[0]?.type, 'unknown');
+  assert.ok(result.lines.some(l => l.text === 'var_m10 = a1;'));
+  assert.equal(result.lines.some(l => l.kind === 'decl'), false);
+});
+
 test('local declarations do not change emitted executable statements', () => {
   const { model, opts } = modelOf([
     { mn: 'sdiv', ops: 'x2, x0, x1' },
@@ -106,11 +118,12 @@ test('local declarations do not change emitted executable statements', () => {
 });
 
 
-test('shared-cleanup goto stays after nested control close and before function close', () => {
+for (const nested of ['if (flag) {', 'while (flag) {', 'switch (flag) {']) {
+test(`shared-cleanup goto stays after nested control close and before function close: ${nested}`, () => {
   const lines = [
     { kind: 'sig', indent: 0, text: 'void nested_cleanup(void)', row: 0 },
     { kind: 'ctrl', indent: 0, text: '{', row: 0 },
-    { kind: 'ctrl', indent: 1, text: 'if (flag) {', row: 1 },
+    { kind: 'ctrl', indent: 1, text: nested, row: 1 },
     { kind: 'stmt', indent: 2, text: 'inside();', row: 2 },
     { kind: 'ctrl', indent: 1, text: '}', row: 2 },
     { kind: 'stmt', indent: 1, text: 'after_nested();', row: 7 },
@@ -136,3 +149,4 @@ test('shared-cleanup goto stays after nested control close and before function c
   assert.ok(gotoIndex > nestedClose, 'goto must not be inserted into the nested control body');
   assert.ok(gotoIndex < functionClose, 'goto must remain before the function closing brace');
 });
+}
