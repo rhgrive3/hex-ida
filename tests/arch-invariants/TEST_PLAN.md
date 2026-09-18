@@ -103,21 +103,62 @@ Controls (currently green, must stay green):
 
 `tests/arch-invariants/query-huge-producer.test.mjs`
 
-Fixture: synthetic product surface (pseudocode, 2048 lines, product provenance)
-plus an internal IR-like state that is both large and deep — a 20000-level
-expression chain, 20000 IR nodes, and a 20000-entry def/use variable graph.
+Fixture: synthetic product surface (pseudocode, 2048 lines, canonical render
+provenance map) plus an internal IR-like state that is both large and deep — a
+20000-level expression chain, 20000 IR nodes, and a 20000-entry def/use
+variable graph.
 
 Asserted invariant: `AnalysisQueryAPI.decompile` completes and keeps the product
 surface as an immutable, detached value. Publishing the huge internal graph is
 **not** required, and is not asserted (`production engineering` note: bounding,
-deleting, or node-tabling the internal state are all acceptable).
+deleting, or node-tabling the internal state are all acceptable). The only shape
+clause is that the published value must not reproduce the deep internal chain:
+its nesting depth is measured iteratively and must stay within a generous budget
+(512) that is far below the 20000-level internal fixture and far above any real
+presentation value. Which mechanism achieves that (bounding, deleting, node
+tabling, an iterative projection) is deliberately not pinned.
+
+### Contract determination for the provenance field (revision 2)
+
+The first revision asserted a generic `provenance` field on the query value.
+That was a fixture-local assumption, not a production contract. Production
+evidence, gathered independently of the fix lanes:
+
+| evidence | reading |
+| --- | --- |
+| `js/analysis/semantic-function-base.js:1286-1301` (`decompilerSnapshot`) | the shared public presentation projection for **both** production analysis routes (`analyzeSemanticFunction`, `analyzeDecodedSemanticFunction`) publishes `renderProvenance`, conditionally, and never a generic `provenance` |
+| `js/decompile-base.js:66` | the producer assigns `result.renderProvenance = buildRenderProvenance(...)`; a generic `provenance` is never produced on a decompile result |
+| `js/ui/decompiler-provenance.js:28-30` | `createDecompilerNavigation(query)` — the *only* navigation consumer — reads `query.value.renderProvenance`, and `js/ui/decompiler-provenance.js` / `decompiler-provenance-sheet.js` are the production provenance UI |
+| `tools/validation/phase8/decompile-corpus.mjs:304`, `tools/validation/phase8/metrics.mjs:333`, `tools/validation/phase8/decoded-function-adapter.mjs:106` | the phase8 acceptance tooling records and requests `result.renderProvenance` (the latter literally passes `renderProvenance:true`) |
+| `tests/phase8/provenance/navigation.test.mjs` (`C4-03 shared semantic presentation … app query boundary`) | the app-query-boundary contract test asserts `query.value.renderProvenance` survives and is a detached copy |
+| `tests/phase8/substrate/representation-candidates.test.mjs:308`, `tests/phase8/provenance/switch-render.test.mjs:93` | production-shaped public decompile values are built as `{pseudocode, lines, renderProvenance}` |
+| `js/analysis/query/**` | contains **no** read of a decompile-result `provenance` field; its only `provenance` identifiers are different concepts (`completeness.provenance` function-range evidence at `app-adapter.js:487`, `call-graph.js:116` source binding, `product-evidence-adapter.js:51` evidence source) |
+| `js/ui/product-base.js:86-87` | the UI's bare `provenance` is a collection annotation *string* (`'canonical-app-state'`), unrelated to decompile presentation |
+
+Conclusion: the canonical public presentation provenance field is
+`renderProvenance`; a generic `provenance` on the decompile query value is a
+fixture-local assumption with no production producer or consumer. The tests and
+the fixture were corrected to the canonical field. This was decided by reading
+production producers/consumers/validators, **not** by inspecting any fix lane,
+and the correction preserves the baseline red/green structure (the same two
+invariant-2 tests fail with the same `TypeError:
+analysis-query-value-unclonable` from `frozenQueryValue`). To keep the assertion
+anchored to the production contract rather than to this file, the first test
+re-derives the field name at runtime from `decompilerSnapshot(producer)` and
+requires it to publish `renderProvenance`, and it runs the surviving map through
+the production `validateRenderProvenance` validator. It also requires
+`createDecompilerNavigation(result, …)` to report `available` and pass
+`checkSnapshot()`, so "canonical provenance/navigation data preserved" is
+checked by the production consumer instead of by a local shape guess. No
+assertion requires the *absence* of an unrelated generic `provenance` field: a
+producer may legitimately carry one, it simply is not the contract.
 
 Baseline failures (intentional red):
 
 | test | signature |
 | --- | --- |
-| public decompile query completes on a huge internal producer and keeps pseudocode, lines and provenance | `TypeError: analysis-query-value-unclonable` raised from `frozenQueryValue` (`js/analysis/query/api.js:207`), i.e. the whole query dies before the product surface is published |
-| the huge-producer result is immutable and detached from the producer | same `TypeError: analysis-query-value-unclonable` |
+| public decompile query completes on a huge internal producer and keeps the canonical presentation surface | `TypeError: analysis-query-value-unclonable` raised from `frozenQueryValue` (`js/analysis/query/api.js:207`), i.e. the whole query dies before the product surface is published |
+| the huge-producer result is immutable, detached and is not the internal graph | same `TypeError: analysis-query-value-unclonable` |
 
 Root cause recorded for the fix lanes: `structuredClone` cannot clone the deep
 internal state (a `RangeError: Maximum call stack size exceeded` at ~5000 levels
@@ -126,8 +167,8 @@ that into `analysis-query-value-unclonable`.
 
 Controls (currently green, must stay green):
 
-- a small normal decompile query keeps pseudocode, lines, and provenance, and
-  returns a frozen value;
+- a small normal decompile query keeps pseudocode, lines, and the canonical
+  `renderProvenance` map, and returns a frozen value;
 - an unrelated callback still fails closed with
   `analysis-query-value-unclonable`;
 - **a huge producer must not turn fail-closed into a silent success**: the huge
@@ -181,7 +222,9 @@ Controls (currently green, must stay green):
   implementation that makes the public observation order-independent and that
   keeps the IR free of runtime-owned closures passes.
 - No assertion requires the huge internal graph to be published, bounded to a
-  specific size, or shaped in a particular way.
+  specific size, or shaped in a particular way. The one shape clause is the
+  depth budget on the *published* value (it must not reproduce the 20000-level
+  internal chain); it names no mechanism and no field.
 - No assertion re-asserts the barrier telemetry beyond the counts that express
   the safety rule (`unknownStores`, `blockedLoads`, clobber classification).
 - Build-time *plain-value* caches (for example an array-valued barrier index)
