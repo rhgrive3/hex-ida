@@ -1,0 +1,661 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "CRASH",
+  "inputSha256": "3bb2e51f3b0cd32d6649398d9f0af786d39334ff3519809bd84dbb480bfcc99c",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 37250,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 37250
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 35904,
+          "bytesWritten": 35904,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 35904,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 35904,
+        "writeBytes": 35904,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "1720",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "1920",
+      "name": "main",
+      "end": "1956",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    test_data_types_l1(/* arguments unknown */);\n    test_array_types(/* arguments unknown */);\n    test_pointer_types(/* arguments unknown */);\n    test_composite_types(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "1984",
+      "name": "_start",
+      "end": "2036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_13FF0);\n    unknown_call(global_13FF0);\n}"
+    },
+    {
+      "address": "2036",
+      "name": "$x",
+      "end": "2056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 $x(void)\n{\n    x0_1 = *(uint64 *)0x13FE0;\n    __asm(\"cbz x0, #0x804\");\n    return sub_730(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "2064",
+      "name": "$x",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 $x(void)\n    loc_820:\n{\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x83c\");\n    x1 = *(uint64 *)0x13FD0;\n    __asm(\"cbz x1, #0x83c\");\n    __asm(\"br x16\");\n    goto loc_820;\n    return x0;\n}"
+    },
+    {
+      "address": "2112",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x878\");\n    x2 = *(uint64 *)0x13FF8;\n    __asm(\"cbz x2, #0x878\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "2176",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x14000;\n    __asm(\"cbnz w0, #0x8bc\");\n    x0_1 = *(uint64 *)0x13FD8;\n    __asm(\"cbz x0, #0x8b0\");\n    x0_2 = sub_700(*(uint64 *)0x14008);\n    x0_3 = $x();\n    *(uint8 *)(x19 + 0x10) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "2256",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n    loc_8D4:\n{\n    return register_tm_clones();\n}\n    goto loc_8D4;"
+    },
+    {
+      "address": "2272",
+      "name": "process_char",
+      "end": "2304",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_char(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2304",
+      "name": "process_short",
+      "end": "2316",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_short(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2320",
+      "name": "process_int",
+      "end": "2332",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_int(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2336",
+      "name": "process_long",
+      "end": "2344",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_long(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2352",
+      "name": "process_ll",
+      "end": "2360",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_ll(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2368",
+      "name": "process_float",
+      "end": "2384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_float(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2384",
+      "name": "process_double",
+      "end": "2404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 process_double(void)\n{\n    return x0;\n}"
+    },
+    {
+      "address": "2404",
+      "name": "process_ld",
+      "end": "2444",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_ld(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    $x(/* arguments unknown */);\n    $x(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "2448",
+      "name": "process_bool",
+      "end": "2468",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_bool(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2468",
+      "name": "const_param",
+      "end": "2480",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void const_param(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2480",
+      "name": "volatile_access",
+      "end": "2496",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void volatile_access(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2496",
+      "name": "test_data_types_l1",
+      "end": "2832",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_data_types_l1(void)\n    loc_9C4:\n{\n    uint32 var_2C;\n\n    x0_1 = sub_750(0x2D48);\n    x1_1 = 0x2D70;\n    x0_2 = sub_710(1, x1_1, 97);\n    x0_3 = sub_710(1, x1_1, 98);\n    x0_4 = sub_710(1, 0x2D90, 300);\n    x0_5 = sub_710(1, 0x2DB0, 11);\n    x0_6 = sub_710(1, 0x2DD0, 200);\n    x0_7 = sub_710(1, 0x2DF0, 0x2710);\n    x0_8 = sub_710(1, 0x2E10);\n    x0_9 = sub_710(1, 0x2E30);\n    x0_10 = sub_710(1, 0x2E58);\n    x1_2 = 0x2E78;\n    x0_11 = sub_710(1, x1_2, 1);\n    x0_12 = sub_710(1, x1_2, 0);\n    x0_13 = sub_710(1, x1_2, 0);\n    x0_14 = sub_710(1, 0x2E98, 15);\n    var_2C = 10;\n    return sub_710(1, 0x2EB8, 20, 10);\n}\n    goto loc_9C4;"
+    },
+    {
+      "address": "2832",
+      "name": "array_1d_stack",
+      "end": "2888",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_1d_stack(void)\n{\n    loc_B10:\n        if ((int32_t)a2 <= 0) goto loc_B40;\n        goto loc_B1C;\n    loc_B1C:\n    loc_B28:\n        if ((int32_t)a2 > (int32_t)(phi(x2, 0)) + 1) goto loc_B28;\n        goto loc_B3C;\n    loc_B3C:\n        return;\n    loc_B40:\n        return;\n}"
+    },
+    {
+      "address": "2896",
+      "name": "array_string",
+      "end": "2940",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_string(void)\n{\n    loc_B50:\n        if (a1->field_0 == 0) goto loc_B74;\n        goto loc_B58;\n    loc_B58:\n    loc_B60:\n        if ((a1 - 1)[(phi(x1, 1)) + 1] != 0) goto loc_B60;\n        goto loc_B70;\n    loc_B70:\n        return;\n    loc_B74:\n        return;\n}"
+    },
+    {
+      "address": "2944",
+      "name": "array_2d_stack",
+      "end": "2980",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_2d_stack(void)\n{\n    while ((uint64_t)(phi(a1, x1)) + 44 != (uint64_t)a1 + 0x1B8) {\n    }\n    return;\n}"
+    },
+    {
+      "address": "2980",
+      "name": "array_3d",
+      "end": "3060",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_3d(void)\n{\n    for (int64 i = (phi((x0 + 20) + 0x64, a1 + 0x64)) - 0x64; (uint64_t)x0 + 20 != (uint64_t)phi((x0 + 20) + 0x64, a1 + 0x64); i += 20) {\n    }\n    if ((uint64_t)(x0 + 20) + 0x64 != (uint64_t)a1 + 0x258) {\n        goto loc_BB0;\n    }\n    return;\n}"
+    },
+    {
+      "address": "3060",
+      "name": "array_vla",
+      "end": "3112",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_vla(void)\n{\n    loc_BF4:\n        if ((int32_t)a1 <= 0) goto loc_C20;\n        goto loc_C00;\n    loc_C00:\n    loc_C08:\n        if ((int32_t)a1 > (int32_t)(phi(0, x2)) + 1) goto loc_C08;\n        goto loc_C1C;\n    loc_C1C:\n        return;\n    loc_C20:\n        return;\n}"
+    },
+    {
+      "address": "3120",
+      "name": "array_pointer",
+      "end": "3180",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_pointer(void)\n{\n    loc_C30:\n        if ((int32_t)a2 <= 0) goto loc_C64;\n        goto loc_C38;\n    loc_C38:\n    loc_C50:\n        if ((uint64_t)(phi(x2, a1)) + 40 != (uint64_t)(a1 + 40) + ((a2 - 1) * 40)) goto loc_C50;\n        goto loc_C60;\n    loc_C60:\n        return;\n    loc_C64:\n        return;\n}"
+    },
+    {
+      "address": "3184",
+      "name": "pointer_array",
+      "end": "3256",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void pointer_array(void)\n{\n    loc_C70:\n        if ((int32_t)a2 <= 0) goto loc_CB0;\n        goto loc_C88;\n    loc_C88:\n    loc_C90:\n        if (a1[phi(0, x1 + 1)] == 0) goto loc_CA4;\n        goto loc_C9C;\n    loc_C9C:\n    loc_CA4:\n        if ((int32_t)((int32_t)a2 <= 10 ? a2 : 10) > (int32_t)x1 + 1) goto loc_C90;\n        goto loc_CAC;\n    loc_CAC:\n        return;\n    loc_CB0:\n        return;\n}"
+    },
+    {
+      "address": "3264",
+      "name": "array_complex_index",
+      "end": "3308",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_complex_index(void)\n{\n    loc_CC0:\n        if (condition_ge) goto loc_CE4;\n        goto loc_CD0;\n    loc_CD0:\n        if ((int32_t)a5 >= (int32_t)a3) goto loc_CE4;\n        goto loc_CD8;\n    loc_CD8:\n        return;\n    loc_CE4:\n        return;\n}"
+    },
+    {
+      "address": "3312",
+      "name": "array_oob",
+      "end": "3364",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void array_oob(void)\n{\n    loc_CF0:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_D1C;\n        goto loc_CF4;\n    loc_CF4:\n    loc_D08:\n        if ((uint64_t)(phi(a1, x2)) + 4 != (uint64_t)(a1 + 4) + ((sext(a2)) << 2)) goto loc_D08;\n        goto loc_D18;\n    loc_D18:\n        return;\n    loc_D1C:\n        return;\n}"
+    },
+    {
+      "address": "3364",
+      "name": "test_array_types",
+      "end": "3940",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_array_types(void)\n{\n    uint64 var_10, var_408;\n    uint32 var_6C, var_400;\n    uint16 var_404;\n\n    var_408 = *(uint64 *)(*(uint64 *)0x13FE8);\n    x0_1 = sub_750(0x2ED8, *(uint64 *)0x13FE8, 0);\n    x1_1 = 0x3440;\n    x3 = &var_10;\n    x0 = 1;\n    x2 = 0;\n    x4 = *(uint64 *)0x3440;   x5 = *(uint64 *)0x3440;\n    var_10 = x4;   var_10_2 = x5;\n    *(uint32 *)(x3 + 0x10) = (uint32)*(uint32 *)0x3450;\n    x0 = x0 + 1;\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x3 + x0 * 4 + -4));\n    /* cmp x0, #6 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xd78\");\n    x0_2 = sub_710(1, 0x2EF8, x2);\n    x1_2 = 0x3000;\n    x0 = &var_401;\n    x2 = 0;\n    x3 = *(uint32 *)(x1);\n    var_400 = x3;\n    var_404 = (uint32)*(uint16 *)0x3004;\n    x1 = *(uint8 *)(x0);\n    x2 = (uint32)((uint32)x2 + 1);\n    __asm(\"cbnz w1, #0xdc0\");\n    x0 = sub_710(1, 0x2F18, x2);\n    x2 = 0;\n    x3 = &var_78;\n    x0 = 0;\n    /* cmp w2, w0 — 次の分岐のための比較 */\n    *(uint32 *)(x3 + x0 * 4) = (uint32)((uint32)x2 == (uint32)x0 ? (uint32)x0 : 0);\n    x0 = x0 + 1;\n    /* cmp x0, #0xa — 次の分岐のための比較 */\n    __asm(\"b.ne #0xdf0\");\n    x2 = (uint32)((uint32)x2 + 1);\n    x3 = x3 + 40;\n    /* cmp w2, #0xa — 次の分岐のための比較 */\n    __asm(\"b.ne #0xde8\");\n    x1 = x4 + 440;\n    x2 = 0;\n    x0 = *(uint32 *)(x4);\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x4));\n    /* cmp x1, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe20\");\n    x0 = sub_710(1, 0x2F38, x2);\n    x4 = &var_3FC;\n    x3 = &var_208;\n    x1 = 1;\n    x0 = x3;\n    x2 = 5;\n    *(uint64 *)(x0) = (uint32)x1;   *(uint64 *)(x0 + 4) = (uint32)x1;\n    x2 = (uint32)((uint32)x2 - 1);\n    *(uint64 *)(x0 + 8) = (uint32)x1;   *(uint64 *)(x0 + 8 + 4) = (uint32)x1;\n    x0 = x0 + 20;\n    *(uint32 *)(x0 + -4) = (uint32)x1;\n    __asm(\"b.ne #0xe58\");\n    x3 = x3 + 100;\n    /* cmp x3, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe50\");\n    x4 = x5 + 100;\n    x5 = x5 + 600;\n    x2 = 0;\n    x0 = x4 - 100;\n    x1 = *(uint64 *)(x0);   x3 = *(uint64 *)(x0 + 4);\n    x1 = *(uint64 *)(x0 + 8);   x3 = *(uint64 *)(x0 + 8 + 4);\n    x0 = x0 + 20;\n    x2 = (uint32)((uint32)((uint32)((uint32)((uint32)((uint32)x2 + (uint32)*(uint32 *)(x0)) + (uint32)*(uint32 *)(x0)) + (uint32)*(uint32 *)(x0 + 8)) + (uint32)x3) + (uint32)*(uint32 *)(x0 + 16));\n    /* cmp x0, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe8c\");\n    x4 = x0 + 120;\n    /* cmp x4, x5 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe88\");\n    x0_3 = sub_710(1, 0x2F58, x2, x3, x4);\n    x0_4 = sub_710(1, 0x2F78, 60);\n    x0_5 = sub_710(1, 0x2F98, 100);\n    x0_6 = sub_710(1, 0x2FB8, 60);\n    x1 = &var_28;\n    x0 = 0;\n    *(uint32 *)(x1) = (uint32)x0;\n    x0 = (uint32)((uint32)x0 + 1);\n    /* cmp w0, #0x14 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xf18\");\n    x0 = *(uint64 *)0x13FE8;\n    x2 = var_408 - *(uint64 *)(x0);\n    x1 = 0;\n    __asm(\"b.ne #0xf60\");\n    return sub_710(1, 0x2FD8, (uint32)var_6C);\n    x0 = sub_720();\n}"
+    },
+    {
+      "address": "3940",
+      "name": "ptr_single",
+      "end": "3952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_single(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3952",
+      "name": "ptr_double",
+      "end": "3968",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_double(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3968",
+      "name": "ptr_triple",
+      "end": "3988",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_triple(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3988",
+      "name": "ptr_increment",
+      "end": "4036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_increment(void)\n{\n    loc_F94:\n        if ((int32_t)a2 <= 0) goto loc_FBC;\n        goto loc_FA0;\n    loc_FA0:\n    loc_FA8:\n        if ((uint64_t)(phi(x2, a1)) + 4 != (uint64_t)a1 + ((sext(a2)) << 2)) goto loc_FA8;\n        goto loc_FB8;\n    loc_FB8:\n        return;\n    loc_FBC:\n        return;\n}"
+    },
+    {
+      "address": "4036",
+      "name": "ptr_offset",
+      "end": "4044",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_offset(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4048",
+      "name": "ptr_diff",
+      "end": "4060",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_diff(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4064",
+      "name": "ptr_void",
+      "end": "4100",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_void(void)\n{\n    loc_FE0:\n        if (a2 == 0) goto loc_FF4;\n        goto loc_FE4;\n    loc_FE4:\n        if ((uint32_t)a2 != 1) goto loc_FFC;\n        goto loc_FEC;\n    loc_FEC:\n        return;\n    loc_FF4:\n        return;\n    loc_FFC:\n        return;\n}"
+    },
+    {
+      "address": "4100",
+      "name": "ptr_const",
+      "end": "4112",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_const(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4112",
+      "name": "ptr_const_ptr",
+      "end": "4132",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_const_ptr(void)\n{\n    a1->field_0 += 5;\n    return;\n}"
+    },
+    {
+      "address": "4132",
+      "name": "ptr_func_simple",
+      "end": "4144",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 ptr_func_simple(int64 a1, int64 a2)\n    loc_1028:\n{\n    __asm(\"br x16\");\n}\n    goto loc_1028;"
+    },
+    {
+      "address": "4144",
+      "name": "ptr_func_complex",
+      "end": "4240",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_func_complex(void)\n{\n    loc_1030:\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        local_pFFFFFFFFFFFFFFE8 = 0x3008;\n        local_pFFFFFFFFFFFFFFE8 = 0x3008;\n        unknown_call(a2);\n        if ((uint64_t)var_28 != (uint64_t)memory_unknown) goto loc_108C;\n        goto loc_1084;\n    loc_1084:\n        return;\n    loc_108C:\n        unknown_call(a2);\n}"
+    },
+    {
+      "address": "4240",
+      "name": "ptr_cast",
+      "end": "4248",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_cast(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4256",
+      "name": "opaque_handle_create",
+      "end": "4264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void opaque_handle_create(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4272",
+      "name": "opaque_handle_op",
+      "end": "4280",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void opaque_handle_op(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4288",
+      "name": "test_pointer_types",
+      "end": "4708",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_pointer_types(void)\n{\n    uint64 var_20, var_38;\n    uint32 var_30;\n\n    var_38 = *(uint64 *)(*(uint64 *)0x13FE8);\n    x0_1 = sub_750(0x3010, *(uint64 *)0x13FE8, 0);\n    x0_2 = sub_710(1, 0x3030, 15);\n    x0_3 = sub_710(1, 0x3050, 15);\n    x0_4 = sub_710(1, \"0-1ubuntu1~22.04) 11.4.0\", 6);\n    x1_1 = 0x3440;\n    x3 = sp - 12;\n    x0 = sp - 32;\n    x2 = 0;\n    x6 = *(uint64 *)0x3440;   x7 = *(uint64 *)0x3440;\n    var_20 = x6;   var_20_2 = x7;\n    var_30 = (uint32)*(uint32 *)0x3450;\n    x1 = *(uint32 *)(x0);\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x0));\n    /* cmp x0, x3 — 次の分岐のための比較 */\n    __asm(\"b.ne #0x1150\");\n    x0_5 = sub_710(1, 0x3090, x2);\n    x0_6 = sub_710(1, 0x30B0, 30);\n    x0_7 = sub_710(1, 0x30D0, 4);\n    x1_2 = 0x30F0;\n    x0_8 = sub_710(1, x1_2, 42);\n    x0_9 = sub_710(1, x1_2, 65);\n    x0_10 = sub_710(1, 0x3110, 20);\n    x0_11 = sub_710(1, 0x3130, 15);\n    x0_12 = sub_710(1, 0x3150, 10);\n    x0_13 = sub_710(1, 0x3178, 1);\n    x0_14 = sub_710(1, 0x31A0, 0x12345678);\n    x0 = *(uint64 *)0x13FE8;\n    x2 = var_38 - *(uint64 *)(x0);\n    x1_3 = 0;\n    __asm(\"b.ne #0x1260\");\n    return sub_710(1, 0x31C0, 20);\n    x0 = sub_720();\n}"
+    },
+    {
+      "address": "4708",
+      "name": "struct_simple",
+      "end": "4728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_simple(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4736",
+      "name": "struct_array",
+      "end": "4812",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_array(void)\n{\n    loc_1280:\n        if ((int32_t)a2 <= 0) goto loc_12C4;\n        goto loc_1288;\n    loc_1288:\n    loc_12A0:\n        if ((uint64_t)(phi(x2, a1)) + 12 != (uint64_t)(a1 + 12) + ((a2 - 1) * 12)) goto loc_12A0;\n        goto loc_12C0;\n    loc_12C0:\n        return;\n    loc_12C4:\n        return;\n}"
+    },
+    {
+      "address": "4816",
+      "name": "struct_nested",
+      "end": "4832",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_nested(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4832",
+      "name": "struct_deep",
+      "end": "4848",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_deep(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4848",
+      "name": "struct_with_ptr",
+      "end": "4872",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_with_ptr(void)\n{\n    if (!(a1->field_8 == 0)) {\n    }\n    return;\n}"
+    },
+    {
+      "address": "4880",
+      "name": "struct_bitfields",
+      "end": "4916",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_bitfields(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4916",
+      "name": "union_type",
+      "end": "4956",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void union_type(void)\n{\n    loc_1334:\n        if (a2 == 0) goto loc_1348;\n        goto loc_1338;\n    loc_1338:\n        if ((uint32_t)a2 == 1) goto loc_1350;\n        goto loc_1340;\n    loc_1340:\n        return;\n    loc_1348:\n        return;\n    loc_1350:\n        __asm(\"fcvtzs w0, s0\");\n        return;\n}"
+    },
+    {
+      "address": "4960",
+      "name": "union_array",
+      "end": "5016",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void union_array(void)\n{\n    loc_1360:\n        if ((int32_t)a2 <= 0) goto loc_1390;\n        goto loc_136C;\n    loc_136C:\n    loc_1378:\n        if ((int32_t)a2 > (int32_t)(phi(x2, 0)) + 1) goto loc_1378;\n        goto loc_138C;\n    loc_138C:\n        return;\n    loc_1390:\n        return;\n}"
+    },
+    {
+      "address": "5024",
+      "name": "enum_type",
+      "end": "5036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void enum_type(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5040",
+      "name": "enum_switch",
+      "end": "5076",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void enum_switch(void)\n{\n    loc_13B0:\n        if ((uint32_t)a1 > 3) goto loc_13CC;\n        goto loc_13B8;\n    loc_13B8:\n        return;\n    loc_13CC:\n        return;\n}"
+    },
+    {
+      "address": "5076",
+      "name": "struct_func_ptr",
+      "end": "5096",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 struct_func_ptr(void * a1)\n    loc_13D8:\n{\n    __asm(\"br x16\");\n}\n    goto loc_13D8;"
+    },
+    {
+      "address": "5104",
+      "name": "linked_list",
+      "end": "5140",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void linked_list(void)\n{\n    if (!(a1 == 0)) {\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5140",
+      "name": "doubly_linked_list",
+      "end": "5172",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void doubly_linked_list(void)\n{\n    if (!(a1 == 0)) {\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5172",
+      "name": "binary_tree_sum",
+      "end": "5744",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void binary_tree_sum(void)\n{\n    loc_1434:\n        if (a1 == 0) goto loc_1668;\n        goto loc_1440;\n    loc_1440:\n        if (memory_unknown == 0) goto loc_165C;\n        goto loc_1450;\n    loc_1450:\n        if (memory_unknown == 0) goto loc_164C;\n        goto loc_1460;\n    loc_1460:\n        if (memory_unknown == 0) goto loc_163C;\n        goto loc_1470;\n    loc_1470:\n        local_pFFFFFFFFFFFFFF40 = local_x29;\n        local_pFFFFFFFFFFFFFF40 = local_x29;\n        local_pFFFFFFFFFFFFFF50 = local_x19;\n        local_pFFFFFFFFFFFFFF50 = local_x19;\n        local_pFFFFFFFFFFFFFF60 = local_x21;\n        local_pFFFFFFFFFFFFFF60 = local_x21;\n        local_pFFFFFFFFFFFFFF80 = local_x25;\n        local_pFFFFFFFFFFFFFF80 = local_x25;\n        local_pFFFFFFFFFFFFFF90 = local_x27;\n        local_pFFFFFFFFFFFFFF90 = local_x27;\n    loc_1488:\n        if (memory_unknown == 0) goto loc_1590;\n        goto loc_1498;\n    loc_1498:\n        if (memory_unknown == 0) goto loc_1580;\n        goto loc_14A8;\n    loc_14A8:\n        if (memory_unknown == 0) goto loc_1570;\n        goto loc_14B8;\n    loc_14B8:\n        memory_unknown = local_phi_1067;\n        memory_unknown = local_phi_1067;\n    loc_14BC:\n        if (memory_unknown == 0) goto loc_155C;\n        goto loc_14CC;\n    loc_14CC:\n        if (memory_unknown == 0) goto loc_154C;\n        goto loc_14DC;\n    loc_14DC:\n        memory_unknown = local_phi_1018;\n        memory_unknown = local_phi_1209;\n        memory_unknown = local_phi_1788;\n        memory_unknown = local_phi_1788;\n        memory_unknown = local_phi_1699;\n        memory_unknown = local_phi_1699;\n        memory_unknown = local_phi_1437;\n        memory_unknown = local_phi_1437;\n        memory_unknown = local_phi_1245;\n        memory_unknown = local_phi_1143;\n        memory_unknown = local_phi_1143;\n        memory_unknown = local_phi_1523;\n        memory_unknown = local_phi_1523;\n        memory_unknown = local_phi_1111;\n        memory_unknown = local_phi_1111;\n        memory_unknown = local_phi_1612;\n        binary_tree_sum(/* arguments unknown */);\n        if (x23 != 0) goto loc_14DC;\n        goto loc_1548;\n    loc_1548:\n    loc_154C:\n        if (x20 != 0) goto loc_14CC;\n        goto loc_1558;\n    loc_1558:\n    loc_155C:\n        if (x2 != 0) goto loc_14BC;\n        goto loc_1568;\n    loc_1568:\n    loc_1570:\n        if (x21 != 0) goto loc_14A8;\n        goto loc_157C;\n    loc_157C:\n    loc_1580:\n        if (x19 != 0) goto loc_1498;\n        goto loc_158C;\n    loc_158C:\n    loc_1590:\n        if (x6 != 0) goto loc_1488;\n        goto loc_159C;\n    loc_159C:\n        if (x5 == 0) goto loc_15C8;\n        goto loc_15AC;\n    loc_15AC:\n        if (x6 != 0) goto loc_1488;\n        goto loc_15BC;\n    loc_15BC:\n        if (x5 != 0) goto loc_15AC;\n        goto loc_15C8;\n    loc_15C8:\n        if (x4 == 0) goto loc_15F4;\n        goto loc_15D8;\n    loc_15D8:\n        if (x5 != 0) goto loc_15AC;\n        goto loc_15E8;\n    loc_15E8:\n        if (x4 != 0) goto loc_15D8;\n        goto loc_15F4;\n    loc_15F4:\n        if (x1 == 0) goto loc_1620;\n        goto loc_1604;\n    loc_1604:\n        if (x4 != 0) goto loc_15D8;\n        goto loc_1614;\n    loc_1614:\n        if (x1 != 0) goto loc_1604;\n        goto loc_1620;\n    loc_1620:\n        return;\n    loc_163C:\n        if (x5 != 0) goto loc_1460;\n        goto loc_1648;\n    loc_1648:\n    loc_164C:\n        if (x4 != 0) goto loc_1450;\n        goto loc_1658;\n    loc_1658:\n    loc_165C:\n        if (x1 != 0) goto loc_1440;\n        goto loc_1668;\n    loc_1668:\n        return;\n}"
+    },
+    {
+      "address": "5744",
+      "name": "binary_tree",
+      "end": "5812",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void binary_tree(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    if (!(a1 == 0)) {\n        binary_tree_sum(/* arguments unknown */);\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5812",
+      "name": "graph_traverse",
+      "end": "5888",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void graph_traverse(void)\n{\n    loc_16B4:\n        if ((int32_t)a1->field_50 <= 0) goto loc_16F8;\n        goto loc_16C4;\n    loc_16C4:\n    loc_16D0:\n        if (a1[phi(0, x3 + 1)] == 0) goto loc_16E8;\n        goto loc_16D8;\n    loc_16D8:\n        if (memory_unknown != 0) goto loc_16D8;\n        goto loc_16E8;\n    loc_16E8:\n        if ((int32_t)a1->field_50 > (int32_t)x3 + 1) goto loc_16D0;\n        goto loc_16F4;\n    loc_16F4:\n        return;\n    loc_16F8:\n        return;\n}"
+    },
+    {
+      "address": "5888",
+      "name": "test_composite_types",
+      "end": "6412",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_composite_types(void)\n{\n    loc_1700:\n        local_pFFFFFFFFFFFFFF80 = local_x29;\n        local_pFFFFFFFFFFFFFF80 = local_x29;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        unknown_call(0x31E8);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        local_pFFFFFFFFFFFFFFC0 = 0;\n        local_pFFFFFFFFFFFFFF98 = 10;\n        local_pFFFFFFFFFFFFFFA0 = var_761 + 0xFFFFFFFFFFFFFFA8;\n        local_pFFFFFFFFFFFFFFA8 = 20;\n        local_pFFFFFFFFFFFFFFB0 = var_761 + 0xFFFFFFFFFFFFFFB8;\n        local_pFFFFFFFFFFFFFFB8 = 30;\n        goto loc_184C;\n    loc_1844:\n    loc_184C:\n        if (phi((sp + 0xFFFFFFFFFFFFFF80) + 40, memory_unknown) != 0) goto loc_1844;\n        goto loc_1854;\n    loc_1854:\n        unknown_call(1);\n        local_pFFFFFFFFFFFFFFC8 = 10;\n        local_pFFFFFFFFFFFFFFD0 = var_761 + 0xFFFFFFFFFFFFFFE0;\n        local_pFFFFFFFFFFFFFFD0 = var_761 + 0xFFFFFFFFFFFFFFE0;\n        local_pFFFFFFFFFFFFFFE0 = 20;\n        local_pFFFFFFFFFFFFFFE8 = 0;\n        local_pFFFFFFFFFFFFFFE8 = 0;\n        goto loc_1898;\n    loc_1894:\n    loc_1898:\n        if (memory_unknown != 0) goto loc_1894;\n        goto loc_18A4;\n    loc_18A4:\n        unknown_call(1);\n        binary_tree_sum(/* arguments unknown */);\n        unknown_call(1);\n        unknown_call(1);\n        if ((uint64_t)var_78 != (uint64_t)memory_unknown) goto loc_1908;\n        goto loc_1900;\n    loc_1900:\n        return;\n    loc_1908:\n        unknown_call(global_13FE8);\n}"
+    },
+    {
+      "address": "6416",
+      "name": "$x",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "9392",
+      "name": "$x",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "11440",
+      "name": "$x",
+      "end": "11552",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void $x(void)\n{\n    if (!(bit_extract(a1, 0, 1) == 0)) {\n        __asm(\"fdiv s0, s1, s1\");\n    }\n    if (!(bit_extract(a1, 1, 1) == 0)) {\n        __asm(\"fdiv s0, s1, s2\");\n    }\n    if (!(bit_extract(a1, 2, 1) == 0)) {\n        __asm(\"fadd s0, s1, s2\");\n    }\n    if (!(bit_extract(a1, 3, 1) == 0)) {\n        __asm(\"fmul s0, s1, s1\");\n    }\n    if (!(bit_extract(a1, 4, 1) == 0)) {\n        __asm(\"fsub s0, s1, s2\");\n    }\n    return;\n}"
+    },
+    {
+      "address": "11552",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "reason": "function-crash",
+  "functionStateCounts": {
+    "CRASH": 2,
+    "PARTIAL": 4,
+    "PASS": 58,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 1,
+  "subjectSignal": null,
+  "stderr": ""
+}

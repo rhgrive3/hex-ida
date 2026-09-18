@@ -1,0 +1,685 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "CRASH",
+  "inputSha256": "d64f3969c0f44f026bf6f0f3ba02a195c17afc8814e8da130296a2c793a2337c",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 46060,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 46060
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 44714,
+          "bytesWritten": 44714,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 44714,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 44714,
+        "writeBytes": 44714,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "3728",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "4160",
+      "name": "_Z18test_cpp_exceptionv",
+      "end": "4372",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z18test_cpp_exceptionv(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x19;\n    local_pFFFFFFFFFFFFFFE0 = local_x19;\n    local_pFFFFFFFFFFFFFFF0 = local_x21;\n    unknown_call(4);\n    memory_unknown = 42;\n    unknown_call(call_329);\n    if ((uint64_t)call_332 == 1) {\n        unknown_call(call_329);\n        unknown_call(call_543);\n        unknown_call(call_526);\n    } else {\n    }\n    if ((uint64_t)phi(call_479, call_332) != 1) {\n        unknown_call(phi(phi(call_526, call_550), call_323));\n        unknown_call(phi(call_323, call_275));\n        unknown_call(phi(call_323, call_275));\n    } else {\n        unknown_call(phi(call_526, call_550));\n        unknown_call(call_614);\n        unknown_call(phi(call_479, call_332));\n        unknown_call(phi(call_479, call_332));\n        if ((uint64_t)call_488 == 2) {\n            goto loc_10E4;\n        } else {\n            if ((uint64_t)call_488 == 3) {\n                unknown_call(phi(call_479, call_332));\n                unknown_call(phi(call_479, call_332));\n            } else {\n                goto loc_10E0;\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "4384",
+      "name": "main",
+      "end": "4408",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    Z20test_cpp_oo_featuresv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "4416",
+      "name": "_GLOBAL__sub_I__Z20test_cpp_member_funcv",
+      "end": "4480",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 GLOBAL__sub_I__Z20test_cpp_member_funcv(void)\n    loc_1144:\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x0_1 = 0x13038 + 8;\n    x0_2 = sub_FB0(x0_1);\n    return sub_F80(*(uint64 *)0x12FF8, x0_1, 0x13008);\n}\n    goto loc_1144;"
+    },
+    {
+      "address": "4480",
+      "name": "_start",
+      "end": "4532",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_12FD0);\n    unknown_call(global_12FD0);\n}"
+    },
+    {
+      "address": "4532",
+      "name": "$x",
+      "end": "4552",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 $x(void)\n{\n    x0_1 = *(uint64 *)0x12FE8;\n    __asm(\"cbz x0, #0x11c4\");\n    return sub_1020(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "4560",
+      "name": "$x",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 $x(void)\n    loc_11E0:\n{\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x11fc\");\n    x1 = *(uint64 *)0x12FE0;\n    __asm(\"cbz x1, #0x11fc\");\n    __asm(\"br x16\");\n    goto loc_11E0;\n    return x0;\n}"
+    },
+    {
+      "address": "4608",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x1238\");\n    x2 = *(uint64 *)0x12FF0;\n    __asm(\"cbz x2, #0x1238\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "4672",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x13000;\n    __asm(\"cbnz w0, #0x127c\");\n    x0_1 = *(uint64 *)0x12FD8;\n    __asm(\"cbz x0, #0x1270\");\n    x0_2 = sub_F20(*(uint64 *)0x13008);\n    x0_3 = $x();\n    *(uint8 *)(x19 + 0x30) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "4752",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n    loc_1294:\n{\n    return register_tm_clones();\n}\n    goto loc_1294;"
+    },
+    {
+      "address": "4768",
+      "name": "_Z20test_cpp_member_funcv",
+      "end": "4876",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_member_funcv(void)\n{\n    loc_12A0:\n        local_pFFFFFFFFFFFFFFC0 = local_x29;\n        local_pFFFFFFFFFFFFFFC0 = local_x29;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        unknown_call((sp + 0xFFFFFFFFFFFFFFC0) + 20);\n        local_pFFFFFFFFFFFFFFF3 = 0;\n        unknown_call((sp + 0xFFFFFFFFFFFFFFC0) + 20);\n        if ((uint64_t)var_38 != (uint64_t)memory_unknown) goto loc_1308;\n        goto loc_12F8;\n    loc_12F8:\n        return;\n    loc_1308:\n        unknown_call((sp + 0xFFFFFFFFFFFFFFC0) + 20);\n}"
+    },
+    {
+      "address": "4880",
+      "name": "_Z20test_cpp_constructorv",
+      "end": "4904",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_constructorv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4912",
+      "name": "_Z17call_virtual_funcP4Basei",
+      "end": "4928",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_virtual_func(void * a1)\n    loc_1334:\n{\n    __asm(\"br x16\");\n}\n    goto loc_1334;"
+    },
+    {
+      "address": "4928",
+      "name": "_Z21test_cpp_virtual_funcv",
+      "end": "4936",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z21test_cpp_virtual_funcv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4944",
+      "name": "_Z29test_cpp_multiple_inheritancev",
+      "end": "4952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z29test_cpp_multiple_inheritancev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4960",
+      "name": "_Z28test_cpp_diamond_inheritancev",
+      "end": "4968",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z28test_cpp_diamond_inheritancev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4976",
+      "name": "_Z26test_cpp_operator_overloadv",
+      "end": "4984",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z26test_cpp_operator_overloadv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4992",
+      "name": "_Z22test_cpp_template_funcv",
+      "end": "5152",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z22test_cpp_template_funcv(void)\n{\n    loc_1380:\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFE0 = local_x19;\n        local_pFFFFFFFFFFFFFFE8 = var_269;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        Z12template_maxIiET_S0_S0_(/* arguments unknown */);\n        Z12template_maxIdET_S0_S0_(/* arguments unknown */);\n        local_pFFFFFFFFFFFFFFF0 = 10;\n        local_pFFFFFFFFFFFFFFF0 = 10;\n        Z13template_swapIiEvRT_S1_(/* arguments unknown */);\n        __asm(\"fcvtzs w0, d8\");\n        if ((uint64_t)var_28 != (uint64_t)memory_unknown) goto loc_141C;\n        goto loc_140C;\n    loc_140C:\n        return;\n    loc_141C:\n        unknown_call(((v25 + call_368) + var_FFFFFFFFFFFFFFF0) + var_FFFFFFFFFFFFFFF0);\n}"
+    },
+    {
+      "address": "5152",
+      "name": "_Z23test_cpp_template_classv",
+      "end": "5160",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z23test_cpp_template_classv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5168",
+      "name": "_Z15test_cpp_lambdav",
+      "end": "5176",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z15test_cpp_lambdav(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5184",
+      "name": "_Z18test_cpp_smart_ptrv",
+      "end": "5192",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z18test_cpp_smart_ptrv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5200",
+      "name": "_Z13test_cpp_rttiv",
+      "end": "5544",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z13test_cpp_rttiv(void)\n{\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x19;\n    local_pFFFFFFFFFFFFFFC0 = local_x19;\n    local_pFFFFFFFFFFFFFFD0 = local_x21;\n    local_pFFFFFFFFFFFFFFD0 = local_x21;\n    local_pFFFFFFFFFFFFFFE0 = local_x23;\n    local_pFFFFFFFFFFFFFFE0 = local_x23;\n    local_pFFFFFFFFFFFFFFF0 = local_x25;\n    unknown_call(8);\n    memory_unknown = 0x12C28;\n    unknown_call(8);\n    memory_unknown = 0x12C50;\n    if ((uint64_t)memory_unknown != 0x1CC8) {\n        if ((uint32_t)memory_unknown != 42) {\n            unknown_call(memory_unknown);\n        }\n    }\n    if ((uint64_t)memory_unknown == 0x1CD8) {\n    } else {\n        if ((uint32_t)memory_unknown != 42) {\n            unknown_call(memory_unknown);\n            if (!(call_878 != 0)) {\n                goto loc_150C;\n            }\n        }\n    }\n    unknown_call(phi(call_555, phi(call_551, call_542), phi(call_555, phi(call_551, call_542))));\n    unknown_call(phi(call_570, phi(call_746, call_567), phi(call_570, phi(call_746, call_567))));\n    unknown_call(((uint32_t)phi(call_687, phi(memory_unknown, call_702), phi(call_687, phi(memory_unknown, call_702))) == 42 ? (phi(call_752, phi(memory_unknown, call_705), phi(call_752, phi(memory_unknown, call_705)))) + 1 : phi(call_752, phi(memory_unknown, call_705), phi(call_752, phi(memory_unknown, call_705)))));\n    unknown_call(phi(call_555, phi(call_551, call_542), phi(call_555, phi(call_551, call_542))));\n    unknown_call(phi(call_570, phi(call_746, call_567), phi(call_570, phi(call_746, call_567))));\n    return;\n}"
+    },
+    {
+      "address": "5552",
+      "name": "_Z20test_cpp_oo_featuresv",
+      "end": "5940",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_oo_features(void)\n{\n    uint8 var_43;\n    uint64 var_48;\n\n    var_48 = *(uint64 *)(*(uint64 *)0x12FC8);\n    x0_1 = sub_ED0(\"=== 测试C++面向对象特性 ===\", *(uint64 *)0x12FC8, 0);\n    x0_2 = sp - 44;\n    x0_3 = sub_F60(x0_2, \"Test\", 31);\n    var_43 = 0;\n    x0_4 = sub_EE0(x0_2);\n    x0_5 = sub_1010(1, \"CPP-L3-01: %d (期望: 4704)\\\\n\", (uint32)((uint32)x0_4 + 0x125C));\n    x0_6 = test_cpp_constructor(x0_5);\n    x0_7 = sub_1010(1, \"CPP-L3-02: %d (期望: 21)\\\\n\", (uint32)x0_6);\n    x0_8 = sub_1010(1, \"CPP-L3-03: %d (期望: 42)\\\\n\", 42);\n    x0_9 = sub_1010(1, \"CPP-L3-04: %d (期望: 71)\\\\n\", 71);\n    x0_10 = test_cpp_diamond_inheritance(x0_9);\n    x0_11 = sub_1010(1, \"CPP-L3-05: %d (期望: 650)\\\\n\", (uint32)x0_10);\n    x0_12 = sub_1010(1, \"CPP-L3-06: %d (期望: 22)\\\\n\", 22);\n    x0_13 = test_cpp_template_func(x0_12);\n    x0_14 = sub_1010(1, \"CPP-L3-07: %d (期望: 39)\\\\n\", (uint32)x0_13);\n    x0_15 = sub_1010(1, \"CPP-L3-08: %d (期望: 16)\\\\n\", 16);\n    x0_16 = sub_1010(1, \"CPP-L3-09: %d (期望: 85)\\\\n\", 85);\n    x0_17 = test_cpp_exception(x0_16);\n    x0_18 = sub_1010(1, \"CPP-L4-01: %d (期望: 226)\\\\n\", (uint32)x0_17);\n    x0_19 = test_cpp_smart_ptr(x0_18);\n    x0_20 = sub_1010(1, \"CPP-L4-02: %d (期望: 703)\\\\n\", (uint32)x0_19);\n    x2 = (uint32)test_cpp_rtti(x0_20);\n    x1 = *(uint64 *)0x12FC8;\n    x0_22 = var_48 - *(uint64 *)(x1);\n    x3 = 0;\n    __asm(\"b.ne #0x1730\");\n    return sub_1010(1, \"CPP-L4-03: %d (期望: 330+)\\\\n\", x2, x3);\n    x0_24 = sub_EF0();\n}"
+    },
+    {
+      "address": "5952",
+      "name": "_ZN4Base12virtual_funcEi",
+      "end": "5960",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4Base12virtual_funcEi(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5968",
+      "name": "_ZNK4Base7getNameEv",
+      "end": "5980",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK4Base7getNameEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5984",
+      "name": "_ZN4BaseD2Ev",
+      "end": "5988",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6000",
+      "name": "_ZN7Derived12virtual_funcEi",
+      "end": "6012",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7Derived12virtual_funcEi(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6016",
+      "name": "_ZNK7Derived7getNameEv",
+      "end": "6028",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK7Derived7getNameEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6032",
+      "name": "_ZN12MultiDerived5funcAEv",
+      "end": "6040",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcAEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6048",
+      "name": "_ZN12MultiDerived5funcBEv",
+      "end": "6056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcBEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6064",
+      "name": "_ZThn16_N12MultiDerived5funcBEv",
+      "end": "6072",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N12MultiDerived5funcBEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6080",
+      "name": "_ZN7MiddleA4funcEv",
+      "end": "6104",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleA4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6112",
+      "name": "_ZTv0_n24_N7MiddleA4funcEv",
+      "end": "6148",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N7MiddleA4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6160",
+      "name": "_ZN7MiddleB4funcEv",
+      "end": "6184",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleB4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6192",
+      "name": "_ZTv0_n24_N7MiddleB4funcEv",
+      "end": "6228",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N7MiddleB4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6240",
+      "name": "_ZN14DiamondDerived4funcEv",
+      "end": "6264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6272",
+      "name": "_ZTv0_n24_N14DiamondDerived4funcEv",
+      "end": "6308",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6308",
+      "name": "_ZThn16_N14DiamondDerived4funcEv",
+      "end": "6332",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6336",
+      "name": "_ZNK12RTTIDerivedA7getTypeEv",
+      "end": "6344",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedA7getTypeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6352",
+      "name": "_ZNK12RTTIDerivedB7getTypeEv",
+      "end": "6360",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedB7getTypeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6368",
+      "name": "_ZN12RTTIDerivedBD2Ev",
+      "end": "6372",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedBD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6384",
+      "name": "_ZN12RTTIDerivedAD2Ev",
+      "end": "6388",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedAD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6400",
+      "name": "_ZN14DiamondDerivedD1Ev",
+      "end": "6404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6404",
+      "name": "_ZTv0_n32_N14DiamondDerivedD1Ev",
+      "end": "6408",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n32_N14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6416",
+      "name": "_ZThn16_N14DiamondDerivedD1Ev",
+      "end": "6420",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6432",
+      "name": "_ZN12MultiDerivedD2Ev",
+      "end": "6436",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerivedD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6436",
+      "name": "_ZThn16_N12MultiDerivedD1Ev",
+      "end": "6440",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N12MultiDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6448",
+      "name": "_ZN7DerivedD1Ev",
+      "end": "6452",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7DerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6464",
+      "name": "_ZN4BaseD0Ev",
+      "end": "6472",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Base::~Base(void)\n    loc_1944:\n{\n    return sub_F50();\n}\n    goto loc_1944;"
+    },
+    {
+      "address": "6480",
+      "name": "_ZN7DerivedD0Ev",
+      "end": "6488",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Derived::~Derived(void)\n    loc_1954:\n{\n    return sub_F50();\n}\n    goto loc_1954;"
+    },
+    {
+      "address": "6496",
+      "name": "_ZN12MultiDerivedD0Ev",
+      "end": "6504",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void MultiDerived::~MultiDerived(void)\n    loc_1964:\n{\n    return sub_F50();\n}\n    goto loc_1964;"
+    },
+    {
+      "address": "6512",
+      "name": "_ZThn16_N12MultiDerivedD0Ev",
+      "end": "6524",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to MultiDerived::~MultiDerived(int64 a1)\n    loc_1974:\n{\n    return sub_F50(a1 - 16, 32);\n}\n    goto loc_1974;"
+    },
+    {
+      "address": "6528",
+      "name": "_ZN12RTTIDerivedBD0Ev",
+      "end": "6536",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void RTTIDerivedB::~RTTIDerivedB(void)\n    loc_1984:\n{\n    return sub_F50();\n}\n    goto loc_1984;"
+    },
+    {
+      "address": "6544",
+      "name": "_ZN12RTTIDerivedAD0Ev",
+      "end": "6552",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void RTTIDerivedA::~RTTIDerivedA(void)\n    loc_1994:\n{\n    return sub_F50();\n}\n    goto loc_1994;"
+    },
+    {
+      "address": "6560",
+      "name": "_ZN14DiamondDerivedD0Ev",
+      "end": "6568",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void DiamondDerived::~DiamondDerived(void)\n    loc_19A4:\n{\n    return sub_F50();\n}\n    goto loc_19A4;"
+    },
+    {
+      "address": "6576",
+      "name": "_ZTv0_n32_N14DiamondDerivedD0Ev",
+      "end": "6596",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n32_N14DiamondDerivedD0Ev(void * a1)\n    loc_19B4:\n{\n    return sub_F50(a1 + *(uint64 *)(*(uint64 *)(a1) + -32), 48, *(uint64 *)(*(uint64 *)(a1) + -32));\n}\n    goto loc_19B4;"
+    },
+    {
+      "address": "6596",
+      "name": "_ZThn16_N14DiamondDerivedD0Ev",
+      "end": "6608",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to DiamondDerived::~DiamondDerived(int64 a1)\n    loc_19C8:\n{\n    return sub_F50(a1 - 16, 48);\n}\n    goto loc_19C8;"
+    },
+    {
+      "address": "6608",
+      "name": "_Z12template_maxIiET_S0_S0_",
+      "end": "6620",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIiET_S0_S0_(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6624",
+      "name": "_Z12template_maxIdET_S0_S0_",
+      "end": "6636",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIdET_S0_S0_(void)\n{\n    __asm(\"fcmpe d0, d1\");\n    return;\n}"
+    },
+    {
+      "address": "6640",
+      "name": "_Z13template_swapIiEvRT_S1_",
+      "end": "6660",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z13template_swapIiEvRT_S1_(void)\n{\n    a1->field_0 = a2->field_0;\n    a2->field_0 = a1->field_0;\n    return;\n}"
+    },
+    {
+      "address": "6672",
+      "name": "_ZN9ContainerIiEC1Ev",
+      "end": "6680",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIiEC1Ev(void)\n{\n    a1->field_28 = 0;\n    return;\n}"
+    },
+    {
+      "address": "6688",
+      "name": "_ZN9ContainerIiE4pushEi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "6720",
+      "name": "_ZNK9ContainerIiE3getEi",
+      "end": "6760",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIiE3getEi(void)\n{\n    loc_1A40:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_1A5C;\n        goto loc_1A4C;\n    loc_1A4C:\n        if ((int32_t)a1->field_28 > (int32_t)a2) goto loc_1A60;\n        goto loc_1A5C;\n    loc_1A5C:\n        return;\n    loc_1A60:\n        return;\n}"
+    },
+    {
+      "address": "6768",
+      "name": "_ZNK9ContainerIiE7getSizeEv",
+      "end": "6776",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIiE7getSizeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6784",
+      "name": "_ZN9ContainerIdEC2Ev",
+      "end": "6792",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIdEC2Ev(void)\n{\n    a1->field_50 = 0;\n    return;\n}"
+    },
+    {
+      "address": "6800",
+      "name": "_ZN9ContainerIdE4pushEd",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "6832",
+      "name": "_ZNK9ContainerIdE3getEi",
+      "end": "6864",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Container::get(void * a1, int64 a2)\n{\n    d0 = 0; /* vector zero */\n    __asm(\"tbnz w1, #0x1f, #0x1ac4\");\n    /* cmp w2, w1 — 次の分岐のための比較 */\n    __asm(\"b.gt #0x1ac8\");\n    return;\n    return;\n}"
+    },
+    {
+      "address": "6864",
+      "name": "_ZNK9ContainerIdE7getSizeEv",
+      "end": "6872",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIdE7getSizeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6872",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "reason": "function-crash",
+  "functionStateCounts": {
+    "CRASH": 2,
+    "PARTIAL": 4,
+    "PASS": 61,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 1,
+  "subjectSignal": null,
+  "stderr": ""
+}

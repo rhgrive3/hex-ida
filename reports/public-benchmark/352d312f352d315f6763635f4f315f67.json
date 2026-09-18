@@ -1,0 +1,684 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "CRASH",
+  "inputSha256": "7d311dfebf96a5c85e41061f84a3af51bf430580e2ac13b96016e277e14b8782",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 50426,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 50426
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 49080,
+          "bytesWritten": 49080,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 49080,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 49080,
+        "writeBytes": 49080,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "5208",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "5696",
+      "name": "_start",
+      "end": "5748",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_13FD0);\n    unknown_call(global_13FD0);\n}"
+    },
+    {
+      "address": "5748",
+      "name": "$x",
+      "end": "5768",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 $x(void)\n{\n    x0_1 = *(uint64 *)0x13FE8;\n    __asm(\"cbz x0, #0x1684\");\n    return sub_1600(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "5776",
+      "name": "$x",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 $x(void)\n    loc_16A0:\n{\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x16bc\");\n    x1 = *(uint64 *)0x13FE0;\n    __asm(\"cbz x1, #0x16bc\");\n    __asm(\"br x16\");\n    goto loc_16A0;\n    return x0;\n}"
+    },
+    {
+      "address": "5824",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x16f8\");\n    x2 = *(uint64 *)0x13FF0;\n    __asm(\"cbz x2, #0x16f8\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "5888",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x14000;\n    __asm(\"cbnz w0, #0x173c\");\n    x0_1 = *(uint64 *)0x13FD8;\n    __asm(\"cbz x0, #0x1730\");\n    x0_2 = sub_14F0(*(uint64 *)0x14008);\n    x0_3 = $x();\n    *(uint8 *)(x19 + 0x30) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "5968",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n    loc_1754:\n{\n    return register_tm_clones();\n}\n    goto loc_1754;"
+    },
+    {
+      "address": "5972",
+      "name": "_Z20test_cpp_member_funcv",
+      "end": "6092",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_member_funcv(void)\n{\n    loc_1754:\n        local_pFFFFFFFFFFFFFFB0 = local_x29;\n        local_pFFFFFFFFFFFFFFB0 = local_x29;\n        local_pFFFFFFFFFFFFFFC0 = local_x19;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        unknown_call((sp + 0xFFFFFFFFFFFFFFB0) + 36);\n        local_pFFFFFFFFFFFFFFF3 = 0;\n        unknown_call((sp + 0xFFFFFFFFFFFFFFB0) + 36);\n        if ((uint64_t)var_48 != (uint64_t)memory_unknown) goto loc_17C8;\n        goto loc_17B4;\n    loc_17B4:\n        return;\n    loc_17C8:\n        unknown_call((sp + 0xFFFFFFFFFFFFFFB0) + 36);\n}"
+    },
+    {
+      "address": "6092",
+      "name": "_Z20test_cpp_constructorv",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "6200",
+      "name": "_Z17call_virtual_funcP4Basei",
+      "end": "6228",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z17call_virtual_funcP4Basei(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "6228",
+      "name": "_Z21test_cpp_virtual_funcv",
+      "end": "6372",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z21test_cpp_virtual_funcv(void)\n{\n    loc_1854:\n        local_pFFFFFFFFFFFFFFC0 = local_x29;\n        local_pFFFFFFFFFFFFFFC0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x19;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        local_pFFFFFFFFFFFFFFE0 = 0x13958;\n        local_pFFFFFFFFFFFFFFE8 = 0x13988;\n        local_pFFFFFFFFFFFFFFF0 = 3;\n        Z17call_virtual_funcP4Basei(/* arguments unknown */);\n        Z17call_virtual_funcP4Basei(/* arguments unknown */);\n        if ((uint64_t)var_38 != (uint64_t)memory_unknown) goto loc_18E0;\n        goto loc_18D4;\n    loc_18D4:\n        return;\n    loc_18E0:\n        unknown_call((call_308 + 21) + call_293);\n}"
+    },
+    {
+      "address": "6372",
+      "name": "_Z29test_cpp_multiple_inheritancev",
+      "end": "6380",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z29test_cpp_multiple_inheritancev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6380",
+      "name": "_Z28test_cpp_diamond_inheritancev",
+      "end": "6536",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z28test_cpp_diamond_inheritancev(void)\n{\n    loc_18EC:\n        local_pFFFFFFFFFFFFFFA0 = local_x29;\n        local_pFFFFFFFFFFFFFFA0 = local_x29;\n        local_pFFFFFFFFFFFFFFB0 = local_x19;\n        local_pFFFFFFFFFFFFFFB0 = local_x19;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        local_pFFFFFFFFFFFFFFC8 = 0x13AC8;\n        local_pFFFFFFFFFFFFFFE8 = 0x13B30;\n        local_pFFFFFFFFFFFFFFD8 = 0x13AF8;\n        local_pFFFFFFFFFFFFFFF0 = 50;\n        ZTv0_n24_N14DiamondDerived4funcEv(/* arguments unknown */);\n        local_pFFFFFFFFFFFFFFF0 = 0x64;\n        ZTv0_n24_N14DiamondDerived4funcEv(/* arguments unknown */);\n        if ((uint64_t)var_58 != (uint64_t)memory_unknown) goto loc_1984;\n        goto loc_1978;\n    loc_1978:\n        return;\n    loc_1984:\n        unknown_call(call_224 + call_283);\n}"
+    },
+    {
+      "address": "6536",
+      "name": "_Z26test_cpp_operator_overloadv",
+      "end": "6544",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z26test_cpp_operator_overloadv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6544",
+      "name": "_Z22test_cpp_template_funcv",
+      "end": "6712",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z22test_cpp_template_funcv(void)\n{\n    loc_1990:\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFE0 = local_x19;\n        local_pFFFFFFFFFFFFFFE8 = var_273;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        Z12template_maxIiET_S0_S0_(/* arguments unknown */);\n        Z12template_maxIdET_S0_S0_(/* arguments unknown */);\n        local_pFFFFFFFFFFFFFFF0 = 10;\n        local_pFFFFFFFFFFFFFFF4 = 20;\n        Z13template_swapIiEvRT_S1_(/* arguments unknown */);\n        __asm(\"fcvtzs w0, d8\");\n        if ((uint64_t)var_28 != (uint64_t)memory_unknown) goto loc_1A34;\n        goto loc_1A24;\n    loc_1A24:\n        return;\n    loc_1A34:\n        unknown_call(((v43 + call_292) + var_FFFFFFFFFFFFFFF0) + var_FFFFFFFFFFFFFFF4);\n}"
+    },
+    {
+      "address": "6712",
+      "name": "_Z23test_cpp_template_classv",
+      "end": "6720",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z23test_cpp_template_classv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6720",
+      "name": "_Z15test_cpp_lambdav",
+      "end": "6728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z15test_cpp_lambdav(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6728",
+      "name": "_Z18test_cpp_exceptionv",
+      "end": "6944",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_exception(void)\n{\n    // … ほかに 3 個の置き場（退避用など）があります\n\n    x0_1 = sub_14E0(4);\n    *(uint32 *)(x0) = 42;\n    x0_2 = sub_15D0(x0_1, *(uint64 *)0x13FC0, 0);\n    /* cmp x1, #1 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1a90\");\n    x21 = 0;\n    loc_1A84:\n    /* cmp x1, #1 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1ab4\");\n    x0_3 = sub_15E0();\n    x0_4 = sub_14D0();\n    x21 = *(uint32 *)(x0);\n    x0_5 = sub_1580(x0_4);\n    x20 = x1;\n    x0_6 = sub_15B0(x0_5);\n    x1 = x20;\n    __asm(\"b #0x1a84\");\n    goto loc_1A84;\n    x0_7 = sub_14D0();\n    x19 = (uint32)((uint32)x21 + (uint32)*(uint32 *)(x0_7) * 2);\n    x0_8 = sub_15B0(x0_7);\n    x0_9 = sub_14E0(1);\n    x0_10 = sub_15D0(x0_9, 0x13C98, 0);\n    /* cmp x1, #2 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1af0\");\n    /* cmp x1, #3 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1b10\");\n    x0_11 = sub_15E0(x0_10);\n    x0_12 = sub_14D0();\n    x19 = (uint32)(x19 + 100);\n    x0_13 = sub_15B0(x0_12);\n    loc_1AFC:\n    return x0;\n    x0_14 = sub_14D0();\n    x19 = (uint32)((uint32)x19 + 200);\n    x0_15 = sub_15B0(x0_14);\n    __asm(\"b #0x1afc\");\n}\n    goto loc_1AFC;"
+    },
+    {
+      "address": "6944",
+      "name": "_Z18test_cpp_smart_ptrv",
+      "end": "6952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z18test_cpp_smart_ptrv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6952",
+      "name": "_Z13test_cpp_rttiv",
+      "end": "7308",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z13test_cpp_rttiv(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x23;\n    unknown_call(8);\n    memory_unknown = 0x13B58;\n    unknown_call(8);\n    memory_unknown = 0x13B80;\n    if ((uint64_t)memory_unknown != 0x2360) {\n        if ((uint32_t)memory_unknown != 42) {\n            unknown_call(memory_unknown);\n        }\n    }\n    if ((uint64_t)memory_unknown == 0x2370) {\n    } else {\n        if ((uint32_t)memory_unknown != 42) {\n            unknown_call(memory_unknown);\n            if (!(call_506 != 0)) {\n                goto loc_1BF0;\n            }\n        }\n    }\n    unknown_call(phi(phi(call_823, phi(call_852, call_914)), call_823, phi(call_852, call_914)));\n    unknown_call(phi(phi(call_637, phi(call_559, call_845)), call_637, phi(call_559, call_845)));\n    unknown_call(((uint32_t)memory_unknown == 42 ? (phi(phi(call_668, phi(call_565, memory_unknown)), call_668, phi(call_565, memory_unknown))) + 1 : phi(phi(call_668, phi(call_565, memory_unknown)), call_668, phi(call_565, memory_unknown))));\n    unknown_call(phi(phi(call_823, phi(call_852, call_914)), call_823, phi(call_852, call_914)));\n    unknown_call(phi(phi(call_637, phi(call_559, call_845)), call_637, phi(call_559, call_845)));\n    return;\n}"
+    },
+    {
+      "address": "7308",
+      "name": "_Z20test_cpp_oo_featuresv",
+      "end": "7612",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_oo_featuresv(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(0x2148);\n    Z20test_cpp_member_funcv(/* arguments unknown */);\n    unknown_call(1);\n    Z20test_cpp_constructorv(/* arguments unknown */);\n    unknown_call(1);\n    Z21test_cpp_virtual_funcv(/* arguments unknown */);\n    unknown_call(1);\n    Z29test_cpp_multiple_inheritancev(/* arguments unknown */);\n    unknown_call(1);\n    Z28test_cpp_diamond_inheritancev(/* arguments unknown */);\n    unknown_call(1);\n    unknown_call(1);\n    Z22test_cpp_template_funcv(/* arguments unknown */);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    Z18test_cpp_exceptionv(/* arguments unknown */);\n    unknown_call(1);\n    Z18test_cpp_smart_ptrv(/* arguments unknown */);\n    unknown_call(1);\n    Z13test_cpp_rttiv(/* arguments unknown */);\n    unknown_call(1);\n    return;\n}"
+    },
+    {
+      "address": "7612",
+      "name": "main",
+      "end": "7636",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    Z20test_cpp_oo_featuresv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "7636",
+      "name": "_GLOBAL__sub_I__Z20test_cpp_member_funcv",
+      "end": "7704",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void GLOBAL__sub_I__Z20test_cpp_member_funcv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(0x14040);\n    unknown_call(global_13FF8);\n    return;\n}"
+    },
+    {
+      "address": "7704",
+      "name": "_ZN4Base12virtual_funcEi",
+      "end": "7712",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4Base12virtual_funcEi(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7712",
+      "name": "_ZNK4Base7getNameEv",
+      "end": "7724",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK4Base7getNameEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7724",
+      "name": "_ZN4BaseD2Ev",
+      "end": "7728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7728",
+      "name": "_ZN7Derived12virtual_funcEi",
+      "end": "7740",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7Derived12virtual_funcEi(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7740",
+      "name": "_ZNK7Derived7getNameEv",
+      "end": "7752",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK7Derived7getNameEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7752",
+      "name": "_ZN12MultiDerived5funcAEv",
+      "end": "7760",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcAEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7760",
+      "name": "_ZN12MultiDerived5funcBEv",
+      "end": "7768",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcBEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7768",
+      "name": "_ZThn16_N12MultiDerived5funcBEv",
+      "end": "7776",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N12MultiDerived5funcBEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7776",
+      "name": "_ZN7MiddleA4funcEv",
+      "end": "7800",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleA4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7800",
+      "name": "_ZTv0_n24_N7MiddleA4funcEv",
+      "end": "7836",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N7MiddleA4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7836",
+      "name": "_ZN7MiddleB4funcEv",
+      "end": "7860",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleB4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7860",
+      "name": "_ZTv0_n24_N7MiddleB4funcEv",
+      "end": "7896",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N7MiddleB4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7896",
+      "name": "_ZN14DiamondDerived4funcEv",
+      "end": "7920",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7920",
+      "name": "_ZTv0_n24_N14DiamondDerived4funcEv",
+      "end": "7956",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n24_N14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7956",
+      "name": "_ZThn16_N14DiamondDerived4funcEv",
+      "end": "7980",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N14DiamondDerived4funcEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7980",
+      "name": "_ZNK12RTTIDerivedA7getTypeEv",
+      "end": "7988",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedA7getTypeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7988",
+      "name": "_ZNK12RTTIDerivedB7getTypeEv",
+      "end": "7996",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedB7getTypeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7996",
+      "name": "_ZN12RTTIDerivedBD2Ev",
+      "end": "8000",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedBD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8000",
+      "name": "_ZN12RTTIDerivedAD2Ev",
+      "end": "8004",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedAD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8004",
+      "name": "_ZN14DiamondDerivedD1Ev",
+      "end": "8008",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8008",
+      "name": "_ZThn16_N14DiamondDerivedD1Ev",
+      "end": "8012",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8012",
+      "name": "_ZTv0_n32_N14DiamondDerivedD1Ev",
+      "end": "8016",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n32_N14DiamondDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8016",
+      "name": "_ZN12MultiDerivedD2Ev",
+      "end": "8020",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerivedD2Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8020",
+      "name": "_ZThn16_N12MultiDerivedD1Ev",
+      "end": "8024",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N12MultiDerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8024",
+      "name": "_ZN7DerivedD1Ev",
+      "end": "8028",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7DerivedD1Ev(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8028",
+      "name": "_ZN4BaseD0Ev",
+      "end": "8052",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(8);\n    return;\n}"
+    },
+    {
+      "address": "8052",
+      "name": "_ZN7DerivedD0Ev",
+      "end": "8076",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7DerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(16);\n    return;\n}"
+    },
+    {
+      "address": "8076",
+      "name": "_ZN12MultiDerivedD0Ev",
+      "end": "8100",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(32);\n    return;\n}"
+    },
+    {
+      "address": "8100",
+      "name": "_ZThn16_N12MultiDerivedD0Ev",
+      "end": "8128",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N12MultiDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1 - 16);\n    return;\n}"
+    },
+    {
+      "address": "8128",
+      "name": "_ZN12RTTIDerivedAD0Ev",
+      "end": "8152",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedAD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(8);\n    return;\n}"
+    },
+    {
+      "address": "8152",
+      "name": "_ZN12RTTIDerivedBD0Ev",
+      "end": "8176",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedBD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(8);\n    return;\n}"
+    },
+    {
+      "address": "8176",
+      "name": "_ZN14DiamondDerivedD0Ev",
+      "end": "8200",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(48);\n    return;\n}"
+    },
+    {
+      "address": "8200",
+      "name": "_ZTv0_n32_N14DiamondDerivedD0Ev",
+      "end": "8236",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZTv0_n32_N14DiamondDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1 + memory_unknown);\n    return;\n}"
+    },
+    {
+      "address": "8236",
+      "name": "_ZThn16_N14DiamondDerivedD0Ev",
+      "end": "8264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZThn16_N14DiamondDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1 - 16);\n    return;\n}"
+    },
+    {
+      "address": "8264",
+      "name": "_Z12template_maxIiET_S0_S0_",
+      "end": "8276",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIiET_S0_S0_(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8276",
+      "name": "_Z12template_maxIdET_S0_S0_",
+      "end": "8288",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIdET_S0_S0_(void)\n{\n    __asm(\"fcmpe d0, d1\");\n    return;\n}"
+    },
+    {
+      "address": "8288",
+      "name": "_Z13template_swapIiEvRT_S1_",
+      "end": "8308",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z13template_swapIiEvRT_S1_(void)\n{\n    a1->field_0 = a2->field_0;\n    a2->field_0 = a1->field_0;\n    return;\n}"
+    },
+    {
+      "address": "8308",
+      "name": "_ZN9ContainerIiEC1Ev",
+      "end": "8316",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIiEC1Ev(void)\n{\n    a1->field_28 = 0;\n    return;\n}"
+    },
+    {
+      "address": "8316",
+      "name": "_ZN9ContainerIiE4pushEi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "8344",
+      "name": "_ZNK9ContainerIiE3getEi",
+      "end": "8384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 Container::get(void * a1, int64 a2)\n{\n    x2 = a1;\n    __asm(\"tbnz w1, #0x1f, #0x20b4\");\n    /* cmp w3, w1 — 次の分岐のための比較 */\n    __asm(\"b.gt #0x20b8\");\n    loc_20B4:\n    return x0;\n    __asm(\"b #0x20b4\");\n}\n    goto loc_20B4;"
+    },
+    {
+      "address": "8384",
+      "name": "_ZNK9ContainerIiE7getSizeEv",
+      "end": "8392",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIiE7getSizeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8392",
+      "name": "_ZN9ContainerIdEC2Ev",
+      "end": "8400",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIdEC2Ev(void)\n{\n    a1->field_50 = 0;\n    return;\n}"
+    },
+    {
+      "address": "8400",
+      "name": "_ZN9ContainerIdE4pushEd",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "8428",
+      "name": "_ZNK9ContainerIdE3getEi",
+      "end": "8460",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Container::get(void * a1, int64 a2)\n{\n    d0 = 0; /* vector zero */\n    __asm(\"tbnz w1, #0x1f, #0x2100\");\n    /* cmp w2, w1 — 次の分岐のための比較 */\n    __asm(\"b.gt #0x2104\");\n    loc_2100:\n    return;\n    __asm(\"b #0x2100\");\n}\n    goto loc_2100;"
+    },
+    {
+      "address": "8460",
+      "name": "_ZNK9ContainerIdE7getSizeEv",
+      "end": "8468",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIdE7getSizeEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "8468",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "reason": "function-crash",
+  "functionStateCounts": {
+    "CRASH": 3,
+    "PARTIAL": 4,
+    "PASS": 60,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 1,
+  "subjectSignal": null,
+  "stderr": ""
+}

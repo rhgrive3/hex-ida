@@ -1,0 +1,725 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "PASS",
+  "inputSha256": "9a4e8ec1902d861b45f9d31c5ee6539b99bf257949b02357f08138e0302aafd1",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 53950,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 53950
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 52604,
+          "bytesWritten": 52604,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 52604,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 52604,
+        "writeBytes": 52604,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "4808",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "5888",
+      "name": "$x",
+      "end": "5924",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void $x(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(16);\n    global_152B0 = bit_extract((uint32_t)call_30, 8, 1);\n    return;\n}"
+    },
+    {
+      "address": "5952",
+      "name": "_start",
+      "end": "6004",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_14FD8);\n    unknown_call(global_14FD8);\n}"
+    },
+    {
+      "address": "6004",
+      "name": "$x",
+      "end": "6024",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 $x(void)\n{\n    x0_1 = *(uint64 *)0x14FD0;\n    __asm(\"cbz x0, #0x1784\");\n    return sub_14A0(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "6032",
+      "name": "$x",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 $x(void)\n    loc_17A0:\n{\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x17bc\");\n    x1 = *(uint64 *)0x14FC0;\n    __asm(\"cbz x1, #0x17bc\");\n    __asm(\"br x16\");\n    goto loc_17A0;\n    return x0;\n}"
+    },
+    {
+      "address": "6080",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x17f8\");\n    x2 = *(uint64 *)0x14FE0;\n    __asm(\"cbz x2, #0x17f8\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "6144",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x15000;\n    __asm(\"cbnz w0, #0x183c\");\n    x0_1 = *(uint64 *)0x14FC8;\n    __asm(\"cbz x0, #0x1830\");\n    x0_2 = sub_1390(*(uint64 *)0x151F0);\n    x0_3 = $x();\n    *(uint8 *)(x19 + 0x1F8) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "6224",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n    loc_1854:\n{\n    return register_tm_clones();\n}\n    goto loc_1854;"
+    },
+    {
+      "address": "6228",
+      "name": "param_strcpy",
+      "end": "6252",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_strcpy(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(/* target unknown */);\n    unknown_call(/* target unknown */);\n    return;\n}"
+    },
+    {
+      "address": "6252",
+      "name": "call_strcpy",
+      "end": "6304",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_strcpy(void)\n{\n    local_m10 = local_x29;\n    local_m10 = local_x29;\n    local_m28 = 0;\n    local_m30 = global_3388;\n    unknown_call(sp - 48);\n    return;\n}"
+    },
+    {
+      "address": "6304",
+      "name": "param_strcmp",
+      "end": "6340",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_strcmp(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "6340",
+      "name": "call_strcmp",
+      "end": "6348",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_strcmp(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6348",
+      "name": "param_strlen",
+      "end": "6368",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_strlen(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(/* target unknown */);\n    return;\n}"
+    },
+    {
+      "address": "6368",
+      "name": "call_strlen",
+      "end": "6376",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_strlen(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6376",
+      "name": "param_memcpy",
+      "end": "6412",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_memcpy(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "6412",
+      "name": "call_memcpy",
+      "end": "6420",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_memcpy(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6420",
+      "name": "param_memcmp",
+      "end": "6456",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_memcmp(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "6456",
+      "name": "call_memcmp",
+      "end": "6464",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_memcmp(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6464",
+      "name": "param_printf",
+      "end": "6500",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_printf(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(\"Value: %d, Name: %s\\\\n\");\n    return;\n}"
+    },
+    {
+      "address": "6500",
+      "name": "call_printf",
+      "end": "6540",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_printf(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(\"Value: %d, Name: %s\\\\n\");\n    return;\n}"
+    },
+    {
+      "address": "6540",
+      "name": "param_scanf",
+      "end": "6604",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_scanf(void)\n{\n    local_m10 = local_x29;\n    local_m10 = local_x29;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "6604",
+      "name": "call_scanf",
+      "end": "6676",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_scanf(void)\n{\n    local_m10 = local_x29;\n    local_m10 = local_x29;\n    unknown_call(\"123,456\");\n    return;\n}"
+    },
+    {
+      "address": "6676",
+      "name": "param_fopen_fclose",
+      "end": "6748",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_fopen_fclose(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(a1);\n    if (call_145 == 0) {\n    } else {\n        unknown_call(call_145);\n        unknown_call(call_145);\n    }\n    return;\n}"
+    },
+    {
+      "address": "6748",
+      "name": "call_fopen_fclose",
+      "end": "6836",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_fopen_fclose(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(\"/etc/passwd\");\n    if (call_178 == 0) {\n    } else {\n        unknown_call(call_178);\n        unknown_call(call_178);\n    }\n    return;\n}"
+    },
+    {
+      "address": "6836",
+      "name": "param_fread_fwrite",
+      "end": "7124",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_fread_fwrite(void)\n{\n    local_m40 = local_x29;\n    local_m40 = local_x29;\n    local_m30 = local_x23;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    unknown_call(a1);\n    if (call_672 == 0) {\n    } else {\n        unknown_call(\"BinBench Test Data\");\n        if ((uint64_t)call_456 != 18) {\n            unknown_call(call_672);\n        } else {\n            unknown_call(call_672);\n            unknown_call(sp - 96);\n            (var_536 - 96)[call_160] = 0;\n            unknown_call(call_672);\n            unknown_call(a1);\n            if ((uint64_t)call_435 == (uint64_t)call_456) {\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "7124",
+      "name": "call_fread_fwrite",
+      "end": "7152",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_fread_fwrite(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_fread_fwrite(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "7152",
+      "name": "param_malloc_free",
+      "end": "7256",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_malloc_free(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(a1 << 2);\n    if (call_239 == 0) {\n    } else {\n        if (!(a1 == 0)) {\n            memory_unknown = local_phi_227;\n            while ((uint64_t)phi(v28 - 1, a1) != 1) {\n            }\n        }\n        unknown_call(call_239);\n    }\n    return;\n}"
+    },
+    {
+      "address": "7256",
+      "name": "call_malloc_free",
+      "end": "7348",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_malloc_free(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(40);\n    if (call_209 == 0) {\n    } else {\n        memory_unknown = local_phi_142;\n        while ((uint64_t)x9 + 4 != 40) {\n        }\n        unknown_call(call_209);\n    }\n    return;\n}"
+    },
+    {
+      "address": "7348",
+      "name": "param_memset",
+      "end": "7416",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_memset(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(a1);\n    if (!(a2 == 0)) {\n        while ((uint64_t)phi(v23 - 1, call_139) != 1) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "7416",
+      "name": "call_memset",
+      "end": "7476",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_memset(void)\n{\n    memory_unknown = 0xFF;\n    while ((uint64_t)x8 + 4 != 40) {\n    }\n    local_m10 = 0;\n    local_m30 = var_26;\n    return;\n}"
+    },
+    {
+      "address": "7476",
+      "name": "param_strchr_strstr",
+      "end": "7564",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_strchr_strstr(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(a1);\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "7564",
+      "name": "call_strchr_strstr",
+      "end": "7572",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_strchr_strstr(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "7572",
+      "name": "test_standard_library_functions",
+      "end": "8096",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_standard_library_functions(void)\n{\n    local_m30 = local_x29;\n    local_m30 = local_x29;\n    local_m20 = local_x21;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    unknown_call(\"=== 测试标准库函数调用 ===\");\n    local_m58 = 0;\n    local_m60 = global_3388;\n    unknown_call(sp - 96);\n    unknown_call(\"LIB-L1-01: %d (期望: 8)\\\\n\");\n    unknown_call(\"LIB-L1-02: %d (期望: 0)\\\\n\");\n    unknown_call(\"LIB-L1-03: %d (期望: 12)\\\\n\");\n    unknown_call(\"LIB-L1-04: %d (期望: 90)\\\\n\");\n    unknown_call(\"LIB-L1-05: %d (期望: -1)\\\\n\");\n    unknown_call(\"Value: %d, Name: %s\\\\n\");\n    unknown_call(\"LIB-L1-06: %d (期望: 22)\\\\n\");\n    unknown_call(\"123,456\");\n    unknown_call(\"LIB-L1-07: %d (期望: 579)\\\\n\");\n    unknown_call(\"/etc/passwd\");\n    if (!(call_747 == 0)) {\n        unknown_call(call_747);\n        unknown_call(call_747);\n    }\n    unknown_call(\"LIB-L1-08: %d (期望: 42)\\\\n\");\n    param_fread_fwrite(/* arguments unknown */);\n    unknown_call(\"LIB-L1-09: %d (期望: 42)\\\\n\");\n    unknown_call(40);\n    if (call_786 == 0) {\n    } else {\n        memory_unknown = local_phi_1159;\n        while ((uint64_t)x9 + 4 != 40) {\n        }\n        unknown_call(call_786);\n    }\n    unknown_call(\"LIB-L1-10: %d (期望: 90)\\\\n\");\n    memory_unknown = 0xFF;\n    while ((uint64_t)x8 + 4 != 40) {\n    }\n    memory_unknown = 0;\n    memory_unknown = var_359;\n    unknown_call(\"LIB-L1-11: %d (期望: 0)\\\\n\");\n    unknown_call(\"LIB-L1-12: %d (期望: 15)\\\\n\");\n    return;\n}"
+    },
+    {
+      "address": "8096",
+      "name": "param_linux_syscall",
+      "end": "8180",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_linux_syscall(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(56);\n    if (__arm64_condition_unknown(/* NZCV */)) {\n        unknown_call(call_183);\n    } else {\n        unknown_call(57);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8180",
+      "name": "call_linux_syscall",
+      "end": "8276",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_linux_syscall(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(56);\n    if (__arm64_condition_unknown(/* NZCV */)) {\n        unknown_call(call_228);\n    } else {\n        unknown_call(57);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8276",
+      "name": "param_win32_api",
+      "end": "8336",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_win32_api(void)\n{\n    local_m10 = local_x29;\n    local_m10 = local_x29;\n    unknown_call(a1);\n    return;\n}"
+    },
+    {
+      "address": "8336",
+      "name": "call_win32_api",
+      "end": "8404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_win32_api(void)\n{\n    local_m10 = local_x29;\n    local_m10 = local_x29;\n    unknown_call(\"/etc/passwd\");\n    return;\n}"
+    },
+    {
+      "address": "8404",
+      "name": "param_fork_exec",
+      "end": "8540",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_fork_exec(void)\n{\n    loc_20D4:\n        local_m20 = local_x29;\n        local_m20 = local_x29;\n        local_m10 = local_x20;\n        local_m10 = local_x20;\n        unknown_call(a1);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_211C;\n        goto loc_20F4;\n    loc_20F4:\n        if (call_308 == 0) goto loc_2140;\n        goto loc_20F8;\n    loc_20F8:\n        unknown_call(call_308);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2124;\n        goto loc_2108;\n    loc_2108:\n        if (((uint32_t)var_m24 & (uint32_t)0x7F) == 0) goto loc_212C;\n        goto loc_2114;\n    loc_2114:\n        goto loc_2130;\n    loc_211C:\n        goto loc_2130;\n    loc_2124:\n        goto loc_2130;\n    loc_212C:\n    loc_2130:\n        return;\n    loc_2140:\n        unknown_call(a1);\n        unknown_call(0x7F);\n}"
+    },
+    {
+      "address": "8540",
+      "name": "call_fork_exec",
+      "end": "8676",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_fork_exec(void)\n{\n    loc_215C:\n        local_m10 = local_x29;\n        local_m10 = local_x29;\n        unknown_call(a1);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2198;\n        goto loc_2170;\n    loc_2170:\n        if (call_310 == 0) goto loc_21C4;\n        goto loc_2174;\n    loc_2174:\n        unknown_call(call_310);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_21A0;\n        goto loc_2184;\n    loc_2184:\n        if (((uint32_t)var_m14 & (uint32_t)0x7F) == 0) goto loc_21A8;\n        goto loc_2190;\n    loc_2190:\n        goto loc_21AC;\n    loc_2198:\n        goto loc_21AC;\n    loc_21A0:\n        goto loc_21AC;\n    loc_21A8:\n    loc_21AC:\n        return;\n    loc_21C4:\n        unknown_call(0x3542);\n        unknown_call(0x7F);\n}"
+    },
+    {
+      "address": "8676",
+      "name": "param_pipe_communication",
+      "end": "8860",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_pipe_communication(void)\n{\n    loc_21E4:\n        local_m20 = local_x29;\n        local_m20 = local_x29;\n        local_m10 = local_x20;\n        local_m10 = local_x20;\n        unknown_call(((sp - 80) + 48) - 8);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2254;\n        goto loc_2200;\n    loc_2200:\n        unknown_call(call_262);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_225C;\n        goto loc_2208;\n    loc_2208:\n        if (call_300 == 0) goto loc_2270;\n        goto loc_220C;\n    loc_220C:\n        unknown_call(var_m24);\n        unknown_call(var_m28);\n        (var_337 - 80 + 8)[call_176] = 0;\n        unknown_call(var_m28);\n        unknown_call(0);\n        goto loc_2260;\n    loc_2254:\n        goto loc_2260;\n    loc_225C:\n    loc_2260:\n        return;\n    loc_2270:\n        unknown_call(var_m28);\n        unknown_call(var_m24);\n        unknown_call(var_m24);\n        unknown_call(0);\n}"
+    },
+    {
+      "address": "8860",
+      "name": "call_pipe_communication",
+      "end": "8880",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_pipe_communication(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_pipe_communication(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "8880",
+      "name": "param_socket_create",
+      "end": "9076",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_socket_create(void)\n{\n    local_m20 = local_x29;\n    local_m20 = local_x29;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    unknown_call(2);\n    if (__arm64_condition_unknown(/* NZCV */)) {\n    } else {\n        local_m24 = 1;\n        unknown_call(call_308);\n        if (__arm64_condition_unknown(/* NZCV */)) {\n            unknown_call(call_308);\n        } else {\n            local_m38 = 2;\n            local_m38 = 2;\n            unknown_call(call_308);\n            if (__arm64_condition_unknown(/* NZCV */)) {\n                unknown_call(call_308);\n            } else {\n                unknown_call(call_308);\n                unknown_call(call_308);\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "9076",
+      "name": "call_socket_create",
+      "end": "9096",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_socket_create(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_socket_create(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "9096",
+      "name": "param_shmget_shmat",
+      "end": "9304",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 param_shmget_shmat(void)\n{\n    // … ほかに 3 個の置き場（退避用など）があります\n\n    x0_1 = sub_1430(\"/tmp/binbench_shm\", 66, 438);\n    __asm(\"tbnz w0, #0x1f, #0x2430\");\n    x0_2 = sub_1490(x0_1);\n    x0_3 = sub_1540(\"/tmp/binbench_shm\", 42);\n    __asm(\"tbnz w0, #0x1f, #0x2430\");\n    x0_4 = sub_1560(x0_3, 0x1000, 950);\n    __asm(\"tbnz w0, #0x1f, #0x2448\");\n    x0_5 = sub_1460(x0_4, 0, 0);\n    /* cmn x0, #1 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x2450\");\n    *(uint64 *)(x0 + 5) = \"dMemory\";\n    *(uint64 *)(x0) = *(uint64 *)(\"SharedMemory\");\n    x0_6 = sub_1320(x0_5);\n    x0_7 = sub_1370(x0_5);\n    x0_8 = (uint32)x0_4;\n    x0_9 = sub_1520(x0_8, 0, 0);\n    __asm(\"b #0x2434\");\n    x20 = 0xFFFFFFFF;\n    loc_2434:\n    return x0;\n    x20 = 0xFFFFFFFE;\n    __asm(\"b #0x2434\");\n    goto loc_2434;\n    x20 = 0xFFFFFFFD;\n    __asm(\"b #0x2434\");\n}\n    goto loc_2434;"
+    },
+    {
+      "address": "9304",
+      "name": "call_shmget_shmat",
+      "end": "9336",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_shmget_shmat(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_shmget_shmat(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "9336",
+      "name": "param_signal_handling",
+      "end": "9644",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_signal_handling(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x22;\n    local_pFFFFFFFFFFFFFFE0 = local_x22;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(10);\n    if ((uint64_t)((uint64_t)call_407 + (uint64_t)1) == 0) {\n    } else {\n        unknown_call(14);\n        if ((uint64_t)((uint64_t)call_675 + (uint64_t)1) == 0) {\n        } else {\n            global_15200 = 0;\n            unknown_call(10);\n            if (!(global_15200 != 0)) {\n                unknown_call(0x3E8);\n                while (condition_hi) {\n                }\n            }\n            if (memory_unknown == 0) {\n            } else {\n                if ((uint32_t)global_15204 != 10) {\n                } else {\n                    memory_unknown = 0;\n                    unknown_call(1);\n                    if (!(memory_unknown != 0)) {\n                        unknown_call(0x3E8);\n                        while (condition_hi) {\n                        }\n                    }\n                    if (memory_unknown == 0) {\n                    } else {\n                        if ((uint32_t)memory_unknown != 14) {\n                            goto loc_2598;\n                        } else {\n                            unknown_call(10);\n                            unknown_call(14);\n                        }\n                    }\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "9644",
+      "name": "signal_handler",
+      "end": "9668",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void signal_handler(void)\n{\n    global_15200 = 1;\n    global_15204 = a1;\n    return;\n}"
+    },
+    {
+      "address": "9668",
+      "name": "call_signal_handling",
+      "end": "9688",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_signal_handling(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_signal_handling(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "9688",
+      "name": "test_system_calls",
+      "end": "10072",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_system_calls(void)\n{\n    loc_25D8:\n        local_m20 = local_x29;\n        local_m20 = local_x29;\n        local_m10 = local_x19;\n        unknown_call(\"=== 测试系统调用 ===\");\n        unknown_call(56);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2624;\n        goto loc_2614;\n    loc_2614:\n        unknown_call(57);\n        goto loc_2630;\n    loc_2624:\n        unknown_call(call_988);\n    loc_2630:\n        unknown_call(\"SYS-L3-01: %d (期望: 42)\\\\n\");\n        unknown_call(\"/etc/passwd\");\n        unknown_call(\"SYS-L3-02: %d (期望: 42)\\\\n\");\n        unknown_call(\"SYS-L3-02: %d (期望: 42)\\\\n\");\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_26AC;\n        goto loc_2684;\n    loc_2684:\n        if (call_1013 == 0) goto loc_2738;\n        goto loc_2688;\n    loc_2688:\n        unknown_call(call_1013);\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_26B4;\n        goto loc_2698;\n    loc_2698:\n        if (((uint32_t)memory_unknown & (uint32_t)0x7F) == 0) goto loc_26BC;\n        goto loc_26A4;\n    loc_26A4:\n        goto loc_26C0;\n    loc_26AC:\n        goto loc_26C0;\n    loc_26B4:\n        goto loc_26C0;\n    loc_26BC:\n    loc_26C0:\n        unknown_call(\"SYS-L3-03: %d (期望: 42)\\\\n\");\n        param_pipe_communication(/* arguments unknown */);\n        unknown_call(\"SYS-L3-04: %d (期望: 42)\\\\n\");\n        param_socket_create(/* arguments unknown */);\n        unknown_call(\"SYS-L3-05: %d (期望: 42)\\\\n\");\n        param_shmget_shmat(/* arguments unknown */);\n        unknown_call(\"SYS-L3-06: %d (期望: 42)\\\\n\");\n        param_signal_handling(/* arguments unknown */);\n        unknown_call(\"SYS-L3-07: %d (期望: 42)\\\\n\");\n        return;\n    loc_2738:\n        unknown_call(0x3542);\n        unknown_call(0x7F);\n}"
+    },
+    {
+      "address": "10072",
+      "name": "thread_compute",
+      "end": "10116",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_compute(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(4);\n    memory_unknown = a1->field_0 * a1->field_0;\n    return;\n}"
+    },
+    {
+      "address": "10116",
+      "name": "param_pthread_create",
+      "end": "10216",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_pthread_create(void)\n{\n    local_m20 = local_x29;\n    local_m20 = local_x29;\n    local_m10 = local_x19;\n    local_m24 = a1;\n    unknown_call(((sp - 48) + 16) + 24);\n    if (call_217 == 0) {\n        unknown_call(var_m8);\n        unknown_call(var_m30);\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "10216",
+      "name": "call_pthread_create",
+      "end": "10320",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_pthread_create(void)\n{\n    local_m20 = local_x29;\n    local_m20 = local_x29;\n    local_m10 = local_x19;\n    local_m24 = 7;\n    unknown_call(((sp - 48) + 16) + 24);\n    if (call_215 == 0) {\n        unknown_call(var_m8);\n        unknown_call(var_m30);\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "10320",
+      "name": "thread_sum",
+      "end": "10384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_sum(void)\n{\n    a1->field_8 = 0;\n    if ((int32_t)a1->field_4 >= (int32_t)a1->field_0) {\n        a1->field_8 = a1->field_8 + a1->field_0 + var_110 + var_110 * a1->field_0 + (uint32_t)((uint64_t)((a1->field_4 + ~a1->field_0) * var_110) >> 1);\n    }\n    return;\n}"
+    },
+    {
+      "address": "10384",
+      "name": "param_pthread_join",
+      "end": "10608",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_pthread_join(void)\n{\n    local_m30 = local_x29;\n    local_m30 = local_x29;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    local_m70 = var_125;\n    local_m70 = var_125;\n    local_m70 = bit_insert(1, 10, 32, 16);\n    local_m50 = 0;\n    local_m64 = 11;\n    local_m64 = 11;\n    local_m58 = bit_insert(21, 30, 32, 16);\n    unknown_call(phi(a1, call_488));\n    unknown_call(phi(a1, call_488));\n    if (call_488 != 0) {\n    } else {\n        if ((uint64_t)x21 + 8 != 24) {\n            goto loc_28E8;\n        } else {\n            unknown_call(phi(call_488, call_447));\n            unknown_call(phi(call_488, call_447));\n            if (call_447 != 0) {\n            } else {\n                if ((uint64_t)x20 + 8 != 24) {\n                    goto loc_2924;\n                } else {\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "10608",
+      "name": "call_pthread_join",
+      "end": "10832",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_pthread_join(void)\n{\n    local_m30 = local_x29;\n    local_m30 = local_x29;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    local_m70 = var_154;\n    local_m70 = var_154;\n    local_m70 = bit_insert(1, 10, 32, 16);\n    local_m50 = 0;\n    local_m64 = 11;\n    local_m64 = 11;\n    local_m58 = bit_insert(21, 30, 32, 16);\n    unknown_call((phi(((sp - 0x70) + 64) - 24, call_387)) + (phi(0, x21 + 8)));\n    unknown_call((phi(((sp - 0x70) + 64) - 24, call_387)) + (phi(0, x21 + 8)));\n    if (call_550 != 0) {\n    } else {\n        if ((uint64_t)x21 + 8 != 24) {\n            goto loc_29C8;\n        } else {\n            unknown_call(phi(call_550, call_376));\n            unknown_call(phi(call_550, call_376));\n            if (call_376 != 0) {\n            } else {\n                if ((uint64_t)x20 + 8 != 24) {\n                    goto loc_2A04;\n                } else {\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "10832",
+      "name": "thread_increment",
+      "end": "10936",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_increment(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    if ((int32_t)a1->field_0 >= 1) {\n        unknown_call(phi(0x15208, call_198));\n        memory_unknown = memory_unknown + 1;\n        unknown_call(phi(0x15208, call_198));\n        unknown_call(0x3E8);\n        while ((uint32_t)phi(a1->field_0, v9) != 1) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "10936",
+      "name": "param_mutex_lock",
+      "end": "11176",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_mutex_lock(void)\n{\n    local_m40 = local_x29;\n    local_m40 = local_x29;\n    local_m30 = local_x24;\n    local_m30 = local_x24;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    local_m44 = a2;\n    unknown_call(x0);\n    if (call_621 == 0) {\n    } else {\n        global_15238 = 0;\n        if ((int32_t)a1 < 1) {\n            if ((int32_t)phi(call_537, call_507) >= 1) {\n                unknown_call(phi(phi(call_398, call_621), call_394));\n                while ((uint64_t)phi(phi(call_537, call_507), v104 - 1) != 1) {\n                }\n            }\n            unknown_call(phi(call_372, phi(call_480, call_621)));\n        } else {\n            unknown_call(phi(call_621, call_398));\n            unknown_call(phi(call_621, call_398));\n            if (call_398 != 0) {\n                unknown_call(phi(call_621, call_480));\n            } else {\n                if ((uint64_t)phi(a1 << 3, call_418) != (uint64_t)x23 + 8) {\n                    goto loc_2B0C;\n                } else {\n                    goto loc_2B30;\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "11176",
+      "name": "call_mutex_lock",
+      "end": "11204",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_mutex_lock(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_mutex_lock(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11204",
+      "name": "consumer_thread",
+      "end": "11344",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void consumer_thread(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(0x15240);\n    if (__arm64_condition_unknown(/* NZCV */)) {\n        unknown_call(phi(call_346, 0x15278));\n        while ((uint32_t)memory_unknown != 1) {\n        }\n    }\n    unknown_call(0x15240);\n    unknown_call(4);\n    memory_unknown = (uint8_t)global_152A8 != 0 ? 42 : 0;\n    return;\n}"
+    },
+    {
+      "address": "11344",
+      "name": "producer_thread",
+      "end": "11436",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void producer_thread(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(1);\n    unknown_call(0x15240);\n    global_152A8 = 1;\n    global_15270 = 1;\n    unknown_call(0x15278);\n    unknown_call(0x15240);\n    return;\n}"
+    },
+    {
+      "address": "11436",
+      "name": "param_condition_variable",
+      "end": "11604",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_condition_variable(void)\n{\n    local_m20 = local_x29;\n    local_m20 = local_x29;\n    local_m10 = local_x19;\n    global_15270 = 0;\n    global_152A8 = 0;\n    unknown_call((sp - 48) + 8);\n    if (call_280 == 0) {\n        unknown_call(((sp - 48) + 16) + 24);\n        if (call_239 == 0) {\n            unknown_call(var_m28);\n            unknown_call(var_m8);\n            unknown_call(var_m30);\n        } else {\n            unknown_call(var_m28);\n        }\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "11604",
+      "name": "call_condition_variable",
+      "end": "11624",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_condition_variable(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_condition_variable(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11624",
+      "name": "thread_atomic_increment",
+      "end": "11724",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_atomic_increment(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    if ((int32_t)a1->field_0 >= 1) {\n        $x(/* arguments unknown */);\n        $x(/* arguments unknown */);\n        while ((uint32_t)x19 + 1 != (uint32_t)phi(call_250, a1->field_0)) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "11724",
+      "name": "thread_atomic_load_store",
+      "end": "11752",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_atomic_load_store(void)\n{\n    global_152AC += 0x64;\n    return;\n}"
+    },
+    {
+      "address": "11752",
+      "name": "param_atomic_ops",
+      "end": "12028",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_atomic_ops(void)\n{\n    local_m40 = local_x29;\n    local_m40 = local_x29;\n    local_m30 = local_x24;\n    local_m30 = local_x24;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    local_m44 = a2;\n    unknown_call(x0);\n    if (call_499 == 0) {\n    } else {\n        global_152AC = 0;\n        if ((int32_t)a1 < 1) {\n            unknown_call(phi(call_441, call_574));\n            if (!(call_751 != 0)) {\n                unknown_call(memory_unknown);\n            }\n            if ((int32_t)phi(call_794, call_652) >= 1) {\n                unknown_call(phi(phi(call_800, call_751), call_470));\n                while ((uint64_t)phi(phi(call_794, call_652), v182 - 1) != 1) {\n                }\n            }\n            unknown_call(phi(call_470, phi(call_800, call_751)));\n        } else {\n            unknown_call(phi(call_744, call_499));\n            unknown_call(phi(call_744, call_499));\n            if (call_744 != 0) {\n                unknown_call(phi(call_702, call_499));\n            } else {\n                if ((uint64_t)phi(call_422, a1 << 3) != (uint64_t)(phi(x23, 0)) + 8) {\n                    goto loc_2E40;\n                } else {\n                    goto loc_2E64;\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "12028",
+      "name": "call_atomic_ops",
+      "end": "12056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_atomic_ops(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_atomic_ops(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "12056",
+      "name": "thread_tls_test",
+      "end": "12136",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void thread_tls_test(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    memory_unknown = memory_unknown + 50;\n    unknown_call((v3 + 0) + 20);\n    unknown_call(8);\n    memory_unknown = memory_unknown;\n    memory_unknown = memory_unknown;\n    return;\n}"
+    },
+    {
+      "address": "12136",
+      "name": "param_thread_local_storage",
+      "end": "12556",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void param_thread_local_storage(void)\n{\n    local_m50 = local_x29;\n    local_m50 = local_x29;\n    local_m40 = local_x26;\n    local_m40 = local_x26;\n    local_m30 = local_x24;\n    local_m30 = local_x24;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    unknown_call(x21);\n    unknown_call(x21);\n    if (!(call_1039 == 0)) {\n        if (!(call_946 == 0)) {\n            if ((int32_t)a1 >= 1) {\n                unknown_call(phi(0xFFFFFFFF, call_1156));\n                local_phi_805[local_phi_930] = call_638;\n                unknown_call(call_1046);\n                while ((uint64_t)phi(a1, call_1145) != (uint64_t)x22 + 1) {\n                }\n            }\n            if ((int32_t)phi(call_1109, call_978) < 1) {\n                if ((int32_t)phi(call_708, phi(call_1109, call_978)) < 1) {\n                } else {\n                    unknown_call(phi(phi(call_1303, phi(call_1156, 0xFFFFFFFF)), call_964));\n                    unknown_call(memory_unknown);\n                    unknown_call(memory_unknown);\n                    while ((uint64_t)phi(phi(call_708, phi(call_1109, call_978)), v286 - 1) != 1) {\n                    }\n                }\n                unknown_call(phi(phi(call_1303, phi(call_1156, 0xFFFFFFFF)), call_964));\n                unknown_call(phi(phi(call_1043, phi(call_922, call_959)), call_1249));\n            } else {\n                unknown_call(phi(phi(call_922, call_959), x22 + 8));\n                unknown_call(phi(phi(call_922, call_959), x22 + 8));\n                if (call_1303 != 0) {\n                    unknown_call(phi(call_1303, call_987));\n                    while ((uint64_t)phi(x24 + 1, call_1255) != (uint64_t)(phi(0, x20)) + 1) {\n                    }\n                    unknown_call(phi(call_1313, call_1184));\n                    unknown_call(phi(call_1043, call_1186));\n                } else {\n                    if ((uint64_t)phi(phi(call_1109, call_978), call_1081) != (uint64_t)x24 + 1) {\n                        goto loc_300C;\n                    } else {\n                        goto loc_3034;\n                    }\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "12556",
+      "name": "call_thread_local_storage",
+      "end": "12580",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_thread_local_storage(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    param_thread_local_storage(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "12580",
+      "name": "test_thread_concurrency",
+      "end": "13012",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_thread_concurrency(void)\n{\n    local_m30 = local_x29;\n    local_m30 = local_x29;\n    local_m20 = local_x22;\n    local_m20 = local_x22;\n    local_m10 = local_x20;\n    local_m10 = local_x20;\n    unknown_call(\"=== 测试线程与并发 ===\");\n    local_m74 = 7;\n    unknown_call((sp - 0x80) + 16);\n    if (call_1100 == 0) {\n        unknown_call(var_m70);\n        unknown_call(var_m48);\n    } else {\n    }\n    unknown_call(\"THR-L3-01: %d (期望: 49)\\\\n\");\n    memory_unknown = var_138;\n    memory_unknown = var_138;\n    memory_unknown = bit_insert(1, 10, 32, 16);\n    memory_unknown = 0;\n    memory_unknown = 11;\n    memory_unknown = 11;\n    memory_unknown = bit_insert(21, 30, 32, 16);\n    unknown_call((phi((phi(call_993, call_929)) - 24, call_1149)) + (phi(0, x21 + 8)));\n    unknown_call((phi((phi(call_993, call_929)) - 24, call_1149)) + (phi(0, x21 + 8)));\n    if (call_1089 != 0) {\n    } else {\n        if ((uint64_t)x21 + 8 != 24) {\n            goto loc_31DC;\n        } else {\n            unknown_call(phi(call_1089, call_1163));\n            unknown_call(phi(call_1089, call_1163));\n            if (call_1163 != 0) {\n            } else {\n                if ((uint64_t)x20 + 8 != 24) {\n                    goto loc_3218;\n                } else {\n                }\n            }\n        }\n    }\n    unknown_call(\"THR-L3-02: %d (期望: 465)\\\\n\");\n    param_mutex_lock(/* arguments unknown */);\n    unknown_call(\"THR-L3-03: %d (期望: 42)\\\\n\");\n    param_condition_variable(/* arguments unknown */);\n    unknown_call(\"THR-L3-04: %d (期望: 42)\\\\n\");\n    param_atomic_ops(/* arguments unknown */);\n    unknown_call(\"THR-L3-05: %d (期望: 42)\\\\n\");\n    param_thread_local_storage(/* arguments unknown */);\n    unknown_call(\"THR-L3-06: %d (期望: 42)\\\\n\");\n    return;\n}"
+    },
+    {
+      "address": "13012",
+      "name": "main",
+      "end": "13044",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    test_standard_library_functions(/* arguments unknown */);\n    test_system_calls(/* arguments unknown */);\n    test_thread_concurrency(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "13056",
+      "name": "$x",
+      "end": "13108",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 $x(int64 a1, int64 a2, void * a3)\n{\n    __asm(\"cbz w16, #0x3318\");\n    *(uint32 *)(x2) = (uint32)a1;\n    return x0;\n    x16 = (uint32)x0;\n    x0 = __atomic_load((uint32 *)(x2));\n    /* cmp w0, w16 — 次の分岐のための比較 */\n    __asm(\"b.ne #0x3330\");\n    x17 = __atomic_store((uint32 *)(x2), x1);\n    __asm(\"cbnz w17, #0x331c\");\n    return x0;\n}"
+    },
+    {
+      "address": "13120",
+      "name": "$x",
+      "end": "13168",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 $x(int64 a1, void * a2)\n{\n    __asm(\"cbz w16, #0x3358\");\n    *(uint32 *)(x1) = (uint32)a1;\n    return x0;\n    x16 = (uint32)x0;\n    x0 = __atomic_load((uint32 *)(x1));\n    x15 = __atomic_store((uint32 *)(x1), x17);\n    __asm(\"cbnz w15, #0x335c\");\n    return x0;\n}"
+    },
+    {
+      "address": "13168",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "functionStateCounts": {
+    "PARTIAL": 4,
+    "PASS": 68,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 0,
+  "subjectSignal": null,
+  "stderr": ""
+}
