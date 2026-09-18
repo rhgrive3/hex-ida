@@ -507,17 +507,22 @@ MAPPING = {
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--taxonomy", required=True)
+    ap.add_argument("--raw-dir", required=True)
+    ap.add_argument("--single-function-probe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--base-sha", required=True)
     args = ap.parse_args()
 
-    tax = json.load(open(args.taxonomy, encoding="utf-8"))
+    with open(args.taxonomy, encoding="utf-8") as fh:
+        tax = json.load(fh)
+    with open(args.single_function_probe, encoding="utf-8") as fh:
+        probe = json.load(fh)
 
-    # recompute generality straight from the raw records
+    # recompute generality straight from the explicitly selected raw records
     groups = collections.defaultdict(set)
     variants = collections.defaultdict(set)
     cases = collections.defaultdict(set)
-    for path in sorted(glob.glob("/tmp/hex-recomp/raw/*.json")):
+    for path in sorted(glob.glob(os.path.join(args.raw_dir, "*.json"))):
         r = json.load(open(path, encoding="utf-8"))
         cid = r["caseId"]
         for d in r["syntax"]["diagnostics"]:
@@ -558,8 +563,10 @@ def main():
         "schema": "hex-direct-recompilability-root-causes/v1",
         "baseSha": args.base_sha,
         "inputs": {
-            "taxonomy": os.path.basename(args.taxonomy),
-            "singleFunctionProbe": "single-function-probe.json",
+            "taxonomy": os.path.abspath(args.taxonomy),
+            "rawDir": os.path.abspath(args.raw_dir),
+            "singleFunctionProbe": os.path.abspath(args.single_function_probe),
+            "singleFunctionProbeSchema": probe.get("schema"),
         },
         "contractFindings": {
             "apiContract": (
@@ -581,15 +588,21 @@ def main():
             ),
         },
         "singleFunctionProbe": {
-            "blobTotal": 10292,
-            "blobPass": 3204,
-            "blobFail": 7088,
-            "casesWithAtLeastOnePassingBlob": 140,
-            "caseCount": 160,
+            "blobCandidates": probe.get("blobCandidates", probe.get("blobTotal")),
+            "blobAttempted": probe.get("blobAttempted", probe.get("blobTotal")),
+            "blobCompleted": probe.get("blobCompleted", probe.get("blobTotal")),
+            "blobTotal": probe.get("blobTotal"),
+            "blobPass": probe.get("blobPass"),
+            "blobFail": probe.get("blobFail"),
+            "blobSkipped": probe.get("blobSkipped", 0),
+            "blobTimedOut": probe.get("blobTimedOut", 0),
+            "casesWithAtLeastOnePassingBlob": probe.get("casesWithAtLeastOnePassingBlob"),
+            "caseCount": probe.get("caseCount"),
             "interpretation": (
-                "31.1% of individual function bodies are already valid C functions. "
-                "The remaining 68.9% fail even in isolation, so their defects are "
-                "emitter-scoped and cannot be explained by concatenation."
+                "Isolation removes cross-function concatenation effects. "
+                "A remaining isolated failure can still be caused by missing "
+                "standalone declarations/headers/prototypes or by an intra-function "
+                "emitter defect; the diagnostic taxonomy must distinguish them."
             ),
         },
         "clusters": out,

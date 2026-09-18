@@ -66,15 +66,17 @@ def reconstruct(doc):
     """
     parts = []
     line_map = []
-    line = 1
+    cursor_line = 1
     for fn in doc.get("functions", []):
         pc = fn.get("pseudocode")
         if pc is None:
             continue
-        text = pc if pc.endswith("\n") else pc + "\n"
-        n = text.count("\n")
-        start = line
-        end = line + n - 1
+        if parts:
+            # join(parts) inserts exactly one separator before this blob.
+            cursor_line += 1
+        start = cursor_line
+        logical_lines = max(1, pc.count("\n") + (0 if pc.endswith("\n") else 1))
+        end = start + logical_lines - 1
         line_map.append(
             {
                 "name": fn.get("name"),
@@ -86,7 +88,7 @@ def reconstruct(doc):
             }
         )
         parts.append(pc)
-        line = end + 1
+        cursor_line += pc.count("\n")
     source = "\n".join(parts)
     if source:
         source += "\n"
