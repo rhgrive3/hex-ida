@@ -90,6 +90,56 @@ function ownUnknowns(ir) {
   return ir.instructions.filter((instruction) => instruction.op === OP.UNKNOWN || instruction.op === 'unknown');
 }
 
+function evalHoldoutIrValue(value, env, seen = new Set()) {
+  assert.ok(value, 'holdout IR value missing');
+  if (value.const != null) return BigInt(value.const) & MASK64;
+  if (value.kind === 'arg') {
+    const input = env[value.reg];
+    assert.notEqual(input, undefined, `missing independent oracle input for ${value.reg}`);
+    return BigInt(input) & MASK64;
+  }
+  assert.ok(value.def, `holdout IR value ${value.id} has no reaching definition`);
+  assert.equal(seen.has(value.id), false, `cycle while evaluating holdout IR value ${value.id}`);
+  const nextSeen = new Set(seen);
+  nextSeen.add(value.id);
+  const args = (value.def.args || []).map((arg) => evalHoldoutIrValue(arg.value, env, nextSeen));
+  if (value.def.op === OP.MOV) return args[0];
+  if (value.def.op === OP.BIN) {
+    if (value.def.sub === 'add') return (args[0] + args[1]) & MASK64;
+    if (value.def.sub === 'sub') return (args[0] - args[1]) & MASK64;
+  }
+  assert.fail(`unsupported holdout oracle IR op ${value.def.op}/${value.def.sub || ''}`);
+}
+
+function zeroCompareBranchTaken(conditionCode, input) {
+  if (conditionCode === 'eq') return BigInt(input) === 0n;
+  if (conditionCode === 'ne') return BigInt(input) !== 0n;
+  assert.fail(`unexpected zero-compare condition code ${conditionCode}`);
+}
+
+function reachingArgumentReg(value, seen = new Set()) {
+  assert.ok(value, 'missing reaching call value');
+  if (value.kind === 'arg') return value.reg;
+  assert.equal(seen.has(value.id), false, `cycle while tracing call value ${value.id}`);
+  assert.equal(value.def?.op, OP.MOV, `call value ${value.id} must reach through MOV-only SSA forwarding`);
+  const nextSeen = new Set(seen);
+  nextSeen.add(value.id);
+  return reachingArgumentReg(value.def.args?.[0]?.value, nextSeen);
+}
+
+function signedWritebackDelta(value, row) {
+  assert.ok(value?.def, `row ${row}: SP value has no reaching definition`);
+  let expression = value;
+  if (expression.def.op === OP.MOV) expression = expression.def.args?.[0]?.value;
+  assert.equal(expression?.def?.op, OP.BIN, `row ${row}: SP writeback must be arithmetic`);
+  assert.equal(expression.def.sub, 'add', `row ${row}: SP writeback must lower to add`);
+  const immediate = expression.def.args
+    .map((arg) => arg.value)
+    .find((candidate) => candidate?.const != null);
+  assert.ok(immediate, `row ${row}: SP writeback immediate missing`);
+  return BigInt.asIntN(64, BigInt(immediate.const));
+}
+
 function makeArm64DiscoveryFixture() {
   const bytes = makeElf64Fixture();
   const view = new DataView(bytes.buffer);
@@ -142,7 +192,7 @@ test('ARM64 holdout: basic arithmetic has semantic return truth', () => {
   assert.ok(observation.ir.instructions.some((instruction) => instruction.op === OP.RET));
 });
 
-test('ARM64 holdout: conditional branch preserves diamond CFG, flags, and merge semantics', () => {
+test('ARM64 holdout: conditional branch preserves condition semantics through the merged return', () => {
   const observation = materialize(fixture('holdout-conditional-cfg'));
   assertCompleteSemanticPresentation(observation);
   const entry = observation.ir.blocks.find((block) => block.startRow === 0);
@@ -150,11 +200,32 @@ test('ARM64 holdout: conditional branch preserves diamond CFG, flags, and merge 
     .map((index) => observation.ir.blocks.find((block) => block.index === index)?.startRow)
     .sort((a, b) => a - b);
   assert.deepEqual(successorRows, [2, 4], 'conditional entry must retain fallthrough and taken CFG successors');
-  assert.ok(observation.ir.instructions.some((instruction) => instruction.op === OP.CBR), 'conditional branch missing');
+  const branch = observation.ir.instructions.find((instruction) => instruction.op === OP.CBR);
+  assert.ok(branch, 'conditional branch missing');
   assert.ok(observation.ir.values.some((value) => value.reg === 'NZCV.Z'), 'condition-flag Z evidence missing');
   const expression = returnExpression(observation.result);
   assert.equal(expression.phi, true, 'two branch results must merge through a semantic phi');
   assert.equal(expression.incoming?.length, 2, 'return phi must retain both alternatives');
+
+  const conditionCode = branch.extra?.attributes?.machineEffects?.bundleMetadata?.conditionCode;
+  const returnBlock = observation.ir.blocks.find((block) =>
+    (block.phis || []).some((phi) => phi.dst?.reg === 'x0'));
+  const returnPhi = returnBlock?.phis?.find((phi) => phi.dst?.reg === 'x0');
+  assert.ok(returnPhi, 'merged x0 return phi missing');
+  const incomingByBlock = new Map((returnPhi.incoming || []).map((incoming) => [incoming.from, incoming.value]));
+  const oracleCases = [
+    { x0:0n, expected:MASK64 },
+    { x0:1n, expected:2n },
+    { x0:0x7fffffffffffffffn, expected:0x8000000000000000n },
+  ];
+  for (const oracle of oracleCases) {
+    const taken = zeroCompareBranchTaken(conditionCode, oracle.x0);
+    const predecessor = taken ? branch.extra?.targetBlock : branch.extra?.fallthroughBlock;
+    const incoming = incomingByBlock.get(predecessor);
+    assert.ok(incoming, `x0=${oracle.x0}: merged return missing ${taken ? 'taken' : 'fallthrough'} input`);
+    assert.equal(evalHoldoutIrValue(incoming, { x0:oracle.x0 }), oracle.expected,
+      `x0=${oracle.x0}: conditional semantics disagree with independent expected return`);
+  }
 });
 
 test('ARM64 holdout: loop keeps the back-edge and loop header', () => {
@@ -174,9 +245,18 @@ test('ARM64 holdout: stack frame carries memory, callee-saved, and aligned-SP ev
   assert.ok(stores.some((instruction) => instruction.row === 2 && instruction.loc?.kind === 'stack'), 'local stack store missing');
   assert.ok(observation.ir.values.some((value) => value.reg === 'x29' && value.def?.row === 5), 'callee-saved x29 restore missing');
   assert.ok(observation.ir.values.some((value) => value.reg === 'x30' && value.def?.row === 5), 'callee-saved x30 restore missing');
-  assert.ok(observation.ir.values.some((value) => value.reg === 'sp' && value.def?.row === 5), 'stack-pointer restore missing');
+  const prologueSp = observation.ir.values.find((value) => value.reg === 'sp' && value.def?.row === 0);
+  const epilogueSp = observation.ir.values.find((value) => value.reg === 'sp' && value.def?.row === 5);
+  assert.ok(prologueSp, 'stack-pointer pre-index writeback missing');
+  assert.ok(epilogueSp, 'stack-pointer restore missing');
+  const prologueDelta = signedWritebackDelta(prologueSp, 0);
+  const epilogueDelta = signedWritebackDelta(epilogueSp, 5);
+  assert.equal(prologueDelta, -32n, 'prologue SP writeback delta must match the frame');
+  assert.equal(epilogueDelta, 32n, 'epilogue SP writeback delta must restore the frame');
+  assert.equal(prologueDelta % 16n, 0n, 'prologue SP writeback must preserve 16-byte AAPCS64 alignment');
+  assert.equal(epilogueDelta % 16n, 0n, 'epilogue SP writeback must preserve 16-byte AAPCS64 alignment');
+  assert.equal(prologueDelta + epilogueDelta, 0n, 'SP writebacks must restore the incoming stack pointer');
   assert.equal(evalReturn(observation.result, { a1:9n }), 11n, 'store/load reaching value must survive the frame');
-  assert.equal(32 % 16, 0, 'fixture frame delta must preserve AAPCS64 SP alignment');
 });
 
 test('ARM64 holdout: direct call exposes AAPCS64 arguments and x0 return flow', () => {
@@ -189,6 +269,14 @@ test('ARM64 holdout: direct call exposes AAPCS64 arguments and x0 return flow', 
   assert.equal(call.extra?.abiAdapterStatus, 'used');
   const regs = new Set((call.callArguments || []).map((argument) => argument.reg));
   assert.ok(regs.has('x0') && regs.has('x1'), 'AAPCS64 x0/x1 argument bank evidence missing');
+  const x0AtCall = call.args?.[0]?.value;
+  const x1AtCall = call.args?.[1]?.value;
+  assert.equal(x0AtCall?.reg, 'x0', 'first materialized call operand must be physical x0');
+  assert.equal(x0AtCall?.def?.row, 0, 'x0 at the call must reach from row 0');
+  assert.equal(reachingArgumentReg(x0AtCall), 'x1', 'row 0 must forward incoming x1 into call x0');
+  assert.equal(x1AtCall?.reg, 'x1', 'second materialized call operand must be physical x1');
+  assert.equal(x1AtCall?.def?.row, 1, 'x1 at the call must reach from row 1');
+  assert.equal(reachingArgumentReg(x1AtCall), 'x2', 'row 1 must forward incoming x2 into call x1');
   assert.ok(observation.ir.values.some((value) => value.reg === 'x0' && value.def?.row === 2), 'x0 call-result definition missing');
   const returned = returnExpression(observation.result);
   assert.equal(returned.op, 'add');
