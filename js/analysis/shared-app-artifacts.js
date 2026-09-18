@@ -1,6 +1,8 @@
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../string-budget.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { investigationServiceFor } from './investigation-service.js';
+import { buildNoreturnContinuationProposal } from './discovery/noreturn-refinement.js';
+import { commitFunctionTopologyRefinement } from './discovery/topology-refinement-transaction.js';
 
 const INSTALL_VERSION = 'shared-app-artifacts/v3';
 const STRING_ENTRIES = new WeakMap();
@@ -509,6 +511,92 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   return entry;
 }
 
+/*
+ * B1a downstream noreturn-continuation refinement orchestration.
+ *
+ * This is the explicit, downstream step `ensureProgram(T0) ->
+ * ensureNoreturnFunctionRefinement(T0) -> ensureProgram(T1/rebind)`. It is
+ * disabled unless product policy turns it on (`app.noreturnTopologyRefinement`),
+ * because the refinement reproduces a reference convention (post-noreturn
+ * boundary splits) that the binary alone does not prove — bootstrap discovery
+ * D0 remains the binary-faithful result.
+ *
+ * The semantic authority is supplied by the caller as
+ * `app.noreturnRefinementAuthority` (a `noreturn-refinement` authority object),
+ * which keeps the summary/CFG owner out of the discovery phase and breaks the
+ * discovery -> entity model -> summary -> discovery cycle.
+ */
+function noreturnRefinementCalls(program) {
+  const out = [];
+  const count = Math.min(program?.callFrom?.length || 0, program?.callTo?.length || 0);
+  for (let i = 0; i < count; i++) out.push({ site: program.callFrom[i], target: program.callTo[i] });
+  return out;
+}
+function programCallEvidenceDigest(program) {
+  let digest = `${program?.callFrom?.length || 0}:`;
+  const count = Math.min(program?.callFrom?.length || 0, program?.callTo?.length || 0);
+  for (let i = 0; i < count; i++) digest += `${program.callFrom[i].toString(16)}>${program.callTo[i].toString(16)},`;
+  return digest;
+}
+
+async function runNoreturnRefinement(app) {
+  const policy = app.noreturnTopologyRefinement || null;
+  if (!policy || policy.enabled !== true) return null;
+  const authority = app.noreturnRefinementAuthority || null;
+  if (!authority || typeof authority !== 'object') return null;
+  const program = app.program || null;
+  const symbols = app.symbols || null;
+  if (!program || !symbols) return null;
+  // Direct-call evidence must itself be complete before it can authorise a split.
+  if (program.unsupported === true || program.callsCapped === true
+    || program.completeness?.complete === false || program.graphCompleteness?.callsComplete !== true) return null;
+  if (app.symbols.functionStartsComplete !== true) return null;
+
+  const discoveryKey = symbols.functionDiscovery?.discoveryKey ?? null;
+  const binding = Object.freeze({
+    binaryId: app.binaryId ?? app.currentSlice?.()?.binaryId ?? null,
+    analysisEpoch: epochOf(app),
+    discoveryKey,
+    symbolsGeneration: symbols.gen,
+    functionTopologyRevision: symbols.functionTopologyRevision ?? 0,
+    startSetDigest: typeof symbols.functionTopologyStartDigest === 'function' ? symbols.functionTopologyStartDigest() : null,
+    programGeneration: program.gen ?? null,
+    programEvidenceDigest: programCallEvidenceDigest(program),
+  });
+
+  const proposal = buildNoreturnContinuationProposal({
+    binding,
+    calls: noreturnRefinementCalls(program),
+    authority,
+  });
+
+  const capturedSymbols = symbols;
+  const bindingIsCurrent = (candidate) => app.symbols === capturedSymbols
+    && app.symbols.gen === candidate.symbolsGeneration
+    && (app.symbols.functionTopologyRevision ?? 0) === candidate.functionTopologyRevision
+    && (typeof app.symbols.functionTopologyStartDigest === 'function'
+      ? app.symbols.functionTopologyStartDigest() === candidate.startSetDigest : true)
+    && epochOf(app) === candidate.analysisEpoch
+    && (app.symbols.functionDiscovery?.discoveryKey ?? null) === candidate.discoveryKey
+    && app.program === program
+    && (program.gen ?? null) === candidate.programGeneration
+    && programCallEvidenceDigest(program) === candidate.programEvidenceDigest;
+
+  const waves = app.__noreturnRefinementWaves instanceof Set ? app.__noreturnRefinementWaves : new Set();
+  Object.defineProperty(app, '__noreturnRefinementWaves', { value: waves, configurable: true });
+  const wave = {
+    has: (key) => waves.has(key),
+    mark: (key) => { waves.add(key); },
+  };
+  const invalidate = () => {
+    // Retain the raw scan; drop the topology-bound projection and cancel old work.
+    app.program = null;
+    app.programKey = null;
+    if (typeof app.clearAnalysisCache === 'function') app.clearAnalysisCache();
+  };
+  return commitFunctionTopologyRefinement({ proposal, symbols, bindingIsCurrent, wave, invalidate });
+}
+
 export function installSharedAppArtifacts(app) {
   if (!app || app.__sharedAppArtifactsVersion === INSTALL_VERSION) return app;
 
@@ -562,6 +650,18 @@ export function installSharedAppArtifacts(app) {
       }
     }
     return attach(entry, options);
+  };
+
+  // B1a is an explicit downstream step, single-flighted per bootstrap discovery
+  // key. It is a no-op unless product policy enables it and an authority is set.
+  app.ensureNoreturnFunctionRefinement = function sharedNoreturnRefinement() {
+    if (app.noreturnTopologyRefinement?.enabled !== true) return Promise.resolve(null);
+    const key = `noreturn-refinement:${app.symbols?.functionDiscovery?.discoveryKey ?? 'none'}:${epochOf(app)}:${app.symbols?.gen ?? 0}`;
+    const existing = app.__noreturnRefinementBusy;
+    if (existing && existing.key === key) return existing.promise;
+    const promise = runNoreturnRefinement(app).catch(() => null);
+    Object.defineProperty(app, '__noreturnRefinementBusy', { value: { key, promise }, configurable: true });
+    return promise;
   };
 
   // Investigation, schema recovery, Globals, and legacy callers now converge on
