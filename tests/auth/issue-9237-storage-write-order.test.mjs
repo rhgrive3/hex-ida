@@ -136,3 +136,29 @@ test('issue #9237: close during an older write cannot clobber a newer client gen
   assert.equal(f.storage.get(KEY), B, 'older close cleanup must not delete the newer session');
   assert.equal(f.events.at(-1), 'B-set-landed');
 });
+
+
+test('issue #9237: stale client logout preserves a newer pairing and current owner can logout', { timeout: 3000 }, async (t) => {
+  const f = authManager({
+    setValue({ key, value, storage, events }) {
+      storage.set(key, value);
+      events.push(value === A ? 'A-set-landed' : 'B-set-landed');
+    },
+  });
+  const older = client(f.manager);
+  const newer = client(f.manager);
+  t.after(() => { older.close(); newer.close(); });
+
+  await older.completePairing(TX_A, POLL, PROOF);
+  assert.equal(f.storage.get(KEY), A);
+
+  await newer.completePairing(TX_B, POLL, PROOF);
+  assert.equal(f.storage.get(KEY), B);
+
+  await older.logout();
+  assert.equal(f.storage.get(KEY), B, 'stale logout must not delete a newer client session');
+
+  await newer.logout();
+  assert.equal(f.storage.has(KEY), false, 'current owner logout must delete its own persisted token');
+  assert.equal(f.events.filter((event) => event === 'delete').length, 1);
+});
