@@ -1,0 +1,1348 @@
+{
+ "schema": "hex-direct-recompilability-root-causes/v1",
+ "baseSha": "a5118dbad78555c118a62ec934a256da6ef46c46",
+ "inputs": {
+  "taxonomy": "diagnostic-taxonomy.json",
+  "singleFunctionProbe": "single-function-probe.json"
+ },
+ "contractFindings": {
+  "apiContract": "Function-scoped pseudocode. The product and benchmark subject call product.query.decompile(snapshot, address) once per function and store `value.pseudocode`. There is no API that returns a translation unit, so cross-function completeness (globals, prototypes, entry point) is outside the current contract.",
+  "tuOwnershipBoundaryExists": false,
+  "declarationEmitterExists": "semantic path: no; legacy path: stack slots only",
+  "typePreludeEmitted": false,
+  "twoTypeVocabularies": "yes - bare (uint64) in type recovery, *_t in the C printer",
+  "consequence": "Part of the raw-TU failure is a contract mismatch that a prelude cannot fix (no prototype/global/runtime declaration concept exists), and part is genuine intra-function emission defects that persist when a single function is compiled alone."
+ },
+ "singleFunctionProbe": {
+  "blobTotal": 10292,
+  "blobPass": 3204,
+  "blobFail": 7088,
+  "casesWithAtLeastOnePassingBlob": 140,
+  "caseCount": 160,
+  "interpretation": "31.1% of individual function bodies are already valid C functions. The remaining 68.9% fail even in isolation, so their defects are emitter-scoped and cannot be explained by concatenation."
+ },
+ "clusters": [
+  {
+   "clusterId": "A-GLOBAL-DATA-DECL",
+   "bucket": "A",
+   "title": "undeclared global data symbol (global_<addr>)",
+   "occurrenceCount": 1510,
+   "caseCount": 160,
+   "functionCount": 754,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Global data is rendered as an address-derived identifier (global_<addr>) synthesised at print time from the memory location. No global declaration list is ever emitted; the printed program has no place to put one.",
+   "contract": "global symbol rendering / translation-unit ownership",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "861-866",
+     "symbol": "location naming -> global_<hex>"
+    },
+    {
+     "file": "js/decompiler/pipeline-core.js",
+     "line": "372",
+     "symbol": "global location text"
+    },
+    {
+     "file": "js/decompiler/pipeline-core.js",
+     "line": "1164",
+     "symbol": "global variable node"
+    }
+   ],
+   "fixClass": "emit a global declaration block from the location table (new TU ownership boundary)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "_start",
+    "line": 3,
+    "severity": "error",
+    "message": "use of undeclared identifier 'global_13FD8'",
+    "snippet": "1: void start(void)\n2: {\n3:     unknown_call(global_13FD8);\n4:     unknown_call(global_13FD8);\n5: }"
+   }
+  },
+  {
+   "clusterId": "A-MANGLED-SYMBOL-PROTOTYPE",
+   "bucket": "A",
+   "title": "C++ mangled symbol emitted as a C identifier and never declared",
+   "occurrenceCount": 480,
+   "caseCount": 36,
+   "functionCount": 306,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Mangled C++ symbol names are emitted verbatim as C identifiers and called with no prototype. Distinct from A-MISSING-PROTOTYPE because the identifier itself is not a valid C-symbol contract.",
+   "contract": "symbol naming (mangled names) + prototype rendering",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496",
+     "symbol": "safeIdent"
+    }
+   ],
+   "fixClass": "demangle/escape non-C symbol names at the symbol boundary",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 3,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 36
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O1_g",
+    "function": "loop_continue",
+    "line": 362,
+    "severity": "warning",
+    "message": "implicit declaration of function 'Z_tst64' is invalid in C99 [-Wimplicit-function-declaration]",
+    "snippet": "360:     x0 = 0;\n361:     /* tst x1, #1 — 次の分岐のための比較 */\n362:     x0 = (uint32)(!Z_tst64(x1, 1) ? (uint32)((uint32)x0 + (uint32)x1) : (uint32)x0);\n363:     x1 = (uint32)((uint32)x1 + 1);\n364:     /* cmp w1, w3 — 次の分岐のための比較 */"
+   }
+  },
+  {
+   "clusterId": "A-MISSING-PROTOTYPE",
+   "bucket": "A",
+   "title": "missing external function prototype (sub_<addr> and named callees)",
+   "occurrenceCount": 2036,
+   "caseCount": 160,
+   "functionCount": 844,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Decompilation is function-scoped: the product API returns one function's pseudocode (subject.mjs calls product.query.decompile per address). Nothing within a function render can declare a callee defined elsewhere, so calls precede definitions with no prototype. This is a genuine translation-unit ownership gap, not an emitter bug.",
+   "contract": "function-scoped pseudocode render; no TU ownership boundary exists",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": true,
+   "sourceLocations": [
+    {
+     "file": "tools/validation/public-benchmark/subject.mjs",
+     "line": "20-38",
+     "symbol": "per-function decompile loop"
+    },
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "326-334",
+     "symbol": "semanticSignature (no prototypes)"
+    }
+   ],
+   "fixClass": "introduce a TU assembly layer that emits prototypes (does not exist today)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "$x",
+    "line": 10,
+    "severity": "warning",
+    "message": "implicit declaration of function 'sub_8E0' is invalid in C99 [-Wimplicit-function-declaration]",
+    "snippet": "8:     x0_1 = *(uint64 *)0x13FD0;\n9:     __asm(\"cbz x0, #0x984\");\n10:     return sub_8E0(x0_1);\n11:     return x0;\n12: }"
+   }
+  },
+  {
+   "clusterId": "A-MISSING-TYPE-DECL",
+   "bucket": "A",
+   "title": "undeclared user/engine type name",
+   "occurrenceCount": 138,
+   "caseCount": 24,
+   "functionCount": 54,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "User/engine type names (vector128, Base, Derived, Container, std) are used as types or in cast position with no type declaration; no struct or typedef block is emitted.",
+   "contract": "type declaration rendering",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "7-11",
+     "symbol": "INTEGER_NAMES (no nominal types)"
+    }
+   ],
+   "fixClass": "emit nominal type declarations (aggregate recovery already exists in phase8/aggregates.js)",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 7,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 16,
+    "compilerOptVariantsTotal": 20,
+    "cases": 24
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O1_g",
+    "function": "loop_multi_exit",
+    "line": 447,
+    "severity": "error",
+    "message": "use of undeclared identifier 'vector128'",
+    "snippet": "445:     v0 = *(double *)(x1);   v1 = *(double *)(x1 + 16);\n446:     *(double *)(x2) = *(uint128 *)(x1);   *(double *)(x2 + 16) = *(uint128 *)(x1);\n447:     *(vector128 *)(x2 + 0x20) = *(uint128 *)(0x2488 + 56);\n448:     x4 = 0;\n449:     x1 = 0;"
+   }
+  },
+  {
+   "clusterId": "A-NONSTANDARD-INT-ALIAS",
+   "bucket": "A",
+   "title": "non-standard integer type alias (uint32 / uint64 / int64 / uint8)",
+   "occurrenceCount": 8990,
+   "caseCount": 160,
+   "functionCount": 1538,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Two type-name vocabularies coexist. Type recovery names widths with bare non-standard aliases (uint64/uint32/int64/uint8) and semanticSignature renders those names verbatim into the declarator; the C expression printer uses the *_t spelling. Nothing emits a typedef or a <stdint.h> include.",
+   "contract": "type naming vocabulary used by the signature renderer",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "7-11",
+     "symbol": "INTEGER_NAMES map"
+    },
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "326-334",
+     "symbol": "semanticSignature"
+    },
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "50-70",
+     "symbol": "exactUnsignedType / exactSignedType"
+    }
+   ],
+   "fixClass": "unify the type vocabulary and emit a prelude/typedef block",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "$x",
+    "line": 6,
+    "severity": "error",
+    "message": "unknown type name 'uint64'",
+    "snippet": "4:     unknown_call(global_13FD8);\n5: }\n6: uint64 $x(void)\n7: {\n8:     x0_1 = *(uint64 *)0x13FD0;"
+   }
+  },
+  {
+   "clusterId": "A-RUNTIME-HELPER-DECL",
+   "bucket": "A",
+   "title": "undeclared decompiler runtime / pseudo-intrinsic helper",
+   "occurrenceCount": 2810,
+   "caseCount": 160,
+   "functionCount": 2186,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "`unknown_call` is not a designed runtime helper. It is the sentinel the C printer substitutes when a call has no resolved callee, so an unresolved call target is printed as a call to a symbol that does not exist. The pseudo-intrinsics (phi, bit_extract, bit_insert, sext, __a64_movi_*,\\n__arm64_condition_*, __arm64_nzcv_*) are printed as ordinary calls with no declaration. The IR does know the target is unresolved (ctx.unknownCallArities is tracked), so this is a contract leak rather than missing analysis.",
+   "contract": "call rendering vs unresolved-target representation",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "185",
+     "symbol": "printExpression case 'call'"
+    },
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1080-1087",
+     "symbol": "call rendering / unknown_call"
+    },
+    {
+     "file": "js/decompiler/pipeline-core.js",
+     "line": "1448",
+     "symbol": "unknown_call fallback name"
+    }
+   ],
+   "fixClass": "declare the runtime/intrinsic surface, or render an explicit unresolved-call form",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "_start",
+    "line": 3,
+    "severity": "warning",
+    "message": "implicit declaration of function 'unknown_call' is invalid in C99 [-Wimplicit-function-declaration]",
+    "snippet": "1: void start(void)\n2: {\n3:     unknown_call(global_13FD8);\n4:     unknown_call(global_13FD8);\n5: }"
+   }
+  },
+  {
+   "clusterId": "A-STANDARD-TYPE-ALIAS",
+   "bucket": "A",
+   "title": "standard fixed-width alias used without <stdint.h>",
+   "occurrenceCount": 4552,
+   "caseCount": 160,
+   "functionCount": 1886,
+   "packagingVsEmitter": "packaging",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "The expression printer emits uint32_t/uint64_t/int32_t casts, which are correct C names but require <stdint.h>. No include or typedef is emitted anywhere, so the same translation unit mixes `uint64 f(void)` (bare, from type recovery) with `(uint32_t)a1` (from the printer).",
+   "contract": "type rendering / missing standard header emission",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "60-70",
+     "symbol": "exactUnsignedType/exactSignedType"
+    },
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "131-148",
+     "symbol": "printIntegerView"
+    }
+   ],
+   "fixClass": "emit a deterministic prelude (typedefs or <stdint.h>)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "sequential_ops",
+    "line": 56,
+    "severity": "error",
+    "message": "use of undeclared identifier 'uint32_t'",
+    "snippet": "54:     local_m8 = a2;\n55:     local_mC = a3;\n56:     local_m10 = (uint32_t)a1 + (uint32_t)a2;\n57:     local_m14 = ((uint32_t)((uint32_t)a1 + (uint32_t)a2) << 1);\n58:     local_m18 = var_110;"
+   }
+  },
+  {
+   "clusterId": "B-ARG-COUNT-MISMATCH",
+   "bucket": "B",
+   "title": "call argument count contradicts an emitted zero-arg declaration",
+   "occurrenceCount": 40,
+   "caseCount": 12,
+   "functionCount": 14,
+   "packagingVsEmitter": "emitter (consequence of A-MISSING-PROTOTYPE)",
+   "independentDefect": false,
+   "cascadeOf": "A-MISSING-PROTOTYPE",
+   "rootCause": "Derived from A-MISSING-PROTOTYPE: an earlier zero-arg implicit declaration contradicts a later call.",
+   "contract": "call rendering vs signature rendering",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": true,
+   "sourceLocations": [
+    {
+     "file": "tools/validation/public-benchmark/subject.mjs",
+     "line": "20-38",
+     "symbol": "per-function decompile"
+    }
+   ],
+   "fixClass": "same fix as A-MISSING-PROTOTYPE",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 3,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 12,
+    "compilerOptVariantsTotal": 20,
+    "cases": 12
+   },
+   "representative": {
+    "caseId": "2/2_clang_O0_g",
+    "function": "test_data_types_l1",
+    "line": 139,
+    "severity": "error",
+    "message": "too many arguments to function call, expected 0, have 1",
+    "snippet": "137: \n138:     x0_1 = sub_700(\"=== 测试基础数据类型 ===\\\\n\");\n139:     x0_2 = process_char(65);\n140:     x0_3 = \"DT-L1-01 (process_char): %c\\\\n\";\n141:     var_8 = x0_3;"
+   }
+  },
+  {
+   "clusterId": "B-DUPLICATE-EMITTED-SYMBOL",
+   "bucket": "B",
+   "title": "same emitted symbol defined more than once",
+   "occurrenceCount": 12,
+   "caseCount": 8,
+   "functionCount": 12,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "The unnamed-function placeholder name `$x` is reused for distinct functions in the same translation unit.",
+   "contract": "symbol naming / function identity rendering",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": true,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496",
+     "symbol": "safeIdent"
+    }
+   ],
+   "fixClass": "make placeholder names unique per emitted symbol",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 1,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 8,
+    "compilerOptVariantsTotal": 20,
+    "cases": 8
+   },
+   "representative": {
+    "caseId": "6/6_gcc_O1_g",
+    "function": "$x",
+    "line": 59,
+    "severity": "error",
+    "message": "redefinition of '$x'",
+    "snippet": "57: }\n58:     goto loc_1914;\n59: void $x(void)\n60: {\n61:     global_15018 = 1;"
+   }
+  },
+  {
+   "clusterId": "B-ENTRY-SIGNATURE",
+   "bucket": "B",
+   "title": "entry point rendered with a non-int return type",
+   "occurrenceCount": 160,
+   "caseCount": 160,
+   "functionCount": 160,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "No entry-point special case: `main` is rendered with whatever return type type recovery produced (void), producing `void main(void)`.",
+   "contract": "function signature rendering (entry point)",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": true,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "326-334",
+     "symbol": "semanticSignature"
+    }
+   ],
+   "fixClass": "model the entry point contract when the TU is assembled",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "main",
+    "line": 1027,
+    "severity": "warning",
+    "message": "return type of 'main' is not 'int' [-Wmain-return-type]",
+    "snippet": "1025:     return;\n1026: }\n1027: void main(void)\n1028: {\n1029:     local_m10 = local_x29;"
+   }
+  },
+  {
+   "clusterId": "B-IMPLICIT-VS-DEFINITION-CONFLICT",
+   "bucket": "B",
+   "title": "later definition conflicts with an earlier implicit declaration",
+   "occurrenceCount": 384,
+   "caseCount": 38,
+   "functionCount": 384,
+   "packagingVsEmitter": "emitter (consequence of A-MISSING-PROTOTYPE)",
+   "independentDefect": false,
+   "cascadeOf": "A-MISSING-PROTOTYPE",
+   "rootCause": "Derived from A-MISSING-PROTOTYPE: a call before the definition creates an implicit `int f()`.",
+   "contract": "prototype rendering ordering",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": true,
+   "sourceLocations": [
+    {
+     "file": "tools/validation/public-benchmark/subject.mjs",
+     "line": "20-38",
+     "symbol": "per-function decompile"
+    }
+   ],
+   "fixClass": "same fix as A-MISSING-PROTOTYPE",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 6,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 14,
+    "compilerOptVariantsTotal": 20,
+    "cases": 38
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "indirect_recursion_b",
+    "line": 631,
+    "severity": "error",
+    "message": "conflicting types for 'indirect_recursion_b'",
+    "snippet": "629:     return;\n630: }\n631: void indirect_recursion_b(void)\n632: {\n633:     local_m10 = local_x29;"
+   }
+  },
+  {
+   "clusterId": "B-INCOMPLETE-TYPE-DECLARATION",
+   "bucket": "B",
+   "title": "declaration with incomplete type",
+   "occurrenceCount": 76,
+   "caseCount": 16,
+   "functionCount": 76,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": false,
+   "cascadeOf": "B-INVALID-DECLARATOR-NAME",
+   "rootCause": "Derived from B-INVALID-DECLARATOR-NAME: `void Container::get(...)` parses as a variable of type void.",
+   "contract": "declarator / type rendering",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496",
+     "symbol": "safeIdent"
+    }
+   ],
+   "fixClass": "same fix as B-INVALID-DECLARATOR-NAME",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 1,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 16,
+    "compilerOptVariantsTotal": 20,
+    "cases": 16
+   },
+   "representative": {
+    "caseId": "5-1/5-1_clang_O1_g",
+    "function": "_ZNK9ContainerIdE3getEi",
+    "line": 280,
+    "severity": "error",
+    "message": "variable has incomplete type 'void'",
+    "snippet": "278:     return;\n279: }\n280: void Container::get(void * a1, int64 a2)\n281: {\n282:     d0 = 0; /* vector zero */"
+   }
+  },
+  {
+   "clusterId": "B-INVALID-DECLARATOR-NAME",
+   "bucket": "B",
+   "title": "invalid C declarator name (C++ qualified / demangled names)",
+   "occurrenceCount": 136,
+   "caseCount": 24,
+   "functionCount": 136,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "C++ qualified/demangled names (`thunk to MultiDerived::funcB`, `Container::get`) are emitted as C declarators, which is not valid C.",
+   "contract": "function name rendering",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496",
+     "symbol": "safeIdent"
+    }
+   ],
+   "fixClass": "escape non-identifier characters at the declarator boundary",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 3,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 24
+   },
+   "representative": {
+    "caseId": "5-1/5-1_clang_O0_g",
+    "function": "_ZThn16_N12MultiDerived5funcBEv",
+    "line": 1121,
+    "severity": "error",
+    "message": "expected ';' after top level declarator",
+    "snippet": "1119:     return;\n1120: }\n1121: uint64 thunk to MultiDerived::funcB(int64 a1)\n1122:     loc_3C98:\n1123: {"
+   }
+  },
+  {
+   "clusterId": "B-INVALID-MEMBER-ACCESS",
+   "bucket": "B",
+   "title": "member access on a non-struct base (dotted symbol names)",
+   "occurrenceCount": 2,
+   "caseCount": 2,
+   "functionCount": 2,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Dotted symbol names (param_atomic_ops.constprop.0) are emitted as C identifiers, so `.` parses as member access.",
+   "contract": "symbol naming in call rendering",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496",
+     "symbol": "safeIdent"
+    }
+   ],
+   "fixClass": "escape `.` at the symbol boundary",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 1,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 2,
+    "compilerOptVariantsTotal": 20,
+    "cases": 2
+   },
+   "representative": {
+    "caseId": "6/6_gcc_O3_g",
+    "function": "test_thread_concurrency",
+    "line": 1584,
+    "severity": "error",
+    "message": "member reference base type 'void (void)' is not a structure or union",
+    "snippet": "1582:     x0_10 = param_condition_variable(x0_9);\n1583:     x0_11 = sub_1520(1, \"04) 11.4.0\", (uint32)x0_10);\n1584:     x0_12 = param_atomic_ops.constprop.0(x0_11);\n1585:     x0_13 = sub_1520(1, 0x4258, (uint32)x0_12);\n1586:     x2 = (uint32)param_thread_local_storage.constprop.0(x0_13);"
+   }
+  },
+  {
+   "clusterId": "B-LABEL-BEFORE-BODY",
+   "bucket": "B",
+   "title": "label emitted before the function body compound statement",
+   "occurrenceCount": 648,
+   "caseCount": 160,
+   "functionCount": 648,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "ensureLegacyLabel searches for the first line with row >= target row; if that search fails it falls back to the closing-brace line, and if THAT also fails it clamps to index 1. Index 1 is between the `sig` line (index 0) and the `{` line (index 1), i.e. inside the function declarator, before the body. The clamp `Math.max(1, ...)` was meant to keep the label below the signature but index 1 is still above `{`; the correct floor is 2.",
+   "contract": "label insertion anchor vs function prologue",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompile-base.js",
+     "line": "304-311",
+     "symbol": "ensureLegacyLabel splice anchor"
+    },
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1620-1622",
+     "symbol": "sig then '{' prologue"
+    }
+   ],
+   "fixClass": "clamp the label insertion anchor to the first body line (index >= 2)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "$x",
+    "line": 14,
+    "severity": "error",
+    "message": "expected function body after function declarator",
+    "snippet": "12: }\n13: uint64 $x(void)\n14:     loc_9A0:\n15: {\n16:     /* cmp x1, x0 — 次の分岐のための比較 */"
+   }
+  },
+  {
+   "clusterId": "B-MALFORMED-EXPRESSION-CASCADE",
+   "bucket": "B",
+   "title": "malformed expression caused by an undeclared type name",
+   "occurrenceCount": 2988,
+   "caseCount": 160,
+   "functionCount": 662,
+   "packagingVsEmitter": "emitter (cascade of A-NONSTANDARD-INT-ALIAS)",
+   "independentDefect": false,
+   "cascadeOf": "A-NONSTANDARD-INT-ALIAS",
+   "rootCause": "Derived from A-NONSTANDARD-INT-ALIAS: `*(uint64 *)0x13FD0` cannot parse without the type.",
+   "contract": "expression / cast rendering",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "131-148",
+     "symbol": "printIntegerView"
+    }
+   ],
+   "fixClass": "same fix as A-NONSTANDARD-INT-ALIAS",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "$x",
+    "line": 8,
+    "severity": "error",
+    "message": "expected expression",
+    "snippet": "6: uint64 $x(void)\n7: {\n8:     x0_1 = *(uint64 *)0x13FD0;\n9:     __asm(\"cbz x0, #0x984\");\n10:     return sub_8E0(x0_1);"
+   }
+  },
+  {
+   "clusterId": "B-STATEMENT-OUTSIDE-FUNCTION",
+   "bucket": "B",
+   "title": "statement emitted outside any function body",
+   "occurrenceCount": 532,
+   "caseCount": 76,
+   "functionCount": 462,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "ensureLegacyGoto anchors its insertion at the last line whose `row` is <= the source edge's end row, then splices at anchor+1. The legacy renderer stamps its closing `}` line with the last instruction row (decompile-legacy.js:139), so that anchor can BE the closing brace; the synthesised goto then lands after `}` at file scope.",
+   "contract": "statement insertion anchor vs function epilogue",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompile-base.js",
+     "line": "317-338",
+     "symbol": "ensureLegacyGoto splice anchor"
+    },
+    {
+     "file": "js/decompile-legacy.js",
+     "line": "139",
+     "symbol": "closing brace carries a real row"
+    }
+   ],
+   "fixClass": "exclude the closing-brace line from the goto insertion anchor search",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 76
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O1_g",
+    "function": "nested_if_2",
+    "line": 156,
+    "severity": "error",
+    "message": "expected identifier or '('",
+    "snippet": "154:     __asm(\"b #0xc44\");\n155: }\n156:     goto loc_C44;\n157: uint32 nested_if_deep(int64 a1, int64 a2, int64 a3, int64 a4, int64 a5)\n158: {"
+   }
+  },
+  {
+   "clusterId": "B-STRING-CONCAT-EMISSION",
+   "bucket": "B",
+   "title": "string literal combined with arithmetic instead of concatenation",
+   "occurrenceCount": 6,
+   "caseCount": 3,
+   "functionCount": 3,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "A string literal operand is combined arithmetically (`\"\\n\" + 24`).",
+   "contract": "expression rendering (string literal operands)",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "170-200",
+     "symbol": "printExpression binary path"
+    }
+   ],
+   "fixClass": "model string-literal operands as pointer values",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 2,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 2,
+    "compilerOptVariantsTotal": 20,
+    "cases": 3
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O1_no_g",
+    "function": "loop_multi_exit",
+    "line": 443,
+    "severity": "warning",
+    "message": "adding 'int' to a string does not append to the string [-Wstring-plus-int]",
+    "snippet": "441: \n442:     var_48 = *(uint64 *)(*(uint64 *)0x13FE8);\n443:     x1 = \"\\\\n\" + 24;\n444:     x2 = sp - 56;\n445:     v0 = *(double *)(x1);   v1 = *(double *)(x1 + 16);"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-ARCH-REGISTER",
+   "bucket": "B",
+   "title": "undeclared raw architecture register (sp, lr, pc)",
+   "occurrenceCount": 664,
+   "caseCount": 114,
+   "functionCount": 384,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Raw architecture registers (sp, lr, pc) are printed as C identifiers.",
+   "contract": "register rendering",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496-515",
+     "symbol": "safeIdent + register naming"
+    }
+   ],
+   "fixClass": "declare or eliminate raw register names",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 114
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "loop_break",
+    "line": 278,
+    "severity": "error",
+    "message": "use of undeclared identifier 'sp'",
+    "snippet": "276:         local_m4 = 0xFFFFFFFF;\n277:     } else {\n278:         if ((uint32_t)((sp - 48) + 16)[sext(var_8)] != (uint32_t)var_28) {\n279:             local_m28++;\n280:             goto loc_117C;"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-ARG-PSEUDO-VAR",
+   "bucket": "B",
+   "title": "undeclared parameter/return pseudo-variable (a1, a2, v0, ...)",
+   "occurrenceCount": 4012,
+   "caseCount": 148,
+   "functionCount": 2364,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "The signature renderer and the body renderer disagree about parameters. semanticSignature renders a1..aN only for recovered args, but the body still names ABI argument registers a1, a2, a3 - so `void sequential_ops(void)` has a body reading a1..a3. Either the signature must declare them or the body must not name them.",
+   "contract": "function signature rendering vs body variable rendering",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "326-334",
+     "symbol": "semanticSignature arg list"
+    },
+    {
+     "file": "js/decompile-legacy.js",
+     "line": "2166-2178",
+     "symbol": "declaration block excludes args"
+    }
+   ],
+   "fixClass": "emit a consistent parameter contract (declare args or bind register names)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 148
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "sequential_ops",
+    "line": 53,
+    "severity": "error",
+    "message": "use of undeclared identifier 'a1'",
+    "snippet": "51: void sequential_ops(void)\n52: {\n53:     local_m4 = a1;\n54:     local_m8 = a2;\n55:     local_mC = a3;"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-CALL-TEMP",
+   "bucket": "B",
+   "title": "undeclared generated call temporary (call_<n>)",
+   "occurrenceCount": 2698,
+   "caseCount": 122,
+   "functionCount": 696,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Per-call result temporaries are created as AST variables named call_<id> for the call's IR value id, emitted inline in statements, and never declared. The emitter knows they are temporaries ({materializedCall:true}), so the declaration is missing rather than unknowable.",
+   "contract": "temporary generation inside the body emitter",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pipeline-core.js",
+     "line": "1183",
+     "symbol": "expr.variable(`call_${d.id}`)"
+    },
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1298-1299",
+     "symbol": "call statement emission"
+    }
+   ],
+   "fixClass": "declare generated call temporaries in the body prologue",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 122
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "tail_recursion",
+    "line": 606,
+    "severity": "error",
+    "message": "use of undeclared identifier 'call_155'",
+    "snippet": "604:     if ((int32_t)var_8 > 1) {\n605:         tail_recursion(/* arguments unknown */);\n606:         local_m14 = call_155;\n607:     } else {\n608:         local_m14 = local_m1C;"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-CONDITION-TEMP",
+   "bucket": "B",
+   "title": "undeclared condition temporary (condition_*)",
+   "occurrenceCount": 70,
+   "caseCount": 42,
+   "functionCount": 58,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Condition/flag temporaries (condition_eq, condition_le, flag_eq) are referenced in branch conditions without declaration.",
+   "contract": "condition/temporary generation",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/flag-semantics.js",
+     "line": "1-30",
+     "symbol": "condition naming"
+    }
+   ],
+   "fixClass": "declare condition temporaries in the body prologue",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 7,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 42
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O2_g",
+    "function": "loop_complex_cond",
+    "line": 560,
+    "severity": "error",
+    "message": "use of undeclared identifier 'condition_le'",
+    "snippet": "558: {\n559:     if ((int32_t)a1 > 0) {\n560:         while (condition_le) {\n561:         }\n562:     }"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-LABEL",
+   "bucket": "B",
+   "title": "goto to a label the emitted body never defines",
+   "occurrenceCount": 544,
+   "caseCount": 104,
+   "functionCount": 326,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Control-flow structuring emits `goto loc_<hex>` for edges whose target block is not emitted with a matching label (104/160 cases, 251 distinct labels). The structuring and the label emission disagree about which blocks are materialised.",
+   "contract": "control-flow structuring / label emission",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1486-1490",
+     "symbol": "goto emission"
+    },
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1500",
+     "symbol": "label emission"
+    }
+   ],
+   "fixClass": "make label emission and goto emission share one block-materialisation set (fail closed)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 104
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "switch_fallthrough",
+    "line": 197,
+    "severity": "error",
+    "message": "use of undeclared label 'loc_F88'",
+    "snippet": "195:         if ((uint32_t)a1 == 2) {\n196:             local_m8 += ((uint32_t)(uint32_t)a1 << 1);\n197:             goto loc_F88;\n198:         } else {\n199:             if ((uint32_t)a1 != 3) {"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-PHI-TEMP",
+   "bucket": "B",
+   "title": "undeclared SSA phi temporary (local_phi_*)",
+   "occurrenceCount": 342,
+   "caseCount": 60,
+   "functionCount": 156,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "SSA phi results are emitted as identifiers `local_phi_<id>` ({phi:true}), never declared, and never lowered into locals. A second, independent phi encoding exits as `phi(a, b)` calls (A-RUNTIME-HELPER-DECL), so phi handling is not even internally consistent.",
+   "contract": "SSA phi lowering / temporary generation",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pipeline-core.js",
+     "line": "1187",
+     "symbol": "expr.variable(`local_phi_${v.id}`)"
+    },
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "185-200",
+     "symbol": "printExpression intrinsic/call path"
+    }
+   ],
+   "fixClass": "lower phi temporaries into declared locals, or declare them",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 6,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 60
+   },
+   "representative": {
+    "caseId": "2/2_clang_O1_g",
+    "function": "test_array_types",
+    "line": 244,
+    "severity": "error",
+    "message": "use of undeclared identifier 'local_phi_1297'",
+    "snippet": "242:     unknown_call(\"ARR-L1-01 (array_1d_stack): %d\\\\n\");\n243:     unknown_call(\"ARR-L1-02 (array_string): %d\\\\n\");\n244:     local_phi_1297[local_phi_1206] = (uint64_t)local_phi_1415 == (uint64_t)local_phi_1206 ? (uint32_t)local_phi_1415 : 0;\n245:     while ((uint64_t)x10 + 1 != 10) {\n246:     }"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-REGISTER-PSEUDO-VAR",
+   "bucket": "B",
+   "title": "undeclared register pseudo-variable (x0, x19, w0, d0, ...)",
+   "occurrenceCount": 14440,
+   "caseCount": 160,
+   "functionCount": 1248,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "Register/high-variable names (x0, x0_1, x19, w0, d0) escape into the body as ordinary identifiers with no declaration. Same missing decl path as B-UNDECLARED-STACK-SLOT, but these are not part of types.locals, so even the legacy decl emitter would not cover them.",
+   "contract": "high-variable / register pseudo-variable rendering",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1620-1625",
+     "symbol": "no decl emitter in the semantic path"
+    }
+   ],
+   "fixClass": "declare every materialised pseudo-variable in the body prologue",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "$x",
+    "line": 8,
+    "severity": "error",
+    "message": "use of undeclared identifier 'x0_1'",
+    "snippet": "6: uint64 $x(void)\n7: {\n8:     x0_1 = *(uint64 *)0x13FD0;\n9:     __asm(\"cbz x0, #0x984\");\n10:     return sub_8E0(x0_1);"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-STACK-SLOT",
+   "bucket": "B",
+   "title": "undeclared stack-slot / local-memory pseudo-variable",
+   "occurrenceCount": 28180,
+   "caseCount": 160,
+   "functionCount": 4000,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "The semantic renderer emits no declaration lines at all. decompileSemantic assembles lines as [sig, '{', ...body, '}'] and the line-kind vocabulary (sig/ctrl/stmt/label) contains no 'decl' kind, so stack-slot names (local_<off>, local_p<hex>, var_<off>) that the body writes are never declared. The legacy renderer does have a declaration block, but the semantic path - the IR-first default - does not.",
+   "contract": "function-body-scoped variable declaration emission",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/type-recovery.js",
+     "line": "293-297",
+     "symbol": "locals recovery (type/offset/confidence)"
+    },
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "1620-1625",
+     "symbol": "lines = [sig, '{', body, '}']"
+    },
+    {
+     "file": "js/decompile-legacy.js",
+     "line": "2160-2190",
+     "symbol": "declarations(): legacy-only decl emitter"
+    }
+   ],
+   "fixClass": "emit a declaration block from the recovered locals (the legacy path already models it)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "sequential_ops",
+    "line": 53,
+    "severity": "error",
+    "message": "use of undeclared identifier 'local_m4'",
+    "snippet": "51: void sequential_ops(void)\n52: {\n53:     local_m4 = a1;\n54:     local_m8 = a2;\n55:     local_mC = a3;"
+   }
+  },
+  {
+   "clusterId": "B-UNDECLARED-VALUE-PSEUDO-VAR",
+   "bucket": "B",
+   "title": "undeclared value/return pseudo-variable (v0, v165, v1010, ...)",
+   "occurrenceCount": 796,
+   "caseCount": 88,
+   "functionCount": 180,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "SSA value indices are printed with a `v` prefix (v165, v1010) and used as operands with no declaration. Shares the spelling space with ARM64 SIMD registers v0..v31, which the same renderer also prints.",
+   "contract": "SSA value materialisation",
+   "metadataExists": true,
+   "metadataDiscarded": true,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/semantic-core.js",
+     "line": "496-515",
+     "symbol": "safeIdent + value naming"
+    }
+   ],
+   "fixClass": "declare materialised SSA values (or inline them into their single use)",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 88
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "loop_continue",
+    "line": 293,
+    "severity": "error",
+    "message": "use of undeclared identifier 'v44'",
+    "snippet": "291:     local_mC = 1;\n292:     while ((int32_t)var_4 <= (int32_t)var_C) {\n293:         if (v44 != 0) {\n294:             local_m8 += local_mC;\n295:         } else {"
+   }
+  },
+  {
+   "clusterId": "B-UNRESOLVED-OPERAND-PLACEHOLDER",
+   "bucket": "B",
+   "title": "unresolved operand emitted as a literal `?` token",
+   "occurrenceCount": 38,
+   "caseCount": 16,
+   "functionCount": 22,
+   "packagingVsEmitter": "emitter",
+   "independentDefect": true,
+   "cascadeOf": null,
+   "rootCause": "A literal `?` token is emitted in operand position on both sides of an assignment (`? = *(uint64 *)(x1);`). A printer placeholder escapes as a token instead of a value; the emitter has an unresolved operand and prints `?`.",
+   "contract": "expression rendering (unresolved operand)",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [
+    {
+     "file": "js/decompiler/pretty/c.js",
+     "line": "170-200",
+     "symbol": "printExpression default branches"
+    }
+   ],
+   "fixClass": "render an explicit unresolved-operand form instead of a bare `?`",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 2,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 14,
+    "compilerOptVariantsTotal": 20,
+    "cases": 16
+   },
+   "representative": {
+    "caseId": "1/1_gcc_O0_g",
+    "function": "fsm_func_table",
+    "line": 956,
+    "severity": "error",
+    "message": "expected ':'",
+    "snippet": "954:     var_18 = x0;\n955:     var_48 = *(uint64 *)(*(uint64 *)0x13FE8);\n956:     ? = *(uint64 *)(x1);\n957:     *(uint64 *)(x0) = ?;\n958:     x0 = var_18;"
+   }
+  },
+  {
+   "clusterId": "C-CASCADE-RECOVERY",
+   "bucket": "C",
+   "title": "parser recovery diagnostic caused by an earlier undeclared type",
+   "occurrenceCount": 44,
+   "caseCount": 18,
+   "functionCount": 44,
+   "packagingVsEmitter": "cascade (not an independent defect)",
+   "independentDefect": false,
+   "cascadeOf": "A-NONSTANDARD-INT-ALIAS / A-STANDARD-TYPE-ALIAS",
+   "rootCause": "Parser recovery after an undeclared alias; not an independent defect.",
+   "contract": "cascade",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [],
+   "fixClass": "disappears with the type-alias fix",
+   "confidence": "medium",
+   "generality": {
+    "programGroups": 5,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 4,
+    "compilerOptVariantsTotal": 20,
+    "cases": 14
+   },
+   "representative": {
+    "caseId": "2/2_clang_O0_g",
+    "function": "array_1d_stack",
+    "line": 186,
+    "severity": "error",
+    "message": "expected ']'",
+    "snippet": "184:     local_m14 = 0;\n185:     while ((int32_t)var_C < (int32_t)var_14) {\n186:         local_m10 += local_m8[(int64_t)local_m14];\n187:         local_m14++;\n188:         continue;"
+   }
+  },
+  {
+   "clusterId": "C-NOTE-SUPPORT",
+   "bucket": "C",
+   "title": "compiler note attached to a parent diagnostic",
+   "occurrenceCount": 674,
+   "caseCount": 160,
+   "functionCount": 531,
+   "packagingVsEmitter": "supporting note",
+   "independentDefect": false,
+   "cascadeOf": null,
+   "rootCause": "clang notes attached to a parent error; evidence, not defects.",
+   "contract": "n/a",
+   "metadataExists": true,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [],
+   "fixClass": "none",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 8,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 20,
+    "compilerOptVariantsTotal": 20,
+    "cases": 160
+   },
+   "representative": {
+    "caseId": "1/1_clang_O0_g",
+    "function": "indirect_recursion_a",
+    "line": 620,
+    "severity": "note",
+    "message": "previous implicit declaration is here",
+    "snippet": "618:     if ((int32_t)var_p4 > 0) {\n619:         if (v39 != 0) {\n620:             indirect_recursion_b(/* arguments unknown */);\n621:             local_m14 = call_342;\n622:         } else {"
+   }
+  },
+  {
+   "clusterId": "C-UNCLASSIFIED",
+   "bucket": "C",
+   "title": "unclassified diagnostic",
+   "occurrenceCount": 0,
+   "caseCount": 0,
+   "functionCount": 0,
+   "packagingVsEmitter": "ambiguous",
+   "independentDefect": null,
+   "cascadeOf": null,
+   "rootCause": "No diagnostic left unclassified after the alias-declaration cascade rule.",
+   "contract": "n/a",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [],
+   "fixClass": "none",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 1,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 4,
+    "compilerOptVariantsTotal": 20,
+    "cases": 4
+   },
+   "representative": null
+  },
+  {
+   "clusterId": "D-TOOLCHAIN",
+   "bucket": "D",
+   "title": "environment / toolchain only",
+   "occurrenceCount": 0,
+   "caseCount": 0,
+   "functionCount": 0,
+   "packagingVsEmitter": "environment",
+   "independentDefect": null,
+   "cascadeOf": null,
+   "rootCause": "Host toolchain only; no environment-caused failure was observed.",
+   "contract": "n/a",
+   "metadataExists": false,
+   "metadataDiscarded": false,
+   "analysisMissing": false,
+   "sourceLocations": [],
+   "fixClass": "none",
+   "confidence": "high",
+   "generality": {
+    "programGroups": 0,
+    "programGroupsTotal": 8,
+    "compilerOptVariants": 0,
+    "compilerOptVariantsTotal": 20,
+    "cases": 0
+   },
+   "representative": null
+  }
+ ]
+}
