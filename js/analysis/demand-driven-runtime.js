@@ -4,6 +4,7 @@ import { createBinaryIdFromDigest } from '../core/identity/index.js';
 import { canonicalContentDigest } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
+import { executableByteCoverage } from './discovery/executable-coverage.js';
 
 const RUNTIME_VERSION = 'demand-driven-analysis/v1';
 const MAX_PAGE = 5000;
@@ -28,6 +29,15 @@ function architectureOf(app) {
   if (typeof value !== 'string') return 'unknown';
   const architecture = value.trim().toLowerCase();
   return architecture || 'unknown';
+}
+function endiannessOf(app) {
+  const candidates = [storeValue(app, 'capability')?.endianness];
+  try { candidates.push(app?.currentSlice?.()?.info?.endian); } catch { /* optional UI slice metadata */ }
+  candidates.push(app?.backend?.platformInfo?.productDescriptor?.formatMetadata?.endian);
+  for (const value of candidates) {
+    if (value === 'little' || value === 'big') return value;
+  }
+  return undefined;
 }
 function abortError(signal, message = 'Analysis query aborted') {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -564,9 +574,27 @@ function installCancellableFunctionDiscovery(app) {
           abortIfNeeded(producerController.signal);
           if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
+          const coverage = await executableByteCoverage({
+            regions:unique,
+            functions:symbols.funcs,
+            functionEnds:symbols.funcEnds,
+            architecture:architectureOf(app),
+            endian:endiannessOf(app),
+            signal:producerController.signal,
+            readBytes:async (address, size) => {
+              if (typeof app.backend.readAt !== 'function') return null;
+              const read = await waitForSearchRequest(app.backend.readAt(address, Number(size), false), producerController.signal);
+              return read?.found === true && read.bytes instanceof Uint8Array ? read.bytes : null;
+            },
+          });
+          // The coverage read awaits external bytes. A newer epoch may start
+          // while the old read is in flight; only the current epoch may
+          // publish functionDiscovery (#9219).
+          abortIfNeeded(producerController.signal);
+          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
-            reasons:[...new Set(reasons)], capped:results.some((item) => item.capped),
+            reasons:[...new Set(reasons)], capped:results.some((item) => item.capped), coverage,
           };
           symbols.functionStartsComplete = complete;
           symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
