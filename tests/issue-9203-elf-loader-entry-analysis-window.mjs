@@ -250,6 +250,8 @@ const loaderSegment = {
   fileSize:0x100n,
   perms:{ read:true, write:false, execute:true },
 };
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ arch:'x64', metadata:{ type:3 }, sections:[loaderSection], segments:[loaderSegment] }, TEXT_VA), null,
+'non-ARM64 ELF loader entries must not receive the ARM64 analysis-window fallback');
 assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections:[
   { ...loaderSection, fileOffset:0x900n },
 ], segments:[loaderSegment] }, TEXT_VA), null,

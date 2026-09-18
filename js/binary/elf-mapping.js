@@ -185,6 +185,7 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
  * not an extent API: callers must keep the function end unknown.
  */
 export function elfLoaderEntrySectionAnalysisWindow(image, address) {
+  if (image?.arch !== 'arm64') return null;
   if (image?.metadata?.type === 1) return null; // ET_REL has no runtime loader contract.
   let start;
   try { start = strictELFInteger(address, 'address'); } catch { return null; }
