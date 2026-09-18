@@ -66,4 +66,8 @@ assert.match(aggregate,/name:\s*Syntax lint[\s\S]*npm run lint/);
 assert.doesNotMatch(workflow,/^  pull_request:/m,'cross-binary accuracy stays manual/push-only under CI development-mode policy');
 assert.match(workflow,/cancel-in-progress:\s*true/);
 
+// #9195: accuracy-partitions.json must be in on.push.paths so partition contract changes trigger CI
+const pushSection = workflow.slice(workflow.indexOf('push:'), workflow.indexOf('concurrency:'));
+assert.match(pushSection, /-\s*'tests\/accuracy-partitions\.json'/, 'cross-binary workflow on.push.paths must include tests/accuracy-partitions.json');
+
 console.log('issue #3123 cross-binary 18-partition topology/cache regression: PASS');

@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from '../../scripts/auth-build-policy.mjs';
-import { parseJsonc, validateAuthConfig } from '../../scripts/validate-auth-config.mjs';
+import { parseJsonc, validateAuthConfig, parseCliArgs } from '../../scripts/validate-auth-config.mjs';
 test('privileged-only edits update release identity without changing runtime content ID; deterministic DAG', () => {
   const runtime = 'a'.repeat(24), first = privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1');
   assert.deepEqual(privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1'), first);
@@ -154,5 +157,42 @@ test('JSONC loader accepts inline comments, trailing commas, and comment-like st
   let multiSpaceError;
   try { parseJsonc(multiSpaceInput); } catch (e) { multiSpaceError = e; }
   assert.equal(multiTrailingError.message, multiSpaceError.message);
+});
+
+test('#9193 validate-auth-config CLI argument validation rejects unknown options and typos', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const cli = path.join(root, 'scripts/validate-auth-config.mjs');
+
+  // parseCliArgs unit validations
+  assert.deepEqual(parseCliArgs([]), { file: 'wrangler.jsonc', local: false });
+  assert.deepEqual(parseCliArgs(['--config=custom.jsonc']), { file: 'custom.jsonc', local: false });
+  assert.deepEqual(parseCliArgs(['--local']), { file: 'wrangler.jsonc', local: true });
+  assert.deepEqual(parseCliArgs(['--config=custom.jsonc', '--local']), { file: 'custom.jsonc', local: true });
+  assert.deepEqual(parseCliArgs(['--local', '--config=custom.jsonc']), { file: 'custom.jsonc', local: true });
+
+  assert.throws(() => parseCliArgs(['--configg=bad.jsonc']), /Unknown argument: --configg=bad\.jsonc/);
+  assert.throws(() => parseCliArgs(['--locla']), /Unknown argument: --locla/);
+  assert.throws(() => parseCliArgs(['unexpected.jsonc']), /Unknown argument: unexpected\.jsonc/);
+  assert.throws(() => parseCliArgs(['--config=a.jsonc', '--config=b.jsonc']), /Duplicate --config option/);
+  assert.throws(() => parseCliArgs(['--local', '--local']), /Duplicate --local option/);
+  assert.throws(() => parseCliArgs(['--config=']), /Invalid --config option: path cannot be empty/);
+
+  // Process execution validations
+  const typoResult = spawnSync(process.execPath, [cli, '--configg=bad.jsonc'], { cwd: root, encoding: 'utf8' });
+  assert.equal(typoResult.status, 1, 'typo in option name must exit non-zero');
+  assert.match(typoResult.stderr, /Unknown argument: --configg=bad\.jsonc/);
+  assert.doesNotMatch(typoResult.stdout, /Auth deployment configuration validated/);
+
+  const typoLocalResult = spawnSync(process.execPath, [cli, '--locla'], { cwd: root, encoding: 'utf8' });
+  assert.equal(typoLocalResult.status, 1, 'typo in --local option must exit non-zero');
+  assert.match(typoLocalResult.stderr, /Unknown argument: --locla/);
+
+  const positionalResult = spawnSync(process.execPath, [cli, 'extra'], { cwd: root, encoding: 'utf8' });
+  assert.equal(positionalResult.status, 1, 'positional argument must exit non-zero');
+  assert.match(positionalResult.stderr, /Unknown argument: extra/);
+
+  const validLocalResult = spawnSync(process.execPath, [cli, '--local'], { cwd: root, encoding: 'utf8' });
+  assert.equal(validLocalResult.status, 0, 'supported --local must succeed against default config');
+  assert.match(validLocalResult.stdout, /Auth deployment configuration validated/);
 });
 

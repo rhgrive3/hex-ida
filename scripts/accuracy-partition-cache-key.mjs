@@ -34,22 +34,23 @@ function walk(dir, root, out, visitedDirs = new Set()) {
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const absolute = path.join(dir, entry.name);
-    let isDir = entry.isDirectory();
-    let isFile = entry.isFile();
 
     if (entry.isSymbolicLink()) {
+      out.push(slash(path.relative(root, absolute)));
       try {
         const stat = fs.statSync(absolute);
-        isDir = stat.isDirectory();
-        isFile = stat.isFile();
+        if (stat.isDirectory()) {
+          walk(absolute, root, out, visitedDirs);
+        }
       } catch {
-        continue;
+        // Broken symlink target cannot be resolved; entry was recorded above
       }
+      continue;
     }
 
-    if (isDir) {
+    if (entry.isDirectory()) {
       walk(absolute, root, out, visitedDirs);
-    } else if (isFile) {
+    } else if (entry.isFile()) {
       out.push(slash(path.relative(root, absolute)));
     }
   }
@@ -92,7 +93,12 @@ export function partitionDigest(root = ROOT, partition) {
         hash.update('\0');
       }
     } catch {}
-    hash.update(fs.readFileSync(fullPath));
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.isFile()) {
+        hash.update(fs.readFileSync(fullPath));
+      }
+    } catch {}
     hash.update('\0');
   }
   return hash.digest('hex');

@@ -334,21 +334,54 @@ function ensureMirror() {
   return wrote;
 }
 
-const args = process.argv.slice(2);
-if (args[0] === '--ensure' && NUMS.includes(args[1])) {
-  ensureShared();
-  ensureHome(args[1], ensureSharedBinary());
-  ensureLauncher();
-  process.exit(0);
+export function parseArgs(argv = process.argv.slice(2)) {
+  if (argv.length === 0) {
+    return { mode: 'full' };
+  }
+  if (argv[0] === '--ensure') {
+    if (argv.length === 2 && NUMS.includes(argv[1])) {
+      return { mode: 'ensure', num: argv[1] };
+    }
+    const target = argv.length > 1 ? argv.slice(1).join(' ') : '<missing>';
+    throw new Error(`freebuff setup: invalid --ensure selector '${target}'. Expected one of: ${NUMS.join(', ')}`);
+  }
+  throw new Error(`freebuff setup: unrecognized argument(s) '${argv.join(' ')}'. Usage: freebuff-setup.mjs [--ensure 1..8]`);
 }
 
-const shared = ensureSharedBinary();
-let totalMigrated = 0;
-for (const n of NUMS) totalMigrated += ensureHome(n, shared).migrated;
-const repoCleaned = cleanupRepoData();
-const launcherInstalled = ensureLauncher();
-const wrappersWrote = ensureWrappers();
-const mirrored = ensureMirror();
-console.log(
-  `freebuff setup: migrated=${totalMigrated} repo-data-removed=${repoCleaned} launcher=${launcherInstalled ? 'installed' : 'ok'} wrappers=${wrappersWrote} mirror=${mirrored} (re)wrote`,
-);
+export function run(argv = process.argv.slice(2)) {
+  const parsed = parseArgs(argv);
+  if (parsed.mode === 'ensure') {
+    ensureShared();
+    ensureHome(parsed.num, ensureSharedBinary());
+    ensureLauncher();
+    return { mode: 'ensure', num: parsed.num };
+  }
+
+  const shared = ensureSharedBinary();
+  let totalMigrated = 0;
+  for (const n of NUMS) totalMigrated += ensureHome(n, shared).migrated;
+  const repoCleaned = cleanupRepoData();
+  const launcherInstalled = ensureLauncher();
+  const wrappersWrote = ensureWrappers();
+  const mirrored = ensureMirror();
+  const summary = `freebuff setup: migrated=${totalMigrated} repo-data-removed=${repoCleaned} launcher=${launcherInstalled ? 'installed' : 'ok'} wrappers=${wrappersWrote} mirror=${mirrored} (re)wrote`;
+  console.log(summary);
+  return {
+    mode: 'full',
+    migrated: totalMigrated,
+    repoCleaned,
+    launcherInstalled,
+    wrappersWrote,
+    mirrored,
+    summary,
+  };
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    run();
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+}

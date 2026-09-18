@@ -79,11 +79,40 @@ export function validateAuthConfig(config, { local = false } = {}) {
   if (config.assets?.run_worker_first !== true) throw new Error('Protected asset routes require assets.run_worker_first=true.');
   return true;
 }
+
+export function parseCliArgs(argv = process.argv.slice(2)) {
+  let file = 'wrangler.jsonc';
+  let local = false;
+  let hasConfigFile = false;
+  let hasLocal = false;
+
+  for (const arg of argv) {
+    if (arg.startsWith('--config=')) {
+      if (hasConfigFile) throw new Error(`Duplicate --config option: ${arg}`);
+      const val = arg.slice(9);
+      if (!val) throw new Error('Invalid --config option: path cannot be empty.');
+      file = val;
+      hasConfigFile = true;
+    } else if (arg === '--local') {
+      if (hasLocal) throw new Error('Duplicate --local option.');
+      local = true;
+      hasLocal = true;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return { file, local };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const file = process.argv.find((arg) => arg.startsWith('--config='))?.slice(9) || 'wrangler.jsonc';
+    const { file, local } = parseCliArgs(process.argv.slice(2));
     const config = parseJsonc(await readFile(file, 'utf8'));
-    validateAuthConfig(config, { local: process.argv.includes('--local') });
+    validateAuthConfig(config, { local });
     console.log('Auth deployment configuration validated.');
-  } catch (error) { console.error(error.message); process.exitCode = 1; }
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

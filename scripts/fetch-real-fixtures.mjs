@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
@@ -49,6 +49,16 @@ export async function verify(name, path, spec) {
   return digest;
 }
 
+async function releaseBody(response) {
+  try {
+    if (typeof response?.body?.cancel === 'function') {
+      await response.body.cancel();
+    } else if (typeof response?.body?.destroy === 'function') {
+      response.body.destroy();
+    }
+  } catch {}
+}
+
 export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
   let currentUrl = initialUrl;
   let redirects = 0;
@@ -59,10 +69,22 @@ export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
     const response = await fetch(currentUrl, { redirect: 'manual' });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       redirects++;
-      if (redirects > maxRedirects) throw new Error('Too many HTTP redirects');
-      const location = response.headers.get('location');
-      if (!location) throw new Error('Redirect missing Location header');
-      currentUrl = new URL(location, currentUrl).href;
+      if (redirects > maxRedirects) {
+        await releaseBody(response);
+        throw new Error('Too many HTTP redirects');
+      }
+      const location = response.headers?.get?.('location') ?? response.headers?.location;
+      if (!location) {
+        await releaseBody(response);
+        throw new Error('Redirect missing Location header');
+      }
+      try {
+        currentUrl = new URL(location, currentUrl).href;
+      } catch (err) {
+        await releaseBody(response);
+        throw err;
+      }
+      await releaseBody(response);
       continue;
     }
     return response;
@@ -84,8 +106,7 @@ export async function fetchFixture(name, spec) {
   if (!/^https:\/\//i.test(url)) throw new Error(`${name}: fixture URL must use HTTPS`);
 
   await mkdir(dirname(target), { recursive:true });
-  const temp = `${target}.partial-${process.pid}`;
-  await rm(temp, { force:true });
+  const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
   const response = await fetchWithHttpsRedirects(url);
   if (!response.ok || !response.body) throw new Error(`${name}: download failed with HTTP ${response.status}`);
 
@@ -108,6 +129,12 @@ export async function fetchFixture(name, spec) {
     const sha256 = hash.digest('hex');
     if (size !== spec.size) throw new Error(`${name}: size mismatch (${size} != ${spec.size})`);
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
+    try {
+      await verify(name, target, spec);
+      await rm(temp, { force: true });
+      console.log(`${name}: downloaded and verified`);
+      return;
+    } catch {}
     await rename(temp, target);
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
