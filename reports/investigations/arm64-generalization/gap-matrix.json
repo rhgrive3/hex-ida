@@ -1,0 +1,343 @@
+{
+  "schema": "arm64-generalization-gap-matrix/v1",
+  "audit": "independent ARM64 generalization coverage audit",
+  "generatedAt": "2026-09-18",
+  "baseSha": "05c93a1c92b34f4876060bd858e4393557d02dd4",
+  "branch": "investigate/arm64-generalization",
+  "stage": 2,
+  "inputs": ["reports/investigations/arm64-generalization/inventory.json"],
+  "coverageVocabulary": {
+    "exact-executable-regression": "a green test that fails on the real defect and is reachable from the canonical gate",
+    "unit-level-semantics": "the semantic unit is asserted in isolation (classification, encoding domain, effect registry) without a compiled program",
+    "synthetic-only": "the artefact under test is constructed inside the test rather than produced by a real toolchain",
+    "partial": "some real evidence exists but a stated part of the dimension is unproven",
+    "not-covered": "no evidence of any class",
+    "unknown": "cannot be determined from the repository without executing an unavailable toolchain or artefact"
+  },
+  "measurementEnvironment": {
+    "node": "v24.20.0",
+    "clang": "Ubuntu clang version 14.0.0-1ubuntu1.1 (aarch64 target present; can produce AArch64 objects and linked ELFs)",
+    "ld.lld": "14.0.0",
+    "llvm-14": "llvm-mc / llvm-readobj / llvm-objdump present",
+    "gcc": "11.4.0 (no aarch64 cross target verified in this audit)",
+    "swiftc": "MISSING",
+    "rustc": "MISSING",
+    "go": "MISSING",
+    "consequence": "The existing ARM64 instruction-coverage gate and the ARM64 machine-byte decompiler route cannot be measured locally; the audit reports that honestly instead of substituting a weaker proxy."
+  },
+  "observedBaseConditions": [
+    {
+      "id": "OBS-1",
+      "severity": "blocking-observation",
+      "statement": "The canonical gate is RED at the audit base SHA on the ARM64 decompiler-corpus provenance lane.",
+      "command": "node tests/phase8/run.mjs --group provenance/arm64-expanded-semantic-denominator",
+      "observed": "phase8: test runner failed with status 1; assertion 'quality.gvn_call_barrier.O0: projection history' expected 'complete', actual undefined (tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs:51)",
+      "notIntroducedByAudit": true,
+      "implication": "A new generalization suite must not assume the existing ARM64 decompiler lane is a green baseline, and must never inherit this failure as 'already covered'."
+    },
+    {
+      "id": "OBS-2",
+      "severity": "blocking-observation",
+      "statement": "tests/machine-effects prerequisites fail closed locally because the suite requires LLVM 18 and only LLVM 14 is installed.",
+      "command": "node -e \"import('./tools/validation/machine-effects/prerequisites.mjs').then(m=>m.assertMachineEffectsPrerequisites())\"",
+      "observed": "machine-effects-prerequisite-failure: missing llvm-mc LLVM 18; tried /usr/bin/llvm-mc-18:ENOENT, llvm-mc-18:ENOENT",
+      "reference": "tools/validation/machine-effects/prerequisites.mjs:22-28,77-84",
+      "notIntroducedByAudit": true,
+      "positiveNote": "This is correct fail-closed behaviour, not a defect. It also means the ARM64 decoder/effect denominators could not be re-measured during this audit."
+    },
+    {
+      "id": "OBS-3",
+      "severity": "coverage-integrity-observation",
+      "statement": "The strongest existing real-compiler ARM64 semantic suite reports success while a language lane silently never runs.",
+      "command": "npm run compiler-truth",
+      "observed": "exit 0; executed 36/36 (clang lane); ObjC ok; swift {status:'skipped', reason:'swiftc unavailable'}; hardFailures 0. Assertions in tests/compiler-truth/run-core.mjs:243-245 cover only the clang lane, so the Swift skip cannot fail the run.",
+      "references": [
+        "tests/compiler-truth/language-matrix.mjs:160-164",
+        "tests/compiler-truth/run-core.mjs:239-246"
+      ],
+      "implication": "A missing mandatory language or toolchain MUST be BLOCKING in any new suite; a skip must never be green."
+    },
+    {
+      "id": "OBS-4",
+      "severity": "cost-observation",
+      "statement": "The ARM64 decompiler corpus contains at least one test that does not complete within 200 s, so corpus cost must be tiered and bounded.",
+      "command": "timeout 200 node --test tests/phase8/corpus/no-op-equivalence.test.mjs",
+      "observed": "cancelled at 199964 ms; 'Promise resolution is still pending but the event loop has already resolved'",
+      "caveat": "Not reproduced to completion; the audit records it as a cost hazard rather than a defect."
+    }
+  ],
+  "measuredCosts": [
+    { "target": "tests/scpa/threaded-native-acceptance.test.mjs (5 tests)", "wallClockSeconds": 10.5, "note": "real ELF + deployed Capstone + worker thread + public QueryAPI" },
+    { "target": "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs", "wallClockSeconds": 10.0, "note": "fails at base (OBS-1)" },
+    { "target": "npm run compiler-truth (full C/C++/ObjC/Swift matrix, ghidra skipped)", "wallClockSeconds": 18.8, "note": "36 clang cases + 56 extended cases + 3-language matrix" },
+    { "target": "tests/machine-effects/arm64-a64-integer-denominator.test.mjs", "wallClockSeconds": 4.8, "note": "aborted at its LLVM oracle assertion; full-suite cost not measurable locally" },
+    { "target": "tests/phase8/corpus/no-op-equivalence.test.mjs", "wallClockSeconds": null, "note": "did not complete in 200 s" }
+  ],
+  "gaps": [
+    {
+      "id": "G-01",
+      "dimension": "ARM64 real-machine-byte decompiler route (decoded instruction -> shared semantic pipeline)",
+      "coverage": "not-covered",
+      "currentEvidence": [
+        "tools/validation/phase8/build-corpus.mjs:31-37 declares arm64 as representation 'assembly' while x86_64/riscv64 are 'machine-bytes'",
+        "tests/phase8/corpus/functions.json: arm64 entries carry an 'assembly' string, x86_64/riscv64 entries carry frozen linked bytes",
+        "js/targets/architecture/arm64/ contains only encoding-word.js, memory-access-qualifiers.js and effects/ — there is no decoded-instruction provider and no semantic-function entry",
+        "tests/phase8/corpus/explicit-compiler-abi.test.mjs:49 and tests/phase8/provenance/navigation.test.mjs:24 iterate only ['x86_64','riscv64']"
+      ],
+      "missingEvidence": "A test that loads a real ARM64 object/executable, decodes it with the shipped Capstone artifact, enters the shared Semantic IR/CFG/SSA/MemorySSA pipeline, and asserts recovered semantics for the same source as the other two architectures.",
+      "productRisk": "Highest in this audit. ARM64 is the primary product target (iOS/iPad-first). Its decompiler input is assembler text re-parsed test-side, which can differ from real Capstone operand text, and its instruction stream never passes through the shipped decoder in the quality corpus. A decoder-text or loader-layer defect is therefore invisible to the strongest existing decompiler gate.",
+      "benchmarkOverfitRisk": "low — asserting this does not resemble any CodeFuse scoring surface",
+      "recommendedFixtureStyle": "Owned source -> real clang/lld AArch64 ELF, sha256-pinned, reusing the provenance shape already proven in tests/scpa/fixtures/*.json (source sha, binary sha, rebuild command, expectedFunctions, explicit claim string). Assert semantic equivalence with an independently evaluated source-level oracle, not with a printed-text snapshot.",
+      "approximateExecutionCost": "estimated 1-3 s per case after build; fixture build cost is a one-time pinned artefact with a recorded rebuild command"
+    },
+    {
+      "id": "G-02",
+      "dimension": "Swift ARM64 end-to-end",
+      "coverage": "not-covered",
+      "currentEvidence": [
+        "tests/compiler-truth/language-matrix.mjs:160-164 returns {status:'skipped'} when swiftc is absent and run-core.mjs:243-245 cannot fail on it",
+        "tests/competitive-arm64 'swift-micro' recipe has never been executed (tools/competitive-arm64/manifest.mjs reports all cells UNMEASURED)",
+        "tests/scpa/swift-generic.test.mjs and tests/issue-*-swift-* assert Swift metadata/witness structures, not decompiled semantics"
+      ],
+      "missingEvidence": "Any executed Swift ARM64 case: real swiftc output, real binary, asserted semantics or even asserted non-regression.",
+      "productRisk": "High. Swift is the dominant iOS language; the entire Swift decompiler path is unproven end-to-end and can regress without any gate turning red.",
+      "benchmarkOverfitRisk": "low — CodeFuse's frozen ARM64 set is C/C++ only",
+      "recommendedFixtureStyle": "Same owned compiler-twin shape as G-01 but with a pinned swiftc version, and a hard fail-closed prerequisite when swiftc is absent (BLOCKING, never skipped).",
+      "approximateExecutionCost": "estimated 20-60 s for the whole Swift lane (toolchain startup dominates); pathological cases separated into a higher tier"
+    },
+    {
+      "id": "G-03",
+      "dimension": "Rust and Go ARM64 end-to-end",
+      "coverage": "not-covered",
+      "currentEvidence": [
+        "tests/competitive-arm64 recipes 'rust-micro' and 'go-micro' exist with pinned compiler argv but no runner executes them",
+        "tests/issue-3715-rust-v0-impl-disambiguator.mjs, tests/issue-6182/6203/6237/6239-rust-*.mjs, tests/issue-5347-go-rtype-nameoff.test.mjs, tests/issue-7879-go-runtime-types-completeness.mjs assert symbol/metadata decoding only"
+      ],
+      "missingEvidence": "Decompiler semantics or even loader-to-analysis acceptance for rustc/go-produced ARM64 binaries.",
+      "productRisk": "Medium-high. Rust and Go binaries are common analysis targets and their symbol/ABI conventions differ enough that metadata-only coverage does not bound decompiler behaviour.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Reuse the existing 6-recipe manifest identity rather than a parallel format: extend tools/competitive-arm64 with an executable owned-fixture lane, or add a compiler-truth language lane with fail-closed toolchain prerequisites.",
+      "approximateExecutionCost": "estimated 20-60 s per language lane; rustc/go startup dominates, deferred tier acceptable"
+    },
+    {
+      "id": "G-04",
+      "dimension": "Real Mach-O ARM64 end-to-end (Darwin)",
+      "coverage": "synthetic-only",
+      "currentEvidence": [
+        "42 of tests/phase4/binary reference arm64 but fixtures are built in-test with DataView writers (e.g. tests/phase4/binary/issue-3615-macho-arm64-32-indirect-pointer-width.test.mjs:25-71); only 1 of 197 files reads a checked-in binary",
+        "tests/fixtures/real-binaries.json pins three large iOS images that are absent from the tree (tests/battlecats|TsumTsum|YWP contain 62-69 byte placeholders)",
+        "npm run accuracy is not part of npm run check"
+      ],
+      "missingEvidence": "A small, in-repo, sha256-pinned real Mach-O ARM64 binary (or a compiler-produced one) taken through open -> analyze -> decompile in the canonical gate.",
+      "productRisk": "High. Mach-O is the shipping platform container; Mach-O parsing/section/discovery defects are only exercised against hand-built bytes whose shape is written by the same authors who wrote the parser.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Compiler-produced Mach-O ARM64 is hard without an Apple SDK; prefer a minimal owned Mach-O ARM64 fixture whose bytes are produced by a pinned local assembler/linker recipe and whose digest is frozen, plus an explicit statement that it is not Apple-toolchain evidence. Keep the large real images as a separate opt-in tier.",
+      "approximateExecutionCost": "estimated <1 s per fixture once built"
+    },
+    {
+      "id": "G-05",
+      "dimension": "PE ARM64 end-to-end",
+      "coverage": "synthetic-only",
+      "currentEvidence": [
+        "tests/phase4/binary/issue-3673-pe-arm64-reloc-whitelist.test.mjs, issue-4162-pe-arm64-xdata-handler-rva.test.mjs, tests/pe-arm64-xdata-*.test.mjs, tests/issue-8474-pe-arm64-xdata-unwind-codes.test.mjs cover container and unwind decoding"
+      ],
+      "missingEvidence": "A real PE32+ ARM64 binary reaching the analysis/decompile path.",
+      "productRisk": "Medium. PE/ARM64 (Windows-on-ARM) is secondary but its parser is large; synthetic-only coverage means the byte-builder and the parser can share one blind spot.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "One owned, digest-pinned PE32+ ARM64 fixture produced by a recorded recipe, asserted through the loader and the unwind path only (not decompiler semantics).",
+      "approximateExecutionCost": "estimated <1 s"
+    },
+    {
+      "id": "G-06",
+      "dimension": "FP and SIMD data-flow recovery",
+      "coverage": "unit-level-semantics",
+      "currentEvidence": [
+        "tests/machine-effects/arm64-a64-fp-denominator.test.mjs and arm64-a64-simd-denominator.test.mjs assert registry ownership over enumerated encodings",
+        "tests/machine-effects/arm64-fp-*.test.mjs, arm64-simd-*.test.mjs, issue-4201-arm64-fp-advsimd-access-traps.test.mjs assert operand/modifier domains",
+        "tests/phase8/foundation/issue-5454-movi2d-immediate.test.mjs and issue-6207-fcsel-fccmp-condition-domain.mjs assert individual lowering contracts"
+      ],
+      "missingEvidence": "Any compiler-produced ARM64 function whose floating-point or SIMD semantics are asserted after decompilation (vector code from -O2/-O3 loops, HFA arguments, lane operations).",
+      "productRisk": "High. FP/SIMD is where a decoder-owned notion of correctness most easily diverges from recovered source semantics, and the frozen corpus has no such case in either lane.",
+      "benchmarkOverfitRisk": "medium — CodeFuse's frozen set is scalar C and its reference is IDA output; FP cases must be designed from the source language, not from any reference text",
+      "recommendedFixtureStyle": "Source-level functions with a declared mathematical contract (e.g. a dot product, a clamp, an fma chain) with an independently computed expected result over a value set, exactly like tests/compiler-truth's boundary evaluation.",
+      "approximateExecutionCost": "estimated 1-2 s per case"
+    },
+    {
+      "id": "G-07",
+      "dimension": "Atomics and memory ordering end-to-end",
+      "coverage": "unit-level-semantics",
+      "currentEvidence": [
+        "tests/machine-effects/arm64-atomic-*.test.mjs, issue-8603-arm64-atomic-zr-acquire.test.mjs, issue-8607-arm64-ldar-zr-acquire.test.mjs assert effect classification",
+        "tests/machine-effects/fixtures/formal-source/aarch64-{relaxed,acquire,release,acq-rel,seq-cst}.litmus plus tools/validation/machine-effects/oracle-evidence-v2.mjs assert claim-local permitted/forbidden outcome sets"
+      ],
+      "missingEvidence": "A compiled ARM64 function containing an explicit atomic sequence whose recovered semantics are asserted (or whose unknown status is asserted to remain explicit).",
+      "productRisk": "Medium-high. Ordering bugs are the classic silent-wrong-answer class in an analyzer; the formal evidence is deliberately claim-local and cannot bound the lifter.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Owned source using an explicit atomic builtin sequence, with two oracles: an exact semantic assertion where the product claims exactness, and an explicit 'unknown preserved' assertion where it does not. Never accept a silent drop to raw assembly.",
+      "approximateExecutionCost": "estimated 1-2 s per case"
+    },
+    {
+      "id": "G-08",
+      "dimension": "ABI argument passing, returns, aggregates, varargs — validated at a real call site",
+      "coverage": "unit-level-semantics",
+      "currentEvidence": [
+        "~60 files across tests/phase6/abi, tests/phase8/abi, tests/semantic-v2/aapcs64-argument-classification.test.mjs assert classification and placement rules as units",
+        "tests/semantic-v2/aapcs64-argument-classification.test.mjs and tests/phase8/abi/c3-combined-acceptance.test.mjs validate the required profile matrix",
+        "no test in this set compiles a function that actually passes an HFA by value or returns a 17-byte struct"
+      ],
+      "missingEvidence": "A function pair (caller + callee) compiled for ARM64 where the argument/return classification is observable in the recovered code or in the analysis result, with an independently computed expectation.",
+      "productRisk": "High. A classification that is right in isolation can still be attached to the wrong physical registers or stack slots at a real call site, which is exactly the failure a user notices.",
+      "benchmarkOverfitRisk": "low — CodeFuse does not exercise aggregates or varargs",
+      "recommendedFixtureStyle": "Source-defined struct/HFA/vararg cases with an oracle derived from the source and the AAPCS64 rule text (not from another tool's output), asserted on the analysis result and on the recovered prototype/argument binding.",
+      "approximateExecutionCost": "estimated 1-2 s per case"
+    },
+    {
+      "id": "G-09",
+      "dimension": "Stripped vs debug-bearing ARM64 twins",
+      "coverage": "partial",
+      "currentEvidence": [
+        "tests/competitive-arm64 declares an allowlisted strip-only twin policy in tools/competitive-arm64/manifest.mjs policies.twins, but no twin has ever been built (binaryTwinsVerified: false)",
+        "the three tests/scpa ELF fixtures are unstripped and carry expectedFunctions from their own manifests"
+      ],
+      "missingEvidence": "Any executed test comparing the same ARM64 binary with and without debug/symbol information.",
+      "productRisk": "Medium-high. Real analysis targets are usually stripped; a suite that only ever sees debug info silently assumes symbol authority that production does not have.",
+      "benchmarkOverfitRisk": "medium — CodeFuse's own family is 'with vs without -g'; the new twins must be chosen for our invariants (same-or-better explicit unknown), not to mirror that grid",
+      "recommendedFixtureStyle": "One linked debug artefact copied and then strip-allowlisted (exactly the existing declared policy), asserted as a pair: neither twin may silently degrade a declared-exact result, and a symbol-dependent claim must become explicitly unknown rather than wrong.",
+      "approximateExecutionCost": "estimated +1 strip step (<1 s) per twin at build time"
+    },
+    {
+      "id": "G-10",
+      "dimension": "Optimization sweep beyond -O0/-O1/-O2 inside the gate",
+      "coverage": "partial",
+      "currentEvidence": [
+        "the frozen corpus covers -O0/-O1/-O2 only (tools/validation/phase8/build-corpus.mjs OPTIMIZATION_LEVELS)",
+        "-O3/-Os/-Oz exist only in tests/compiler-truth, which is not in the canonical gate",
+        "CodeFuse covers O0/O1/O2/O3/Os but only as an external scoreboard"
+      ],
+      "missingEvidence": "In-gate ARM64 cases at -O3/-Os/-Oz.",
+      "productRisk": "Medium. Aggressive optimization is the normal shipping configuration for iOS release builds and is where inlining/idiom folding tests the decompiler hardest.",
+      "benchmarkOverfitRisk": "high if the new grid is copied from CodeFuse's exact {O0,O1,O2,O3,Os} x {g,no_g} shape; design the optimization set from the compiler behaviour under test and include at least one level CodeFuse does not use",
+      "recommendedFixtureStyle": "Add -O3/-Os/-Oz to a new owned source-based lane; do not extend the frozen Phase 8 corpus in place, because that invalidates its frozen baseline (a deliberate documented transaction).",
+      "approximateExecutionCost": "estimated 1-3 s per (case, level)"
+    },
+    {
+      "id": "G-11",
+      "dimension": "Compiler diversity (gcc)",
+      "coverage": "not-covered",
+      "currentEvidence": [
+        "tests/compiler-truth uses clang/clang++/swiftc only (tests/compiler-truth/run-core.mjs:107, language-matrix.mjs:17,168)",
+        "the frozen Phase 8 corpus records an Ubuntu clang 18.1.3 toolchain only",
+        "CodeFuse includes gcc-derived cases but only as external comparison material"
+      ],
+      "missingEvidence": "Any in-gate ARM64 case produced by a second compiler family.",
+      "productRisk": "Medium-high. Independent-verifier discipline requires enumerated compiler families; a single available compiler must not silently satisfy a multi-family contract (docs/ENGINEERING_PROCESS_GUARDRAILS.md section 3.5).",
+      "benchmarkOverfitRisk": "medium — mirroring CodeFuse's clang/gcc pairing is itself an overfit surface; the requirement should be 'a second independent code generator', satisfied by any pinned family the environment can actually run",
+      "recommendedFixtureStyle": "A second compiler family must be a BLOCKING enumerated requirement with recorded version/target, not an optional extra; if the family is unavailable the suite must fail closed rather than skip.",
+      "approximateExecutionCost": "estimated 1-3 s per case; requires a pinned aarch64-capable gcc"
+    },
+    {
+      "id": "G-12",
+      "dimension": "Large / pathological ARM64 function and resource bounds",
+      "coverage": "partial",
+      "currentEvidence": [
+        "the only large real ARM64 artefacts are the absent pinned iOS images (npm run accuracy, out of gate)",
+        "tests/phase8/provenance/budget.test.mjs and tools/validation/phase8/metrics.mjs encode determinism and time-budget discipline for the frozen corpus",
+        "OBS-4 records a corpus test that does not complete in 200 s, demonstrating that unbounded corpus cost is already a real risk"
+      ],
+      "missingEvidence": "An in-gate bounded pathological case (very large function, deep nesting, or a known quadratic hazard) with an explicit complexity/resource guard, plus a deterministic time budget.",
+      "productRisk": "Medium-high. EP-016 in the guardrails records an O(N^2) validation path causing a ~139 s pathological function; without a pathological tier the same class can return.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Separate highest tier: generated-but-deterministic large inputs with a declared algorithm-sensitive bound (work units, not wall clock), asserted as 'completes within the declared bound' and 'result set unchanged'.",
+      "approximateExecutionCost": "minutes; must be a separate opt-in tier and must never be part of the per-PR budget"
+    },
+    {
+      "id": "G-13",
+      "dimension": "Symbol aliases, mapping symbols and thunks",
+      "coverage": "synthetic-only",
+      "currentEvidence": [
+        "tests/phase4/binary symbol/merge-type/stub tests build their own symbol tables",
+        "tests/scpa dispatch-table.elf exercises stubs end-to-end but with hand-written assembly and no compiler-visible mapping symbols"
+      ],
+      "missingEvidence": "A compiler-produced ARM64 object containing mapping symbols ($x/$d) and local aliases, analyzed end-to-end.",
+      "productRisk": "Medium. Mapping symbols govern ARM64 code/data separation in ELF; getting them wrong corrupts discovery in ways synthetic fixtures cannot reveal.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Owned C source with data embedded in a text section region and a pinned link step that preserves mapping symbols; assert data-in-code exclusion and function extents.",
+      "approximateExecutionCost": "estimated <1 s per case once built"
+    },
+    {
+      "id": "G-14",
+      "dimension": "arm64_32 / ILP32 pointer-width behaviour end-to-end",
+      "coverage": "synthetic-only",
+      "currentEvidence": [
+        "tests/phase4/issue-8406-arm64-32-vtable-pointer-width.test.mjs, tests/phase4/binary/issue-3615-macho-arm64-32-indirect-pointer-width.test.mjs, tests/phase12/integration/issue-8280-objc-arm64-32-pointer-width.test.mjs assert widths on built fixtures",
+        "tests/phase6/abi/issue-8428-aarch64-ilp32.test.mjs asserts classification"
+      ],
+      "missingEvidence": "Any real arm64_32 container reaching analysis.",
+      "productRisk": "Medium. watchOS-lineage arm64_32 is a distinct ABI with 4-byte pointers; width confusion produces plausible-looking wrong output.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "One owned arm64_32 container fixture, digest-pinned, asserted on pointer width and function extent only.",
+      "approximateExecutionCost": "estimated <1 s"
+    },
+    {
+      "id": "G-15",
+      "dimension": "False-green resistance of the new coverage itself",
+      "coverage": "partial",
+      "currentEvidence": [
+        "the A2 locked denominator already forbids claiming full ISA coverage and exposes blocking gaps explicitly (tests/machine-effects/a2-denominator.test.mjs:19-25)",
+        "the Phase 8 verifier already derives hard-zero counters from a frozen baseline and compares determinism across two runs (tools/validation/phase8/metrics.mjs:315-410, MEASUREMENT_TIME_BUDGET_MS)",
+        "the SCPA manifests already carry explicit non-claim strings and sha256 identity for both source and binary",
+        "the machine-effects prerequisites already fail closed on a missing pinned toolchain"
+      ],
+      "missingEvidence": "These disciplines are per-suite, not shared: no common excluded_by_environment counter, no common 'declared-precision vs achieved-precision' separation, and OBS-3 shows one suite where a missing language is a silent skip.",
+      "productRisk": "High in aggregate. A new suite that reuses none of this would be able to report 100% while measuring nothing.",
+      "benchmarkOverfitRisk": "low",
+      "recommendedFixtureStyle": "Mandate the existing patterns by reference: hard-zero counters, frozen-baseline comparison, two-run determinism, a fail-closed prerequisite assertion, and an explicit counted excluded-by-environment set that can never be quietly empty.",
+      "approximateExecutionCost": "structural; the determinism double-run is the only visible cost and it should be confined to Tier 0"
+    }
+  ],
+  "dimensionCoverageSummary": [
+    { "dimension": "instruction family", "coverage": "exact-executable-regression", "note": "at the decoder/effect boundary only" },
+    { "dimension": "decoded-instruction decompiler route", "coverage": "not-covered", "note": "G-01" },
+    { "dimension": "CFG shape", "coverage": "partial", "note": "frozen corpus, assembly text" },
+    { "dimension": "direct control flow", "coverage": "unit-level-semantics", "note": "" },
+    { "dimension": "indirect control flow", "coverage": "unit-level-semantics", "note": "" },
+    { "dimension": "irreducible flow", "coverage": "partial", "note": "" },
+    { "dimension": "loop shape", "coverage": "partial", "note": "" },
+    { "dimension": "jump table", "coverage": "partial", "note": "structure_switch case plus dispatch-table.elf" },
+    { "dimension": "stack/local recovery", "coverage": "partial", "note": "" },
+    { "dimension": "pointer arithmetic", "coverage": "partial", "note": "SCPA demand queries only" },
+    { "dimension": "alias/unknown memory", "coverage": "synthetic-only", "note": "phase7 shared fixture shape" },
+    { "dimension": "integer width", "coverage": "partial", "note": "exact only out of gate" },
+    { "dimension": "FP", "coverage": "unit-level-semantics", "note": "G-06" },
+    { "dimension": "SIMD", "coverage": "unit-level-semantics", "note": "G-06" },
+    { "dimension": "atomics", "coverage": "unit-level-semantics", "note": "G-07" },
+    { "dimension": "ABI argument passing", "coverage": "unit-level-semantics", "note": "G-08" },
+    { "dimension": "ABI return", "coverage": "unit-level-semantics", "note": "G-08" },
+    { "dimension": "aggregate return/pass", "coverage": "unit-level-semantics", "note": "G-08" },
+    { "dimension": "varargs", "coverage": "unit-level-semantics", "note": "G-08" },
+    { "dimension": "tail calls", "coverage": "partial", "note": "one implicit-ret contract" },
+    { "dimension": "thunk", "coverage": "partial", "note": "hand-written assembly only" },
+    { "dimension": "exception/unwind", "coverage": "synthetic-only", "note": "container-level only" },
+    { "dimension": "C++", "coverage": "partial", "note": "compiler-truth, out of gate, assembly text" },
+    { "dimension": "ObjC", "coverage": "partial", "note": "compiler-truth, out of gate, assembly text; Darwin runtime unproven" },
+    { "dimension": "Swift", "coverage": "not-covered", "note": "G-02, silently skipped today" },
+    { "dimension": "Rust", "coverage": "not-covered", "note": "G-03" },
+    { "dimension": "Go", "coverage": "not-covered", "note": "G-03" },
+    { "dimension": "ELF", "coverage": "partial", "note": "3 owned assembled fixtures" },
+    { "dimension": "Mach-O", "coverage": "synthetic-only", "note": "G-04" },
+    { "dimension": "PE", "coverage": "synthetic-only", "note": "G-05" },
+    { "dimension": "stripped vs debug", "coverage": "not-covered", "note": "G-09" },
+    { "dimension": "clang/gcc", "coverage": "partial", "note": "clang only in gate; G-11" },
+    { "dimension": "optimization level", "coverage": "partial", "note": "O0-O2 in gate; G-10" },
+    { "dimension": "symbol aliases/mapping symbols", "coverage": "synthetic-only", "note": "G-13" },
+    { "dimension": "large/pathological function", "coverage": "not-covered", "note": "G-12" },
+    { "dimension": "deterministic resource bounds", "coverage": "partial", "note": "G-15" },
+    { "dimension": "arm64_32 / ILP32 end-to-end", "coverage": "not-covered", "note": "G-14" }
+  ],
+  "crossCuttingConclusions": [
+    "Decoder instruction coverage is not decompiler end-to-end recovery, and the repository is strong on the former and structurally weak on the latter for ARM64 specifically.",
+    "No existing ARM64 evidence connects a compiler-produced binary to a semantic equivalence oracle inside the canonical gate.",
+    "Three independent coverage-integrity conditions were observed at the base SHA (OBS-1..OBS-3): one red canonical-gate test on the ARM64 decompiler lane, one fail-closed missing toolchain, and one silently-skipped mandatory language.",
+    "The highest-overfit-risk surface is the CodeFuse-shaped grid (ARM64 C, clang/gcc, five optimization levels, with/without debug, IDA reference). Any new suite must differ from that grid in at least the source set, the oracle type, and the optimization set, and must never gate on similarity to a reference text."
+  ]
+}
