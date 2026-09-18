@@ -31,6 +31,7 @@ if (isMain) {
   const [first, ...rest] = process.argv.slice(2);
   if (!first || first === '--help' || first === '-h') usage();
   if (first === '--list') {
+    if (rest.length > 0) usage();
     for (const [name, script] of Object.entries(pkg.scripts ?? {})) console.log(`${name.padEnd(24)} ${script}`);
     process.exit(0);
   }
