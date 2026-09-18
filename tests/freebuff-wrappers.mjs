@@ -18,7 +18,7 @@
 //   3. The data dir lives outside git; the wrappers themselves must be
 //      tracked (so cleanup cannot silently drop them).
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,6 +93,33 @@ check(setupSrc.includes('MIRROR_ROOT'), 'setup must maintain the off-repo mirror
 check(setupSrc.includes('showProjectPicker'), 'setup must document the HOME-under-cwd picker gate');
 check(setupSrc.includes('SHARED_BIN'), 'setup must share one binary copy across HOMEs');
 check(setupSrc.includes('symlinkSync'), 'setup must link (not re-download) missing per-HOME binaries');
+
+// #9200: freebuff-setup CLI argument grammar and validation
+const { parseArgs } = await import('../scripts/freebuff-setup.mjs');
+assert.deepEqual(parseArgs([]), { mode: 'full' });
+assert.deepEqual(parseArgs(['--ensure', '1']), { mode: 'ensure', num: '1' });
+assert.deepEqual(parseArgs(['--ensure', '8']), { mode: 'ensure', num: '8' });
+
+assert.throws(() => parseArgs(['--ensure', '9']), /invalid --ensure selector '9'/);
+assert.throws(() => parseArgs(['--ensure', '0']), /invalid --ensure selector '0'/);
+assert.throws(() => parseArgs(['--ensure']), /invalid --ensure selector '<missing>'/);
+assert.throws(() => parseArgs(['--ensure', '1', '--typo']), /invalid --ensure selector/);
+assert.throws(() => parseArgs(['--unknown']), /unrecognized argument/);
+assert.throws(() => parseArgs(['garbage']), /unrecognized argument/);
+
+const setupScript = path.join(root, 'scripts/freebuff-setup.mjs');
+const badEnsure9 = spawnSync(process.execPath, [setupScript, '--ensure', '9'], { cwd: root, encoding: 'utf8' });
+check(badEnsure9.status !== 0, '--ensure 9 must exit non-zero');
+check(badEnsure9.stderr.includes("invalid --ensure selector '9'"), '--ensure 9 error must report invalid selector 9');
+
+const badBareEnsure = spawnSync(process.execPath, [setupScript, '--ensure'], { cwd: root, encoding: 'utf8' });
+check(badBareEnsure.status !== 0, 'bare --ensure must exit non-zero');
+
+const badUnknown = spawnSync(process.execPath, [setupScript, '--unknown'], { cwd: root, encoding: 'utf8' });
+check(badUnknown.status !== 0, '--unknown must exit non-zero');
+
+const badTrailing = spawnSync(process.execPath, [setupScript, '--ensure', '1', '--typo'], { cwd: root, encoding: 'utf8' });
+check(badTrailing.status !== 0, '--ensure 1 --typo must exit non-zero');
 
 if (failures.length) {
   for (const f of failures) process.stderr.write(`FAIL: ${f}\n`);

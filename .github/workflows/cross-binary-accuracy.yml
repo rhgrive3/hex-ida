@@ -28,6 +28,7 @@ on:
       - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
       - 'scripts/accuracy-partition-cache-key.mjs'
+      - 'tests/accuracy-partitions.json'
       - 'package.json'
       - '.github/workflows/cross-binary-accuracy.yml'
 
