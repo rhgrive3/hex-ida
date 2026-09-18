@@ -564,9 +564,11 @@ function installCancellableFunctionDiscovery(app) {
           abortIfNeeded(producerController.signal);
           if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
+          const coverage = symbols.functionDiscovery?.coverage;
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
             reasons:[...new Set(reasons)], capped:results.some((item) => item.capped),
+            ...(coverage ? { coverage } : {}),
           };
           symbols.functionStartsComplete = complete;
           symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
