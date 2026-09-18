@@ -8,6 +8,11 @@
 //   others; the final exit code fails closed if ANY step failed.
 // - Wall-clock only change. Each step runs exactly the same command with the
 //   same quiet-output wrapper as the serial gate.
+// - Canonical steps are npm script text, so they carry shell semantics. Each
+//   step is executed verbatim by the platform shell (with npm's
+//   node_modules/.bin PATH entry) instead of being reinterpreted as literal
+//   argv. Command substitution, quoting, pipelines, and redirection therefore
+//   behave exactly as they do under `npm run check`.
 // - `benchmark:baseline` is CPU-time-sensitive, so it runs alone after the
 //   pool drains (exclusive tail), in canonical position.
 
@@ -136,6 +141,26 @@ export function splitCommand(command) {
   return { command: name, args };
 }
 
+// npm executes scripts with a shell, so a canonical step's semantics include
+// shell expansion. Handing the original step text to that same shell preserves
+// command substitution and every other shell construct the serial gate sees;
+// tokenizing to argv would silently pass `$(...)` as a literal argument.
+function shellInvocation(command) {
+  if (process.platform === 'win32') {
+    return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', command] };
+  }
+  return { command: '/bin/sh', args: ['-c', command] };
+}
+
+// npm prepends node_modules/.bin to PATH for scripts. Mirror that here so a
+// shell-invoked step resolves local binaries exactly like the serial gate.
+function shellEnvironment() {
+  if (process.platform === 'win32') return process.env;
+  const binDirectory = path.join(root, 'node_modules', '.bin');
+  const pathValue = process.env.PATH ?? '';
+  return { ...process.env, PATH: pathValue ? `${binDirectory}${path.delimiter}${pathValue}` : binDirectory };
+}
+
 function poolSize(stepCount) {
   const override = Number(process.env.HEX_CHECK_PARALLEL);
   const requested = Number.isSafeInteger(override) && override >= 1 ? override : os.availableParallelism();
@@ -170,7 +195,12 @@ export async function runCheckParallel({
   const steps = parseCheckSteps(rawScript);
   if (steps.length === 0) throw new Error('run-check-parallel: no steps found in scripts.check');
 
-  const jobs = steps.map((command) => ({ label: stepLabel(command), rawCommand: command, ...splitCommand(command) }));
+  const jobs = steps.map((command) => ({
+    label: stepLabel(command),
+    rawCommand: command,
+    env: shellEnvironment(),
+    ...shellInvocation(command),
+  }));
   const tailIndexes = [];
   const poolJobs = [];
   const poolJobIndex = [];
