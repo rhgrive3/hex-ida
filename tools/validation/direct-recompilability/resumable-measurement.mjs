@@ -74,6 +74,19 @@ function readCaseRecord(storeDir, caseId) {
   }
 }
 
+function validateManifestCaseIds(manifest) {
+  const seen = new Set();
+  for (const entry of manifest.cases) {
+    if (!entry || typeof entry.id !== 'string' || entry.id.length === 0) {
+      throw new Error('measurement-manifest-case-id-invalid');
+    }
+    if (seen.has(entry.id)) {
+      throw new Error(`measurement-manifest-duplicate-case-id:${entry.id}`);
+    }
+    seen.add(entry.id);
+  }
+}
+
 /**
  * Open (or create) a measurement run directory.
  *
@@ -86,6 +99,7 @@ export function openRun({ storeDir, manifest, headSha }) {
   if (!manifest || !Array.isArray(manifest.cases) || manifest.cases.length === 0) {
     throw new Error('measurement-manifest-empty');
   }
+  validateManifestCaseIds(manifest);
   if (!/^[0-9a-f]{40,64}$/.test(headSha || '')) throw new Error('measurement-head-sha-invalid');
   const manifestSha256 = hashManifest(manifest);
   fs.mkdirSync(storeDir, { recursive: true });
@@ -123,9 +137,6 @@ function validateRunnerResult(caseId, value) {
     return { state: 'FAIL', reason: 'invalid-runner-verdict', functions: null };
   }
   const reason = value.reason == null ? null : String(value.reason);
-  // Runners must report a measured verdict. The only accepted NOT_RUN is an
-  // explicit input problem (e.g. missing/hash-mismatched binary), which keeps
-  // the case retryable instead of failing the product for harness inputs.
   if (value.state === 'NOT_RUN') {
     if (reason?.startsWith('input-')) return { state: 'NOT_RUN', reason, functions: null };
     return { state: 'FAIL', reason: 'invalid-runner-verdict', functions: null };
@@ -147,17 +158,6 @@ function validateRunnerResult(caseId, value) {
   return { state: value.state, reason, functions };
 }
 
-/**
- * Measure every manifest case, resuming durable per-case records.
- *
- * `runCase` is `async (selectedCase) => ({ state, reason?, functions? })`.
- * The runner receives the caller-supplied selected case object when one was
- * provided (otherwise the manifest entry), so runners can carry resolved
- * input paths or other per-run context without changing the manifest.
- * A runner that throws is recorded as CRASH (completed work is preserved).
- * Cases already recorded with a terminal state outside `retryStates` are not
- * re-executed. Returns the summary object and writes `summary.json`.
- */
 export async function measureCases({
   storeDir,
   manifest,
@@ -225,13 +225,6 @@ export async function measureCases({
   return writeSummary({ storeDir, manifest, headSha, extraWarnings: warnings });
 }
 
-/**
- * Recompute the summary from durable per-case records.
- *
- * The denominator is always the full manifest case count. Cases without a
- * readable record count as NOT_RUN. `complete` is true only when every case
- * holds a terminal state and no warnings exist.
- */
 export function writeSummary({ storeDir, manifest, headSha, extraWarnings = [] } = {}) {
   const run = openRun({ storeDir, manifest, headSha });
   const counts = { PASS: 0, FAIL: 0, TIMEOUT: 0, CRASH: 0, NOT_RUN: 0 };
@@ -272,12 +265,6 @@ export function readSummary(storeDir) {
   return summary;
 }
 
-/**
- * Build a retry manifest listing only retry-eligible cases (deduplicated).
- * Cases are eligible when their recorded state is in `retryStates`
- * (default NOT_RUN and TIMEOUT). Records are keyed by case id, so executing
- * a retry manifest twice cannot double-count.
- */
 export function buildRetryManifest({ storeDir, manifest, headSha, retryStates = DEFAULT_RETRY_STATES } = {}) {
   const run = openRun({ storeDir, manifest, headSha });
   const retrySet = new Set(retryStates);
