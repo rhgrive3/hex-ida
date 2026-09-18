@@ -27,7 +27,7 @@ export const ARM64_GENERALIZATION_HOLDOUT_FIXTURES = Object.freeze([
       'sub x0, x0, #1',
       'ret',
     ]),
-    overfitGuard: 'Requires a diamond CFG, NZCV evidence, and a two-input return phi.',
+    overfitGuard: 'Checks fixed input/output branch semantics through the taken/fallthrough CFG and merged x0 return.',
   }),
   Object.freeze({
     id: 'holdout-loop-backedge',
@@ -55,7 +55,7 @@ export const ARM64_GENERALIZATION_HOLDOUT_FIXTURES = Object.freeze([
       'ldp x29, x30, [sp], #32',
       'ret',
     ]),
-    overfitGuard: 'Checks stack-memory forwarding, saved-register state, and a 16-byte-aligned frame delta.',
+    overfitGuard: 'Checks stack-memory forwarding plus IR-derived pre/post-index SP deltas and 16-byte alignment.',
   }),
   Object.freeze({
     id: 'holdout-aapcs64-call',
@@ -67,7 +67,7 @@ export const ARM64_GENERALIZATION_HOLDOUT_FIXTURES = Object.freeze([
       'add x0, x0, #1',
       'ret',
     ]),
-    overfitGuard: 'Checks physical x0/x1 call arguments and x0 call-result flow rather than a callee name or rendered call.',
+    overfitGuard: 'Checks the reaching SSA definitions that forward incoming x1/x2 into physical call x0/x1, plus x0 return flow.',
   }),
   Object.freeze({
     id: 'holdout-sign-zero-extension',
