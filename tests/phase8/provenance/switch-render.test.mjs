@@ -89,7 +89,8 @@ test('C4-03 changed descriptors, targets or source lines cannot replay switch re
 test('C4-03 switch render artifacts navigate to the actual branch through a snapshot-bound query', async () => {
   const result = applyPhase8Projection(fixture().result, analysis());
   // Query values are cloneable data, not the live compatibility IR envelope
-  // (which owns methods such as defUse). Exercise the actual rendered artifacts.
+  // (which used to own runtime methods such as defUse). Exercise the actual
+  // rendered artifacts.
   const value = { pseudocode:result.pseudocode, lines:result.lines, renderProvenance:result.renderProvenance };
   let epoch = 1;
   const api = new AnalysisQueryAPI({

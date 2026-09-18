@@ -11,11 +11,17 @@
  * keyed by IR. These contracts pin the ownership: queries must not move the
  * query cache into the IR, must keep the previous barrier semantics, and must
  * still reuse the explored answers for one IR.
+ *
+ * The same ownership now covers the build-time closures: the IR no longer
+ * carries `defUse` (or the legacy `newValue`) as a function-valued own
+ * property. The def-use index is the published `values` table and is read
+ * through the canonical `defUseFor(ir)` accessor, so the IR is a serializable
+ * semantic value.
  */
 import assert from 'node:assert/strict';
 
 import { buildSemanticModel } from '../../js/blocks.js';
-import { buildIR, OP, MK, hasUnknownStoreBarrier } from '../../js/ir.js';
+import { buildIR, OP, MK, hasUnknownStoreBarrier, defUseFor } from '../../js/ir.js';
 import * as irBaseModule from '../../js/ir-base.js';
 
 const BASE = 0x100000000n;
@@ -165,8 +171,12 @@ for (const [label, query] of [['js/ir.js', hasUnknownStoreBarrier], ['js/ir-base
 
   const keysBefore = Reflect.ownKeys(ir).map(String).sort();
   const functionKeysBefore = functionValuedOwnKeys(ir).map(String);
-  assert.deepEqual(functionKeysBefore, ['defUse'],
-    'pre-existing contract: defUse is the only function-valued IR property');
+  assert.deepEqual(functionKeysBefore, [],
+    'a production Semantic IR must own no function-valued property: the build-time defUse/newValue closures were removed');
+  assert.equal(defUseFor(ir), ir.values,
+    'the def-use index is the published value table, read through the canonical accessor');
+  assert.equal(typeof ir.defUse, 'undefined',
+    'the IR must not expose a defUse runtime method');
 
   assert.equal(hasUnknownStoreBarrier(ir, concreteStore, load), true,
     'the unknown store must remain a barrier on a production IR');
@@ -176,6 +186,8 @@ for (const [label, query] of [['js/ir.js', hasUnknownStoreBarrier], ['js/ir-base
   assert.deepEqual(functionValuedOwnKeys(ir).map(String), functionKeysBefore,
     'no query may append a function-valued cache to a production IR');
   assert.equal(Object.hasOwn(ir, '_canReachBlock'), false);
+  assert.doesNotThrow(() => structuredClone(ir),
+    'a production Semantic IR must stay a serializable value');
 }
 
 console.log('semantic-v2 Semantic IR reachability cache ownership: PASS');

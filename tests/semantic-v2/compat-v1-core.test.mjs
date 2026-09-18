@@ -3,6 +3,7 @@ import { OP, VK, MK } from '../../js/ir-core.js';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { projectSemanticIrV2ToLegacyV1, SEMANTIC_IR_V2_V1_COMPAT } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { defUseFor } from '../../js/ir.js';
 
 const bit1 = { kind: 'predicate', widthBits: 1 };
 const bit32 = { kind: 'bitvector', widthBits: 32 };
@@ -78,8 +79,11 @@ function callSummary({ args = [], returns = [], memoryWrite = 'none', completene
   assert.equal(out.blocks[0].index, 0);
   assert.ok(Array.isArray(out.blocks[0].phis));
   assert.ok(Array.isArray(out.blocks[0].memPhis));
-  assert.equal(typeof out.defUse, 'function');
-  assert.equal(out.defUse(), out.values);
+  // The projection publishes its def-use index as semantic data. It must not
+  // carry a runtime closure: that made the projected IR unserializable.
+  assert.equal(typeof out.defUse, 'undefined');
+  assert.equal(defUseFor(out), out.values);
+  assert.deepEqual(Object.getOwnPropertyNames(out).filter((key) => typeof out[key] === 'function'), []);
 }
 
 // Comparison.

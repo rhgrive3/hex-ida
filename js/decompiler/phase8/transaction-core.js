@@ -20,6 +20,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { defUseFor } from '../../semantics/def-use.js';
 
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult, createPassResult } from './contract.js';
 import { rewritePolicyFailure } from './rewrite-registry.js';
@@ -468,7 +469,7 @@ export function seedAnalysisState(ir, upstream = {}) {
     seed.loops = Object.freeze({ loops: ir.loops, backEdges: ir.backEdges ?? null });
   }
   if (Array.isArray(ir.values) && ir.values.length > 0) {
-    seed.ssa = Object.freeze({ values: ir.values, defUse: ir.defUse ?? null });
+    seed.ssa = Object.freeze({ values: ir.values, defUse: defUseFor(ir) });
   }
   // Origins are what every transform record has to point back at. If the IR
   // carries no origin at all, Phase 8 must not claim provenance it cannot show.

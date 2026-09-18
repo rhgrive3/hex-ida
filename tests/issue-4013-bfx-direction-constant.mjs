@@ -76,7 +76,7 @@ check('unknown BFX direction fails closed to no proven threshold', () => {
   const model = {
     compat: { projection: 'semantic-ir-v2-to-v1' },
     semanticIrVersion: 'unit-fixture',
-    instructions: [cmp], blocks: [], defUse: () => [],
+    instructions: [cmp], blocks: [], values: [],
   };
   assert.deepEqual(findIrConstantComparisons(model, {}), []);
 });
@@ -92,7 +92,7 @@ check('out-of-range BFX metadata fails closed to no proven threshold', () => {
   const model = {
     compat: { projection: 'semantic-ir-v2-to-v1' },
     semanticIrVersion: 'unit-fixture',
-    instructions: [cmp], blocks: [], defUse: () => [],
+    instructions: [cmp], blocks: [], values: [],
   };
   assert.deepEqual(findIrConstantComparisons(model, {}), []);
 });
