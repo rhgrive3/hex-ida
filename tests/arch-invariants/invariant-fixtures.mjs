@@ -15,6 +15,7 @@
 
 import { buildSemanticModel } from '../../js/blocks.js';
 import { buildIR, OP, MK } from '../../js/ir.js';
+import { RENDER_PROVENANCE_VERSION } from '../../js/decompiler/phase8/render-provenance.js';
 
 /* ── Semantic IR fixtures (invariant 1) ─────────────────────────────────── */
 
@@ -92,11 +93,37 @@ function assertFixture(message, condition, detail) {
 
 export const HUGE_PSEUDOCODE = 'int synthetic_huge(void) { return probe_marker; }';
 export const HUGE_LINE_COUNT = 2048;
-export const HUGE_PROVENANCE = Object.freeze({
-  source: 'decompiler',
-  contract: 'arch-invariant-regression/v1',
-  semanticIrVersion: 'v2',
-  regionId: 'synthetic-huge-region',
+/*
+ * The canonical public presentation provenance is the phase8 render map, not a
+ * generic `provenance` bag: the shared presentation projection
+ * (`decompilerSnapshot`) publishes `renderProvenance`, and the production
+ * navigation/UI/validation consumers read `renderProvenance`. The fixture
+ * therefore publishes the real shape, so the regression asserts that the
+ * production field survives the query boundary instead of a schema invented
+ * here. The map is structurally complete so the production validator accepts
+ * it; its contents are synthetic and intentionally empty.
+ */
+export const HUGE_RENDER_PROVENANCE = Object.freeze({
+  version: RENDER_PROVENANCE_VERSION,
+  snapshotId: 'synthetic-huge-snapshot',
+  entities: Object.freeze({}),
+  reverse: Object.freeze({}),
+  transformReverse: Object.freeze({}),
+  ledger: Object.freeze([]),
+  transformCount: 0,
+  budget: Object.freeze({ truncated: false, truncatedScopes: Object.freeze([]) }),
+  completeness: 'complete',
+  reasons: Object.freeze([]),
+  counts: Object.freeze({
+    entities: 0,
+    entitiesTruncated: false,
+    transformRecords: 0,
+    expressionConsumerWitnesses: 0,
+    ledgerTruncated: false,
+    provenanceLoss: 0,
+    structuralEntities: 0,
+    unavailableExpressionHistory: null,
+  }),
 });
 
 export function hugeProducedLines(count = HUGE_LINE_COUNT) {
@@ -138,17 +165,17 @@ function variableGraph(size) {
 }
 
 /**
- * Product-critical surface (pseudocode / lines / provenance) plus an internal
- * IR-like state that is both large and deep. The public query must keep the
- * former and must not die on the latter; it is not required to publish the
- * internal graph at all.
+ * Product-critical surface (pseudocode / lines / canonical renderProvenance)
+ * plus an internal IR-like state that is both large and deep. The public query
+ * must keep the former and must not die on the latter; it is not required to
+ * publish the internal graph at all.
  */
 export function hugeDecompilerProducer({ unrelatedCallback = false, depth = 20000, size = 20000 } = {}) {
   const graph = variableGraph(size);
   const producer = {
     pseudocode: HUGE_PSEUDOCODE,
     lines: hugeProducedLines(),
-    provenance: { ...HUGE_PROVENANCE },
+    renderProvenance: { ...HUGE_RENDER_PROVENANCE },
     ir: {
       schemaVersion: 'legacy-ir/v1',
       provenance: { source: 'semantic-ir/v2' },

@@ -1,0 +1,3471 @@
+{
+ "schema": "hex-direct-recompilability-single-function-probe/v1",
+ "note": "Each pseudocode blob compiled alone as its own translation unit, no prelude and no repair. Answers intra-function validity only.",
+ "blobTotal": 10292,
+ "blobPass": 3204,
+ "blobFail": 7088,
+ "failFamilies": {
+  "use of undeclared identifier 'X'": 4848,
+  "unknown type name 'X'": 1888,
+  "expected function body after function declarator": 276,
+  "variable has incomplete type 'X'": 76
+ },
+ "failClusters": {
+  "B-UNDECLARED-STACK-SLOT": 3574,
+  "A-NONSTANDARD-INT-ALIAS": 1896,
+  "A-STANDARD-TYPE-ALIAS": 550,
+  "B-UNDECLARED-ARG-PSEUDO-VAR": 392,
+  "B-LABEL-BEFORE-BODY": 276,
+  "A-GLOBAL-DATA-DECL": 264,
+  "B-INCOMPLETE-TYPE-DECLARATION": 76,
+  "B-UNDECLARED-CONDITION-TEMP": 34,
+  "B-UNDECLARED-REGISTER-PSEUDO-VAR": 18,
+  "B-UNDECLARED-VALUE-PSEUDO-VAR": 8
+ },
+ "casesWithAtLeastOnePassingBlob": 140,
+ "caseCount": 160,
+ "perCase": {
+  "1/1_clang_O0_g": {
+   "blobs": 67,
+   "pass": 0
+  },
+  "1/1_clang_O0_no_g": {
+   "blobs": 67,
+   "pass": 0
+  },
+  "1/1_clang_O1_g": {
+   "blobs": 74,
+   "pass": 35
+  },
+  "1/1_clang_O1_no_g": {
+   "blobs": 74,
+   "pass": 35
+  },
+  "1/1_clang_O2_g": {
+   "blobs": 77,
+   "pass": 38
+  },
+  "1/1_clang_O2_no_g": {
+   "blobs": 77,
+   "pass": 38
+  },
+  "1/1_clang_O3_g": {
+   "blobs": 77,
+   "pass": 38
+  },
+  "1/1_clang_O3_no_g": {
+   "blobs": 77,
+   "pass": 38
+  },
+  "1/1_clang_Os_g": {
+   "blobs": 74,
+   "pass": 35
+  },
+  "1/1_clang_Os_no_g": {
+   "blobs": 74,
+   "pass": 35
+  },
+  "1/1_gcc_O0_g": {
+   "blobs": 70,
+   "pass": 0
+  },
+  "1/1_gcc_O0_no_g": {
+   "blobs": 70,
+   "pass": 0
+  },
+  "1/1_gcc_O1_g": {
+   "blobs": 72,
+   "pass": 22
+  },
+  "1/1_gcc_O1_no_g": {
+   "blobs": 72,
+   "pass": 22
+  },
+  "1/1_gcc_O2_g": {
+   "blobs": 72,
+   "pass": 25
+  },
+  "1/1_gcc_O2_no_g": {
+   "blobs": 72,
+   "pass": 25
+  },
+  "1/1_gcc_O3_g": {
+   "blobs": 73,
+   "pass": 25
+  },
+  "1/1_gcc_O3_no_g": {
+   "blobs": 73,
+   "pass": 25
+  },
+  "1/1_gcc_Os_g": {
+   "blobs": 71,
+   "pass": 23
+  },
+  "1/1_gcc_Os_no_g": {
+   "blobs": 71,
+   "pass": 23
+  },
+  "2/2_clang_O0_g": {
+   "blobs": 62,
+   "pass": 0
+  },
+  "2/2_clang_O0_no_g": {
+   "blobs": 62,
+   "pass": 0
+  },
+  "2/2_clang_O1_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_clang_O1_no_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_clang_O2_g": {
+   "blobs": 62,
+   "pass": 26
+  },
+  "2/2_clang_O2_no_g": {
+   "blobs": 62,
+   "pass": 26
+  },
+  "2/2_clang_O3_g": {
+   "blobs": 62,
+   "pass": 26
+  },
+  "2/2_clang_O3_no_g": {
+   "blobs": 62,
+   "pass": 26
+  },
+  "2/2_clang_Os_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_clang_Os_no_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_gcc_O0_g": {
+   "blobs": 63,
+   "pass": 0
+  },
+  "2/2_gcc_O0_no_g": {
+   "blobs": 63,
+   "pass": 0
+  },
+  "2/2_gcc_O1_g": {
+   "blobs": 64,
+   "pass": 24
+  },
+  "2/2_gcc_O1_no_g": {
+   "blobs": 64,
+   "pass": 24
+  },
+  "2/2_gcc_O2_g": {
+   "blobs": 62,
+   "pass": 23
+  },
+  "2/2_gcc_O2_no_g": {
+   "blobs": 62,
+   "pass": 23
+  },
+  "2/2_gcc_O3_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_gcc_O3_no_g": {
+   "blobs": 62,
+   "pass": 24
+  },
+  "2/2_gcc_Os_g": {
+   "blobs": 67,
+   "pass": 23
+  },
+  "2/2_gcc_Os_no_g": {
+   "blobs": 67,
+   "pass": 23
+  },
+  "3/3_clang_O0_g": {
+   "blobs": 53,
+   "pass": 8
+  },
+  "3/3_clang_O0_no_g": {
+   "blobs": 53,
+   "pass": 8
+  },
+  "3/3_clang_O1_g": {
+   "blobs": 62,
+   "pass": 18
+  },
+  "3/3_clang_O1_no_g": {
+   "blobs": 62,
+   "pass": 18
+  },
+  "3/3_clang_O2_g": {
+   "blobs": 62,
+   "pass": 21
+  },
+  "3/3_clang_O2_no_g": {
+   "blobs": 62,
+   "pass": 21
+  },
+  "3/3_clang_O3_g": {
+   "blobs": 62,
+   "pass": 21
+  },
+  "3/3_clang_O3_no_g": {
+   "blobs": 62,
+   "pass": 21
+  },
+  "3/3_clang_Os_g": {
+   "blobs": 62,
+   "pass": 19
+  },
+  "3/3_clang_Os_no_g": {
+   "blobs": 62,
+   "pass": 19
+  },
+  "3/3_gcc_O0_g": {
+   "blobs": 53,
+   "pass": 8
+  },
+  "3/3_gcc_O0_no_g": {
+   "blobs": 53,
+   "pass": 8
+  },
+  "3/3_gcc_O1_g": {
+   "blobs": 63,
+   "pass": 16
+  },
+  "3/3_gcc_O1_no_g": {
+   "blobs": 63,
+   "pass": 16
+  },
+  "3/3_gcc_O2_g": {
+   "blobs": 62,
+   "pass": 17
+  },
+  "3/3_gcc_O2_no_g": {
+   "blobs": 62,
+   "pass": 17
+  },
+  "3/3_gcc_O3_g": {
+   "blobs": 63,
+   "pass": 19
+  },
+  "3/3_gcc_O3_no_g": {
+   "blobs": 63,
+   "pass": 19
+  },
+  "3/3_gcc_Os_g": {
+   "blobs": 63,
+   "pass": 17
+  },
+  "3/3_gcc_Os_no_g": {
+   "blobs": 63,
+   "pass": 17
+  },
+  "4/4_clang_O0_g": {
+   "blobs": 72,
+   "pass": 3
+  },
+  "4/4_clang_O0_no_g": {
+   "blobs": 72,
+   "pass": 3
+  },
+  "4/4_clang_O1_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_clang_O1_no_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_clang_O2_g": {
+   "blobs": 76,
+   "pass": 54
+  },
+  "4/4_clang_O2_no_g": {
+   "blobs": 76,
+   "pass": 54
+  },
+  "4/4_clang_O3_g": {
+   "blobs": 74,
+   "pass": 54
+  },
+  "4/4_clang_O3_no_g": {
+   "blobs": 74,
+   "pass": 54
+  },
+  "4/4_clang_Os_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_clang_Os_no_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_gcc_O0_g": {
+   "blobs": 72,
+   "pass": 2
+  },
+  "4/4_gcc_O0_no_g": {
+   "blobs": 72,
+   "pass": 2
+  },
+  "4/4_gcc_O1_g": {
+   "blobs": 77,
+   "pass": 47
+  },
+  "4/4_gcc_O1_no_g": {
+   "blobs": 77,
+   "pass": 47
+  },
+  "4/4_gcc_O2_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_gcc_O2_no_g": {
+   "blobs": 76,
+   "pass": 51
+  },
+  "4/4_gcc_O3_g": {
+   "blobs": 78,
+   "pass": 54
+  },
+  "4/4_gcc_O3_no_g": {
+   "blobs": 78,
+   "pass": 54
+  },
+  "4/4_gcc_Os_g": {
+   "blobs": 77,
+   "pass": 50
+  },
+  "4/4_gcc_Os_no_g": {
+   "blobs": 77,
+   "pass": 50
+  },
+  "5-1/5-1_clang_O0_g": {
+   "blobs": 189,
+   "pass": 2
+  },
+  "5-1/5-1_clang_O0_no_g": {
+   "blobs": 189,
+   "pass": 2
+  },
+  "5-1/5-1_clang_O1_g": {
+   "blobs": 78,
+   "pass": 42
+  },
+  "5-1/5-1_clang_O1_no_g": {
+   "blobs": 78,
+   "pass": 42
+  },
+  "5-1/5-1_clang_O2_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_clang_O2_no_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_clang_O3_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_clang_O3_no_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_clang_Os_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_clang_Os_no_g": {
+   "blobs": 36,
+   "pass": 16
+  },
+  "5-1/5-1_gcc_O0_g": {
+   "blobs": 174,
+   "pass": 2
+  },
+  "5-1/5-1_gcc_O0_no_g": {
+   "blobs": 174,
+   "pass": 2
+  },
+  "5-1/5-1_gcc_O1_g": {
+   "blobs": 64,
+   "pass": 34
+  },
+  "5-1/5-1_gcc_O1_no_g": {
+   "blobs": 64,
+   "pass": 34
+  },
+  "5-1/5-1_gcc_O2_g": {
+   "blobs": 65,
+   "pass": 37
+  },
+  "5-1/5-1_gcc_O2_no_g": {
+   "blobs": 65,
+   "pass": 37
+  },
+  "5-1/5-1_gcc_O3_g": {
+   "blobs": 65,
+   "pass": 37
+  },
+  "5-1/5-1_gcc_O3_no_g": {
+   "blobs": 65,
+   "pass": 37
+  },
+  "5-1/5-1_gcc_Os_g": {
+   "blobs": 84,
+   "pass": 28
+  },
+  "5-1/5-1_gcc_Os_no_g": {
+   "blobs": 84,
+   "pass": 28
+  },
+  "5-23/5-23_clang_O0_g": {
+   "blobs": 50,
+   "pass": 0
+  },
+  "5-23/5-23_clang_O0_no_g": {
+   "blobs": 50,
+   "pass": 0
+  },
+  "5-23/5-23_clang_O1_g": {
+   "blobs": 51,
+   "pass": 25
+  },
+  "5-23/5-23_clang_O1_no_g": {
+   "blobs": 51,
+   "pass": 25
+  },
+  "5-23/5-23_clang_O2_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_clang_O2_no_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_clang_O3_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_clang_O3_no_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_clang_Os_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_clang_Os_no_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_gcc_O0_g": {
+   "blobs": 50,
+   "pass": 0
+  },
+  "5-23/5-23_gcc_O0_no_g": {
+   "blobs": 50,
+   "pass": 0
+  },
+  "5-23/5-23_gcc_O1_g": {
+   "blobs": 51,
+   "pass": 23
+  },
+  "5-23/5-23_gcc_O1_no_g": {
+   "blobs": 51,
+   "pass": 23
+  },
+  "5-23/5-23_gcc_O2_g": {
+   "blobs": 51,
+   "pass": 24
+  },
+  "5-23/5-23_gcc_O2_no_g": {
+   "blobs": 51,
+   "pass": 24
+  },
+  "5-23/5-23_gcc_O3_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_gcc_O3_no_g": {
+   "blobs": 51,
+   "pass": 26
+  },
+  "5-23/5-23_gcc_Os_g": {
+   "blobs": 51,
+   "pass": 23
+  },
+  "5-23/5-23_gcc_Os_no_g": {
+   "blobs": 51,
+   "pass": 23
+  },
+  "6/6_clang_O0_g": {
+   "blobs": 61,
+   "pass": 0
+  },
+  "6/6_clang_O0_no_g": {
+   "blobs": 61,
+   "pass": 0
+  },
+  "6/6_clang_O1_g": {
+   "blobs": 72,
+   "pass": 5
+  },
+  "6/6_clang_O1_no_g": {
+   "blobs": 72,
+   "pass": 5
+  },
+  "6/6_clang_O2_g": {
+   "blobs": 72,
+   "pass": 7
+  },
+  "6/6_clang_O2_no_g": {
+   "blobs": 72,
+   "pass": 7
+  },
+  "6/6_clang_O3_g": {
+   "blobs": 72,
+   "pass": 7
+  },
+  "6/6_clang_O3_no_g": {
+   "blobs": 72,
+   "pass": 7
+  },
+  "6/6_clang_Os_g": {
+   "blobs": 72,
+   "pass": 6
+  },
+  "6/6_clang_Os_no_g": {
+   "blobs": 72,
+   "pass": 6
+  },
+  "6/6_gcc_O0_g": {
+   "blobs": 60,
+   "pass": 0
+  },
+  "6/6_gcc_O0_no_g": {
+   "blobs": 60,
+   "pass": 0
+  },
+  "6/6_gcc_O1_g": {
+   "blobs": 72,
+   "pass": 1
+  },
+  "6/6_gcc_O1_no_g": {
+   "blobs": 72,
+   "pass": 1
+  },
+  "6/6_gcc_O2_g": {
+   "blobs": 72,
+   "pass": 6
+  },
+  "6/6_gcc_O2_no_g": {
+   "blobs": 72,
+   "pass": 6
+  },
+  "6/6_gcc_O3_g": {
+   "blobs": 76,
+   "pass": 6
+  },
+  "6/6_gcc_O3_no_g": {
+   "blobs": 76,
+   "pass": 6
+  },
+  "6/6_gcc_Os_g": {
+   "blobs": 72,
+   "pass": 1
+  },
+  "6/6_gcc_Os_no_g": {
+   "blobs": 72,
+   "pass": 1
+  },
+  "7/7_clang_O0_g": {
+   "blobs": 37,
+   "pass": 0
+  },
+  "7/7_clang_O0_no_g": {
+   "blobs": 37,
+   "pass": 0
+  },
+  "7/7_clang_O1_g": {
+   "blobs": 40,
+   "pass": 14
+  },
+  "7/7_clang_O1_no_g": {
+   "blobs": 40,
+   "pass": 14
+  },
+  "7/7_clang_O2_g": {
+   "blobs": 40,
+   "pass": 17
+  },
+  "7/7_clang_O2_no_g": {
+   "blobs": 40,
+   "pass": 17
+  },
+  "7/7_clang_O3_g": {
+   "blobs": 40,
+   "pass": 17
+  },
+  "7/7_clang_O3_no_g": {
+   "blobs": 40,
+   "pass": 17
+  },
+  "7/7_clang_Os_g": {
+   "blobs": 40,
+   "pass": 16
+  },
+  "7/7_clang_Os_no_g": {
+   "blobs": 40,
+   "pass": 16
+  },
+  "7/7_gcc_O0_g": {
+   "blobs": 37,
+   "pass": 0
+  },
+  "7/7_gcc_O0_no_g": {
+   "blobs": 37,
+   "pass": 0
+  },
+  "7/7_gcc_O1_g": {
+   "blobs": 40,
+   "pass": 12
+  },
+  "7/7_gcc_O1_no_g": {
+   "blobs": 40,
+   "pass": 12
+  },
+  "7/7_gcc_O2_g": {
+   "blobs": 40,
+   "pass": 14
+  },
+  "7/7_gcc_O2_no_g": {
+   "blobs": 40,
+   "pass": 14
+  },
+  "7/7_gcc_O3_g": {
+   "blobs": 42,
+   "pass": 15
+  },
+  "7/7_gcc_O3_no_g": {
+   "blobs": 42,
+   "pass": 15
+  },
+  "7/7_gcc_Os_g": {
+   "blobs": 40,
+   "pass": 13
+  },
+  "7/7_gcc_Os_no_g": {
+   "blobs": 40,
+   "pass": 13
+  }
+ },
+ "failingBlobSamples": [
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 1,
+   "name": "_start",
+   "address": "2368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 18,
+    "message": "use of undeclared identifier 'global_13FD8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 2,
+   "name": "$x",
+   "address": "2420",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 3,
+   "name": "$x",
+   "address": "2448",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 4,
+   "name": "register_tm_clones",
+   "address": "2496",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 5,
+   "name": "__do_global_dtors_aux",
+   "address": "2560",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 6,
+   "name": "frame_dummy",
+   "address": "2640",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 2,
+    "col": 5,
+    "message": "expected function body after function declarator"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 7,
+   "name": "sequential_ops",
+   "address": "2644",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 8,
+   "name": "single_if",
+   "address": "2716",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 9,
+   "name": "if_else",
+   "address": "2768",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 10,
+   "name": "nested_if_2",
+   "address": "2824",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 11,
+   "name": "nested_if_deep",
+   "address": "2920",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 12,
+   "name": "if_elseif_chain",
+   "address": "3104",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 13,
+   "name": "if_elseif_long",
+   "address": "3216",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 16,
+   "name": "switch_default",
+   "address": "3756",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 17,
+   "name": "switch_fallthrough",
+   "address": "3872",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 18,
+   "name": "loop_for_fixed",
+   "address": "4020",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 19,
+   "name": "loop_while",
+   "address": "4108",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 20,
+   "name": "loop_dowhile",
+   "address": "4220",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 21,
+   "name": "loop_nested",
+   "address": "4292",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 22,
+   "name": "loop_break",
+   "address": "4428",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 23,
+   "name": "loop_continue",
+   "address": "4580",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 24,
+   "name": "goto_forward",
+   "address": "4704",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 25,
+   "name": "goto_backward",
+   "address": "4788",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 26,
+   "name": "ternary_op",
+   "address": "4920",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 27,
+   "name": "test_control_flow_l1",
+   "address": "4988",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 28,
+   "name": "loop_multi_exit",
+   "address": "5744",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 30,
+   "name": "multi_return",
+   "address": "6060",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 31,
+   "name": "conditional_return",
+   "address": "6204",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 32,
+   "name": "duffs_device",
+   "address": "6316",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 33,
+   "name": "loop_complex_cond",
+   "address": "6784",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 34,
+   "name": "loop_modify_var",
+   "address": "6964",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 35,
+   "name": "loop_external_state",
+   "address": "7084",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 36,
+   "name": "recursion_factorial",
+   "address": "7164",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 37,
+   "name": "tail_recursion",
+   "address": "7260",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 38,
+   "name": "indirect_recursion_a",
+   "address": "7356",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 39,
+   "name": "indirect_recursion_b",
+   "address": "7516",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 40,
+   "name": "call_func_ptr",
+   "address": "7608",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 41,
+   "name": "call_func_ptr_array",
+   "address": "7652",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 42,
+   "name": "double_value",
+   "address": "7780",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 43,
+   "name": "triple_value",
+   "address": "7804",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 44,
+   "name": "call_virtual_func",
+   "address": "7832",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 45,
+   "name": "process_with_callback",
+   "address": "7860",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 46,
+   "name": "test_control_flow_l2",
+   "address": "7984",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 47,
+   "name": "non_local_jump",
+   "address": "8584",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 48,
+   "name": "cpp_exception",
+   "address": "8728",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 49,
+   "name": "large_jump_table",
+   "address": "8820",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 50,
+   "name": "op_add",
+   "address": "8952",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 51,
+   "name": "op_sub",
+   "address": "8984",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 52,
+   "name": "op_mul",
+   "address": "9016",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 53,
+   "name": "op_div",
+   "address": "9048",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 54,
+   "name": "op_mod",
+   "address": "9116",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 55,
+   "name": "op_and",
+   "address": "9192",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 56,
+   "name": "op_or",
+   "address": "9224",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 57,
+   "name": "op_xor",
+   "address": "9256",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 58,
+   "name": "op_shl",
+   "address": "9288",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 59,
+   "name": "op_shr",
+   "address": "9320",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 60,
+   "name": "conditional_func_ptr",
+   "address": "9352",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 62,
+   "name": "fsm_func_table",
+   "address": "9708",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 63,
+   "name": "state_idle",
+   "address": "9836",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 64,
+   "name": "state_processing",
+   "address": "9868",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 65,
+   "name": "state_done",
+   "address": "9956",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 66,
+   "name": "state_error",
+   "address": "9976",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 68,
+   "name": "obfuscated_cf",
+   "address": "10172",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 69,
+   "name": "opaque_predicate",
+   "address": "10260",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 70,
+   "name": "overlapped_code",
+   "address": "10372",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 71,
+   "name": "test_control_flow_l3",
+   "address": "10448",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_g",
+   "index": 72,
+   "name": "main",
+   "address": "10832",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 1,
+   "name": "_start",
+   "address": "2368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 18,
+    "message": "use of undeclared identifier 'global_13FD8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 2,
+   "name": "$x",
+   "address": "2420",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 3,
+   "name": "$x",
+   "address": "2448",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 4,
+   "name": "register_tm_clones",
+   "address": "2496",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 5,
+   "name": "__do_global_dtors_aux",
+   "address": "2560",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 6,
+   "name": "frame_dummy",
+   "address": "2640",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 2,
+    "col": 5,
+    "message": "expected function body after function declarator"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 7,
+   "name": "sequential_ops",
+   "address": "2644",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 8,
+   "name": "single_if",
+   "address": "2716",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 9,
+   "name": "if_else",
+   "address": "2768",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 10,
+   "name": "nested_if_2",
+   "address": "2824",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 11,
+   "name": "nested_if_deep",
+   "address": "2920",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 12,
+   "name": "if_elseif_chain",
+   "address": "3104",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 13,
+   "name": "if_elseif_long",
+   "address": "3216",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 16,
+   "name": "switch_default",
+   "address": "3756",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 17,
+   "name": "switch_fallthrough",
+   "address": "3872",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 18,
+   "name": "loop_for_fixed",
+   "address": "4020",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 19,
+   "name": "loop_while",
+   "address": "4108",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 20,
+   "name": "loop_dowhile",
+   "address": "4220",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 21,
+   "name": "loop_nested",
+   "address": "4292",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 22,
+   "name": "loop_break",
+   "address": "4428",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 23,
+   "name": "loop_continue",
+   "address": "4580",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 24,
+   "name": "goto_forward",
+   "address": "4704",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 25,
+   "name": "goto_backward",
+   "address": "4788",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 26,
+   "name": "ternary_op",
+   "address": "4920",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 27,
+   "name": "test_control_flow_l1",
+   "address": "4988",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 28,
+   "name": "loop_multi_exit",
+   "address": "5744",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 30,
+   "name": "multi_return",
+   "address": "6060",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 31,
+   "name": "conditional_return",
+   "address": "6204",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 32,
+   "name": "duffs_device",
+   "address": "6316",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 33,
+   "name": "loop_complex_cond",
+   "address": "6784",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 34,
+   "name": "loop_modify_var",
+   "address": "6964",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 35,
+   "name": "loop_external_state",
+   "address": "7084",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 36,
+   "name": "recursion_factorial",
+   "address": "7164",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 37,
+   "name": "tail_recursion",
+   "address": "7260",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 38,
+   "name": "indirect_recursion_a",
+   "address": "7356",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 39,
+   "name": "indirect_recursion_b",
+   "address": "7516",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 40,
+   "name": "call_func_ptr",
+   "address": "7608",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 41,
+   "name": "call_func_ptr_array",
+   "address": "7652",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 42,
+   "name": "double_value",
+   "address": "7780",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 43,
+   "name": "triple_value",
+   "address": "7804",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 44,
+   "name": "call_virtual_func",
+   "address": "7832",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 45,
+   "name": "process_with_callback",
+   "address": "7860",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 46,
+   "name": "test_control_flow_l2",
+   "address": "7984",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 47,
+   "name": "non_local_jump",
+   "address": "8584",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 48,
+   "name": "cpp_exception",
+   "address": "8728",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 49,
+   "name": "large_jump_table",
+   "address": "8820",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 50,
+   "name": "op_add",
+   "address": "8952",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 51,
+   "name": "op_sub",
+   "address": "8984",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 52,
+   "name": "op_mul",
+   "address": "9016",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 53,
+   "name": "op_div",
+   "address": "9048",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 54,
+   "name": "op_mod",
+   "address": "9116",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 55,
+   "name": "op_and",
+   "address": "9192",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 56,
+   "name": "op_or",
+   "address": "9224",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 57,
+   "name": "op_xor",
+   "address": "9256",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 58,
+   "name": "op_shl",
+   "address": "9288",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 59,
+   "name": "op_shr",
+   "address": "9320",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 60,
+   "name": "conditional_func_ptr",
+   "address": "9352",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 62,
+   "name": "fsm_func_table",
+   "address": "9708",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 63,
+   "name": "state_idle",
+   "address": "9836",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 64,
+   "name": "state_processing",
+   "address": "9868",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 65,
+   "name": "state_done",
+   "address": "9956",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 66,
+   "name": "state_error",
+   "address": "9976",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 68,
+   "name": "obfuscated_cf",
+   "address": "10172",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m4'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 69,
+   "name": "opaque_predicate",
+   "address": "10260",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 70,
+   "name": "overlapped_code",
+   "address": "10372",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 71,
+   "name": "test_control_flow_l3",
+   "address": "10448",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O0_no_g",
+   "index": 72,
+   "name": "main",
+   "address": "10832",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_m10'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 1,
+   "name": "_start",
+   "address": "2368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 18,
+    "message": "use of undeclared identifier 'global_12FD8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 2,
+   "name": "$x",
+   "address": "2420",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 3,
+   "name": "$x",
+   "address": "2448",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 4,
+   "name": "register_tm_clones",
+   "address": "2496",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 5,
+   "name": "__do_global_dtors_aux",
+   "address": "2560",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 6,
+   "name": "frame_dummy",
+   "address": "2640",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 2,
+    "col": 5,
+    "message": "expected function body after function declarator"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 11,
+   "name": "nested_if_deep",
+   "address": "2708",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 14,
+   "name": "switch_small",
+   "address": "2836",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 17,
+   "name": "switch_fallthrough",
+   "address": "2916",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 18,
+   "name": "loop_for_fixed",
+   "address": "2968",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 19,
+   "name": "loop_while",
+   "address": "3008",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 11,
+    "message": "use of undeclared identifier 'a1'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 20,
+   "name": "loop_dowhile",
+   "address": "3072",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 13,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 22,
+   "name": "loop_break",
+   "address": "3152",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 23,
+   "name": "loop_continue",
+   "address": "3200",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 25,
+   "name": "goto_backward",
+   "address": "3280",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 27,
+   "name": "test_control_flow_l1",
+   "address": "3340",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 28,
+   "name": "loop_multi_exit",
+   "address": "3804",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 29,
+   "name": "infinite_loop",
+   "address": "3956",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 32,
+   "name": "duffs_device",
+   "address": "4056",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 33,
+   "name": "loop_complex_cond",
+   "address": "4220",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 34,
+   "name": "loop_modify_var",
+   "address": "4304",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 35,
+   "name": "loop_external_state",
+   "address": "4368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 14,
+    "message": "use of undeclared identifier 'a1'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 36,
+   "name": "recursion_factorial",
+   "address": "4400",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 37,
+   "name": "tail_recursion",
+   "address": "4456",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 38,
+   "name": "indirect_recursion_a",
+   "address": "4500",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 39,
+   "name": "call_func_ptr",
+   "address": "4588",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 40,
+   "name": "call_func_ptr_array",
+   "address": "4616",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 44,
+   "name": "process_with_callback",
+   "address": "4692",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFD0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 45,
+   "name": "test_control_flow_l2",
+   "address": "4780",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFD0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 46,
+   "name": "non_local_jump",
+   "address": "5368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 9,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 48,
+   "name": "large_jump_table",
+   "address": "5496",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 52,
+   "name": "op_div",
+   "address": "5576",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 13,
+    "message": "use of undeclared identifier 'a2'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 53,
+   "name": "op_mod",
+   "address": "5596",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 13,
+    "message": "use of undeclared identifier 'a2'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 59,
+   "name": "conditional_func_ptr",
+   "address": "5660",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 60,
+   "name": "state_machine",
+   "address": "5724",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 61,
+   "name": "fsm_func_table",
+   "address": "5824",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 66,
+   "name": "computed_goto",
+   "address": "5932",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 73,
+   "name": "test_control_flow_l3",
+   "address": "6040",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_g",
+   "index": 74,
+   "name": "main",
+   "address": "6292",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 1,
+   "name": "_start",
+   "address": "2368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 18,
+    "message": "use of undeclared identifier 'global_12FD8'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 2,
+   "name": "$x",
+   "address": "2420",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 3,
+   "name": "$x",
+   "address": "2448",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 4,
+   "name": "register_tm_clones",
+   "address": "2496",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint64'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 5,
+   "name": "__do_global_dtors_aux",
+   "address": "2560",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 6,
+   "name": "frame_dummy",
+   "address": "2640",
+   "state": "PARTIAL",
+   "pass": false,
+   "firstError": {
+    "line": 2,
+    "col": 5,
+    "message": "expected function body after function declarator"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 11,
+   "name": "nested_if_deep",
+   "address": "2708",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 14,
+   "name": "switch_small",
+   "address": "2836",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 17,
+   "name": "switch_fallthrough",
+   "address": "2916",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 18,
+   "name": "loop_for_fixed",
+   "address": "2968",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 19,
+   "name": "loop_while",
+   "address": "3008",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 11,
+    "message": "use of undeclared identifier 'a1'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 20,
+   "name": "loop_dowhile",
+   "address": "3072",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 13,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 22,
+   "name": "loop_break",
+   "address": "3152",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 23,
+   "name": "loop_continue",
+   "address": "3200",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 25,
+   "name": "goto_backward",
+   "address": "3280",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 27,
+   "name": "test_control_flow_l1",
+   "address": "3340",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 28,
+   "name": "loop_multi_exit",
+   "address": "3804",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 29,
+   "name": "infinite_loop",
+   "address": "3956",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 32,
+   "name": "duffs_device",
+   "address": "4056",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 1,
+    "col": 1,
+    "message": "unknown type name 'uint32'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 33,
+   "name": "loop_complex_cond",
+   "address": "4220",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 34,
+   "name": "loop_modify_var",
+   "address": "4304",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 35,
+   "name": "loop_external_state",
+   "address": "4368",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 14,
+    "message": "use of undeclared identifier 'a1'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 36,
+   "name": "recursion_factorial",
+   "address": "4400",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 37,
+   "name": "tail_recursion",
+   "address": "4456",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 10,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 38,
+   "name": "indirect_recursion_a",
+   "address": "4500",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'int32_t'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 39,
+   "name": "call_func_ptr",
+   "address": "4588",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 3,
+    "col": 5,
+    "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+   },
+   "fallbackLink": null
+  },
+  {
+   "caseId": "1/1_clang_O1_no_g",
+   "index": 40,
+   "name": "call_func_ptr_array",
+   "address": "4616",
+   "state": "PASS",
+   "pass": false,
+   "firstError": {
+    "line": 4,
+    "col": 14,
+    "message": "use of undeclared identifier 'uint32_t'"
+   },
+   "fallbackLink": null
+  }
+ ]
+}
