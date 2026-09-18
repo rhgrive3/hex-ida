@@ -1,0 +1,1739 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "CRASH",
+  "inputSha256": "45500218dd19a9d046e7b66d35a410293cba67e559809309f1bb2513d8e01a17",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 114004,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 114004
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 112657,
+          "bytesWritten": 112657,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 112657,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 112657,
+        "writeBytes": 112657,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "6176",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "6656",
+      "name": "_start",
+      "end": "6708",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_16FD0);\n    unknown_call(global_16FD0);\n}"
+    },
+    {
+      "address": "6708",
+      "name": "$x",
+      "end": "6728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 $x(void)\n{\n    x0_1 = *(uint64 *)0x16FE8;\n    __asm(\"cbz x0, #0x1a44\");\n    return sub_19E0(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "6736",
+      "name": "$x",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 $x(void)\n    loc_1A60:\n{\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1a7c\");\n    x1 = *(uint64 *)0x16FE0;\n    __asm(\"cbz x1, #0x1a7c\");\n    __asm(\"br x16\");\n    goto loc_1A60;\n    return x0;\n}"
+    },
+    {
+      "address": "6784",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x1ab8\");\n    x2 = *(uint64 *)0x16FF0;\n    __asm(\"cbz x2, #0x1ab8\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "6848",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x17000;\n    __asm(\"cbnz w0, #0x1afc\");\n    x0_1 = *(uint64 *)0x16FD8;\n    __asm(\"cbz x0, #0x1af0\");\n    x0_2 = sub_18C0(*(uint64 *)0x17008);\n    x0_3 = $x();\n    *(uint8 *)(x19 + 0x30) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "6928",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n    loc_1B14:\n{\n    return register_tm_clones();\n}\n    goto loc_1B14;"
+    },
+    {
+      "address": "6932",
+      "name": "_Z20test_cpp_member_funcv",
+      "end": "7100",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_member_funcv(void)\n{\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    ZN11SimpleClassC1EiPKc(/* arguments unknown */);\n    ZN11SimpleClass8setValueEi(/* arguments unknown */);\n    ZNK11SimpleClass8getValueEv(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFC4 = call_135;\n    ZNK11SimpleClass7computeEi(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFC8 = call_164;\n    ZN11SimpleClass10getClassIDEv(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFCC = call_179;\n    if ((uint64_t)var_48 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "7100",
+      "name": "_Z20test_cpp_constructorv",
+      "end": "7280",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_constructorv(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    local_pFFFFFFFFFFFFFFE4 = 0;\n    ZN14LifecycleClassC2Em(/* arguments unknown */);\n    ZNK14LifecycleClass7getDataEm(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE4 += (uint32_t)call_109;\n    ZN14LifecycleClass16getInstanceCountEv(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE4 += (uint32_t)call_151;\n    ZN14LifecycleClassD2Ev(/* arguments unknown */);\n    ZN14LifecycleClass16getInstanceCountEv(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE4 += (uint32_t)call_208 * 0x3E8;\n    if ((uint64_t)var_28 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "7280",
+      "name": "_Z17call_virtual_funcP4Basei",
+      "end": "7328",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z17call_virtual_funcP4Basei(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF4 = a2;\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "7328",
+      "name": "_Z21test_cpp_virtual_funcv",
+      "end": "7592",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_virtual_func(int64 a1, uint64 a2)\n{\n    uint32 var_20, var_24, var_28, var_2C;\n    uint64 var_30, var_38, var_40, var_58;\n\n    var_58 = *(uint64 *)(*(uint64 *)0x16FC8);\n    var_30 = 0x16B10;\n    x0_1 = Derived::Derived(sp - 24, 3);\n    x0_2 = Base::virtual_func(sp - 48, 5);\n    var_20 = (uint32)x0_2;\n    x0_3 = Derived::virtual_func(sp - 24, 5);\n    var_24 = (uint32)x0_3;\n    x0_4 = sp - 48;\n    var_38 = x0_4;\n    var_40 = sp - 24;\n    x0_5 = call_virtual_func(x0_4, 5);\n    var_28 = x0_7;\n    x0_6 = call_virtual_func(var_40, 5);\n    var_2C = x0_8;\n    x0_9 = Derived::~Derived(sp - 24, (uint32)((uint32)((uint32)var_20 + (uint32)var_24) + x0_7));\n    x0_10 = Base::~Base(sp - 48);\n    x1 = (uint32)((uint32)((uint32)((uint32)var_20 + (uint32)var_24) + x0_7) + x0_8);\n    x0_11 = *(uint64 *)0x16FC8;\n    x3 = var_58 - *(uint64 *)(x0_11);\n    x2 = 0;\n    __asm(\"b.eq #0x1d98\");\n    __asm(\"b #0x1d94\");\n    x0_12 = Derived::~Derived(sp - 24, x1, x2, x3);\n    x0_13 = Base::~Base(sp - 48);\n    x0_14 = sub_19D0(x0_11);\n    x0_15 = sub_1890();\n    return x0;\n}"
+    },
+    {
+      "address": "7592",
+      "name": "_Z29test_cpp_multiple_inheritancev",
+      "end": "7844",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_multiple_inheritance(int64 a1, uint64 a2)\n{\n    uint32 var_2C, var_30, var_34, var_50, var_60;\n    uint64 var_38, var_40, var_68;\n\n    var_68 = *(uint64 *)(*(uint64 *)0x16FC8);\n    x0_1 = MultiDerived::MultiDerived(sp - 40, 0);\n    var_50 = 100;\n    var_60 = 200;\n    x0_2 = sp - 40;\n    var_38 = x0_2;\n    var_40 = sp - 24;\n    x0_3 = (*x1)(x0_2, *(uint64 *)(*(uint64 *)(x0_2)));\n    var_2C = x1_1;\n    x0_4 = (*x1)(var_40, *(uint64 *)(*(uint64 *)(var_40)));\n    var_30 = x0_6;\n    /* cmp x1, x0 — 次の分岐のための比較 */\n    x0_5 = (uint32)((uint32)(var_38 != var_40 ? 1 : 0) & 255);\n    var_34 = x0_5;\n    x0_7 = MultiDerived::~MultiDerived(sp - 40, (uint32)(x1_1 + x0_6));\n    x1 = (uint32)((uint32)(x1_1 + x0_6) + x0_5);\n    x0_8 = *(uint64 *)0x16FC8;\n    x3 = var_68 - *(uint64 *)(x0_8);\n    x2 = 0;\n    __asm(\"b.eq #0x1e94\");\n    __asm(\"b #0x1e90\");\n    x0_9 = MultiDerived::~MultiDerived(sp - 40, x1, x2, x3);\n    x0_10 = sub_19D0(x0_8);\n    x0_11 = sub_1890();\n    return x0;\n}"
+    },
+    {
+      "address": "7844",
+      "name": "_Z28test_cpp_diamond_inheritancev",
+      "end": "8056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_diamond_inheritance(int64 a1, uint64 a2)\n{\n    uint32 var_28, var_2C, var_60;\n    uint64 var_30, var_68;\n\n    var_68 = *(uint64 *)(*(uint64 *)0x16FC8);\n    x0_1 = DiamondDerived::DiamondDerived(sp - 56, 0);\n    var_60 = 50;\n    x0_2 = sp - 24;\n    var_30 = x0_2;\n    x0_3 = (*x1)(x0_2, *(uint64 *)(*(uint64 *)(x0_2)));\n    var_28 = x1_1;\n    var_60 = 100;\n    x0_4 = (*x1)(var_30, *(uint64 *)(*(uint64 *)(var_30)));\n    var_2C = x0_5;\n    x0_6 = DiamondDerived::~DiamondDerived(sp - 56, x1_1);\n    x1 = (uint32)(x1_1 + x0_5);\n    x0_7 = *(uint64 *)0x16FC8;\n    x3 = var_68 - *(uint64 *)(x0_7);\n    x2 = 0;\n    __asm(\"b.eq #0x1f68\");\n    __asm(\"b #0x1f64\");\n    x0_8 = DiamondDerived::~DiamondDerived(sp - 56, x1, x2, x3);\n    x0_9 = sub_19D0(x0_7);\n    x0_10 = sub_1890();\n    return x0;\n}"
+    },
+    {
+      "address": "8056",
+      "name": "_Z26test_cpp_operator_overloadv",
+      "end": "8244",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z26test_cpp_operator_overloadv(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    ZN5PointC2Eii(/* arguments unknown */);\n    ZN5PointC2Eii(/* arguments unknown */);\n    ZNK5PointplERKS_(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFF0 = call_139;\n    ZNK5PointeqERKS_(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFDF = (uint32_t)call_171;\n    ZN5PointppEv(/* arguments unknown */);\n    if ((uint32_t)var_FFFFFFFFFFFFFFDF == 0) {\n    } else {\n    }\n    if ((uint64_t)var_38 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8244",
+      "name": "_Z22test_cpp_template_funcv",
+      "end": "8412",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z22test_cpp_template_funcv(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    Z12template_maxIiET_S0_S0_(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFEC = call_84;\n    Z12template_maxIdET_S0_S0_(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFF0 = call_111;\n    local_pFFFFFFFFFFFFFFE4 = 10;\n    local_pFFFFFFFFFFFFFFE8 = 20;\n    Z13template_swapIiEvRT_S1_(/* arguments unknown */);\n    __asm(\"fcvtzs w1, d0\");\n    if ((uint64_t)var_28 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8412",
+      "name": "_Z23test_cpp_template_classv",
+      "end": "8624",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z23test_cpp_template_classv(void)\n{\n    local_pFFFFFFFFFFFFFF50 = local_x29;\n    local_pFFFFFFFFFFFFFF50 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    ZN9ContainerIiEC1Ev(/* arguments unknown */);\n    ZN9ContainerIiE4pushEi(/* arguments unknown */);\n    ZN9ContainerIiE4pushEi(/* arguments unknown */);\n    ZN9ContainerIiE4pushEi(/* arguments unknown */);\n    ZNK9ContainerIiE3getEi(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFF60 = call_162;\n    ZNK9ContainerIiE7getSizeEv(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFF64 = call_186;\n    ZN9ContainerIdEC2Ev(/* arguments unknown */);\n    ZN9ContainerIdE4pushEd(/* arguments unknown */);\n    ZNK9ContainerIdE3getEi(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFF68 = call_257;\n    __asm(\"fcvtzs w0, d0\");\n    if ((uint64_t)var_A8 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8624",
+      "name": "_ZZ15test_cpp_lambdavENKUliE_clEi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "8704",
+      "name": "_Z15test_cpp_lambdav",
+      "end": "8848",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z15test_cpp_lambdav(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    local_pFFFFFFFFFFFFFFDC = 10;\n    local_pFFFFFFFFFFFFFFD8 = 20;\n    local_pFFFFFFFFFFFFFFE8 = local_pFFFFFFFFFFFFFFDC;\n    local_pFFFFFFFFFFFFFFF0 = var_221 + 0xFFFFFFFFFFFFFFD8;\n    ZZ15test_cpp_lambdavENKUliE_clEi(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE0 = call_146;\n    local_pFFFFFFFFFFFFFFE4 = 30;\n    if ((uint64_t)var_38 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "8848",
+      "name": "_Z18test_cpp_exceptionv",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "9140",
+      "name": "_ZZ18test_cpp_smart_ptrvENKUlPiE_clES_",
+      "end": "9200",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZZ18test_cpp_smart_ptrvENKUlPiE_clES_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    a2->field_0 = 0xFFFFFFFF;\n    if ((uint64_t)var_10 != 0) {\n        unknown_call(var_10);\n    }\n    return;\n}"
+    },
+    {
+      "address": "9200",
+      "name": "_Z18test_cpp_smart_ptrv",
+      "end": "9632",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_cpp_smart_ptr(int64 a1, uint64 a2)\n{\n    uint32 var_2C, var_30, var_34;\n    uint64 var_58;\n\n    var_58 = *(uint64 *)(*(uint64 *)0x16FC8);\n    x0_1 = sub_18E0(4, 0);\n    *(uint32 *)(x0) = 100;\n    x0_2 = ZNSt10unique_ptrIiSt14default_deleteIiEEC1IS1_vEEPi(sp - 40, x0_1, sp - 40);\n    x0_3 = std::unique_ptr::operator*(sp - 40);\n    *(uint32 *)(x1) = 200;\n    x0_4 = ZSt4moveIRSt10unique_ptrIiSt14default_deleteIiEEEONSt16remove_referenceIT_E4typeEOS6_(sp - 40, x0_3);\n    x0_5 = ZNSt10unique_ptrIiSt14default_deleteIiEEC2EOS2_(sp - 32, x0_4);\n    x0_6 = std::unique_ptr::operator*(sp - 32);\n    var_2C = (uint32)*(uint32 *)(x0_6);\n    x0_7 = sub_1860(20);\n    *(uint32 *)(x0) = 1;\n    *(uint32 *)(x0) = 2;\n    *(uint32 *)(x0) = 3;\n    *(uint32 *)(x0) = 4;\n    *(uint32 *)(x0) = 5;\n    x0_8 = ZNSt10unique_ptrIA_iSt14default_deleteIS0_EEC1IPiS2_vbEET_(sp - 24, x0_7, x0_7);\n    x0_9 = ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EEixEm(sp - 24, 2);\n    var_30 = (uint32)*(uint32 *)(x0_9);\n    x0_10 = sub_18E0(4);\n    *(uint32 *)(x0) = 500;\n    x0_11 = ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EC1IS1_vEES0_RKS1_(sp - 16, x0_10, sp - 56, sp - 16);\n    x0_12 = ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EdeEv(sp - 16);\n    x0_13 = *(uint32 *)(x0);\n    var_34 = x0_13;\n    x0_14 = ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_ED1Ev(sp - 16, (uint32)((uint32)var_2C + (uint32)var_30));\n    x0_15 = ZNSt10unique_ptrIA_iSt14default_deleteIS0_EED1Ev(sp - 24);\n    x0_16 = std::unique_ptr::~(sp - 32);\n    x0_17 = std::unique_ptr::~(sp - 40);\n    x1 = (uint32)((uint32)((uint32)var_2C + (uint32)var_30) + x0_13);\n    x0_18 = *(uint64 *)0x16FC8;\n    x3 = var_58 - *(uint64 *)(x0_18);\n    x2 = 0;\n    __asm(\"b.eq #0x2590\");\n    __asm(\"b #0x258c\");\n    x0_19 = ZNSt10unique_ptrIA_iSt14default_deleteIS0_EED1Ev(sp - 24, x1, x2, x3);\n    __asm(\"b #0x2574\");\n    x0_20 = std::unique_ptr::~(sp - 32);\n    x0_21 = std::unique_ptr::~(sp - 40);\n    x0_22 = sub_19D0(x19);\n    x0_23 = sub_1890();\n    return x0;\n}"
+    },
+    {
+      "address": "9632",
+      "name": "_Z13test_cpp_rttiv",
+      "end": "10132",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z13test_cpp_rttiv(void)\n{\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFB0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x19;\n    unknown_call(8);\n    memory_unknown = 0;\n    ZN12RTTIDerivedAC2Ev(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE0 = call_192;\n    unknown_call(8);\n    memory_unknown = 0;\n    ZN12RTTIDerivedBC1Ev(/* arguments unknown */);\n    local_pFFFFFFFFFFFFFFE8 = call_231;\n    local_pFFFFFFFFFFFFFFDC = 0;\n    if ((uint64_t)var_FFFFFFFFFFFFFFE0 == 0) {\n        unknown_call(var_FFFFFFFFFFFFFFE0);\n        memory_unknown = memory_unknown + 10;\n    } else {\n        ZNKSt9type_infoeqERKS_(/* arguments unknown */);\n        if ((uint32_t)call_833 & 0xFF != 0) {\n            goto loc_2620;\n        }\n    }\n    if ((uint64_t)memory_unknown == 0) {\n        unknown_call(memory_unknown);\n        memory_unknown = memory_unknown + 20;\n    } else {\n        ZNKSt9type_infoeqERKS_(/* arguments unknown */);\n        if ((uint32_t)call_800 & 0xFF != 0) {\n            goto loc_2664;\n        }\n    }\n    if ((uint64_t)memory_unknown == 0) {\n    } else {\n        unknown_call(memory_unknown);\n    }\n    memory_unknown = local_phi_685;\n    if ((uint64_t)memory_unknown != 0) {\n        ZNK12RTTIDerivedA13derivedA_dataEv(/* arguments unknown */);\n        memory_unknown = memory_unknown + (uint32_t)call_713;\n    }\n    if ((uint64_t)memory_unknown == 0) {\n    } else {\n        unknown_call(memory_unknown);\n    }\n    memory_unknown = local_phi_968;\n    if ((uint64_t)memory_unknown != 0) {\n        ZNK12RTTIDerivedB13derivedB_dataEv(/* arguments unknown */);\n        memory_unknown = memory_unknown + (uint32_t)call_370;\n    }\n    if ((uint64_t)memory_unknown == 0) {\n        unknown_call(memory_unknown);\n        unknown_call(phi(call_954, memory_unknown));\n    } else {\n        ZNKSt9type_info4nameEv(/* arguments unknown */);\n        unknown_call(memory_unknown);\n        memory_unknown = (uint32_t)call_775 + memory_unknown;\n        if ((uint64_t)memory_unknown != 0) {\n            goto loc_2758;\n        }\n    }\n    if ((uint64_t)memory_unknown != 0) {\n        unknown_call(memory_unknown);\n    }\n    return;\n}"
+    },
+    {
+      "address": "10132",
+      "name": "_Z20test_cpp_oo_featuresv",
+      "end": "10404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z20test_cpp_oo_featuresv(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    unknown_call(\"=== 测试C++面向对象特性 ===\");\n    Z20test_cpp_member_funcv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-01: %d (期望: 4704)\\\\n\");\n    Z20test_cpp_constructorv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-02: %d (期望: 21)\\\\n\");\n    Z21test_cpp_virtual_funcv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-03: %d (期望: 42)\\\\n\");\n    Z29test_cpp_multiple_inheritancev(/* arguments unknown */);\n    unknown_call(\"CPP-L3-04: %d (期望: 71)\\\\n\");\n    Z28test_cpp_diamond_inheritancev(/* arguments unknown */);\n    unknown_call(\"CPP-L3-05: %d (期望: 650)\\\\n\");\n    Z26test_cpp_operator_overloadv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-06: %d (期望: 22)\\\\n\");\n    Z22test_cpp_template_funcv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-07: %d (期望: 39)\\\\n\");\n    Z23test_cpp_template_classv(/* arguments unknown */);\n    unknown_call(\"CPP-L3-08: %d (期望: 16)\\\\n\");\n    Z15test_cpp_lambdav(/* arguments unknown */);\n    unknown_call(\"CPP-L3-09: %d (期望: 85)\\\\n\");\n    Z18test_cpp_exceptionv(/* arguments unknown */);\n    unknown_call(\"CPP-L4-01: %d (期望: 226)\\\\n\");\n    Z18test_cpp_smart_ptrv(/* arguments unknown */);\n    unknown_call(\"CPP-L4-02: %d (期望: 703)\\\\n\");\n    Z13test_cpp_rttiv(/* arguments unknown */);\n    unknown_call(\"CPP-L4-03: %d (期望: 330+)\\\\n\");\n    return;\n}"
+    },
+    {
+      "address": "10404",
+      "name": "main",
+      "end": "10428",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    Z20test_cpp_oo_featuresv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10428",
+      "name": "_ZNSt15__uniq_ptr_dataIiZ18test_cpp_smart_ptrvEUlPiE_Lb1ELb0EECI2St15__uniq_ptr_implIiS1_EIRKS1_EES0_OT_",
+      "end": "10476",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_dataIiZ18test_cpp_smart_ptrvEUlPiE_Lb1ELb0EECI2St15__uniq_ptr_implIiS1_EIRKS1_EES0_OT_(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    local_pFFFFFFFFFFFFFFE8 = a3;\n    ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_EC2IRKS1_EES0_OT_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10476",
+      "name": "_ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EC1IS1_vEES0_RKS1_",
+      "end": "10524",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EC1IS1_vEES0_RKS1_(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    local_pFFFFFFFFFFFFFFE8 = a3;\n    ZNSt15__uniq_ptr_dataIiZ18test_cpp_smart_ptrvEUlPiE_Lb1ELb0EECI2St15__uniq_ptr_implIiS1_EIRKS1_EES0_OT_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10524",
+      "name": "_ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_ED1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "10628",
+      "name": "_ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EdeEv",
+      "end": "10664",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_EdeEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_E3getEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10664",
+      "name": "_ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_EC2IRKS1_EES0_OT_",
+      "end": "10740",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_EC2IRKS1_EES0_OT_(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    local_pFFFFFFFFFFFFFFE8 = a3;\n    ZSt7forwardIRKZ18test_cpp_smart_ptrvEUlPiE_EOT_RNSt16remove_referenceIS4_E4typeE(/* arguments unknown */);\n    ZNSt5tupleIJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC1IRS0_RKS1_Lb1EEEOT_OT0_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10740",
+      "name": "_ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E6_M_ptrEv",
+      "end": "10768",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10768",
+      "name": "_ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_E11get_deleterEv",
+      "end": "10796",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_E11get_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E10_M_deleterEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10796",
+      "name": "_ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_E3getEv",
+      "end": "10824",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIiZ18test_cpp_smart_ptrvEUlPiE_E3getEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNKSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E6_M_ptrEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10824",
+      "name": "_ZSt7forwardIRKZ18test_cpp_smart_ptrvEUlPiE_EOT_RNSt16remove_referenceIS4_E4typeE",
+      "end": "10844",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt7forwardIRKZ18test_cpp_smart_ptrvEUlPiE_EOT_RNSt16remove_referenceIS4_E4typeE(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "10844",
+      "name": "_ZNSt5tupleIJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC1IRS0_RKS1_Lb1EEEOT_OT0_",
+      "end": "10924",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt5tupleIJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC1IRS0_RKS1_Lb1EEEOT_OT0_(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    local_pFFFFFFFFFFFFFFE8 = a3;\n    ZSt7forwardIRPiEOT_RNSt16remove_referenceIS2_E4typeE(/* arguments unknown */);\n    ZSt7forwardIRKZ18test_cpp_smart_ptrvEUlPiE_EOT_RNSt16remove_referenceIS4_E4typeE(/* arguments unknown */);\n    ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC2IRS0_JRKS1_EvEEOT_DpOT0_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10924",
+      "name": "_ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_",
+      "end": "10952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10952",
+      "name": "_ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E10_M_deleterEv",
+      "end": "10980",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E10_M_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm1EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "10980",
+      "name": "_ZNKSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E6_M_ptrEv",
+      "end": "11012",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt15__uniq_ptr_implIiZ18test_cpp_smart_ptrvEUlPiE_E6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS6_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11012",
+      "name": "_ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC2IRS0_JRKS1_EvEEOT_DpOT0_",
+      "end": "11096",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EEC2IRS0_JRKS1_EvEEOT_DpOT0_(void)\n{\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFC0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x19;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    local_pFFFFFFFFFFFFFFE8 = a3;\n    ZSt7forwardIRKZ18test_cpp_smart_ptrvEUlPiE_EOT_RNSt16remove_referenceIS4_E4typeE(/* arguments unknown */);\n    ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EEC2ERKS1_(/* arguments unknown */);\n    ZSt7forwardIRPiEOT_RNSt16remove_referenceIS2_E4typeE(/* arguments unknown */);\n    ZNSt10_Head_baseILm0EPiLb0EEC1IRS0_EEOT_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11096",
+      "name": "_ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "end": "11124",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11124",
+      "name": "_ZSt3getILm1EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_",
+      "end": "11152",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm1EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm1EZ18test_cpp_smart_ptrvEUlPiE_JEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11152",
+      "name": "_ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS6_",
+      "end": "11180",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS6_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERKT0_RKSt11_Tuple_implIXT_EJS2_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11180",
+      "name": "_ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EEC2ERKS1_",
+      "end": "11220",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EEC2ERKS1_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EEC2ERKS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11220",
+      "name": "_ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERS2_",
+      "end": "11248",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11248",
+      "name": "_ZSt12__get_helperILm1EZ18test_cpp_smart_ptrvEUlPiE_JEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "end": "11276",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm1EZ18test_cpp_smart_ptrvEUlPiE_JEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EE7_M_headERS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11276",
+      "name": "_ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERKT0_RKSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "end": "11304",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJZ18test_cpp_smart_ptrvEUlS0_E_EERKT0_RKSt11_Tuple_implIXT_EJS2_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERKS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11304",
+      "name": "_ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EEC2ERKS1_",
+      "end": "11328",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EEC2ERKS1_(void)\n{\n    local_m8 = a1;\n    local_m10 = a2;\n    return;\n}"
+    },
+    {
+      "address": "11328",
+      "name": "_ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EE7_M_headERS2_",
+      "end": "11356",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJZ18test_cpp_smart_ptrvEUlPiE_EE7_M_headERS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EE7_M_headERS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11356",
+      "name": "_ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERKS2_",
+      "end": "11384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiZ18test_cpp_smart_ptrvEUlS0_E_EE7_M_headERKS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERKS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11384",
+      "name": "_ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EE7_M_headERS2_",
+      "end": "11404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1EZ18test_cpp_smart_ptrvEUlPiE_Lb1EE7_M_headERS2_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "11404",
+      "name": "_Z41__static_initialization_and_destruction_0ii",
+      "end": "11500",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z41__static_initialization_and_destruction_0ii(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFFC = a1;\n    local_pFFFFFFFFFFFFFFF8 = a2;\n    if ((uint32_t)var_1C == 1) {\n        if ((uint32_t)var_18 == 0xFFFF) {\n            unknown_call(0x17040);\n            unknown_call(global_16FF8);\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "11500",
+      "name": "_GLOBAL__sub_I__Z20test_cpp_member_funcv",
+      "end": "11528",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void GLOBAL__sub_I__Z20test_cpp_member_funcv(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    Z41__static_initialization_and_destruction_0ii(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "11528",
+      "name": "_ZNKSt9type_info4nameEv",
+      "end": "11588",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt9type_info4nameEv(void)\n{\n    local_m8 = a1;\n    if ((uint32_t)memory_unknown != 42) {\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "11588",
+      "name": "_ZNKSt9type_infoeqERKS_",
+      "end": "11704",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt9type_infoeqERKS_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    if ((uint64_t)var_18->field_8 == (uint64_t)var_10->field_8) {\n    } else {\n        if ((uint32_t)memory_unknown == 42) {\n        } else {\n            unknown_call(var_18->field_8);\n            if ((uint32_t)call_170 != 0) {\n                goto loc_2DAC;\n            } else {\n                goto loc_2DA4;\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "11704",
+      "name": "_ZN11SimpleClassC1EiPKc",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "11776",
+      "name": "_ZNK11SimpleClass8getValueEv",
+      "end": "11800",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK11SimpleClass8getValueEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "11800",
+      "name": "_ZN11SimpleClass8setValueEi",
+      "end": "11836",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11SimpleClass8setValueEi(void)\n{\n    local_m8 = a1;\n    local_mC = a2;\n    a1->field_0 = local_mC;\n    return;\n}"
+    },
+    {
+      "address": "11836",
+      "name": "_ZNK11SimpleClass7computeEi",
+      "end": "11904",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK11SimpleClass7computeEi(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x19;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF4 = a2;\n    unknown_call(var_28 + 4);\n    return;\n}"
+    },
+    {
+      "address": "11904",
+      "name": "_ZN11SimpleClass10getClassIDEv",
+      "end": "11912",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11SimpleClass10getClassIDEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "11912",
+      "name": "_ZN14LifecycleClassC2Em",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "12112",
+      "name": "_ZN14LifecycleClassD2Ev",
+      "end": "12192",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14LifecycleClassD2Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    if ((uint64_t)var_18->field_0 != 0) {\n        unknown_call(var_18->field_0);\n    }\n    global_17038--;\n    return;\n}"
+    },
+    {
+      "address": "12192",
+      "name": "_ZNK14LifecycleClass7getDataEm",
+      "end": "12264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK14LifecycleClass7getDataEm(void)\n{\n    local_m8 = a1;\n    local_m10 = a2;\n    if ((uint64_t)var_0 >= (uint64_t)var_8->field_8) {\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "12264",
+      "name": "_ZN14LifecycleClass16getInstanceCountEv",
+      "end": "12280",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14LifecycleClass16getInstanceCountEv(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "12280",
+      "name": "_ZN4Base12virtual_funcEi",
+      "end": "12308",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4Base12virtual_funcEi(void)\n{\n    local_m8 = a1;\n    local_mC = a2;\n    return;\n}"
+    },
+    {
+      "address": "12308",
+      "name": "_ZNK4Base7getNameEv",
+      "end": "12332",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK4Base7getNameEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12332",
+      "name": "_ZN4BaseD2Ev",
+      "end": "12368",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseD2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16B10;\n    return;\n}"
+    },
+    {
+      "address": "12368",
+      "name": "_ZN4BaseD0Ev",
+      "end": "12408",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN4BaseD2Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "12408",
+      "name": "_ZN4BaseC1Ev",
+      "end": "12444",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN4BaseC1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16B10;\n    return;\n}"
+    },
+    {
+      "address": "12444",
+      "name": "_ZN7DerivedC2Ei",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "12508",
+      "name": "_ZN7Derived12virtual_funcEi",
+      "end": "12544",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7Derived12virtual_funcEi(void)\n{\n    local_m8 = a1;\n    local_mC = a2;\n    return;\n}"
+    },
+    {
+      "address": "12544",
+      "name": "_ZNK7Derived7getNameEv",
+      "end": "12568",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK7Derived7getNameEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12568",
+      "name": "_ZN5BaseA5funcAEv",
+      "end": "12588",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseA5funcAEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12588",
+      "name": "_ZN5BaseAD1Ev",
+      "end": "12624",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseAD1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16AB8;\n    return;\n}"
+    },
+    {
+      "address": "12624",
+      "name": "_ZN5BaseAD0Ev",
+      "end": "12664",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseAD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN5BaseAD1Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "12664",
+      "name": "_ZN5BaseB5funcBEv",
+      "end": "12684",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseB5funcBEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12684",
+      "name": "_ZN5BaseBD2Ev",
+      "end": "12720",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseBD2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16A90;\n    return;\n}"
+    },
+    {
+      "address": "12720",
+      "name": "_ZN5BaseBD0Ev",
+      "end": "12760",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseBD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN5BaseBD2Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "12760",
+      "name": "_ZN12MultiDerived5funcAEv",
+      "end": "12780",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcAEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12780",
+      "name": "_ZN12MultiDerived5funcBEv",
+      "end": "12800",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerived5funcBEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12800",
+      "name": "_ZThn16_N12MultiDerived5funcBEv",
+      "end": "12808",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to MultiDerived::funcB(int64 a1)\n    loc_3204:\n{\n    return MultiDerived::funcB(a1 - 16);\n}\n    goto loc_3204;"
+    },
+    {
+      "address": "12808",
+      "name": "_ZN5BaseAC2Ev",
+      "end": "12844",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseAC2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16AB8;\n    return;\n}"
+    },
+    {
+      "address": "12844",
+      "name": "_ZN5BaseBC1Ev",
+      "end": "12880",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN5BaseBC1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16A90;\n    return;\n}"
+    },
+    {
+      "address": "12880",
+      "name": "_ZN12MultiDerivedC1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "12956",
+      "name": "_ZN11VirtualBase4funcEv",
+      "end": "12976",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11VirtualBase4funcEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "12976",
+      "name": "_ZN11VirtualBaseD1Ev",
+      "end": "13012",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11VirtualBaseD1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16A10;\n    return;\n}"
+    },
+    {
+      "address": "13012",
+      "name": "_ZN11VirtualBaseD0Ev",
+      "end": "13052",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11VirtualBaseD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN11VirtualBaseD1Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "13052",
+      "name": "_ZN7MiddleA4funcEv",
+      "end": "13104",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleA4funcEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "13104",
+      "name": "_ZTv0_n24_N7MiddleA4funcEv",
+      "end": "13120",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n24_N7MiddleA4funcEv(void * a1)\n    loc_3334:\n{\n    return MiddleA::func(a1 + *(uint64 *)(*(uint64 *)(a1) + -24));\n}\n    goto loc_3334;"
+    },
+    {
+      "address": "13120",
+      "name": "_ZN7MiddleB4funcEv",
+      "end": "13172",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7MiddleB4funcEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "13172",
+      "name": "_ZTv0_n24_N7MiddleB4funcEv",
+      "end": "13188",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n24_N7MiddleB4funcEv(void * a1)\n    loc_3378:\n{\n    return MiddleB::func(a1 + *(uint64 *)(*(uint64 *)(a1) + -24));\n}\n    goto loc_3378;"
+    },
+    {
+      "address": "13188",
+      "name": "_ZN14DiamondDerived4funcEv",
+      "end": "13240",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerived4funcEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "13240",
+      "name": "_ZTv0_n24_N14DiamondDerived4funcEv",
+      "end": "13256",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n24_N14DiamondDerived4funcEv(void * a1)\n    loc_33BC:\n{\n    return DiamondDerived::func(a1 + *(uint64 *)(*(uint64 *)(a1) + -24));\n}\n    goto loc_33BC;"
+    },
+    {
+      "address": "13256",
+      "name": "_ZThn16_N14DiamondDerived4funcEv",
+      "end": "13264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to DiamondDerived::func(int64 a1)\n    loc_33CC:\n{\n    return DiamondDerived::func(a1 - 16);\n}\n    goto loc_33CC;"
+    },
+    {
+      "address": "13264",
+      "name": "_ZN11VirtualBaseC2Ev",
+      "end": "13300",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN11VirtualBaseC2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16A10;\n    return;\n}"
+    },
+    {
+      "address": "13300",
+      "name": "_ZN7MiddleAC2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13380",
+      "name": "_ZN7MiddleAD2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13460",
+      "name": "_ZN7MiddleBC2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13540",
+      "name": "_ZN7MiddleBD2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13620",
+      "name": "_ZN14DiamondDerivedC1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13760",
+      "name": "_ZN5PointC2Eii",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "13812",
+      "name": "_ZNK5PointplERKS_",
+      "end": "13956",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK5PointplERKS_(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE8 = a1;\n    local_pFFFFFFFFFFFFFFE0 = a2;\n    local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n    ZN5PointC2Eii(/* arguments unknown */);\n    if ((uint64_t)var_28 != (uint64_t)memory_unknown) {\n        unknown_call(global_16FC8);\n    }\n    return;\n}"
+    },
+    {
+      "address": "13956",
+      "name": "_ZNK5PointeqERKS_",
+      "end": "14036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK5PointeqERKS_(void)\n{\n    local_m8 = a1;\n    local_m10 = a2;\n    if ((uint32_t)var_8->field_0 != (uint32_t)var_0->field_0) {\n    } else {\n        if ((uint32_t)var_8->field_4 != (uint32_t)var_0->field_4) {\n            goto loc_36C8;\n        } else {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "14036",
+      "name": "_ZN5PointppEv",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "14096",
+      "name": "_Z12template_maxIiET_S0_S0_",
+      "end": "14144",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIiET_S0_S0_(void)\n{\n    local_m4 = a1;\n    local_m8 = a2;\n    if ((int32_t)a1 <= (int32_t)a2) {\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "14144",
+      "name": "_Z12template_maxIdET_S0_S0_",
+      "end": "14196",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void Z12template_maxIdET_S0_S0_(void)\n{\n    local_m8 = var_89;\n    local_m10 = var_76;\n    __asm(\"fcmpe d1, d0\");\n    if (condition_gt) {\n    } else {\n    }\n    return;\n}"
+    },
+    {
+      "address": "14196",
+      "name": "_Z13template_swapIiEvRT_S1_",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "14260",
+      "name": "_ZN9ContainerIiEC1Ev",
+      "end": "14288",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIiEC1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_28 = 0;\n    return;\n}"
+    },
+    {
+      "address": "14288",
+      "name": "_ZN9ContainerIiE4pushEi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "14364",
+      "name": "_ZNK9ContainerIiE3getEi",
+      "end": "14436",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIiE3getEi(void)\n{\n    local_m8 = a1;\n    local_mC = a2;\n    if ((int32_t)var_4 < 0) {\n    } else {\n        if ((int32_t)var_4 >= (int32_t)var_8->field_28) {\n            goto loc_3858;\n        } else {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "14436",
+      "name": "_ZNK9ContainerIiE7getSizeEv",
+      "end": "14460",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIiE7getSizeEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14460",
+      "name": "_ZN9ContainerIdEC2Ev",
+      "end": "14488",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN9ContainerIdEC2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_50 = 0;\n    return;\n}"
+    },
+    {
+      "address": "14488",
+      "name": "_ZN9ContainerIdE4pushEd",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "14564",
+      "name": "_ZNK9ContainerIdE3getEi",
+      "end": "14636",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 Container::get(uint32 a1, uint32 a2)\n{\n    uint32 var_4;\n    uint64 var_8;\n\n    var_8 = a1;\n    var_4 = x0_1;\n    x0_1 = var_4;\n    /* cmp w0, #0 — 次の分岐のための比較 */\n    __asm(\"b.lt #0x3920\");\n    x0_2 = var_8;\n    x0_1 = var_4;\n    /* cmp w1, w0 — 次の分岐のための比較 */\n    __asm(\"b.ge #0x3920\");\n    x0_2 = var_8;\n    x0_1 = var_4;\n    __asm(\"b #0x3924\");\n    d0 = 0; /* vector zero */\n    return x0;\n}"
+    },
+    {
+      "address": "14636",
+      "name": "_ZNK9ContainerIdE7getSizeEv",
+      "end": "14660",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK9ContainerIdE7getSizeEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14660",
+      "name": "_ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EEC1EOS2_",
+      "end": "14700",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EEC1EOS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_implIiSt14default_deleteIiEEC2EOS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "14700",
+      "name": "_ZNSt10unique_ptrIiSt14default_deleteIiEEC2EOS2_",
+      "end": "14740",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIiSt14default_deleteIiEEC2EOS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EEC1EOS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "14740",
+      "name": "_ZNK8RTTIBase7getTypeEv",
+      "end": "14760",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK8RTTIBase7getTypeEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14760",
+      "name": "_ZNK12RTTIDerivedA7getTypeEv",
+      "end": "14780",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedA7getTypeEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14780",
+      "name": "_ZNK12RTTIDerivedA13derivedA_dataEv",
+      "end": "14800",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedA13derivedA_dataEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14800",
+      "name": "_ZNK12RTTIDerivedB7getTypeEv",
+      "end": "14820",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedB7getTypeEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14820",
+      "name": "_ZNK12RTTIDerivedB13derivedB_dataEv",
+      "end": "14840",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNK12RTTIDerivedB13derivedB_dataEv(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "14840",
+      "name": "_ZN8RTTIBaseC2Ev",
+      "end": "14876",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN8RTTIBaseC2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16848;\n    return;\n}"
+    },
+    {
+      "address": "14876",
+      "name": "_ZN8RTTIBaseD1Ev",
+      "end": "14912",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN8RTTIBaseD1Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0x16848;\n    return;\n}"
+    },
+    {
+      "address": "14912",
+      "name": "_ZN8RTTIBaseD0Ev",
+      "end": "14952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN8RTTIBaseD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN8RTTIBaseD1Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "14952",
+      "name": "_ZN12RTTIDerivedAC2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15000",
+      "name": "_ZN12RTTIDerivedBC1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15048",
+      "name": "_ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EECI1St15__uniq_ptr_implIiS1_EEPi",
+      "end": "15088",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EECI1St15__uniq_ptr_implIiS1_EEPi(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_implIiSt14default_deleteIiEEC1EPi(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15088",
+      "name": "_ZNSt10unique_ptrIiSt14default_deleteIiEEC1IS1_vEEPi",
+      "end": "15128",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIiSt14default_deleteIiEEC1IS1_vEEPi(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_dataIiSt14default_deleteIiELb1ELb1EECI1St15__uniq_ptr_implIiS1_EEPi(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15128",
+      "name": "_ZNSt10unique_ptrIiSt14default_deleteIiEED2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15232",
+      "name": "_ZNKSt10unique_ptrIiSt14default_deleteIiEEdeEv",
+      "end": "15268",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIiSt14default_deleteIiEEdeEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNKSt10unique_ptrIiSt14default_deleteIiEE3getEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15268",
+      "name": "_ZSt4moveIRSt10unique_ptrIiSt14default_deleteIiEEEONSt16remove_referenceIT_E4typeEOS6_",
+      "end": "15288",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt4moveIRSt10unique_ptrIiSt14default_deleteIiEEEONSt16remove_referenceIT_E4typeEOS6_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "15288",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEEC2EOS3_",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15344",
+      "name": "_ZNSt5tupleIJPiSt14default_deleteIiEEEC2EOS3_",
+      "end": "15384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt5tupleIJPiSt14default_deleteIiEEEC2EOS3_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEEC2EOS3_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15384",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIiEEC2EOS2_",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15456",
+      "name": "_ZNSt15__uniq_ptr_dataIiSt14default_deleteIA_iELb1ELb1EECI2St15__uniq_ptr_implIiS2_EEPi",
+      "end": "15496",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_dataIiSt14default_deleteIA_iELb1ELb1EECI2St15__uniq_ptr_implIiS2_EEPi(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEEC1EPi(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15496",
+      "name": "_ZNSt10unique_ptrIA_iSt14default_deleteIS0_EEC1IPiS2_vbEET_",
+      "end": "15536",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIA_iSt14default_deleteIS0_EEC1IPiS2_vbEET_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNSt15__uniq_ptr_dataIiSt14default_deleteIA_iELb1ELb1EECI2St15__uniq_ptr_implIiS2_EEPi(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15536",
+      "name": "_ZNSt10unique_ptrIA_iSt14default_deleteIS0_EED1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15628",
+      "name": "_ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EEixEm",
+      "end": "15684",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EEixEm(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EE3getEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15684",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIiEEC1EPi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "15744",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIiEE6_M_ptrEv",
+      "end": "15772",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiSt14default_deleteIiEE6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15772",
+      "name": "_ZNSt10unique_ptrIiSt14default_deleteIiEE11get_deleterEv",
+      "end": "15800",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIiSt14default_deleteIiEE11get_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt15__uniq_ptr_implIiSt14default_deleteIiEE10_M_deleterEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15800",
+      "name": "_ZSt4moveIRPiEONSt16remove_referenceIT_E4typeEOS3_",
+      "end": "15820",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt4moveIRPiEONSt16remove_referenceIT_E4typeEOS3_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "15820",
+      "name": "_ZNKSt14default_deleteIiEclEPi",
+      "end": "15868",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt14default_deleteIiEclEPi(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    if ((uint64_t)var_10 != 0) {\n        unknown_call(var_10);\n    }\n    return;\n}"
+    },
+    {
+      "address": "15868",
+      "name": "_ZNKSt10unique_ptrIiSt14default_deleteIiEE3getEv",
+      "end": "15896",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIiSt14default_deleteIiEE3getEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNKSt15__uniq_ptr_implIiSt14default_deleteIiEE6_M_ptrEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "15896",
+      "name": "_ZSt4moveIRSt5tupleIJPiSt14default_deleteIiEEEEONSt16remove_referenceIT_E4typeEOS7_",
+      "end": "15916",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt4moveIRSt5tupleIJPiSt14default_deleteIiEEEEONSt16remove_referenceIT_E4typeEOS7_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "15916",
+      "name": "_ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEEC1EOS2_",
+      "end": "15940",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEEC1EOS2_(void)\n{\n    local_m8 = a1;\n    local_m10 = a2;\n    return;\n}"
+    },
+    {
+      "address": "15940",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEEC1EPi",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "16000",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEE6_M_ptrEv",
+      "end": "16028",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEE6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16028",
+      "name": "_ZNSt10unique_ptrIA_iSt14default_deleteIS0_EE11get_deleterEv",
+      "end": "16056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10unique_ptrIA_iSt14default_deleteIS0_EE11get_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEE10_M_deleterEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16056",
+      "name": "_ZNKSt14default_deleteIA_iEclIiEENSt9enable_ifIXsrSt14is_convertibleIPA_T_PS0_E5valueEvE4typeEPS5_",
+      "end": "16104",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt14default_deleteIA_iEclIiEENSt9enable_ifIXsrSt14is_convertibleIPA_T_PS0_E5valueEvE4typeEPS5_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    local_pFFFFFFFFFFFFFFF0 = a2;\n    if ((uint64_t)var_10 != 0) {\n        unknown_call(var_10);\n    }\n    return;\n}"
+    },
+    {
+      "address": "16104",
+      "name": "_ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EE3getEv",
+      "end": "16132",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt10unique_ptrIA_iSt14default_deleteIS0_EE3getEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNKSt15__uniq_ptr_implIiSt14default_deleteIA_iEE6_M_ptrEv(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16132",
+      "name": "_ZNSt5tupleIJPiSt14default_deleteIiEEEC2ILb1ELb1EEEv",
+      "end": "16164",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt5tupleIJPiSt14default_deleteIiEEEC2ILb1ELb1EEEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEEC2Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16164",
+      "name": "_ZSt3getILm0EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_",
+      "end": "16192",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16192",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIiEE10_M_deleterEv",
+      "end": "16220",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiSt14default_deleteIiEE10_M_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm1EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16220",
+      "name": "_ZNKSt15__uniq_ptr_implIiSt14default_deleteIiEE6_M_ptrEv",
+      "end": "16252",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt15__uniq_ptr_implIiSt14default_deleteIiEE6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiSt14default_deleteIiEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS7_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16252",
+      "name": "_ZNSt5tupleIJPiSt14default_deleteIA_iEEEC1ILb1ELb1EEEv",
+      "end": "16284",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt5tupleIJPiSt14default_deleteIA_iEEEC1ILb1ELb1EEEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEEC1Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16284",
+      "name": "_ZSt3getILm0EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_",
+      "end": "16312",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERT0_RSt11_Tuple_implIXT_EJS4_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16312",
+      "name": "_ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEE10_M_deleterEv",
+      "end": "16340",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt15__uniq_ptr_implIiSt14default_deleteIA_iEE10_M_deleterEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm1EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16340",
+      "name": "_ZNKSt15__uniq_ptr_implIiSt14default_deleteIA_iEE6_M_ptrEv",
+      "end": "16372",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNKSt15__uniq_ptr_implIiSt14default_deleteIA_iEE6_M_ptrEv(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt3getILm0EJPiSt14default_deleteIA_iEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS8_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16372",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEEC2Ev",
+      "end": "16412",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEEC2Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEEC1Ev(/* arguments unknown */);\n    ZNSt10_Head_baseILm0EPiLb0EEC2Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16412",
+      "name": "_ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE",
+      "end": "16440",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERS3_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16440",
+      "name": "_ZSt3getILm1EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_",
+      "end": "16468",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm1EJPiSt14default_deleteIiEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS7_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm1ESt14default_deleteIiEJEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16468",
+      "name": "_ZSt3getILm0EJPiSt14default_deleteIiEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS7_",
+      "end": "16496",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiSt14default_deleteIiEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS7_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERKT0_RKSt11_Tuple_implIXT_EJS3_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16496",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEEC1Ev",
+      "end": "16536",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEEC1Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEEC1Ev(/* arguments unknown */);\n    ZNSt10_Head_baseILm0EPiLb0EEC2Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16536",
+      "name": "_ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERT0_RSt11_Tuple_implIXT_EJS4_DpT1_EE",
+      "end": "16564",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERT0_RSt11_Tuple_implIXT_EJS4_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERS4_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16564",
+      "name": "_ZSt3getILm1EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_",
+      "end": "16592",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm1EJPiSt14default_deleteIA_iEEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS8_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm1ESt14default_deleteIA_iEJEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16592",
+      "name": "_ZSt3getILm0EJPiSt14default_deleteIA_iEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS8_",
+      "end": "16620",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt3getILm0EJPiSt14default_deleteIA_iEEERKNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERKS8_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERKT0_RKSt11_Tuple_implIXT_EJS4_DpT1_EE(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16620",
+      "name": "_ZSt7forwardIRPiEOT_RNSt16remove_referenceIS2_E4typeE",
+      "end": "16640",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt7forwardIRPiEOT_RNSt16remove_referenceIS2_E4typeE(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "16640",
+      "name": "_ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEEC1Ev",
+      "end": "16672",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEEC1Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EEC1Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16672",
+      "name": "_ZNSt10_Head_baseILm0EPiLb0EEC2Ev",
+      "end": "16700",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm0EPiLb0EEC2Ev(void)\n{\n    local_m8 = a1;\n    a1->field_0 = 0;\n    return;\n}"
+    },
+    {
+      "address": "16700",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERS3_",
+      "end": "16728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERS3_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16728",
+      "name": "_ZSt12__get_helperILm1ESt14default_deleteIiEJEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "end": "16756",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm1ESt14default_deleteIiEJEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEE7_M_headERS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16756",
+      "name": "_ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERKT0_RKSt11_Tuple_implIXT_EJS3_DpT1_EE",
+      "end": "16784",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJSt14default_deleteIiEEERKT0_RKSt11_Tuple_implIXT_EJS3_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERKS3_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16784",
+      "name": "_ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEEC1Ev",
+      "end": "16816",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEEC1Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EEC2Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16816",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERS4_",
+      "end": "16844",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERS4_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16844",
+      "name": "_ZSt12__get_helperILm1ESt14default_deleteIA_iEJEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE",
+      "end": "16872",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm1ESt14default_deleteIA_iEJEERT0_RSt11_Tuple_implIXT_EJS3_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEE7_M_headERS3_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16872",
+      "name": "_ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERKT0_RKSt11_Tuple_implIXT_EJS4_DpT1_EE",
+      "end": "16900",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZSt12__get_helperILm0EPiJSt14default_deleteIA_iEEERKT0_RKSt11_Tuple_implIXT_EJS4_DpT1_EE(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERKS4_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "16900",
+      "name": "_ZNSt10_Head_baseILm0EPiLb0EEC1IRS0_EEOT_",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "16948",
+      "name": "_ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EEC1Ev",
+      "end": "16968",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EEC1Ev(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "16968",
+      "name": "_ZNSt10_Head_baseILm0EPiLb0EE7_M_headERS1_",
+      "end": "16988",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm0EPiLb0EE7_M_headERS1_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "16988",
+      "name": "_ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEE7_M_headERS2_",
+      "end": "17016",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJSt14default_deleteIiEEE7_M_headERS2_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EE7_M_headERS2_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17016",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERKS3_",
+      "end": "17044",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIiEEE7_M_headERKS3_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERKS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17044",
+      "name": "_ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EEC2Ev",
+      "end": "17064",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EEC2Ev(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "17064",
+      "name": "_ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEE7_M_headERS3_",
+      "end": "17092",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm1EJSt14default_deleteIA_iEEE7_M_headERS3_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EE7_M_headERS3_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17092",
+      "name": "_ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERKS4_",
+      "end": "17120",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt11_Tuple_implILm0EJPiSt14default_deleteIA_iEEE7_M_headERKS4_(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZNSt10_Head_baseILm0EPiLb0EE7_M_headERKS1_(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17120",
+      "name": "_ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EE7_M_headERS2_",
+      "end": "17140",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1ESt14default_deleteIiELb1EE7_M_headERS2_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "17140",
+      "name": "_ZNSt10_Head_baseILm0EPiLb0EE7_M_headERKS1_",
+      "end": "17160",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm0EPiLb0EE7_M_headERKS1_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "17160",
+      "name": "_ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EE7_M_headERS3_",
+      "end": "17180",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZNSt10_Head_baseILm1ESt14default_deleteIA_iELb1EE7_M_headERS3_(void)\n{\n    local_m8 = a1;\n    return;\n}"
+    },
+    {
+      "address": "17180",
+      "name": "_ZN12RTTIDerivedBD2Ev",
+      "end": "17228",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedBD2Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    a1->field_0 = 0x167F8;\n    ZN8RTTIBaseD1Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17228",
+      "name": "_ZN12RTTIDerivedBD0Ev",
+      "end": "17268",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedBD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN12RTTIDerivedBD2Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "17268",
+      "name": "_ZN12RTTIDerivedAD2Ev",
+      "end": "17316",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedAD2Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    a1->field_0 = 0x16820;\n    ZN8RTTIBaseD1Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17316",
+      "name": "_ZN12RTTIDerivedAD0Ev",
+      "end": "17356",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12RTTIDerivedAD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN12RTTIDerivedAD2Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "17356",
+      "name": "_ZN14DiamondDerivedD1Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "17496",
+      "name": "_ZThn16_N14DiamondDerivedD1Ev",
+      "end": "17504",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to DiamondDerived::~DiamondDerived(int64 a1)\n    loc_445C:\n{\n    return DiamondDerived::~DiamondDerived(a1 - 16);\n}\n    goto loc_445C;"
+    },
+    {
+      "address": "17504",
+      "name": "_ZTv0_n32_N14DiamondDerivedD1Ev",
+      "end": "17520",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n32_N14DiamondDerivedD1Ev(void * a1)\n    loc_4464:\n{\n    return DiamondDerived::~DiamondDerived(a1 + *(uint64 *)(*(uint64 *)(a1) + -32));\n}\n    goto loc_4464;"
+    },
+    {
+      "address": "17520",
+      "name": "_ZN14DiamondDerivedD0Ev",
+      "end": "17560",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN14DiamondDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN14DiamondDerivedD1Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "17560",
+      "name": "_ZThn16_N14DiamondDerivedD0Ev",
+      "end": "17568",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to DiamondDerived::~DiamondDerived(int64 a1)\n    loc_449C:\n{\n    return DiamondDerived::~DiamondDerived(a1 - 16);\n}\n    goto loc_449C;"
+    },
+    {
+      "address": "17568",
+      "name": "_ZTv0_n32_N14DiamondDerivedD0Ev",
+      "end": "17584",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 ZTv0_n32_N14DiamondDerivedD0Ev(void * a1)\n    loc_44A4:\n{\n    return DiamondDerived::~DiamondDerived(a1 + *(uint64 *)(*(uint64 *)(a1) + -32));\n}\n    goto loc_44A4;"
+    },
+    {
+      "address": "17584",
+      "name": "_ZN12MultiDerivedD2Ev",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable",
+      "pseudocode": null
+    },
+    {
+      "address": "17660",
+      "name": "_ZThn16_N12MultiDerivedD1Ev",
+      "end": "17668",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to MultiDerived::~MultiDerived(int64 a1)\n    loc_4500:\n{\n    return MultiDerived::~MultiDerived(a1 - 16);\n}\n    goto loc_4500;"
+    },
+    {
+      "address": "17668",
+      "name": "_ZN12MultiDerivedD0Ev",
+      "end": "17708",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN12MultiDerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN12MultiDerivedD2Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "17708",
+      "name": "_ZThn16_N12MultiDerivedD0Ev",
+      "end": "17716",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 thunk to MultiDerived::~MultiDerived(int64 a1)\n    loc_4530:\n{\n    return MultiDerived::~MultiDerived(a1 - 16);\n}\n    goto loc_4530;"
+    },
+    {
+      "address": "17716",
+      "name": "_ZN7DerivedD1Ev",
+      "end": "17764",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7DerivedD1Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    a1->field_0 = 0x16AE0;\n    ZN4BaseD2Ev(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "17764",
+      "name": "_ZN7DerivedD0Ev",
+      "end": "17804",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ZN7DerivedD0Ev(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF8 = a1;\n    ZN7DerivedD1Ev(/* arguments unknown */);\n    unknown_call(var_18);\n    return;\n}"
+    },
+    {
+      "address": "17804",
+      "name": "$x",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "reason": "function-crash",
+  "functionStateCounts": {
+    "CRASH": 28,
+    "PARTIAL": 4,
+    "PASS": 170,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 1,
+  "subjectSignal": null,
+  "stderr": ""
+}
