@@ -17,13 +17,25 @@ import {
   canonicalizeLegacyRootedFieldBases,
   restoreLegacyPrivateStackForwarding,
 } from './legacy-stack-compat-repair.js';
+import { hasDefUseIndex } from './semantics/def-use.js';
 
+// The canonical def-use reader travels with the public facade. The IR no longer
+// carries a `defUse` closure, so consumers ask for the index explicitly.
+export { defUseFor } from './semantics/def-use.js';
+
+// A canonical v2 -> v1 projection is identified by the producer-owned compat
+// record it publishes plus the semantic indexes it carries — never by a runtime
+// method. The historical probe was `typeof model.defUse === 'function'`; the
+// equivalent semantic fact is that the projection published its SSA value
+// (def-use) index. Keeping the probe on a method would either resurrect the
+// closure or make every projection look like a raw legacy model and be
+// re-lifted by the legacy ARM64 decoder.
 function isCanonicalV2CompatibilityProjection(model) {
   return model?.compat?.projection === 'semantic-ir-v2-to-v1'
     && typeof model?.semanticIrVersion === 'string'
     && Array.isArray(model?.instructions)
     && Array.isArray(model?.blocks)
-    && typeof model?.defUse === 'function';
+    && hasDefUseIndex(model);
 }
 
 export function buildIR(model, options = {}) {
