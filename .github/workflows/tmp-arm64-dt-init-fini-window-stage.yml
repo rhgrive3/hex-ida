@@ -12,33 +12,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Checkout staging payload
-        uses: actions/checkout@v4
-        with:
-          ref: tmp-arm64-dt-init-fini-window-stage
-          fetch-depth: 1
-          path: stage
+      - name: Fetch review patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 60 \
+            -o /tmp/coderabbit-fix.patch.gz \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/tmp-arm64-dt-init-fini-window-stage/tmp/arm64-dt-window/coderabbit-fix.patch.gz
+          gzip -t /tmp/coderabbit-fix.patch.gz
+          gzip -dc /tmp/coderabbit-fix.patch.gz > /tmp/coderabbit-fix.patch
+          test -s /tmp/coderabbit-fix.patch
       - name: Checkout target PR branch
         uses: actions/checkout@v4
         with:
           ref: fix/arm64-dt-init-fini-analysis-window
           fetch-depth: 2
-          path: work
       - name: Verify target head
-        working-directory: work
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "4f19c0b8106503487475af15e95fd87b6420ecd1"
-      - name: Expand review fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          gzip -t stage/tmp/arm64-dt-window/coderabbit-fix.patch.gz
-          gzip -dc stage/tmp/arm64-dt-window/coderabbit-fix.patch.gz > /tmp/coderabbit-fix.patch
-          test -s /tmp/coderabbit-fix.patch
       - name: Apply review fix
-        working-directory: work
         shell: bash
         run: |
           set -euo pipefail
@@ -47,20 +41,17 @@ jobs:
           git am /tmp/coderabbit-fix.patch
           git diff --check HEAD^ HEAD
       - name: Run focused regression
-        working-directory: work
         shell: bash
         run: |
           set -euo pipefail
           timeout 180s node --test tests/issue-9203-elf-loader-entry-analysis-window.mjs tests/issue-2409-function-extent-boundary.mjs
       - name: Run ownership and query focused checks
-        working-directory: work
         shell: bash
         run: |
           set -euo pipefail
           timeout 120s npm run phase7:ownership
           timeout 180s node --test tests/phase7/analysis-query/analysis-query-decompiler-dto.test.mjs tests/phase7/analysis-query/analysis-query-decompiler-projection.test.mjs
       - name: Publish target branch
-        working-directory: work
         shell: bash
         run: |
           set -euo pipefail
