@@ -1,0 +1,313 @@
+{
+  "schema": "arm64-generalization-proposed-matrix/v1",
+  "audit": "independent ARM64 generalization coverage audit",
+  "generatedAt": "2026-09-18",
+  "baseSha": "05c93a1c92b34f4876060bd858e4393557d02dd4",
+  "stage": 3,
+  "status": "design only; no implementation in this audit",
+  "suiteName": "arm64-generalization",
+  "proposedPaths": {
+    "runner": "tests/arm64-generalization/run.mjs",
+    "manifest": "tests/arm64-generalization/manifest.json",
+    "tier0": "tests/arm64-generalization/tier0-invariants/",
+    "tier1": "tests/arm64-generalization/tier1-end-to-end/",
+    "tier2": "tests/arm64-generalization/tier2-abi-language/",
+    "tier3": "tests/arm64-generalization/tier3-pathological/",
+    "fixtures": "tests/arm64-generalization/fixtures/",
+    "builder": "tools/validation/arm64-generalization/build-fixtures.mjs",
+    "verifier": "tools/validation/arm64-generalization/verify.mjs"
+  },
+  "designInvariants": [
+    {
+      "id": "D-I1",
+      "rule": "CodeFuse-independent",
+      "detail": "No CodeFuse source, case id, function name, address, binary digest or reference text may appear in this suite. CodeFuse remains an external scoreboard that is never a merge requirement and never an oracle. The suite must be able to pass while the CodeFuse score is unchanged or worse."
+    },
+    {
+      "id": "D-I2",
+      "rule": "deterministic",
+      "detail": "Fixed sources, fixed toolchain identity, fixed value sets, no wall-clock thresholds inside assertions. Tier 0 proves determinism by running the same corpus twice and requiring byte-identical observations."
+    },
+    {
+      "id": "D-I3",
+      "rule": "reproducible",
+      "detail": "Every fixture records compiler/linker identity, target triple, argv, optimization level, debug state, source sha256 and binary sha256, plus a copy-pasteable rebuild command. A rebuild that changes the digest invalidates the frozen baseline as one transaction."
+    },
+    {
+      "id": "D-I4",
+      "rule": "finite and bounded",
+      "detail": "The case set is a closed enumeration (32 declared items across 4 tiers). Value sets are finite and listed in the manifest. No case is discovered dynamically at run time."
+    },
+    {
+      "id": "D-I5",
+      "rule": "small enough for regular regression",
+      "detail": "Tier 0 <= 5 s, Tier 1 <= 60 s, Tier 2 <= 90 s. Total added per-PR cost target <= 2.5 min. Tier 3 never runs in the per-PR path."
+    },
+    {
+      "id": "D-I6",
+      "rule": "pathological cost separated",
+      "detail": "Tier 3 is a separate opt-in command with its own budget and its own generated (but deterministic) inputs, bounded by work units rather than wall clock."
+    },
+    {
+      "id": "D-I7",
+      "rule": "oracle explicit and independent",
+      "detail": "Every case declares an oracle whose authority is stated, whose implementation is not the product, and which is self-tested by a deliberately wrong sentinel that must be rejected before the case can run."
+    },
+    {
+      "id": "D-I8",
+      "rule": "semantic correctness separated from presentation",
+      "detail": "Semantic metrics (semantic-path retention, oracle equivalence, unknown preservation) are merge-blocking. Presentation metrics (rendered length, goto count, readability vector) are reported and can only fail through a frozen-baseline regression rule, never on their own."
+    },
+    {
+      "id": "D-I9",
+      "rule": "hard-zero counters prevent false green",
+      "detail": "Nine counters must be exactly zero; a non-zero counter is blocking, and a counter that cannot be evaluated (missing tool, missing artifact, empty corpus) is itself a blocked run, not a zero."
+    },
+    {
+      "id": "D-I10",
+      "rule": "no overfit to current output strings",
+      "detail": "No assertion may compare against a specific rendered string produced by the current implementation. Assertions are on the oracle-visible semantic contract; frozen-baseline comparison is allowed only as a non-regression direction (must not get worse), never as equality-against-current-output."
+    },
+    {
+      "id": "D-I11",
+      "rule": "reuse before create",
+      "detail": "The suite extends the existing 12-case / 6-recipe competitive-arm64 foundation and reuses the existing fixture/provenance/oracle/counter disciplines instead of creating a parallel format."
+    },
+    {
+      "id": "D-I12",
+      "rule": "missing prerequisite is blocking",
+      "detail": "A missing compiler, target library, or language lane blocks the suite (adopting tools/validation/machine-effects/prerequisites.mjs fail-closed semantics) and is recorded in a counted excluded-by-environment set that may never be silently empty."
+    }
+  ],
+  "provenanceSchema": {
+    "schemaVersion": "arm64-generalization-fixture/v1",
+    "requiredFields": [
+      "caseId",
+      "tier",
+      "source.path",
+      "source.sha256",
+      "build.compiler",
+      "build.compilerVersion",
+      "build.linker",
+      "build.linkerVersion",
+      "build.targetTriple",
+      "build.platform",
+      "build.optimizationLevel",
+      "build.debug",
+      "build.argv",
+      "build.rebuildCommand",
+      "artifacts.binary",
+      "artifacts.binarySha256",
+      "artifacts.strippedTwin",
+      "artifacts.strippedTwinSha256",
+      "oracle.id",
+      "oracle.authority",
+      "oracle.independent",
+      "oracle.inputSpace",
+      "expected.functions",
+      "expected.semantics",
+      "counters.hardZero",
+      "claim"
+    ],
+    "claimTemplate": "Owned compiler-produced AArch64 fixture. Not CodeFuse, competitor, browser, physical-device or reference-text evidence.",
+    "precedent": "tests/scpa/fixtures/threaded-integer.json (schema scpa-owned-assembled-fixture/v1) plus tools/validation/phase8/build-corpus.mjs toolchain recording"
+  },
+  "tiers": [
+    {
+      "id": "Tier 0",
+      "name": "micro invariant",
+      "purpose": "Prove the suite cannot lie about itself, in seconds, with no compiler.",
+      "budgetSeconds": 5,
+      "distributionMeasurement": "measured analog: tests/phase8/provenance/safety-counter-style checks run in single-digit seconds",
+      "cases": [
+        {
+          "id": "T0-01",
+          "invariant": "determinism",
+          "assertion": "Two independent in-process runs of the Tier 1 observation corpus produce byte-identical observations; any difference increments nonDeterminismCount.",
+          "reuse": "tools/validation/phase8/metrics.mjs determinismFailures + MEASUREMENT_TIME_BUDGET_MS (one shared budget, not two)"
+        },
+        {
+          "id": "T0-02",
+          "invariant": "oracle sentinel rejection",
+          "assertion": "For every declared oracle, a deliberately mutated expectation is rejected before the case is admitted.",
+          "reuse": "tools/competitive-arm64/manifest.mjs wrong-oracle sentinel pattern (checkU64Add7 good/bad pair)"
+        },
+        {
+          "id": "T0-03",
+          "invariant": "independent arithmetic model self-test",
+          "assertion": "The oracle's integer/flag model reproduces hand-computed wrap, carry and overflow vectors; the oracle must not import product semantics.",
+          "reuse": "tools/validation/machine-effects/independent-oracle.mjs addWithFlags/subWithFlags shape"
+        },
+        {
+          "id": "T0-04",
+          "invariant": "provenance completeness",
+          "assertion": "Every declared case has a source digest, an artifact digest, an oracle identity and a rebuild command; a case with a missing field is counted, not skipped.",
+          "reuse": "tests/scpa/threaded-native-fixture.mjs source/binary sha256 verification"
+        },
+        {
+          "id": "T0-05",
+          "invariant": "excluded-by-environment is counted, never empty-by-default",
+          "assertion": "The declared prerequisite set is enumerated as a set; an unsatisfied member blocks the run and is reported in excludedByEnvironment. A green run with a non-empty excludedByEnvironment is a blocked run, not a pass.",
+          "reuse": "tools/validation/machine-effects/prerequisites.mjs:22-28,77-84 fail-closed resolution",
+          "motivatedBy": "OBS-3 in gap-matrix.json (compiler-truth exits 0 while the Swift lane is skipped)"
+        }
+      ]
+    },
+    {
+      "id": "Tier 1",
+      "name": "end-to-end ARM64",
+      "purpose": "Close G-01: a compiler-produced ARM64 binary must reach the shared semantic path through the shipped decoder, and recovered semantics must match an independent source-level oracle.",
+      "budgetSeconds": 60,
+      "executionMode": "owned C source -> AArch64 object -> linked minimal ELF (recorded argv) -> real loader -> shipped Capstone decode -> shared semantic pipeline -> public query/decompile facade",
+      "optimizationLevels": ["-O0", "-O2", "-O3"],
+      "oracle": {
+        "authority": "source-level contract evaluated by a test-owned interpreter over a finite value set",
+        "notUsedAsOracle": ["IDA reference text", "CodeFuse reference", "current product rendered output", "tool majority"],
+        "precedent": "tests/compiler-truth/language-matrix.mjs:112-130 boundary-value evaluation"
+      },
+      "cases": [
+        { "id": "gen-int-wrap", "dimension": "integer width / wraparound", "contract": "u64 + u64 wraparound at the 64-bit boundary", "overfitGuard": "value set chosen from the arithmetic boundary, not from an observed render" },
+        { "id": "gen-int-width", "dimension": "integer width", "contract": "signed/unsigned extension matrix across 8/16/32/64-bit operands" },
+        { "id": "gen-mem-reach", "dimension": "memory reaching definition", "contract": "store then load at the same address; a clobbering unknown call must break the store-load link" },
+        { "id": "gen-pointer-stride", "dimension": "pointer arithmetic / aggregate stride", "contract": "array-of-struct stride and field offset recovery with distinct byte offsets" },
+        { "id": "gen-cfg-irreducible", "dimension": "irreducible flow", "contract": "goto-based dispatcher producing a multi-entry loop; recovered structure must keep all reachable blocks" },
+        { "id": "gen-loop-early-exit", "dimension": "loop shape", "contract": "counted loop with a mid-body break; iteration count and exit condition observable in the oracle" },
+        { "id": "gen-loop-nested", "dimension": "loop shape", "contract": "nested loop with an induction variable pair" },
+        { "id": "gen-switch-dense", "dimension": "jump table", "contract": "dense switch compiled to a table branch; all case targets must be recovered" },
+        { "id": "gen-switch-sparse", "dimension": "jump table", "contract": "sparse switch compiled to a compare chain; the default arm must remain distinct from the cases" },
+        { "id": "gen-indirect-unknown", "dimension": "indirect control flow", "contract": "function-pointer dispatch through an unresolvable target; the unknown must stay explicitly open rather than being folded to one target" },
+        { "id": "gen-fp-contract", "dimension": "FP", "contract": "floating-point accumulation or clamp with a declared mathematical result over a finite value set", "motivatedBy": "G-06" },
+        { "id": "gen-simd-contract", "dimension": "SIMD", "contract": "vector reduction expressed with an independently computed expected result", "motivatedBy": "G-06" }
+      ],
+      "perCaseAssertions": {
+        "semantic": [
+          "the shared semantic path is used (not a legacy fallback)",
+          "oracle equivalence over the declared finite value set",
+          "declared-unknown stays explicit (no silent exactness)",
+          "raw-assembly escalation count does not increase over the frozen baseline"
+        ],
+        "presentation": [
+          "reported only: rendered length, goto count, readability vector",
+          "may fail a merge only through an explicit frozen-baseline regression rule, never by absolute value"
+        ]
+      },
+      "strippedTwin": "each Tier 1 case is also run against an allowlisted strip-only copy; the invariant is 'a declared-exact result must not degrade silently, and a symbol-dependent claim must become explicitly unknown rather than wrong'"
+    },
+    {
+      "id": "Tier 2",
+      "name": "ABI / language",
+      "purpose": "Close G-08 (ABI at a real call site) and G-02/G-03 (Swift, Rust, Go lanes) using the existing six recipes as the inventory of record.",
+      "budgetSeconds": 90,
+      "cases": [
+        { "id": "abi-hfa-by-value", "lane": "c", "contract": "homogeneous float aggregate passed by value; register bank assignment must match the AAPCS64 rule derived from the rule text", "motivatedBy": "G-08" },
+        { "id": "abi-aggregate-return-17", "lane": "c", "contract": "17-byte aggregate return crossing the register/stack boundary" },
+        { "id": "abi-varargs-word-slots", "lane": "c", "contract": "variadic call with mixed integer and floating arguments; word-slot accounting" },
+        { "id": "abi-sret-indirect", "lane": "c", "contract": "large aggregate return via an indirect result pointer (x8)" },
+        { "id": "abi-wide-integral-pair", "lane": "c", "contract": "wide integral argument split across a register pair" },
+        { "id": "abi-stack-natural-alignment", "lane": "c", "contract": "over-aligned aggregate forced to the stack" },
+        { "id": "lang-cpp-virtual-open", "lane": "cpp", "recipe": "cpp-micro", "contract": "open-world virtual dispatch must remain open (reuses the existing virtual_open recipe, executed against a linked binary)" },
+        { "id": "lang-objc-selector-open", "lane": "objc", "recipe": "objc-micro", "contract": "dynamic selector dispatch must remain open (reuses selector_open)" },
+        { "id": "lang-swift-generic-witness", "lane": "swift", "recipe": "swift-micro", "contract": "generic witness dispatch (reuses witnessOpen)", "blockingPrerequisite": "pinned swiftc", "motivatedBy": "G-02" },
+        { "id": "lang-rust-slice-bounds", "lane": "rust", "recipe": "rust-micro", "contract": "slice bounds check on a fat pointer (reuses slice_bounds)", "blockingPrerequisite": "pinned rustc + aarch64 target std", "motivatedBy": "G-03" },
+        { "id": "lang-go-interface-dispatch", "lane": "go", "recipe": "go-micro", "contract": "interface dispatch and closure capture (reuses ClosureCapture)", "blockingPrerequisite": "pinned Go toolchain with GOARCH=arm64", "motivatedBy": "G-03" }
+      ],
+      "laneSetRule": "The six lanes are declared as a SET. `npm run arm64-generalization:tier2` requires every lane to be present-and-bound; an unbound lane blocks the run and is counted, it is never skipped (D-I12, motivated by OBS-3)."
+    },
+    {
+      "id": "Tier 3",
+      "name": "pathological / stress",
+      "purpose": "Bound resource behaviour without endangering the per-PR budget.",
+      "budgetSeconds": null,
+      "optIn": true,
+      "command": "npm run arm64-generalization:tier3",
+      "cases": [
+        { "id": "stress-large-function", "contract": "deterministically generated single function with a declared work-unit bound; asserts completion within the bound and an unchanged result set", "motivatedBy": "G-12, guardrails EP-016" },
+        { "id": "stress-deep-nesting", "contract": "deeply nested control flow with a declared bound on recovered structure size" },
+        { "id": "stress-large-real-macho", "contract": "the existing sha256-pinned large iOS images (tests/fixtures/real-binaries.json) analyzed with an explicit resource ceiling", "motivatedBy": "G-04" },
+        { "id": "stress-discovery-scale", "contract": "many-function binary discovery with a declared bound on time and on unproven extents, reported as explicit unknown rather than dropped" }
+      ]
+    }
+  ],
+  "hardZeroCounters": [
+    { "id": "semanticPathLost", "definition": "a case that used the shared semantic path in the frozen baseline no longer does" },
+    { "id": "oracleMismatch", "definition": "recovered semantics differ from the independent source-level oracle over the declared finite value set" },
+    { "id": "unknownBecameSilent", "definition": "a declared-unknown result is presented as a definite answer" },
+    { "id": "rawAssemblyEscalationIncrease", "definition": "per-case raw-assembly row count increased over the frozen baseline" },
+    { "id": "exactClaimOnUnknown", "definition": "a published completeness/ledger claims complete for a case without a semantic path" },
+    { "id": "withheldLedgerClaimsTransforms", "definition": "a withheld ledger carries transform claims" },
+    { "id": "unboundCaseCount", "definition": "a declared case lacks a source digest, artifact digest, oracle identity or rebuild command" },
+    { "id": "nonDeterminismCount", "definition": "two Tier 0 runs of the same corpus disagree" },
+    { "id": "excludedByEnvironment", "definition": "a declared prerequisite is unsatisfied; blocking, and never allowed to be non-empty on a green run" }
+  ],
+  "benchmarkOverfitPreventionRules": [
+    { "id": "OF-1", "rule": "Forbidden: copying any CodeFuse-declared case name, function name, address, binary digest or reference text into this suite." },
+    { "id": "OF-2", "rule": "Forbidden: using another tool's output (IDA, or any reference .c) as an oracle. Oracles must be source-level contracts or architecture-rule-derived expectations." },
+    { "id": "OF-3", "rule": "Forbidden: asserting against a specific rendered string of the current implementation." },
+    { "id": "OF-4", "rule": "Forbidden: making CodeFuse score improvement a merge condition. The suite must pass with an unchanged or worse CodeFuse score." },
+    { "id": "OF-5", "rule": "Required: the source set, the oracle type and the optimization set must each differ from CodeFuse's frozen shape (C-only sources, IDA reference, {O0,O1,O2,O3,Os} x {g,no_g})." },
+    { "id": "OF-6", "rule": "Required: every case states why its assertion cannot be satisfied by memorizing the current product output (an explicit overfitGuard note in the manifest)." },
+    { "id": "OF-7", "rule": "Required: holdout discipline. Tier 1/2 sources are owned and must not be published as a scored corpus; CodeFuse remains the only published external scoreboard." }
+  ],
+  "reuseMap": {
+    "reuseUnchanged": [
+      { "asset": "tests/machine-effects ARM64 decoder and 7 family denominators", "role": "precondition, not a target; the new suite must not duplicate instruction ownership", "reuseMechanism": "assert the existing denominators are present and green, then ignore their content" },
+      { "asset": "tools/validation/machine-effects/prerequisites.mjs", "role": "fail-closed toolchain resolution pattern (D-I12)" },
+      { "asset": "tools/validation/machine-effects/independent-oracle.mjs", "role": "independent arithmetic/flag model for Tier 0 T0-03" },
+      { "asset": "tools/validation/phase8/metrics.mjs", "role": "hard-zero counters + frozen-baseline comparison + shared-budget determinism (Tier 0 T0-01)" },
+      { "asset": "tests/scpa/fixtures/*.json + threaded-native-fixture.mjs", "role": "provenance schema and real-ELF-through-real-decoder harness shape" },
+      { "asset": "tests/compiler-truth/deterministic-decompile.mjs + boundary-value oracle style", "role": "guarded deterministic decompile boundary and source-level semantic oracle" },
+      { "asset": "tools/competitive-arm64/manifest.mjs source-oracle sentinel", "role": "Tier 0 T0-02 wrong-oracle rejection" }
+    ],
+    "extendNotReplace": [
+      {
+        "asset": "tests/competitive-arm64/manifest/post-b.json (12 cases / 6 recipes)",
+        "extend": "keep the case ids, recipe ids, source digests and closed 6-language inventory exactly as the language-recipe of record; add an executable owned-fixture lane per recipe (Tier 2) instead of replacing the manifest",
+        "removedCases": []
+      },
+      {
+        "asset": "tests/compiler-truth",
+        "extend": "add the missing lanes (Rust/Go) and make every declared lane a BLOCKING prerequisite; keep the existing oracle and boundary-evaluation style",
+        "explicitlyNotDoing": "not moving or rewriting the existing suite in this audit"
+      },
+      {
+        "asset": "tests/scpa three owned ELF fixtures",
+        "extend": "add compiler-produced fixtures alongside the hand-written ones; keep the hand-written ones for the exact-extent and replay invariants they already prove"
+      }
+    ],
+    "newOnly": [
+      "the Tier 1 real-binary semantic-oracle cases (the ARM64 machine-byte decompiler route does not exist today, G-01)",
+      "the nine hard-zero counters as one shared contract",
+      "the counted excluded-by-environment set (T0-05)",
+      "the stripped-twin pair assertion for the ARM64 semantic path"
+    ]
+  },
+  "minimumProposedNewCases": {
+    "mustDo": ["T1 (12 cases)", "T2 abi-* (6 cases)"],
+    "shouldDo": ["Tier 0 T0-01..T0-05"],
+    "deferred": ["T2 language lanes requiring absent toolchains (Swift/Rust/Go) until the pinned toolchains are available and BLOCKING", "Tier 3 (opt-in)"]
+  },
+  "runtimeBudget": {
+    "tier0Seconds": 5,
+    "tier1Seconds": 60,
+    "tier2Seconds": 90,
+    "totalAddedPerPrSeconds": 150,
+    "tier3": "opt-in only, minutes, never in the per-PR path",
+    "measuredReferences": {
+      "npm run compiler-truth (C/C++/ObjC matrix, 36+56+18 cases)": 18.8,
+      "tests/scpa/threaded-native-acceptance.test.mjs (5 tests, real ELF + Capstone + worker)": 10.5,
+      "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs": 10.0,
+      "tests/phase8/corpus/no-op-equivalence.test.mjs": "did not complete in 200 s — evidence that Tier 3 must be separate"
+    }
+  },
+  "prerequisiteEnvelope": {
+    "requiredForTier1": ["clang with AArch64 target", "ld.lld or equivalent", "sha256 tooling", "a strip implementation"],
+    "requiredForTier2": ["clang/clang++", "clang ObjC front end for the objc lane", "swiftc", "rustc + aarch64 std", "Go toolchain with GOARCH=arm64"],
+    "rule": "Each member is a declared set member. Locally, this audit measured swiftc/rustc/go as MISSING, so the Tier 2 language lanes are BLOCKING-but-unavailable today; the design must make that state loud rather than green.",
+    "localAvailability": { "clang": true, "ld.lld": true, "swiftc": false, "rustc": false, "go": false, "strip": true, "llvm18RequiredByExistingMachineEffectsSuite": false }
+  },
+  "openQuestionsForMergeDecision": [
+    "Which lane owns the existing red ARM64 provenance test (OBS-1) before a new suite may cite Phase 8 ARM64 coverage?",
+    "Does the decoded-instruction route for ARM64 need a production provider before Tier 1 can be expressed, or should Tier 1 initially assert through the existing decompile() facade and mark the decoded route as an explicit remaining unknown?",
+    "Which tier becomes merge-blocking first: Tier 1 only, or Tier 0 + Tier 1 together?"
+  ]
+}

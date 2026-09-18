@@ -165,6 +165,16 @@ jobs:
                   --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              integration/arch-defects-progress-20260918)
+                # PR #9203 combines the reviewed architecture invariant work with
+                # the Phase 7 query DTO repair. The exact helper rejects every
+                # undeclared foreign path before validating the Phase 7 slice.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               recovery/t016-discovery-artifact-20260916)
                 # PR #9128 intentionally pairs Phase 7 discovery authority with
                 # two rebuild preservation paths. Reject every other foreign path.

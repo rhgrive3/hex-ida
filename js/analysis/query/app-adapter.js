@@ -291,36 +291,149 @@ function cloneableLegacyModel(model) {
   return data;
 }
 
-// The decompiler keeps a closure on semantic IR for in-process def-use lookups.
-// Query snapshots publish the serializable IR, while the live callback remains
-// owned by the producer. Other unclonable query data still fails closed.
-function cloneableDecompilerProjection(value) {
-  if (!value || typeof value !== 'object') return value;
-  let changed = false;
-  const projection = { ...value };
-  if (value.ir && typeof value.ir === 'object' && typeof value.ir.defUse === 'function') {
-    const ir = { ...value.ir };
-    delete ir.defUse;
-    projection.ir = ir;
-    changed = true;
+// ── Public decompile DTO ────────────────────────────────────────────────────
+// The decompile query publishes an explicit *presentation* schema. The
+// decompiler's internal analysis state is deliberately not part of that
+// contract:
+//   * it is producer-owned state — compatibility models and analysis contexts
+//     can carry live row/address/symbol callbacks — so publishing it hands
+//     consumers a handle on live analysis state, and
+//   * it is deeply recursive and unbounded, so publishing it made the query
+//     envelope's structuredClone()/deepFreezeTree() overflow the stack on large
+//     functions even when the decompilation itself succeeded.
+// Rendered navigation only needs `lines` + `renderProvenance`, which are
+// published here, and the control-flow graph is served by `cfg()`. The
+// dedicated `semanticIR()` query serves the canonical Semantic IR v2
+// (`pipeline.semanticIr`), which carries no runtime observer and therefore
+// crosses the clone boundary. The ARM64 legacy compatibility IR is also
+// clone-safe after the IR-ownership repair, but that route still does not
+// publish it through `semanticIR()`; decompile keeps every internal IR private.
+export const DECOMPILE_DTO_SCHEMA = 'analysis-query-decompile-presentation-v1';
+
+// The published schema and the never-published producer state are exported as
+// frozen *arrays*: frozen documentation a consumer can read, never a mutable
+// runtime authority. `Object.freeze(new Set(...))` would still allow `.add()` /
+// `.delete()`, so a consumer could silently reclassify an internal field as
+// publishable. Lookup below uses module-private Sets derived from these arrays
+// at module evaluation time, so no consumer can change what `publish()` does.
+export const DECOMPILE_PUBLIC_FIELDS = Object.freeze([
+  'semantic', 'signature', 'summary', 'pseudocode', 'text', 'code',
+  'lines', 'evidence', 'warnings', 'labels', 'coverage',
+  'renderProvenance', 'unknownInstructions',
+]);
+
+// Producer-owned analysis state that is never published. A field is listed here
+// because the field itself is internal by contract; its contents are not
+// inspected, which is why producer-owned observers such as `ctx.rowOfAddress`
+// do not fail the query. A field in neither list is unknown to the schema: it is never
+// published, it fails closed when it carries an unclonable value, and it is
+// reported as an explicit projection loss otherwise (never a silent drop).
+export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
+  'ir', 'ctx', 'types', 'highVariables', 'cAst', 'semanticAst', 'semanticFacts',
+  'sourceMap', 'prototype', 'aggregateLayouts', 'rewriteProof', 'rewriteStats',
+  'passMetrics', 'phase8', 'phase8Projection', 'metrics', 'importantInputs',
+  'importantOutputs', 'sideEffects', 'conditions', 'expressionHistoryBinding',
+  'semanticSuppressionHistory', 'semanticStatementRenderHistory',
+  'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
+]);
+
+const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
+const DECOMPILE_INTERNAL_FIELD_SET = new Set(DECOMPILE_INTERNAL_FIELDS);
+
+// structuredClone() overflows the stack at a nesting depth far below what the
+// internal analysis graph reaches. Published presentation data is shallow by
+// construction (measured <= 8 for rendered lines and the origin ledger), so a
+// field deeper than this is withheld with an explicit availability marker
+// instead of overflowing the query envelope.
+const DECOMPILE_MAX_PUBLISHED_DEPTH = 64;
+
+// Iterative on purpose: the value being inspected can itself be deep, and a
+// recursive walk would reintroduce the stack overflow this boundary exists to
+// prevent. SharedArrayBuffer is unclonable and therefore reported as such.
+function containsUnclonableValue(root) {
+  const stack = [root];
+  const seen = new Set();
+  while (stack.length) {
+    const node = stack.pop();
+    if (typeof node === 'function' || typeof node === 'symbol') return true;
+    if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    if (typeof SharedArrayBuffer !== 'undefined' && node instanceof SharedArrayBuffer) return true;
+    if (node instanceof ArrayBuffer || ArrayBuffer.isView(node) || node instanceof Date) continue;
+    if (node instanceof Map) { for (const [key, value] of node) stack.push(key, value); continue; }
+    if (node instanceof Set) { for (const value of node) stack.push(value); continue; }
+    for (const key of Object.keys(node)) stack.push(node[key]);
   }
-  if (value.ctx && typeof value.ctx === 'object') {
-    const ctx = { ...value.ctx };
-    let ctxChanged = false;
-    if (value.ctx.values && typeof value.ctx.values === 'object') {
-      const values = { ...value.ctx.values };
-      let valuesChanged = false;
-      for (const key of ['at', 'defAt']) {
-        if (typeof values[key] === 'function') { delete values[key]; valuesChanged = true; }
-      }
-      if (valuesChanged) { ctx.values = values; ctxChanged = true; }
-    }
-    for (const key of ['rowOfAddress', 'addrOfRow', 'symbolFor', 'rawSymbolFor', 'fieldFor']) {
-      if (typeof ctx[key] === 'function') { delete ctx[key]; ctxChanged = true; }
-    }
-    if (ctxChanged) { projection.ctx = ctx; changed = true; }
+  return false;
+}
+
+function exceedsPublishedDepthBudget(root) {
+  const stack = [[root, 1]];
+  const seen = new Set();
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    if (depth > DECOMPILE_MAX_PUBLISHED_DEPTH) return true;
+    if (node instanceof ArrayBuffer || ArrayBuffer.isView(node) || node instanceof Date) continue;
+    if (node instanceof Map) { for (const [key, value] of node) stack.push([key, depth + 1], [value, depth + 1]); continue; }
+    if (node instanceof Set) { for (const value of node) stack.push([value, depth + 1]); continue; }
+    for (const key of Object.keys(node)) stack.push([node[key], depth + 1]);
   }
-  return changed ? projection : value;
+  return false;
+}
+
+// Projects a producer decompiler result onto the explicit public schema.
+// Returns the published value plus the fields the projection had to give up:
+//   * `withheld`   — public fields too deep to cross the clone boundary,
+//   * `unexpected` — fields the schema does not know at all (producer drift).
+// Neither list is ever a silent drop: both are reported on `status.projection`
+// with a non-`complete` completeness, and neither is published.
+function publicDecompilerProjection(value) {
+  if (value == null || typeof value !== 'object') return { value, withheld:[], unexpected:[] };
+
+  // Unknown fields are outside the schema. Dropping an unclonable value there
+  // would silently turn a producer error into an apparently complete result, so
+  // those keep failing closed; the declared internal fields are the only place
+  // a live observer is allowed to live. A cloneable unknown field is not
+  // published either — it is reported as schema drift, so a producer that adds
+  // a new field cannot look like a complete result under the old schema.
+  let keys;
+  try {
+    keys = Object.keys(value);
+  } catch { throw new TypeError('analysis-query-value-unclonable'); }
+  const unexpected = [];
+  for (const key of keys) {
+    if (DECOMPILE_PUBLIC_FIELD_SET.has(key) || DECOMPILE_INTERNAL_FIELD_SET.has(key)) continue;
+    let unclonable;
+    try { unclonable = containsUnclonableValue(value[key]); }
+    catch { unclonable = true; }
+    if (unclonable) throw new TypeError('analysis-query-value-unclonable');
+    unexpected.push(key);
+  }
+  unexpected.sort();
+
+  const projection = {};
+  const withheld = [];
+  for (const key of DECOMPILE_PUBLIC_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const field = value[key];
+    if (field === undefined) continue;
+    let bounded = false;
+    try { bounded = exceedsPublishedDepthBudget(field); }
+    catch { bounded = true; }
+    if (bounded) withheld.push(key);
+    else projection[key] = field;
+  }
+  // The only ctx-derived public scalar: the count of instructions the semantic
+  // pipeline could not model. It is a number, so it crosses the boundary safely.
+  if (projection.unknownInstructions === undefined) {
+    const unknownInstructions = value.ctx?.unknownInstructions;
+    if (typeof unknownInstructions === 'number' && Number.isSafeInteger(unknownInstructions) && unknownInstructions >= 0) {
+      projection.unknownInstructions = unknownInstructions;
+    }
+  }
+  return { value:projection, withheld, unexpected };
 }
 
 function legacyPresentationModel(model) {
@@ -898,13 +1011,33 @@ export function createAppAnalysisQueryAdapter(app) {
     },
 
     async decompile(_snapshot, id, options = {}) {
+      // Every producer result crosses the same explicit DTO boundary, so the
+      // canonical semantic path, an app-owned getDecompile() and the legacy
+      // ARM64 decompiler cannot drift apart.
+      const publish = (value, completeness = null, status = {}) => {
+        const { value:published, withheld, unexpected } = publicDecompilerProjection(value);
+        if (!withheld.length && !unexpected.length) return wrap(published, completeness, status);
+        // Every field the projection gave up is an explicit availability loss
+        // reported with the schema and the field names, never a silent drop.
+        // A withheld deep field is `truncated`; an unknown field is schema
+        // drift, so the published value is a `partial` projection of it.
+        const truncated = withheld.length > 0;
+        const projectionCompleteness = truncated ? 'truncated' : 'partial';
+        const producerCompleteness = completeness ?? completenessOf(value, 'complete');
+        const combinedCompleteness = weakestCompleteness([producerCompleteness, projectionCompleteness]);
+        return wrap(published, combinedCompleteness, {
+          ...status,
+          reason:status.reason ?? (truncated ? 'decompile-projection-withheld' : 'decompile-projection-schema-drift'),
+          projection:{ schema:DECOMPILE_DTO_SCHEMA, withheld, unexpected },
+        });
+      };
       if (typeof app?.getDecompile === 'function') {
         const value = await app.getDecompile(id, options);
-        if (value != null) return wrap(cloneableDecompilerProjection(value));
+        if (value != null) return publish(value);
       }
       const result = await loadFunction(id, options);
       if (result?.value?.decompiler) {
-        return wrap(cloneableDecompilerProjection(result.value.decompiler), result.status?.completeness);
+        return publish(result.value.decompiler, result.status?.completeness);
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
@@ -912,7 +1045,7 @@ export function createAppAnalysisQueryAdapter(app) {
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
       });
-      return wrap(cloneableDecompilerProjection(projection), result.status?.completeness);
+      return publish(projection, result.status?.completeness);
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

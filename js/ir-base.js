@@ -41,8 +41,20 @@ function normalizedOptions(model, opts) {
   return o;
 }
 
+// Block reachability is a runtime-only memo: it holds a closure plus the pair
+// answers already explored for one CFG. It is owned outside the Semantic IR so
+// the IR stays a pure data structure. Storing it as `ir._canReachBlock` made a
+// single query append a function-valued own property, which poisoned every
+// consumer that must serialize the IR (structuredClone threw DataCloneError)
+// and every consumer that requires IR own properties to be semantic data (the
+// Phase 8 identity walk rejects function-valued properties). Keying the memo by
+// IR keeps the old lifecycle: answers are reused for the lifetime of that IR and
+// different IRs never share reachability facts.
+const reachabilityCache = new WeakMap();
+
 function blockReachability(ir) {
-  if (ir._canReachBlock) return ir._canReachBlock;
+  const cached = reachabilityCache.get(ir);
+  if (cached) return cached;
   const cache = new Map();
   const canReach = (from, to) => {
     if (from == null || to == null || from < 0 || to < 0) return false;
@@ -62,7 +74,7 @@ function blockReachability(ir) {
     cache.set(key, yes);
     return yes;
   };
-  ir._canReachBlock = canReach;
+  reachabilityCache.set(ir, canReach);
   return canReach;
 }
 
@@ -73,15 +85,15 @@ function orderedBefore(a, b, canReach) {
 }
 
 function unknownStores(ir) {
-  if (ir._unknownStoreBarriers) return ir._unknownStoreBarriers;
-  const list = (ir.instructions || []).filter((inst) =>
+  // This is semantic data derived from the current instruction list, not
+  // runtime state owned by the IR. Recompute it so direct queries observe
+  // instruction mutations and never attach a cache/property to the IR value.
+  return (ir.instructions || []).filter((inst) =>
     inst.op === OP.STORE && (!inst.loc || inst.loc.kind === MK.UNKNOWN));
-  ir._unknownStoreBarriers = list;
-  return list;
 }
 
-function unknownStoreBetween(ir, from, to) {
-  const barriers = unknownStores(ir);
+function unknownStoreBetween(ir, from, to, knownBarriers = null) {
+  const barriers = knownBarriers ?? unknownStores(ir);
   if (!barriers.length || !from || !to) return null;
   const canReach = blockReachability(ir);
   for (const candidate of barriers) {
@@ -120,7 +132,7 @@ function hardenUnknownStores(ir) {
       continue;
     }
     if (!load.reachingStore) continue;
-    const barrier = unknownStoreBetween(ir, load.reachingStore, load);
+    const barrier = unknownStoreBetween(ir, load.reachingStore, load, barriers);
     if (!barrier) continue;
     load.reachingStore = null;
     load.memUse = {
@@ -168,7 +180,6 @@ function promoteResolvedGlobals(ir) {
   if (ir.locations && ir.locations.set) {
     for (const [key, loc] of globals) ir.locations.set(key, loc);
   }
-  delete ir._unknownStoreBarriers;
   return ir;
 }
 
@@ -483,11 +494,12 @@ function classifyUpdate(chain) {
  */
 export function readModifyWrite(ir) {
   if (!ir || !ir.instructions) return [];
+  const barriers = unknownStores(ir);
   const out = [];
   const seen = new Set();
 
   for (const r of coreReadModifyWrite(ir)) {
-    if (!r || !r.load || !r.store || unknownStoreBetween(ir, r.load, r.store)) continue;
+    if (!r || !r.load || !r.store || unknownStoreBetween(ir, r.load, r.store, barriers)) continue;
     const key = r.load.id + '>' + r.store.id;
     seen.add(key);
     out.push(r);
@@ -510,7 +522,7 @@ export function readModifyWrite(ir) {
       if (!def) continue;
       chain.push(def);
       if (def.op === OP.LOAD) {
-        if (mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store)) load = def;
+        if (mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store, barriers)) load = def;
         continue;
       }
       for (const a of def.args || []) if (a && a.value) work.push(a.value);

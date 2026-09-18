@@ -1,0 +1,1700 @@
+{
+ "schema": "hex-direct-recompilability-reference-control/v1",
+ "note": "Identical compiler rules applied to the IDA Pro 9.1 Hex-Rays reference .c artifacts shipped with the same corpus. Not a quality or superiority comparison; no semantic check is performed.",
+ "compilerCommand": [
+  "clang",
+  "-std=gnu11",
+  "-fsyntax-only",
+  "-ferror-limit=0"
+ ],
+ "files": 160,
+ "syntaxPass": 0,
+ "errorCountDistribution": {
+  "2": 3,
+  "3": 95,
+  "6": 5,
+  "7": 4,
+  "8": 1,
+  "9": 40,
+  "12": 9,
+  "15": 3
+ },
+ "errorFamiliesByFileCount": {
+  "unknown type name 'X'": 160,
+  "expected 'X' after top level declarator": 160,
+  "variable has incomplete type 'X'": 157,
+  "use of undeclared identifier 'X'": 62,
+  "expected expression": 10
+ },
+ "detail": [
+  {
+   "ref": "1/1_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "1/1_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "2/2_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "3/3_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "4/4_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 6,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 8,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 6,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 7,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 6,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 7,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 6,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 7,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 6,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 7,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "expected expression",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 2,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 2,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 2,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'"
+   ]
+  },
+  {
+   "ref": "5-1/5-1_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "5-23/5-23_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 12,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 15,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 15,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 9,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "6/6_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 15,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "use of undeclared identifier 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_clang_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O0_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O0_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O1_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O1_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O2_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O2_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O3_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_O3_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_Os_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  },
+  {
+   "ref": "7/7_gcc_Os_no_g.c",
+   "exitCode": 1,
+   "errorCount": 3,
+   "errorFamilies": [
+    "expected 'X' after top level declarator",
+    "unknown type name 'X'",
+    "variable has incomplete type 'X'"
+   ]
+  }
+ ]
+}

@@ -721,7 +721,10 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   finalizeLegacyProjection(projected, constantObserver, stateObserver);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
-  projected.defUse = () => projected.values;
+  // `defUse` is deliberately not attached: the def-use index is the projected
+  // `values` table and is read through the canonical `defUseFor(ir)` accessor.
+  // Attaching a closure here made the projection an unserializable carrier of
+  // runtime state (structuredClone threw DataCloneError).
   sealMemoryOperandTransitions(projected, memoryTransitions);
   sealStateTransitions(projected, stateObserver);
   sealConstantTransitions(projected, constantObserver);

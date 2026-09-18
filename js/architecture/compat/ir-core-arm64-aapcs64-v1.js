@@ -833,7 +833,10 @@ export function buildIR(model, opts) {
     ir.values.push(v);
     return v;
   };
-  ir.newValue = newValue;
+  // `newValue` is used here through its closure. It is deliberately not
+  // attached as `ir.newValue`: that published a second runtime function on the
+  // Semantic IR (nothing in the tree ever read it), which is the same ownership
+  // defect as `defUse` and would keep the IR an unserializable value.
 
   /* ── 1. 素の IR に持ち上げる ── */
   const rowToBlock = new Map();
@@ -1038,7 +1041,10 @@ export function buildIR(model, opts) {
   inferSignedness(ir);
   recoverStackVariables(ir);
 
-  ir.defUse = () => ir.values;
+  // The def-use index is the published `values` table itself (each value
+  // carries its `uses`). It is read through the canonical `defUseFor(ir)`
+  // accessor instead of being attached here as a runtime closure, which would
+  // make the Semantic IR an unserializable carrier of producer state.
   return ir;
 }
 
