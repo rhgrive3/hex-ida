@@ -93,9 +93,15 @@ def reconstruct(doc):
     return source, line_map
 
 
+SUMMARY_RE = re.compile(r"^\d+ warnings? and \d+ errors? generated\.$")
+
+
 def parse_diagnostics(text: str):
     out = []
     for raw in text.splitlines():
+        if SUMMARY_RE.match(raw.strip()):
+            # clang's final tally line is a summary, not a diagnostic.
+            continue
         m = DIAG_RE.match(raw)
         if m:
             out.append(

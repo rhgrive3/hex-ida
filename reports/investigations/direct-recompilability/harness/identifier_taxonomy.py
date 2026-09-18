@@ -40,16 +40,20 @@ RUNTIME_HELPERS = {"unknown_call"}
 
 # --- Category B patterns -------------------------------------------------
 
-RE_GPR64 = re.compile(r"^x[0-9]{1,2}(_[0-9]+)?$")
-RE_GPR32 = re.compile(r"^w[0-9]{1,2}(_[0-9]+)?$")
-RE_SIMD = re.compile(r"^[dsq][0-9]{1,2}(_[0-9]+)?$")
-RE_ARG = re.compile(r"^a[0-9]{1,2}(_[0-9]+)?$")
-RE_VEC_RET = re.compile(r"^v[0-9]{1,2}(_[0-9]+)?$")
+# NOTE: ARM64 GPRs are x0..x30 and SIMD v0..v31, but this emitter also uses
+# the same spelling for SSA value indices (v165, v1010), so digit widths are
+# deliberately permissive.
+RE_GPR64 = re.compile(r"^x[0-9]{1,4}(_[0-9]+)?$")
+RE_GPR32 = re.compile(r"^w[0-9]{1,4}(_[0-9]+)?$")
+RE_SIMD = re.compile(r"^[dsq][0-9]{1,4}(_[0-9]+)?$")
+RE_ARG = re.compile(r"^a[0-9]{1,4}(_[0-9]+)?$")
+RE_VALUE = re.compile(r"^v[0-9]{1,4}(_[0-9]+)?$")
 RE_ARCH_REG = re.compile(r"^(xzr|wzr|lr|pc|sp|fp)$")
-RE_STACK_SLOT = re.compile(r"^(local_|var_|field_).+$")
 RE_CALL_TMP = re.compile(r"^call_[0-9]+$")
 RE_PHI_TMP = re.compile(r"^local_phi_.*$")
-RE_COND_TMP = re.compile(r"^condition_[a-z]+$")
+RE_COND_TMP = re.compile(r"^(condition|flag)_[a-z0-9_]+$")
+# Checked after the more specific temporary patterns above.
+RE_STACK_SLOT = re.compile(r"^(local_|var_|field_).+$")
 EMITTER_PLACEHOLDERS = {"memory_unknown", "memory", "result"}
 
 
@@ -83,18 +87,18 @@ def classify_identifier(name):
         return "B", "undeclared-simd-pseudo-variable"
     if RE_ARG.match(name):
         return "B", "undeclared-argument-pseudo-variable"
-    if RE_VEC_RET.match(name):
-        return "B", "undeclared-vector/return-pseudo-variable"
+    if RE_VALUE.match(name):
+        return "B", "undeclared-value-pseudo-variable"
     if RE_ARCH_REG.match(name):
         return "B", "undeclared-architecture-register"
-    if RE_STACK_SLOT.match(name):
-        return "B", "undeclared-stack-slot-variable"
     if RE_CALL_TMP.match(name):
         return "B", "undeclared-generated-call-temporary"
     if RE_PHI_TMP.match(name):
         return "B", "undeclared-ssa-phi-temporary"
     if RE_COND_TMP.match(name):
         return "B", "undeclared-condition-temporary"
+    if RE_STACK_SLOT.match(name):
+        return "B", "undeclared-stack-slot-variable"
     if name in EMITTER_PLACEHOLDERS:
         return "B", "undeclared-emitter-placeholder"
 
