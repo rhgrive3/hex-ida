@@ -18,7 +18,7 @@ again on resume.
   records, resume, retry manifests, summaries, identity enforcement).
 - `measure-g.mjs` — G wiring: codefuse manifest → existing
   `tools/validation/public-benchmark` subject runner → clang
-  syntax+link stages → harness core.
+  syntax + object-compilation stages → harness core.
 - `README.md` — this contract.
 
 ## Contract
@@ -47,6 +47,11 @@ again on resume.
   from a runner is an explicit input problem (`reason: input-…`), e.g. a
   missing or hash-mismatched binary — it stays retryable instead of blaming
   the product.
+- The compiler stage is intentionally **object compilation**, not executable
+  linking: function-level recovered translation units do not require `main`,
+  and unresolved external symbols are outside this compile-only contract.
+  `PASS` means syntax validation plus successful `clang -O0 -c` object
+  emission; it must not be described as a link or runtime result.
 
 ## Schemas (all `/v1`)
 
@@ -55,7 +60,7 @@ again on resume.
 
 Per-case (`hex-recompilability-resumable-case/v1`):
 `{ schema, caseId, state, reason, functions, headSha, manifestSha256,
-attempts: [{ startedAt, finishedAt, elapsedMs }] }`.
+attempts: [{ startedAt, finishedAt, elapsedMs }]`.
 
 `summary.json` (`hex-recompilability-resumable-summary/v1`):
 `{ schema, denominator, complete, counts: { PASS, FAIL, TIMEOUT, CRASH,
