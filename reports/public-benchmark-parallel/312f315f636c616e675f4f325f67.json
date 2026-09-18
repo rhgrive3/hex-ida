@@ -1,0 +1,765 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "PASS",
+  "inputSha256": "691cbdad1979548623f1b94e822842201617f7fe2ec4ae1bd7945ed5a8db6934",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 40058,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 40058
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 38712,
+          "bytesWritten": 38712,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 38712,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 38712,
+        "writeBytes": 38712,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "2144",
+      "name": "_init",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "2368",
+      "name": "_start",
+      "end": "2420",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_12FD8);\n    unknown_call(global_12FD8);\n}"
+    },
+    {
+      "address": "2420",
+      "name": "call_weak_fn",
+      "end": "2440",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 call_weak_fn(void)\n{\n    x0_1 = *(uint64 *)0x12FD0;\n    __asm(\"cbz x0, #0x984\");\n    return sub_8D0(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "2448",
+      "name": "deregister_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void deregister_tm_clones(void)\n{\n    loc_9A0:\n    loc_990:\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        if (0x13050 == 0x13050) goto loc_9BC;\n        goto loc_9A8;\n    loc_9A8:\n        if (global_12FC0 == 0) goto loc_9BC;\n        goto loc_9B4;\n    loc_9B4:\n        __asm(\"br x16\");\n    loc_9BC:\n        return;\n}"
+    },
+    {
+      "address": "2496",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x9f8\");\n    x2 = *(uint64 *)0x12FE0;\n    __asm(\"cbz x2, #0x9f8\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "2560",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x13000;\n    __asm(\"cbnz w0, #0xa3c\");\n    x0_1 = *(uint64 *)0x12FC8;\n    __asm(\"cbz x0, #0xa30\");\n    x0_2 = sub_8C0(\"H0\");\n    x0_3 = deregister_tm_clones();\n    *(uint8 *)(x19 + 0x50) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "2640",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n{\n}"
+    },
+    {
+      "address": "2644",
+      "name": "sequential_ops",
+      "end": "2660",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void sequential_ops(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2660",
+      "name": "single_if",
+      "end": "2676",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void single_if(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2676",
+      "name": "if_else",
+      "end": "2688",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void if_else(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2688",
+      "name": "nested_if_2",
+      "end": "2708",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void nested_if_2(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2708",
+      "name": "nested_if_deep",
+      "end": "2788",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void nested_if_deep(void)\n{\n    loc_A94:\n        if ((int32_t)a1 < 1) goto loc_AC4;\n        goto loc_A9C;\n    loc_A9C:\n        if ((int32_t)a2 < 1) goto loc_ACC;\n        goto loc_AA4;\n    loc_AA4:\n        if ((int32_t)a3 < 1) goto loc_AD4;\n        goto loc_AAC;\n    loc_AAC:\n        if ((int32_t)a4 < 1) goto loc_ADC;\n        goto loc_AB4;\n    loc_AB4:\n        return;\n    loc_AC4:\n        return;\n    loc_ACC:\n        return;\n    loc_AD4:\n        return;\n    loc_ADC:\n        return;\n}"
+    },
+    {
+      "address": "2788",
+      "name": "if_elseif_chain",
+      "end": "2812",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void if_elseif_chain(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2812",
+      "name": "if_elseif_long",
+      "end": "2836",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void if_elseif_long(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2836",
+      "name": "switch_small",
+      "end": "2868",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void switch_small(void)\n{\n    loc_B14:\n        if ((uint32_t)a1 > 3) goto loc_B2C;\n        goto loc_B1C;\n    loc_B1C:\n        return;\n    loc_B2C:\n        return;\n}"
+    },
+    {
+      "address": "2868",
+      "name": "switch_large",
+      "end": "2888",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void switch_large(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2888",
+      "name": "switch_default",
+      "end": "2916",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void switch_default(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2916",
+      "name": "switch_fallthrough",
+      "end": "2968",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void switch_fallthrough(void)\n{\n    loc_B64:\n        if ((uint32_t)a1 == 1) goto loc_B88;\n        goto loc_B70;\n    loc_B70:\n        if ((uint32_t)a1 == 2) goto loc_B84;\n        goto loc_B78;\n    loc_B78:\n        if ((uint32_t)a1 != 3) goto loc_B90;\n        goto loc_B80;\n    loc_B80:\n    loc_B84:\n    loc_B88:\n        return;\n    loc_B90:\n        return;\n}"
+    },
+    {
+      "address": "2968",
+      "name": "loop_for_fixed",
+      "end": "3008",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_for_fixed(void)\n{\n    loc_B98:\n        if ((int32_t)a1 < 1) goto loc_BB8;\n        goto loc_BA0;\n    loc_BA0:\n        return;\n    loc_BB8:\n        return;\n}"
+    },
+    {
+      "address": "3008",
+      "name": "loop_while",
+      "end": "3076",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_while(void)\n{\n    loc_BC0:\n        if (a1 == 0) goto loc_BFC;\n        goto loc_BC4;\n    loc_BC4:\n    loc_BD4:\n        if ((uint32_t)(phi((((sext(x8)) * (sext(bit_insert(0x6667, 0x6666, 16, 16)))) >> 34) + (((sext(x8)) * (sext(bit_insert(0x6667, 0x6666, 16, 16)))) >> 63), a1)) + 9 > 18) goto loc_BD4;\n        goto loc_BF8;\n    loc_BF8:\n        return;\n    loc_BFC:\n        return;\n}"
+    },
+    {
+      "address": "3076",
+      "name": "loop_dowhile",
+      "end": "3132",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_dowhile(void)\n{\n    while ((uint32_t)(phi((((sext(x8)) * (sext(bit_insert(0x6667, 0x6666, 16, 16)))) >> 34) + (((sext(x8)) * (sext(bit_insert(0x6667, 0x6666, 16, 16)))) >> 63), a1)) + 9 > 18) {\n    }\n    return;\n}"
+    },
+    {
+      "address": "3132",
+      "name": "loop_nested",
+      "end": "3156",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void loop_nested(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3156",
+      "name": "loop_break",
+      "end": "3236",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 loop_break(int64 a1)\n{\n    x8 = (uint32)((uint32)a1 - 10);\n    /* cmp w8, #0x28 — 次の分岐のための比較 */\n    __asm(\"b.hi #0xc84\");\n    __asm(\"br x10\");\n    return x0;\n    return x0;\n    return x0;\n    return x0;\n    return x0;\n}"
+    },
+    {
+      "address": "3212",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_C8C(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3220",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_C94(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3228",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_C9C(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3236",
+      "name": "loop_continue",
+      "end": "3408",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_continue(void)\n{\n    loc_CA4:\n        if ((int32_t)a1 < 1) goto loc_CC0;\n        goto loc_CAC;\n    loc_CAC:\n        if ((uint32_t)a1 >= 8) goto loc_CC8;\n        goto loc_CB4;\n    loc_CB4:\n        goto loc_D2C;\n    loc_CC0:\n        return;\n    loc_CC8:\n    loc_CF0:\n        if ((uint32_t)phi(a1 & 0xFFFFFFF8, v248 - 8) != 8) goto loc_CF0;\n        goto loc_D18;\n    loc_D18:\n        if ((uint32_t)a1 & 0xFFFFFFF8 == (uint32_t)a1) goto loc_D48;\n        goto loc_D2C;\n    loc_D2C:\n    loc_D30:\n        if ((uint32_t)a1 + 1 != (uint32_t)(phi(phi((a1 & 0xFFFFFFF8) | 1, 1), x9)) + 1) goto loc_D30;\n        goto loc_D48;\n    loc_D48:\n        return;\n}"
+    },
+    {
+      "address": "3408",
+      "name": "goto_forward",
+      "end": "3428",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void goto_forward(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3428",
+      "name": "goto_backward",
+      "end": "3584",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void goto_backward(void)\n{\n    loc_D64:\n        if ((int32_t)a1 < 1) goto loc_D80;\n        goto loc_D6C;\n    loc_D6C:\n        if ((uint32_t)a1 >= 8) goto loc_D88;\n        goto loc_D74;\n    loc_D74:\n        goto loc_DE4;\n    loc_D80:\n        return;\n    loc_D88:\n    loc_DAC:\n        if ((uint32_t)phi(v31 - 8, a1 & 0xFFFFFFF8) != 8) goto loc_DAC;\n        goto loc_DC4;\n    loc_DC4:\n        if ((uint32_t)a1 & 0xFFFFFFF8 == (uint32_t)a1) goto loc_DF8;\n        goto loc_DE4;\n    loc_DE4:\n    loc_DE8:\n        if ((uint32_t)a1 + 1 != (uint32_t)(phi(x9, phi((a1 & 0xFFFFFFF8) | 1, 1))) + 1) goto loc_DE8;\n        goto loc_DF8;\n    loc_DF8:\n        return;\n}"
+    },
+    {
+      "address": "3584",
+      "name": "ternary_op",
+      "end": "3596",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ternary_op(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3596",
+      "name": "test_control_flow_l1",
+      "end": "4056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_control_flow_l1(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(\"=== 测试基础控制流特征 ===\");\n    unknown_call(\"CF-L1-01 (sequential_ops): %d\\\\n\");\n    unknown_call(0x1A2F);\n    unknown_call(0x1A2F);\n    unknown_call(0x1A49);\n    unknown_call(0x1A49);\n    unknown_call(0x1A61);\n    unknown_call(0x1A61);\n    unknown_call(0x1A61);\n    unknown_call(\"CF-L1-05 (nested_if_deep): %d\\\\n\");\n    unknown_call(\"CF-L1-06 (if_elseif_chain): %d\\\\n\");\n    unknown_call(\"CF-L1-07 (if_elseif_long): %d\\\\n\");\n    unknown_call(\"CF-L1-08 (switch_small): %d\\\\n\");\n    unknown_call(\"CF-L1-09 (switch_large): %d\\\\n\");\n    unknown_call(\"CF-L1-10 (switch_default): %d\\\\n\");\n    unknown_call(\"CF-L1-11 (switch_fallthrough): %d\\\\n\");\n    unknown_call(\"CF-L1-12 (loop_for_fixed): %d\\\\n\");\n    unknown_call(\"CF-L1-13 (loop_while): %d\\\\n\");\n    unknown_call(\"CF-L1-14 (loop_dowhile): %d\\\\n\");\n    unknown_call(\"CF-L1-15 (loop_nested): %d\\\\n\");\n    unknown_call(0x1BCA);\n    unknown_call(0x1BCA);\n    unknown_call(\"CF-L1-17 (loop_continue): %d\\\\n\");\n    unknown_call(0x1C03);\n    unknown_call(0x1C03);\n    unknown_call(\"CF-L1-19 (goto_backward): %d\\\\n\");\n    unknown_call(0x1C3E);\n}"
+    },
+    {
+      "address": "4056",
+      "name": "loop_multi_exit",
+      "end": "4112",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_multi_exit(void)\n{\n    loc_FD8:\n        if ((uint32_t)a1 - 1 > 11) goto loc_1008;\n        goto loc_FE4;\n    loc_FE4:\n        return;\n    loc_1008:\n        return;\n}"
+    },
+    {
+      "address": "4112",
+      "name": "infinite_loop",
+      "end": "4156",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void infinite_loop(void)\n{\n    if ((uint32_t)a1->field_0 != 1) {\n        if ((uint32_t)(phi(0, x0)) + 1 != 0x3E9) {\n            goto loc_1018;\n        } else {\n            a1->field_0 = 1;\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "4156",
+      "name": "multi_return",
+      "end": "4196",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void multi_return(void)\n{\n    loc_103C:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_105C;\n        goto loc_1040;\n    loc_1040:\n        return;\n    loc_105C:\n        return;\n}"
+    },
+    {
+      "address": "4196",
+      "name": "conditional_return",
+      "end": "4212",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void conditional_return(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4212",
+      "name": "duffs_device",
+      "end": "4344",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 duffs_device(int64 a3)\n{\n    x8 = 0xFFFFFFFF;\n    /* cmp w2, #1 — 次の分岐のための比較 */\n    __asm(\"b.lt #0x10f0\");\n    __asm(\"br x11\");\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 4);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 8);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 12);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 16);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 20);\n    x9 = *(uint32 *)(x1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 24);\n    x9 = *(uint32 *)(x1);\n    x8 = (uint32)((uint32)x8 - 1);\n    *(uint32 *)(x0) = (uint32)*(uint32 *)(a2 + 28);\n    __asm(\"b.gt #0x10a4\");\n    x8 = (uint32)a3;\n    return x0;\n}"
+    },
+    {
+      "address": "4344",
+      "name": "loop_complex_cond",
+      "end": "4428",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_complex_cond(void)\n{\n    if ((int32_t)a1 < 1) {\n    } else {\n        if ((uint32_t)phi(a1, x0 - 1) >= 2) {\n            if ((int32_t)(phi(0, x8)) + 2 < (int32_t)x0 - 1) {\n                if ((uint32_t)phi(0, x10 + 1) < 9) {\n                    goto loc_1108;\n                } else {\n                }\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "4428",
+      "name": "loop_modify_var",
+      "end": "4492",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_modify_var(void)\n{\n    loc_114C:\n        if ((int32_t)a1 < 1) goto loc_1180;\n        goto loc_1154;\n    loc_1154:\n    loc_115C:\n        if ((int32_t)(((int32_t)phi(0, x9) > 5 ? (phi(0, x9)) + 2 : phi(0, x9))) + 1 < (int32_t)a1) goto loc_115C;\n        goto loc_1178;\n    loc_1178:\n        return;\n    loc_1180:\n        return;\n}"
+    },
+    {
+      "address": "4492",
+      "name": "loop_external_state",
+      "end": "4524",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void loop_external_state(void)\n{\n    while (!(a1->field_0 != 0)) {\n        if ((uint32_t)(phi(0, x0)) + 1 != 0x65) goto loc_1194;\n        goto loc_11A8;\n    }\n    return;\n}"
+    },
+    {
+      "address": "4524",
+      "name": "recursion_factorial",
+      "end": "4692",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void recursion_factorial(void)\n{\n    loc_11AC:\n        if ((int32_t)a1 >= 2) goto loc_11BC;\n        goto loc_11B4;\n    loc_11B4:\n        return;\n    loc_11BC:\n        if ((uint32_t)(((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1 >= 8) goto loc_11D8;\n        goto loc_11D0;\n    loc_11D0:\n        goto loc_123C;\n    loc_11D8:\n    loc_1204:\n        if ((uint32_t)phi(((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8, v208 - 8) != 8) goto loc_1204;\n        goto loc_121C;\n    loc_121C:\n        if ((uint32_t)(((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1 == (uint32_t)((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8) goto loc_1250;\n        goto loc_123C;\n    loc_123C:\n        if ((uint32_t)phi(x8 - 1, a1 - (((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8), a1) > 2) goto loc_123C;\n        goto loc_1250;\n    loc_1250:\n        return;\n}"
+    },
+    {
+      "address": "4692",
+      "name": "tail_recursion",
+      "end": "4848",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void tail_recursion(void)\n{\n    if ((int32_t)a1 >= 2) {\n        if ((uint32_t)(((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1 < 8) {\n            while ((uint32_t)phi(a1, x0 - 1, a1 - (((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8)) > 2) {\n            }\n        } else {\n            while ((uint32_t)phi(((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8, v213 - 8) != 8) {\n            }\n            if ((uint32_t)(((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1 != (uint32_t)((((uint32_t)a1 < 2 ? 0 : a1 - 2)) + 1) & 0xFFFFFFF8) {\n                goto loc_12D4;\n            }\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "4848",
+      "name": "indirect_recursion_a",
+      "end": "4936",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 indirect_recursion_a(int64 a1, int64 a2)\n{\n    /* cmp w1, #1 — 次の分岐のための比較 */\n    __asm(\"b.lt #0x1344\");\n    x8 = (uint32)((uint32)a2 + 2);\n    __asm(\"b #0x130c\");\n    loc_1300:\n    x8 = (uint32)((uint32)x8 - 2);\n    /* cmp w8, #3 — 次の分岐のための比較 */\n    __asm(\"b.lt #0x1344\");\n    __asm(\"tbnz w0, #0, #0x132c\");\n    /* cmp w0, #0 — 次の分岐のための比較 */\n    /* cmp w8, #3 — 次の分岐のための比較 */\n    x0 = (uint32)((uint32)((uint32)a1 < 0 ? (uint32)a1 + 1 : (uint32)a1) >> 1);\n    __asm(\"b.eq #0x1344\");\n    x0 = (uint32)(x0 + 1);\n    __asm(\"b #0x1300\");\n    goto loc_1300;\n    x9 = (uint32)((uint32)x0 * 3);\n    /* cmp w8, #3 — 次の分岐のための比較 */\n    __asm(\"b.eq #0x1340\");\n    x0 = (uint32)(x9 + 2);\n    __asm(\"b #0x1300\");\n    goto loc_1300;\n    return x0;\n}"
+    },
+    {
+      "address": "4936",
+      "name": "call_func_ptr",
+      "end": "4948",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 call_func_ptr(int64 a1, int64 a2)\n{\n    __asm(\"br x2\");\n}"
+    },
+    {
+      "address": "4948",
+      "name": "call_func_ptr_array",
+      "end": "4984",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void call_func_ptr_array(void)\n{\n    loc_1360:\n    loc_1354:\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        if ((uint32_t)a1 <= 2) goto loc_1364;\n        goto loc_135C;\n    loc_135C:\n        return;\n    loc_1364:\n        __asm(\"br x2\");\n}"
+    },
+    {
+      "address": "4984",
+      "name": "double_value",
+      "end": "4992",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void double_value(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4992",
+      "name": "triple_value",
+      "end": "5000",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void triple_value(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5000",
+      "name": "call_virtual_func",
+      "end": "5008",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void call_virtual_func(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5008",
+      "name": "process_with_callback",
+      "end": "5096",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void process_with_callback(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x22;\n    local_pFFFFFFFFFFFFFFE0 = local_x22;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    if ((int32_t)a2 < 1) {\n    } else {\n        unknown_call(memory_unknown);\n        while ((uint64_t)phi(v62 - 1, a2) != 1) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5096",
+      "name": "test_control_flow_l2",
+      "end": "5528",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void test_control_flow_l2(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x21;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    local_pFFFFFFFFFFFFFFF0 = local_x20;\n    unknown_call(\"=== 测试高级控制流特征 ===\");\n    unknown_call(\"CF-L2-01 (loop_multi_exit): %d\\\\n\");\n    local_pFFFFFFFFFFFFFFEC = 0;\n    if ((uint32_t)var_FFFFFFFFFFFFFFEC != 1) {\n        if ((uint32_t)(phi(x1, 0)) + 1 != 0x3E9) {\n            goto loc_141C;\n        } else {\n            local_pFFFFFFFFFFFFFFEC = 1;\n        }\n    }\n    unknown_call(\"CF-L2-02 (infinite_loop): %d\\\\n\");\n    unknown_call(0x1C97);\n    unknown_call(0x1C97);\n    unknown_call(0x1C97);\n    unknown_call(0x1CB4);\n    unknown_call(0x1CB4);\n    unknown_call(\"CF-L2-05 (duffs_device): %d\\\\n\");\n    while ((uint32_t)(phi(x19 + 2, call_1101)) - 8 < (uint32_t)(phi(x8 - 1, 11)) - 2) {\n        if ((uint32_t)(phi(x21, call_615)) + 1 < 9) goto loc_14B0;\n        goto loc_14D4;\n    }\n    unknown_call(\"CF-L2-06 (loop_complex_cond): %d\\\\n\");\n    unknown_call(\"CF-L2-07 (loop_modify_var): %d\\\\n\");\n    local_pFFFFFFFFFFFFFFE8 = 0;\n    while (!(var_FFFFFFFFFFFFFFE8 != 0)) {\n        if ((uint32_t)(phi(0, x1)) + 1 != 0x65) goto loc_14FC;\n        goto loc_1510;\n    }\n    unknown_call(\"CF-L2-08 (loop_external_state): %d\\\\n\");\n    unknown_call(\"CF-L2-09 (recursion_factorial): %d\\\\n\");\n    unknown_call(\"CF-L2-10 (tail_recursion): %d\\\\n\");\n    unknown_call(\"CF-L2-11 (indirect_recursion): %d\\\\n\");\n    unknown_call(\"CF-L2-12 (call_func_ptr): %d\\\\n\");\n    unknown_call(0x1DDE);\n    unknown_call(0x1DDE);\n}"
+    },
+    {
+      "address": "5528",
+      "name": "non_local_jump",
+      "end": "5628",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void non_local_jump(void)\n{\n    loc_1598:\n        local_pFFFFFFFFFFFFFFE0 = local_x29;\n        local_pFFFFFFFFFFFFFFE0 = local_x29;\n        local_pFFFFFFFFFFFFFFF0 = local_x19;\n        unknown_call(0x13058);\n        if (call_167 == 0) goto loc_15C0;\n        goto loc_15B8;\n    loc_15B8:\n        goto loc_15D0;\n    loc_15C0:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_15DC;\n        goto loc_15C4;\n    loc_15C4:\n        if ((uint32_t)a1 >= 0x65) goto loc_15EC;\n        goto loc_15CC;\n    loc_15CC:\n    loc_15D0:\n        return;\n    loc_15DC:\n        unknown_call(0x13058);\n    loc_15EC:\n        unknown_call(0x13058);\n}"
+    },
+    {
+      "address": "5628",
+      "name": "cpp_exception",
+      "end": "5656",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void cpp_exception(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5656",
+      "name": "large_jump_table",
+      "end": "5696",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void large_jump_table(void)\n{\n    loc_1624:\n    loc_1618:\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        if ((uint32_t)a1 <= 9) goto loc_1628;\n        goto loc_1620;\n    loc_1620:\n        return;\n    loc_1628:\n        __asm(\"br x3\");\n}"
+    },
+    {
+      "address": "5696",
+      "name": "op_add",
+      "end": "5704",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_add(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5704",
+      "name": "op_sub",
+      "end": "5712",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_sub(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5712",
+      "name": "op_mul",
+      "end": "5720",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_mul(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5720",
+      "name": "op_div",
+      "end": "5740",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void op_div(void)\n{\n    loc_1658:\n        if (a2 == 0) goto loc_1664;\n        goto loc_165C;\n    loc_165C:\n        return;\n    loc_1664:\n        return;\n}"
+    },
+    {
+      "address": "5740",
+      "name": "op_mod",
+      "end": "5764",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void op_mod(void)\n{\n    loc_166C:\n        if (a2 == 0) goto loc_167C;\n        goto loc_1670;\n    loc_1670:\n        return;\n    loc_167C:\n        return;\n}"
+    },
+    {
+      "address": "5764",
+      "name": "op_and",
+      "end": "5772",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_and(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5772",
+      "name": "op_or",
+      "end": "5780",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_or(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5780",
+      "name": "op_xor",
+      "end": "5788",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_xor(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5788",
+      "name": "op_shl",
+      "end": "5796",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_shl(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5796",
+      "name": "op_shr",
+      "end": "5804",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void op_shr(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5804",
+      "name": "conditional_func_ptr",
+      "end": "5852",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 conditional_func_ptr(int64 a1, int64 a2)\n{\n    /* cmp w0, #1 — 次の分岐のための比較 */\n    /* cmp w0, #0 — 次の分岐のための比較 */\n    __asm(\"br x2\");\n}"
+    },
+    {
+      "address": "5852",
+      "name": "state_machine",
+      "end": "5952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 state_machine(int64 a1, int64 a2)\n{\n    /* cmp w1, #3 — 次の分岐のための比較 */\n    __asm(\"b.hi #0x170c\");\n    __asm(\"br x10\");\n    /* cmp w0, #1 — 次の分岐のための比較 */\n    return x0;\n    x0_1 = 3;\n    return x0;\n    /* cmp w0, #0x63 — 次の分岐のための比較 */\n    /* cmp w0, #2 — 次の分岐のための比較 */\n    x0_2 = 1;\n    return x0;\n    /* cmp w0, #0 — 次の分岐のための比較 */\n    return x0;\n}"
+    },
+    {
+      "address": "5952",
+      "name": "fsm_func_table",
+      "end": "5984",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void fsm_func_table(void)\n{\n    loc_174C:\n    loc_1740:\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        if ((uint32_t)a2 <= 3) goto loc_1750;\n        goto loc_1748;\n    loc_1748:\n        return;\n    loc_1750:\n        __asm(\"br x1\");\n}"
+    },
+    {
+      "address": "5984",
+      "name": "state_idle",
+      "end": "5996",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void state_idle(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5996",
+      "name": "state_processing",
+      "end": "6020",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void state_processing(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6020",
+      "name": "state_done",
+      "end": "6028",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void state_done(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6028",
+      "name": "state_error",
+      "end": "6044",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void state_error(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6044",
+      "name": "computed_goto",
+      "end": "6108",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 computed_goto(int64 a2)\n{\n    /* cmp w1, #3 — 次の分岐のための比較 */\n    __asm(\"b.ls #0x17ac\");\n    return x0;\n    __asm(\"br x8\");\n    return x0;\n    return x0;\n    return x0;\n    return x0;\n}"
+    },
+    {
+      "address": "6084",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_17C4(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6092",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_17CC(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6100",
+      "name": null,
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sub_17D4(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6108",
+      "name": "obfuscated_cf",
+      "end": "6116",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void obfuscated_cf(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6116",
+      "name": "opaque_predicate",
+      "end": "6124",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void opaque_predicate(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6124",
+      "name": "overlapped_code",
+      "end": "6152",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void overlapped_code(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "6152",
+      "name": "test_control_flow_l3",
+      "end": "6400",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_control_flow_l3(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    unknown_call(\"=== 测试极端控制流特征 ===\");\n    non_local_jump(/* arguments unknown */);\n    unknown_call(0x1E28);\n    non_local_jump(/* arguments unknown */);\n    unknown_call(0x1E28);\n    unknown_call(0x1E47);\n    unknown_call(0x1E47);\n    unknown_call(\"CF-L3-03 (large_jump_table): %d\\\\n\");\n    unknown_call(\"CF-L3-04 (conditional_func_ptr): %d\\\\n\");\n    unknown_call(\"CF-L3-05 (state_machine): %d\\\\n\");\n    unknown_call(\"CF-L3-06 (fsm_func_table): %d\\\\n\");\n    computed_goto(/* arguments unknown */);\n    unknown_call(\"CF-L3-07 (computed_goto): %d\\\\n\");\n    unknown_call(\"CF-L3-08 (obfuscated_cf): %d\\\\n\");\n    unknown_call(\"CF-L3-09 (opaque_predicate): %d\\\\n\");\n}"
+    },
+    {
+      "address": "6400",
+      "name": "main",
+      "end": "6432",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    test_control_flow_l1(/* arguments unknown */);\n    test_control_flow_l2(/* arguments unknown */);\n    test_control_flow_l3(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "6432",
+      "name": "_fini",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "functionStateCounts": {
+    "PARTIAL": 34,
+    "PASS": 43,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 0,
+  "subjectSignal": null,
+  "stderr": ""
+}
