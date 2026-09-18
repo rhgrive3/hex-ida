@@ -1,0 +1,160 @@
+{
+  "schema": "hex-investigation-unsupported-semantics/v2",
+  "baseSha": "05c93a1c92b34f4876060bd858e4393557d02dd4",
+  "source": {
+    "summary": "reports/public-benchmark/summary.json",
+    "summarySha256": "e44df2a95b98bb0dfdb06bac4bc54d837db6830723830c9a71403142f83cada0",
+    "manifest": "benchmarks/public/codefuse-arm64/manifest.json",
+    "manifestSha256": "de5d7726ef6bb18649a0b8cc5e4d261e01873eb7ae2c5734d203fed7c8eef992"
+  },
+  "summary": {
+    "unsupportedRows": 320,
+    "cases": 160,
+    "rowsPerCase": 2,
+    "byIdaName": {
+      ".init_proc": 160,
+      ".term_proc": 160
+    },
+    "byHexNameAtFrozenArtifact": {
+      "$x": 320
+    },
+    "bySection": {
+      ".init": 160,
+      ".fini": 160
+    },
+    "byFunctionSymbol": {
+      "_init": 160,
+      "_fini": 160
+    },
+    "functionSymbolType": {
+      "FUNC": 320
+    },
+    "functionSymbolBinding": {
+      "GLOBAL": 320
+    },
+    "functionSymbolVisibility": {
+      "HIDDEN": 320
+    },
+    "functionSymbolSize": {
+      "0": 320
+    },
+    "mappingSymbolAtSameAddress": {
+      "$x": 320
+    },
+    "addressIsExecutableSectionStart": 320,
+    "sectionFileBackedByExecutableLoad": 320,
+    "dtInitExactMatches": 160,
+    "dtFiniExactMatches": 160,
+    "sectionSizes": {
+      ".init": {
+        "24": 160
+      },
+      ".fini": {
+        "20": 160
+      }
+    },
+    "subjectEndNull": 320,
+    "subjectPseudocodeNull": 320,
+    "subjectStateUnsupported": 320,
+    "unknownRows": 0
+  },
+  "interpretation": {
+    "entityClass": "real ELF runtime init/fini code",
+    "ordinaryUserFunction": false,
+    "binaryGrounded": true,
+    "firstDivergence": "function-end-unproven",
+    "decoderOrLifterFailureObserved": false,
+    "nameProjectionArtifact": "The frozen artifact displays $x because the old same-address name projection let the mapping symbol win. The C-lane ranking repair changes the canonical display to _init/_fini but does not supply an extent.",
+    "benchmarkScope": "Under the frozen published-artifact-quality scope these are real matched rows and Hex has a coverage gap because it publishes no pseudocode. A user-function-only supplemental metric may exclude DT_INIT/DT_FINI symmetrically, but that is a separate scope lens rather than evidence that the product gap does not exist."
+  },
+  "runtimeProbes": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "compiler": "clang",
+      "optimization": "O0",
+      "debug": true,
+      "rows": [
+        {
+          "address": "0x860",
+          "kind": "init",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        },
+        {
+          "address": "0x2a84",
+          "kind": "fini",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        }
+      ]
+    },
+    {
+      "caseId": "3/3_gcc_O3_no_g",
+      "compiler": "gcc",
+      "optimization": "O3",
+      "debug": false,
+      "rows": [
+        {
+          "address": "0x990",
+          "kind": "init",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        },
+        {
+          "address": "0x2298",
+          "kind": "fini",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        }
+      ]
+    },
+    {
+      "caseId": "5-1/5-1_clang_Os_g",
+      "compiler": "clang",
+      "optimization": "Os",
+      "debug": true,
+      "rows": [
+        {
+          "address": "0xd48",
+          "kind": "init",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        },
+        {
+          "address": "0x1498",
+          "kind": "fini",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        }
+      ]
+    },
+    {
+      "caseId": "7/7_gcc_O2_g",
+      "compiler": "gcc",
+      "optimization": "O2",
+      "debug": true,
+      "rows": [
+        {
+          "address": "0x848",
+          "kind": "init",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        },
+        {
+          "address": "0x130c",
+          "kind": "fini",
+          "rangeReason": "function-end-unproven",
+          "decompileCompleteness": "unsupported",
+          "decompileReason": "decompiler-projection-unavailable"
+        }
+      ]
+    }
+  ]
+}

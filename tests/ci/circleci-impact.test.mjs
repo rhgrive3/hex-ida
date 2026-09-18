@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -69,6 +69,33 @@ try {
   git(repo, 'checkout', 'main');
   execFileSync('git', ['clone', '--bare', repo, remote], { encoding: 'utf8' });
   git(repo, 'remote', 'add', 'origin', remote);
+
+  // #9211: unsupported trailing arguments are invocation errors and must be
+  // rejected before any repository/network work is attempted.
+  const arityFakeBin = join(root, 'arity-fake-bin');
+  const arityGit = join(arityFakeBin, 'git');
+  const arityGitMarker = join(root, 'arity-git-called');
+  mkdirSync(arityFakeBin, { recursive: true });
+  write(arityGit, [
+    '#!/usr/bin/env bash',
+    `printf 'called\\n' >> ${JSON.stringify(arityGitMarker)}`,
+    'exit 99',
+    '',
+  ].join('\n'));
+  chmodSync(arityGit, 0o755);
+  for (const args of [
+    ['main-and-branch', '^js/ai/', 'unexpected'],
+    ['pr-only', '^js/ai/', 'extra1', 'extra2'],
+  ]) {
+    const result = spawnSync('bash', [router, ...args], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, CIRCLE_BRANCH: 'main', PATH: `${arityFakeBin}:${process.env.PATH || ''}` },
+    });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /unexpected CircleCI impact arguments/);
+  }
+  assert.equal(existsSync(arityGitMarker), false, 'rejected trailing arguments must not invoke git');
 
   // Regression for the A -> B race: remote main is already B while the older
   // A pipeline starts. A must still validate its own first-parent delta.
