@@ -80,6 +80,22 @@ test('reachability and unknown-store queries add no own property to the Semantic
   const introduced = after.filter((key) => !before.includes(key));
   assert.deepEqual(introduced, [],
     `analysis queries must not attach runtime caches/closures to the Semantic IR, added: ${introduced.join(', ')}`);
+  assert.equal(Object.hasOwn(ir, '_unknownStoreBarriers'), false,
+    'unknown-store barrier discovery must not publish a runtime cache on Semantic IR');
+});
+
+test('unknown-store barrier discovery reflects instruction mutation without stale IR-owned cache state', () => {
+  const { ir, concreteStore, unknownStore, load } = threeBlockUnknownStoreFixture();
+
+  assert.equal(hasUnknownStoreBarrier(ir, concreteStore, load), true,
+    'fixture starts with an unknown store between the concrete store and load');
+  assert.equal(Object.hasOwn(ir, '_unknownStoreBarriers'), false);
+
+  unknownStore.loc = { kind: 'field', key: 'field:mutated-control', size: 4 };
+  assert.equal(hasUnknownStoreBarrier(ir, concreteStore, load), false,
+    'a query after semantic instruction mutation must recompute the barrier set');
+  assert.equal(Object.hasOwn(ir, '_unknownStoreBarriers'), false,
+    'recomputation must stay external to the IR value');
 });
 
 test('control: a query on an IR without an unknown store adds no own property and reports no barrier', () => {

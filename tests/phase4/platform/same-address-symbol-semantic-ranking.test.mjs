@@ -176,28 +176,65 @@ test('an ordinary ELF symbol keeps its name, kind, flag and provenance semantics
   assert.equal(result.nameProvenance[0].confidence, 0.99);
 });
 
-test('export and import priority still dominate the same-address symbol tier', () => {
+test('strong semantic identity beats lower-evidence import/export source priority', () => {
   const address = 0x5000n;
-  const symbol = { name: 'symbol_name', address, kind: 'function', binding: 'local', size: 16n, defined: true, exported: false, sectionIndex: 1, source: 'symtab' };
+  const callable = { name: 'real_fn', address, kind: 'function', binding: 'global', size: 16n, defined: true, exported: false, sectionIndex: 1, source: 'symtab' };
 
   const withImport = analysisFromBinaryImage(imageWith({
-    symbols: [symbol],
-    exports: [{ address, name: 'export_name', kind: 'function', source: 'dynsym' }],
+    symbols: [callable],
+    exports: [],
+    imports: [{ name: 'bound_name', source: 'elf-dynsym', sites: [{ address, kind: 'bind' }] }],
+  }));
+  assert.deepEqual(withImport.names, ['real_fn'],
+    'an untyped import site must not displace a defined callable solely because its source bucket is higher');
+  assert.deepEqual([...withImport.kinds], [0]);
+  assert.equal(withImport.nameProvenance[0].source, 'symtab');
+
+  const withExport = analysisFromBinaryImage(imageWith({
+    symbols: [callable],
+    exports: [{ address, name: 'export_alias', source: 'dynsym' }],
+  }));
+  assert.deepEqual(withExport.names, ['real_fn'],
+    'an untyped export alias must not displace a defined callable solely because its source bucket is higher');
+  assert.deepEqual([...withExport.flags], [1], 'export evidence still merges the exported flag');
+  assert.equal(withExport.nameProvenance[0].source, 'symtab');
+
+  const typedData = { name: 'typed_data', address, kind: 'object', binding: 'global', size: 8n, defined: true, sectionIndex: 1, source: 'symtab' };
+  const dataWithImport = analysisFromBinaryImage(imageWith({
+    symbols: [typedData],
+    imports: [{ name: 'bound_data', source: 'elf-dynsym', sites: [{ address, kind: 'bind' }] }],
+  }));
+  assert.deepEqual(dataWithImport.names, ['typed_data'],
+    'typed data identity must likewise beat an untyped import site');
+
+  // Reversing the raw symbol list around the same source candidates cannot
+  // affect the semantic winner.
+  for (const symbols of [[mappingRecord('$x', address), callable], [callable, mappingRecord('$x', address)]]) {
+    const result = analysisFromBinaryImage(imageWith({
+      symbols,
+      exports: [{ address, name: 'export_alias', source: 'dynsym' }],
+      imports: [{ name: 'bound_name', source: 'elf-dynsym', sites: [{ address, kind: 'bind' }] }],
+    }));
+    assert.deepEqual(result.names, ['real_fn']);
+    assert.deepEqual([...result.flags], [1]);
+    assert.equal(result.nameProvenance[0].source, 'symtab');
+  }
+});
+
+test('source priority remains a deterministic tie-break for semantically equivalent records', () => {
+  const address = 0x5400n;
+  const marker = mappingRecord('local_label', address);
+  const result = analysisFromBinaryImage(imageWith({
+    symbols: [marker],
+    exports: [{ address, name: 'export_name', source: 'dynsym' }],
     imports: [{ name: 'import_name', source: 'elf-dynsym', sites: [{ address, kind: 'bind' }] }],
   }));
-  assert.deepEqual(withImport.names, ['import_name'], 'import priority (30) still wins the address');
-  assert.deepEqual([...withImport.kinds], [2]);
-  assert.deepEqual([...withImport.flags], [1], 'the lower-priority exported evidence still merges its export bit');
-  assert.equal(withImport.nameProvenance[0].source, 'bind');
 
-  const exportOnly = analysisFromBinaryImage(imageWith({
-    symbols: [symbol],
-    exports: [{ address, name: 'export_name', kind: 'function', source: 'dynsym' }],
-  }));
-  assert.deepEqual(exportOnly.names, ['export_name'], 'export priority (20) still beats the symbol tier (10)');
-  assert.deepEqual([...exportOnly.kinds], [0]);
-  assert.deepEqual([...exportOnly.flags], [1]);
-  assert.equal(exportOnly.nameProvenance[0].source, 'dynsym');
+  assert.deepEqual(result.names, ['import_name'],
+    'when identity, extent and linkage evidence tie, provider priority remains the documented tie-break');
+  assert.deepEqual([...result.kinds], [2]);
+  assert.deepEqual([...result.flags], [1], 'exported evidence is merged independently of the canonical-name winner');
+  assert.equal(result.nameProvenance[0].source, 'bind');
 });
 
 test('function identity and published function starts survive the naming decision', () => {

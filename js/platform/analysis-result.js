@@ -219,24 +219,22 @@ function canonicalNameEvidence(record) {
 
 /**
  * Total order over same-address candidates: declared identity first, then a
- * published extent, then binding linkage, and finally name and source. Every
- * component is a property of the record's own content, so no permutation of the
- * raw input — including a rewrite of the symbol table's physical order — can
- * change the winner.
+ * published extent, then binding linkage. Only records with equivalent semantic
+ * evidence use the source bucket as a tie-break, followed by name and source.
+ * This prevents a low-evidence import/export record from displacing a defined
+ * callable or typed symbol solely because it was collected from a higher-priority
+ * provider, while keeping provider preference for otherwise equivalent aliases.
  *
- * Once identity, extent and binding all tie, the remaining candidates are
- * aliases the parser declared indistinguishable: same address, same declared
- * kind, same extent, same linkage. Their only distinguishing content is the
- * spelling, so the spelling decides — by an order that is a pure function of the
- * record itself rather than of its position in the file.
+ * Every discriminator is independent of raw input order, including physical
+ * symbol-table ordinals, so provider/list permutations cannot change the winner.
  */
 function canonicalNameIsStronger(candidate, incumbent) {
-  if (candidate.priority !== incumbent.priority) return candidate.priority > incumbent.priority;
   const a = canonicalNameEvidence(candidate.record);
   const b = canonicalNameEvidence(incumbent.record);
   if (a.identity !== b.identity) return a.identity > b.identity;
   if (a.sized !== b.sized) return a.sized > b.sized;
   if (a.binding !== b.binding) return a.binding > b.binding;
+  if (candidate.priority !== incumbent.priority) return candidate.priority > incumbent.priority;
   if (candidate.name !== incumbent.name) return candidate.name < incumbent.name;
   return a.source < b.source;
 }
