@@ -41,8 +41,20 @@ function normalizedOptions(model, opts) {
   return o;
 }
 
+// Block reachability is a runtime-only memo: it holds a closure plus the pair
+// answers already explored for one CFG. It is owned outside the Semantic IR so
+// the IR stays a pure data structure. Storing it as `ir._canReachBlock` made a
+// single query append a function-valued own property, which poisoned every
+// consumer that must serialize the IR (structuredClone threw DataCloneError)
+// and every consumer that requires IR own properties to be semantic data (the
+// Phase 8 identity walk rejects function-valued properties). Keying the memo by
+// IR keeps the old lifecycle: answers are reused for the lifetime of that IR and
+// different IRs never share reachability facts.
+const reachabilityCache = new WeakMap();
+
 function blockReachability(ir) {
-  if (ir._canReachBlock) return ir._canReachBlock;
+  const cached = reachabilityCache.get(ir);
+  if (cached) return cached;
   const cache = new Map();
   const canReach = (from, to) => {
     if (from == null || to == null || from < 0 || to < 0) return false;
@@ -62,7 +74,7 @@ function blockReachability(ir) {
     cache.set(key, yes);
     return yes;
   };
-  ir._canReachBlock = canReach;
+  reachabilityCache.set(ir, canReach);
   return canReach;
 }
 
