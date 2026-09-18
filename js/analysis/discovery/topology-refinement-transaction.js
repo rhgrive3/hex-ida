@@ -81,8 +81,12 @@ export function commitFunctionTopologyRefinement({
   const candidates = Array.isArray(proposal.candidates) ? proposal.candidates : [];
   const accepted = [];
   for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object') continue;
-    if (typeof validateCandidate === 'function' && validateCandidate(candidate) !== true) continue;
+    if (!candidate || typeof candidate !== 'object') {
+      return Object.freeze({ status: 'stale', added: 0, revision: null });
+    }
+    if (typeof validateCandidate === 'function' && validateCandidate(candidate) !== true) {
+      return Object.freeze({ status: 'stale', added: 0, revision: null });
+    }
     accepted.push(candidate);
   }
   if (!accepted.length) {
