@@ -16,9 +16,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const ROOT = '/mnt/workspace/hex-agent-e';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const MANIFEST = JSON.parse(
   fs.readFileSync(path.join(ROOT, 'benchmarks/public/codefuse-arm64/manifest.json'), 'utf8'),
 );
@@ -46,7 +47,7 @@ function run(bin, args) {
 
 function parseSections(text) {
   const out = [];
-  const re = /^\s*\[\s*(\d+)\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+\S+\s+(\S*)/;
+  const re = /^\s*\[\s*(\d+)\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+(\S+)/;
   for (const line of text.split('\n')) {
     const m = re.exec(line);
     if (!m) continue;

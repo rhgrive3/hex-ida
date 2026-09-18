@@ -14,8 +14,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = '/mnt/workspace/hex-agent-e';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const REPORT_DIR = path.join(ROOT, 'reports/investigations/function-discovery');
 const BENCH = path.join(ROOT, 'benchmarks/public/codefuse-arm64');
 const manifest = JSON.parse(fs.readFileSync(path.join(BENCH, 'manifest.json'), 'utf8'));
@@ -183,6 +184,37 @@ function decodePltThunk(elf, addr) {
   return decodePltTail(w, addr);
 }
 
+function findStructuralPltSection(elf, exec, relaPlt) {
+  const nJmp = relaPlt.length;
+  const dtPltgot = elf.dyn.get(3) ?? null;
+  if (dtPltgot == null || nJmp === 0) return null;
+  const expectedSize = 32 + 16 * nJmp;
+  const jumpOffsets = new Set(relaPlt.map((r) => r.rOffset));
+  const candidates = [];
+
+  for (const section of exec) {
+    if (section.size !== expectedSize) continue;
+    const resolver = decodePltResolver(elf, section.addr);
+    if (!resolver) continue;
+    if (resolver.gotSlot !== dtPltgot + 16 || resolver.addTarget !== resolver.gotSlot) continue;
+    if (jumpOffsets.has(resolver.gotSlot)) continue;
+
+    let allThunksMatch = true;
+    for (let k = 0; k < nJmp; k += 1) {
+      const thunk = decodePltThunk(elf, section.addr + 32 + 16 * k);
+      if (!thunk
+        || thunk.gotSlot !== thunk.addTarget
+        || thunk.gotSlot !== relaPlt[k].rOffset) {
+        allThunksMatch = false;
+        break;
+      }
+    }
+    if (allThunksMatch) candidates.push(section);
+  }
+
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 const perBinary = [];
 const execNameCounts = {};
 const plt0Signatures = {};
@@ -207,8 +239,8 @@ for (const c of manifest.cases) {
   const p = path.join(BENCH, 'inputs', `${c.binarySha256}.bin`);
   const elf = parseElf(fs.readFileSync(p));
   const exec = execSections(elf);
-  const pltSec = exec.find((s) => s.name === '.plt');
   const relaPlt = elf.relaPlt;
+  const pltSec = findStructuralPltSection(elf, exec, relaPlt);
   const nJmp = relaPlt.length;
 
   const names = exec.map((s) => s.name);
@@ -383,7 +415,7 @@ const doc = {
     distinctSlot0ByteSignatures: Object.keys(plt0Signatures).length,
     slot0SignatureHistogram: plt0Signatures,
     finding:
-      'A PLT is identifiable from the ELF dynamic/linker structures alone, with no section name consulted: DT_JMPREL + the R_AARCH64_JUMP_SLOT entry count fixes the region size as 16*(n+1) with a 32-byte slot 0; slot 0 decodes as the AAELF64 resolver stub (stp x16,x30,[sp,#-16]! + adrp x16 / ldr x17,[x16,#o] / add x16,x16,#o / br x17) and materialises &GOT[2] = DT_PLTGOT+16, a slot that is NOT any jump-slot r_offset; and every remaining slot k decodes as that same GOT-materialisation tail encoding exactly .rela.plt[k-1].r_offset, in order. This separates the resolver stub (slot 0) from the import thunks (slots 1..n) using dynamic-table evidence only.',
+      'A PLT is identifiable from the ELF dynamic/linker structures alone, with no section name consulted: DT_JMPREL + the R_AARCH64_JUMP_SLOT entry count fixes the region size as 32+16*n bytes with a 32-byte slot 0; slot 0 decodes as the AAELF64 resolver stub (stp x16,x30,[sp,#-16]! + adrp x16 / ldr x17,[x16,#o] / add x16,x16,#o / br x17) and materialises &GOT[2] = DT_PLTGOT+16, a slot that is NOT any jump-slot r_offset; and every remaining slot k decodes as that same GOT-materialisation tail encoding exactly .rela.plt[k-1].r_offset, in order. This separates the resolver stub (slot 0) from the import thunks (slots 1..n) using dynamic-table evidence only.',
   },
   q3ExecutableByteCoverage: {
     binaries: q3PerBinary.length,

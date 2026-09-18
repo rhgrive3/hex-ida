@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const ROOT = '/mnt/workspace/hex-agent-e';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const BENCH = path.join(ROOT, 'benchmarks/public/codefuse-arm64');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(BENCH, 'manifest.json'), 'utf8'));
 const byId = new Map(MANIFEST.cases.map((c) => [c.id, c]));
@@ -84,6 +84,9 @@ if (shapesOnly) {
 const baseStarts = toBigList(analysis?.funcs);
 const baseProvenance = Array.isArray(analysis?.functionProvenance) ? analysis.functionProvenance : [];
 const baseStartSet = new Set(baseStarts);
+const baseProvenanceByAddress = new Map(
+  baseStarts.map((addr, index) => [addr.toString(), baseProvenance[index] ?? null]),
+);
 const baseEnds = Array.isArray(analysis?.funcEnds) || ArrayBuffer.isView(analysis?.funcEnds) ? analysis.funcEnds : null;
 const baseSourceOf = (addr) => {
   const idx = baseStarts.indexOf(addr);
@@ -95,8 +98,8 @@ const baseEndOf = (addr) => {
   const e = baseEnds[idx];
   return e == null ? null : '0x' + BigInt(e).toString(16);
 };
-const rawSeeds = [];
-const symbols = [];
+const rawSeeds = Array.isArray(image?.functions) ? image.functions : [];
+const symbols = Array.isArray(image?.symbols) ? image.symbols : [];
 // Layer 3: final SymbolIndex function list after demand discovery.
 const finalStarts = toBigList(app.symbols?.funcs);
 const finalSet = new Set(finalStarts);
@@ -116,12 +119,7 @@ const regionOf = (addr) => {
 };
 const seedOf = (addr) => rawSeeds.filter((s) => s?.address != null && BigInt(s.address) === addr);
 const symbolOf = (addr) => symbols.filter((s) => s?.address != null && BigInt(s.address) === addr);
-const provenanceOf = (addr) => {
-  const idx = finalStarts.indexOf(addr);
-  const raw = analysis?.functionProvenance;
-  if (idx < 0 || !Array.isArray(raw)) return null;
-  return raw[idx] ?? null;
-};
+const provenanceOf = (addr) => baseProvenanceByAddress.get(addr.toString()) ?? null;
 const enclosing = (addr) => {
   const before = [...finalSet].filter((a) => a <= addr);
   return before.length ? before.reduce((m, a) => (a > m ? a : m)) : null;
