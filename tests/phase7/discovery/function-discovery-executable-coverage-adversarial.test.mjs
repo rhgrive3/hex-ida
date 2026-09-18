@@ -155,3 +155,66 @@ test('A1 prime explicit zero-fill executable region contributes zero file-backed
   assert.equal(coverage.executableBytes, 8);
   assert.deepEqual(coverage.unclassified, [{ start:BASE, end:BASE + 8n, class:'padding' }]);
 });
+
+test('stale coverage after epoch change never publishes over newer discovery', async () => {
+  const bytes = new Uint8Array(16);
+  bytes.set(wordBytes(NOP, 'little'), 0);
+  bytes.set(wordBytes(NOP, 'little'), 4);
+  bytes.set(wordBytes(NOP, 'little'), 8);
+  bytes.set(wordBytes(NOP, 'little'), 12);
+  const region = { id:'text', exec:true, vmAddr:BASE, size:16n };
+  let releaseOldRead = null;
+  let oldReadStarted = null;
+  const oldReadGate = new Promise((resolve) => { oldReadStarted = resolve; });
+  const app = {
+    backend:{
+      gen:1,
+      binaryId:'coverage-epoch-race',
+      guessFunctions:async () => ({ starts:[], complete:true, discoveryComplete:true }),
+      readAt:(address, length) => {
+        if (app.backend.gen === 1) {
+          oldReadStarted();
+          return new Promise((resolve) => {
+            releaseOldRead = () => resolve({
+              found:true,
+              bytes:bytes.slice(Number(address - BASE), Number(address - BASE) + Number(length)),
+            });
+          });
+        }
+        const offset = Number(address - BASE);
+        return Promise.resolve({ found:true, bytes:bytes.slice(offset, offset + Number(length)) });
+      },
+    },
+    analysisEpoch:1,
+    projectRevision:0,
+    store:{ get:(key) => key === 'architecture' ? 'arm64' : key === 'sliceIndex' ? 0 : null },
+    symbols:{
+      gen:1,
+      funcs:new BigUint64Array(0),
+      funcEnds:new BigUint64Array(0),
+      functionCount:0,
+      functionStartsComplete:false,
+      functionDiscovery:{ complete:false },
+      addFunctions() { throw new Error('coverage accounting must not add function starts'); },
+    },
+    programRegions:() => [region],
+    viewer:{ setSymbols() {} },
+  };
+  installDemandDrivenAnalysis(app);
+
+  const oldFinished = app.ensureFunctions(region).then(
+    () => ({ settled:'fulfilled' }),
+    (error) => ({ settled:'rejected', error }),
+  );
+  await oldReadGate;
+  // A newer demand epoch starts while the old coverage read is in flight.
+  app.backend.gen = 2;
+  await app.ensureFunctions(region);
+  const newKey = app.symbols.functionDiscovery?.discoveryKey;
+  assert.ok(newKey?.startsWith('2:'), `newer epoch must publish first (got ${newKey})`);
+
+  releaseOldRead();
+  const oldOutcome = await oldFinished;
+  assert.equal(oldOutcome.settled, 'rejected', 'stale coverage producer must fail closed');
+  assert.equal(app.symbols.functionDiscovery?.discoveryKey, newKey, 'stale coverage must not overwrite newer discovery');
+});

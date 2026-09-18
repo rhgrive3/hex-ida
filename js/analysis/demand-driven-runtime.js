@@ -587,6 +587,11 @@ function installCancellableFunctionDiscovery(app) {
               return read?.found === true && read.bytes instanceof Uint8Array ? read.bytes : null;
             },
           });
+          // The coverage read awaits external bytes. A newer epoch may start
+          // while the old read is in flight; only the current epoch may
+          // publish functionDiscovery (#9219).
+          abortIfNeeded(producerController.signal);
+          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
             reasons:[...new Set(reasons)], capped:results.some((item) => item.capped), coverage,
