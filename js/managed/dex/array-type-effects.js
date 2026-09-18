@@ -113,10 +113,10 @@ function newArrayEffects({ formatByte, view, insnsStart, pc, image }) {
 
 function filledArrayRegisters({ opcode, formatByte, view, insnsStart, pc }) {
   if (opcode === 0x24) {
-    const count = formatByte >>> 4;
+    const count = formatByte & 15;
     if (count > 5) fail('dex-filled-new-array-register-count-invalid');
     const packed = view.getUint16(insnsStart + (pc + 2) * 2, true);
-    return [packed & 15, (packed >>> 4) & 15, (packed >>> 8) & 15, (packed >>> 12) & 15, formatByte & 15].slice(0, count);
+    return [packed & 15, (packed >>> 4) & 15, (packed >>> 8) & 15, (packed >>> 12) & 15, formatByte >>> 4].slice(0, count);
   }
   const count = formatByte;
   const first = view.getUint16(insnsStart + (pc + 2) * 2, true);
@@ -195,7 +195,7 @@ function arrayAccessEffects(opcode, formatByte, view, insnsStart, pc) {
   return exact(`${isWrite ? 'aput' : 'aget'}${variant.suffix}`, {
     locationReads:reads,
     locationWrites:isWrite ? [] : [valueLocation],
-    producedValues:isWrite ? [] : [{ bits:variant.byteWidth * 8, type:variant.extension ? { kind:'bitvector', widthBits:variant.byteWidth * 8 } : variant.type }],
+    producedValues:isWrite ? [] : [{ bits:variant.bits, type:variant.type }],
     memoryEffects:[memory],
     possibleExceptions:exceptions(
       'java/lang/NullPointerException',
