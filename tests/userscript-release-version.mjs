@@ -34,6 +34,32 @@ const loaderOnlyChange = resolveUserscriptReleaseVersion({ serial: 42, releaseId
 assert.equal(loaderOnlyChange.version, '2.0.43', 'loader/release identity changes must bump even when runtime buildId is unchanged');
 
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 0 }, { releaseIdentity: a, buildId: buildA }));
+
+// #9212: persisted serial authority is typed state. Values that Number() could
+// coerce into a valid serial must still be rejected rather than canonicalized.
+for (const serial of [true, '1', '41', [1], ['41'], { valueOf: () => 41 }]) {
+  assert.throws(
+    () => resolveUserscriptReleaseVersion({ serial, releaseIdentity: a, buildId: buildA }, { releaseIdentity: a, buildId: buildA }),
+    /invalid or exhausted/,
+  );
+}
+let coercionAttempted = false;
+assert.throws(
+  () => resolveUserscriptReleaseVersion(
+    { serial: { valueOf() { coercionAttempted = true; return 41; } }, releaseIdentity: a, buildId: buildA },
+    { releaseIdentity: a, buildId: buildA },
+  ),
+  /invalid or exhausted/,
+);
+assert.equal(coercionAttempted, false, 'invalid serial objects must be rejected without invoking coercion hooks');
+
+for (const serial of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+  assert.throws(
+    () => resolveUserscriptReleaseVersion({ serial, releaseIdentity: a, buildId: buildA }, { releaseIdentity: a, buildId: buildA }),
+    /invalid or exhausted/,
+  );
+}
+
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: a, buildId: buildA }, { releaseIdentity: 'bad', buildId: buildA }));
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: 'bad', buildId: buildA }, { releaseIdentity: a, buildId: buildA }));
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: a, buildId: 'bad' }, { releaseIdentity: a, buildId: buildA }));
