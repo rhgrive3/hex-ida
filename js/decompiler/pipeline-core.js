@@ -24,7 +24,7 @@ import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
-  readSemanticConditionalRegions } from './semantic-core.js';
+  readSemanticConditionalRegions, readSemanticLocalDeclaration } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -364,7 +364,11 @@ function memoryLocation(inst, state) {
   const loc = inst?.loc || {};
   const addr = inst?.addr || {};
   if (loc.kind === 'stack') {
-    const name = stackLocationName(loc, addr);
+    // A declaration and every use denote one recovered stack location. Keep
+    // the initial producer's spelling when it issued a typed declaration;
+    // renaming only the rewritten stores would leave the declaration orphaned
+    // and retained control expressions referring to a second storage object.
+    const name = state.localDeclarations?.get(loc.key)?.name ?? stackLocationName(loc, addr);
     return { kind: 'stack', key: loc.key, name, text: name };
   }
   if (loc.kind === 'global') {
@@ -1884,6 +1888,8 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
+    localDeclarations: new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))
+      .filter(Boolean).map(owner => [owner.key, owner])),
     proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],

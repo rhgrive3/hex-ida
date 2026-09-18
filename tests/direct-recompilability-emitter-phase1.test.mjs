@@ -100,6 +100,19 @@ test('a real stack slot with width alone does not authorize a fabricated local t
   assert.equal(result.lines.some(l => l.kind === 'decl'), false);
 });
 
+test('final C AST preserves the declared stack identity through expression rewriting', () => {
+  const { model, opts } = modelOf([
+    { mn: 'sdiv', ops: 'x2, x0, x1' },
+    { mn: 'str', ops: 'x2, [sp, #0x10]' },
+    { mn: 'ret', ops: '' },
+  ], { name: 'declared_stack_identity' });
+  const result = decompile(model, opts);
+  assert.match(result.pseudocode, /int64 var_10;/);
+  assert.match(result.pseudocode, /var_10 = \(int64_t\)\(a2 == 0 \? 0 : a1 \/ a2\);/);
+  assert.doesNotMatch(result.pseudocode, /local_p10/);
+  assert.equal(result.types.locals[0]?.type, 'unknown');
+});
+
 test('local declarations do not change emitted executable statements', () => {
   const { model, opts } = modelOf([
     { mn: 'sdiv', ops: 'x2, x0, x1' },

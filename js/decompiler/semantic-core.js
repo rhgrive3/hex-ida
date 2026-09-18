@@ -900,6 +900,15 @@ function semanticLocalDeclarationType(local, ctx) {
   return observed.size === 1 ? [...observed][0] : null;
 }
 
+const localDeclarationOwners = new WeakMap();
+
+export function readSemanticLocalDeclaration(node, ir) {
+  const owner = localDeclarationOwners.get(node);
+  return owner && owner.ir === ir && ir.stackSlots?.includes(owner.slot)
+    && owner.slot.key === owner.key && node.text === `${owner.type} ${owner.name};`
+    ? owner : null;
+}
+
 function semanticLocalDeclarations(types, body, ctx) {
   const text = body.map((item) => item.text || '').join('\n');
   const out = [];
@@ -911,7 +920,10 @@ function semanticLocalDeclarations(types, body, ctx) {
     const type = semanticLocalDeclarationType(local, ctx);
     if (!type) continue;
     seen.add(name);
-    out.push(line('decl', 1, `${type} ${name};`, null));
+    const node = line('decl', 1, `${type} ${name};`, null);
+    const slot = (ctx.ir.stackSlots || []).find(candidate => candidate.name === local.slot);
+    if (slot?.key) localDeclarationOwners.set(node, Object.freeze({ ir:ctx.ir, slot, key:slot.key, name, type }));
+    out.push(node);
   }
   return out;
 }

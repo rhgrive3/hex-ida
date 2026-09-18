@@ -2,6 +2,7 @@
 import { registerHooks } from 'node:module';
 
 const mutations = {
+  'orphaned-stack-declaration': ['js/decompiler/pipeline-core.js', 'state.localDeclarations?.get(loc.key)?.name ?? stackLocationName(loc, addr)', 'stackLocationName(loc, addr)'],
   'nested-close': ['js/decompile-base.js', " && (l.indent ?? 0) === functionIndent", ''],
   'label-floor': ['js/decompile-base.js', 'const floor = open >= 0 ? open + 1 : 1;', 'const floor = 1;'],
   'naive-declarations': ['js/decompiler/semantic-core.js', 'const type = semanticLocalDeclarationType(local, ctx);', "const type = semanticLocalDeclarationType(local, ctx) || 'uint64';"],
