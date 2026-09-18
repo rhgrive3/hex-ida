@@ -65,6 +65,9 @@ export function parseCheckSteps(checkScript) {
     }
     current += ch;
   }
+  if (escaped || inSingle || inDouble || inBacktick) {
+    throw new Error('run-check-parallel: malformed shell syntax in check script (unclosed quote or dangling escape)');
+  }
   const last = current.trim();
   if (last) steps.push(last);
   return steps;
@@ -119,6 +122,9 @@ export function tokenizeCommand(command) {
     current += ch;
     hasToken = true;
   }
+  if (escaped || inSingle || inDouble) {
+    throw new Error(`run-check-parallel: malformed shell syntax in command "${command}" (unclosed quote or dangling escape)`);
+  }
   if (hasToken || current.length > 0) {
     tokens.push(current);
   }
@@ -152,9 +158,16 @@ async function runPool(jobs, concurrency, onSettled) {
   return results;
 }
 
-export async function runCheckParallel({ stdout = process.stdout, stderr = process.stderr } = {}) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  const steps = parseCheckSteps(pkg.scripts.check ?? '');
+export async function runCheckParallel({
+  stdout = process.stdout,
+  stderr = process.stderr,
+  checkScript,
+} = {}) {
+  const pkg = checkScript !== undefined
+    ? null
+    : JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const rawScript = checkScript !== undefined ? checkScript : (pkg?.scripts?.check ?? '');
+  const steps = parseCheckSteps(rawScript);
   if (steps.length === 0) throw new Error('run-check-parallel: no steps found in scripts.check');
 
   const jobs = steps.map((command) => ({ label: stepLabel(command), rawCommand: command, ...splitCommand(command) }));

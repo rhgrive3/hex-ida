@@ -75,13 +75,16 @@ test('#9198 concurrent fetchFixture calls do not collide on PID-only temp paths'
       };
     };
 
-    const [failRes, successRes] = await Promise.allSettled([
+    const [res1, res2] = await Promise.allSettled([
       fetchFixture('test-concurrent', spec),
       fetchFixture('test-concurrent', spec),
     ]);
 
-    assert.equal(failRes.status, 'rejected', 'first call should fail as simulated');
-    assert.equal(successRes.status, 'fulfilled', `second call must succeed and not be affected: ${successRes.reason?.message}`);
+    const failRes = res1.status === 'rejected' ? res1 : res2;
+    const successRes = res1.status === 'fulfilled' ? res1 : res2;
+    assert.notEqual(failRes, successRes, 'one call must fail and the other must succeed');
+    assert.equal(failRes.status, 'rejected', 'one call should fail as simulated');
+    assert.equal(successRes.status, 'fulfilled', `other call must succeed and not be affected: ${successRes.reason?.message}`);
     assert.ok(fs.existsSync(targetPath), 'target fixture must still exist from successful call');
   } finally {
     globalThis.fetch = originalFetch;

@@ -49,7 +49,7 @@ export async function verify(name, path, spec) {
   return digest;
 }
 
-async function releaseBody(response) {
+export async function releaseBody(response) {
   try {
     if (typeof response?.body?.cancel === 'function') {
       await response.body.cancel();
@@ -108,7 +108,10 @@ export async function fetchFixture(name, spec) {
   await mkdir(dirname(target), { recursive:true });
   const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
   const response = await fetchWithHttpsRedirects(url);
-  if (!response.ok || !response.body) throw new Error(`${name}: download failed with HTTP ${response.status}`);
+  if (!response.ok || !response.body) {
+    await releaseBody(response);
+    throw new Error(`${name}: download failed with HTTP ${response.status}`);
+  }
 
   const hash = createHash('sha256');
   const output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });

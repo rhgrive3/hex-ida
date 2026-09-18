@@ -61,10 +61,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unexpected="$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
-          if [[ -n "$unexpected" ]]; then
+          unexpected=()
+          while IFS= read -r -d '' entry; do
+            [[ -z "$entry" ]] && continue
+            status="${entry:0:2}"
+            path="${entry:3}"
+            case "$path" in
+              userscript/hex.user.template.js|userscript/release-version.json) ;;
+              *) unexpected+=("$path") ;;
+            esac
+            if [[ "$status" =~ [RC] ]]; then
+              IFS= read -r -d '' orig_path || true
+              case "$orig_path" in
+                userscript/hex.user.template.js|userscript/release-version.json) ;;
+                *) unexpected+=("$orig_path") ;;
+              esac
+            fi
+          done < <(git status --porcelain=v1 -z --untracked-files=all)
+          if [[ ${#unexpected[@]} -gt 0 ]]; then
             echo 'userscript:build changed files outside the generated-output allowlist:' >&2
-            printf '%s\n' "$unexpected" >&2
+            printf '%s\n' "${unexpected[@]}" >&2
             exit 1
           fi
           git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
