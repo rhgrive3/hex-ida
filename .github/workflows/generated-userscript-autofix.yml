@@ -93,6 +93,7 @@ jobs:
         shell: bash
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           if git diff --quiet -- userscript/hex.user.template.js userscript/release-version.json; then
@@ -100,7 +101,7 @@ jobs:
             echo 'push=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git fetch origin "${{ github.event.pull_request.head.ref }}"
+          git fetch origin "$HEAD_REF"
           if [[ "$(git rev-parse FETCH_HEAD)" != "$HEAD_SHA" ]]; then
             echo 'PR head moved during autofix; refusing stale push.' >&2
             exit 1
