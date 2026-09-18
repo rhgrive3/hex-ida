@@ -88,12 +88,22 @@ export async function runQuietCommand({
   }
 
   const directory = fs.mkdtempSync(path.join(tempRoot, `hex-${safeLabel(label)}-`));
+  const cleanupDirectory = () => fs.rmSync(directory, { recursive: true, force: true });
   const logPath = path.join(directory, 'full.log');
-  const log = createLogStream(logPath);
+  // A stream factory may throw before returning a stream (EMFILE/ENFILE/open
+  // validation). That happens before the async 'error' path owns cleanup, so
+  // the directory created on the line above must be released here without
+  // masking the original initialization error.
+  let log;
+  try {
+    log = createLogStream(logPath);
+  } catch (error) {
+    try { cleanupDirectory(); } catch { /* preserve the initialization error */ }
+    throw error;
+  }
   // 'finish' flushes writes but can precede descriptor close. NFS cleanup
   // must wait for 'close' so an open log cannot leave a transient .nfs entry.
   const logClosed = new Promise((resolve) => log.once('close', resolve));
-  const cleanupDirectory = () => fs.rmSync(directory, { recursive: true, force: true });
   let tail = Buffer.alloc(0);
   let logError = null;
   let child;
