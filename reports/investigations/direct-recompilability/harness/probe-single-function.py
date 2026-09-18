@@ -7,9 +7,11 @@ two different questions:
   (a) is a function's own emitted text a valid C function definition?  and
   (b) is there a standalone translation unit around it?
 
-This probe answers (a) alone: one pseudocode blob per translation unit, nothing
-added, nothing repaired. If a blob still fails, the defect is intra-function and
-therefore a genuine emitter defect rather than a missing prelude.
+This probe removes cross-function concatenation effects by compiling one
+pseudocode blob per translation unit, with nothing added or repaired. A remaining
+failure is still ambiguous between missing standalone declarations/headers/
+prototypes and an intra-function emitter defect; isolation alone does not decide
+which side owns the defect.
 
 Not a benchmark. It is a bounded diagnostic probe over the frozen corpus.
 """
@@ -47,15 +49,90 @@ PER_CASE_TIMEOUT_S = 5.0
 GLOBAL_DEADLINE_S = 600.0
 
 
-def _per_case(blobs):
-    per = collections.defaultdict(lambda: {"blobs": 0, "pass": 0})
+def _line_text(source, first):
+    if not first or not source:
+        return None
+    lines = source.splitlines()
+    line = first.get("line")
+    if not isinstance(line, int) or line <= 0 or line > len(lines):
+        return None
+    return lines[line - 1]
+
+
+def _compact(blobs):
+    per = collections.defaultdict(
+        lambda: {"candidates": 0, "attempted": 0, "completed": 0,
+                 "pass": 0, "fail": 0, "skipped": 0, "timedOut": 0}
+    )
+    fail_families = collections.Counter()
+    fail_clusters = collections.Counter()
+    candidate_cases = set()
+    candidates = attempted = completed = passed = skipped = timed_out = 0
+    failing_samples = []
+
     for b in blobs:
+        cid = b["caseId"]
+        candidate_cases.add(cid)
+        candidates += 1
+        per[cid]["candidates"] += 1
+
         if b.get("skipped"):
+            skipped += 1
+            per[cid]["skipped"] += 1
             continue
-        per[b["caseId"]]["blobs"] += 1
-        if b["pass"]:
-            per[b["caseId"]]["pass"] += 1
-    return {k: per[k] for k in sorted(per)}
+
+        attempted += 1
+        per[cid]["attempted"] += 1
+        if b.get("timedOut"):
+            timed_out += 1
+            per[cid]["timedOut"] += 1
+            continue
+
+        completed += 1
+        per[cid]["completed"] += 1
+        if b.get("pass") is True:
+            passed += 1
+            per[cid]["pass"] += 1
+            continue
+
+        per[cid]["fail"] += 1
+        first = b.get("firstError")
+        if first:
+            fail_families[norm_family(first["message"])] += 1
+            fail_clusters[cluster_of(
+                {"severity": "error", **first},
+                b.get("sourceLine"),
+            )] += 1
+        if len(failing_samples) < 200:
+            failing_samples.append(b)
+
+    return {
+        "schema": "hex-direct-recompilability-single-function-probe/v2",
+        "note": (
+            "Each pseudocode blob is compiled alone with no prelude or repair. "
+            "Isolation removes cross-function concatenation effects but does not "
+            "separate missing standalone declarations from emitter defects."
+        ),
+        "blobCandidates": candidates,
+        "blobAttempted": attempted,
+        "blobCompleted": completed,
+        "blobTotal": completed,
+        "blobPass": passed,
+        "blobFail": completed - passed,
+        "blobSkipped": skipped,
+        "blobTimedOut": timed_out,
+        "failFamilies": dict(fail_families.most_common(20)),
+        "failClusters": dict(fail_clusters.most_common(20)),
+        "casesWithAtLeastOnePassingBlob": sum(
+            1 for stats in per.values() if stats["pass"] > 0
+        ),
+        "caseCount": len(candidate_cases),
+        "completedCaseCount": sum(
+            1 for stats in per.values() if stats["completed"] > 0
+        ),
+        "perCase": {k: per[k] for k in sorted(per)},
+        "failingBlobSamples": failing_samples,
+    }
 
 
 def main():
@@ -73,11 +150,7 @@ def main():
     if args.from_full:
         with open(args.from_full, "r", encoding="utf-8") as fh:
             prior = json.load(fh)
-        compact = {k: v for k, v in prior.items() if k != "blobs"}
-        compact["perCase"] = _per_case(prior["blobs"])
-        compact["failingBlobSamples"] = [
-            b for b in prior["blobs"] if not b.get("pass")
-        ][:200]
+        compact = _compact(prior["blobs"])
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(compact, fh, ensure_ascii=False, indent=1)
         print("recompacted from", args.from_full, "->", args.out)
@@ -87,12 +160,6 @@ def main():
     os.makedirs(args.tmp, exist_ok=True)
     deadline = time.time() + GLOBAL_DEADLINE_S
 
-    blob_total = 0
-    blob_pass = 0
-    fail_families = collections.Counter()
-    fail_clusters = collections.Counter()
-    case_pass = collections.Counter()   # caseId -> blobs that pass
-    case_total = collections.Counter()
     blob_records = []
 
     files = sorted(
@@ -109,8 +176,6 @@ def main():
             pc = fn.get("pseudocode")
             if pc is None:
                 continue
-            blob_total += 1
-            case_total[case_id] += 1
             if time.time() > deadline:
                 blob_records.append(
                     {"caseId": case_id, "index": idx, "skipped": "global-deadline"}
@@ -128,7 +193,20 @@ def main():
                 )
                 code, err = p.returncode, p.stderr.decode("utf-8", "replace")
             except subprocess.TimeoutExpired:
-                code, err = None, ""
+                blob_records.append(
+                    {
+                        "caseId": case_id,
+                        "index": idx,
+                        "name": fn.get("name"),
+                        "address": fn.get("address"),
+                        "state": fn.get("state"),
+                        "pass": None,
+                        "timedOut": True,
+                        "firstError": None,
+                        "sourceLine": None,
+                    }
+                )
+                continue
             passed = code == 0
             first = None
             if not passed and err:
@@ -141,12 +219,7 @@ def main():
                             "message": m.group(4),
                         }
                         break
-            if passed:
-                blob_pass += 1
-                case_pass[case_id] += 1
-            if first:
-                fail_families[norm_family(first["message"])] += 1
-                fail_clusters[cluster_of({"severity": "error", **first})] += 1
+            source_line = _line_text(src, first)
             blob_records.append(
                 {
                     "caseId": case_id,
@@ -156,51 +229,44 @@ def main():
                     "state": fn.get("state"),
                     "pass": passed,
                     "firstError": first,
-                    "fallbackLink": None if passed else None,
+                    "sourceLine": source_line,
+                    "timedOut": False,
+                    "fallbackLink": None,
                 }
             )
+
+    result = _compact(blob_records)
 
     if args.full:
         with open(args.full, "w", encoding="utf-8") as fh:
             json.dump(
                 {
-                    "schema": "hex-direct-recompilability-single-function-probe/full/v1",
-                    "blobTotal": blob_total, "blobPass": blob_pass,
+                    "schema": "hex-direct-recompilability-single-function-probe/full/v2",
+                    "summary": {k: v for k, v in result.items()
+                                if k not in ("perCase", "failingBlobSamples")},
                     "blobs": blob_records,
                 },
                 fh, ensure_ascii=False, indent=1,
             )
         print("full record written to", args.full)
-
-    result = {
-        "schema": "hex-direct-recompilability-single-function-probe/v1",
-        "note": (
-            "Each pseudocode blob compiled alone as its own translation unit, "
-            "no prelude and no repair. Answers intra-function validity only."
-        ),
-        "blobTotal": blob_total,
-        "blobPass": blob_pass,
-        "blobFail": blob_total - blob_pass,
-        "failFamilies": dict(fail_families.most_common(20)),
-        "failClusters": dict(fail_clusters.most_common(20)),
-        "casesWithAtLeastOnePassingBlob": sum(1 for k, v in case_pass.items() if v > 0),
-        "caseCount": len(case_total),
-        "perCase": {
-            cid: {"blobs": case_total[cid], "pass": case_pass.get(cid, 0)}
-            for cid in sorted(case_total)
-        },
-        "failingBlobSamples": [b for b in blob_records if not b.get("pass")][:200],
-    }
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
 
-    print("blobs:", blob_total, "pass:", blob_pass, "fail:", blob_total - blob_pass)
-    print("cases with >=1 passing blob:", result["casesWithAtLeastOnePassingBlob"], "/", len(case_total))
+    print(
+        "candidates:", result["blobCandidates"],
+        "attempted:", result["blobAttempted"],
+        "completed:", result["blobCompleted"],
+        "pass:", result["blobPass"],
+        "fail:", result["blobFail"],
+        "skipped:", result["blobSkipped"],
+        "timed out:", result["blobTimedOut"],
+    )
+    print("cases with >=1 passing blob:", result["casesWithAtLeastOnePassingBlob"], "/", result["caseCount"])
     print("top first-error families:")
-    for k, v in fail_families.most_common(10):
+    for k, v in collections.Counter(result["failFamilies"]).most_common(10):
         print(f"  {v:6d}  {k}")
     print("top first-error clusters:")
-    for k, v in fail_clusters.most_common(12):
+    for k, v in collections.Counter(result["failClusters"]).most_common(12):
         print(f"  {v:6d}  {k}")
 
 

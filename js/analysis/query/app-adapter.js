@@ -1022,7 +1022,10 @@ export function createAppAnalysisQueryAdapter(app) {
         // A withheld deep field is `truncated`; an unknown field is schema
         // drift, so the published value is a `partial` projection of it.
         const truncated = withheld.length > 0;
-        return wrap(published, truncated ? 'truncated' : 'partial', {
+        const projectionCompleteness = truncated ? 'truncated' : 'partial';
+        const producerCompleteness = completeness ?? completenessOf(value, 'complete');
+        const combinedCompleteness = weakestCompleteness([producerCompleteness, projectionCompleteness]);
+        return wrap(published, combinedCompleteness, {
           ...status,
           reason:status.reason ?? (truncated ? 'decompile-projection-withheld' : 'decompile-projection-schema-drift'),
           projection:{ schema:DECOMPILE_DTO_SCHEMA, withheld, unexpected },
