@@ -3,8 +3,8 @@ const IDENTITY = /^[a-f0-9]{64}$/;
 const BUILD_ID = /^[a-f0-9]{24}$/;
 
 export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, buildId } = {}) {
-  const serial = Number(previous?.serial);
-  if (!Number.isSafeInteger(serial) || serial < 1 || serial > 9_999_999_999) {
+  const serial = previous?.serial;
+  if (typeof serial !== 'number' || !Number.isSafeInteger(serial) || serial < 1 || serial > 9_999_999_999) {
     throw new Error('Userscript release serial is invalid or exhausted.');
   }
   const identity = String(releaseIdentity || '').toLowerCase();
