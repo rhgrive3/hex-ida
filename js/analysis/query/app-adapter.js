@@ -301,11 +301,21 @@ function cloneableLegacyModel(model) {
 //   * it is deeply recursive and unbounded, so publishing it made the query
 //     envelope's structuredClone()/deepFreezeTree() overflow the stack on large
 //     functions even when the decompilation itself succeeded.
-// Raw semantic IR stays reachable through the dedicated `semanticIR()` query
-// and the control-flow graph through `cfg()`; rendered navigation only needs
-// `lines` + `renderProvenance`, which are published here.
+// Rendered navigation only needs `lines` + `renderProvenance`, which are
+// published here, and the control-flow graph is served by `cfg()`. The
+// dedicated `semanticIR()` query serves the canonical Semantic IR v2
+// (`pipeline.semanticIr`), which carries no runtime observer and therefore
+// crosses the clone boundary; it does **not** serve the ARM64 legacy `ir`
+// value, which still owns a `defUse` runtime closure (see RESULT notes in the
+// commit message: IR runtime ownership is invariant-1 work in another lane).
 export const DECOMPILE_DTO_SCHEMA = 'analysis-query-decompile-presentation-v1';
 
+// The published schema and the never-published producer state are exported as
+// frozen *arrays*: frozen documentation a consumer can read, never a mutable
+// runtime authority. `Object.freeze(new Set(...))` would still allow `.add()` /
+// `.delete()`, so a consumer could silently reclassify an internal field as
+// publishable. Lookup below uses module-private Sets derived from these arrays
+// at module evaluation time, so no consumer can change what `publish()` does.
 export const DECOMPILE_PUBLIC_FIELDS = Object.freeze([
   'semantic', 'signature', 'summary', 'pseudocode', 'text', 'code',
   'lines', 'evidence', 'warnings', 'labels', 'coverage',
@@ -315,15 +325,20 @@ export const DECOMPILE_PUBLIC_FIELDS = Object.freeze([
 // Producer-owned analysis state that is never published. A field is listed here
 // because the field itself is internal by contract; its contents are not
 // inspected, which is why an unclonable observer such as `ir.defUse` does not
-// fail the query. A field in neither list is unknown to the schema and still
-// fails closed when it carries an unclonable value.
-export const DECOMPILE_INTERNAL_FIELDS = Object.freeze(new Set([
+// fail the query. A field in neither list is unknown to the schema: it is never
+// published, it fails closed when it carries an unclonable value, and it is
+// reported as an explicit projection loss otherwise (never a silent drop).
+export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'ir', 'ctx', 'types', 'highVariables', 'cAst', 'semanticAst', 'semanticFacts',
   'sourceMap', 'prototype', 'aggregateLayouts', 'rewriteProof', 'rewriteStats',
   'passMetrics', 'phase8', 'phase8Projection', 'metrics', 'importantInputs',
   'importantOutputs', 'sideEffects', 'conditions', 'expressionHistoryBinding',
   'semanticSuppressionHistory', 'semanticStatementRenderHistory',
-]));
+  'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
+]);
+
+const DECOMPILE_PUBLIC_FIELD_SET = new Set(DECOMPILE_PUBLIC_FIELDS);
+const DECOMPILE_INTERNAL_FIELD_SET = new Set(DECOMPILE_INTERNAL_FIELDS);
 
 // structuredClone() overflows the stack at a nesting depth far below what the
 // internal analysis graph reaches. Published presentation data is shallow by
@@ -369,25 +384,34 @@ function exceedsPublishedDepthBudget(root) {
 }
 
 // Projects a producer decompiler result onto the explicit public schema.
-// Returns the published value plus the public fields that had to be withheld.
+// Returns the published value plus the fields the projection had to give up:
+//   * `withheld`   — public fields too deep to cross the clone boundary,
+//   * `unexpected` — fields the schema does not know at all (producer drift).
+// Neither list is ever a silent drop: both are reported on `status.projection`
+// with a non-`complete` completeness, and neither is published.
 function publicDecompilerProjection(value) {
-  if (value == null || typeof value !== 'object') return { value, withheld:[] };
+  if (value == null || typeof value !== 'object') return { value, withheld:[], unexpected:[] };
 
   // Unknown fields are outside the schema. Dropping an unclonable value there
   // would silently turn a producer error into an apparently complete result, so
   // those keep failing closed; the declared internal fields are the only place
-  // a live observer is allowed to live.
-  let unknown;
+  // a live observer is allowed to live. A cloneable unknown field is not
+  // published either — it is reported as schema drift, so a producer that adds
+  // a new field cannot look like a complete result under the old schema.
+  let keys;
   try {
-    unknown = Object.keys(value);
+    keys = Object.keys(value);
   } catch { throw new TypeError('analysis-query-value-unclonable'); }
-  for (const key of unknown) {
-    if (DECOMPILE_PUBLIC_FIELDS.includes(key) || DECOMPILE_INTERNAL_FIELDS.has(key)) continue;
+  const unexpected = [];
+  for (const key of keys) {
+    if (DECOMPILE_PUBLIC_FIELD_SET.has(key) || DECOMPILE_INTERNAL_FIELD_SET.has(key)) continue;
     let unclonable;
     try { unclonable = containsUnclonableValue(value[key]); }
     catch { unclonable = true; }
     if (unclonable) throw new TypeError('analysis-query-value-unclonable');
+    unexpected.push(key);
   }
+  unexpected.sort();
 
   const projection = {};
   const withheld = [];
@@ -409,7 +433,7 @@ function publicDecompilerProjection(value) {
       projection.unknownInstructions = unknownInstructions;
     }
   }
-  return { value:projection, withheld };
+  return { value:projection, withheld, unexpected };
 }
 
 function legacyPresentationModel(model) {
@@ -991,14 +1015,17 @@ export function createAppAnalysisQueryAdapter(app) {
       // canonical semantic path, an app-owned getDecompile() and the legacy
       // ARM64 decompiler cannot drift apart.
       const publish = (value, completeness = null, status = {}) => {
-        const { value:published, withheld } = publicDecompilerProjection(value);
-        if (!withheld.length) return wrap(published, completeness, status);
-        // A withheld field is an explicit availability loss. It is reported as
-        // `truncated` with the schema and field names, never as a silent drop.
-        return wrap(published, 'truncated', {
+        const { value:published, withheld, unexpected } = publicDecompilerProjection(value);
+        if (!withheld.length && !unexpected.length) return wrap(published, completeness, status);
+        // Every field the projection gave up is an explicit availability loss
+        // reported with the schema and the field names, never a silent drop.
+        // A withheld deep field is `truncated`; an unknown field is schema
+        // drift, so the published value is a `partial` projection of it.
+        const truncated = withheld.length > 0;
+        return wrap(published, truncated ? 'truncated' : 'partial', {
           ...status,
-          reason:status.reason ?? 'decompile-projection-withheld',
-          projection:{ schema:DECOMPILE_DTO_SCHEMA, withheld },
+          reason:status.reason ?? (truncated ? 'decompile-projection-withheld' : 'decompile-projection-schema-drift'),
+          projection:{ schema:DECOMPILE_DTO_SCHEMA, withheld, unexpected },
         });
       };
       if (typeof app?.getDecompile === 'function') {

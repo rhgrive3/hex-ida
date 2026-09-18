@@ -57,7 +57,7 @@ test('decompile query publishes the presentation schema and keeps the internal g
   for (const key of ['ir', 'ctx', 'highVariables', 'cAst', 'phase8']) {
     assert.equal(Object.hasOwn(result.value, key), false, key);
     assert.equal(DECOMPILE_PUBLIC_FIELDS.includes(key), false, key);
-    assert.equal(DECOMPILE_INTERNAL_FIELDS.has(key), true, key);
+    assert.equal(DECOMPILE_INTERNAL_FIELDS.includes(key), true, key);
   }
   assert.equal(DECOMPILE_DTO_SCHEMA, 'analysis-query-decompile-presentation-v1');
 

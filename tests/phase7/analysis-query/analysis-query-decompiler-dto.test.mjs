@@ -2,19 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from '../../../js/analysis/query/index.js';
+import {
+  DECOMPILE_DTO_SCHEMA,
+  DECOMPILE_INTERNAL_FIELDS,
+  DECOMPILE_PUBLIC_FIELDS,
+} from '../../../js/analysis/query/app-adapter.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { decompile } from '../../../js/decompile.js';
 import { buildSemanticModel } from '../../../js/blocks.js';
+import { analyzeSemanticFunction } from '../../../js/analysis/semantic-function.js';
 
 // The decompile query DTO contract:
 //
 //   * only the explicit presentation schema is published, so the result is
 //     bounded by presentation data instead of the internal analysis graph;
 //   * the internal graph (semantic IR, ctx observers, high variables, cAst,
-//     phase8) is producer-owned and never crosses the query boundary — raw IR
-//     is served by the dedicated semanticIR() query;
-//   * anything outside the schema that carries an unclonable value still fails
-//     closed instead of being silently dropped.
+//     phase8) is producer-owned and never crosses the query boundary;
+//   * a field the schema does not know is never silently dropped as complete —
+//     it fails closed when unclonable and is reported as explicit schema drift
+//     otherwise;
+//   * the exported schema lists are frozen arrays (not a mutable Set) so a
+//     consumer cannot reclassify a field at runtime.
 //
 // These tests replace the previous shallow-copy/deny-list behaviour, which
 // overflowed structuredClone() on large functions while leaving the graph in
@@ -95,15 +103,60 @@ test('B. large internal producers no longer overflow the clone envelope and publ
 });
 
 // C. Unrelated callbacks stay fail-closed, and non-schema fields are not published.
-test('C. unrelated unclonable metadata still fails closed and non-schema fields stay unpublished', async () => {
+test('C. unrelated unclonable metadata still fails closed', async () => {
   await assert.rejects(
     run({ pseudocode: 'int f(void) { return 1; }', metadata: { callback: () => 'must remain fail-closed' } }),
     /analysis-query-value-unclonable/,
   );
+});
 
-  const safe = await run({ pseudocode: 'int f(void) { return 1; }', metadata: { note: 'clone-safe, not part of the schema' } });
-  assert.equal(safe.value.pseudocode, 'int f(void) { return 1; }');
-  assert.equal(Object.hasOwn(safe.value, 'metadata'), false);
+// C2. A cloneable field outside the schema is a projection loss, not a silent
+// drop: the producer added a field the DTO does not publish, so the query must
+// not hand back an apparently complete result.
+test('C2. a cloneable field outside the schema is reported as explicit schema drift', async () => {
+  const result = await run({ pseudocode: 'int f(void) { return 1; }', metadata: { note: 'clone-safe, not part of the schema' } });
+
+  assert.equal(Object.hasOwn(result.value, 'metadata'), false, 'a non-schema field is never published');
+  assert.equal(result.value.pseudocode, 'int f(void) { return 1; }');
+  assert.equal(result.completeness, 'partial', 'schema drift must not look complete');
+  assert.equal(result.status.reason, 'decompile-projection-schema-drift');
+  assert.equal(result.status.projection.schema, DECOMPILE_DTO_SCHEMA);
+  assert.deepEqual(result.status.projection.unexpected, ['metadata']);
+  assert.deepEqual(result.status.projection.withheld, []);
+
+  // A producer that emits only schema fields stays complete.
+  const clean = await run(presentation());
+  assert.equal(clean.completeness, 'complete');
+  assert.equal(clean.status.projection ?? null, null);
+});
+
+// C3. The exported schema is immutable contract documentation, not a mutable
+// runtime authority. `Object.freeze(new Set(...))` would still allow `.add()`.
+test('C3. the exported schema cannot be mutated to reclassify a field', async () => {
+  assert.equal(Object.isFrozen(DECOMPILE_PUBLIC_FIELDS), true);
+  assert.equal(Object.isFrozen(DECOMPILE_INTERNAL_FIELDS), true);
+  assert.equal(Array.isArray(DECOMPILE_PUBLIC_FIELDS), true);
+  assert.equal(Array.isArray(DECOMPILE_INTERNAL_FIELDS), true);
+  // No Set mutation surface is exported.
+  assert.equal(DECOMPILE_PUBLIC_FIELDS.add, undefined);
+  assert.equal(DECOMPILE_INTERNAL_FIELDS.add, undefined);
+  assert.equal(DECOMPILE_INTERNAL_FIELDS.delete, undefined);
+
+  assert.throws(() => { DECOMPILE_PUBLIC_FIELDS.push('ir'); }, TypeError);
+  assert.throws(() => { DECOMPILE_INTERNAL_FIELDS.push('pseudocode'); }, TypeError);
+  assert.throws(() => { DECOMPILE_PUBLIC_FIELDS[0] = 'ir'; }, TypeError);
+
+  // The classification used at runtime is unchanged by any of that: an internal
+  // field stays unpublished and a public field stays published.
+  assert.equal(DECOMPILE_INTERNAL_FIELDS.includes('ir'), true);
+  assert.equal(DECOMPILE_PUBLIC_FIELDS.includes('ir'), false);
+  const result = await run({
+    pseudocode: 'int f(void) { return 1; }',
+    ir: { values: [], defUse: () => new Map() },
+  });
+  assert.equal(result.completeness, 'complete');
+  assert.equal(Object.hasOwn(result.value, 'ir'), false);
+  assert.equal(result.value.pseudocode, 'int f(void) { return 1; }');
 });
 
 // D. The real legacy decompiler result keeps its navigation/provenance behaviour.
@@ -129,4 +182,129 @@ test('D. legacy decompiler results stay navigable through the query boundary', a
   const line = query.value.lines.findIndex((entry) => /return/.test(entry.text));
   assert.ok(line >= 0, 'rendered lines are published');
   assert.equal((await navigation.selectLine(line)).state, 'ready');
+});
+
+// D2. Every field the real legacy decompiler emits is classified by the schema,
+// so the projection reports no drift for a genuine producer.
+test('D2. the real legacy producer result has no unclassified field', async () => {
+  const rows = [{ row: 0, address: 0x1000n, mn: 'mov', ops: 'w0, #7' }, { row: 1, address: 0x1004n, mn: 'ret', ops: '' }];
+  const model = buildSemanticModel(rows, { startRow: 0, endRow: 1, rowOfAddress: (address) => Number((address - 0x1000n) / 4n), name: 'return_seven' });
+  const direct = decompile(model, { addr: 0x1000n, name: 'return_seven' });
+
+  const classified = new Set([...DECOMPILE_PUBLIC_FIELDS, ...DECOMPILE_INTERNAL_FIELDS]);
+  const unclassified = Object.keys(direct).filter((key) => !classified.has(key));
+  assert.deepEqual(unclassified, [], 'the schema must classify every real producer field');
+
+  const query = await run(direct);
+  assert.equal(query.completeness, 'complete');
+  assert.equal(query.status.projection ?? null, null);
+});
+
+/* ── semanticIR() cloneability against the canonical production IR ───────── */
+
+function regNumber(name) { return Number(String(name).replace(/^x/, '')); }
+function littleEndianWord(word) {
+  return Uint8Array.from([word & 0xff, (word >>> 8) & 0xff, (word >>> 16) & 0xff, (word >>> 24) & 0xff]);
+}
+function encodeJal(rd, immediate) {
+  const imm = Number(BigInt.asUintN(21, BigInt(immediate)));
+  const word = (((imm >>> 20) & 1) << 31) | (((imm >>> 1) & 0x3ff) << 21) | (((imm >>> 11) & 1) << 20)
+    | (((imm >>> 12) & 0xff) << 12) | (regNumber(rd) << 7) | 0x6f;
+  return littleEndianWord(word >>> 0);
+}
+function encodeBranch(op, rs1, rs2, immediate) {
+  const funct3 = { beq: 0, bne: 1, blt: 4, bge: 5, bltu: 6, bgeu: 7 }[op];
+  const imm = Number(BigInt.asUintN(13, BigInt(immediate)));
+  const word = (((imm >>> 12) & 1) << 31) | (((imm >>> 5) & 0x3f) << 25) | (regNumber(rs2) << 20)
+    | (regNumber(rs1) << 15) | (funct3 << 12) | (((imm >>> 1) & 0xf) << 8) | (((imm >>> 11) & 1) << 7) | 0x63;
+  return littleEndianWord(word >>> 0);
+}
+function riscvControl(op, fields = {}, address = 0x1000n) {
+  const merged = { rd: 'x0', rs1: 'x10', rs2: 'x11', imm: 4, ...fields };
+  const rawBytes = op === 'jal' ? encodeJal(merged.rd, merged.imm) : encodeBranch(op, merged.rs1, merged.rs2, merged.imm);
+  return {
+    contractVersion: 'riscv64-decoded-instruction/v1', instructionId: `rv-${op}@${address}`,
+    origin: { instructionIds: [`rv-${op}@${address}`] }, mode: 'rv64im', address, size: 4,
+    instructionAlignment: 4, rawBytes, fields: { supported: true, op, compressed: false, ...merged },
+  };
+}
+
+function canonicalSemanticFunction() {
+  return analyzeSemanticFunction({
+    architecture: 'riscv64', platform: 'linux', abiId: 'lp64',
+    binaryId: 'bin-canonical-ir', sliceId: 'bin-canonical-ir-slice',
+    decoderSemanticVersion: 'capstone-5-riscv64-word-exact-v1', mode: 'rv64im',
+    instructions: [riscvControl('beq', { imm: 4 }, 0x1000n), riscvControl('jal', { rd: 'x1', imm: 8 }, 0x1004n)],
+    name: 'canonical_probe',
+  });
+}
+
+function canonicalApi(canonical) {
+  const stored = {
+    architecture: 'riscv64',
+    regions: [{ id: 'r0', vmAddr: 0x1000n, size: 0x100n, exec: true, read: true, write: false }],
+    sliceIndex: 0,
+    canDisassemble: true,
+  };
+  const app = {
+    store: { get: (key) => stored[key] ?? null },
+    backend: {
+      binaryId: 'bin-canonical-ir', gen: 1,
+      analyzeSemanticFunction: async () => canonical,
+      platformInfo: { productDescriptor: { formatMetadata: { abi: 'lp64', bits: 64, platform: 'linux' } } },
+    },
+    symbols: { functionAt: () => ({ start: 0x1000n, end: 0x1008n }), nameAt: () => 'canonical_probe', functionCount: 1, funcs: [0x1000n] },
+  };
+  return new AnalysisQueryAPI({
+    ...createAppAnalysisQueryAdapter(app),
+    currentIdentity: async () => ({ binaryId: 'bin-canonical-ir', projectRevision: 1, analysisEpoch: 1, artifactVersions: {} }),
+  });
+}
+
+// E. The canonical Semantic IR served by semanticIR() is the Semantic IR v2
+// pipeline value, which owns no runtime observer and therefore crosses the
+// clone boundary intact.
+test('E. semanticIR() publishes the canonical production Semantic IR across the clone boundary', async () => {
+  const canonical = canonicalSemanticFunction();
+  const ir = canonical.pipeline.semanticIr;
+  assert.ok(ir, 'the canonical pipeline publishes a semantic IR');
+  assert.equal(ir.defUse, undefined, 'the canonical Semantic IR v2 owns no runtime defUse closure');
+  assert.doesNotThrow(() => structuredClone(ir), 'the canonical Semantic IR is clone-safe');
+  assert.doesNotThrow(() => structuredClone(canonical), 'the canonical semantic function result is clone-safe');
+
+  const api = canonicalApi(canonical);
+  const snapshot = await api.snapshot();
+  const result = await api.semanticIR(snapshot, 0x1000n);
+
+  assert.equal(result.completeness, 'complete');
+  assert.equal(result.value.contractVersion, ir.contractVersion);
+  assert.deepEqual(result.value.blocks, JSON.parse(JSON.stringify(ir.blocks)));
+  assert.equal(Object.isFrozen(result.value), true, 'the published IR is immutable');
+});
+
+// F. The IR that *does* own a runtime closure is the legacy v1 compatibility
+// projection / ARM64 legacy `ir` (js/semantics/compat/semantic-ir-v2-to-v1.js
+// attaches `defUse = () => values`). It is not served by semanticIR() on the
+// ARM64 route — that route has no `pipeline.semanticIr` — so after the
+// decompile DTO stopped publishing `ir`, raw IR for the ARM64 legacy route is
+// currently unreachable through the query API. That is invariant-1 work
+// (IR runtime ownership) owned by another lane; this test pins the honest
+// current behaviour instead of claiming a working migration.
+test('F. the ARM64 legacy route serves no semanticIR and owns a runtime IR closure', async () => {
+  const rows = [{ row: 0, address: 0x1000n, mn: 'mov', ops: 'w0, #7' }, { row: 1, address: 0x1004n, mn: 'ret', ops: '' }];
+  const model = buildSemanticModel(rows, { startRow: 0, endRow: 1, rowOfAddress: (address) => Number((address - 0x1000n) / 4n), name: 'return_seven' });
+  const direct = decompile(model, { addr: 0x1000n, name: 'return_seven' });
+
+  assert.equal(typeof direct.ir.defUse, 'function', 'the legacy IR still owns a runtime closure');
+  assert.throws(() => structuredClone(direct.ir), 'the legacy IR is not clone-safe');
+
+  const api = new AnalysisQueryAPI({
+    ...createAppAnalysisQueryAdapter({ analyzeFunction: async () => direct }),
+    currentIdentity: async () => ({ binaryId: 'dto-legacy-ir', projectRevision: 1, analysisEpoch: 1, artifactVersions: {} }),
+  });
+  const result = await api.semanticIR(await api.snapshot(), 0x1000n);
+
+  assert.equal(result.completeness, 'unsupported');
+  assert.equal(result.status.reason, 'semantic-ir-v2-unavailable');
+  assert.equal(result.value, null);
 });
