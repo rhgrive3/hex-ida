@@ -16,6 +16,8 @@ import {
   summarizeDiagnostics,
   stripHostRoot,
 } from '../../reports/investigations/codefuse-functionality/harness/compile.mjs';
+import { runProbe } from '../../reports/investigations/codefuse-functionality/harness/probe.mjs';
+import { failingChild } from './helpers.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
@@ -102,6 +104,41 @@ test('probe summary records explicit, clean provenance', () => {
   );
   assert.equal(typeof summary.identity.worktreeDirty, 'boolean');
   assert.equal(summary.identity.worktreeDirty, false, 'committed evidence must come from a clean worktree');
+});
+
+// The reduction above can only be host-neutral if the toolchain is not handed
+// an absolute path in the first place. Assert the real invocation, not the
+// intent: the compiler is driven from the repository root with relative paths,
+// so its byte counts and quoted paths do not move with the checkout.
+test('the raw lane invokes the compiler with repository-relative paths', async () => {
+  const invocations = [];
+  const spawnImpl = (command, args, options) => {
+    invocations.push({ command, args, cwd: options?.cwd });
+    return failingChild();
+  };
+
+  const { summary } = await runProbe({
+    count: 5,
+    writeArtifacts: false,
+    spawnImpl,
+    // Keep the repair lane out of the network entirely: the raw lane is what is
+    // under test here.
+    env: { ...process.env, CODEFUSE_LLM_DISABLED: '1' },
+  });
+
+  assert.equal(summary.counts.selected, 5);
+  assert.ok(invocations.length > 0, 'the raw lane must actually invoke the compiler');
+
+  const sourceArgs = invocations.flatMap((entry) => entry.args).filter((arg) => String(arg).endsWith('.c'));
+  assert.ok(sourceArgs.length > 0, 'expected compiler source arguments');
+  for (const arg of sourceArgs) {
+    assert.equal(path.isAbsolute(arg), false, `compiler source argument must be repository-relative: ${arg}`);
+    assert.equal(String(arg).includes('..'), false, `compiler source argument must stay inside the repository: ${arg}`);
+  }
+
+  for (const entry of invocations) {
+    assert.equal(path.resolve(entry.cwd), path.resolve(REPO_ROOT), 'the toolchain must run from the repository root');
+  }
 });
 
 test('per-case records keep a bounded first failure instead of a full compiler log', () => {

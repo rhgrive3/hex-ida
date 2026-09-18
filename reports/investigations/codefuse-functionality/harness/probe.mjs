@@ -69,19 +69,43 @@ function writeText(file, text) {
 // One raw recompilability measurement: compile then link, with bounded
 // diagnostics and no full-log retention.
 async function rawRecompilability({ sourceFile, cc, ccArgs, workDir, timeoutMs, spawnImpl, rootDir }) {
+  // Invoke the toolchain from the repository root with repository-relative
+  // paths. Compilers quote the path they are handed, so an absolute invocation
+  // would make committed diagnostics - and the discarded-log byte count - depend
+  // on how deep the checkout happens to sit.
+  const relative = (target) => path.relative(rootDir, target);
   const objectFile = path.join(workDir, `${path.basename(sourceFile)}.o`);
   const binaryFile = path.join(workDir, `${path.basename(sourceFile)}.bin`);
-  const compiled = await compileSource({ file: sourceFile, cc, args: ccArgs, objectFile, timeoutMs, spawnImpl, rootDir });
+  const compiled = await compileSource({
+    file: relative(sourceFile),
+    cwd: rootDir,
+    cc,
+    args: ccArgs,
+    objectFile: relative(objectFile),
+    timeoutMs,
+    spawnImpl,
+    rootDir,
+  });
   if (!compiled.compileSucceeded) {
     return { status: compiled.status, compileSucceeded: false, linkSucceeded: false, binaryProduced: false, diagnostics: compiled.diagnostics, durationMs: compiled.durationMs, reason: compiled.reason };
   }
-  const linked = await linkBinary({ file: objectFile, cc, args: ccArgs, out: binaryFile, timeoutMs, spawnImpl, rootDir });
+  const linked = await linkBinary({
+    file: relative(objectFile),
+    cwd: rootDir,
+    cc,
+    args: ccArgs,
+    out: relative(binaryFile),
+    timeoutMs,
+    spawnImpl,
+    rootDir,
+  });
   return {
     status: linked.linkSucceeded ? 'ok' : linked.status,
     compileSucceeded: true,
     linkSucceeded: linked.linkSucceeded,
     binaryProduced: linked.linkSucceeded,
-    binary: linked.linkSucceeded ? binaryFile : null,
+    // Kept repository-relative; consumers resolve it against the repository root.
+    binary: linked.linkSucceeded ? relative(binaryFile) : null,
     diagnostics: linked.diagnostics,
     durationMs: compiled.durationMs + linked.durationMs,
     reason: linked.reason,
@@ -235,8 +259,10 @@ export async function runProbe({
     const rawBinary = record.rawLane.preprocessed.binaryProduced ? record.rawLane.preprocessed.binary : null;
     if (rawBinary) {
       const originalBinary = path.join(repoRoot, 'benchmarks/public/codefuse-arm64', entry.binary);
+      // Both sides run from the repository root so a repository-relative
+      // candidate path resolves the same way the original absolute path does.
       const originalRun = await runProgram({ binary: originalBinary, timeoutMs: runTimeoutMs, spawnImpl, cwd: repoRoot });
-      const candidateRun = await runProgram({ binary: rawBinary, timeoutMs: runTimeoutMs, spawnImpl, cwd: repoRoot });
+      const candidateRun = await runProgram({ binary: path.resolve(repoRoot, rawBinary), timeoutMs: runTimeoutMs, spawnImpl, cwd: repoRoot });
       record.functionality.raw = compareFunctionality({ originalRun, candidateRun });
     } else {
       record.functionality.raw = { state: 'unsupported', reason: 'raw-not-recompiled' };
