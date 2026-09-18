@@ -1,0 +1,66 @@
+{
+  "schema": "arm64-real-byte-semantic-holdout/v1",
+  "source": "arm64-real-byte-semantic-holdout.s",
+  "binary": "arm64-real-byte-semantic-holdout.elf",
+  "sourceSha256": "812d3d531ce4ef196a1f67c2aee70a19ea03ee15dead2b9b3dccc5f18ef21ab9",
+  "binarySha256": "2fb0e381ef6e3d45bf01a0cf3d7645006eefc524303525a681b7d0affe160c3b",
+  "compiler": "clang 17.0.0 / lld 17.0.0",
+  "targetTriple": "aarch64-linux-gnu",
+  "rebuild": [
+    "timeout",
+    "30s",
+    "clang",
+    "--target=aarch64-linux-gnu",
+    "-fuse-ld=lld",
+    "-nostdlib",
+    "-Wl,-Ttext=0x1000",
+    "-Wl,-e,arithmetic_wrap",
+    "-Wl,--build-id=none",
+    "arm64-real-byte-semantic-holdout.s",
+    "-o",
+    "arm64-real-byte-semantic-holdout.elf"
+  ],
+  "cases": [
+    {
+      "id": "arithmetic-wrap",
+      "function": "arithmetic_wrap",
+      "start": "0x1000",
+      "end": "0x100c",
+      "oracle": "32-bit (-1 + 1) wraps to zero and zero-extends into x0",
+      "bytesSha256": "23bfe0f5d9ccb3fb34d4f97ad6dbbf458b6cd9333470b882a570d9d333d7f754"
+    },
+    {
+      "id": "conditional-semantics",
+      "function": "conditional_value",
+      "start": "0x100c",
+      "end": "0x1024",
+      "oracle": "x0 == 0 takes subtract arm; otherwise takes add arm",
+      "bytesSha256": "791190aee3f45a224145a12b08e28f75de57e0990e61047b518493de7bca91b4"
+    },
+    {
+      "id": "memory-reaching-definition",
+      "function": "memory_forward",
+      "start": "0x1024",
+      "end": "0x103c",
+      "oracle": "load from [sp] reaches the immediately preceding store of input x0",
+      "bytesSha256": "7f8f9ddb4ac005be7d444ec102848911338346988c1a67e00c589cc6b7926825"
+    },
+    {
+      "id": "direct-call-aapcs64",
+      "function": "direct_call",
+      "start": "0x103c",
+      "end": "0x105c",
+      "oracle": "x1/x2 are moved into AAPCS64 x0/x1 before the direct call; return is in x0",
+      "bytesSha256": "dbd44ed34229067c719bb7fffb611acb3ae945ffcd2066366aaec08b09f5fc8a"
+    },
+    {
+      "id": "unknown-fail-closed",
+      "function": "unsupported_pair_exclusive",
+      "start": "0x1064",
+      "end": "0x106c",
+      "oracle": "LDAXP exact effects are intentionally unowned and must remain explicit/partial",
+      "bytesSha256": "c2519ac0b7afcf5f120cf2a08506c995b9056cfc6256237f43d7664e1df3fb7a"
+    }
+  ],
+  "claim": "Test-owned AArch64 source and linked ELF. Oracle is source-contract semantics, not product pseudocode, CodeFuse, IDA, or reference-renderer text."
+}
