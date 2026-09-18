@@ -47,7 +47,7 @@ function run(bin, args) {
 
 function parseSections(text) {
   const out = [];
-  const re = /^\s*\[\s*(\d+)\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+(\S+)/;
+  const re = /^\s*\[\s*(\d+)\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+(\S*)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/;
   for (const line of text.split('\n')) {
     const m = re.exec(line);
     if (!m) continue;

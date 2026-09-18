@@ -523,10 +523,22 @@ def main():
     variants = collections.defaultdict(set)
     cases = collections.defaultdict(set)
     for path in sorted(glob.glob(os.path.join(args.raw_dir, "*.json"))):
-        r = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as fh:
+            r = json.load(fh)
         cid = r["caseId"]
+        try:
+            with open(r["sourceFile"], encoding="utf-8") as fh:
+                source_lines = fh.read().splitlines()
+        except (OSError, KeyError, TypeError):
+            source_lines = []
         for d in r["syntax"]["diagnostics"]:
-            k = at.cluster_of(d)
+            line = d.get("line")
+            line_text = (
+                source_lines[line - 1]
+                if isinstance(line, int) and 0 < line <= len(source_lines)
+                else None
+            )
+            k = at.cluster_of(d, line_text)
             groups[k].add(cid.split("/")[0])
             variants[k].add(cid.split("_", 1)[1])
             cases[k].add(cid)
