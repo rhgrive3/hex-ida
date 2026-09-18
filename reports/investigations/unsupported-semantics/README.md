@@ -1,115 +1,124 @@
-# UNSUPPORTED semantics investigation — recommendation (stage 4)
+# UNSUPPORTED semantics investigation — final recommendation
 
-- baseSha: `05c93a1c92b34f4876060bd858e4393557d02dd4`
-- stages: `00-baseline.md` (exact 320 inventory) → `01-binary-semantics.md`
-  (CRT init/fini ground truth) → `02-first-divergence.md`
-  (`function-end-unproven` → `UNSUPPORTED`) → this file.
-- `reports/public-benchmark/summary.json`: **not modified** (frozen). All
-  filtered numbers below are supplemental views computed from the frozen
-  artifact, never a rewrite of it.
+- investigation base: `05c93a1c92b34f4876060bd858e4393557d02dd4`
+- scope: the 320 `hexState == UNSUPPORTED` rows in the frozen public benchmark artifact
+- production code/tests/tools: unchanged on this branch
+- benchmark output: unchanged; `reports/public-benchmark/summary.json` remains frozen
 
-## Verdict counts (320 rows, disjoint primary classification)
+The evidence chain is:
 
-- **A. Real decompilable user function where Hex has a capability gap: 0.**
-  No row is an ordinary user function: every address is a zero-size HIDDEN
-  FUNC at an executable init/fini section start, loader-invoked, with no user
-  call edge (stage 1–2). There is no evidence of a decoder/lifter gap — the
-  bytes decode (`llvm-objdump`) and IDA's 4-line/1-line pseudocode needs no
-  Hex-missing instruction support.
-- **B. Real code but special runtime / init-fini entity: 320.**
-  All 320 are executable CRT startup/finalization bodies (`_init` in `.init`,
-  `_fini` in `.fini`; sampled `DT_INIT==0x860`, `DT_FINI==0x2a84`). Real bytes,
-  real FUNC symbols, real loader contract — but HIDDEN, zero-extent,
-  section-start trampolines, not user functions.
-- **C. Comparator/reference artifact (IDA-only fiction, no binary ground): 0.**
-  Explicitly 0: the bytes, FUNC symbols, and INIT/FINI contract exist, so "IDA
-  invented them" is false. C is retained as a *lens*, not a count: under a
-  narrowed *user-function-only* benchmark scope the same 320 would be treated
-  as out-of-scope reference rows (see filter below), but that is a scope
-  decision, not a claim that IDA hallucinated.
-- **D. Unknown: 0**, with one stated residual (below): full-corpus `DT_INIT`/
-  `DT_FINI` sweep (currently: section+symbol aggregation on all 320, dynamic-
-  tag match sampled on 1 binary). Nothing in the 320 contradicts B, so parking
-  them in D would be evasive, not conservative.
+`00-baseline.md` → exact 320-row inventory  
+`01-binary-semantics.md` → full-corpus ELF semantics  
+`02-first-divergence.md` → start-known / extent-unknown range failure
 
-**Is the 320 a product bug or a metric issue? Metric (scope) issue, not a
-product bug.** Hex's `function-end-unproven` fail-closed is the designed extent
-contract (#2409/#2458): zero-size FUNC + no unwind/`function_starts` extent +
-cross-section next-start guard ⇒ `end null` ⇒ `UNSUPPORTED`. The pipeline
-refuses to invent the section-bound end (`0x878`/`0x2a98`) without authority,
-and refuses to swallow `.plt` via naive next-start extension. IDA's choice to
-emit section-bounded `.init_proc`/`.term_proc` is a legitimate *reference*
-policy, not proof that Hex's authority policy is wrong. Under the report's
-frozen scope (`published-artifact-quality-only`) the 320 correctly stay in the
-denominator as Hex non-decompiles; under a user-function scope they are
-out-of-scope runtime entities. Neither lens requires a production-code change.
+## Final classification
 
-## Tool-neutral filter rule (for a supplemental view only)
+The 320 rows are one homogeneous class.
 
-Forbidden: hardcoding comparator labels (`.init_proc`, `.term_proc`, `$x`) or
-Hex internals. Required: symmetric, binary-grounded, applicable to IDA and Hex
-rows identically.
+- **B — real code, special runtime/init-fini entity: 320**
+- **C — comparator/reference fiction with no binary ground: 0**
+- **D — unknown: 0**
 
-**Rule R1 (proposed):** exclude a comparison row iff its address equals the
-`DT_INIT` or `DT_FINI` value parsed from the case binary's `PT_DYNAMIC`
-segment. Inputs: ELF headers only. No symbol names, no section names, no tool
-output. Both tools' rows at that address drop together (denominator −= rows,
-not Hex-only subtraction).
+A/B are different questions here: the **entity class** is B, while the
+**observable product limitation** is a function-boundary/pseudocode coverage gap
+for all 320 rows under the benchmark's current scope.
 
-- Why this rule: INIT/FINI are the loader's own designation of startup/
-  finalization entry points — the tool-independent definition of "runtime
-  init/fini entity". It generalizes beyond ARM64/Linux only insofar as the
-  binary format names such entries; where a format has no such contract the
-  rule is a no-op (fail-closed, no silent exclusion).
-- Weaker alternative R2 (section+symbol, more portable, slightly name-touched):
-  exclude iff address is an executable-section start **and** carries a
-  zero-size `STT_FUNC` **and** the section is the image's designated init/fini
-  section. R1 is preferred precisely because it avoids even section/symbol
-  names. Either rule must be published with the filtered view and versioned
-  with the corpus; neither rewrites the frozen report.
-- Coverage honesty: R1's premise (every one of the 320 is a DT_INIT/FINI value)
-  is *aggregated* for section+symbol on all 320 and *sampled* for the dynamic
-  tag on 1/160 binaries. Before any gate or publication uses the filtered view,
-  run the full-corpus dynamic sweep (160 `readelf -d` reads, mechanical) and
-  attach its pass/fail table. If any of the 320 is not a DT_INIT/FINI value, it
-  stays in (fail-closed) and this recommendation returns to D for that subset.
+Corpus-wide binary evidence:
 
-## Both numbers (frozen source, no overwrite)
+- 160 exact `DT_INIT` matches and 160 exact `DT_FINI` matches.
+- 160 `.init` and 160 `.fini` executable section starts.
+- 320 same-address zero-size `STT_FUNC GLOBAL HIDDEN` records
+  (`_init` / `_fini`).
+- 320 same-address AArch64 `$x` mapping markers.
+- 320 sections fully file-backed by executable PT_LOAD mappings.
+- 320 frozen subject rows with `end:null`, no pseudocode and
+  `state:UNSUPPORTED`.
 
-Frozen (`reports/public-benchmark/summary.json`):
+There is no decoder/lifter unsupported-instruction evidence in this cluster.
+The first failure is `function-end-unproven`: start authority exists, positive
+extent authority does not.
 
-| view | denominator | IDA cov (ida/denom) | Hex cov (hexPseudo/denom) | matched |
-|---|---|---|---|---|
-| as-published | 11124 (ida 10976, hexFuncs 10952, matched 10804, hexPseudo 10292) | 0.9867 | 0.9252 | 10804 |
-| R1-supplemental (÷320, symmetric) | 10804 (ida 10656, hexFuncs 10632, matched 10484, hexPseudo 10292) | 0.9863 | **0.9526** | 10484 |
+## Product vs metric
 
-Derivation: each of the 160 cases drops exactly its 2 UNSUPPORTED rows
-(per-case UNSUPPORTED dist `{2: 160}`); pseudocode counts unchanged (the 320
-have `hexMetrics == null`); IDA and matched counts drop symmetrically because
-all 320 are matched-by-address rows. `functionStates` for the supplemental
-view: `CRASH 340 / PARTIAL 692 / PASS 9600 / UNSUPPORTED 0` over the reduced
-denominator (Hex discovered-function universe 10632).
+Do **not** collapse this to "metric issue, not product bug."
 
-## What changes, what does not
+The fail-closed extent policy is deliberate and defensible, but the benchmark's
+frozen scope is `published-artifact-quality-only`; these addresses are real,
+matched, loader-designated executable functions, and Hex publishes no pseudocode.
+Within that existing scope, the 320 rows are a genuine coverage limitation.
 
-- Public benchmark result: **unchanged**. `summary.json` stays frozen;
-  `denominatorFrozen: true` is honored.
-- Product code/tests/tools/package.json: **unchanged** in this worktree
-  (`git diff --name-only BASE..HEAD` = investigation reports only).
-- C lane (`fix/arch-symbol-ranking`): **independent**. Its fix changes the
-  displayed name (`$x` → `_init`/`_fini`) but, per stage 3's measured chain,
-  leaves `end null` and the UNSUPPORTED verdict intact. Do not close this
-  investigation on C's landing; re-run the re-verification list instead.
+There is also a legitimate **supplemental** user-function-only lens. If a report
+wants to exclude runtime loader init/fini entries, the filter must be symmetric
+and binary-grounded. That supplemental view must not replace or rewrite the
+frozen benchmark.
 
-## Re-verify after C's symbol fix (checklist)
+## Tool-neutral supplemental filter
 
-1. Recompute stage-1 set equality (`summary.json` vs `unsupported-functions.json`).
-2. Re-run the stage-3 product probe on `1/1_clang_O0_g`: expect `nameAt →
-   _init/_fini`, `end → null`, `functionWindowBound → null`,
-   `validatedFunctionRange → ok:false/function-end-unproven`,
-   `decompile → value null/unsupported` (name fixed, verdict unchanged).
-3. Run the full-corpus `DT_INIT`/`DT_FINI` sweep for R1 and publish the table.
-4. Confirm `reports/public-benchmark/` still untouched and `summary.json` frozen.
-5. If any future extent-authority change (e.g. section-bound extent for
-   zero-size init/fini FUNCs) is proposed, treat it as a product decision with
-   its own tests and re-verification — not as a consequence of this report.
+A safe optional rule is:
+
+> Exclude a comparison row iff its address equals the binary's `DT_INIT` or
+> `DT_FINI` dynamic value.
+
+This uses only the target binary's dynamic-loader contract. It does not inspect
+IDA names, Hex names, mapping-symbol spellings, compiler names, or benchmark
+addresses.
+
+The full-corpus sweep now verifies the rule premise for **320 / 320** rows, so
+there is no residual unknown subset.
+
+If applied only as a separately labeled supplemental view:
+
+| view | denominator | IDA | Hex discovered funcs | matched | Hex pseudocode |
+|---|---:|---:|---:|---:|---:|
+| frozen published | 11124 | 10976 | 10952 | 10804 | 10292 |
+| runtime-init/fini excluded | 10804 | 10656 | 10632 | 10484 | 10292 |
+
+The supplemental Hex pseudocode coverage is `10292 / 10804 ≈ 95.26%`.
+This number is descriptive only; it is not a replacement score and does not
+change `summary.json`.
+
+## Why C does not close F
+
+The accepted C same-address ranking repair is relevant but independent.
+
+Before C, the frozen artifact displays `$x` because a local zero-size mapping
+record wins the old naming projection. C changes canonical naming so the callable
+FUNC identity wins, yielding `_init` / `_fini`.
+
+That repairs identity presentation only. It does not create a positive size/end,
+so the range gate remains `function-end-unproven` unless a separate extent/window
+policy is added.
+
+## Recommended product follow-up
+
+Do not introduce a generic "use executable section end" rule.
+
+A safe design should be restricted to binary-grounded dynamic runtime entries:
+
+1. retain both `DT_INIT` and `DT_FINI` as exact loader-entry evidence;
+2. require the entry address to equal the start of a fully file-backed executable
+   section;
+3. use that section end only as an **analysis window**, not as a proved function
+   extent;
+4. publish decompilation as partial/incomplete with explicit
+   `function-end-unproven` provenance;
+5. add independent synthetic ELF counterexamples so ordinary executable section
+   starts cannot acquire this privilege.
+
+That design can recover useful pseudocode without weakening the existing
+fail-closed extent contract.
+
+## Acceptance state
+
+F is complete as an investigation:
+
+- exact inventory: complete;
+- binary semantics: complete across all 320 rows;
+- dynamic-tag sweep: complete across all 160 binaries;
+- first divergence: identified;
+- C interaction: separated;
+- unknown rows: 0;
+- production changes: 0.
+
+Any implementation of the recommended runtime-entry analysis-window policy should
+be a separate production PR with its own synthetic regressions.
