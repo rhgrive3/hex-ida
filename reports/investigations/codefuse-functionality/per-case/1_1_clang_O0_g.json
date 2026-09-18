@@ -1,0 +1,158 @@
+{
+  "schema": "hex-codefuse-functionality-probe-case/v1",
+  "caseId": "1/1_clang_O0_g",
+  "binarySha256": "9600e39427753dcf4d4dc4c3ab218eca92bbf2fe898a8d3ca8204202ac0135ce",
+  "manifest": {
+    "compiler": "clang",
+    "optimization": "O0",
+    "debug": true,
+    "architecture": "arm64"
+  },
+  "artifact": {
+    "file": "reports/public-benchmark/312f315f636c616e675f4f305f67.json",
+    "available": true,
+    "reason": null
+  },
+  "variants": {
+    "rawFunctionText": {
+      "variant": "raw-function-text",
+      "sha256": "7dfe216043f46e1b28943b9f46cd5d472fbe6a0d4589f6534737c2eee3534ea9",
+      "bytes": 30366,
+      "functions": 67,
+      "excludedFunctions": 7
+    },
+    "codefusePreprocessed": {
+      "variant": "codefuse-preprocessed",
+      "sha256": "9763aadc5a18df411ff63ff08b728cef687594c680ab92ba24df1404c1e9209d",
+      "bytes": 26812,
+      "stats": {
+        "detectedDecompiler": "angr",
+        "removedFunctions": [],
+        "patternReplacements": {
+          "angr:\\$x\\b": 5,
+          "angr:(?<![0-9])\\.([a-zA-Z_]\\w*)": 4
+        },
+        "injectedTypedefs": true
+      }
+    },
+    "translationUnit": {
+      "variant": "product-translation-unit",
+      "available": true,
+      "sha256": "72f0a9c137bc6b317524c2e529cc96886639f0a6bf77f080db773db1e0a9882a",
+      "reason": null
+    }
+  },
+  "sources": {
+    "rawFunctionText": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O0_g.raw-function-text.c",
+    "codefusePreprocessed": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O0_g.codefuse-preprocessed.c",
+    "translationUnit": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O0_g.product-translation-unit.c"
+  },
+  "rawLane": {
+    "preprocessed": {
+      "status": "compile_failed",
+      "compileSucceeded": false,
+      "linkSucceeded": false,
+      "binaryProduced": false,
+      "diagnostics": {
+        "errorCount": 80,
+        "warningCount": 2,
+        "firstError": {
+          "line": 21,
+          "column": 15,
+          "message": "‘global_13FD8’ undeclared (first use in this function)"
+        },
+        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O0_g.codefuse-preprocessed.c:21:15: error: ‘global_13FD8’ undeclared (first use in this function)",
+        "stderrBytes": 22046
+      },
+      "durationMs": 40.297716,
+      "reason": null,
+      "input": "codefuse-preprocessed"
+    },
+    "rawFunctionText": {
+      "status": "compile_failed",
+      "compileSucceeded": false,
+      "linkSucceeded": false,
+      "binaryProduced": false,
+      "diagnostics": {
+        "errorCount": 80,
+        "warningCount": 2,
+        "firstError": {
+          "line": 4,
+          "column": 18,
+          "message": "‘global_13FD8’ undeclared (first use in this function)"
+        },
+        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O0_g.raw-function-text.c:4:18: error: ‘global_13FD8’ undeclared (first use in this function)",
+        "stderrBytes": 21288
+      },
+      "durationMs": 35.104656,
+      "reason": null,
+      "input": "raw-function-text"
+    }
+  },
+  "llmRepairLane": {
+    "status": "unsupported",
+    "reason": "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed",
+    "attempts": 0,
+    "history": []
+  },
+  "functionality": {
+    "raw": {
+      "state": "unsupported",
+      "reason": "raw-not-recompiled"
+    },
+    "repaired": {
+      "state": "unsupported",
+      "reason": "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+    },
+    "originalRunIssue": null
+  },
+  "blockers": [
+    "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+  ],
+  "excludedFunctions": [
+    {
+      "address": "2144",
+      "name": "$x",
+      "state": "UNSUPPORTED",
+      "reason": "no-pseudocode"
+    },
+    {
+      "address": "3384",
+      "name": "switch_small",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable"
+    },
+    {
+      "address": "3560",
+      "name": "switch_large",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable"
+    },
+    {
+      "address": "5960",
+      "name": "infinite_loop",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable"
+    },
+    {
+      "address": "9476",
+      "name": "state_machine",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable"
+    },
+    {
+      "address": "10012",
+      "name": "computed_goto",
+      "state": "CRASH",
+      "reason": "analysis-query-value-unclonable"
+    },
+    {
+      "address": "10884",
+      "name": "$x",
+      "state": "UNSUPPORTED",
+      "reason": "no-pseudocode"
+    }
+  ],
+  "rawRecompilable": false,
+  "repairedRecompilable": null
+}

@@ -1,0 +1,128 @@
+{
+  "schema": "hex-codefuse-functionality-probe-case/v1",
+  "caseId": "1/1_clang_O3_g",
+  "binarySha256": "f4fe41712dc2907ce1bc04d49e1714e506586159f3019016ca53abcb463c1f2c",
+  "manifest": {
+    "compiler": "clang",
+    "optimization": "O3",
+    "debug": true,
+    "architecture": "arm64"
+  },
+  "artifact": {
+    "file": "reports/public-benchmark/312f315f636c616e675f4f335f67.json",
+    "available": true,
+    "reason": null
+  },
+  "variants": {
+    "rawFunctionText": {
+      "variant": "raw-function-text",
+      "sha256": "ed4ccbbc36c427183cb9c2317bf3be251af067c39db6ace0459c29dfe3ebf727",
+      "bytes": 25050,
+      "functions": 77,
+      "excludedFunctions": 2
+    },
+    "codefusePreprocessed": {
+      "variant": "codefuse-preprocessed",
+      "sha256": "6e745193bf0288ad2721760e668ab6c293e1257738a3a620896254fc4e75285c",
+      "bytes": 23313,
+      "stats": {
+        "detectedDecompiler": "angr",
+        "removedFunctions": [],
+        "patternReplacements": {
+          "angr:\\$x\\b": 5,
+          "angr:(?<![0-9])\\.([a-zA-Z_]\\w*)": 19
+        },
+        "injectedTypedefs": true
+      }
+    },
+    "translationUnit": {
+      "variant": "product-translation-unit",
+      "available": true,
+      "sha256": "3273e78a6084436461ad18abdee6c9a2a4d913d99205959e65020a515cf00aa1",
+      "reason": null
+    }
+  },
+  "sources": {
+    "rawFunctionText": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O3_g.raw-function-text.c",
+    "codefusePreprocessed": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O3_g.codefuse-preprocessed.c",
+    "translationUnit": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O3_g.product-translation-unit.c"
+  },
+  "rawLane": {
+    "preprocessed": {
+      "status": "compile_failed",
+      "compileSucceeded": false,
+      "linkSucceeded": false,
+      "binaryProduced": false,
+      "diagnostics": {
+        "errorCount": 115,
+        "warningCount": 2,
+        "firstError": {
+          "line": 21,
+          "column": 15,
+          "message": "‘global_12FD8’ undeclared (first use in this function)"
+        },
+        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O3_g.codefuse-preprocessed.c:21:15: error: ‘global_12FD8’ undeclared (first use in this function)",
+        "stderrBytes": 32247
+      },
+      "durationMs": 39.839902,
+      "reason": null,
+      "input": "codefuse-preprocessed"
+    },
+    "rawFunctionText": {
+      "status": "compile_failed",
+      "compileSucceeded": false,
+      "linkSucceeded": false,
+      "binaryProduced": false,
+      "diagnostics": {
+        "errorCount": 115,
+        "warningCount": 2,
+        "firstError": {
+          "line": 4,
+          "column": 18,
+          "message": "‘global_12FD8’ undeclared (first use in this function)"
+        },
+        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_O3_g.raw-function-text.c:4:18: error: ‘global_12FD8’ undeclared (first use in this function)",
+        "stderrBytes": 30739
+      },
+      "durationMs": 34.769159,
+      "reason": null,
+      "input": "raw-function-text"
+    }
+  },
+  "llmRepairLane": {
+    "status": "unsupported",
+    "reason": "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed",
+    "attempts": 0,
+    "history": []
+  },
+  "functionality": {
+    "raw": {
+      "state": "unsupported",
+      "reason": "raw-not-recompiled"
+    },
+    "repaired": {
+      "state": "unsupported",
+      "reason": "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+    },
+    "originalRunIssue": null
+  },
+  "blockers": [
+    "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+  ],
+  "excludedFunctions": [
+    {
+      "address": "2144",
+      "name": "$x",
+      "state": "UNSUPPORTED",
+      "reason": "no-pseudocode"
+    },
+    {
+      "address": "6476",
+      "name": "$x",
+      "state": "UNSUPPORTED",
+      "reason": "no-pseudocode"
+    }
+  ],
+  "rawRecompilable": false,
+  "repairedRecompilable": null
+}
