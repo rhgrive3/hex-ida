@@ -72,8 +72,15 @@ export function parseJsonc(text) {
 }
 
 export function validateAuthConfig(config, { local = false } = {}) {
-  const binding = config?.d1_databases?.find((item) => item.binding === 'AUTH_DB');
-  if (!binding || binding.database_name !== 'hex-auth' || binding.migrations_dir !== 'migrations/auth') throw new Error('AUTH_DB and migrations/auth must be configured.');
+  // The runtime binding identity must be unambiguous: a deployment config that
+  // declares AUTH_DB more than once cannot prove which definition the auth
+  // worker will resolve, and `find()` would silently ignore later conflicts.
+  // Cardinality is therefore exactly one, independent of array ordering.
+  const databases = Array.isArray(config?.d1_databases) ? config.d1_databases : [];
+  const authBindings = databases.filter((item) => item?.binding === 'AUTH_DB');
+  if (authBindings.length !== 1) throw new Error('AUTH_DB must be defined exactly once.');
+  const [binding] = authBindings;
+  if (binding.database_name !== 'hex-auth' || binding.migrations_dir !== 'migrations/auth') throw new Error('AUTH_DB and migrations/auth must be configured.');
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(binding.database_id || '')) throw new Error('AUTH_DB database_id must be a real D1 UUID.');
   if (!local && binding.database_id === LOCAL_D1_ID) throw new Error('Local-only AUTH_DB sentinel: set the real production D1 ID before deployment.');
   if (config.assets?.run_worker_first !== true) throw new Error('Protected asset routes require assets.run_worker_first=true.');
