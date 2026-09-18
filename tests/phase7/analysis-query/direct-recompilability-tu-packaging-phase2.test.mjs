@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildCTranslationUnit } from '../js/decompiler/translation-unit.js';
-import { AnalysisQueryAPI } from '../js/analysis/query/api.js';
-import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
+import { buildCTranslationUnit } from '../../../js/analysis/query/translation-unit.js';
+import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
 
 function fn(pseudocode, extra = {}) {
   return { address:0x100n, name:'sample', signature:pseudocode.split(/\r?\n/, 1)[0], pseudocode, ...extra };

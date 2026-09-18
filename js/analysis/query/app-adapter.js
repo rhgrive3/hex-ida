@@ -2,7 +2,7 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
-import { buildCTranslationUnit } from '../../decompiler/translation-unit.js';
+import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
