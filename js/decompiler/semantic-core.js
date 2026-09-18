@@ -857,6 +857,65 @@ function stackName(ctx, loc) {
   return hit?.name || `var_${loc.disp < 0n ? 'm' : ''}${hex(loc.disp < 0n ? -loc.disp : loc.disp)}`;
 }
 
+function concreteRecoveredType(type) {
+  const name = typeNameOf(type);
+  return name && name !== 'unknown' ? name : null;
+}
+
+function valueTypeThroughCopies(value, ctx, active = new Set()) {
+  if (!value || active.has(value.id)) return null;
+  active.add(value.id);
+  const direct = concreteRecoveredType(ctx.types?.values?.get?.(value.id));
+  if (direct) { active.delete(value.id); return direct; }
+  const def = value.def;
+  if (!def || def.op !== OP.MOV) { active.delete(value.id); return null; }
+  const sources = (def.args || []).map((arg) => arg?.value).filter(Boolean);
+  const names = new Set(sources.map((source) => valueTypeThroughCopies(source, ctx, active)).filter(Boolean));
+  active.delete(value.id);
+  return names.size === 1 ? [...names][0] : null;
+}
+
+function semanticLocalDeclarationType(local, ctx) {
+  const funcAddr = ctx.opts.addr ?? ctx.model.instructions?.[0]?.address ?? null;
+  try {
+    const noteType = ctx.opts.notes?.typeOf?.(funcAddr, local.slot);
+    if (noteType && noteType !== 'unknown') return noteType;
+  } catch { /* optional user type notes */ }
+
+  const recovered = concreteRecoveredType(local.type) || concreteRecoveredType(local.semanticType);
+  if (recovered) return recovered;
+
+  const slot = (ctx.ir.stackSlots || []).find((candidate) =>
+    candidate.name === local.slot || Number(candidate.offset ?? candidate.disp ?? NaN) === Number(local.offset));
+  if (!slot?.key) return null;
+
+  const observed = new Set();
+  for (const inst of ctx.ir.instructions || []) {
+    if (inst.loc?.key !== slot.key) continue;
+    const value = inst.op === OP.STORE ? inst.args?.[0]?.value : inst.op === OP.LOAD ? inst.dst : null;
+    const name = valueTypeThroughCopies(value, ctx);
+    if (name) observed.add(name);
+    if (observed.size > 1) return null;
+  }
+  return observed.size === 1 ? [...observed][0] : null;
+}
+
+function semanticLocalDeclarations(types, body, ctx) {
+  const text = body.map((item) => item.text || '').join('\n');
+  const out = [];
+  const seen = new Set();
+  for (const local of types.locals || []) {
+    const name = String(local.slot || '');
+    if (!/^[A-Za-z_]\w*$/.test(name) || seen.has(name)) continue;
+    if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+    const type = semanticLocalDeclarationType(local, ctx);
+    if (!type) continue;
+    seen.add(name);
+    out.push(line('decl', 1, `${type} ${name};`, null));
+  }
+  return out;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) return stackName(ctx, loc);
@@ -1621,6 +1680,7 @@ export function decompileSemantic(model, opts = {}) {
     line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr, { source: sourceOf({ address: firstAddr, row: model.instructions?.[0]?.row ?? null, evidence: [{ reason: 'function entry' }] }) }),
     line('ctrl', 0, '{'),
   ];
+  for (const l of semanticLocalDeclarations(types, body, ctx)) lines.push(l);
   for (const l of body) lines.push(l);
   lines.push(line('ctrl', 0, '}'));
 
