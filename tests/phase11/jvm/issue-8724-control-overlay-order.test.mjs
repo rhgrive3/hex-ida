@@ -127,7 +127,7 @@ assert.deepEqual(globallyReordered.slice(0, 4), [
 assert.ok(globallyReordered.indexOf('node_10') < globallyReordered.indexOf('node_9'));
 assert.ok(entry.nodeIds.indexOf('node_9') < entry.nodeIds.indexOf('node_10:jvm-condition'));
 
-function buildJvmBranchClass(pairCount) {
+function buildJvmBranchClass(pairCount, { invalidZeroSuper = false } = {}) {
   const bytes = new Uint8Array(0x400);
   const view = new DataView(bytes.buffer);
   bytes.set([0xca, 0xfe, 0xba, 0xbe]);
@@ -160,7 +160,7 @@ function buildJvmBranchClass(pairCount) {
   offset += 2;
   view.setUint16(offset, 1, false); offset += 2;
   view.setUint16(offset, 2, false); offset += 2;
-  view.setUint16(offset, 7, false); offset += 2;
+  view.setUint16(offset, invalidZeroSuper ? 0 : 7, false); offset += 2;
   view.setUint16(offset, 0, false); offset += 2;
   view.setUint16(offset, 0, false); offset += 2;
   view.setUint16(offset, 1, false); offset += 2;
@@ -187,6 +187,10 @@ function buildJvmBranchClass(pairCount) {
   view.setUint16(offset, 0, false); offset += 2;
   return bytes.subarray(0, offset);
 }
+
+await assert.rejects(new JvmFrontend().open(buildJvmBranchClass(4, { invalidZeroSuper:true }), {
+  binaryId:'issue-8724-invalid-zero-super',
+}), /jvm-invalid-zero-super-class/);
 
 for (const pairCount of [4, 5]) {
   const frontend = new JvmFrontend();

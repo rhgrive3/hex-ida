@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "corpusId": "phase7-alias-memory-corpus",
-  "corpusVersion": 1,
+  "corpusVersion": 2,
   "architectureLanes": {
     "mandatory": [
       "arm64",
@@ -132,8 +132,8 @@
       "fixture": "frame-non-escaping",
       "left": "node_st_slot",
       "right": "node_st_arg",
-      "truth": "no",
-      "expectStrong": true
+      "truth": "may-or-weaker",
+      "expectStrong": false
     },
     {
       "id": "q-frame-escaped-argument",
@@ -168,6 +168,320 @@
       "expectStrong": false
     }
   ],
+  "aliasQueriesV2": [
+    {
+      "id": "v2-stack-identical",
+      "fixture": "stack-identical",
+      "left": "node_st",
+      "right": "node_ld",
+      "truth": "must",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "identity",
+      "category": "same-stack-same-field"
+    },
+    {
+      "id": "v2-stack-disjoint",
+      "fixture": "stack-disjoint",
+      "left": "node_st0",
+      "right": "node_st8",
+      "truth": "no",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interval",
+      "category": "same-stack-disjoint-fields"
+    },
+    {
+      "id": "v2-stack-diff-objects",
+      "fixture": "stack-different-objects",
+      "left": "node_st_obj0",
+      "right": "node_st_obj1",
+      "truth": "no",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interval",
+      "category": "different-stack-objects"
+    },
+    {
+      "id": "v2-stack-overlapping",
+      "fixture": "stack-overlapping",
+      "left": "node_st0",
+      "right": "node_st4",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interval",
+      "category": "overlapping-offset-intervals"
+    },
+    {
+      "id": "v2-uncertain-offset",
+      "fixture": "uncertain-offset",
+      "left": "node_st0",
+      "right": "node_stn",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "range",
+      "category": "uncertain-offset"
+    },
+    {
+      "id": "v2-provenance-loss",
+      "fixture": "provenance-loss",
+      "left": "node_st_lost",
+      "right": "node_st_other",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "provenance",
+      "category": "provenance-loss"
+    },
+    {
+      "id": "v2-global-identical",
+      "fixture": "global-identical",
+      "left": "node_st_g",
+      "right": "node_ld_g",
+      "truth": "must",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "global",
+      "category": "same-global"
+    },
+    {
+      "id": "v2-global-disjoint",
+      "fixture": "global-disjoint",
+      "left": "node_st_ga",
+      "right": "node_st_gb",
+      "truth": "no",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "global",
+      "category": "different-globals"
+    },
+    {
+      "id": "v2-abs-identical",
+      "fixture": "absolute-address-identical",
+      "left": "node_st_abs0",
+      "right": "node_ld_abs0",
+      "truth": "must",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "absolute",
+      "category": "exact-absolute-addresses-identical"
+    },
+    {
+      "id": "v2-abs-disjoint",
+      "fixture": "absolute-address-disjoint",
+      "left": "node_st_abs1",
+      "right": "node_st_abs2",
+      "truth": "no",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "absolute",
+      "category": "exact-absolute-addresses-disjoint"
+    },
+    {
+      "id": "v2-heap-same-site",
+      "fixture": "heap-same-allocation-site",
+      "left": "node_st_h1_a",
+      "right": "node_ld_h1_b",
+      "truth": "must",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "allocation",
+      "category": "same-allocation-site"
+    },
+    {
+      "id": "v2-heap-diff-sites",
+      "fixture": "heap-different-allocation-sites",
+      "left": "node_st_h1",
+      "right": "node_st_h2",
+      "truth": "no",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "allocation",
+      "category": "different-allocation-sites"
+    },
+    {
+      "id": "v2-intervals-disjoint",
+      "fixture": "intervals-disjoint",
+      "left": "node_st_int0",
+      "right": "node_st_int8",
+      "truth": "no",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interval",
+      "category": "disjoint-offset-intervals"
+    },
+    {
+      "id": "v2-intervals-overlapping",
+      "fixture": "intervals-overlapping",
+      "left": "node_st_int_wide",
+      "right": "node_st_int_inner",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interval",
+      "category": "overlapping-offset-intervals"
+    },
+    {
+      "id": "v2-phi-same-root",
+      "fixture": "phi-same-root-merge",
+      "left": "node_st_phi_same",
+      "right": "node_st_phi_target",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "phi",
+      "category": "phi-same-root-merge"
+    },
+    {
+      "id": "v2-phi-diff-roots",
+      "fixture": "phi-different-root-merge",
+      "left": "node_st_phi_diff",
+      "right": "node_st_phi_sp",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "phi",
+      "category": "phi-different-root-merge"
+    },
+    {
+      "id": "v2-cyclic-phi",
+      "fixture": "cyclic-pointer-phi",
+      "left": "node_st_cur",
+      "right": "node_st_far",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "loop",
+      "category": "loop-carried-pointer"
+    },
+    {
+      "id": "v2-frame-non-escaping",
+      "fixture": "frame-non-escaping",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "escape",
+      "category": "one-sided-non-escaped-object"
+    },
+    {
+      "id": "v2-frame-escaped-arg",
+      "fixture": "frame-escapes-through-argument",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "escape",
+      "category": "escaped-object"
+    },
+    {
+      "id": "v2-frame-escaped-ret",
+      "fixture": "frame-escapes-through-argument",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "escape",
+      "category": "escaped-object"
+    },
+    {
+      "id": "v2-load-derived",
+      "fixture": "load-derived-pointer",
+      "left": "node_st_loaded",
+      "right": "node_st_other",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interproc",
+      "category": "pointer-stored-then-loaded"
+    },
+    {
+      "id": "v2-callee-ret",
+      "fixture": "callee-returned-pointer",
+      "left": "node_st_callee_slot",
+      "right": "node_st_callee_ret",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interproc",
+      "category": "pointer-returned-by-direct-callee"
+    },
+    {
+      "id": "v2-rec-ret",
+      "fixture": "recursive-return-pointer",
+      "left": "node_st_rec_sp",
+      "right": "node_st_rec_ret",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "interproc",
+      "category": "recursive-return-pointer-summary"
+    },
+    {
+      "id": "v2-exhaustive-ind",
+      "fixture": "exhaustive-indirect-candidates",
+      "left": "node_st_ind_slot",
+      "right": "node_st_ind_target",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "indirect",
+      "category": "exhaustive-indirect-candidate-set"
+    },
+    {
+      "id": "v2-incomplete-ind",
+      "fixture": "incomplete-indirect-candidates",
+      "left": "node_st_incomp_slot",
+      "right": "node_st_incomp_opaque",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "indirect",
+      "category": "incomplete-indirect-candidate-set"
+    },
+    {
+      "id": "v2-store-barrier",
+      "fixture": "store-barrier-alias",
+      "left": "node_st_known",
+      "right": "node_st_unknown",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "barrier",
+      "category": "unknown-store-barrier"
+    },
+    {
+      "id": "v2-call-barrier",
+      "fixture": "call-barrier-alias",
+      "left": "node_st_known",
+      "right": "node_st_opaque",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "barrier",
+      "category": "unknown-call-barrier"
+    },
+    {
+      "id": "v2-tls-identical",
+      "fixture": "tls-identical",
+      "left": "node_st_tls0",
+      "right": "node_ld_tls0",
+      "truth": "must",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "tls",
+      "category": "tls-identities-same"
+    },
+    {
+      "id": "v2-tls-disjoint",
+      "fixture": "tls-disjoint",
+      "left": "node_st_tls16",
+      "right": "node_st_tls32",
+      "truth": "no",
+      "truthSource": "authoritative-spec-relation",
+      "proofClass": "tls",
+      "category": "tls-identities-distinct"
+    },
+    {
+      "id": "v2-tls-vs-stack",
+      "fixture": "tls-vs-stack",
+      "left": "node_st_tls_root",
+      "right": "node_st_sp_root",
+      "truth": "may",
+      "truthSource": "deterministic-fixture-construction",
+      "proofClass": "tls",
+      "category": "tls-identities-vs-stack"
+    }
+  ],
+  "aliasTruthErratum": {
+    "id": "c1-incoming-storage-20260915",
+    "previousCorpusVersion": 1,
+    "invalidatesPreviousEvidence": true,
+    "correctedQueryIds": [
+      "q-frame-non-escaping",
+      "v2-frame-non-escaping",
+      "v2-callee-ret",
+      "v2-tls-vs-stack"
+    ],
+    "reason": "Incoming addresses lack fresh-allocation or disjoint-storage preconditions."
+  },
   "memoryLinkQueries": [
     {
       "id": "m-unknown-store",
@@ -643,12 +957,12 @@
   },
   "truthGenerator": {
     "id": "phase7.corpus.declared-truth",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "scoring": {
     "id": "phase7.scoring",
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d"
+  "manifestDigest": "b09c8b8ce9039e936f5480a2ef4a57e2"
 }

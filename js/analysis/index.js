@@ -24,7 +24,15 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
-import { createDiscoveryArtifact } from './discovery/artifact.js';
+import {
+  createDiscoveryArtifact,
+  discoveryArtifactForRebuild,
+  functionDiscoveryArtifact,
+  isFactoryIssuedDiscoveryArtifact,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  normalizeDiscoveryArtifactBudget,
+  verifyDiscoveryReparse,
+} from './discovery/artifact.js';
 import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
@@ -309,11 +317,14 @@ export {
   applyDebugTypesToGraph,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
-};
-
-export {
+  createDiscoveryArtifact,
+  functionDiscoveryArtifact,
   discoveryArtifactForRebuild,
   isFactoryIssuedDiscoveryArtifact,
   isFactoryIssuedDiscoveryRebuildBinding,
+  normalizeDiscoveryArtifactBudget,
   verifyDiscoveryReparse,
-} from './discovery/artifact.js';
+};
+
+// Original-byte discovery materialization reuses the canonical producer/fusion lane.
+export {queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS} from './discovery/layout.js';

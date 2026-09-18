@@ -401,6 +401,7 @@ function signExtendExtractedField(n, width, bits) {
 
 const BIN_MN = {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
+  adc: 'adc', adcs: 'adc', sbc: 'sbc', sbcs: 'sbc',
   mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
   and: 'and', ands: 'and', orr: 'or', eor: 'xor',
   lsl: 'shl', lslv: 'shl', lsr: 'shr', lsrv: 'shr', asr: 'sar', asrv: 'sar',
@@ -734,12 +735,12 @@ export function buildValues(model, opts) {
     const bits = regBits(dstOp);
     const A = () => valueOf(insn.ops[1], row, bits);
     const B = () => valueOf(insn.ops[2], row, bits);
-    /* 末尾に s の付く演算（subs / adds / ands …）もフラグを立てる。 */
-    const knownFlagWriter = /^(subs|adds|ands|bics|negs|cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base);
-    const unsupportedFlagWriter = /^(adcs|sbcs|ngcs|rmif|setf8|setf16)$/.test(base);
+    /* 末尾に s の付く演算（subs / adds / ands / adcs / sbcs …）もフラグを立てる。 */
+    const knownFlagWriter = /^(subs|adds|ands|bics|negs|adcs|sbcs|ngcs|cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base);
+    const unsupportedFlagWriter = /^(rmif|setf8|setf16)$/.test(base);
     if (unsupportedFlagWriter) flags = null;
-    if (/^(subs|adds|ands|bics|negs)$/.test(base)) {
-      flags = base === 'negs' ? { op: base, a: ZERO, b: A(), bits } : { op: base, a: A(), b: B(), bits };
+    if (/^(subs|adds|ands|bics|negs|adcs|sbcs|ngcs)$/.test(base)) {
+      flags = (base === 'negs' || base === 'ngcs') ? { op: base, a: ZERO, b: A(), bits } : { op: base, a: A(), b: B(), bits };
     }
     // Unknown instructions explicitly reported as writing NZCV must invalidate
     // the remembered predicate even when their mnemonic is not in our table.
@@ -783,8 +784,8 @@ export function buildValues(model, opts) {
       emit(dst, bin('or', A(), un('not', B()), bits));
     } else if (base === 'eon') {
       emit(dst, bin('xor', A(), un('not', B()), bits));
-    } else if (base === 'neg' || base === 'negs') {
-      emit(dst, un('neg', A()));
+    } else if (base === 'neg' || base === 'negs' || base === 'ngc' || base === 'ngcs') {
+      emit(dst, un(base.startsWith('ngc') ? 'ngc' : 'neg', A()));
     } else if (base === 'fneg') {
       emit(dst, node('un', { op: 'fneg', a: A() }));
     } else if (base === 'mvn') {
@@ -975,9 +976,9 @@ function nzcvForConstants(flags) {
   const width = BigInt(bits), mask = (1n << width) - 1n, sign = 1n << (width - 1n);
   const a = BigInt.asUintN(bits, av), b = BigInt.asUintN(bits, bv);
   let result = 0n, c = false, v = false;
-  if (flags.op === 'adds' || flags.op === 'cmn') {
+  if (flags.op === 'adds' || flags.op === 'cmn' || flags.op === 'adcs') {
     const full = a + b; result = full & mask; c = full > mask; v = ((~(a ^ b) & (a ^ result) & sign) !== 0n);
-  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs') {
+  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs' || flags.op === 'sbcs' || flags.op === 'ngcs') {
     result = (a - b) & mask; c = a >= b; v = (((a ^ b) & (a ^ result) & sign) !== 0n);
   } else if (flags.op === 'ands' || flags.op === 'tst') {
     result = a & b;
@@ -1009,7 +1010,7 @@ function compareCompatible(flags) {
 
 function flagConditionNode(flags, cc) {
   if (!flags || !flags.a || !flags.b || !cc) return null;
-  if (!['adds','cmn','ands','tst','bics'].includes(flags.op)) return null;
+  if (!['adds','cmn','ands','tst','bics','adcs','sbcs','ngcs'].includes(flags.op)) return null;
   return node('flagcond', { cc, producer:flags.op, bits:Math.max(1, Math.min(64, Number(flags.bits) || 64)), a:flags.a, b:flags.b, semantics:'aarch64-nzcv-exact' });
 }
 

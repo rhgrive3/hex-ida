@@ -15,10 +15,10 @@ const ROOT_PROVENANCE = {
 
 test('#5242 contract version has one source of truth at the public boundary', () => {
   assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, core.FUNCTION_SUMMARY_CONTRACT_VERSION);
-  assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, '1.3.0');
+  assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, '1.4.0');
 });
 
-test('#5242 the public wrapper stamps the current 1.3 wire version', () => {
+test('#5242 the public wrapper stamps the current 1.4 wire version', () => {
   const summary = createFunctionSummary({
     functionId: 'fn-a',
     returnProvenance: [ROOT_PROVENANCE],
@@ -27,7 +27,7 @@ test('#5242 the public wrapper stamps the current 1.3 wire version', () => {
     memoryWriteRegions: [],
     status: STATUS,
   });
-  assert.equal(summary.contractVersion, '1.3.0');
+  assert.equal(summary.contractVersion, '1.4.0');
   assert.equal(summaryIdentityMatches(summary), true);
 });
 
@@ -46,7 +46,7 @@ test('#5242 a legacy 1.2 root/allocation summary without address-space identity 
   assert.equal(summaryIdentityMatches(legacy), false);
 });
 
-test('#5242 a 1.2 stamp on a valid 1.3 payload cannot pass identity validation', () => {
+test('#5242 a 1.2 stamp on a valid 1.4 payload cannot pass identity validation', () => {
   // Version-keyed consumers must be able to distinguish the incompatible
   // envelope even when the payload itself is canonical.
   const summary = createFunctionSummary({
@@ -59,3 +59,11 @@ test('#5242 a 1.2 stamp on a valid 1.3 payload cannot pass identity validation',
   });
   assert.equal(summaryIdentityMatches({ ...summary, contractVersion: '1.2.0' }), false);
 });
+
+for (const version of ['1.2.0', '1.3.0']) {
+  test(`#5242 legacy ${version} cannot be reinterpreted as source-bound recursive equations`, () => {
+    const summary = createFunctionSummary({ functionId:'fn-a', returnProvenance:[ROOT_PROVENANCE], status:STATUS });
+    assert.equal(summaryIdentityMatches({ ...summary, contractVersion:version }), false);
+    assert.equal(summaryIdentityMatches({ ...summary, schemaVersion:3 }), false);
+  });
+}

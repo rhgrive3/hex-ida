@@ -24,7 +24,7 @@ import { a1RegionAlias } from './a1-region-alias.js';
 import { createAliasResult, reasonCodeForStopReason, unknownAlias } from './result.js';
 
 export const PHASE7_ALIAS_SOLVER_ID = 'phase7.alias.solver';
-export const PHASE7_ALIAS_SOLVER_VERSION = '1.1.0';
+export const PHASE7_ALIAS_SOLVER_VERSION = '1.1.1';
 
 const STRENGTH = { unknown: 0, may: 1, must: 2, no: 2 };
 

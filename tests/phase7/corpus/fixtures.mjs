@@ -21,7 +21,7 @@
 import { fixture, memoryAccessOf, regionOf } from '../helpers/fixtures.mjs';
 
 export const CORPUS_ID = 'phase7-alias-memory-corpus';
-export const CORPUS_VERSION = 1;
+export const CORPUS_VERSION = 2;
 
 /** Two disjoint fixed slots in one frame. Exact truth: they cannot overlap. */
 function stackDisjoint(options) {
@@ -283,9 +283,9 @@ const FRAME_ROOTS = Object.freeze({
 });
 
 /**
- * A frame slot and an incoming pointer parameter. Nothing publishes the frame,
- * so the caller cannot hold a pointer into it: exact truth is separation, and
- * only escape evidence can prove it.
+ * Incoming SP and a pointer parameter. Neither a fresh frame allocation nor a
+ * disjointness precondition is present. Non-publication does not exclude an
+ * incoming alias: SP = x0 and SP != x0 are both valid (corpus v2 erratum).
  */
 function frameNonEscaping(options) {
   const f = fixture('function_frame_non_escaping');
@@ -302,8 +302,8 @@ function frameNonEscaping(options) {
 
 /**
  * The same shape, except the frame pointer is stored through the incoming
- * argument first. The frame has escaped, so the separation above is no longer
- * true and must be withdrawn.
+ * argument first. The frame has escaped, so its non-escape proof must be
+ * withdrawn; aliasing remains conservative in both fixtures.
  */
 function frameEscapesThroughArgument(options) {
   const f = fixture('function_frame_escapes');
@@ -554,7 +554,8 @@ function phiDifferentRootMerge(options) {
   return f.build({ ...options, rootDescriptors: V2_ROOTS });
 }
 
-/** Direct callee returned pointer. */
+/** Historical callee-return case: x0 is read before an effect-free call.
+ * No return binding or fresh allocation separates that incoming value from SP. */
 function calleeReturnedPointer(options) {
   const f = fixture('function_callee_returned');
   f.block('entry', []);
@@ -671,7 +672,7 @@ function tlsDisjoint(options) {
   return f.build({ ...options, rootDescriptors: V2_ROOTS });
 }
 
-/** TLS vs Stack: distinct address regions. */
+/** TLS-like and incoming SP roots lack a disjoint local-stack storage proof. */
 function tlsVsStack(options) {
   const f = fixture('function_tls_vs_stack');
   f.block('entry', []);
@@ -769,7 +770,7 @@ export const ALIAS_QUERIES = Object.freeze([
   { id: 'q-similar-roots', fixture: 'similar-looking-roots', left: 'node_st_a', right: 'node_st_b', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-select-roots', fixture: 'select-distinct-roots', left: 'node_st_chosen', right: 'node_st_a', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-load-derived', fixture: 'load-derived-pointer', left: 'node_st_loaded', right: 'node_st_other', truth: 'may-or-weaker', expectStrong: false },
-  { id: 'q-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'no', expectStrong: true, proofClass: 'escape' },
+  { id: 'q-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'may-or-weaker', expectStrong: false, proofClass: 'escape' },
   { id: 'q-frame-escaped-argument', fixture: 'frame-escapes-through-argument', left: 'node_st_slot', right: 'node_st_arg', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-two-pointer-add-left', fixture: 'two-pointer-arithmetic', left: 'node_st_sum', right: 'node_st_a', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-two-pointer-add-right', fixture: 'two-pointer-arithmetic', left: 'node_st_sum', right: 'node_st_b', truth: 'may-or-weaker', expectStrong: false },

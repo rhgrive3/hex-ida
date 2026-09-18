@@ -111,19 +111,20 @@ test('MOV extension operand-size states preserve partial-register and 32-bit wri
       assert.equal(write.metadata.writePolicy, policy);
     }
 
-    // MOVZX/MOVSX do not have a 16->16 encoding. Capstone can still return a
-    // structured row for the 66h bytes, so this remains an explicit negative
-    // witness rather than being admitted to the exact denominator.
+    // Operand-size override admits 16->16 MOVZX/MOVSX. These forms preserve
+    // the upper physical register bits, as verified by the native oracle.
     for (const [bytes, family] of [
       [[0x66,0x0f,0xb7,0xc3], 'movzx'],
       [[0x66,0x0f,0xbf,0xc3], 'movsx'],
     ]) {
       const decoded = one(session, bytes);
       assert.equal(decoded.instructionFamily, family);
-      const result = liftX86IntegerEffects({ ...decoded, instructionId:`negative:${family}:16-to-16` });
-      assert.equal(result.completeness, 'partial');
-      assert.match(partialReason(result), new RegExp(`${family}-operand-shape-unmodelled`));
-      assert.equal(result.metadata?.failClosed, true);
+      const result = liftX86IntegerEffects({ ...decoded, instructionId:`extend:${family}:16-to-16` });
+      assert.equal(result.completeness, 'exact');
+      assert.equal(result.metadata.fromBits, 16);
+      assert.equal(result.metadata.toBits, 16);
+      const [write] = writes(result, 'rax');
+      assert.equal(write.metadata.writePolicy, 'preserve-unaffected');
     }
 
     const highByte = effect(session,[0x88,0xdc],'partial:ah'); // mov ah, bl

@@ -83,6 +83,13 @@ test('native query rejects user-supplied reader and returns no proof after host 
 const cli=fileURLToPath(new URL('../../tools/portable-checker/check.mjs',import.meta.url));
 async function dirFor(t){const dir=await mkdtemp(path.join(tmpdir(),'scpa-portable-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;}
 function run(file){const r=spawnSync(process.execPath,[cli,file],{timeout:8000,maxBuffer:262144,encoding:'utf8'});assert.ifError(r.error);return r;}
+function failureReport(stderr) {
+  // Node may emit runtime diagnostics on stderr before the CLI's one JSON
+  // record. Keep exit-code and record checks; do not parse those diagnostics.
+  const records=String(stderr).split(/\r?\n/).filter(line=>line.startsWith('{'));
+  assert.equal(records.length,1,stderr);
+  return JSON.parse(records[0]);
+}
 test('CLI exit codes distinguish checked, rejected and unknown without inventing semantic proof',async t=>{
   const dir=await dirFor(t),file=path.join(dir,'capsule.json');
   for(const [expected,mutate] of [[0,()=>{}],[2,c=>c.checks[0].bytesHex='29fe83d229410091'],[3,c=>c.checks=[]]]){
@@ -93,7 +100,7 @@ test('CLI exit codes distinguish checked, rejected and unknown without inventing
 test('CLI rejects malformed, oversized, non-UTF8, directory, missing and symlink inputs',async t=>{
   const dir=await dirFor(t),file=path.join(dir,'capsule.json');
   for(const bytes of ['{',Buffer.alloc(PORTABLE_CHECK_LIMITS.encodedBytes+1,32),Buffer.from([255,254])]){
-    await writeFile(file,bytes); const r=run(file);assert.equal(r.status,1);assert.equal(JSON.parse(r.stderr).semanticProof,false);
+    await writeFile(file,bytes); const r=run(file);assert.equal(r.status,1);assert.equal(failureReport(r.stderr).semanticProof,false);
   }
   assert.equal(run(dir).status,1);assert.equal(run(path.join(dir,'missing')).status,1);
   await symlink(file,path.join(dir,'link'));assert.equal(run(path.join(dir,'link')).status,1);

@@ -17,6 +17,7 @@ import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './ag
  */
 
 const XLEN = 64;
+const UNION_TYPE = /^(?:(?:const|volatile|restrict)\s+)*union\b/i;
 
 /* Integer Calling Convention: a0-a7 are x10-x17. */
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['x10','x11','x12','x13','x14','x15','x16','x17']);
@@ -298,7 +299,7 @@ function parameterClass(parameter) {
 function aggregateIsUnion(parameter) {
   const type = String(parameter?.returnType || parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  return /\bunion\b/.test(`${type} ${abiClass}`);
+  return UNION_TYPE.test(type) || abiClass === 'union';
 }
 
 function aggregateUnionExtent(parameter) {
@@ -406,7 +407,8 @@ function collectFlattenLeaves(member, offset, abiFlen) {
     };
   }
   if (aggregateIsUnion(member)) {
-    return aggregateUnionExtent(member) ? { state:'ineligible' } : { state:'unknown' };
+    return (canonicalAggregateLayout(member) ?? aggregateUnionExtent(member))
+      ? { state:'ineligible' } : { state:'unknown' };
   }
   const nestedCanonical = canonicalAggregateLayout(member);
   if (!nestedCanonical) return { state:'unknown' };
@@ -421,7 +423,8 @@ function collectFlattenLeaves(member, offset, abiFlen) {
 
 function flattenAggregate(parameter, abiFlen) {
   if (aggregateIsUnion(parameter)) {
-    return aggregateUnionExtent(parameter) ? { eligible:false, known:true } : null;
+    return (canonicalAggregateLayout(parameter) ?? aggregateUnionExtent(parameter))
+      ? { eligible:false, known:true } : null;
   }
   const canonical = canonicalAggregateLayout(parameter);
   const members = canonical?.members ?? aggregateMembers(parameter);
@@ -564,6 +567,15 @@ function createClassifier(profile) {
   const hardFloat = profile.floatAbi !== 'soft';
   const abiFlen = profile.floatAbi === 'double' ? 64 : profile.floatAbi === 'single' ? 32 : 0;
 
+  /*
+   * psABI hardware floating-point flattening recurses through the full
+   * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
+   * classified exactly like `struct { float f0; float f1; }`. Leaves carry
+   * their proven absolute byte span so register placement can be validated
+   * against the physical layout. A nested aggregate without a proven layout,
+   * or an undecidable nested leaf, remains unknown. Only a proven ineligible
+   * layout may use the integer convention (#5619).
+   */
   function classifyArguments(instruction, options = {}) {
     const prototype = callPrototypeOf(instruction, options);
     const parameters = parameterList(prototype);
@@ -1355,7 +1367,7 @@ function createRiscvAbi(profile) {
   };
   return new ABIPlugin({
     id:profile.id,
-    semanticVersion:'1',
+    semanticVersion:profile.floatAbi === 'soft' ? '1' : '1.1.0',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
     // The classifier's vectorVariantRequested() accepts both the canonical

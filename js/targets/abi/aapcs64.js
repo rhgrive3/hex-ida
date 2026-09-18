@@ -79,6 +79,9 @@ function normalizeAAPCS64StackLayout(result, params) {
       argument.pieces = argument.pieces.map((piece) => piece.stackOffset == null ? piece : ({
         ...piece,
         stackOffset: piece.stackOffset + displacement,
+        // The aggregate's stack-slot alignment is not each member's
+        // alignment. Reuse the core's proven homogeneous element layout.
+        ...(argument.homogeneousLayoutProven === true ? { stackAlignment:argument.elementBytes } : {}),
       }));
     }
     stackArguments.push(argument);

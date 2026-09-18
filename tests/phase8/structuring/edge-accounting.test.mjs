@@ -70,6 +70,38 @@ test('a switch names each case and its join', () => {
   assert.ok(defaultEdge.kinds.includes('switch-default'));
 });
 
+test('switch case fallthrough remains an explicit accounted edge inside the switch region', () => {
+  const f = fixture('switch-fallthrough');
+  const selector = f.block(0, { succ: [1, 2, 3] }).opaque(32);
+  f.switchBranch(selector, [[0, 1], [1, 2]], 3);
+  f.block(1, { succ: [2], edges: [{ to: 2, kind: 'fallthrough' }] }).branch(2);
+  f.block(2, { succ: [4] }).branch(4);
+  f.block(3, { succ: [4] }).branch(4);
+  f.block(4).ret();
+  const ir = f.build();
+  const { facts } = structuring(ir);
+  assert.equal(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.construct, 'sequence');
+  assert.ok(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.kinds.includes('fallthrough'));
+  assert.ok(facts.regions.some((entry) => entry.kind === 'switch' && entry.entry === 0));
+  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
+});
+
+test('flattened switch dispatcher remains residual control flow instead of a guessed loop', () => {
+  const f = fixture('flattened-dispatcher');
+  f.block(0, { succ: [1] }).branch(1);
+  const state = f.block(1, { succ: [2, 3, 4] }).opaque(32);
+  f.switchBranch(state, [[0, 2], [1, 3]], 4);
+  f.block(2, { succ: [1] }).branch(1);
+  f.block(3, { succ: [1] }).branch(1);
+  f.block(4).ret();
+  const ir = f.build();
+  const { facts } = structuring(ir);
+  assert.equal(facts.residualGotoCount, facts.edgeCount);
+  assert.ok(facts.edges.every((edge) => edge.construct === 'residual-goto'));
+  assert.ok(!facts.regions.some((entry) => entry.entry === 1 && (entry.kind === 'loop' || entry.kind === 'switch')));
+  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
+});
+
 test('nested loops name the back edge, the entry and the guard exit at each level', () => {
   const f = fixture('nested');
   f.block(0);

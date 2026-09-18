@@ -4,18 +4,15 @@
  * core, then applies the stricter serialized-envelope rules added by
  * #4314/#4320/#4695 without weakening any upstream checks.
  */
-import { deepFreeze } from '../../core/identity/index.js';
+import { canonicalAddress, createFunctionId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCompleteStatus } from '../status.js';
 import * as core from './contract-core.js';
+import { canonicalReturnEquations, returnEquationSourceMatches } from './return-equations.js';
 
 export * from './contract-core.js';
 
-// Single contract-version source of truth: the core canonical constructor owns
-// the version identity (the #5242 root/allocation `addressSpace` requirement
-// bumped it to 1.3.0). Redeclaring a stale constant here re-stamped core-built
-// summaries with an older wire version while identity validation compared
-// against the same stale value — version-keyed cache/consumer layers could not
-// distinguish the incompatible envelope from a legacy 1.2 summary.
+// The core constructor is the single wire-version authority. Schema 4 / 1.4
+// includes source-bound return equations; a 1.3 envelope must be recomputed.
 export const FUNCTION_SUMMARY_CONTRACT_VERSION = core.FUNCTION_SUMMARY_CONTRACT_VERSION;
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
@@ -56,18 +53,6 @@ function optionalInteger(value, code) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string' && /^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/.test(value.trim())) return BigInt(value.trim());
   throw new TypeError(code);
-}
-function strictProvenanceIndex(value) {
-  if (typeof value === 'bigint') {
-    const number = Number(value);
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
-  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
-    const number = Number(value.trim());
-    return Number.isSafeInteger(number) ? number : null;
-  }
-  return null;
 }
 function strictProvenanceOffset(value) {
   if (typeof value === 'bigint') return value;
@@ -112,8 +97,8 @@ function validateReturnProvenance(value) {
   if (value.addressSpace != null) {
     nonEmptyString(value.addressSpace, 'function-summary-invalid-return-provenance-address-space');
   }
-  const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
-  const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
+  const argIndex = optionalIndex(value.argIndex, 'function-summary-invalid-return-provenance-arg-index');
+  const returnIndex = optionalIndex(value.returnIndex, 'function-summary-invalid-return-provenance-return-index');
   const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
   const root = value.rootEntityId == null ? null : nonEmptyString(value.rootEntityId, 'function-summary-invalid-return-provenance-identity');
   const allocation = value.allocationSiteId == null ? null : nonEmptyString(value.allocationSiteId, 'function-summary-invalid-return-provenance-identity');
@@ -192,6 +177,8 @@ function validateSummaryInput(input) {
   if (input.functionId != null) nonEmptyString(input.functionId, 'function-summary-function-id-required');
   for (const field of ['inputs','returnValues','registerEffects','allocations','frees']) validateStringList(input[field], `function-summary-invalid-${field}`);
   for (const value of denseArray(input.returnProvenance, 'function-summary-invalid-return-provenance')) validateReturnProvenance(value);
+  if (input.returnSourceDigest != null) nonEmptyString(input.returnSourceDigest, 'function-summary-invalid-return-source-digest');
+  canonicalReturnEquations(input.returnEquations, input, value => { validateReturnProvenance(value); return value; });
   for (const value of denseArray(input.memoryReadRegions, 'function-summary-invalid-read-regions')) {
     validateMemoryEffectInput(value);
     if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');
@@ -208,10 +195,76 @@ function validateSummaryInput(input) {
   if (input.stackDelta != null) optionalInteger(input.stackDelta, 'function-summary-invalid-stack-delta');
 }
 
+// Bound newly consumed return-summary universes without confusing the number
+// of callees with the number of distinct points-to roots after their union.
+export const RETURN_SUMMARY_CANDIDATE_LIMIT = 256;
+
 export function classifyCallTargetProof(call = {}) {
   const result = core.classifyCallTargetProof(call);
   if (result.kind !== 'indirect' || result.candidateEntityIds.length > 0 || !result.exhaustive) return result;
   return deepFreeze({ ...result, exhaustive:false, exactSingletonEntityId:null });
+}
+
+/**
+ * Resolve native immediate calls against an existing summary registry. Target
+ * identity is independent of callee effect completeness: retain the canonical
+ * target value and opaque machine CALL unchanged. Neither an ABI declaration
+ * nor an address alone establishes a callee; the same-snapshot summary must
+ * already exist under the canonical function identity for that binary/slice.
+ */
+export function createSemanticCallTargetClassifier(ir, memorySsa, options = {}) {
+  let digest, nodes, values;
+  return node => {
+    const fallback = classifyCallTargetProof(node?.call);
+    const call = node?.call;
+    if (fallback.exhaustive || fallback.candidateEntityIds.length || node?.kind !== 'call'
+      || !node.attributes?.abiCallBinding
+      || call?.summarySource !== 'machine-effects-abi-neutral-call'
+      || ['targetEntityId', 'target', 'callee'].some(key => Object.hasOwn(call, key))
+      || call.targetEntityIds?.length !== 0 || call.targetValueIds?.length !== 1
+      || typeof options.summaryForTarget !== 'function' || options.signal?.aborted) return fallback;
+    try {
+      nodes ??= new Map((ir?.nodes ?? []).map(item => [item.id, item]));
+      values ??= new Map((ir?.values ?? []).map(value => [value.id, value]));
+      if (nodes.get(node.id) !== node) return fallback;
+      const identity = memorySsa?.identity, abi = node.attributes?.abiCallBinding?.abiIdentity;
+      const snapshotId = options.snapshotId ?? 'snapshot-unbound';
+      if (!identity || !abi || identity.functionId !== ir.functionId
+        || memorySsa.functionId !== ir.functionId || identity.snapshotId !== snapshotId
+        || memorySsa.snapshotId !== snapshotId || abi.snapshotId !== snapshotId
+        || !identity.binaryId || !identity.sliceId || !identity.architectureId
+        || abi.binaryId !== identity.binaryId || abi.sliceId !== identity.sliceId
+        || abi.architectureId !== identity.architectureId
+        || (abi.functionId != null && abi.functionId !== ir.functionId)) return fallback;
+      digest ??= stableDigest(ir);
+      if (identity.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.functionId !== ir.functionId) return fallback;
+      const control = node.attributes?.machineControlEffect;
+      if (control?.kind !== 'call' || control.target?.kind !== 'absolute-address'
+        || call.controlEffects?.length !== 1
+        || stableStringify(call.controlEffects[0]) !== stableStringify(control)) return fallback;
+      const target = values.get(call.targetValueIds[0]), producer = nodes.get(target?.definitionNodeId);
+      const constant = target?.metadata?.constant;
+      if (producer?.kind !== 'const' || producer.outputs?.length !== 1
+        || producer.outputs[0] !== target.id || producer.blockId !== node.blockId
+        || constant?.kind !== 'bitvector' || constant.value == null
+        || stableStringify(producer.attributes?.constant) !== stableStringify(constant)
+        || !node.origin?.instructionIds?.length
+        || stableStringify(producer.origin?.instructionIds) !== stableStringify(node.origin.instructionIds)) return fallback;
+      const address = canonicalAddress(control.target.value);
+      if (canonicalAddress(constant.value) !== address) return fallback;
+      const functionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+        canonicalStartIdentity:{ address } });
+      const summary = options.summaryForTarget(functionId);
+      if (options.signal?.aborted || !summaryIdentityMatches(summary, { functionId, snapshotId })) return fallback;
+      return deepFreeze({ kind:'direct', candidateEntityIds:[functionId], exhaustive:true,
+        exactSingletonEntityId:functionId,
+        nativeTargetFact:{ kind:'native-direct-call-target', version:1, callSiteId:node.id,
+          functionId:ir.functionId, targetFunctionId:functionId, address, snapshotId,
+          semanticIrDigest:digest, summaryDigest:functionSummaryDigest(summary) } });
+    } catch { return fallback; }
+  };
 }
 export function createMemoryEffect(input = {}) {
   validateMemoryEffectInput(input);
@@ -256,11 +309,13 @@ export function summaryIdentityMatches(summary, expected = {}) {
       canonical = createFunctionSummary(summary);
       if (!sameCanonicalValue(summary, canonical)) return false;
     }
+    if (!returnEquationSourceMatches(canonical)) return false;
     if (expected.functionId != null && (typeof expected.functionId !== 'string' || canonical.functionId !== expected.functionId)) return false;
     const status = canonical.status;
     if (expected.snapshotId != null && (typeof expected.snapshotId !== 'string' || status.snapshotId !== expected.snapshotId)) return false;
     if (expected.analyzerId != null && (typeof expected.analyzerId !== 'string' || status.analyzerId !== expected.analyzerId)) return false;
     if (expected.analyzerVersion != null && (typeof expected.analyzerVersion !== 'string' || status.analyzerVersion !== expected.analyzerVersion)) return false;
+    if (expected.digest != null && (typeof expected.digest !== 'string' || core.functionSummaryDigest(canonical) !== expected.digest)) return false;
     return true;
   } catch { return false; }
 }

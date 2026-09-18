@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { adrTargetOperandValue, canonicalAddressValue, createArm64EffectContext, immediateOf, numericOtherTargetValue } from './common.js';
+import { adrTargetOperandValue, canonicalAddressValue, canonicalArm64InstructionAddress, canonicalArm64TargetAddress, createArm64EffectContext, immediateOf, numericOtherTargetValue } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -248,13 +248,13 @@ function validAddressEncoding(instruction, ops) {
     || targetOperand?.shift != null || targetOperand?.extend != null) return false;
   const rawAddress = instruction?.address;
   const rawTarget = instruction?.pcRelTarget ?? adrTargetOperandValue(targetOperand);
-  const address = canonicalAddressValue(rawAddress);
-  const target = canonicalAddressValue(rawTarget);
+  const address = canonicalArm64InstructionAddress(rawAddress);
+  const target = canonicalArm64TargetAddress(rawTarget);
   if (address == null || target == null) return false;
-  if (targetOperand?.k === 'imm' && canonicalAddressValue(targetOperand.value) !== target) return false;
+  if (targetOperand?.k === 'imm' && canonicalArm64TargetAddress(targetOperand.value) !== target) return false;
   if (targetOperand?.k === 'other') {
     const otherValue = numericOtherTargetValue(targetOperand);
-    if (otherValue != null && otherValue !== target) return false;
+    if (otherValue != null && canonicalArm64TargetAddress(otherValue) !== target) return false;
   }
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);

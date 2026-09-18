@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bvSort, BV_BINARY_OP, BV_COMPARE_OP, BOOL_CONNECTIVE_OP } from '../../../js/symbolic/expr/kinds.js';
+import { bvSort, boolSort, BV_BINARY_OP, BV_COMPARE_OP, BOOL_CONNECTIVE_OP } from '../../../js/symbolic/expr/kinds.js';
 import {
   createBv,
   createBool,
@@ -19,6 +19,44 @@ import { CLAIM_KIND, VERIFICATION_QUERY_KIND, createVerificationQuery } from '..
 import { validateSatModel } from '../../../js/symbolic/verify/validate-model.js';
 
 const MASK = (width) => (1n << BigInt(width)) - 1n;
+
+test('exhaustive mixed-width enumeration retains every valuation and the final SAT witness', async () => {
+  const x = createFreshSymbol(bvSort(3), 'counter-x');
+  const y = createFreshSymbol(bvSort(2), 'counter-y');
+  const flag = createFreshSymbol(boolSort(), 'counter-flag');
+  const last = createConnective('and', createCompare('eq', x, createBv(3, 7n)),
+    createCompare('eq', y, createBv(2, 3n)), flag);
+  const backend = new ExhaustiveBvBackend({ yieldEvery: 8 });
+  const session = backend.createSession();
+  try {
+    const query = queryFor(last);
+    const sat = await session.check(query);
+    assert.equal(sat.status, SOLVER_STATUS.SAT);
+    assert.equal(sat.stats.nodesEvaluated, 8 * 4 * 2);
+    assert.equal(sat.model[x.symbolId], 7n);
+    assert.equal(sat.model[y.symbolId], 3n);
+    assert.equal(sat.model[flag.symbolId], true);
+    assert.equal(validateSatModel(query, sat.model).valid, true);
+    const before = { ...sat.model };
+    const unsat = await session.check(queryFor(createConnective('and', last, createConnective('not', last))));
+    assert.equal(unsat.status, SOLVER_STATUS.UNSAT);
+    assert.equal(unsat.stats.nodesEvaluated, 8 * 4 * 2);
+    assert.deepEqual(sat.model, before, 'later enumeration cannot mutate the published witness');
+  } finally { await session.dispose(); }
+});
+
+test('exhaustive enumeration still observes host cancellation at its task-queue yield', async () => {
+  const x = createFreshSymbol(bvSort(8), 'cancel-counter');
+  const session = new ExhaustiveBvBackend({ yieldEvery: 8 }).createSession();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 0);
+  try {
+    const result = await session.check(queryFor(createCompare('ne', x, x)), { signal: controller.signal });
+    assert.equal(result.status, SOLVER_STATUS.CANCELLED);
+    assert.equal(result.model, null);
+    assert.equal(result.lifecycle.publishable, false);
+  } finally { clearTimeout(timer); await session.dispose(); }
+});
 const wrap = (value, width) => BigInt.asUintN(width, BigInt(value));
 const signed = (value, width) => BigInt.asIntN(width, wrap(value, width));
 

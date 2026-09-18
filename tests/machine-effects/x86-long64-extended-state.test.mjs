@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { effects,reg,legacy,vex2,ops } from '../phase5/effects/fp-simd/helpers.mjs';
-import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { forEachX86BrowserSession } from './helpers/x86-browser-effects.mjs';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
+import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 
 const vex = effects('vxorps',[reg('xmm0'),reg('xmm1'),reg('xmm2')],{prefixes:vex2(0xf0),rawBytes:[0xc5,0xf0,0x57,0xc2],instructionId:'extended:vex'});
 assert.equal(vex.completeness,'exact');
@@ -31,8 +32,29 @@ const fldzSynthetic=effects('fldz',[],{prefixes:legacy(),rawBytes:[0xd9,0xee],in
 assert.equal(fldzSynthetic.completeness,'partial');
 assert.match(fldzSynthetic.unknownEffects.reason,/trusted-decoder-provenance/);
 
-const capstone=await createCapstoneX86Session();
+const x87Fixtures={
+  fldz:[0xd9,0xee],
+  fstp_m64:[0xdd,0x18],
+  fnstcw:[0xd9,0x38],
+  fldcw:[0xd9,0x28],
+  fnstsw_ax:[0xdf,0xe0],
+};
+// Decoding alone does not authorize receiver terminal closure. Preserve
+// main's public-decoder refusal alongside the real browser receiver checks.
+const publicDecoder=await createCapstoneX86Session();
 try {
+  for (const [name,bytes] of Object.entries(x87Fixtures)) {
+    const raw=publicDecoder.decode(bytes,0x721000n)[0];
+    assert.ok(raw,`${name}:public decoder fixture`);
+    const bundle=liftX86MachineEffects(raw,{instructionId:`extended:public:${name}`});
+    assert.equal(bundle.completeness,'partial',name);
+    assert.match(bundle.unknownEffects?.reason,/x87-family-requires-dedicated-semantics/);
+    assert.notEqual(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
+    assert.equal(bundle.metadata.x87PhysicalStateModeled,true,name);
+  }
+} finally { publicDecoder.close(); }
+
+await forEachX86BrowserSession(async ({ decodeAndLift }) => {
   const fixtures={
     vxorps_maskz:[0x62,0xf1,0x74,0xc9,0x57,0xc2],
     vxorps_high_merge:[0x62,0xa1,0x74,0x22,0x57,0xc2],
@@ -45,8 +67,7 @@ try {
   };
   const trustedEvexBundles=new Map();
   for(const [name,bytes] of Object.entries(fixtures)){
-    const raw=capstone.decode(bytes,0x720000n)[0];
-    const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
+    const [{ decoded:raw, effects:bundle }] = await decodeAndLift(bytes,0x720000n);
     assert.ok(bundle,`${name}:bundle`);
     assert.equal(bundle.completeness,'exact-with-intrinsic',`${name}:${bundle.unknownEffects?.reason}`);
     const intrinsic=bundle.operations.find((operation)=>operation.kind==='intrinsic');
@@ -99,9 +120,8 @@ try {
   };
   const trustedEvexMemoryBundles=new Map();
   for(const [name,bytes] of Object.entries(memoryFixtures)){
-    const raw=capstone.decode(bytes,0x720800n)[0];
+    const [{ decoded:raw, effects:bundle }] = await decodeAndLift(bytes,0x720800n);
     assert.ok(raw,`${name}:decoder fixture must decode`);
-    const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
     assert.equal(bundle?.completeness,'exact-with-intrinsic',`${name}:${bundle?.unknownEffects?.reason}`);
     const intrinsic=bundle.operations.find((operation)=>operation.kind==='intrinsic');
     assert.equal(intrinsic?.metadata.exactArchitecturalSummary,true,name);
@@ -120,23 +140,15 @@ try {
   assert.equal(scalarCompareMemory.intrinsic.metadata.fpEnvironmentDependency,'MXCSR');
   assert.ok(scalarCompareMemory.bundle.possibleFaults.some((fault)=>fault.kind==='x86-simd-floating-point-exception'));
 
-  const x87Fixtures={
-    fldz:[0xd9,0xee],
-    fstp_m64:[0xdd,0x18],
-    fnstcw:[0xd9,0x38],
-    fldcw:[0xd9,0x28],
-    fnstsw_ax:[0xdf,0xe0],
-  };
   for(const [name,bytes] of Object.entries(x87Fixtures)){
-    const raw=capstone.decode(bytes,0x721000n)[0];
-    const bundle=liftX86MachineEffects(raw,{instructionId:`extended:${name}`});
+    const [{ effects:bundle }] = await decodeAndLift(bytes,0x721000n);
     assert.ok(bundle,`${name}:bundle`);
-    assert.equal(bundle.completeness,'partial',`${name}:unrevalidated Capstone rows must remain fail-closed`);
-    assert.match(bundle.unknownEffects?.reason,/x87-family-requires-dedicated-semantics/);
-    assert.notEqual(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
+    assert.equal(bundle.completeness,'exact-with-intrinsic',`${name}:${bundle.unknownEffects?.reason}`);
+    assert.equal(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
+    assert.match(bundle.metadata.priorFailClosedReason,/requires-dedicated-semantics/);
     assert.equal(bundle.metadata.x87PhysicalStateModeled,true,name);
   }
-} finally { capstone.close(); }
+});
 
 const badEvex=effects('vxorps',[reg('zmm0'),reg('zmm1'),reg('zmm2')],{prefixes:{legacy:[],rex:null,vector:{kind:'evex',bytes:[0x62,0xf1,0x78,0x68]}},rawBytes:[0x62,0xf1,0x78,0x68,0x57,0xc0],instructionId:'extended:bad-evex'});
 assert.notEqual(badEvex?.completeness,'exact-with-intrinsic');

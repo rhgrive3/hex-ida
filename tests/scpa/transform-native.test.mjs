@@ -5,7 +5,7 @@ import { checkBitvectorViewRelation } from '../../js/core/evidence/bv-view-proof
 import { checkMemoryViewFrame, MEMORY_VIEW_FRAME_SCHEMA } from '../../js/core/evidence/memory-transform-frame.js';
 import { checkNativeTransformRelation, explainNativeTransformProjection } from '../../js/core/evidence/native-transform.js';
 import { beginScopedTransformCapture, finishScopedTransformCapture } from '../../js/decompiler/phase8/scoped-transform-capture.js';
-import { decompileScopedCanonicalOwner } from '../../js/analysis/semantic-function.js';
+import { analyzeSemanticFunction, decompileScopedCanonicalOwner } from '../../js/analysis/semantic-function.js';
 import { projectScopedTransformOwners } from '../../js/analysis/scoped-transform-projection.js';
 import { captured, scope } from './native-owner-fixture.mjs';
 import { nativeWorkerFixture } from './native-worker-fixture.mjs';
@@ -157,4 +157,29 @@ test('native transform production stops within the pass budget without yielding 
   const request = { kind: 'transforms', ...f, worldId: f.world.id, snapshotId: 'snap', producerArtifactId: 'artifact' };
   for (const workUnits of [1, 2, 4, 8, 16]) await assert.rejects(() => projectScopedTransformOwners(owner, semantic, request,
     { work: workFor(t, { workUnits }) }), e => e.code === 'budget-exhausted');
+});
+
+// The shared roadmap projection and scoped main owner must compose without a
+// second enhancement or an option-supplied IR replacing the issued owner.
+test('combined scoped projection preserves its canonical owner and original cancellation', () => {
+  const seed = captured(0x1000n, [['uxtb', 'w0, w0', 0x53001c00], ['ret', '', 0xd65f03c0]]);
+  const controller = new AbortController();
+  let owner;
+  analyzeSemanticFunction({ binaryId:'binary-scpa-test', sliceId:'slice-arm64', snapshotId:'snap',
+    architecture:'arm64', platform:'linux', abiId:'aapcs64', decoderSemanticVersion:'legacy-model-decoder-v1',
+    instructions:seed.owner.decodedInstructions, dataEndianness:'little', instructionEndianness:'little' }, {
+    signal:controller.signal, canonicalProjectionOnly:true, captureCanonicalOwner:value => { owner = value; },
+  });
+  const baseline = decompileScopedCanonicalOwner(owner, { deterministicTransforms:true, scopedTransformEvidence:true });
+  const projected = decompileScopedCanonicalOwner(owner, {
+    deterministicTransforms:true, scopedTransformEvidence:true, shouldAbort:() => false,
+    ir:{ instructions:[], blocks:[], values:[] }, abiAdapter:{}, binaryId:'forged', sliceId:'forged',
+    decoderSemanticVersion:'forged', addr:0x9999n, name:'forged', functionPrototype:{returnType:'void'},
+  });
+  assert.equal(projected.ir, owner.pipeline.legacyV1);
+  assert.equal(projected.pseudocode, baseline.pseudocode);
+  assert.ok(projected.cAst?.body.length > 0);
+  assert.ok(projected.renderProvenance, 'the shared enhanced projection retains root provenance');
+  controller.abort(new Error('original-owner-cancelled'));
+  assert.throws(() => decompileScopedCanonicalOwner(owner, { shouldAbort:() => false }), /original-owner-cancelled/);
 });

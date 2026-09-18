@@ -8,9 +8,23 @@ import {
 import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from '../objc.js';
 
 export const OBJC_PROVIDER_ID = 'metadata.objc';
-export const OBJC_PROVIDER_VERSION = '1.0.0';
+export const OBJC_PROVIDER_VERSION = '1.1.1';
+
+function sectionName(section) {
+  for (const key of ['section', 'name', 'sectname']) {
+    if (typeof section?.[key] === 'string' && section[key]) return section[key];
+  }
+  return '';
+}
+
+// Adapt the public BinaryImage range, without guessing or coercing a pointer.
+function sectionRange(section) {
+  if (!section) return null;
+  return { ...section, vmAddr: section.vmAddr ?? section.address ?? section.addr };
+}
 
 export class ObjcMetadataProvider extends LanguageMetadataProvider {
+  #probeGeneration = 0;
   constructor({
     readAt = null,
     sections = [],
@@ -31,16 +45,34 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
   }
 
   async probe() {
+    const generation = ++this.#probeGeneration;
+    // An absent, aborted or superseded scan must not publish previous records.
+    this.cachedModel = null;
+    this.cachedIndex = null;
     if (this.sections != null && !Array.isArray(this.sections) && typeof this.sections !== 'object') {
       throw new TypeError('metadata-objc-sections-must-be-array-or-object');
     }
     const sectionList = Array.isArray(this.sections) ? this.sections : Object.values(this.sections || {});
     const objcSections = sectionList.filter((s) => {
-      const name = s.section || s.name || s.sectname || '';
+      const name = sectionName(s);
       return name.includes('objc_') || name.includes('__OBJC');
     });
-
-    const classList = sectionList.find((s) => (s.section || s.name || s.sectname || '').includes('objc_classlist'));
+    const tables = Object.fromEntries(['classList', 'categoryList', 'protocolList'].map((key, i) => {
+      const name = ['__objc_classlist', '__objc_catlist', '__objc_protolist'][i];
+      return [key, sectionList.filter(s => sectionName(s) === name).map(sectionRange)];
+    }));
+    const classList = tables.classList[0];
+    const incomplete = (reason) => createLanguageMetadataResult({
+      providerId: this.id, providerVersion: this.version, ecosystem: 'objc',
+      identity: createLanguageMetadataIdentity({
+        verdict: 'matched-partial', providerId: this.id, providerVersion: this.version,
+        ecosystem: 'objc', binaryIdentity: this.binaryIdentity, architecture: this.architecture,
+        platform: this.platform, method: 'objc-section-probe', detail: reason,
+      }),
+      sections: objcSections.map(sectionName),
+      completeness: { present: true, declared: 0, scanned: 0, parsed: 0, complete: false, reasons: [reason] },
+      diagnostics: [reason],
+    });
 
     if (!objcSections.length) {
       return createLanguageMetadataResult({
@@ -80,7 +112,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
           method: 'objc-section-probe',
           detail: reason,
         }),
-        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        sections: objcSections.map(sectionName),
         completeness: {
           present: true,
           declared: 0,
@@ -93,7 +125,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       });
     }
 
-    if (!classList) {
+    if (!classList && !tables.categoryList.length && !tables.protocolList.length) {
       const reason = 'objc metadata sections found but objc_classlist section is missing';
       return createLanguageMetadataResult({
         providerId: this.id,
@@ -110,7 +142,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
           method: 'objc-section-probe',
           detail: reason,
         }),
-        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        sections: objcSections.map(sectionName),
         completeness: {
           present: true,
           declared: 0,
@@ -123,10 +155,30 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       });
     }
 
+    for (const [kind, ranges] of Object.entries(tables)) {
+      // The existing owner accepts one table per kind. Never silently discard
+      // another declaration and then call that incomplete universe complete.
+      if (ranges.length > 1) return incomplete(`objc-multiple-${kind}-sections`);
+    }
+    for (const [kind, ranges] of Object.entries(tables)) {
+      const range = ranges[0];
+      if (!range) continue;
+      const address = range.vmAddr;
+      const addressValid = (typeof address === 'bigint' && address >= 0n)
+        || (typeof address === 'number' && Number.isSafeInteger(address) && address >= 0);
+      const size = range.size;
+      const sizeValid = (typeof size === 'bigint' && size >= 0n && size <= BigInt(Number.MAX_SAFE_INTEGER))
+        || (typeof size === 'number' && Number.isSafeInteger(size) && size >= 0);
+      if (!addressValid || !sizeValid) return incomplete(`objc-${kind}-range-invalid`);
+      range.vmAddr = BigInt(address);
+    }
     const runtimeSections = {
       sections: this.sections,
       architecture: this.architecture,
       ...(this.options.runtimeSections || {}),
+      // Actual loaded sections outrank optional hints, including null hints.
+      categoryList: tables.categoryList[0] ?? this.options.runtimeSections?.categoryList,
+      protocolList: tables.protocolList[0] ?? this.options.runtimeSections?.protocolList,
     };
 
     const model = await buildObjcRuntimeModel(
@@ -138,7 +190,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       this.options.pointerFormat,
       this.options
     );
-    if (!model || this.options.signal?.aborted) {
+    if (!model || this.options.signal?.aborted || generation !== this.#probeGeneration) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -152,9 +204,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'objc-metadata-parse',
-          detail: 'objc metadata could not be parsed or was cancelled',
+          detail: 'objc metadata could not be parsed, was cancelled, or was superseded',
         }),
-        sections: objcSections.map((s) => s.section || s.name || String(s)),
+        sections: objcSections.map(sectionName),
         completeness: { present: true, declared: 0, scanned: 0, parsed: 0, complete: false },
       });
     }
@@ -163,6 +215,10 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    const coverage = ['classes', 'categories', 'protocols'].map(kind => ({ kind, ...model.runtimeCompleteness?.[kind] }));
+    const sum = key => coverage.reduce((total, item) => total + (Number.isSafeInteger(item[key]) && item[key] >= 0 ? item[key] : 0), 0);
+    const reasons = coverage.filter(item => item.complete !== true)
+      .flatMap(item => [`objc-${item.kind}-metadata-incomplete`, ...(item.reasons || [])]);
     const coveredEntityIds = isComplete
       ? []
       : [...this.types().records, ...this.methods().records].map((record) => record.entityId);
@@ -190,18 +246,20 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       platform: this.platform,
       method: 'objc-2.0-runtime',
       detail: hasIdentityBinding
-        ? `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`
-        : `Objective-C 2.0 without binary identity binding (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
+        ? `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.categories?.length || 0} categories, ${model.protocols?.length || 0} protocols)`
+        : `Objective-C 2.0 without binary identity binding (${model.classes?.length || 0} classes, ${model.categories?.length || 0} categories, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
         entityIds: coveredEntityIds,
       },
     });
 
-    const totalMethods = (model.classes || []).reduce((acc, c) => acc + (c.methods?.length || 0) + (c.classMethods?.length || 0), 0);
+    const totalMethods = [...(model.classes || []), ...(model.categories || [])]
+      .reduce((acc, c) => acc + (c.methods?.length || 0) + (c.classMethods?.length || 0), 0);
     const counts = {
       types: model.classes?.length || 0,
       protocols: model.protocols?.length || 0,
+      categories: model.categories?.length || 0,
       methods: totalMethods,
     };
 
@@ -210,19 +268,21 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       providerVersion: this.version,
       ecosystem: 'objc',
       identity,
-      sections: objcSections.map((s) => s.section || s.name || String(s)),
+      sections: objcSections.map(sectionName),
       counts,
       completeness: {
         present: true,
-        declared: (model.classes?.length || 0) + (model.protocols?.length || 0),
-        scanned: (model.classes?.length || 0) + (model.protocols?.length || 0),
-        parsed: (model.classes?.length || 0) + (model.protocols?.length || 0),
+        declared: sum('declared'),
+        scanned: sum('scanned'),
+        parsed: sum('parsed'),
+        capped: coverage.some(item => item.capped === true),
         complete: isComplete,
-        unreadableEntries: model.completeness?.unreadableEntries || 0,
-        invalidEntries: model.completeness?.invalidEntries || 0,
-        ...(pointerAbiReason ? { reasons: [pointerAbiReason], pointerAbi: pointerAbiReason } : {}),
+        unreadableEntries: sum('unreadableSlots'),
+        invalidEntries: sum('invalidEntries'),
+        reasons: [...new Set([...reasons, ...(pointerAbiReason ? [pointerAbiReason] : [])])],
+        ...(pointerAbiReason ? { pointerAbi: pointerAbiReason } : {}),
       },
-      ...(pointerAbiReason ? { diagnostics: [pointerAbiReason] } : {}),
+      diagnostics: [...new Set([...reasons, ...(pointerAbiReason ? [pointerAbiReason] : [])])],
     });
   }
 
@@ -232,7 +292,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
 
     const records = [];
     for (const cls of model.classes) {
-      const addrStr = cls.address != null ? `0x${cls.address.toString(16)}` : null;
+      const address = cls.address ?? cls.addr;
+      const addrStr = address != null ? `0x${address.toString(16)}` : null;
       records.push(
         createLanguageMetadataRecord({
           kind: 'type',
@@ -261,12 +322,57 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     return createLanguageMetadataPage({ records });
   }
 
+  // Protocol declarations are nominal runtime metadata too. Keep them on the
+  // provider's public page surface instead of leaving them reachable only via
+  // the private cached runtime model. A protocol uses the canonical `type`
+  // record kind with an explicit protocol descriptor because the shared
+  // metadata contract intentionally has no second, protocol-only kind.
+  protocols() {
+    const model = this.cachedModel;
+    if (!model || !model.protocols) return createLanguageMetadataPage({ records: [] });
+
+    const records = [];
+    for (const protocol of model.protocols) {
+      const address = protocol.address ?? protocol.addr;
+      const addrStr = address != null ? `0x${address.toString(16)}` : null;
+      records.push(
+        createLanguageMetadataRecord({
+          kind: 'type',
+          entityId: `protocol@${addrStr || protocol.name}`,
+          name: protocol.name,
+          address: addrStr,
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'objc',
+          buildIdentity: this.binaryIdentity,
+          descriptor: {
+            layer: 'nominal',
+            kind: 'protocol',
+            name: protocol.name,
+            size: protocol.size ?? null,
+            flags: protocol.flags ?? null,
+            methods: (protocol.methods || []).map((method) => ({
+              selector: method.sel || method.selector,
+              types: method.types || null,
+              classMethod: method.classMethod === true,
+            })),
+          },
+        })
+      );
+    }
+
+    return createLanguageMetadataPage({ records });
+  }
+
   methods() {
     const model = this.cachedModel;
     if (!model || !model.classes) return createLanguageMetadataPage({ records: [] });
 
     const records = [];
-    for (const cls of model.classes) {
+    for (const cls of [...model.classes, ...(model.categories || [])]) {
+      const category = cls.kind === 'category' ? cls : null;
+      const owner = category ? (category.className || '<unknown>') : cls.name;
+      const categorySuffix = category ? `(${category.name})@${category.address?.toString(16) ?? 'unknown'}` : '';
       const emitMethod = (m, isClassMethod) => {
         const methodAddress = m.addr ?? m.imp;
         const addrStr = methodAddress != null ? `0x${methodAddress.toString(16)}` : null;
@@ -275,8 +381,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
         records.push(
           createLanguageMetadataRecord({
             kind: 'method',
-            entityId: `method@${cls.name}:${classMethod ? '+' : '-'}:${selector}`,
-            name: m.name || `${classMethod ? '+' : '-'}[${cls.name} ${selector}]`,
+            entityId: `method@${owner}${categorySuffix}:${classMethod ? '+' : '-'}:${selector}`,
+            name: m.name || `${classMethod ? '+' : '-'}[${owner}${category ? `(${category.name})` : ''} ${selector}]`,
             address: addrStr,
             providerId: this.id,
             providerVersion: this.version,
@@ -284,7 +390,8 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
             buildIdentity: this.binaryIdentity,
             descriptor: {
               selector,
-              className: cls.name,
+              className: owner,
+              ...(category ? { categoryName: category.name, source: 'category' } : {}),
               classMethod,
               types: m.types || null,
               implementationProven: m.implementationProven === true,

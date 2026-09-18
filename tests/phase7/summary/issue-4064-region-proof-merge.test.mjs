@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
-import { solveInterproceduralSummaries } from '../../../js/analysis/summary/interprocedural.js';
+import { solveInterproceduralSummaries, LIBRARY_MODEL_SCHEMA, LIBRARY_MODEL_VERSION,
+  LIBRARY_MODEL_PROVENANCE_SCHEMA } from '../../../js/analysis/summary/interprocedural.js';
 import {
   createFunctionSummary,
   summaryMayWriteRegion,
@@ -53,27 +54,20 @@ function solveDuplicate(label, localEffect, modelEffect) {
     }],
   });
   const solved = solveInterproceduralSummaries({
+    snapshotId: complete.snapshotId,
     roots: [callerId],
     localSummaries: new Map([[callerId, caller]]),
     // #8809 sync: #6074 requires the canonical proven library-model envelope;
     // a bare effects object is now rejected into the broad fallback before
     // the duplicate-proof merge path is ever reached.
     libraryModels: new Map([[modelId, {
-      modelSchema: 'phase7-library-model',
-      modelVersion: '1',
-      targetEntityId: modelId,
-      snapshotId: 'snapshot-unbound',
-      completeness: 'complete',
-      stopReason: null,
-      current: true,
-      provenance: {
-        schema: 'phase7-library-model-provenance',
-        providerId: 'test-library-provider',
-        providerVersion: '1.0.0',
-        evidenceIds: [`model:${modelId}`],
-      },
+      modelSchema: LIBRARY_MODEL_SCHEMA, modelVersion: LIBRARY_MODEL_VERSION,
+      targetEntityId: modelId, snapshotId: complete.snapshotId,
+      completeness: 'complete', stopReason: null, current: true,
+      provenance: { schema: LIBRARY_MODEL_PROVENANCE_SCHEMA, providerId: 'region-merge-test',
+        providerVersion: '1', evidenceIds: [`model:${modelId}`] },
       memoryReadRegions: [],
-      memoryWriteRegions: [{ ...modelEffect, source: 'library-model', evidenceIds: [`effect:${modelId}:write`] }],
+      memoryWriteRegions: [{ ...modelEffect, source: 'library-model', evidenceIds: [`write:${modelId}`] }],
       escapes: [],
       noreturn: false,
       mayThrow: false,

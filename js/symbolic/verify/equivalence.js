@@ -38,6 +38,7 @@ import { validateSatModel } from './validate-model.js';
 import { checkProofEligibility } from './eligibility.js';
 import { checkPreconditionsConsistency } from './preconditions.js';
 import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
 
 function collectFreshSymbols(expr, out = [], seen = new Set()) {
   if (!expr || typeof expr !== 'object' || seen.has(expr)) return out;
@@ -112,6 +113,20 @@ function correspondAfterSymbols(beforeExpr, afterExpr, correspondence = {}) {
     return { ok: false, reason: 'missing-input-state-correspondence', symbols: unresolved.map((symbol) => symbol.name) };
   }
   return { ok: true, expression: replaceSymbols(afterExpr, replacements), replacements };
+}
+
+function memoryRegionIdentitySnapshot(memoryRegions) {
+  if (!Array.isArray(memoryRegions)) return memoryRegions;
+  ownDataEntries(memoryRegions, 4096);
+  return Object.freeze(memoryRegions.map(region => {
+    if (region == null || typeof region !== 'object' || Array.isArray(region)) return region;
+    const normalized = Object.create(null);
+    for (const [key, value] of ownDataEntries(region, 64)) {
+      normalized[key] = typeof value === 'bigint'
+        ? Object.freeze({ scalarType:'bigint', decimal:value.toString() }) : value;
+    }
+    return Object.freeze(normalized);
+  }));
 }
 
 export async function verifyBoundedEquivalence({
@@ -326,13 +341,14 @@ export async function verifyBoundedEquivalence({
     queryScope: memoryScopeClaimed ? COMPLETENESS_STATUS.PARTIAL : mergeCompleteness('queryScope'),
   });
 
+  const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);
   const query = createVerificationQuery({
     kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,
     claimKind: CLAIM_KIND.EQUIVALENT,
     targetEntity: {
       beforeId: beforeTarget.id || 'target_before',
       afterId: afterTarget.id || 'target_after',
-      memoryRegions,
+      memoryRegions:queryMemoryRegions,
     },
     constraints,
     assertion: diffCond,
@@ -344,7 +360,7 @@ export async function verifyBoundedEquivalence({
     bitWidth: options.bitWidth ?? beforeExpr.sort?.width ?? null,
     proofScope: options.proofScope || {
       kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,
-      memoryRegions,
+      memoryRegions:queryMemoryRegions,
     },
   });
 

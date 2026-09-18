@@ -73,6 +73,15 @@ assert.equal(parsed.protocols[0].completeness.complete, true);
 assert.equal(parsed.categories[0].completeness.complete, true);
 assert.equal(parsed.completeness.complete, true);
 
+// An observed name/method prefix alone is not complete protocol_t evidence.
+{
+  p32(0x1000 + 64, 0);
+  const malformed = await parseObjcExtendedMetadata(read, sections, opts);
+  assert.equal(malformed.protocols[0].completeness.complete, false);
+  assert.equal(malformed.completeness.complete, false);
+  p32(0x1000 + 64, 72);
+}
+
 // #1793: a pointer-table section with trailing non-pointer bytes is not complete.
 {
   const misaligned = await parseObjcExtendedMetadata(read, {
