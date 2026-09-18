@@ -532,6 +532,7 @@ export class BinaryImage {
     this.exports = [];
     this.symbols = [];
     this.relocations = [];
+    this.relocationTargets = [];
     this.functions = [];
     this.unwindEntries = [];
     this.libraries = [];
@@ -1069,6 +1070,7 @@ export class BinaryImage {
       exports: this.exports.length,
       symbols: this.symbols.length,
       relocations: this.relocations.length,
+      relocationTargets: this.relocationTargets.length,
       functions: this.functions.length,
       libraries: this.libraries.length,
       warnings: [...this.warnings],
@@ -1095,6 +1097,7 @@ export class BinaryImage {
       exports: this.exports,
       symbols: this.symbols,
       relocations: this.relocations,
+      relocationTargets: this.relocationTargets,
       functions: this.functions,
       metadata: this.metadata,
     });
