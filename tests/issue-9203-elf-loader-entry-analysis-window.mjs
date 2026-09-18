@@ -229,4 +229,36 @@ for (const [label, options] of [
   assert.equal(appRange(symbols).ok, false, `${label}: unproven extent must remain unavailable`);
 }
 
+
+const forgedImage = {
+  format:'elf',
+  metadata:{ type:3, functionDiscovery:{ complete:true } },
+  sections:[], segments:[], symbols:[], exports:[], imports:[],
+  functions:[{
+    address:TEXT_VA,
+    source:'dt-init',
+    sources:['dt-init'],
+    confidence:0.9,
+    exactFunctionStart:true,
+    loaderEntryContracts:['DT_INIT'],
+    analysisWindow:{
+      kind:'elf-loader-entry-section',
+      start:TEXT_VA,
+      end:TEXT_VA + 0x100000000n,
+      sectionIndex:0,
+      provenance:'forged-window',
+    },
+  }],
+};
+const forgedAnalysis = analysisFromBinaryImage(forgedImage);
+assert.equal(forgedAnalysis.functionProvenance[0]?.analysisWindow ?? null, null,
+  'platform boundary must drop a forged loader window without canonical ELF section backing');
+const forgedSymbols = new SymbolIndex(forgedAnalysis);
+assert.equal(forgedSymbols.functionWindowBound(TEXT_VA), null,
+  'forged loader window must not become an analysis bound');
+const forgedProbe = await adapterRangeProbe(forgedSymbols);
+assert.equal(forgedProbe.requestedLength, null,
+  'adapter must not request decode bytes from a forged loader window');
+assert.equal(forgedProbe.result.status?.reason, 'function-end-unproven');
+
 console.log('issue #9203 ELF DT_INIT/DT_FINI loader analysis window: PASS');

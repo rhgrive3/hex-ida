@@ -1,4 +1,5 @@
 import { functionSeedConfidence, isExactFunctionSeed } from './worker-validation.js';
+import { elfLoaderEntrySectionAnalysisWindow } from '../binary/elf-mapping.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -300,7 +301,6 @@ export function analysisFromBinaryImage(image) {
     const rawEnd = rawSeed.end;
     const rawSize = rawSeed.size;
     const rawLoaderEntryContracts = rawSeed.loaderEntryContracts;
-    const rawAnalysisWindow = rawSeed.analysisWindow;
 
     const source = rawSource != null ? String(rawSource) : '';
     const sources = Array.isArray(rawSources) ? rawSources.map(String) : undefined;
@@ -312,20 +312,14 @@ export function analysisFromBinaryImage(image) {
       .filter((value) => value === 'DT_INIT' ? seedSources.has('dt-init') : seedSources.has('dt-fini'))
       .sort();
     let analysisWindow = null;
-    if (loaderEntryContracts.length && rawAnalysisWindow?.kind === 'elf-loader-entry-section') {
-      try {
-        const windowStart = u64Address(rawAnalysisWindow.start);
-        const windowEnd = u64Address(rawAnalysisWindow.end);
-        const seedAddress = u64Address(rawAddress);
-        const sectionIndex = rawAnalysisWindow.sectionIndex == null ? null : Number(rawAnalysisWindow.sectionIndex);
-        if (windowStart === seedAddress && windowEnd > windowStart
-          && (sectionIndex == null || (Number.isSafeInteger(sectionIndex) && sectionIndex >= 0))) {
-          analysisWindow = {
-            kind:'elf-loader-entry-section', start:windowStart, end:windowEnd, sectionIndex,
-            provenance:typeof rawAnalysisWindow.provenance === 'string' ? rawAnalysisWindow.provenance : null,
-          };
-        }
-      } catch { analysisWindow = null; }
+    // The seed-carried window is only a transport/cache hint. Re-establish its
+    // authority from the BinaryImage's canonical ELF section/PT_LOAD metadata
+    // at the platform boundary so a forged or stale raw seed cannot widen the
+    // decode range. DT_INIT/DT_FINI still gate the fallback; this helper proves
+    // the exact section-start, executable/allocated, and file-backed bounds.
+    if (image?.format === 'elf' && loaderEntryContracts.length && rawAddress != null) {
+      const derived = elfLoaderEntrySectionAnalysisWindow(image, rawAddress);
+      if (derived) analysisWindow = { ...derived };
     }
 
     const confidenceNorm = functionSeedConfidence(rawConfidence);
