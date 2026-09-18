@@ -116,34 +116,160 @@ function u64Address(value) {
   return addr;
 }
 
+// Canonical-name ranking for same-address raw evidence.
+//
+// One raw image can publish several records for a single address: an AAELF64
+// `$x`/`$d` mapping marker and the STT_FUNC it describes, a `symtab` entry and
+// its `dynsym` twin, an export and the symbol behind it. Whichever record owns
+// the canonical display/function name must be decided by published semantic
+// evidence — never by the order the provider happened to emit the records in,
+// which is what made `[$x, foo]` and `[foo, $x]` disagree.
+//
+// Every tier below is derived from parser metadata only: record kind (the st_info
+// type/class the parser decoded), binding, and the published size. Name text is
+// used exclusively as the last deterministic tie-break, so no `$x`-shaped string
+// is ever special-cased. The raw records are left untouched: a mapping marker
+// keeps its record in `image.symbols`, its code/data authority in
+// `metadata.aarch64MappingSymbols`/`metadata.riscvIsa`, and its `$d` intervals in
+// `image.dataInCode`. Only this naming projection changes.
+//
+// Deliberately absent: the parser's own record ordinals (`tableIndex`, `index`).
+// They look like tie-break evidence, but they are the physical position of the
+// record in the symbol table (`index: i, tableIndex: table.index` in the ELF
+// reader) and `BinaryImage.finalize()` sorts symbols by address with a stable
+// sort, so two records for one address arrive here in exactly their table order.
+// Ranking on them would reintroduce the same defect one layer down: two
+// indistinguishable aliases for one address would take their canonical name from
+// how the assembler or linker happened to lay the table out. The ordinals remain
+// valid — and are still used — as identity keys for relocation lookup
+// (`symbolsByTable`, `${tableIndex}:${index}`), which is a different question
+// from which name an address should display.
+const CALLABLE_SYMBOL_KINDS = new Set(['function', 'indirect-function', 'indirect']);
+const DATA_SYMBOL_KINDS = new Set(['object', 'tls', 'common']);
+// Binding evidence. STB_GLOBAL, STB_WEAK and STB_GNU_UNIQUE all *define* the
+// address and are ranked together on purpose:
+//
+//   * Weakness is a link-time rule — "a strong definition of the same name
+//     overrides this one". By the time an image is being described the link is
+//     over, no second definition is coming, and a surviving weak definition is a
+//     definition like any other, so its weak bit says nothing about which name
+//     is the canonical identity.
+//   * Ordering them would let an authoring idiom pick the displayed name:
+//     glibc-style `weak_alias (__printf, printf)` puts a strong `__printf` and a
+//     weak `printf` at one address, and a strong/weak rank would silently demote
+//     the public spelling. That is a layout/authoring artifact deciding user
+//     visible names — the very class of defect this ranking removes.
+//   * STB_GNU_UNIQUE is a process-wide unique definition, i.e. stronger than
+//     global in preemption terms and equal in naming terms; a rule placing it
+//     below or above STB_GLOBAL would have no naming basis either way.
+//
+// The one split that does carry naming meaning is file-scoped vs link-visible,
+// and it matches the linkage notion the ELF reader already publishes
+// (`externallyVisible = bind === 1 || bind === 2 || bind === STB_GNU_UNIQUE`):
+// a local record (or one with no binding evidence, or an OS/processor-specific
+// `bind-N`, which the reader also treats as not externally visible) is
+// file-scoped, so a non-local definition of the same address owns the identity.
+const LINK_VISIBLE_BINDINGS = new Set(['weak', 'global', 'gnu-unique']);
+
+function publishedSymbolSize(record) {
+  const size = record?.size;
+  if (typeof size === 'bigint') return size;
+  if (typeof size === 'number' && Number.isSafeInteger(size)) return BigInt(size);
+  if (typeof size === 'string' && /^(?:0|[1-9][0-9]*)$/.test(size.trim())) {
+    try { return BigInt(size.trim()); } catch { return 0n; }
+  }
+  return 0n;
+}
+
+/**
+ * How much identity the parser actually declared for this record:
+ *
+ *   3  a callable body      (STT_FUNC / STT_GNU_IFUNC)
+ *   2  a typed data object  (STT_OBJECT / STT_TLS / STT_COMMON)
+ *   1  any other declared type
+ *   0  no declared identity (STT_NOTYPE, or no type metadata at all)
+ *
+ * Every ELF psABI mapping symbol — the AArch64 `$x`/`$d` family included — is a
+ * local, zero-sized STT_NOTYPE record, i.e. tier 0. A callable FUNC/IFUNC, or any
+ * typed identity, therefore always outranks it without inspecting the marker's
+ * name or reading an architecture-specific mapping table.
+ */
+function symbolIdentityRank(record) {
+  const kind = record?.kind;
+  if (CALLABLE_SYMBOL_KINDS.has(kind)) return 3;
+  if (DATA_SYMBOL_KINDS.has(kind)) return 2;
+  if (typeof kind !== 'string' || kind === 'type-0') return 0;
+  return 1;
+}
+
+function symbolBindingRank(record) {
+  return LINK_VISIBLE_BINDINGS.has(record?.binding) ? 1 : 0;
+}
+
+function canonicalNameEvidence(record) {
+  return {
+    identity: symbolIdentityRank(record),
+    sized: publishedSymbolSize(record) > 0n ? 1 : 0,
+    binding: symbolBindingRank(record),
+    // Primitive strings only: a provider-supplied structured `source` must never
+    // see its coercion hooks executed by a naming decision (#4739).
+    source: typeof record?.source === 'string' ? record.source : '',
+  };
+}
+
+/**
+ * Total order over same-address candidates: declared identity first, then a
+ * published extent, then binding linkage, and finally name and source. Every
+ * component is a property of the record's own content, so no permutation of the
+ * raw input — including a rewrite of the symbol table's physical order — can
+ * change the winner.
+ *
+ * Once identity, extent and binding all tie, the remaining candidates are
+ * aliases the parser declared indistinguishable: same address, same declared
+ * kind, same extent, same linkage. Their only distinguishing content is the
+ * spelling, so the spelling decides — by an order that is a pure function of the
+ * record itself rather than of its position in the file.
+ */
+function canonicalNameIsStronger(candidate, incumbent) {
+  if (candidate.priority !== incumbent.priority) return candidate.priority > incumbent.priority;
+  const a = canonicalNameEvidence(candidate.record);
+  const b = canonicalNameEvidence(incumbent.record);
+  if (a.identity !== b.identity) return a.identity > b.identity;
+  if (a.sized !== b.sized) return a.sized > b.sized;
+  if (a.binding !== b.binding) return a.binding > b.binding;
+  if (candidate.name !== incumbent.name) return candidate.name < incumbent.name;
+  return a.source < b.source;
+}
+
 export function analysisFromBinaryImage(image) {
   if (!image) return emptyAnalysis();
   const entries = new Map();
-  const add = (address, name, kind, exported, prov, priority) => {
+  const add = (address, name, kind, exported, prov, priority, record) => {
     if (address == null || typeof name !== 'string' || !name) return;
     const addr = u64Address(address), key = addr.toString();
-    const next = { address: addr, name, kind, exported: !!exported, provenance: prov, priority };
+    const next = { address: addr, name, kind, exported: !!exported, provenance: prov, priority, record };
     const current = entries.get(key);
     if (!current) { entries.set(key, next); return; }
     current.exported ||= next.exported;
-    if (next.priority > current.priority) {
-      current.name = next.name; current.kind = next.kind; current.provenance = next.provenance; current.priority = next.priority;
+    if (canonicalNameIsStronger(next, current)) {
+      current.name = next.name; current.kind = next.kind; current.provenance = next.provenance;
+      current.priority = next.priority; current.record = next.record;
     }
   };
 
   for (const symbol of image.symbols || []) {
     if (symbol?.defined !== true || symbol?.address == null || !symbol.name) continue;
-    add(symbol.address, symbol.name, 0, !!symbol.exported, provenance(symbol.source || 'symbol-table', 0.99), 10);
+    add(symbol.address, symbol.name, 0, !!symbol.exported, provenance(symbol.source || 'symbol-table', 0.99), 10, symbol);
   }
   for (const exp of image.exports || []) {
     if (exp?.address == null || !exp.name) continue;
-    add(exp.address, exp.name, 0, true, provenance(exp.source || 'exports-trie', 1), 20);
+    add(exp.address, exp.name, 0, true, provenance(exp.source || 'exports-trie', 1), 20, exp);
   }
   for (const imp of image.imports || []) {
     if (!imp?.name) continue;
     for (const site of imp.sites || []) {
       if (site?.address == null) continue;
-      add(site.address, imp.name, 2, false, provenance(site.kind || imp.source || 'dyld-bind', 1), 30);
+      add(site.address, imp.name, 2, false, provenance(site.kind || imp.source || 'dyld-bind', 1), 30, imp);
     }
   }
 
