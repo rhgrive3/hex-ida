@@ -2,6 +2,7 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { buildCTranslationUnit } from '../../decompiler/translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
@@ -1046,6 +1047,52 @@ export function createAppAnalysisQueryAdapter(app) {
         addr:address,
       });
       return publish(projection, result.status?.completeness);
+    },
+
+    async translationUnit(_snapshot, ids, options = {}) {
+      if (!Array.isArray(ids) || ids.length === 0) return unsupported(null, 'translation-unit-function-list-required');
+      // Keep this query bounded. A whole-program export should use a future
+      // streaming/export owner rather than making one query clone unbounded.
+      if (ids.length > 256) return unsupported(null, 'translation-unit-function-limit');
+
+      const functions = [];
+      for (const id of ids) {
+        throwIfAborted(options.signal);
+        const result = await loadFunction(id, options);
+        if (result?.status?.completeness === 'unsupported' || result?.value == null) {
+          return unsupported(id, result?.status?.reason || 'translation-unit-function-unavailable');
+        }
+        const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress ?? null;
+        const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
+        let producer = result.value.decompiler ?? null;
+        if (!producer && result.value.model) {
+          producer = decompile(result.value.model, { name, addr:address });
+        }
+        producer ??= result.value;
+        const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;
+        if (typeof pseudocode !== 'string' || !pseudocode.trim()) {
+          return unsupported(id, 'translation-unit-pseudocode-unavailable');
+        }
+        functions.push({
+          functionId:result.value.functionId ?? id,
+          address:result.value.startAddress ?? result.value.startAddr ?? address,
+          name:result.value.name ?? name,
+          signature:producer.signature ?? null,
+          pseudocode,
+          // These remain internal to the producer; the packager consumes them
+          // and publishes only declarations/provenance, never the analysis graph.
+          ir:producer.ir ?? result.value.ir ?? null,
+          semanticIR:producer.semanticIR ?? result.value.semanticIR ?? null,
+          types:producer.types ?? result.value.types ?? null,
+          locationTypes:producer.locationTypes ?? result.value.locationTypes ?? null,
+          globalEvidence:producer.globalEvidence ?? result.value.globalEvidence ?? null,
+        });
+      }
+
+      const unit = buildCTranslationUnit(functions, {
+        symbolFor:(address) => app?.symbols?.nameAt?.(BigInt(address)) ?? app?.symbols?.label?.(BigInt(address)) ?? null,
+      });
+      return wrap(unit, unit.completeness, { reason:unit.reason, schema:unit.schema });
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

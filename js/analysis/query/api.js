@@ -423,6 +423,12 @@ export class AnalysisQueryAPI {
     return this.#query("decompile", snapshot, [functionId], options);
   }
 
+  // Compile-oriented source is an explicit opt-in surface. decompile() remains
+  // function-scoped presentation and never silently grows TU declarations.
+  async translationUnit(snapshot, functionIds, options = {}) {
+    return this.#query("translationUnit", snapshot, [functionIds], options);
+  }
+
   async search(snapshot, query, page = {}, options = {}) {
     return this.#query("search", snapshot, [query, page], options);
   }
