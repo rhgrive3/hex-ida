@@ -8,9 +8,10 @@
  * the function-valued property as non-semantic metadata.
  *
  * Reachability is a runtime-only memo and now lives in a module-owned WeakMap
- * keyed by IR. These contracts pin the ownership: queries must not move the
- * query cache into the IR, must keep the previous barrier semantics, and must
- * still reuse the explored answers for one IR.
+ * keyed by IR. Unknown-store barrier discovery is derived from the current
+ * instruction list on demand, so neither query publishes cache state on the IR.
+ * These contracts pin that ownership while preserving barrier semantics and
+ * reachability-answer reuse for one IR.
  *
  * The same ownership now covers the build-time closures: the IR no longer
  * carries `defUse` (or the legacy `newValue`) as a function-valued own
@@ -100,11 +101,11 @@ for (const [label, query] of [['js/ir.js', hasUnknownStoreBarrier], ['js/ir-base
   assert.deepEqual(functionValuedOwnKeys(ir), [],
     `${label}: a query must not attach a function-valued cache to the Semantic IR`);
 
-  // `_unknownStoreBarriers` (an array) keeps its existing derived-key contract;
-  // nothing else may appear, and no function-valued property may appear at all.
   const added = Reflect.ownKeys(ir).map(String).filter((key) => !keysBefore.includes(key));
-  assert.deepEqual(added, ['_unknownStoreBarriers'],
-    `${label}: a query may only add the pre-existing derived barrier index`);
+  assert.deepEqual(added, [],
+    `${label}: a query must not publish any runtime cache or derived barrier index on the IR`);
+  assert.equal(Object.hasOwn(ir, '_unknownStoreBarriers'), false,
+    `${label}: unknown-store barrier discovery must stay outside Semantic IR ownership`);
 
   const clone = structuredClone(ir);
   assert.equal(clone.blocks.length, 3, `${label}: the IR must stay structured-cloneable after a query`);
