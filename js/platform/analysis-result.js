@@ -307,9 +307,16 @@ export function analysisFromBinaryImage(image) {
     const exactFunctionStart = rawExactFunctionStart === true;
     const extentInferred = rawExtentInferred === true;
     const seedSources = new Set([source, ...(sources || [])]);
+    const loaderContractBackedByMetadata = (contract) => {
+      const record = contract === 'DT_INIT' ? image?.metadata?.dtInit : image?.metadata?.dtFini;
+      if (!record || (record.source !== 'PT_DYNAMIC' && record.source !== 'SHT_DYNAMIC')) return false;
+      try { return u64Address(record.address) === u64Address(rawAddress); }
+      catch { return false; }
+    };
     const loaderEntryContracts = [...new Set((Array.isArray(rawLoaderEntryContracts) ? rawLoaderEntryContracts : [])
       .filter((value) => value === 'DT_INIT' || value === 'DT_FINI'))]
       .filter((value) => value === 'DT_INIT' ? seedSources.has('dt-init') : seedSources.has('dt-fini'))
+      .filter(loaderContractBackedByMetadata)
       .sort();
     let analysisWindow = null;
     // The seed-carried window is only a transport/cache hint. Re-establish its
