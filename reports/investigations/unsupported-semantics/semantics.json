@@ -1,0 +1,5640 @@
+{
+  "schema": "hex-investigation-unsupported-semantics/v1",
+  "baseSha": "05c93a1c92b34f4876060bd858e4393557d02dd4",
+  "summary": {
+    "total": 320,
+    "bySection": {
+      "\".fini\"": 160,
+      "\".init\"": 160
+    },
+    "byFuncSymbolName": {
+      "\"_fini\"": 160,
+      "\"_init\"": 160
+    },
+    "byFuncSymbolBind": {
+      "\"GLOBAL\"": 320
+    },
+    "byFuncSymbolVis": {
+      "\"HIDDEN\"": 320
+    },
+    "byFuncSymbolSizeZero": {},
+    "byMappingSymbol": {
+      "null": 320
+    },
+    "byAddressIsSectionStart": {
+      "true": 320
+    },
+    "byIdaNameAndSection": {
+      ".term_proc->.fini": 160,
+      ".init_proc->.init": 160
+    },
+    "funcSymbolBindDist": null,
+    "funcSymbolVisDist": null,
+    "funcSymbolSizeDist": null,
+    "byFuncSymbolSize": {
+      "0": 320
+    }
+  },
+  "rows": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "0x2a84",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O0_no_g",
+      "address": "0x2a84",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O0_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O1_g",
+      "address": "0x18b4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O1_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O1_no_g",
+      "address": "0x18b4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O1_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O2_g",
+      "address": "0x1920",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O2_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "0x1920",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O3_g",
+      "address": "0x194c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O3_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O3_no_g",
+      "address": "0x194c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_O3_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_Os_g",
+      "address": "0x18fc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_Os_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_Os_no_g",
+      "address": "0x18fc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_clang_Os_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O0_g",
+      "address": "0x29b4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O0_g",
+      "address": "0x918",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O0_no_g",
+      "address": "0x29b4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O0_no_g",
+      "address": "0x918",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "0x1e20",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O1_no_g",
+      "address": "0x1e20",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O1_no_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O2_g",
+      "address": "0x1f00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O2_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O2_no_g",
+      "address": "0x1f00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O2_no_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O3_g",
+      "address": "0x249c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O3_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O3_no_g",
+      "address": "0x249c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_O3_no_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_Os_g",
+      "address": "0x1c58",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_Os_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "0x1c58",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "0x928",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "0x35e0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "0x660",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O0_no_g",
+      "address": "0x35e0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O0_no_g",
+      "address": "0x660",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O1_g",
+      "address": "0x28b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O1_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O1_no_g",
+      "address": "0x28b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O1_no_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O2_g",
+      "address": "0x2b70",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O2_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "0x2b70",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O3_g",
+      "address": "0x2a40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O3_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O3_no_g",
+      "address": "0x2a40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_O3_no_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_Os_g",
+      "address": "0x28b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_Os_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_Os_no_g",
+      "address": "0x28b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_clang_Os_no_g",
+      "address": "0x608",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O0_g",
+      "address": "0x3630",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O0_g",
+      "address": "0x6b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O0_no_g",
+      "address": "0x3630",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O0_no_g",
+      "address": "0x6b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "0x2c30",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O1_no_g",
+      "address": "0x2c30",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O1_no_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O2_g",
+      "address": "0x2d20",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O2_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O2_no_g",
+      "address": "0x2d20",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O2_no_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O3_g",
+      "address": "0x3050",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O3_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O3_no_g",
+      "address": "0x3050",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_O3_no_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_Os_g",
+      "address": "0x2b00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_Os_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "0x2b00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "0x6b8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "0x26fc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "0x908",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O0_no_g",
+      "address": "0x26fc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O0_no_g",
+      "address": "0x908",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O1_g",
+      "address": "0x1c54",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O1_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O1_no_g",
+      "address": "0x1c54",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O1_no_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O2_g",
+      "address": "0x1c00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O2_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "0x1c00",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O3_g",
+      "address": "0x1c94",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O3_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O3_no_g",
+      "address": "0x1c94",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_O3_no_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_Os_g",
+      "address": "0x1cd0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_Os_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_Os_no_g",
+      "address": "0x1cd0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_clang_Os_no_g",
+      "address": "0x8c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O0_g",
+      "address": "0x28dc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O0_g",
+      "address": "0x9c0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O0_no_g",
+      "address": "0x28dc",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O0_no_g",
+      "address": "0x9c0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "0x1e1c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O1_no_g",
+      "address": "0x1e1c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O1_no_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O2_g",
+      "address": "0x1f88",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O2_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O2_no_g",
+      "address": "0x1f88",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O2_no_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O3_g",
+      "address": "0x2298",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O3_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O3_no_g",
+      "address": "0x2298",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_O3_no_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_Os_g",
+      "address": "0x1d80",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_Os_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "0x1d80",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "0x990",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "0x1d88",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "0x6b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O0_no_g",
+      "address": "0x1d88",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O0_no_g",
+      "address": "0x6b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O1_g",
+      "address": "0x115c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O1_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O1_no_g",
+      "address": "0x115c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O1_no_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O2_g",
+      "address": "0x112c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O2_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "0x112c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O3_g",
+      "address": "0x139c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O3_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O3_no_g",
+      "address": "0x139c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_O3_no_g",
+      "address": "0x628",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_Os_g",
+      "address": "0x11b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_Os_g",
+      "address": "0x668",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_Os_no_g",
+      "address": "0x11b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_clang_Os_no_g",
+      "address": "0x668",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O0_g",
+      "address": "0x1f90",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O0_g",
+      "address": "0x730",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O0_no_g",
+      "address": "0x1f90",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O0_no_g",
+      "address": "0x730",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "0x1554",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "0x738",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O1_no_g",
+      "address": "0x1554",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O1_no_g",
+      "address": "0x738",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O2_g",
+      "address": "0x1594",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O2_g",
+      "address": "0x6f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O2_no_g",
+      "address": "0x1594",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O2_no_g",
+      "address": "0x6f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O3_g",
+      "address": "0x1570",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O3_g",
+      "address": "0x6f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O3_no_g",
+      "address": "0x1570",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_O3_no_g",
+      "address": "0x6f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_Os_g",
+      "address": "0x1440",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_Os_g",
+      "address": "0x738",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "0x1440",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "0x738",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "0x1988",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "0x4ba8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_no_g",
+      "address": "0x1988",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_no_g",
+      "address": "0x4ba8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O1_g",
+      "address": "0x1618",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O1_g",
+      "address": "0x2404",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O1_no_g",
+      "address": "0x1618",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O1_no_g",
+      "address": "0x2404",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_g",
+      "address": "0x1540",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "0x1540",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O3_g",
+      "address": "0x154c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O3_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O3_no_g",
+      "address": "0x154c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_O3_no_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_Os_g",
+      "address": "0x1498",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_Os_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_Os_no_g",
+      "address": "0x1498",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_clang_Os_no_g",
+      "address": "0xd48",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O0_g",
+      "address": "0x1820",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O0_g",
+      "address": "0x458c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O0_no_g",
+      "address": "0x1820",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O0_no_g",
+      "address": "0x458c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "0x1458",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "0x2114",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_no_g",
+      "address": "0x1458",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_no_g",
+      "address": "0x2114",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O2_g",
+      "address": "0x1ad8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O2_g",
+      "address": "0xe90",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O2_no_g",
+      "address": "0x1ad8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O2_no_g",
+      "address": "0xe90",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O3_g",
+      "address": "0x1b68",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O3_g",
+      "address": "0xe90",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O3_no_g",
+      "address": "0x1b68",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O3_no_g",
+      "address": "0xe90",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_g",
+      "address": "0x1638",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_g",
+      "address": "0x2588",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "0x1638",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "0x2588",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "0x1670",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_no_g",
+      "address": "0x1670",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_no_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O1_g",
+      "address": "0x1190",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O1_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O1_no_g",
+      "address": "0x1190",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O1_no_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_g",
+      "address": "0x1180",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "0x1180",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O3_g",
+      "address": "0x1240",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O3_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O3_no_g",
+      "address": "0x1240",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_O3_no_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_Os_g",
+      "address": "0x1060",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_Os_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_Os_no_g",
+      "address": "0x1060",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_clang_Os_no_g",
+      "address": "0x780",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O0_g",
+      "address": "0x1780",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O0_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O0_no_g",
+      "address": "0x1780",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O0_no_g",
+      "address": "0x860",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "0x1280",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_no_g",
+      "address": "0x1280",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_no_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O2_g",
+      "address": "0x14b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O2_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O2_no_g",
+      "address": "0x14b0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O2_no_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O3_g",
+      "address": "0x1430",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O3_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O3_no_g",
+      "address": "0x1430",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O3_no_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_g",
+      "address": "0x1230",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "0x1230",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "0x7f0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "0x38f0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O0_no_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O0_no_g",
+      "address": "0x38f0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O1_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O1_g",
+      "address": "0x3370",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O1_no_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O1_no_g",
+      "address": "0x3370",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O2_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O2_g",
+      "address": "0x30e0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "0x30e0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O3_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O3_g",
+      "address": "0x32f0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O3_no_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_O3_no_g",
+      "address": "0x32f0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_Os_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_Os_g",
+      "address": "0x2e40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_Os_no_g",
+      "address": "0x12c8",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_clang_Os_no_g",
+      "address": "0x2e40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O0_g",
+      "address": "0x13b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O0_g",
+      "address": "0x3a40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O0_no_g",
+      "address": "0x13b0",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O0_no_g",
+      "address": "0x3a40",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "0x33d0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O1_no_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O1_no_g",
+      "address": "0x33d0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O2_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O2_g",
+      "address": "0x3660",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O2_no_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O2_no_g",
+      "address": "0x3660",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O3_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O3_g",
+      "address": "0x3e10",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O3_no_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_O3_no_g",
+      "address": "0x3e10",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_Os_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_Os_g",
+      "address": "0x3160",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "0x1388",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "0x3160",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "0x15d4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "0x748",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O0_no_g",
+      "address": "0x15d4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O0_no_g",
+      "address": "0x748",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O1_g",
+      "address": "0x10a0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O1_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O1_no_g",
+      "address": "0x10a0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O1_no_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O2_g",
+      "address": "0x10c4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O2_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "0x10c4",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O3_g",
+      "address": "0x10d0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O3_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O3_no_g",
+      "address": "0x10d0",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_O3_no_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_Os_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_Os_g",
+      "address": "0xef8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_Os_no_g",
+      "address": "0x710",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_clang_Os_no_g",
+      "address": "0xef8",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O0_g",
+      "address": "0x1650",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O0_g",
+      "address": "0x840",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O0_no_g",
+      "address": "0x1650",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O0_no_g",
+      "address": "0x840",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "0x1160",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O1_no_g",
+      "address": "0x1160",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O1_no_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O2_g",
+      "address": "0x130c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O2_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O2_no_g",
+      "address": "0x130c",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O2_no_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O3_g",
+      "address": "0x1618",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O3_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O3_no_g",
+      "address": "0x1618",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_O3_no_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_Os_g",
+      "address": "0x1108",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_Os_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "0x1108",
+      "idaName": ".term_proc",
+      "section": ".fini",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_fini",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "0x848",
+      "idaName": ".init_proc",
+      "section": ".init",
+      "sectionFlagsExec": true,
+      "funcSymbol": "_init",
+      "funcSymbolBind": "GLOBAL",
+      "funcSymbolVis": "HIDDEN",
+      "funcSymbolSize": 0,
+      "mappingSymbol": null,
+      "otherSymbols": [
+        "SECTION:LOCAL:",
+        "SECTION:LOCAL:",
+        "NOTYPE:LOCAL:"
+      ],
+      "addressIsSectionStart": true
+    }
+  ]
+}
