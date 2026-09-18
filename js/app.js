@@ -1386,8 +1386,13 @@ export class App {
     if(fn.end==null){
       /* end の証明はしない。局所的な境界（証明済み end か同一領域内の次開始）
          で締めた解析窓として返し、complete:false で未証明を正直に伝える。 */
-      const windowEnd=this.symbols?.functionWindowBound?.(fn.start)??null;
-      if(windowEnd==null)return {ok:false,reason:'function-end-unproven',function:fn,region};
+      const loaderWindow=this.symbols?.functionAnalysisWindow?.(fn.start)??null;
+      const windowEnd=loaderWindow?.end??this.symbols?.functionWindowBound?.(fn.start)??null;
+      const regionEnd=region.vmAddr+region.size;
+      if(windowEnd==null||windowEnd<=fn.start||windowEnd>regionEnd)return {ok:false,reason:'function-end-unproven',function:fn,region};
+      if(loaderWindow){
+        return {ok:true,start:fn.start,end:windowEnd,region,function:fn,complete:false,reason:'function-end-unproven',provenance:'elf-loader-contract+section-analysis-window',analysisWindow:loaderWindow};
+      }
       return {ok:true,start:fn.start,end:windowEnd,region,function:fn,complete:false,reason:'function-end-unproven',provenance:'executable-region+analysis-window'};
     }
     const regionEnd=region.vmAddr+region.size;
