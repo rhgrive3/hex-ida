@@ -40,11 +40,29 @@ test('#5302 aget/aput variants publish array base/index/value bindings and stora
       assert.equal(bundle.locationReads[0].index, 1);
       assert.equal(bundle.locationReads[1].index, 2);
       if (isWrite) assert.equal(bundle.locationReads[2].index, 3);
-      else assert.equal(bundle.locationWrites[0].index, 3);
+      else {
+        assert.equal(bundle.locationWrites[0].index, 3);
+        assert.equal(bundle.producedValues[0].bits, variant === 1 ? 64 : 32);
+        assert.equal(bundle.producedValues[0].type.widthBits, variant === 1 ? 64 : 32);
+      }
       if (descriptor === 'Ljava/lang/Object;') {
         assert.equal((isWrite ? bundle.locationReads[2] : bundle.locationWrites[0]).type.kind, 'address');
       }
     }
+  }
+});
+
+test('#5302 narrow aget results are 32-bit after their declared extension', () => {
+  for (const [opcode, extension, operator] of [
+    [0x47, 'zero', 'zext'], [0x48, 'sign', 'sext'], [0x49, 'zero', 'zext'], [0x4a, 'sign', 'sext'],
+  ]) {
+    const fn = liftDexMethod(0, dexMethod(accessWords(opcode), { registers:8 }));
+    const bundle = fn.bundles[0];
+    assert.equal(bundle.producedValues[0].bits, 32);
+    assert.equal(bundle.producedValues[0].type.widthBits, 32);
+    assert.equal(bundle.memoryEffects[0].extension, extension);
+    const lowered = lowerVMEffectsToSemanticIr(fn);
+    assert.ok(lowered.semanticIr.nodes.some((node) => node.kind === operator), `opcode 0x${opcode.toString(16)} emits ${operator}`);
   }
 });
 
@@ -82,7 +100,8 @@ test('#5302 array-length/new-array and filled-new-array expose concrete typed re
   assert.ok(reasons(allocated).includes('dex-array-allocation-identity-unrepresented'));
 
   for (const [words, expected] of [
-    [[0x2024, 1, 0x0021, 0x030c, 0x000e], [1, 2]],
+    [[0x7224, 1, 0x4321, 0x030c, 0x000e], [1, 2]],
+    [[0x7524, 1, 0x4321, 0x030c, 0x000e], [1, 2, 3, 4, 7]],
     [[0x0225, 1, 1, 0x030c, 0x000e], [1, 2]],
   ]) {
     const fn = liftDexMethod(0, dexMethod(words, { types:['LTest;', '[I'], registers:8 }));
