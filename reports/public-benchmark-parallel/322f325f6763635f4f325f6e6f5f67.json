@@ -1,0 +1,661 @@
+{
+  "schema": "hex-public-benchmark-subject/v1",
+  "state": "PASS",
+  "inputSha256": "cc1ce21c235d26aa2572d5c47fb3a14487eee5f9365f8b0c7b68dfff654cba62",
+  "productRoute": {
+    "route": "artifact",
+    "defaultCutover": true,
+    "canonicalIdentityRequired": true,
+    "completenessRequired": true,
+    "artifactRuntimeCreated": true,
+    "artifactRuntime": {
+      "migrationVersion": "hex-worker-cache-migration-v1",
+      "payloadCodecVersion": "hex-worker-analysis-payload-v2",
+      "requests": 1,
+      "producerInvocations": 1,
+      "coldPublishes": 1,
+      "warmReuses": 0,
+      "failures": 0,
+      "cancellations": 0,
+      "budgetExhaustions": 0,
+      "scheduler": {
+        "schedulerVersion": "hex-analysis-scheduler-v1",
+        "starvationPolicy": "virtual-deadline-v1",
+        "starvationInterval": 8,
+        "terminalHistoryLimit": 16384,
+        "terminalHistoryNodes": 1,
+        "running": 0,
+        "queued": 0,
+        "inflight": 0,
+        "activeConsumers": 0,
+        "dagNodes": 1,
+        "dagEdges": 0,
+        "queueComparisons": 0,
+        "producerInvocationCount": 1,
+        "requests": 1,
+        "cacheHits": 0,
+        "producerInvocations": 1,
+        "coalescedRequests": 0,
+        "queueOperations": 2,
+        "completedJobs": 1,
+        "failedJobs": 0,
+        "cancelledJobs": 0,
+        "cancelledConsumers": 0,
+        "orphanCancellations": 0,
+        "budgetExhaustions": 0,
+        "dependencyFailures": 0,
+        "producerFailures": 0,
+        "storageFailures": 0,
+        "cycleErrors": 0,
+        "cycleChecks": 0,
+        "cycleTraversalSteps": 0,
+        "dependencyIdentityErrors": 0,
+        "maxObservedRunning": 1,
+        "observerFailures": 0
+      },
+      "store": {
+        "storeVersion": "hex-artifact-store-v1",
+        "capabilities": {
+          "storeVersion": "hex-artifact-store-v1",
+          "backend": "memory",
+          "persistent": false,
+          "indexedDB": false,
+          "opfs": false,
+          "reason": "explicit-memory-backend"
+        },
+        "hotCache": {
+          "version": "hex-artifact-hot-cache-v1",
+          "entries": 1,
+          "bytes": 37586,
+          "maxEntries": 256,
+          "maxBytes": 8388608,
+          "hits": 0,
+          "misses": 1,
+          "puts": 1,
+          "replacements": 0,
+          "evictions": 0,
+          "evictionBytes": 0,
+          "oversizeSkips": 0,
+          "insertedBytes": 37586
+        },
+        "backend": {
+          "reads": 1,
+          "readBytes": 0,
+          "writes": 1,
+          "writeBytes": 36240,
+          "bytesWritten": 36240,
+          "duplicatePuts": 0,
+          "deletes": 0,
+          "deleteMisses": 0,
+          "hasChecks": 0,
+          "bytes": 36240,
+          "entries": 1
+        },
+        "requests": 1,
+        "reads": 1,
+        "hotHits": 0,
+        "persistentHits": 0,
+        "memoryHits": 0,
+        "misses": 1,
+        "readBytes": 0,
+        "corruptions": 0,
+        "incompatibilities": 0,
+        "validationFailures": 0,
+        "serializationFailures": 0,
+        "storageFailures": 0,
+        "publishes": 1,
+        "writes": 1,
+        "duplicatePuts": 0,
+        "publishBytes": 36240,
+        "writeBytes": 36240,
+        "cancelledPublishes": 0,
+        "staleDependencyMisses": 0,
+        "deletes": 0,
+        "deleteMisses": 0,
+        "mutationRetries": 0,
+        "quarantines": 0,
+        "scopedDependencyMisses": 0,
+        "staleScopedPublishes": 0
+      }
+    }
+  },
+  "functionDiscoveryComplete": true,
+  "functions": [
+    {
+      "address": "1720",
+      "name": "_init",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    },
+    {
+      "address": "1920",
+      "name": "main",
+      "end": "1956",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void main(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    test_data_types_l1(/* arguments unknown */);\n    test_array_types(/* arguments unknown */);\n    test_pointer_types(/* arguments unknown */);\n    test_composite_types(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "1984",
+      "name": "_start",
+      "end": "2036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void start(void)\n{\n    unknown_call(global_13FF0);\n    unknown_call(global_13FF0);\n}"
+    },
+    {
+      "address": "2036",
+      "name": "call_weak_fn",
+      "end": "2056",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 call_weak_fn(void)\n{\n    x0_1 = *(uint64 *)0x13FE0;\n    __asm(\"cbz x0, #0x804\");\n    return sub_730(x0_1);\n    return x0;\n}"
+    },
+    {
+      "address": "2064",
+      "name": "deregister_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void deregister_tm_clones(void)\n{\n    loc_820:\n    loc_810:\n        __asm(\"semantic-v2 function unknown: unresolved-indirect-control-flow\");\n        if (0x14010 == 0x14010) goto loc_83C;\n        goto loc_828;\n    loc_828:\n        if (global_13FD0 == 0) goto loc_83C;\n        goto loc_834;\n    loc_834:\n        __asm(\"br x16\");\n    loc_83C:\n        return;\n}"
+    },
+    {
+      "address": "2112",
+      "name": "register_tm_clones",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint64 register_tm_clones(void)\n{\n    __asm(\"cbz x1, #0x878\");\n    x2 = *(uint64 *)0x13FF8;\n    __asm(\"cbz x2, #0x878\");\n    __asm(\"br x16\");\n    return x0;\n}"
+    },
+    {
+      "address": "2176",
+      "name": "__do_global_dtors_aux",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "uint32 do_global_dtors_aux(void)\n{\n    // … ほかに 2 個の置き場（退避用など）があります\n\n    x19 = 0x14000;\n    __asm(\"cbnz w0, #0x8bc\");\n    x0_1 = *(uint64 *)0x13FD8;\n    __asm(\"cbz x0, #0x8b0\");\n    x0_2 = sub_700(*(uint64 *)0x14008);\n    x0_3 = deregister_tm_clones();\n    *(uint8 *)(x19 + 0x10) = 1;\n    return x0;\n}"
+    },
+    {
+      "address": "2256",
+      "name": "frame_dummy",
+      "end": null,
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void frame_dummy(void)\n{\n}"
+    },
+    {
+      "address": "2272",
+      "name": "process_char",
+      "end": "2304",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_char(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2304",
+      "name": "process_short",
+      "end": "2316",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_short(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2320",
+      "name": "process_int",
+      "end": "2332",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_int(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2336",
+      "name": "process_long",
+      "end": "2344",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_long(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2352",
+      "name": "process_ll",
+      "end": "2360",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_ll(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2368",
+      "name": "process_float",
+      "end": "2384",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_float(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2384",
+      "name": "process_double",
+      "end": "2404",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint64 process_double(void)\n{\n    return x0;\n}"
+    },
+    {
+      "address": "2404",
+      "name": "process_ld",
+      "end": "2444",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_ld(void)\n{\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x29;\n    multf3(/* arguments unknown */);\n    addtf3(/* arguments unknown */);\n    return;\n}"
+    },
+    {
+      "address": "2448",
+      "name": "process_bool",
+      "end": "2468",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void process_bool(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2468",
+      "name": "const_param",
+      "end": "2480",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void const_param(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2480",
+      "name": "volatile_access",
+      "end": "2496",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void volatile_access(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "2496",
+      "name": "test_data_types_l1",
+      "end": "2832",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void test_data_types_l1(void)\n{\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFD0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x19;\n    unknown_call(\"=== 测试基础数据类型 ===\");\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    unknown_call(1);\n    local_pFFFFFFFFFFFFFFFC = 10;\n}"
+    },
+    {
+      "address": "2832",
+      "name": "array_1d_stack",
+      "end": "2888",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_1d_stack(void)\n{\n    loc_B10:\n        if ((int32_t)a2 <= 0) goto loc_B40;\n        goto loc_B1C;\n    loc_B1C:\n    loc_B28:\n        if ((int32_t)a2 > (int32_t)(phi(x2, 0)) + 1) goto loc_B28;\n        goto loc_B3C;\n    loc_B3C:\n        return;\n    loc_B40:\n        return;\n}"
+    },
+    {
+      "address": "2896",
+      "name": "array_string",
+      "end": "2940",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_string(void)\n{\n    loc_B50:\n        if (a1->field_0 == 0) goto loc_B74;\n        goto loc_B58;\n    loc_B58:\n    loc_B60:\n        if ((a1 - 1)[(phi(x1, 1)) + 1] != 0) goto loc_B60;\n        goto loc_B70;\n    loc_B70:\n        return;\n    loc_B74:\n        return;\n}"
+    },
+    {
+      "address": "2944",
+      "name": "array_2d_stack",
+      "end": "2980",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_2d_stack(void)\n{\n    while ((uint64_t)(phi(a1, x1)) + 44 != (uint64_t)a1 + 0x1B8) {\n    }\n    return;\n}"
+    },
+    {
+      "address": "2980",
+      "name": "array_3d",
+      "end": "3060",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_3d(void)\n{\n    for (int64 i = (phi((x0 + 20) + 0x64, a1 + 0x64)) - 0x64; (uint64_t)x0 + 20 != (uint64_t)phi((x0 + 20) + 0x64, a1 + 0x64); i += 20) {\n    }\n    if ((uint64_t)(x0 + 20) + 0x64 != (uint64_t)a1 + 0x258) {\n        goto loc_BB0;\n    }\n    return;\n}"
+    },
+    {
+      "address": "3060",
+      "name": "array_vla",
+      "end": "3112",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_vla(void)\n{\n    loc_BF4:\n        if ((int32_t)a1 <= 0) goto loc_C20;\n        goto loc_C00;\n    loc_C00:\n    loc_C08:\n        if ((int32_t)a1 > (int32_t)(phi(0, x2)) + 1) goto loc_C08;\n        goto loc_C1C;\n    loc_C1C:\n        return;\n    loc_C20:\n        return;\n}"
+    },
+    {
+      "address": "3120",
+      "name": "array_pointer",
+      "end": "3180",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_pointer(void)\n{\n    loc_C30:\n        if ((int32_t)a2 <= 0) goto loc_C64;\n        goto loc_C38;\n    loc_C38:\n    loc_C50:\n        if ((uint64_t)(phi(x2, a1)) + 40 != (uint64_t)(a1 + 40) + ((a2 - 1) * 40)) goto loc_C50;\n        goto loc_C60;\n    loc_C60:\n        return;\n    loc_C64:\n        return;\n}"
+    },
+    {
+      "address": "3184",
+      "name": "pointer_array",
+      "end": "3256",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void pointer_array(void)\n{\n    loc_C70:\n        if ((int32_t)a2 <= 0) goto loc_CB0;\n        goto loc_C88;\n    loc_C88:\n    loc_C90:\n        if (a1[phi(0, x1 + 1)] == 0) goto loc_CA4;\n        goto loc_C9C;\n    loc_C9C:\n    loc_CA4:\n        if ((int32_t)((int32_t)a2 <= 10 ? a2 : 10) > (int32_t)x1 + 1) goto loc_C90;\n        goto loc_CAC;\n    loc_CAC:\n        return;\n    loc_CB0:\n        return;\n}"
+    },
+    {
+      "address": "3264",
+      "name": "array_complex_index",
+      "end": "3308",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_complex_index(void)\n{\n    loc_CC0:\n        if (condition_ge) goto loc_CE4;\n        goto loc_CD0;\n    loc_CD0:\n        if ((int32_t)a5 >= (int32_t)a3) goto loc_CE4;\n        goto loc_CD8;\n    loc_CD8:\n        return;\n    loc_CE4:\n        return;\n}"
+    },
+    {
+      "address": "3312",
+      "name": "array_oob",
+      "end": "3364",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void array_oob(void)\n{\n    loc_CF0:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_D1C;\n        goto loc_CF4;\n    loc_CF4:\n    loc_D08:\n        if ((uint64_t)(phi(a1, x2)) + 4 != (uint64_t)(a1 + 4) + ((sext(a2)) << 2)) goto loc_D08;\n        goto loc_D18;\n    loc_D18:\n        return;\n    loc_D1C:\n        return;\n}"
+    },
+    {
+      "address": "3364",
+      "name": "test_array_types",
+      "end": "3940",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_array_types(void)\n{\n    uint64 var_10, var_408;\n    uint32 var_6C, var_400;\n    uint16 var_404;\n\n    var_408 = *(uint64 *)(*(uint64 *)0x13FE8);\n    x0_1 = sub_750(\"=== 测试数组类型 ===\", *(uint64 *)0x13FE8, 0);\n    x1_1 = 0x3440;\n    x3 = &var_10;\n    x0 = 1;\n    x2 = 0;\n    x4 = *(uint64 *)0x3440;   x5 = *(uint64 *)0x3440;\n    var_10 = x4;   var_10_2 = x5;\n    *(uint32 *)(x3 + 0x10) = (uint32)\"(Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\";\n    x0 = x0 + 1;\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x3 + x0 * 4 + -4));\n    /* cmp x0, #6 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xd78\");\n    x0_2 = sub_710(1, \"ARR-L1-01 (array_1d_stack): %d\\\\n\", x2);\n    x1_2 = \"hello\";\n    x0 = &var_401;\n    x2 = 0;\n    x3 = *(uint32 *)(x1);\n    var_400 = x3;\n    var_404 = (uint32)*(uint16 *)(x1_2 + 4);\n    x1 = *(uint8 *)(x0);\n    x2 = (uint32)((uint32)x2 + 1);\n    __asm(\"cbnz w1, #0xdc0\");\n    x0 = sub_710(1, \"ARR-L1-02 (array_string): %d\\\\n\", x2);\n    x2 = 0;\n    x3 = &var_78;\n    x0 = 0;\n    /* cmp w2, w0 — 次の分岐のための比較 */\n    *(uint32 *)(x3 + x0 * 4) = (uint32)((uint32)x2 == (uint32)x0 ? (uint32)x0 : 0);\n    x0 = x0 + 1;\n    /* cmp x0, #0xa — 次の分岐のための比較 */\n    __asm(\"b.ne #0xdf0\");\n    x2 = (uint32)((uint32)x2 + 1);\n    x3 = x3 + 40;\n    /* cmp w2, #0xa — 次の分岐のための比較 */\n    __asm(\"b.ne #0xde8\");\n    x1 = x4 + 440;\n    x2 = 0;\n    x0 = *(uint32 *)(x4);\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x4));\n    /* cmp x1, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe20\");\n    x0 = sub_710(1, \"ARR-L1-03 (array_2d_stack): %d\\\\n\", x2);\n    x4 = &var_3FC;\n    x3 = &var_208;\n    x1 = 1;\n    x0 = x3;\n    x2 = 5;\n    *(uint64 *)(x0) = (uint32)x1;   *(uint64 *)(x0 + 4) = (uint32)x1;\n    x2 = (uint32)((uint32)x2 - 1);\n    *(uint64 *)(x0 + 8) = (uint32)x1;   *(uint64 *)(x0 + 8 + 4) = (uint32)x1;\n    x0 = x0 + 20;\n    *(uint32 *)(x0 + -4) = (uint32)x1;\n    __asm(\"b.ne #0xe58\");\n    x3 = x3 + 100;\n    /* cmp x3, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe50\");\n    x4 = x5 + 100;\n    x5 = x5 + 600;\n    x2 = 0;\n    x0 = x4 - 100;\n    x1 = *(uint64 *)(x0);   x3 = *(uint64 *)(x0 + 4);\n    x1 = *(uint64 *)(x0 + 8);   x3 = *(uint64 *)(x0 + 8 + 4);\n    x0 = x0 + 20;\n    x2 = (uint32)((uint32)((uint32)((uint32)((uint32)((uint32)x2 + (uint32)*(uint32 *)(x0)) + (uint32)*(uint32 *)(x0)) + (uint32)*(uint32 *)(x0 + 8)) + (uint32)x3) + (uint32)*(uint32 *)(x0 + 16));\n    /* cmp x0, x4 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe8c\");\n    x4 = x0 + 120;\n    /* cmp x4, x5 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xe88\");\n    x0_3 = sub_710(1, \"ARR-L1-04 (array_3d): %d\\\\n\", x2, x3, x4);\n    x0_4 = sub_710(1, \"ARR-L2-01 (array_vla): %d\\\\n\", 60);\n    x0_5 = sub_710(1, \"ARR-L2-02 (array_pointer): %d\\\\n\", 100);\n    x0_6 = sub_710(1, \"ARR-L2-03 (pointer_array): %d\\\\n\", 60);\n    x1 = &var_28;\n    x0 = 0;\n    *(uint32 *)(x1) = (uint32)x0;\n    x0 = (uint32)((uint32)x0 + 1);\n    /* cmp w0, #0x14 — 次の分岐のための比較 */\n    __asm(\"b.ne #0xf18\");\n    x0 = *(uint64 *)0x13FE8;\n    x2 = var_408 - *(uint64 *)(x0);\n    x1 = 0;\n    __asm(\"b.ne #0xf60\");\n    return sub_710(1, \"ARR-L2-04 (array_complex_index): %d\\\\n\", (uint32)var_6C);\n    x0 = sub_720();\n}"
+    },
+    {
+      "address": "3940",
+      "name": "ptr_single",
+      "end": "3952",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_single(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3952",
+      "name": "ptr_double",
+      "end": "3968",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_double(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3968",
+      "name": "ptr_triple",
+      "end": "3988",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_triple(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "3988",
+      "name": "ptr_increment",
+      "end": "4036",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void ptr_increment(void)\n{\n    loc_F94:\n        if ((int32_t)a2 <= 0) goto loc_FBC;\n        goto loc_FA0;\n    loc_FA0:\n    loc_FA8:\n        if ((uint64_t)(phi(x2, a1)) + 4 != (uint64_t)a1 + ((sext(a2)) << 2)) goto loc_FA8;\n        goto loc_FB8;\n    loc_FB8:\n        return;\n    loc_FBC:\n        return;\n}"
+    },
+    {
+      "address": "4036",
+      "name": "ptr_offset",
+      "end": "4044",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_offset(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4048",
+      "name": "ptr_diff",
+      "end": "4060",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_diff(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4064",
+      "name": "ptr_void",
+      "end": "4100",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void ptr_void(void)\n{\n    loc_FE0:\n        if (a2 == 0) goto loc_FF4;\n        goto loc_FE4;\n    loc_FE4:\n        if ((uint32_t)a2 != 1) goto loc_FFC;\n        goto loc_FEC;\n    loc_FEC:\n        return;\n    loc_FF4:\n        return;\n    loc_FFC:\n        return;\n}"
+    },
+    {
+      "address": "4100",
+      "name": "ptr_const",
+      "end": "4112",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_const(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4112",
+      "name": "ptr_const_ptr",
+      "end": "4132",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_const_ptr(void)\n{\n    a1->field_0 += 5;\n    return;\n}"
+    },
+    {
+      "address": "4132",
+      "name": "ptr_func_simple",
+      "end": "4144",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 ptr_func_simple(int64 a1, int64 a2)\n{\n    __asm(\"br x16\");\n}"
+    },
+    {
+      "address": "4144",
+      "name": "ptr_func_complex",
+      "end": "4240",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void ptr_func_complex(void)\n{\n    loc_1030:\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        local_pFFFFFFFFFFFFFFE8 = 0x3008;\n        local_pFFFFFFFFFFFFFFE8 = 0x3008;\n        unknown_call(a2);\n        if ((uint64_t)var_28 != (uint64_t)memory_unknown) goto loc_108C;\n        goto loc_1084;\n    loc_1084:\n        return;\n    loc_108C:\n        unknown_call(a2);\n}"
+    },
+    {
+      "address": "4240",
+      "name": "ptr_cast",
+      "end": "4248",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void ptr_cast(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4256",
+      "name": "opaque_handle_create",
+      "end": "4264",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void opaque_handle_create(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4272",
+      "name": "opaque_handle_op",
+      "end": "4280",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void opaque_handle_op(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4288",
+      "name": "test_pointer_types",
+      "end": "4708",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 test_pointer_types(void)\n{\n    uint64 var_20, var_38;\n    uint32 var_30;\n\n    var_38 = *(uint64 *)(*(uint64 *)0x13FE8);\n    x0_1 = sub_750(\"=== 测试指针类型 ===\", *(uint64 *)0x13FE8, 0);\n    x0_2 = sub_710(1, \"PTR-L2-01 (ptr_single): %d\\\\n\", 15);\n    x0_3 = sub_710(1, \"PTR-L2-02 (ptr_double): %d\\\\n\", 15);\n    x0_4 = sub_710(1, \"PTR-L2-03 (ptr_triple): %d\\\\n\", 6);\n    x1_1 = 0x3440;\n    x3 = sp - 12;\n    x0 = sp - 32;\n    x2 = 0;\n    x6 = *(uint64 *)0x3440;   x7 = *(uint64 *)0x3440;\n    var_20 = x6;   var_20_2 = x7;\n    var_30 = (uint32)\"(Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\";\n    x1 = *(uint32 *)(x0);\n    x2 = (uint32)((uint32)x2 + (uint32)*(uint32 *)(x0));\n    /* cmp x0, x3 — 次の分岐のための比較 */\n    __asm(\"b.ne #0x1150\");\n    x0_5 = sub_710(1, \"PTR-L2-04 (ptr_increment): %d\\\\n\", x2);\n    x0_6 = sub_710(1, \"PTR-L2-05 (ptr_offset): %d\\\\n\", 30);\n    x0_7 = sub_710(1, \"PTR-L2-06 (ptr_diff): %d\\\\n\", 4);\n    x1_2 = \"PTR-L2-07 (ptr_void): %d\\\\n\";\n    x0_8 = sub_710(1, x1_2, 42);\n    x0_9 = sub_710(1, x1_2, 65);\n    x0_10 = sub_710(1, \"PTR-L2-08 (ptr_const): %d\\\\n\", 20);\n    x0_11 = sub_710(1, \"PTR-L2-09 (ptr_const_ptr): %d\\\\n\", 15);\n    x0_12 = sub_710(1, \"PTR-L2-10 (ptr_func_simple): %d\\\\n\", 10);\n    x0_13 = sub_710(1, \"PTR-L2-11 (ptr_func_complex): %d\\\\n\", 1);\n    x0_14 = sub_710(1, \"PTR-L2-12 (ptr_cast): 0x%x\\\\n\", 0x12345678);\n    x0 = *(uint64 *)0x13FE8;\n    x2 = var_38 - *(uint64 *)(x0);\n    x1_3 = 0;\n    __asm(\"b.ne #0x1260\");\n    return sub_710(1, \"PTR-L2-13 (opaque_handle_op): %d\\\\n\", 20);\n    x0 = sub_720();\n}"
+    },
+    {
+      "address": "4708",
+      "name": "struct_simple",
+      "end": "4728",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_simple(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4736",
+      "name": "struct_array",
+      "end": "4812",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void struct_array(void)\n{\n    loc_1280:\n        if ((int32_t)a2 <= 0) goto loc_12C4;\n        goto loc_1288;\n    loc_1288:\n    loc_12A0:\n        if ((uint64_t)(phi(x2, a1)) + 12 != (uint64_t)(a1 + 12) + ((a2 - 1) * 12)) goto loc_12A0;\n        goto loc_12C0;\n    loc_12C0:\n        return;\n    loc_12C4:\n        return;\n}"
+    },
+    {
+      "address": "4816",
+      "name": "struct_nested",
+      "end": "4832",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_nested(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4832",
+      "name": "struct_deep",
+      "end": "4848",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_deep(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4848",
+      "name": "struct_with_ptr",
+      "end": "4872",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void struct_with_ptr(void)\n{\n    if (!(a1->field_8 == 0)) {\n    }\n    return;\n}"
+    },
+    {
+      "address": "4880",
+      "name": "struct_bitfields",
+      "end": "4916",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void struct_bitfields(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "4916",
+      "name": "union_type",
+      "end": "4956",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void union_type(void)\n{\n    loc_1334:\n        if (a2 == 0) goto loc_1348;\n        goto loc_1338;\n    loc_1338:\n        if ((uint32_t)a2 == 1) goto loc_1350;\n        goto loc_1340;\n    loc_1340:\n        return;\n    loc_1348:\n        return;\n    loc_1350:\n        __asm(\"fcvtzs w0, s0\");\n        return;\n}"
+    },
+    {
+      "address": "4960",
+      "name": "union_array",
+      "end": "5016",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void union_array(void)\n{\n    loc_1360:\n        if ((int32_t)a2 <= 0) goto loc_1390;\n        goto loc_136C;\n    loc_136C:\n    loc_1378:\n        if ((int32_t)a2 > (int32_t)(phi(x2, 0)) + 1) goto loc_1378;\n        goto loc_138C;\n    loc_138C:\n        return;\n    loc_1390:\n        return;\n}"
+    },
+    {
+      "address": "5024",
+      "name": "enum_type",
+      "end": "5036",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "void enum_type(void)\n{\n    return;\n}"
+    },
+    {
+      "address": "5040",
+      "name": "enum_switch",
+      "end": "5076",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void enum_switch(void)\n{\n    loc_13B0:\n        if ((uint32_t)a1 > 3) goto loc_13CC;\n        goto loc_13B8;\n    loc_13B8:\n        return;\n    loc_13CC:\n        return;\n}"
+    },
+    {
+      "address": "5076",
+      "name": "struct_func_ptr",
+      "end": "5096",
+      "state": "PASS",
+      "completeness": "complete",
+      "pseudocode": "uint32 struct_func_ptr(void * a1)\n{\n    __asm(\"br x16\");\n}"
+    },
+    {
+      "address": "5104",
+      "name": "linked_list",
+      "end": "5140",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void linked_list(void)\n{\n    if (!(a1 == 0)) {\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5140",
+      "name": "doubly_linked_list",
+      "end": "5172",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void doubly_linked_list(void)\n{\n    if (!(a1 == 0)) {\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5172",
+      "name": "binary_tree_sum",
+      "end": "5744",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void binary_tree_sum(void)\n{\n    loc_1434:\n        if (a1 == 0) goto loc_1668;\n        goto loc_1440;\n    loc_1440:\n        if (memory_unknown == 0) goto loc_165C;\n        goto loc_1450;\n    loc_1450:\n        if (memory_unknown == 0) goto loc_164C;\n        goto loc_1460;\n    loc_1460:\n        if (memory_unknown == 0) goto loc_163C;\n        goto loc_1470;\n    loc_1470:\n        local_pFFFFFFFFFFFFFF40 = local_x29;\n        local_pFFFFFFFFFFFFFF40 = local_x29;\n        local_pFFFFFFFFFFFFFF50 = local_x19;\n        local_pFFFFFFFFFFFFFF50 = local_x19;\n        local_pFFFFFFFFFFFFFF60 = local_x21;\n        local_pFFFFFFFFFFFFFF60 = local_x21;\n        local_pFFFFFFFFFFFFFF80 = local_x25;\n        local_pFFFFFFFFFFFFFF80 = local_x25;\n        local_pFFFFFFFFFFFFFF90 = local_x27;\n        local_pFFFFFFFFFFFFFF90 = local_x27;\n    loc_1488:\n        if (memory_unknown == 0) goto loc_1590;\n        goto loc_1498;\n    loc_1498:\n        if (memory_unknown == 0) goto loc_1580;\n        goto loc_14A8;\n    loc_14A8:\n        if (memory_unknown == 0) goto loc_1570;\n        goto loc_14B8;\n    loc_14B8:\n        memory_unknown = local_phi_1578;\n        memory_unknown = local_phi_1578;\n    loc_14BC:\n        if (memory_unknown == 0) goto loc_155C;\n        goto loc_14CC;\n    loc_14CC:\n        if (memory_unknown == 0) goto loc_154C;\n        goto loc_14DC;\n    loc_14DC:\n        memory_unknown = local_phi_1699;\n        memory_unknown = local_phi_1715;\n        memory_unknown = local_phi_1025;\n        memory_unknown = local_phi_1025;\n        memory_unknown = local_phi_1416;\n        memory_unknown = local_phi_1416;\n        memory_unknown = local_phi_1177;\n        memory_unknown = local_phi_1177;\n        memory_unknown = local_phi_1298;\n        memory_unknown = local_phi_1258;\n        memory_unknown = local_phi_1258;\n        memory_unknown = local_phi_1771;\n        memory_unknown = local_phi_1771;\n        memory_unknown = local_phi_1792;\n        memory_unknown = local_phi_1792;\n        memory_unknown = local_phi_1470;\n        binary_tree_sum(/* arguments unknown */);\n        if (x23 != 0) goto loc_14DC;\n        goto loc_1548;\n    loc_1548:\n    loc_154C:\n        if (x20 != 0) goto loc_14CC;\n        goto loc_1558;\n    loc_1558:\n    loc_155C:\n        if (x2 != 0) goto loc_14BC;\n        goto loc_1568;\n    loc_1568:\n    loc_1570:\n        if (x21 != 0) goto loc_14A8;\n        goto loc_157C;\n    loc_157C:\n    loc_1580:\n        if (x19 != 0) goto loc_1498;\n        goto loc_158C;\n    loc_158C:\n    loc_1590:\n        if (x6 != 0) goto loc_1488;\n        goto loc_159C;\n    loc_159C:\n        if (x5 == 0) goto loc_15C8;\n        goto loc_15AC;\n    loc_15AC:\n        if (x6 != 0) goto loc_1488;\n        goto loc_15BC;\n    loc_15BC:\n        if (x5 != 0) goto loc_15AC;\n        goto loc_15C8;\n    loc_15C8:\n        if (x4 == 0) goto loc_15F4;\n        goto loc_15D8;\n    loc_15D8:\n        if (x5 != 0) goto loc_15AC;\n        goto loc_15E8;\n    loc_15E8:\n        if (x4 != 0) goto loc_15D8;\n        goto loc_15F4;\n    loc_15F4:\n        if (x1 == 0) goto loc_1620;\n        goto loc_1604;\n    loc_1604:\n        if (x4 != 0) goto loc_15D8;\n        goto loc_1614;\n    loc_1614:\n        if (x1 != 0) goto loc_1604;\n        goto loc_1620;\n    loc_1620:\n        return;\n    loc_163C:\n        if (x5 != 0) goto loc_1460;\n        goto loc_1648;\n    loc_1648:\n    loc_164C:\n        if (x4 != 0) goto loc_1450;\n        goto loc_1658;\n    loc_1658:\n    loc_165C:\n        if (x1 != 0) goto loc_1440;\n        goto loc_1668;\n    loc_1668:\n        return;\n}"
+    },
+    {
+      "address": "5744",
+      "name": "binary_tree",
+      "end": "5812",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void binary_tree(void)\n{\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFE0 = local_x29;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    local_pFFFFFFFFFFFFFFF0 = local_x19;\n    if (!(a1 == 0)) {\n        binary_tree_sum(/* arguments unknown */);\n        while (memory_unknown != 0) {\n        }\n    }\n    return;\n}"
+    },
+    {
+      "address": "5812",
+      "name": "graph_traverse",
+      "end": "5888",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void graph_traverse(void)\n{\n    loc_16B4:\n        if ((int32_t)a1->field_50 <= 0) goto loc_16F8;\n        goto loc_16C4;\n    loc_16C4:\n    loc_16D0:\n        if (a1[phi(0, x3 + 1)] == 0) goto loc_16E8;\n        goto loc_16D8;\n    loc_16D8:\n        if (memory_unknown != 0) goto loc_16D8;\n        goto loc_16E8;\n    loc_16E8:\n        if ((int32_t)a1->field_50 > (int32_t)x3 + 1) goto loc_16D0;\n        goto loc_16F4;\n    loc_16F4:\n        return;\n    loc_16F8:\n        return;\n}"
+    },
+    {
+      "address": "5888",
+      "name": "test_composite_types",
+      "end": "6412",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void test_composite_types(void)\n{\n    loc_1700:\n        local_pFFFFFFFFFFFFFF80 = local_x29;\n        local_pFFFFFFFFFFFFFF80 = local_x29;\n        local_pFFFFFFFFFFFFFFF8 = memory_unknown;\n        unknown_call(\"=== 测试复合类型 ===\");\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        unknown_call(1);\n        local_pFFFFFFFFFFFFFFC0 = 0;\n        local_pFFFFFFFFFFFFFF98 = 10;\n        local_pFFFFFFFFFFFFFFA0 = var_649 + 0xFFFFFFFFFFFFFF80 + 40;\n        local_pFFFFFFFFFFFFFFA8 = 20;\n        local_pFFFFFFFFFFFFFFB0 = var_649 + 0xFFFFFFFFFFFFFF80 + 56;\n        local_pFFFFFFFFFFFFFFB8 = 30;\n        goto loc_184C;\n    loc_1844:\n    loc_184C:\n        if (phi((sp + 0xFFFFFFFFFFFFFF80) + 40, memory_unknown) != 0) goto loc_1844;\n        goto loc_1854;\n    loc_1854:\n        unknown_call(1);\n        local_pFFFFFFFFFFFFFFC8 = 10;\n        local_pFFFFFFFFFFFFFFD0 = var_649 + 0xFFFFFFFFFFFFFF80 + 96;\n        local_pFFFFFFFFFFFFFFD0 = var_649 + 0xFFFFFFFFFFFFFF80 + 96;\n        local_pFFFFFFFFFFFFFFE0 = 20;\n        local_pFFFFFFFFFFFFFFE8 = 0;\n        local_pFFFFFFFFFFFFFFE8 = 0;\n        goto loc_1898;\n    loc_1894:\n    loc_1898:\n        if (memory_unknown != 0) goto loc_1894;\n        goto loc_18A4;\n    loc_18A4:\n        unknown_call(1);\n        binary_tree_sum(/* arguments unknown */);\n        unknown_call(1);\n        unknown_call(1);\n        if ((uint64_t)var_78 != (uint64_t)memory_unknown) goto loc_1908;\n        goto loc_1900;\n    loc_1900:\n        return;\n    loc_1908:\n        unknown_call(global_13FE8);\n}"
+    },
+    {
+      "address": "6416",
+      "name": "__addtf3",
+      "end": "9380",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void addtf3(void)\n{\n    loc_1910:\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFD0 = local_x29;\n        local_pFFFFFFFFFFFFFFE0 = var_3683;\n        local_pFFFFFFFFFFFFFFF0 = var_4311;\n        __asm(\"semantic-v2 function unknown: arm64-simd-instruction-unsupported:fmov\");\n        __asm(\"semantic-v2 function unknown: arm64-simd-instruction-unsupported:fmov\");\n        if ((uint64_t)var_10 >> 63 == (uint64_t)var_20 >> 63) goto loc_1B00;\n        goto loc_1970;\n    loc_1970:\n        if ((int32_t)(bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)) <= 0) goto loc_1ACC;\n        goto loc_1980;\n    loc_1980:\n        if (bit_extract(var_20, 48, 15) == 0) goto loc_1B60;\n        goto loc_1984;\n    loc_1984:\n    loc_1988:\n        if ((uint64_t)bit_extract(var_10, 48, 15) == 0x7FFF) goto loc_1DD4;\n        goto loc_1994;\n    loc_1994:\n        if ((int32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) > 0x74) goto loc_1DC4;\n        goto loc_199C;\n    loc_199C:\n        if ((int32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) > 63) goto loc_1F48;\n        goto loc_19A4;\n    loc_19A4:\n    loc_19D0:\n    loc_19DC:\n        if (bit_extract(phi(((x7 | (var_10 >> 61)) + (~(v2383 | (var_20 >> 61)))) + (bit_extract(((var_10 << 3) & (~(var_20 << 3))) | (((var_10 << 3) | (~(var_20 << 3))) & (~((var_10 << 3) - (var_20 << 3)))), 63, 1)), ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) - ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)))) + 0xFFFFFFFFFFFFFFFF) + (bit_extract(((var_20 << 3) & (~(phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0)))))) | (((var_20 << 3) | (~(phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0)))))) & (~((var_20 << 3) - (phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0))))))), 63, 1)), ((v2383 | (var_20 >> 61)) + (~(x7 | (var_10 >> 61)))) + (bit_extract(((var_20 << 3) & (~(var_10 << 3))) | (((var_20 << 3) | (~(var_10 << 3))) & (~((var_20 << 3) - (var_10 << 3)))), 63, 1)), ((phi(x7 | (var_10 >> 61), (x7 | (var_10 >> 61)) - ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63)))) + 0xFFFFFFFFFFFFFFFF) + (bit_extract(((var_10 << 3) & (~(phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0)))))) | (((var_10 << 3) | (~(phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0)))))) & (~((var_10 << 3) - (phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0))))))), 63, 1))), 51, 1) == 0) goto loc_1B8C;\n        goto loc_19E4;\n    loc_19E4:\n        if (phi((phi(((x7 | (var_10 >> 61)) + (~(v2383 | (var_20 >> 61)))) + (bit_extract(((var_10 << 3) & (~(var_20 << 3))) | (((var_10 << 3) | (~(var_20 << 3))) & (~((var_10 << 3) - (var_20 << 3)))), 63, 1)), ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) - ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)))) + 0xFFFFFFFFFFFFFFFF) + (bit_extract(((var_20 << 3) & (~(phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0)))))) | (((var_20 << 3) | (~(phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0)))))) & (~((var_20 << 3) - (phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0))))))), 63, 1)), ((v2383 | (var_20 >> 61)) + (~(x7 | (var_10 >> 61)))) + (bit_extract(((var_20 << 3) & (~(var_10 << 3))) | (((var_20 << 3) | (~(var_10 << 3))) & (~((var_20 << 3) - (var_10 << 3)))), 63, 1)), ((phi(x7 | (var_10 >> 61), (x7 | (var_10 >> 61)) - ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63)))) + 0xFFFFFFFFFFFFFFFF) + (bit_extract(((var_10 << 3) & (~(phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0)))))) | (((var_10 << 3) | (~(phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0)))))) & (~((var_10 << 3) - (phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0))))))), 63, 1)))) & 0x7FFFFFFFFFFFF, ((v2383 | (var_20 >> 61)) + (~(x7 | (var_10 >> 61)))) + (bit_extract(((var_20 << 3) & (~(var_10 << 3))) | (((var_20 << 3) | (~(var_10 << 3))) & (~((var_20 << 3) - (var_10 << 3)))), 63, 1)), ((x7 | (var_10 >> 61)) + (~(v2383 | (var_20 >> 61)))) + (bit_extract(((var_10 << 3) & (~(var_20 << 3))) | (((var_10 << 3) | (~(var_20 << 3))) & (~((var_10 << 3) - (var_20 << 3)))), 63, 1))) == 0) goto loc_1CC4;\n        goto loc_19E8;\n    loc_19E8:\n    loc_19F0:\n    loc_1A04:\n        if ((int64_t)sext(phi(phi(v3429 + 52, v2230 - 12), v3429 + 52)) < (int64_t)phi(phi(bit_extract(var_10, 48, 15), bit_extract(var_20, 48, 15)), bit_extract(var_10, 48, 15))) goto loc_1B80;\n        goto loc_1A10;\n    loc_1A10:\n        if ((int32_t)((phi(phi(v3429 + 52, v2230 - 12), v3429 + 52)) - (phi(phi(bit_extract(var_10, 48, 15), bit_extract(var_20, 48, 15)), bit_extract(var_10, 48, 15)))) + 1 > 63) goto loc_1F10;\n        goto loc_1A20;\n    loc_1A20:\n    loc_1A48:\n    loc_1A4C:\n        if (phi((phi((((phi(((phi(phi((var_10 << 3) - (var_20 << 3), (var_20 << 3) - (phi(((uint64_t)(phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) | (var_10 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) != 64 ? (var_10 << 3) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((0x80 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) : var_10 << 3) != 0 ? 1 : 0)) | ((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) >> (((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) - 64) & 63)), (((phi((x7 | (var_10 >> 61)) | 0x8000000000000, x7 | (var_10 >> 61))) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63)) | ((var_10 << 3) >> ((phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63))) | (((uint64_t)(var_10 << 3) << ((64 - (phi(0 - ((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))), ~((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))))) & 63) != 0 ? 1 : 0)))), (var_20 << 3) - (var_10 << 3), (var_10 << 3) - (phi(((uint64_t)(phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) | (var_20 << 3) != 0 ? 1 : 0), (((uint64_t)((uint32_t)phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) != 64 ? (var_20 << 3) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((0x80 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) : var_20 << 3) != 0 ? 1 : 0)) | ((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) >> (((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) - 64) & 63)), (((phi(v2383 | (var_20 >> 61), (v2383 | (var_20 >> 61)) | 0x8000000000000)) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63)) | ((var_20 << 3) >> ((phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)))) & 63))) | (((uint64_t)(var_20 << 3) << ((64 - (phi(((bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))) - 1, (bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15))))) & 63) != 0 ? 1 : 0))))), (var_20 << 3) - (var_10 << 3), (var_10 << 3) - (var_20 << 3))) >> (v1817 & v2286)) | x3, x0)) << v2463) | x2) | x1, x9)) | x13, x6) == 0) goto loc_1BA0;\n        goto loc_1A50;\n    loc_1A50:\n    loc_1A5C:\n        if (x0 == 0) goto loc_236C;\n        goto loc_1A60;\n    loc_1A60:\n        if ((uint64_t)x1 == (uint64_t)v2491) goto loc_1DB8;\n        goto loc_1A6C;\n    loc_1A6C:\n        if ((uint64_t)x1 == (uint64_t)v2187) goto loc_1D7C;\n        goto loc_1A74;\n    loc_1A74:\n        if (x1 == 0) goto loc_1D9C;\n        goto loc_1A78;\n    loc_1A78:\n        if (v1456 == 0) goto loc_1A88;\n        goto loc_1A84;\n    loc_1A84:\n    loc_1A88:\n        if (x1 == 0) goto loc_1C38;\n        goto loc_1A8C;\n    loc_1A8C:\n        if ((uint64_t)x2 == (uint64_t)x1) goto loc_1C54;\n        goto loc_1A9C;\n    loc_1A9C:\n    loc_1AA8:\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        if (v2855 != 0) goto loc_1CB0;\n        goto loc_1AC4;\n    loc_1AC4:\n        return;\n    loc_1ACC:\n        if ((uint32_t)(bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)) == 0) goto loc_1BB8;\n        goto loc_1AD0;\n    loc_1AD0:\n        if (x8 != 0) goto loc_1E50;\n        goto loc_1AD4;\n    loc_1AD4:\n        if (x2 == 0) goto loc_204C;\n        goto loc_1ADC;\n    loc_1ADC:\n        if (v213 != 0) goto loc_1E58;\n        goto loc_1AE4;\n    loc_1AE4:\n        goto loc_19DC;\n    loc_1B00:\n        if ((int32_t)v2316 <= (int32_t)v3233) goto loc_1CE0;\n        goto loc_1B0C;\n    loc_1B0C:\n        if (x7 == 0) goto loc_1C00;\n        goto loc_1B10;\n    loc_1B10:\n        if ((uint64_t)x8 == (uint64_t)x1) goto loc_1DD4;\n        goto loc_1B20;\n    loc_1B20:\n        if ((int32_t)v673 > (int32_t)v1507) goto loc_1EF4;\n        goto loc_1B28;\n    loc_1B28:\n        if ((int32_t)v436 > (int32_t)v2364) goto loc_1FDC;\n        goto loc_1B30;\n    loc_1B30:\n        goto loc_1F00;\n    loc_1B60:\n        if (x1 == 0) goto loc_1ED0;\n        goto loc_1B68;\n    loc_1B68:\n        if ((uint32_t)(bit_extract(var_10, 48, 15)) - (bit_extract(var_20, 48, 15)) != 1) goto loc_1988;\n        goto loc_1B70;\n    loc_1B70:\n        goto loc_19DC;\n    loc_1B80:\n    loc_1B8C:\n        if (x2 != 0) goto loc_1A5C;\n        goto loc_1B9C;\n    loc_1B9C:\n        if (x6 != 0) goto loc_1A50;\n        goto loc_1BA0;\n    loc_1BA0:\n    loc_1BAC:\n        goto loc_1AA8;\n    loc_1BB8:\n        if (((uint64_t)x6 & (uint64_t)v843) != 0) goto loc_1EA4;\n        goto loc_1BC4;\n    loc_1BC4:\n        if (x8 != 0) goto loc_2070;\n        goto loc_1BD0;\n    loc_1BD0:\n        if (x7 == 0) goto loc_2164;\n        goto loc_1BD4;\n    loc_1BD4:\n        if (x6 == 0) goto loc_2178;\n        goto loc_1BD8;\n    loc_1BD8:\n        if (v495 == 0) goto loc_2350;\n        goto loc_1BE4;\n    loc_1BE4:\n        goto loc_1A4C;\n    loc_1C00:\n        if (x1 == 0) goto loc_20D0;\n        goto loc_1C08;\n    loc_1C08:\n        if ((uint32_t)v2692 == (uint32_t)v2998) goto loc_20A0;\n        goto loc_1C10;\n    loc_1C10:\n        if ((uint64_t)x8 != (uint64_t)x1) goto loc_1B20;\n        goto loc_1C1C;\n    loc_1C1C:\n        if (x0 == 0) goto loc_1F78;\n        goto loc_1C24;\n    loc_1C24:\n    loc_1C30:\n    loc_1C38:\n        if ((uint64_t)x2 == (uint64_t)x3) goto loc_1DF4;\n        goto loc_1C50;\n    loc_1C50:\n        goto loc_1BAC;\n    loc_1C54:\n    loc_1C58:\n        if (x1 == 0) goto loc_1C90;\n        goto loc_1C5C;\n    loc_1C5C:\n        if ((uint64_t)x1 == (uint64_t)v2788) goto loc_1C8C;\n        goto loc_1C64;\n    loc_1C64:\n        if (((uint32_t)v3198 & (uint32_t)v3035) != 0) goto loc_1C90;\n        goto loc_1C74;\n    loc_1C74:\n        goto loc_1BAC;\n    loc_1C8C:\n        if (x15 != 0) goto loc_1C74;\n        goto loc_1C90;\n    loc_1C90:\n    loc_1C9C:\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n    loc_1CB0:\n        memory_unknown = local_phi_5081;\n        sfp_handle_exceptions(/* arguments unknown */);\n        return;\n    loc_1CC4:\n        if ((int32_t)v232 <= (int32_t)v1343) goto loc_19F0;\n        goto loc_1CD4;\n    loc_1CD4:\n        goto loc_1A04;\n    loc_1CE0:\n        if ((uint32_t)v2316 == (uint32_t)v3233) goto loc_1E0C;\n        goto loc_1CE4;\n    loc_1CE4:\n        if (x8 == 0) goto loc_1FB8;\n        goto loc_1CE8;\n    loc_1CE8:\n    loc_1CF0:\n        if ((uint64_t)x1 == (uint64_t)x2) goto loc_2210;\n        goto loc_1CFC;\n    loc_1CFC:\n        if ((int32_t)v1458 > (int32_t)v78) goto loc_21AC;\n        goto loc_1D04;\n    loc_1D04:\n        if ((int32_t)v648 > (int32_t)v6) goto loc_2264;\n        goto loc_1D0C;\n    loc_1D0C:\n    loc_1D38:\n    loc_1D48:\n        if (v541 == 0) goto loc_1B8C;\n        goto loc_1D4C;\n    loc_1D4C:\n        if ((uint64_t)x2 == (uint64_t)x0) goto loc_20F0;\n        goto loc_1D5C;\n    loc_1D5C:\n        goto loc_1A5C;\n    loc_1D7C:\n        if (x15 == 0) goto loc_1D8C;\n        goto loc_1D84;\n    loc_1D84:\n    loc_1D8C:\n        if (v2242 == 0) goto loc_1A88;\n        goto loc_1D94;\n    loc_1D94:\n        goto loc_1A88;\n    loc_1D9C:\n        if ((uint64_t)x1 == (uint64_t)v3232) goto loc_1D8C;\n        goto loc_1DAC;\n    loc_1DAC:\n        goto loc_1D8C;\n    loc_1DB8:\n        if (x15 != 0) goto loc_1D8C;\n        goto loc_1DC0;\n    loc_1DC0:\n        goto loc_1D84;\n    loc_1DC4:\n        goto loc_19D0;\n    loc_1DD4:\n        if (x9 == 0) goto loc_1F78;\n        goto loc_1DDC;\n    loc_1DDC:\n    loc_1DF4:\n        if (x2 == 0) goto loc_2494;\n        goto loc_1DFC;\n    loc_1DFC:\n        goto loc_1AA8;\n    loc_1E0C:\n        if (((uint64_t)x7 & (uint64_t)v303) != 0) goto loc_2008;\n        goto loc_1E18;\n    loc_1E18:\n        if (x8 != 0) goto loc_21E8;\n        goto loc_1E20;\n    loc_1E20:\n        if (x7 == 0) goto loc_2198;\n        goto loc_1E28;\n    loc_1E28:\n        if (x6 == 0) goto loc_2178;\n        goto loc_1E2C;\n    loc_1E2C:\n        if (v567 == 0) goto loc_1A48;\n        goto loc_1E3C;\n    loc_1E3C:\n        goto loc_1A5C;\n    loc_1E50:\n    loc_1E58:\n        if ((uint64_t)x1 == (uint64_t)x2) goto loc_213C;\n        goto loc_1E64;\n    loc_1E64:\n        if ((int32_t)v3199 > (int32_t)v3508) goto loc_1F90;\n        goto loc_1E6C;\n    loc_1E6C:\n        if ((int32_t)v1297 > (int32_t)v136) goto loc_21BC;\n        goto loc_1E74;\n    loc_1E74:\n        goto loc_1F9C;\n    loc_1EA4:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2034;\n        goto loc_1EB0;\n    loc_1EB0:\n        if (x6 != 0) goto loc_2190;\n        goto loc_1EB8;\n    loc_1EB8:\n        goto loc_1BAC;\n    loc_1ED0:\n        if ((uint64_t)x8 != (uint64_t)x0) goto loc_1B8C;\n        goto loc_1EDC;\n    loc_1EDC:\n        if (x0 != 0) goto loc_1C24;\n        goto loc_1EE4;\n    loc_1EE4:\n        goto loc_1DF4;\n    loc_1EF4:\n    loc_1F00:\n        goto loc_1D48;\n    loc_1F10:\n        goto loc_1A4C;\n    loc_1F48:\n        goto loc_19D0;\n    loc_1F74:\n    loc_1F78:\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        __asm(\"fmov v0.d[1], x5\");\n        goto loc_1AC4;\n    loc_1F90:\n    loc_1F9C:\n        goto loc_19DC;\n    loc_1FB8:\n        if (x2 == 0) goto loc_2234;\n        goto loc_1FC0;\n    loc_1FC0:\n        if (v2412 != 0) goto loc_1CF0;\n        goto loc_1FC8;\n    loc_1FC8:\n        goto loc_1D48;\n    loc_1FDC:\n        goto loc_1F00;\n    loc_2008:\n        if ((uint64_t)x7 == (uint64_t)x0) goto loc_2290;\n        goto loc_2014;\n    loc_2014:\n        goto loc_1A5C;\n    loc_2034:\n        goto loc_19E4;\n    loc_204C:\n        if ((uint64_t)x7 == (uint64_t)x0) goto loc_22C4;\n        goto loc_2058;\n    loc_2058:\n        goto loc_1B8C;\n    loc_2070:\n        if ((uint64_t)x2 == (uint64_t)x8) goto loc_22E8;\n        goto loc_207C;\n    loc_207C:\n        if ((uint64_t)x1 == (uint64_t)x8) goto loc_2300;\n        goto loc_2084;\n    loc_2084:\n        if (x7 == 0) goto loc_20B8;\n        goto loc_2088;\n    loc_2088:\n        if (x6 != 0) goto loc_2318;\n        goto loc_2094;\n    loc_2094:\n        goto loc_1DF4;\n    loc_20A0:\n        goto loc_1D48;\n    loc_20B0:\n        if ((uint64_t)x1 == (uint64_t)x2) goto loc_2300;\n        goto loc_20B8;\n    loc_20B8:\n        if (x6 != 0) goto loc_237C;\n        goto loc_20BC;\n    loc_20BC:\n        goto loc_1DFC;\n    loc_20D0:\n        if ((uint64_t)x8 != (uint64_t)x0) goto loc_1B8C;\n        goto loc_20DC;\n    loc_20DC:\n        if (x0 == 0) goto loc_1EE4;\n        goto loc_20E4;\n    loc_20E4:\n        goto loc_1C30;\n    loc_20F0:\n        if (((uint64_t)x16 & (uint64_t)v3437) == 0) goto loc_21A4;\n        goto loc_20F8;\n    loc_20F8:\n        if (((uint32_t)v420 & (uint32_t)v496) != 0) goto loc_2450;\n        goto loc_210C;\n    loc_210C:\n        if ((uint64_t)x1 == (uint64_t)v1897) goto loc_23E8;\n        goto loc_2114;\n    loc_2114:\n        if ((uint64_t)x1 != (uint64_t)v2043) goto loc_1C58;\n        goto loc_2120;\n    loc_2120:\n        if (x15 != 0) goto loc_1D8C;\n        goto loc_2138;\n    loc_2138:\n        goto loc_1D84;\n    loc_213C:\n        if (x1 == 0) goto loc_1F74;\n        goto loc_2144;\n    loc_2144:\n        goto loc_1DF4;\n    loc_2164:\n        if (x6 == 0) goto loc_2250;\n        goto loc_2168;\n    loc_2168:\n    loc_2178:\n    loc_2180:\n        if (v3267 == 0) goto loc_1A88;\n        goto loc_2188;\n    loc_2188:\n        goto loc_1A88;\n    loc_2190:\n        goto loc_19E4;\n    loc_2198:\n        if (x6 != 0) goto loc_2488;\n        goto loc_219C;\n    loc_219C:\n        goto loc_1BAC;\n    loc_21A4:\n        goto loc_1C9C;\n    loc_21AC:\n        goto loc_1D38;\n    loc_21BC:\n        goto loc_1F9C;\n    loc_21E8:\n        if ((uint64_t)x2 == (uint64_t)x8) goto loc_2390;\n        goto loc_21F4;\n    loc_21F4:\n        if ((uint64_t)x1 == (uint64_t)x8) goto loc_2434;\n        goto loc_21FC;\n    loc_21FC:\n        if (x7 != 0) goto loc_23A8;\n        goto loc_2200;\n    loc_2200:\n        goto loc_1DF4;\n    loc_2210:\n        if (x1 == 0) goto loc_1F78;\n        goto loc_2218;\n    loc_2218:\n        goto loc_1DF4;\n    loc_2234:\n        if ((uint64_t)x7 == (uint64_t)x0) goto loc_2404;\n        goto loc_2240;\n    loc_2240:\n        goto loc_1B8C;\n    loc_2250:\n        goto loc_1BAC;\n    loc_2264:\n        goto loc_1D38;\n    loc_2290:\n        if (((uint64_t)x16 & (uint64_t)v190) == 0) goto loc_21A4;\n        goto loc_2298;\n    loc_2298:\n        if (((uint32_t)v3407 & (uint32_t)v2365) != 0) goto loc_2450;\n        goto loc_22AC;\n    loc_22AC:\n        if ((uint64_t)x1 != (uint64_t)v1876) goto loc_2114;\n        goto loc_22B4;\n    loc_22B4:\n        if (x6 == 0) goto loc_23EC;\n        goto loc_22B8;\n    loc_22B8:\n        goto loc_1C9C;\n    loc_22C4:\n        if (x0 == 0) goto loc_242C;\n        goto loc_22CC;\n    loc_22CC:\n        goto loc_1C30;\n    loc_22E8:\n        if (x7 == 0) goto loc_20B0;\n        goto loc_22EC;\n    loc_22EC:\n        if ((uint64_t)x1 != (uint64_t)x2) goto loc_2088;\n        goto loc_2300;\n    loc_2300:\n        if (x6 == 0) goto loc_2424;\n        goto loc_2304;\n    loc_2304:\n        if (x7 == 0) goto loc_237C;\n        goto loc_2310;\n    loc_2310:\n    loc_2318:\n        if (v3513 == 0) goto loc_233C;\n        goto loc_2324;\n    loc_2324:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_233C;\n        goto loc_232C;\n    loc_232C:\n    loc_233C:\n        goto loc_1DF4;\n    loc_2350:\n        if (x6 == 0) goto loc_2250;\n        goto loc_2358;\n    loc_2358:\n        goto loc_1A5C;\n    loc_236C:\n        if (v2331 != 0) goto loc_2180;\n        goto loc_2378;\n    loc_2378:\n        goto loc_1A88;\n    loc_237C:\n        goto loc_1DF4;\n    loc_2390:\n        if (x7 == 0) goto loc_245C;\n        goto loc_2394;\n    loc_2394:\n        if ((uint64_t)x1 == (uint64_t)x2) goto loc_247C;\n        goto loc_23A8;\n    loc_23A8:\n        if (x1 == 0) goto loc_2440;\n        goto loc_23B0;\n    loc_23B0:\n        if (v1235 == 0) goto loc_23D8;\n        goto loc_23C0;\n    loc_23C0:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_23D8;\n        goto loc_23C8;\n    loc_23C8:\n    loc_23D8:\n        goto loc_1DF4;\n    loc_23E8:\n        if (x6 != 0) goto loc_22B8;\n        goto loc_23EC;\n    loc_23EC:\n        goto loc_1A8C;\n    loc_2404:\n        if (x0 == 0) goto loc_1EE4;\n        goto loc_240C;\n    loc_240C:\n        goto loc_1C30;\n    loc_2424:\n        if (x7 == 0) goto loc_20BC;\n        goto loc_2428;\n    loc_2428:\n        goto loc_2088;\n    loc_242C:\n        goto loc_1EE4;\n    loc_2434:\n        if (x1 != 0) goto loc_246C;\n        goto loc_243C;\n    loc_243C:\n        if (x7 == 0) goto loc_1F78;\n        goto loc_2440;\n    loc_2440:\n        goto loc_1DF4;\n    loc_2450:\n        goto loc_1C9C;\n    loc_245C:\n        if ((uint64_t)x1 != (uint64_t)x2) goto loc_2200;\n        goto loc_2464;\n    loc_2464:\n        if (x1 == 0) goto loc_1F78;\n        goto loc_246C;\n    loc_246C:\n        if (x7 != 0) goto loc_23B0;\n        goto loc_2478;\n    loc_2478:\n        goto loc_2200;\n    loc_247C:\n        if (x1 != 0) goto loc_246C;\n        goto loc_2484;\n    loc_2484:\n        goto loc_2440;\n    loc_2488:\n        goto loc_2178;\n    loc_2494:\n        goto loc_1AA8;\n}"
+    },
+    {
+      "address": "9392",
+      "name": "__multf3",
+      "end": "11440",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void multf3(void)\n{\n    loc_24B0:\n        local_pFFFFFFFFFFFFFFB0 = local_x29;\n        local_pFFFFFFFFFFFFFFB0 = local_x29;\n        local_pFFFFFFFFFFFFFFE0 = var_2745;\n        local_pFFFFFFFFFFFFFFF0 = var_2807;\n        __asm(\"semantic-v2 function unknown: arm64-simd-instruction-unsupported:fmov\");\n        __asm(\"semantic-v2 function unknown: arm64-simd-instruction-unsupported:fmov\");\n        if (bit_extract(var_30, 48, 15) == 0) goto loc_28F4;\n        goto loc_24E4;\n    loc_24E4:\n        if ((uint32_t)bit_extract(var_30, 48, 15) == 0x7FFF) goto loc_293C;\n        goto loc_24F0;\n    loc_24F0:\n    loc_2514:\n        if (bit_extract(var_40, 48, 15) == 0) goto loc_2898;\n        goto loc_252C;\n    loc_252C:\n        if ((uint32_t)bit_extract(var_40, 48, 15) == 0x7FFF) goto loc_2584;\n        goto loc_2538;\n    loc_2538:\n        if ((int64_t)phi(12, 8, 0, 4) <= 10) goto loc_25BC;\n        goto loc_2570;\n    loc_2570:\n        if ((uint64_t)phi((phi(12, 8, 0, 4)) | 1, phi(12, 8, 0, 4)) == 11) goto loc_2CA4;\n        goto loc_2578;\n    loc_2578:\n        goto loc_267C;\n    loc_2584:\n        if (var_40 | (bit_extract(var_40, 0, 48)) != 0) goto loc_2610;\n        goto loc_2594;\n    loc_2594:\n        if ((int64_t)(phi(12, 8, 0, 4)) | 2 > 10) goto loc_2C10;\n        goto loc_25B4;\n    loc_25B4:\n    loc_25BC:\n        if ((int64_t)phi((phi(12, 8, 0, 4)) | 2, phi(12, 8, 0, 4), (phi(12, 8, 0, 4)) | 1) > 2) goto loc_2638;\n        goto loc_25C4;\n    loc_25C4:\n        if ((uint64_t)(phi((phi(12, 8, 0, 4)) | 2, phi(12, 8, 0, 4), (phi(12, 8, 0, 4)) | 1)) - 1 > 1) goto loc_26DC;\n        goto loc_25D0;\n    loc_25D0:\n        if ((uint64_t)phi(2, 0, 1) == 2) goto loc_26CC;\n        goto loc_25D8;\n    loc_25D8:\n        if ((uint64_t)phi(phi(2, 0, 1), phi(phi(phi(2, 3), phi(3, 2, 0, 1), phi(phi(2, 0, 1), 3)), phi(1, 0))) != 1) goto loc_283C;\n        goto loc_25E0;\n    loc_25E0:\n    loc_25EC:\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n        if (x0 != 0) goto loc_2AA4;\n        goto loc_2608;\n    loc_2608:\n        return;\n    loc_2610:\n        if ((int64_t)(phi(12, 8, 0, 4)) | 3 > 10) goto loc_2C98;\n        goto loc_2638;\n    loc_2638:\n        if (((uint64_t)1 << ((phi(phi((phi(12, 8, 0, 4)) | 2, phi(12, 8, 0, 4), (phi(12, 8, 0, 4)) | 1), (phi(12, 8, 0, 4)) | 3)) & 63) & (uint64_t)0x530) != 0) goto loc_2674;\n        goto loc_264C;\n    loc_264C:\n        if (((uint64_t)1 << ((phi(phi((phi(12, 8, 0, 4)) | 2, phi(12, 8, 0, 4), (phi(12, 8, 0, 4)) | 1), (phi(12, 8, 0, 4)) | 3)) & 63) & (uint64_t)0x240) != 0) goto loc_26B4;\n        goto loc_2658;\n    loc_2658:\n        if (((uint64_t)1 << ((phi(phi((phi(12, 8, 0, 4)) | 2, phi(12, 8, 0, 4), (phi(12, 8, 0, 4)) | 1), (phi(12, 8, 0, 4)) | 3)) & 63) & (uint64_t)0x88) == 0) goto loc_26DC;\n        goto loc_2664;\n    loc_2664:\n        goto loc_267C;\n    loc_2674:\n    loc_267C:\n        if ((uint64_t)phi(phi(2, 3), phi(3, 2, 0, 1), phi(phi(2, 0, 1), 3)) == 2) goto loc_26CC;\n        goto loc_2688;\n    loc_2688:\n    loc_2698:\n        if ((uint64_t)phi(phi(phi(2, 3), phi(3, 2, 0, 1), phi(phi(2, 0, 1), 3)), phi(1, 0)) != 3) goto loc_25D8;\n        goto loc_26A0;\n    loc_26A0:\n        goto loc_25EC;\n    loc_26B4:\n        goto loc_25EC;\n    loc_26CC:\n        goto loc_25EC;\n    loc_26DC:\n        local_pFFFFFFFFFFFFFFD0 = local_x21;\n        local_pFFFFFFFFFFFFFFC0 = local_x19;\n        local_pFFFFFFFFFFFFFFC0 = local_x19;\n        if (bit_extract(((condition_ne ? (((uint64_t)((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF) > (uint64_t)((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) + (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF))) + ((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) >> 32) ? (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32)) + 0x100000000 : ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32))) + 1 : ((uint64_t)((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF) > (uint64_t)((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) + (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF))) + ((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) >> 32) ? (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32)) + 0x100000000 : ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32)))) + ((condition_ne ? ((((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) + (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF))) + ((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) >> 32)) >> 32) + 1 : (((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) >> 32) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) + (((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) >> 32) * ((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF))) + ((((phi(bit_extract(var_30, 0, 48), 0, v1748 | 0x8000000000000, phi(var_30 << (((v1071 + 49) - 61) & 63), (var_30 >> ((61 - (phi(v1071 + 49, v1244 - 15))) & 63)) | ((bit_extract(var_30, 0, 48)) << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63))))) & 0xFFFFFFFF) * ((phi(phi(phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000), bit_extract(var_40, 0, 48)), phi(0, phi((var_40 >> ((61 - (phi(v620 + 49, v862 - 15))) & 63)) | ((bit_extract(var_40, 0, 48)) << (((phi(v620 + 49, v862 - 15)) + 3) & 63)), var_40 << (((v620 + 49) - 61) & 63)), v2295 | 0x8000000000000))) & 0xFFFFFFFF)) >> 32)) >> 32)), 39, 1) == 0) goto loc_29C4;\n        goto loc_2824;\n    loc_2824:\n    loc_283C:\n        if ((int64_t)(phi(phi(phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1, (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1), (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000), phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1, (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1)), phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1, (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1), phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000, phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1), (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000), phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1, (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1), (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x8000)), phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 1, (((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011) + 1, ((((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))) + 1))), phi(phi(phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x7FFF, ((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011, (((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)), phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)), (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x7FFF), phi((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) + 0x7FFF, ((phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)) - (phi(phi(v620 + 64, v862), v620 + 64))) + 0xFFFFFFFFFFFFC011, (((bit_extract(var_40, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001) + (phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0)), phi(0x7FFF, ((bit_extract(var_30, 48, 15)) & 0xFFFF) + 0xFFFFFFFFFFFFC001, 0xFFFFFFFFFFFFC011 - (phi(v1071 + 64, phi(v1071 + 64, v1244))), 0))))) + 0x3FFF <= 0) goto loc_29D4;\n        goto loc_284C;\n    loc_284C:\n        if (((uint64_t)phi((((((((uint64_t)(((((phi(phi(phi(0, phi(var_40 << (((phi(v620 + 49, v862 - 15)) + 3) & 63), 0), var_40 << 3), var_40), phi(0, phi(var_40 << (((phi(v620 + 49, v862 - 15)) + 3) & 63), 0), var_40 << 3))) & 0xFFFFFFFF) * ((phi(var_30, var_30 | (bit_extract(var_30, 0, 48)), var_30 << 3, phi(0, var_30 << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63)))) & v1799)) & v2407) + v1017) | v1156 != (uint64_t)v1582 ? 1 : 0)) | v2051) | v1547) & v537) | v1049) | v651, x7, ((((uint64_t)(((((phi(phi(phi(0, phi(var_40 << (((phi(v620 + 49, v862 - 15)) + 3) & 63), 0), var_40 << 3), var_40), phi(0, phi(var_40 << (((phi(v620 + 49, v862 - 15)) + 3) & 63), 0), var_40 << 3))) & 0xFFFFFFFF) * ((phi(var_30, var_30 | (bit_extract(var_30, 0, 48)), var_30 << 3, phi(0, var_30 << (((phi(v1071 + 49, v1244 - 15)) + 3) & 63)))) & v1799)) & v2407) + v1017) | v1156 != (uint64_t)v1582 ? 1 : 0)) | v2051) | v1547) & (uint64_t)v289) == 0) goto loc_2870;\n        goto loc_2854;\n    loc_2854:\n        if ((uint64_t)x3 == (uint64_t)v343) goto loc_2BEC;\n        goto loc_2864;\n    loc_2864:\n        if ((uint64_t)x3 == (uint64_t)v2541) goto loc_2BB8;\n        goto loc_286C;\n    loc_286C:\n        if (x3 == 0) goto loc_2BA0;\n        goto loc_2870;\n    loc_2870:\n        if (v2562 == 0) goto loc_287C;\n        goto loc_2874;\n    loc_2874:\n    loc_287C:\n        if ((int64_t)x1 > (int64_t)x3) goto loc_2A58;\n        goto loc_2888;\n    loc_2888:\n        goto loc_25EC;\n    loc_2898:\n        if (x2 == 0) goto loc_2994;\n        goto loc_28A0;\n    loc_28A0:\n        if (x12 == 0) goto loc_2ADC;\n        goto loc_28A4;\n    loc_28A4:\n    loc_28AC:\n    loc_28C8:\n        if ((int64_t)x1 > (int64_t)v2652) goto loc_2570;\n        goto loc_28F0;\n    loc_28F0:\n        goto loc_25BC;\n    loc_28F4:\n        if (var_30 | (bit_extract(var_30, 0, 48)) == 0) goto loc_297C;\n        goto loc_28FC;\n    loc_28FC:\n        if (bit_extract(var_30, 0, 48) == 0) goto loc_2AB8;\n        goto loc_2900;\n    loc_2900:\n    loc_2908:\n    loc_2924:\n        goto loc_2514;\n    loc_293C:\n        if (var_30 | (bit_extract(var_30, 0, 48)) != 0) goto loc_295C;\n        goto loc_2944;\n    loc_2944:\n        goto loc_2514;\n    loc_295C:\n        goto loc_2514;\n    loc_297C:\n        goto loc_2514;\n    loc_2994:\n        if ((int64_t)x1 > (int64_t)v2109) goto loc_2570;\n        goto loc_29C0;\n    loc_29C0:\n        goto loc_25BC;\n    loc_29C4:\n        goto loc_283C;\n    loc_29D4:\n        if ((int64_t)x1 > (int64_t)v2544) goto loc_2B04;\n        goto loc_29E4;\n    loc_29E4:\n        if ((int64_t)x1 <= (int64_t)v1378) goto loc_2B38;\n        goto loc_29EC;\n    loc_29EC:\n        if (((uint64_t)x8 & (uint64_t)v1940) == 0) goto loc_2B6C;\n        goto loc_2A20;\n    loc_2A20:\n    loc_2A24:\n        if ((uint64_t)x6 == (uint64_t)v2307) goto loc_2BC8;\n        goto loc_2A34;\n    loc_2A34:\n        if ((uint64_t)x6 == (uint64_t)v858) goto loc_2C84;\n        goto loc_2A3C;\n    loc_2A3C:\n        if (x6 == 0) goto loc_2C68;\n        goto loc_2A40;\n    loc_2A40:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2BD8;\n        goto loc_2A44;\n    loc_2A44:\n        goto loc_2A8C;\n    loc_2A58:\n        if ((uint64_t)x8 == (uint64_t)v955) goto loc_2BF4;\n        goto loc_2A64;\n    loc_2A64:\n        if ((uint64_t)x8 == (uint64_t)v780) goto loc_2B84;\n        goto loc_2A6C;\n    loc_2A6C:\n        if (x8 == 0) goto loc_2A84;\n        goto loc_2A78;\n    loc_2A78:\n    loc_2A84:\n    loc_2A8C:\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n        __asm(\"fmov v0.d[1], x3\");\n    loc_2AA4:\n        memory_unknown = local_phi_3384;\n        sfp_handle_exceptions(/* arguments unknown */);\n        return;\n    loc_2AB8:\n        if ((int64_t)v1071 + 49 <= 60) goto loc_2908;\n        goto loc_2ACC;\n    loc_2ACC:\n        goto loc_2924;\n    loc_2ADC:\n        if ((int64_t)x2 <= (int64_t)v2036) goto loc_28AC;\n        goto loc_2AF0;\n    loc_2AF0:\n        goto loc_28C8;\n    loc_2B04:\n        if (x8 == 0) goto loc_2B28;\n        goto loc_2B0C;\n    loc_2B0C:\n        if ((uint64_t)x6 == (uint64_t)v852) goto loc_2B28;\n        goto loc_2B20;\n    loc_2B20:\n    loc_2B28:\n        goto loc_2A8C;\n    loc_2B38:\n        if (((uint64_t)x8 & (uint64_t)v2359) != 0) goto loc_2A24;\n        goto loc_2B68;\n    loc_2B68:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2C90;\n        goto loc_2B6C;\n    loc_2B6C:\n        if (v2626 == 0) goto loc_25EC;\n        goto loc_2B7C;\n    loc_2B7C:\n        goto loc_2A8C;\n    loc_2B84:\n        goto loc_2A84;\n    loc_2BA0:\n        if ((uint64_t)x3 == (uint64_t)v1376) goto loc_2870;\n        goto loc_2BAC;\n    loc_2BAC:\n        goto loc_2870;\n    loc_2BB8:\n        if (x2 == 0) goto loc_2870;\n        goto loc_2BBC;\n    loc_2BBC:\n        goto loc_2870;\n    loc_2BC8:\n        if (x2 != 0) goto loc_2BD4;\n        goto loc_2BCC;\n    loc_2BCC:\n    loc_2BD4:\n        if (v1696 == 0) goto loc_2A44;\n        goto loc_2BD8;\n    loc_2BD8:\n        goto loc_2A8C;\n    loc_2BEC:\n        if (x2 != 0) goto loc_2870;\n        goto loc_2BF0;\n    loc_2BF0:\n        goto loc_2BBC;\n    loc_2BF4:\n        goto loc_2A84;\n    loc_2C10:\n    loc_2C14:\n        if ((uint64_t)x1 != (uint64_t)v2112) goto loc_2C3C;\n        goto loc_2C1C;\n    loc_2C1C:\n        if (v1279 == 0) goto loc_2C54;\n        goto loc_2C20;\n    loc_2C20:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2C54;\n        goto loc_2C24;\n    loc_2C24:\n        goto loc_25EC;\n    loc_2C3C:\n        if ((uint64_t)x1 != (uint64_t)v1600) goto loc_2578;\n        goto loc_2C44;\n    loc_2C44:\n        goto loc_267C;\n    loc_2C54:\n        goto loc_25EC;\n    loc_2C68:\n        if ((uint64_t)x1 == (uint64_t)v1998) goto loc_2BD4;\n        goto loc_2C74;\n    loc_2C74:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2BD8;\n        goto loc_2C80;\n    loc_2C80:\n        goto loc_2A44;\n    loc_2C84:\n        if (x2 != 0) goto loc_2BCC;\n        goto loc_2C88;\n    loc_2C88:\n        if (__arm64_condition_unknown(/* NZCV */)) goto loc_2BD8;\n        goto loc_2C8C;\n    loc_2C8C:\n        goto loc_2A44;\n    loc_2C90:\n        goto loc_2BD8;\n    loc_2C98:\n        goto loc_2C14;\n    loc_2CA4:\n        goto loc_2698;\n}"
+    },
+    {
+      "address": "11440",
+      "name": "__sfp_handle_exceptions",
+      "end": "11552",
+      "state": "PARTIAL",
+      "completeness": "partial",
+      "pseudocode": "void sfp_handle_exceptions(void)\n{\n    if (!(bit_extract(a1, 0, 1) == 0)) {\n        __asm(\"fdiv s0, s1, s1\");\n    }\n    if (!(bit_extract(a1, 1, 1) == 0)) {\n        __asm(\"fdiv s0, s1, s2\");\n    }\n    if (!(bit_extract(a1, 2, 1) == 0)) {\n        __asm(\"fadd s0, s1, s2\");\n    }\n    if (!(bit_extract(a1, 3, 1) == 0)) {\n        __asm(\"fmul s0, s1, s1\");\n    }\n    if (!(bit_extract(a1, 4, 1) == 0)) {\n        __asm(\"fsub s0, s1, s2\");\n    }\n    return;\n}"
+    },
+    {
+      "address": "11552",
+      "name": "_fini",
+      "end": null,
+      "state": "UNSUPPORTED",
+      "completeness": "unsupported",
+      "pseudocode": null
+    }
+  ],
+  "functionStateCounts": {
+    "PARTIAL": 30,
+    "PASS": 34,
+    "UNSUPPORTED": 2
+  },
+  "subjectExitCode": 0,
+  "subjectSignal": null,
+  "stderr": ""
+}
