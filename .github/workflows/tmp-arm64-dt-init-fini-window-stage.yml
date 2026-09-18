@@ -46,12 +46,38 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD^)" = "1122837fd0644ff2c0996b3dbfc9fa021303d2c8"
-      - name: Verify exact tree
+      - name: Verify exact changed files and content
         working-directory: work
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^{tree})" = "f6f65ef10e63512207b1ed112fc49ddece2bc9c8"
+          cat > /tmp/expected-files <<'EOF'
+          js/analysis/discovery/producers.js
+          js/analysis/query/app-adapter.js
+          js/app.js
+          js/binary/elf-core-original.js
+          js/binary/elf-dynamic-original.js
+          js/binary/elf-mapping.js
+          js/binary/model.js
+          js/platform/analysis-result.js
+          js/symbols.js
+          tests/issue-2409-function-extent-boundary.mjs
+          tests/issue-9203-elf-loader-entry-analysis-window.mjs
+          EOF
+          git diff --name-only HEAD^ HEAD > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          git diff --check HEAD^ HEAD
+          echo "99624525da74e4443cf53b7f5b14873b411f51157543aeda2c485ab889622880  js/analysis/discovery/producers.js" | sha256sum -c -
+          echo "5447713bfb2882a7c0bbe61987442940d9d5eeec0786f696ab4aa662712ea315  js/analysis/query/app-adapter.js" | sha256sum -c -
+          echo "4497a36c09ba304703dbfdf6a24e36263846a9eeca053e670ca27e2a1075dd18  js/app.js" | sha256sum -c -
+          echo "54fafaec211ed506675a31dc9a80d75a3772711270ee69914e654c4b989ec063  js/binary/elf-core-original.js" | sha256sum -c -
+          echo "af8c1f2f25f033a58844c44149b5b72f4ab6ba58164a62174a21388e0ed55238  js/binary/elf-dynamic-original.js" | sha256sum -c -
+          echo "e94ec6c289826fd2a430642282898cd02b5c12a0d5e47df13348ddbb4178bedf  js/binary/elf-mapping.js" | sha256sum -c -
+          echo "069ce5bf29d65b7f8917cb928107f27abbd0f3af6a8ac4225f24a32a38d88495  js/binary/model.js" | sha256sum -c -
+          echo "11eaf5a4856ae94017d3c1b49674e8ec7ea7e5786b55913e5e365cf919fdd53b  js/platform/analysis-result.js" | sha256sum -c -
+          echo "5443b7dcd51e45747506ef2ddf77b1cef00680e34a78fa6e49b21d692f71f8f3  js/symbols.js" | sha256sum -c -
+          echo "018835839a6f489404439b06718833eeb4ce69ff375dacb826b7d5dba9be8b73  tests/issue-2409-function-extent-boundary.mjs" | sha256sum -c -
+          echo "74bd986ede97eab43ff58c639cebe30d1bf1df8e55182f8702754bbd7ac80b20  tests/issue-9203-elf-loader-entry-analysis-window.mjs" | sha256sum -c -
       - name: Run focused regression
         working-directory: work
         shell: bash
