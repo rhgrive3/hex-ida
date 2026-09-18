@@ -175,6 +175,43 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
   return cursor >= end;
 }
 
+/**
+ * Return the bounded analysis window authorized by an ELF loader-entry contract.
+ *
+ * DT_INIT/DT_FINI prove that the loader invokes `address`; they do not prove the
+ * precise function extent.  When that entry is exactly the start of one
+ * canonical, allocated executable section whose complete bytes are file-backed,
+ * the section end is safe as a decode/analysis ceiling.  This is deliberately
+ * not an extent API: callers must keep the function end unknown.
+ */
+export function elfLoaderEntrySectionAnalysisWindow(image, address) {
+  if (image?.metadata?.type === 1) return null; // ET_REL has no runtime loader contract.
+  let start;
+  try { start = strictELFInteger(address, 'address'); } catch { return null; }
+  const candidates = (image?.sections || []).filter((section) => {
+    if (!section || section.source !== 'section-header') return false;
+    if (section.address !== start) return false;
+    if (section.perms?.execute !== true || section.perms?.read !== true) return false;
+    if (!sectionHasMappedAddress(section)) return false;
+    let size, fileSize;
+    try { size = BigInt(section.size); fileSize = BigInt(section.fileSize); } catch { return false; }
+    if (size <= 0n || fileSize < size) return false;
+    return mappedELFFileSpanForVa(image, start, size) != null;
+  });
+  // Ambiguous section ownership is not sufficient authority for a loader window.
+  if (candidates.length !== 1) return null;
+  const section = candidates[0];
+  const size = BigInt(section.size);
+  const end = start + size;
+  if (end <= start) return null;
+  return Object.freeze({
+    kind:'elf-loader-entry-section',
+    start, end,
+    sectionIndex:Number.isInteger(section.index) ? section.index : null,
+    provenance:'ELF loader entry at canonical executable file-backed section start',
+  });
+}
+
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
 export function mappedELFFileSpanForVa(image, va, size) {
   const n = strictELFInteger(size, 'size');

@@ -299,11 +299,34 @@ export function analysisFromBinaryImage(image) {
     const rawAddress = rawSeed.address;
     const rawEnd = rawSeed.end;
     const rawSize = rawSeed.size;
+    const rawLoaderEntryContracts = rawSeed.loaderEntryContracts;
+    const rawAnalysisWindow = rawSeed.analysisWindow;
 
     const source = rawSource != null ? String(rawSource) : '';
     const sources = Array.isArray(rawSources) ? rawSources.map(String) : undefined;
     const exactFunctionStart = rawExactFunctionStart === true;
     const extentInferred = rawExtentInferred === true;
+    const seedSources = new Set([source, ...(sources || [])]);
+    const loaderEntryContracts = [...new Set((Array.isArray(rawLoaderEntryContracts) ? rawLoaderEntryContracts : [])
+      .filter((value) => value === 'DT_INIT' || value === 'DT_FINI'))]
+      .filter((value) => value === 'DT_INIT' ? seedSources.has('dt-init') : seedSources.has('dt-fini'))
+      .sort();
+    let analysisWindow = null;
+    if (loaderEntryContracts.length && rawAnalysisWindow?.kind === 'elf-loader-entry-section') {
+      try {
+        const windowStart = u64Address(rawAnalysisWindow.start);
+        const windowEnd = u64Address(rawAnalysisWindow.end);
+        const seedAddress = u64Address(rawAddress);
+        const sectionIndex = rawAnalysisWindow.sectionIndex == null ? null : Number(rawAnalysisWindow.sectionIndex);
+        if (windowStart === seedAddress && windowEnd > windowStart
+          && (sectionIndex == null || (Number.isSafeInteger(sectionIndex) && sectionIndex >= 0))) {
+          analysisWindow = {
+            kind:'elf-loader-entry-section', start:windowStart, end:windowEnd, sectionIndex,
+            provenance:typeof rawAnalysisWindow.provenance === 'string' ? rawAnalysisWindow.provenance : null,
+          };
+        }
+      } catch { analysisWindow = null; }
+    }
 
     const confidenceNorm = functionSeedConfidence(rawConfidence);
     const exactConfidenceNorm = rawExactStartConfidence != null ? functionSeedConfidence(rawExactStartConfidence) : null;
@@ -329,6 +352,8 @@ export function analysisFromBinaryImage(image) {
       extentConfidence,
       end: rawEnd,
       size: rawSize,
+      loaderEntryContracts,
+      analysisWindow,
     });
   }
 
@@ -380,7 +405,10 @@ export function analysisFromBinaryImage(image) {
   const functionProvenance = functions.map((addr) => {
     const seed = seedByAddress.get(addr.toString());
     if (!seed) return { source: 'heuristic', confidence: 0.5, confirmed: false };
-    return { source: seed.source, confidence: seed.effectiveConfidence, confirmed: seed.isExact };
+    const provenance = { source: seed.source, confidence: seed.effectiveConfidence, confirmed: seed.isExact };
+    if (seed.loaderEntryContracts?.length) provenance.loaderEntryContracts = [...seed.loaderEntryContracts];
+    if (seed.analysisWindow) provenance.analysisWindow = { ...seed.analysisWindow };
+    return provenance;
   });
   const nameProvenance = sorted.map((entry) => entry.provenance);
   // This describes every raw provider seed. A heuristic duplicate must keep

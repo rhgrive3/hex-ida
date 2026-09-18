@@ -351,12 +351,43 @@ export class SymbolIndex {
     return next;
   }
 
+  /**
+   * DT_INIT/DT_FINI の loader contract が許可した section-backed analysis window。
+   * exact function extent ではないため、exact start 以外の containment には使わない。
+   */
+  functionAnalysisWindow(addr) {
+    const i = this._floor(this.funcs, addr);
+    if (i < 0 || this.funcs[i] !== addr) return null;
+    if (this._functionEnd(i) != null) return null;
+    const provenance = this.functionProvenance.get(addr.toString());
+    const contracts = Array.isArray(provenance?.loaderEntryContracts)
+      ? provenance.loaderEntryContracts.filter((value) => value === 'DT_INIT' || value === 'DT_FINI')
+      : [];
+    const window = provenance?.analysisWindow;
+    if (!contracts.length || window?.kind !== 'elf-loader-entry-section') return null;
+    let start, end;
+    try { start = BigInt(window.start); end = BigInt(window.end); } catch { return null; }
+    if (start !== addr || end <= start) return null;
+    const sectionIndex = window.sectionIndex == null ? null : Number(window.sectionIndex);
+    if (sectionIndex != null && (!Number.isSafeInteger(sectionIndex) || sectionIndex < 0)) return null;
+    if (this.functionRegions.length) {
+      const region = this._functionRegion(start);
+      if (!region || end > region.end) return null;
+    }
+    return {
+      kind:'elf-loader-entry-section', start, end, sectionIndex,
+      contracts:[...new Set(contracts)].sort(),
+      provenance:typeof window.provenance === 'string' ? window.provenance : null,
+    };
+  }
+
   /** addr を含む関数の解析窓の右端（先頭でなくても、floor した関数の窓）。締める境界が無ければ null。 */
   functionWindowBound(addr) {
     const i = this._floor(this.funcs, addr);
     if (i < 0) return null;
     const start = this.funcs[i];
-    const bound = this._containmentBound(i);
+    const loaderWindow = addr === start ? this.functionAnalysisWindow(start) : null;
+    const bound = loaderWindow?.end ?? this._containmentBound(i);
     if (bound == null || addr >= bound) return null;
     if (this.functionRegions.length) {
       const startRegion = this._functionRegion(start);

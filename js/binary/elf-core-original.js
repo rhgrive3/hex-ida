@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed, sectionHasMappedAddress } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfLoaderEntrySectionAnalysisWindow, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 import { isRiscvMappingSymbolRecord, parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
@@ -39,6 +39,7 @@ const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
 const DT_INIT = 12n;
+const DT_FINI = 13n;
 const DT_NEEDED = 1n;
 const DT_SONAME = 14n;
 const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
@@ -1068,6 +1069,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
 
   let sawNull = false;
   let dtInitHandled = false;
+  let dtFiniHandled = false;
   for (let i = 0; i < count; i++) {
     if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
     const p = start + i * ent;
@@ -1082,21 +1084,28 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       break;
     }
 
-    if (tag === DT_INIT && val !== 0n && !dtInitHandled && Number(image.metadata.type) !== ET_REL) {
-      dtInitHandled = true;
+    const loaderTag = tag === DT_INIT ? { name:'DT_INIT', source:'dt-init', metadata:'dtInit', handled:dtInitHandled }
+      : tag === DT_FINI ? { name:'DT_FINI', source:'dt-fini', metadata:'dtFini', handled:dtFiniHandled }
+      : null;
+    if (loaderTag && val !== 0n && !loaderTag.handled && Number(image.metadata.type) !== ET_REL) {
+      if (tag === DT_INIT) dtInitHandled = true;
+      else dtFiniHandled = true;
       const rejection = elfInstructionTargetRejection(image, val);
       if (rejection == null) {
+        const analysisWindow = elfLoaderEntrySectionAnalysisWindow(image, val);
         image.functions.push(functionSeed(val, {
-          source: 'dt-init',
+          source: loaderTag.source,
           confidence: 0.9,
           exactFunctionStart: true,
-          functionStartEvidence: 'ELF SHT_DYNAMIC DT_INIT loader-invoked initializer in validated executable mapping with file-backed instruction bytes',
+          functionStartEvidence: `ELF SHT_DYNAMIC ${loaderTag.name} loader-invoked runtime entry in validated executable mapping with file-backed instruction bytes`,
+          loaderEntryContract: loaderTag.name,
+          analysisWindow,
         }));
-        image.metadata.dtInit = { address: val, source: 'SHT_DYNAMIC' };
+        image.metadata[loaderTag.metadata] = { address: val, source: 'SHT_DYNAMIC' };
       } else {
         budget.partial(
-          `dynamic-section:${sec.index}:dt-init`,
-          `ELF SHT_DYNAMIC ${sec.index} DT_INIT 0x${val.toString(16)} ${rejection}`,
+          `dynamic-section:${sec.index}:${loaderTag.source}`,
+          `ELF SHT_DYNAMIC ${sec.index} ${loaderTag.name} 0x${val.toString(16)} ${rejection}`,
         );
       }
     }
