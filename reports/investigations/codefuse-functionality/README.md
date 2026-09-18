@@ -67,6 +67,20 @@ repair attempts, raw/repaired recompilability, raw/repaired functionality, and
 timeout/crash counts. API keys are never written: only the env-var **name** is
 recorded (`apiKeyEnv`) plus a boolean `apiKeyPresent`.
 
+### Provenance and artifact hygiene
+
+- `identity.headSha` names the commit the probe ran against, and
+  `identity.worktreeDirty` records whether that tree was clean when the run
+  started. A recorded HEAD without dirtiness cannot prove that the harness that
+  produced an artifact is the harness that commit contains, so both are kept.
+- Committed evidence is host-neutral: compiler paths are reduced to paths
+  relative to the repository, and no absolute build-machine path is stored.
+- Only bounded reductions of compiler output are committed (error/warning counts,
+  the first error, and the discarded stderr size) — never the full log.
+
+`tests/codefuse-functionality/artifact-hygiene.test.mjs` enforces all three
+properties, so a regression cannot be committed silently.
+
 ## Probe result (5 cases)
 
 Selected deterministically from the frozen manifest by facet coverage

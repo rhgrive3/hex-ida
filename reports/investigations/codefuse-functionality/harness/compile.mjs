@@ -33,15 +33,28 @@ function parseErrorLocation(line) {
   };
 }
 
+// Compiler output quotes the source path exactly as it was passed on the command
+// line. Rewriting the repository root away keeps committed evidence portable and
+// stops a builder's filesystem layout from leaking into artifacts. Any absolute
+// path is reduced to the path relative to `rootDir`.
+export function stripHostRoot(line, rootDir) {
+  const text = String(line ?? '');
+  if (!rootDir) return text;
+  const root = String(rootDir).replace(/\/+$/, '');
+  if (!root) return text;
+  return text.split(`${root}/`).join('');
+}
+
 // Bounded, machine-readable reduction of compiler stderr.
-export function summarizeDiagnostics(stderr) {
+export function summarizeDiagnostics(stderr, { rootDir = null } = {}) {
   const text = String(stderr ?? '');
   const lines = text.split('\n');
   let errorCount = 0;
   let warningCount = 0;
   let firstError = null;
   let firstErrorRaw = null;
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = stripHostRoot(rawLine, rootDir);
     if (/:\s*(?:fatal error|error):/.test(line)) {
       errorCount += 1;
       if (!firstError) {
@@ -111,6 +124,7 @@ export async function compileSource({
   timeoutMs = DEFAULT_COMPILE_TIMEOUT_MS,
   spawnImpl = spawn,
   objectFile = null,
+  rootDir = cwd,
 } = {}) {
   if (!file) throw new TypeError('codefuse-compile-requires-file');
   const output = objectFile ?? `${file}.o`;
@@ -124,7 +138,7 @@ export async function compileSource({
       signal: tool.signal,
       reason: tool.reason,
       durationMs: tool.durationMs,
-      diagnostics: summarizeDiagnostics(tool.stderr),
+      diagnostics: summarizeDiagnostics(tool.stderr, { rootDir }),
     };
   }
   return {
@@ -135,7 +149,7 @@ export async function compileSource({
     signal: null,
     reason: null,
     durationMs: tool.durationMs,
-    diagnostics: summarizeDiagnostics(tool.stderr),
+    diagnostics: summarizeDiagnostics(tool.stderr, { rootDir }),
   };
 }
 
@@ -147,6 +161,7 @@ export async function linkBinary({
   cwd = process.cwd(),
   timeoutMs = DEFAULT_COMPILE_TIMEOUT_MS,
   spawnImpl = spawn,
+  rootDir = cwd,
 } = {}) {
   if (!file || !out) throw new TypeError('codefuse-link-requires-file-and-out');
   const tool = await runTool(cc, [...args, '-o', out, file], { cwd, timeoutMs, spawnImpl });
@@ -159,7 +174,7 @@ export async function linkBinary({
       signal: tool.signal,
       reason: tool.reason,
       durationMs: tool.durationMs,
-      diagnostics: summarizeDiagnostics(tool.stderr),
+      diagnostics: summarizeDiagnostics(tool.stderr, { rootDir }),
     };
   }
   return {
@@ -170,7 +185,7 @@ export async function linkBinary({
     signal: null,
     reason: null,
     durationMs: tool.durationMs,
-    diagnostics: summarizeDiagnostics(tool.stderr),
+    diagnostics: summarizeDiagnostics(tool.stderr, { rootDir }),
   };
 }
 

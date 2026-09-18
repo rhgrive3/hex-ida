@@ -42,6 +42,20 @@ function gitSha(args, cwd) {
   }
 }
 
+// A recorded HEAD is only meaningful provenance when the tree it names is the
+// tree that produced the artifact. Capture dirtiness before anything is written
+// so a probe that ran against uncommitted harness code cannot claim a clean
+// commit as its source.
+function gitWorktreeDirty(cwd) {
+  try {
+    const result = spawnSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'] });
+    if (result.error) return null;
+    return String(result.stdout || '').trim().length > 0;
+  } catch {
+    return null;
+  }
+}
+
 function writeJson(file, payload) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`);
@@ -54,14 +68,14 @@ function writeText(file, text) {
 
 // One raw recompilability measurement: compile then link, with bounded
 // diagnostics and no full-log retention.
-async function rawRecompilability({ sourceFile, cc, ccArgs, workDir, timeoutMs, spawnImpl }) {
+async function rawRecompilability({ sourceFile, cc, ccArgs, workDir, timeoutMs, spawnImpl, rootDir }) {
   const objectFile = path.join(workDir, `${path.basename(sourceFile)}.o`);
   const binaryFile = path.join(workDir, `${path.basename(sourceFile)}.bin`);
-  const compiled = await compileSource({ file: sourceFile, cc, args: ccArgs, objectFile, timeoutMs, spawnImpl });
+  const compiled = await compileSource({ file: sourceFile, cc, args: ccArgs, objectFile, timeoutMs, spawnImpl, rootDir });
   if (!compiled.compileSucceeded) {
     return { status: compiled.status, compileSucceeded: false, linkSucceeded: false, binaryProduced: false, diagnostics: compiled.diagnostics, durationMs: compiled.durationMs, reason: compiled.reason };
   }
-  const linked = await linkBinary({ file: objectFile, cc, args: ccArgs, out: binaryFile, timeoutMs, spawnImpl });
+  const linked = await linkBinary({ file: objectFile, cc, args: ccArgs, out: binaryFile, timeoutMs, spawnImpl, rootDir });
   return {
     status: linked.linkSucceeded ? 'ok' : linked.status,
     compileSucceeded: true,
@@ -91,6 +105,8 @@ export async function runProbe({
   writeArtifacts = true,
 } = {}) {
   const timeout = validateTimeout(compileTimeoutMs, DEFAULT_COMPILE_TIMEOUT_MS);
+  // Provenance is captured before a single artifact is written.
+  const worktreeDirtyAtStart = gitWorktreeDirty(repoRoot);
   const manifest = loadHexManifest(manifestPath);
   const artifactIndex = indexArtifactsByInputSha(artifactDirectory);
   const selection = selectProbeCases(manifest.cases, count);
@@ -171,9 +187,9 @@ export async function runProbe({
     // Raw lane: the CodeFuse-faithful measurement is the preprocessed source
     // with no LLM step. The untouched raw function text is measured separately
     // so the preprocessing effect is never hidden.
-    record.rawLane.preprocessed = await rawRecompilability({ sourceFile: preFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl });
+    record.rawLane.preprocessed = await rawRecompilability({ sourceFile: preFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl, rootDir: repoRoot });
     record.rawLane.preprocessed.input = SOURCE_VARIANTS.codefusePreprocessed;
-    record.rawLane.rawFunctionText = await rawRecompilability({ sourceFile: rawFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl });
+    record.rawLane.rawFunctionText = await rawRecompilability({ sourceFile: rawFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl, rootDir: repoRoot });
     record.rawLane.rawFunctionText.input = SOURCE_VARIANTS.rawFunctionText;
 
     // Recompilability is a full-success rate (compile AND link).
@@ -184,7 +200,7 @@ export async function runProbe({
       const check = async (source) => {
         const stageFile = path.join(caseWorkDir, `${slug}.repair.c`);
         fs.writeFileSync(stageFile, source);
-        const result = await rawRecompilability({ sourceFile: stageFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl });
+        const result = await rawRecompilability({ sourceFile: stageFile, cc, ccArgs, workDir: caseWorkDir, timeoutMs: timeout, spawnImpl, rootDir: repoRoot });
         if (result.status === 'ok') return { status: 'success', phase: 'linker', diagnostics: result.diagnostics };
         return {
           status: result.status === 'compile_failed' ? 'compile_failed' : result.status,
@@ -250,6 +266,7 @@ export async function runProbe({
     identity: {
       headSha: gitSha(['rev-parse', 'HEAD'], repoRoot),
       originMainSha: gitSha(['rev-parse', 'origin/main'], repoRoot),
+      worktreeDirty: worktreeDirtyAtStart,
       benchmarkManifest: path.relative(repoRoot, manifestPath),
       benchmarkManifestSha256: sha256(fs.readFileSync(manifestPath, 'utf8')),
       benchmarkCaseTotal: manifest.cases.length,
