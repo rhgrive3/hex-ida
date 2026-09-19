@@ -218,3 +218,70 @@ test('#9229 G emitter repair uses an exact Phase 8 cross-lane route', () => {
   const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
   assert.ok(fallback.includes(branch));
 });
+
+
+test('#9263 performance indexing branch uses an exact Phase 8 cross-lane route', () => {
+  const branch = "perf/index-repeated-semantic-lookups";
+  const owned = [
+  "js/decompiler/ast/nodes.js",
+  "js/decompiler/phase8/aggregates.js",
+  "js/decompiler/phase8/conditional-region-reachability.js",
+  "js/decompiler/phase8/projection.js",
+  "js/decompiler/phase8/providers.js",
+  "js/decompiler/phase8/render-provenance.js",
+  "js/decompiler/phase8/sccp.js",
+  "js/decompiler/phase8/structuring.js",
+  "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
+  "tests/phase8/ownership/cross-lane-routing.test.mjs",
+  "tests/phase8/scalar/sccp.test.mjs",
+  "tools/validation/phase8/cross-lane-inventory.mjs"
+];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  assert.deepEqual(foreign, [
+  ".circleci/config.yml",
+  "js/analysis/summary/interprocedural.js",
+  "js/semantics/cfg/index.js",
+  "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
+  "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
+  "js/semantics/compat/semantic-ir-v2-to-v1.js",
+  "js/semantics/ir/from-machine-effects.js",
+  "js/semantics/memoryssa/build.js",
+  "js/semantics/memoryssa/operand-forwarding.js",
+  "js/semantics/memoryssa/queries.js",
+  "js/semantics/ssa/build.js",
+  "js/semantics/ssa/contract.js",
+  "js/semantics/ssa/queries.js",
+  "js/semantics/ssa/validate.js",
+  "tests/performance/aggregate-origin-indexing.test.mjs",
+  "tests/performance/ast-source-dedup-indexing.test.mjs",
+  "tests/performance/cfg-query-indexing.test.mjs",
+  "tests/performance/compat-memory-definition-indexing.test.mjs",
+  "tests/performance/compat-memory-region-indexing.test.mjs",
+  "tests/performance/compat-projection-node-indexing.test.mjs",
+  "tests/performance/conditional-region-reachability-indexing.test.mjs",
+  "tests/performance/interprocedural-return-provenance-indexing.test.mjs",
+  "tests/performance/machine-effect-lowering-value-indexing.test.mjs",
+  "tests/performance/memoryssa-operand-forwarding-indexing.test.mjs",
+  "tests/performance/memoryssa-query-indexing.test.mjs",
+  "tests/performance/memoryssa-stack-escape-indexing.test.mjs",
+  "tests/performance/phase8-cse-instruction-position-indexing.test.mjs",
+  "tests/performance/provider-region-indexing.test.mjs",
+  "tests/performance/render-provenance-record-index.test.mjs",
+  "tests/performance/sccp-switch-case-indexing.test.mjs",
+  "tests/performance/ssa-contract-validation-indexing.test.mjs",
+  "tests/performance/ssa-query-indexing.test.mjs",
+  "tests/performance/structuring-edge-indexing.test.mjs",
+  "tests/phase7/ownership/cross-lane-routing.test.mjs",
+  "tools/validation/phase7/cross-lane-inventory.mjs"
+], 'the #9263 Phase 8 route must enumerate every foreign path exactly');
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, [...owned, ...foreign]),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+    'the #9263 route must project only its Phase 8-owned subset',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...owned, ...foreign, 'js/ui/__undeclared_9263.js']),
+    /unexpected foreign paths/,
+  );
+  assert.ok(CONFIG.includes(`            elif [ "\${CIRCLE_BRANCH:-}" = '${branch}' ]; then`), 'CircleCI must route the #9263 Phase 8 subset');
+});
