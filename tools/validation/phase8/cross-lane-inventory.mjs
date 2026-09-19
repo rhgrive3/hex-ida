@@ -18,6 +18,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   "perf/index-repeated-semantic-lookups": Object.freeze([
     ".circleci/config.yml",
     "js/analysis/summary/interprocedural.js",
+    "js/schema.js",
     "js/semantics/cfg/index.js",
     "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
     "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js",
@@ -48,6 +49,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/performance/provider-region-indexing.test.mjs",
     "tests/performance/render-provenance-record-index.test.mjs",
     "tests/performance/sccp-switch-case-indexing.test.mjs",
+    "tests/performance/schema-fact-indexing.test.mjs",
     "tests/performance/ssa-contract-validation-indexing.test.mjs",
     "tests/performance/ssa-query-indexing.test.mjs",
     "tests/performance/structuring-edge-indexing.test.mjs",
