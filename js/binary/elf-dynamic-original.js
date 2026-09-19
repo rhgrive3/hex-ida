@@ -42,6 +42,7 @@ const EM_AARCH64 = 183;
 const R_AARCH64_JUMP_SLOT = 1026;
 const AAELF64_PLT_RESOLVER_BYTES = 32n;
 const AAELF64_PLT_THUNK_BYTES = 16n;
+const AARCH64_NOP = 0xd503201f;
 const AAELF64_PLT_RELA_BYTES = 24n;
 
 const AARCH64_STP_X16_X30_PRE = 0xa9bf7bf0;
@@ -458,6 +459,18 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
   return { dtPltgot, jumpSlots };
 }
 
+function exactAarch64PltResolverExtent(r, image, address) {
+  const span = mappedELFFileSpanForVa(image, address, AAELF64_PLT_RESOLVER_BYTES);
+  if (!span) return null;
+  // Classic AAELF64 PLT0 is exactly eight instructions: the five-instruction
+  // resolver sequence followed by three NOPs. Only this fully validated shape
+  // is strong enough to publish exact extent authority.
+  for (let offset = 20; offset < Number(AAELF64_PLT_RESOLVER_BYTES); offset += 4) {
+    if (r.u32(span.start + offset) !== AARCH64_NOP) return null;
+  }
+  return AAELF64_PLT_RESOLVER_BYTES;
+}
+
 function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
   const dynamic = dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComplete);
   if (!dynamic) return null;
@@ -499,7 +512,10 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
           break;
         }
       }
-      if (complete) matches.set(address.toString(), address);
+      if (complete) matches.set(address.toString(), {
+        address,
+        exactExtent: exactAarch64PltResolverExtent(r, image, address),
+      });
       if (matches.size > 1) return null;
     }
   }
@@ -507,18 +523,26 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
 }
 
 function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
-  const address = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
-  if (address == null) return;
-  image.functions.push(functionSeed(address, {
+  const match = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
+  if (match == null) return;
+  const exact = match.exactExtent === AAELF64_PLT_RESOLVER_BYTES;
+  image.functions.push(functionSeed(match.address, {
+    ...(exact ? {
+      size: AAELF64_PLT_RESOLVER_BYTES,
+      exactFunctionStart: true,
+      exactFunctionStartConfidence: 0.995,
+      extentSource: 'elf-plt-structure',
+      extentConfidence: 0.995,
+    } : { exactFunctionStart: false }),
     source: 'elf-plt-structure',
-    confidence: 0.65,
+    confidence: exact ? 0.995 : 0.65,
     kind: 'stub',
-    exactFunctionStart: false,
     functionStartEvidence: 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, and resolver/thunk instruction structure',
   }));
   image.metadata.aarch64PltResolver = {
-    address,
+    address: match.address,
     source: 'elf-plt-structure',
+    ...(exact ? { size:AAELF64_PLT_RESOLVER_BYTES, extent:'validated-classic-aaelf64-plt0' } : {}),
   };
 }
 
