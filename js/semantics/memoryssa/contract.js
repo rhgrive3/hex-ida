@@ -358,8 +358,22 @@ export function createMemorySsaContract(input, options = {}) {
   }
 
   const blocks = cfgMap(cfg);
+  // Canonical Semantic CFGs are immutable. Reuse per-block predecessor and
+  // dominator membership facts across MemorySSA PHIs; mutable/foreign CFGs keep
+  // the legacy live-array reads below.
+  const cacheCfgFacts = blocks && Object.isFrozen(cfg) && Object.isFrozen(cfg.blocks);
+  const phiPredecessorCache = new Map();
+  const predecessorInfo = (blockId, block) => {
+    let info = phiPredecessorCache.get(blockId);
+    if (info) return info;
+    const expected = block.predecessors.slice().sort();
+    info = { expected, members:new Set(expected) };
+    phiPredecessorCache.set(blockId, info);
+    return info;
+  };
   // Dominance is computed at most once per contract validation (#5411).
   const dominanceCache = new Map();
+  const dominatorSetCache = new Map();
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -383,12 +397,24 @@ export function createMemorySsaContract(input, options = {}) {
     if (definition.blockId == null) fail('memory-ssa-phi-block-required');
     const block = blocks.get(definition.blockId);
     if (!block) fail('memory-ssa-invalid-definition-block');
-    for (const pred of incomingPreds) {
-      work();
-      if (!block.predecessors.includes(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
-    }
-    if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
-      fail('memory-ssa-phi-predecessor-set-incomplete');
+    if (!cacheCfgFacts) {
+      for (const pred of incomingPreds) {
+        work();
+        if (!block.predecessors.includes(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
+      }
+      if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
+        fail('memory-ssa-phi-predecessor-set-incomplete');
+      }
+    } else {
+      const info = predecessorInfo(definition.blockId, block);
+      for (const pred of incomingPreds) {
+        work();
+        if (!info.members.has(pred)) fail('memory-ssa-phi-predecessor-not-in-cfg');
+      }
+      const incoming = incomingPreds.slice().sort();
+      if (incoming.length !== info.expected.length || incoming.some((pred, index) => pred !== info.expected[index])) {
+        fail('memory-ssa-phi-predecessor-set-incomplete');
+      }
     }
     // Each phi argument must be available on its own edge (#5411): the
     // argument's definition block must be the predecessor itself or dominate
@@ -399,8 +425,17 @@ export function createMemorySsaContract(input, options = {}) {
     for (const incoming of definition.incoming) {
       const prior = definitionById.get(incoming.definitionId);
       if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
-      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
-      if (!dominators?.includes(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
+      if (!cacheCfgFacts) {
+        const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
+        if (!dominators?.includes(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
+      } else {
+        let dominators = dominatorSetCache.get(incoming.predecessorBlockId);
+        if (!dominators) {
+          dominators = new Set(dominance?.dominators?.[incoming.predecessorBlockId] ?? []);
+          dominatorSetCache.set(incoming.predecessorBlockId, dominators);
+        }
+        if (!dominators.has(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
+      }
     }
   }
 

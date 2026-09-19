@@ -43,11 +43,48 @@ function analysisObject(memorySsa) {
   if (!memorySsa || typeof memorySsa !== 'object') fail('memory-ssa-query-analysis-required');
   return memorySsa;
 }
+// Canonical producer artifacts are immutable capabilities. Repeated point
+// queries should not rebuild identical lookup maps, but mutable/unbranded input
+// must retain live observation semantics.
+const canonicalQueryIndexes = new WeakMap();
+function canonicalQueryIndex(memorySsa) {
+  if (!isCanonicalMemorySsaProducerArtifact(memorySsa)) return null;
+  let index = canonicalQueryIndexes.get(memorySsa);
+  if (index) return index;
+  const definitionsByRegion = new Map();
+  for (const definition of memorySsa.definitions) {
+    const list = definitionsByRegion.get(definition.regionId);
+    if (list) list.push(definition);
+    else definitionsByRegion.set(definition.regionId, [definition]);
+  }
+  const blockVersions = new Map();
+  for (const state of memorySsa.blockStates ?? []) {
+    const entry = new Map();
+    const exit = new Map();
+    for (const item of state.entry ?? []) if (!entry.has(item.regionId)) entry.set(item.regionId, item.definitionId);
+    for (const item of state.exit ?? []) if (!exit.has(item.regionId)) exit.set(item.regionId, item.definitionId);
+    blockVersions.set(state.blockId, { entry, exit });
+  }
+  index = {
+    definitions: new Map(memorySsa.definitions.map((definition) => [definition.id, definition])),
+    uses: new Map(memorySsa.uses.map((use) => [use.id, use])),
+    defUseLinks: new Map((memorySsa.defUseLinks ?? []).map((link) => [link.definitionId, link.useIds])),
+    definitionsByRegion,
+    accessMetadata: new Map((memorySsa.accessMetadata ?? []).map((item) => [item.memorySsaEntityId, item])),
+    blockVersions,
+  };
+  canonicalQueryIndexes.set(memorySsa, index);
+  return index;
+}
 function definitionMap(memorySsa) {
-  return new Map(analysisObject(memorySsa).definitions.map((definition) => [definition.id, definition]));
+  const artifact = analysisObject(memorySsa);
+  return canonicalQueryIndex(artifact)?.definitions
+    ?? new Map(artifact.definitions.map((definition) => [definition.id, definition]));
 }
 function useMap(memorySsa) {
-  return new Map(analysisObject(memorySsa).uses.map((use) => [use.id, use]));
+  const artifact = analysisObject(memorySsa);
+  return canonicalQueryIndex(artifact)?.uses
+    ?? new Map(artifact.uses.map((use) => [use.id, use]));
 }
 function useFrom(memorySsa, useOrId) {
   let id;
@@ -1240,6 +1277,7 @@ function forwardingStatusFromArtifact(memorySsa, options) {
         useIndex: null,
         regionById: null,
         metadataIndex: null,
+        byteCoverageByUseId: null,
         validatedOk: false,
         validatedCfg: null,
         validatedBudget: null,
@@ -2177,18 +2215,31 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       if (pre.metadataIndex == null) {
         pre.metadataIndex = forwardingMetadataIndex(artifact, state);
       }
+      if (pre.byteCoverageByUseId == null && Array.isArray(artifact.byteCoverage)) {
+        const byUse = new Map();
+        for (const item of artifact.byteCoverage) {
+          const key = String(item.useId);
+          if (!byUse.has(key)) byUse.set(key, item);
+        }
+        pre.byteCoverageByUseId = byUse;
+      }
     }
     const regionById = pre != null && pre.regionById != null ? pre.regionById : new Map(regions.map((region) => [String(region.id), region]));
     const metadataById = pre != null && pre.metadataIndex != null
       ? pre.metadataIndex
       : forwardingMetadataIndex(artifact, state);
+    const coverageForUse = () => {
+      if (!Array.isArray(artifact.byteCoverage)) return null;
+      if (pre != null && artifact === memorySsa && pre.byteCoverageByUseId != null) {
+        return pre.byteCoverageByUseId.get(String(use.id)) ?? null;
+      }
+      return artifact.byteCoverage.find((item) => String(item.useId) === String(use.id)) ?? null;
+    };
     context = forwardingLoadContext(artifact, use, options, metadataById, regionById, sourceById);
     const stores = forwardingCollect(artifact, use, context, options, metadataById, regionById, sourceById, state);
     const operandStore = forwardingExactOperand(stores, context, state);
     if (operandStore) {
-      const coverage = Array.isArray(artifact.byteCoverage)
-        ? artifact.byteCoverage.find((item) => String(item.useId) === String(use.id))
-        : null;
+      const coverage = coverageForUse();
       const winner = {
         definition: operandStore.definition,
         range: operandStore.range,
@@ -2257,9 +2308,7 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
     forwardingScanTick(state);
     const winners = [...new Map([...byteMap.values()].map((lane) => [String(lane.definition.id), lane])).values()]
       .sort((left, right) => left.order - right.order || String(left.definition.id).localeCompare(String(right.definition.id)));
-    const coverage = Array.isArray(artifact.byteCoverage)
-      ? artifact.byteCoverage.find((item) => String(item.useId) === String(use.id))
-      : null;
+    const coverage = coverageForUse();
     const proofIdentity = forwardingIdentity(artifact, use, context.useMeta, winners, stores, coverage, context, options);
     return forwardingRegisterExactFact(forwardingResult(FORWARD_EXACT, null, {
       ...forwardingCapabilityDetails(artifact, use, context, options),
@@ -2311,7 +2360,8 @@ export function memoryUsesOfDefinition(memorySsa, definitionOrId) {
     ? validId(definitionOrId.id, 'memory-ssa-query-definition-id-required')
     : validId(definitionOrId, 'memory-ssa-query-definition-id-required');
   const byId = useMap(memorySsa);
-  const indexed = memorySsa.defUseLinks?.find((link) => link.definitionId === definitionId)?.useIds;
+  const indexed = canonicalQueryIndex(analysisObject(memorySsa))?.defUseLinks.get(definitionId)
+    ?? memorySsa.defUseLinks?.find((link) => link.definitionId === definitionId)?.useIds;
   const useIds = indexed ?? memorySsa.uses
     .filter((use) => use.reachingDefinitionId === definitionId)
     .map((use) => use.id)
@@ -2321,20 +2371,57 @@ export function memoryUsesOfDefinition(memorySsa, definitionOrId) {
 
 export function memoryDefinitionsForRegion(memorySsa, regionId) {
   const id = String(regionId);
-  return Object.freeze(memorySsa.definitions.filter((definition) => definition.regionId === id));
+  const indexed = canonicalQueryIndex(analysisObject(memorySsa))?.definitionsByRegion.get(id);
+  return Object.freeze(indexed ? [...indexed] : memorySsa.definitions.filter((definition) => definition.regionId === id));
 }
 
 export function memoryAccessMetadata(memorySsa, memorySsaEntityId) {
   const id = String(memorySsaEntityId);
-  return memorySsa.accessMetadata?.find((item) => item.memorySsaEntityId === id) ?? null;
+  return canonicalQueryIndex(analysisObject(memorySsa))?.accessMetadata.get(id)
+    ?? memorySsa.accessMetadata?.find((item) => item.memorySsaEntityId === id) ?? null;
 }
 
 export function memoryVersionAtBlock(memorySsa, blockId, regionId, position = 'exit') {
   if (!['entry', 'exit'].includes(position)) fail('memory-ssa-query-invalid-block-position');
-  const state = memorySsa.blockStates?.find((item) => item.blockId === String(blockId));
+  const artifact = analysisObject(memorySsa);
+  const blockKey = String(blockId);
+  const regionKey = String(regionId);
+  const queryIndex = canonicalQueryIndex(artifact);
+  if (queryIndex != null) return queryIndex.blockVersions.get(blockKey)?.[position].get(regionKey) ?? null;
+  const state = artifact.blockStates?.find((item) => item.blockId === blockKey);
   if (!state) return null;
-  const item = state[position].find((entry) => entry.regionId === String(regionId));
+  const item = state[position].find((entry) => entry.regionId === regionKey);
   return item?.definitionId ?? null;
+}
+
+function memoryPathHeapPush(heap, value) {
+  let index = heap.length;
+  heap.push(value);
+  while (index > 0) {
+    const parent = (index - 1) >> 1;
+    if (heap[parent] <= value) break;
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = value;
+}
+
+function memoryPathHeapPop(heap) {
+  const first = heap[0];
+  const last = heap.pop();
+  if (!heap.length) return first;
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) break;
+    const right = left + 1;
+    const child = right < heap.length && heap[right] < heap[left] ? right : left;
+    if (heap[child] >= last) break;
+    heap[index] = heap[child];
+    index = child;
+  }
+  heap[index] = last;
+  return first;
 }
 
 export function explainMemoryPath(memorySsa, useOrId, options = {}) {
@@ -2345,13 +2432,14 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
   const definitions = definitionMap(memorySsa);
   const use = useFrom(memorySsa, useOrId);
   const visited = new Set();
-  const work = [use.reachingDefinitionId];
+  const work = [];
+  memoryPathHeapPush(work, use.reachingDefinitionId);
   const nodes = [];
   const edges = [];
   while (work.length) {
     assertNotAborted(options);
     if (visited.size >= maximum) fail('memory-ssa-query-budget-exceeded-max-definitions');
-    const id = work.shift();
+    const id = memoryPathHeapPop(work);
     if (visited.has(id)) continue;
     visited.add(id);
     const definition = definitions.get(id);
@@ -2359,7 +2447,7 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
     nodes.push(definition);
     for (const previousId of definition.previousDefinitionIds) {
       edges.push({ from: definition.id, to: previousId, kind: 'previous' });
-      if (!visited.has(previousId)) work.push(previousId);
+      if (!visited.has(previousId)) memoryPathHeapPush(work, previousId);
     }
     for (const incoming of definition.incoming) {
       edges.push({
@@ -2368,9 +2456,8 @@ export function explainMemoryPath(memorySsa, useOrId, options = {}) {
         kind: 'phi-incoming',
         predecessorBlockId: incoming.predecessorBlockId,
       });
-      if (!visited.has(incoming.definitionId)) work.push(incoming.definitionId);
+      if (!visited.has(incoming.definitionId)) memoryPathHeapPush(work, incoming.definitionId);
     }
-    work.sort();
   }
   nodes.sort((a, b) => a.id.localeCompare(b.id));
   edges.sort((a, b) => a.from.localeCompare(b.from)

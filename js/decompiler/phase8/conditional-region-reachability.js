@@ -51,14 +51,16 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     for (const edge of structure.cfgEdges) {
       incoming.set(edge.to, incoming.get(edge.to) + 1);
       if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
-      outgoing.get(edge.from).push(edge.to);
+      outgoing.get(edge.from).push(edge);
     }
     const queue = [...incoming].filter(([, count]) => count === 0).map(([index]) => index);
     let visited = 0;
     for (let offset = 0; offset < queue.length; offset++) {
       visited++; guard.take('workItems');
-      for (const target of outgoing.get(queue[offset]) ?? []) {
-        guard.take('workItems'); incoming.set(target, incoming.get(target) - 1);
+      for (const edge of outgoing.get(queue[offset]) ?? []) {
+        guard.take('workItems');
+        const target = edge.to;
+        incoming.set(target, incoming.get(target) - 1);
         if (incoming.get(target) === 0) queue.push(target);
       }
     }
@@ -95,7 +97,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     if (addressMap.get(addressKey(targetAddress)) !== structure.region.selection.yes) return reject('executor-producer-target-mismatch');
     // The executor trace carries row/address, not a rendered predicate or C AST
     // index. Require their unique exact canonical CBR identity before matching.
-    const branchIndex = [], stateBindings = prepareCanonicalRegisterStateBindings(ir, guard.identity);
+    const branchIndex = new Map(), stateBindings = prepareCanonicalRegisterStateBindings(ir, guard.identity);
     if (stateBindings?.status === 'unavailable') return reject('unproved-state-effects');
     const faultBindings = prepareCanonicalReturnFaultBindings(ir, guard.identity), faultBundles = new Set(), faultSources = new Set();
     if (faultBindings?.status === 'unavailable') return reject('unproved-machine-effects');
@@ -158,7 +160,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       }
       if (current.op !== 'cbr') continue;
       const destination = addressMap.get(addressKey(extra.target));
-      const edges = structure.cfgEdges.filter(edge => edge.from === current.block);
+      const edges = outgoing.get(current.block) ?? [];
       guard.take('workItems', structure.cfgEdges.length);
       const yesEdge = edges.find(edge => edge.to === destination), noEdge = edges.find(edge => edge.to !== destination);
       if (edges.length !== 2 || !yesEdge || !noEdge || yesEdge.kinds.length !== 1 || yesEdge.kinds[0] !== 'conditional-true'
@@ -166,12 +168,13 @@ export async function prepareConditionalRegionReachability(structure, ir, option
           || extra.targetBlock != null && extra.targetBlock !== destination
           || extra.fallthroughBlock != null && extra.fallthroughBlock !== noEdge.to
           || extra.fallthrough != null && addressMap.get(addressKey(extra.fallthrough)) !== noEdge.to) return reject('inconsistent-branch-endpoints');
-      guard.take('workItems', branchIndex.length);
-      if (!Number.isSafeInteger(current.row) || current.row < 0 || addressKey(current.address) == null
-          || branchIndex.some(other => other.row === current.row && other.address === addressKey(current.address))) {
-        return reject('ambiguous-branch-trace-identity');
-      }
-      guard.take('allocationUnits'); branchIndex.push({ instruction:inst, row:current.row, address:addressKey(current.address) });
+      guard.take('workItems', branchIndex.size);
+      if (!Number.isSafeInteger(current.row) || current.row < 0) return reject('ambiguous-branch-trace-identity');
+      const branchAddress = addressKey(current.address);
+      if (branchAddress == null) return reject('ambiguous-branch-trace-identity');
+      const branchKey = `${current.row}\u0000${branchAddress}`;
+      if (branchIndex.has(branchKey)) return reject('ambiguous-branch-trace-identity');
+      guard.take('allocationUnits'); branchIndex.set(branchKey, { instruction:inst, row:current.row, address:branchAddress });
     }
     for (const bundle of faultBundles) {
       guard.take('workItems', bundle.members.length);
@@ -240,10 +243,11 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       const roles = new Set();
       let targetVisits = 0;
       for (const step of path.takenBranches) {
-        guard.take('workItems', branchIndex.length);
-        const matches = branchIndex.filter(item => item.row === step.row && item.address === addressKey(step.address));
-        if (matches.length !== 1 || typeof step.taken !== 'boolean') return reject('unbound-execution-branch');
-        if (matches[0].instruction === branch) {
+        guard.take('workItems', branchIndex.size);
+        const stepAddress = addressKey(step.address);
+        const match = stepAddress == null ? null : branchIndex.get(`${step.row}\u0000${stepAddress}`);
+        if (!match || typeof step.taken !== 'boolean') return reject('unbound-execution-branch');
+        if (match.instruction === branch) {
           if (++targetVisits > 1) return reject('repeated-target-traversal');
           roles.add(step.taken ? 'yes' : 'no');
         }

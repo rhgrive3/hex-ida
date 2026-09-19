@@ -53,6 +53,17 @@ class CanonicalSemanticSsaArtifact {
     Object.setPrototypeOf(this, Object.prototype);
   }
 
+  static has(value) {
+    try {
+      return value !== null
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && #producerBrand in value;
+    } catch {
+      return false;
+    }
+  }
+
   static matches(value, binding) {
     try {
       if (value === null || typeof value !== 'object' || Array.isArray(value) || !(#producerBrand in value)) {
@@ -71,6 +82,10 @@ class CanonicalSemanticSsaArtifact {
   static matchesRow(row, producer) {
     return CanonicalSemanticSsaRow.matchesProducer(row, producer);
   }
+}
+
+export function isCanonicalSemanticSsaProducerArtifact(artifact) {
+  return CanonicalSemanticSsaArtifact.has(artifact);
 }
 
 export function canonicalSemanticSsaProducerMatches(artifact, binding) {

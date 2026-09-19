@@ -17,6 +17,33 @@ import { isCanonicalMemorySsaProducerArtifact } from './build.js';
  */
 
 const semanticIndexCache = new WeakMap();
+const memorySsaIndexCache = new WeakMap();
+
+function appendIndex(map, key, value) {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+function memorySsaIndexFor(memorySsa) {
+  if (!isCanonicalMemorySsaProducerArtifact(memorySsa)) return null;
+  let index = memorySsaIndexCache.get(memorySsa);
+  if (index) return index;
+  const usesById = new Map(), definitionsById = new Map(), metadataByEntityId = new Map();
+  const coverageByUseId = Array.isArray(memorySsa.byteCoverage) ? new Map() : null;
+  const regionById = new Map();
+  for (const use of memorySsa.uses ?? []) appendIndex(usesById, String(use?.id ?? ''), use);
+  for (const definition of memorySsa.definitions ?? []) appendIndex(definitionsById, String(definition?.id ?? ''), definition);
+  for (const metadata of memorySsa.accessMetadata ?? []) appendIndex(metadataByEntityId, String(metadata?.memorySsaEntityId ?? ''), metadata);
+  if (coverageByUseId) for (const coverage of memorySsa.byteCoverage) appendIndex(coverageByUseId, String(coverage?.useId ?? ''), coverage);
+  for (const region of memorySsa.regions ?? []) {
+    const id = String(region?.id ?? '');
+    if (!regionById.has(id)) regionById.set(id, region);
+  }
+  index = { usesById, definitionsById, metadataByEntityId, coverageByUseId, regionById };
+  memorySsaIndexCache.set(memorySsa, index);
+  return index;
+}
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -148,15 +175,14 @@ function uniqueBy(items, keyOf) {
   return true;
 }
 
-function metadataFor(memorySsa, id) {
-  const rows = (memorySsa.accessMetadata ?? [])
-    .filter((item) => String(item?.memorySsaEntityId ?? '') === String(id));
+function metadataFor(index, id) {
+  const rows = index.metadataByEntityId.get(String(id)) ?? [];
   return rows.length === 1 ? rows[0] : null;
 }
 
-function coverageFor(memorySsa, use) {
-  if (!Array.isArray(memorySsa.byteCoverage)) return null;
-  const rows = memorySsa.byteCoverage.filter((item) => String(item?.useId ?? '') === String(use.id));
+function coverageFor(memorySsa, index, use) {
+  if (!index.coverageByUseId) return null;
+  const rows = index.coverageByUseId.get(String(use.id)) ?? [];
   if (rows.length !== 1) return null;
   const coverage = rows[0];
   if (!record(coverage)
@@ -232,26 +258,27 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)) return null;
   const semanticIndex = semanticIndexFor(memorySsa, ir);
-  if (!semanticIndex) return null;
+  const artifactIndex = memorySsaIndexFor(memorySsa);
+  if (!semanticIndex || !artifactIndex) return null;
 
   const useId = typeof useOrId === 'object' ? useOrId?.id : useOrId;
-  const uses = memorySsa.uses.filter((item) => String(item?.id ?? '') === String(useId ?? ''));
+  const uses = artifactIndex.usesById.get(String(useId ?? '')) ?? [];
   if (uses.length !== 1) return null;
   const use = uses[0];
   if (use.aliasRelation !== 'must' || use.sourceEntityId == null || use.regionId == null) return null;
 
-  const definitions = memorySsa.definitions.filter((item) => String(item?.id ?? '') === String(use.reachingDefinitionId ?? ''));
+  const definitions = artifactIndex.definitionsById.get(String(use.reachingDefinitionId ?? '')) ?? [];
   if (definitions.length !== 1) return null;
   const definition = definitions[0];
   if (definition.kind !== 'memory-def'
       || definition.aliasRelation !== 'must'
       || String(definition.regionId ?? '') !== String(use.regionId)) return null;
 
-  const region = (memorySsa.regions ?? []).find((item) => String(item?.id ?? '') === String(use.regionId)) ?? null;
+  const region = artifactIndex.regionById.get(String(use.regionId)) ?? null;
   if (!region || region.kind !== 'stack-fixed') return null;
 
-  const loadMetadata = metadataFor(memorySsa, use.id);
-  const storeMetadata = metadataFor(memorySsa, definition.id);
+  const loadMetadata = metadataFor(artifactIndex, use.id);
+  const storeMetadata = metadataFor(artifactIndex, definition.id);
   if (!loadMetadata || !storeMetadata
       || loadMetadata.entityKind !== 'use'
       || loadMetadata.sourceKind !== 'load'
@@ -274,7 +301,7 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   const loadRange = rangeKey(loadMetadata.byteRange);
   const storeRange = rangeKey(storeMetadata.byteRange);
   if (!loadRange || loadRange !== storeRange) return null;
-  const coverage = coverageFor(memorySsa, use);
+  const coverage = coverageFor(memorySsa, artifactIndex, use);
   if (!coverage || rangeKey(coverage.loadRange) !== loadRange) return null;
 
   const loadNode = semanticIndex.nodes.get(String(use.sourceEntityId));

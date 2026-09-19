@@ -132,3 +132,15 @@ test('C2 byte forwarding: canonical width/endian/coverage/clobber matrix reaches
  t.diagnostic(JSON.stringify({schema:'c2-byte-forwarding-matrix-v1',rows,
   scope:'canonical builder/query/compatibility/consumer; no cloned proof issuance, no replacement memory engine'}));
 });
+
+
+test('C2 repeated exact forwarding indexes byte coverage by use',()=>{
+ const {ir,cfg,artifact}=makeFixture(32,'little','full');
+ const use=artifact.uses.find(u=>u.sourceEntityId==='n_load');assert.ok(use);
+ const options={functionId:ir.functionId,ir,cfg,consumerId:CANONICAL_MEMORY_FORWARDING_CONSUMER,purpose:CANONICAL_MEMORY_FORWARDING_PURPOSE};
+ const originalFind=Array.prototype.find;let coverageFinds=0;
+ Array.prototype.find=function patchedFind(...args){if(this===artifact.byteCoverage)coverageFinds+=1;return Reflect.apply(originalFind,this,args);};
+ try{for(let i=0;i<40;i++)assert.equal(forwardMemoryValue(artifact,use.id,options).status,'exact');}
+ finally{Array.prototype.find=originalFind;}
+ assert.equal(coverageFinds,0,`exact forwarding rescanned byteCoverage ${coverageFinds} times`);
+});

@@ -546,6 +546,11 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
   if (body.length > 4096 || bindings.size > 32 || ordered.length > PROJECTION_LIMITS.nodes) return;
   const instructions = new Map(ordered.map(inst => [inst.id, inst]));
   if (instructions.size !== ordered.length) return;
+  // The rendered nodes below resolve their instruction through this canonical
+  // id map, so instruction identity has a stable O(1) position.  Repeated
+  // Array#indexOf here made the adjacency check quadratic for large straight-
+  // line blocks without adding any semantic authority.
+  const instructionPositions = new Map(ordered.map((inst, index) => [inst.id, index]));
   const groups = [];
   let remaining = PROJECTION_LIMITS.edges;
   for (const [index, node] of body.entries()) {
@@ -572,8 +577,8 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
     // No branch, label, scope change or unrelated statement is crossed. The
     // canonical instruction order must agree with the actual rendered order.
     if (last.index - first.index + 1 !== group.items.length
-      || group.items.some((item, i) => i && result.ir.instructions.indexOf(item.instruction)
-        <= result.ir.instructions.indexOf(group.items[i - 1].instruction))) continue;
+      || group.items.some((item, i) => i && instructionPositions.get(item.instruction.id)
+        <= instructionPositions.get(group.items[i - 1].instruction.id))) continue;
     let name;
     do {
       if (--remaining < 0 || shouldAbort?.()) return;

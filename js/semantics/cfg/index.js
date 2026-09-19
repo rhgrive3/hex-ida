@@ -121,7 +121,26 @@ function normalizeBlock(input) {
   };
 }
 
+const immutableCfgIndexes = new WeakMap();
 function cfgIndex(cfg) {
+  // Canonical CFGs are deeply frozen. Reuse their block index across point
+  // queries and dominance helpers, but preserve live reads for mutable
+  // caller-supplied graphs.
+  if (cfg && typeof cfg === 'object') {
+    const cached = immutableCfgIndexes.get(cfg);
+    if (cached) return cached;
+  }
+  if (cfg && typeof cfg === 'object' && Object.isFrozen(cfg)
+      && Array.isArray(cfg.blocks) && Object.isFrozen(cfg.blocks)) {
+    const index = new Map();
+    let cacheable = true;
+    for (const block of cfg.blocks) {
+      if (!block || typeof block !== 'object' || !Object.isFrozen(block)) cacheable = false;
+      index.set(block?.id, block);
+    }
+    if (cacheable) immutableCfgIndexes.set(cfg, index);
+    return index;
+  }
   return new Map(cfg.blocks.map((block) => [block.id, block]));
 }
 

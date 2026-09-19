@@ -57,6 +57,27 @@ export const PROVIDER_HINT_KINDS = Object.freeze([
 /** What became of a hint. `rejected` is published, never dropped. */
 export const HINT_STATUSES = Object.freeze(['accepted', 'rejected']);
 
+// Only views issued by providerView() are cacheable. Foreign/frozen lookalikes
+// keep live Array.find() semantics so accessors or caller mutation are never
+// hidden by this optimization.
+const CANONICAL_PROVIDER_VIEWS = new WeakSet();
+const PROVIDER_REGION_INDEXES = new WeakMap();
+function providerRegionIndex(view) {
+  if (!CANONICAL_PROVIDER_VIEWS.has(view)) return null;
+  let index = PROVIDER_REGION_INDEXES.get(view);
+  if (index) return index;
+  index = new Map();
+  for (const region of view.regions) if (!index.has(region.regionKey)) index.set(region.regionKey, region);
+  PROVIDER_REGION_INDEXES.set(view, index);
+  return index;
+}
+function providerRegion(view, regionKey) {
+  if (regionKey == null) return null;
+  const index = providerRegionIndex(view);
+  return index ? index.get(regionKey) ?? null
+    : view?.regions?.find((entry) => entry.regionKey === regionKey) ?? null;
+}
+
 function fail(code) { throw new TypeError(code); }
 
 function nonEmptyString(value, code) {
@@ -153,7 +174,7 @@ export function providerView(analysis) {
   }));
 
   const constructs = structured?.edgesByConstruct ?? {};
-  return Object.freeze({
+  const view = Object.freeze({
     interfaceVersion: PROVIDER_INTERFACE_VERSION,
     loops: Object.freeze(loops),
     regions: Object.freeze(regions),
@@ -170,6 +191,8 @@ export function providerView(analysis) {
       .filter((name) => name != null)
       .map((name) => String(name)))].sort()),
   });
+  CANONICAL_PROVIDER_VIEWS.add(view);
+  return view;
 }
 
 const CERTAINTY_ORDER = Object.freeze(['candidate', 'supported', 'confirmed']);
@@ -185,7 +208,7 @@ const HARD_CONFLICTS = new Set(['nominal-disagreement', 'width-disagreement', 'b
  * region's own evidence already reached.
  */
 export function judgeHint(hint, view) {
-  const region = hint.regionKey == null ? null : view.regions.find((entry) => entry.regionKey === hint.regionKey) ?? null;
+  const region = providerRegion(view, hint.regionKey);
   if (hint.regionKey != null && region == null) {
     return { status: 'rejected', certainty: 'candidate', reason: `no region ${hint.regionKey} in the published facts` };
   }
@@ -441,7 +464,7 @@ export function providerAuthorityFailures(facts, view) {
       failures.push({ providerId: hint.providerId, problem: 'no-evidence', detail: hint.name });
     }
     if (hint.status !== 'accepted') continue;
-    const region = hint.regionKey == null ? null : view?.regions?.find((entry) => entry.regionKey === hint.regionKey) ?? null;
+    const region = providerRegion(view, hint.regionKey);
     if (hint.regionKey != null && region == null) {
       failures.push({ providerId: hint.providerId, problem: 'accepted-for-missing-region', detail: hint.regionKey });
       continue;

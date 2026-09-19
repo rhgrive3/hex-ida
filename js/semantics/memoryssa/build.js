@@ -508,6 +508,8 @@ function stackDerivedValueIds(irFunction) {
   };
   return {
     derives,
+    valuesById,
+    nodesById,
     nodeHasStackDerivedArgument: (node) => [
       ...(node?.inputs ?? []),
       ...(node?.call?.targetValueIds ?? []),
@@ -521,7 +523,7 @@ function stackDerivedValueIds(irFunction) {
   };
 }
 
-function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) {
+function callMayExposeStackAddress(node, orderedNodes, stackValues, nodeIndex) {
   if (node?.kind !== 'call') return false;
   const explicitArguments = [
     ...(node.call?.arguments ?? []),
@@ -529,8 +531,6 @@ function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) 
     ...(node.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
   ];
   if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return true;
-  const valuesById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
-  const nodeIndex = new Map(orderedNodes.map((candidate, index) => [String(candidate.id), index]));
   const callIndex = nodeIndex.get(String(node.id));
   if (callIndex == null) return true;
   // A canonical call summary may omit ABI arguments.  Recover only the
@@ -554,22 +554,18 @@ function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) 
     if (seenRegisters.has(register)) continue;
     seenRegisters.add(register);
     const valueId = candidate.inputs?.[0];
-    const value = valuesById.get(String(valueId));
+    const value = stackValues.valuesById.get(String(valueId));
     if (stackValues.derives(valueId)
         || value == null
         || value.kind === 'unknown'
         || value.kind === 'undef'
-        || nodesByIdForStack(irFunction).get(String(value.definitionNodeId))?.completeness !== 'complete') return true;
+        || stackValues.nodesById.get(String(value.definitionNodeId))?.completeness !== 'complete') return true;
   }
   return false;
 }
 
-function nodesByIdForStack(irFunction) {
-  return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
-}
-
-function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
-  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues, nodeIndex) {
+  const callIndex = nodeIndex.get(String(node.id)) ?? -1;
   if (callIndex < 0) return true;
   const stores = (upstream) => {
     const list = [
@@ -636,13 +632,18 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
   }
 
   const stackValues = stackDerivedValueIds(irFunction);
+  let stackNodeIndex = null;
+  const stackIndex = () => {
+    if (stackNodeIndex == null) stackNodeIndex = new Map(nodes.map((candidate, index) => [String(candidate.id), index]));
+    return stackNodeIndex;
+  };
   for (const descriptor of descriptors) {
     if (descriptor.role === 'write' && descriptor.broad
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
-        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, stackValues, stackIndex())
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues, stackIndex())) {
       descriptor.noEscapeStack = true;
     }
   }

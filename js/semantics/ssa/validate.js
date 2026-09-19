@@ -4,7 +4,6 @@ import { createSemanticIrFunction } from '../ir/function.js';
 import {
   analyzeSemanticSsaDominance,
   createSemanticSsaContract,
-  semanticSsaPhiPredecessors,
   semanticSsaVirtualEntryPredecessor,
 } from './contract.js';
 
@@ -159,11 +158,9 @@ function validateControlProjection(ir, cfg) {
   }
 }
 
-function computeExpectedPhiBlocks(variableKey, definitions, dominance, tick) {
-  const reachable = new Set(dominance.reachable);
+function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
   const defBlocks = new Set(definitions
-    .filter((definition) => definition.variableKey === variableKey
-      && definition.kind !== 'phi'
+    .filter((definition) => definition.kind !== 'phi'
       && !['entry-seed', 'implicit-undef'].includes(definition.proof?.kind)
       && definition.blockId != null
       && reachable.has(definition.blockId))
@@ -209,6 +206,34 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: maxWorkItems(options) }, ...(options.dominanceOptions ?? {}) });
   const cfgById = new Map(cfg.blocks.map((block) => [block.id, block]));
   const irByBlock = new Map(ir.blocks.map((block) => [block.id, block]));
+  let cachedVirtualEntryPredecessor;
+  let hasCachedVirtualEntryPredecessor = false;
+  const virtualEntryPredecessor = () => {
+    if (!hasCachedVirtualEntryPredecessor) {
+      cachedVirtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
+      hasCachedVirtualEntryPredecessor = true;
+    }
+    return cachedVirtualEntryPredecessor;
+  };
+  const dominatorSetCache = new Map();
+  const hasDominator = (blockId, candidate) => {
+    let set = dominatorSetCache.get(blockId);
+    if (!set) {
+      set = new Set(dominance.dominators[blockId] ?? []);
+      dominatorSetCache.set(blockId, set);
+    }
+    return set.has(candidate);
+  };
+  const phiPredecessorCache = new Map();
+  const phiPredecessors = (blockId) => {
+    if (phiPredecessorCache.has(blockId)) return phiPredecessorCache.get(blockId);
+    const block = cfgById.get(blockId);
+    const predecessors = block ? block.predecessors.slice() : [];
+    if (blockId === cfg.entryBlockId && predecessors.length > 0) predecessors.push(virtualEntryPredecessor());
+    predecessors.sort();
+    phiPredecessorCache.set(blockId, predecessors);
+    return predecessors;
+  };
   const nodePosition = new Map();
   for (const block of ir.blocks) for (let index = 0; index < block.nodeIds.length; index++) { tick(); nodePosition.set(block.nodeIds[index], { blockId: block.id, index }); }
   const definitionByValue = new Map(ssa.definitions.map((definition) => [definition.valueId, definition]));
@@ -235,15 +260,14 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
         if (stableStringify(incomingDef.proof?.machineType ?? null) !== stableStringify(definition.proof.machineType ?? null)) fail('semantic-ssa-phi-type-mismatch');
         if (!originContains(definition.origin, incomingDef.origin)) fail('semantic-ssa-phi-origin-incomplete');
         const predecessor = incoming.predecessorBlockId;
-        const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
         if (definition.blockId === cfg.entryBlockId
           && entry.predecessors.length > 0
-          && predecessor === virtualEntryPredecessor) {
+          && predecessor === virtualEntryPredecessor()) {
           if (!['entry-seed', 'implicit-undef'].includes(incomingDef.proof?.kind)) fail('semantic-ssa-entry-phi-seed-required');
           if (incomingDef.blockId !== cfg.entryBlockId) fail('semantic-ssa-entry-phi-seed-block-mismatch');
           continue;
         }
-        if (incomingDef.blockId == null || !(dominance.dominators[predecessor] ?? []).includes(incomingDef.blockId)) {
+        if (incomingDef.blockId == null || !hasDominator(predecessor, incomingDef.blockId)) {
           fail('semantic-ssa-phi-incoming-not-dominating-predecessor');
         }
       }
@@ -261,7 +285,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     const definition = definitionByValue.get(use.valueId);
     if (!definition) fail('semantic-ssa-dangling-value-id');
     if (stableStringify(definition.proof?.machineType ?? null) !== stableStringify(use.proof.machineType ?? null)) fail('semantic-ssa-use-type-mismatch');
-    if (definition.blockId == null || use.blockId == null || !(dominance.dominators[use.blockId] ?? []).includes(definition.blockId)) {
+    if (definition.blockId == null || use.blockId == null || !hasDominator(use.blockId, definition.blockId)) {
       fail('semantic-ssa-definition-does-not-dominate-use');
     }
     if (definition.blockId === use.blockId && definition.kind !== 'phi' && !['entry', 'undef'].includes(definition.kind)) {
@@ -270,19 +294,28 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     }
   }
 
-  const variableKeys = [...new Set(ssa.definitions.map((definition) => definition.variableKey).filter(Boolean))].sort();
+  const definitionsByVariableKey = new Map();
+  for (const definition of ssa.definitions) {
+    if (!definition.variableKey) continue;
+    const group = definitionsByVariableKey.get(definition.variableKey);
+    if (group) group.push(definition);
+    else definitionsByVariableKey.set(definition.variableKey, [definition]);
+  }
+  const variableKeys = [...definitionsByVariableKey.keys()].sort();
+  const reachable = new Set(dominance.reachable);
   for (const variableKey of variableKeys) {
     tick();
-    const expected = [...computeExpectedPhiBlocks(variableKey, ssa.definitions, dominance, tick)].sort();
-    const actual = ssa.definitions.filter((definition) => definition.kind === 'phi' && definition.variableKey === variableKey).map((definition) => definition.blockId).sort();
+    const variableDefinitions = definitionsByVariableKey.get(variableKey);
+    const expected = [...computeExpectedPhiBlocks(variableDefinitions, dominance, reachable, tick)].sort();
+    const actual = variableDefinitions.filter((definition) => definition.kind === 'phi').map((definition) => definition.blockId).sort();
     if (stableStringify(expected) !== stableStringify(actual)) fail('semantic-ssa-phi-placement-mismatch');
-    const typeKeys = new Set(ssa.definitions.filter((definition) => definition.variableKey === variableKey).map((definition) => stableStringify(definition.proof?.machineType ?? null)));
+    const typeKeys = new Set(variableDefinitions.map((definition) => stableStringify(definition.proof?.machineType ?? null)));
     if (typeKeys.size > 1) fail('semantic-ssa-variable-type-collision');
   }
 
   for (const definition of ssa.definitions.filter((item) => item.kind === 'phi')) {
     tick();
-    const predecessors = semanticSsaPhiPredecessors(cfg, definition.blockId);
+    const predecessors = phiPredecessors(definition.blockId);
     const incoming = definition.incoming.map((item) => item.predecessorBlockId).sort();
     if (stableStringify(predecessors) !== stableStringify(incoming)) fail('semantic-ssa-phi-predecessor-set-incomplete');
     if (!irByBlock.has(definition.blockId)) fail('semantic-ssa-phi-block-not-in-ir');

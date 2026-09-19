@@ -68,6 +68,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   const nodeIds = [];
   const blocks = new Map();
   const valueIds = new Set();
+  const valueById = new Map();
   const nodeIdSet = new Set();
   const temporaryDefinitions = new Map();
   // A MachineEffects operation reads only state defined by strictly earlier
@@ -136,6 +137,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function addValue(value) {
     if (valueIds.has(value.id)) fail('semantic-ir-lowering-duplicate-value-id');
     valueIds.add(value.id);
+    valueById.set(value.id, value);
     values.push(value);
     return value.id;
   }
@@ -465,7 +467,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       if (!inner.valueId || fromBits == null || toBits == null || toBits < fromBits) {
         return { valueId: null, reason: inner.reason ?? 'extension-expression-width-invalid' };
       }
-      const innerValue = values.find((value) => value.id === inner.valueId) ?? null;
+      const innerValue = valueById.get(inner.valueId) ?? null;
       const innerWidth = positiveInteger(innerValue?.machineType?.widthBits);
       if (innerWidth == null || innerWidth !== fromBits) {
         // A declared source width that contradicts (or cannot be proven against)
@@ -1152,7 +1154,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         const unboundTemporary = control.target.kind === 'temporary'
           && !temporaryDefinitions.has(`temporary:${String(control.target.temporaryId ?? '')}`);
         const valueId = unboundTemporary ? null : resolveControlCondition(effect, control.target);
-        const value = valueId == null ? null : values.find(candidate => candidate.id === valueId);
+        const value = valueId == null ? null : valueById.get(valueId) ?? null;
         if (value
           && (value.machineType.kind === 'bitvector' || value.machineType.kind === 'address')) {
           returnControlTarget = { schema: SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA, state: 'resolved', valueId };

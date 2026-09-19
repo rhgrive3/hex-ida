@@ -864,23 +864,34 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
     const rawCases = terminator.cases ?? terminator.extra?.cases ?? [];
     const cases = Array.isArray(rawCases) ? rawCases : [];
+    let malformedNormalizedCase = false;
     const normalizedCases = cases.map((entry, index) => {
       const rawValue = Array.isArray(entry) ? entry[0] : entry?.value ?? entry?.caseValue ?? entry?.constant;
       const to = Array.isArray(entry) ? entry[1] : entry?.to ?? entry?.target;
       try {
         return { value: rawValue == null ? null : BigInt(rawValue), to, index };
       } catch {
+        malformedNormalizedCase = true;
         return { value: null, to, index, malformed: true };
       }
     }).filter((entry) => entry.value != null && entry.to != null);
     const complete = terminator.casesComplete === true || terminator.extra?.casesComplete === true;
     const selectorMax = maxUnsigned(selectorFact.bits);
     const labelWidthMismatch = normalizedCases.some((entry) => entry.value < 0n || entry.value > selectorMax);
-    const malformed = !Array.isArray(rawCases) || cases.some((entry, index) => {
-      const normalized = normalizedCases.find((candidate) => candidate.index === index);
-      return normalized == null || normalized.malformed;
-    }) || normalizedCases.some((entry, index, all) => all.some((other) => other !== entry
-      && other.value === entry.value && other.to !== entry.to)) || labelWidthMismatch;
+    // Index normalized slots and case-value ownership once. This keeps the old
+    // sparse-array semantics (cases.some still skips holes) without quadratic
+    // find/some scans over large switch tables.
+    const normalizedCaseIndexes = new Set(normalizedCases.map((entry) => entry.index));
+    const targetByCaseValue = new Map();
+    let conflictingCaseValue = false;
+    for (const entry of normalizedCases) {
+      if (targetByCaseValue.has(entry.value)) {
+        if (targetByCaseValue.get(entry.value) !== entry.to) conflictingCaseValue = true;
+      } else targetByCaseValue.set(entry.value, entry.to);
+    }
+    const malformed = !Array.isArray(rawCases) || malformedNormalizedCase
+      || cases.some((_entry, index) => !normalizedCaseIndexes.has(index))
+      || conflictingCaseValue || labelWidthMismatch;
     const byTarget = new Map();
     for (const entry of normalizedCases) {
       if (!byTarget.has(entry.to)) byTarget.set(entry.to, []);

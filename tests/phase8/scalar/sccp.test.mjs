@@ -417,6 +417,24 @@ test('switch case labels, shared targets, and default remain conservative and de
   assert.deepEqual([...exact.unreachableBlockIndexes], [2, 3]);
 });
 
+test('present-but-malformed switch labels fail closed after case indexing', () => {
+  const f = fixture('switch-malformed-normalized-entry');
+  f.block(0);
+  const selector = f.constant(0, 8);
+  f.switchBranch(selector, [[0, 1]], 2);
+  f.block(1).ret();
+  f.block(2).ret();
+  const ir = f.build();
+  ir.blocks[0].insts.at(-1).cases = [{ value:'not-an-integer', to:1 }];
+  const facts = analyze(ir).facts;
+  const caseEdge = edge(facts, '0->1:switch-case');
+  const defaultEdge = edge(facts, '0->2:switch-default');
+  assert.equal(caseEdge.reachable, true, 'malformed case evidence cannot prune its edge');
+  assert.equal(defaultEdge.reachable, true, 'malformed case evidence cannot prune the default');
+  assert.equal(caseEdge.facts.has(selector.id), false, 'malformed case evidence cannot refine the selector');
+  assert.equal(defaultEdge.facts.has(selector.id), false, 'malformed case evidence cannot refine the default');
+});
+
 test('width-incompatible switch labels remain conservative', () => {
   const f = fixture('switch-width-mismatch');
   f.block(0);

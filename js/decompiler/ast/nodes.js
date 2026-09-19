@@ -35,9 +35,16 @@ function canonicalList(values, options = {}) {
   if (values == null) return [];
   const list = Array.isArray(values) ? values : [values];
   const out = [];
+  let seen = null;
   for (const v of list) {
     const canonical = canonicalIdentity(v, options);
-    if (canonical !== null && !out.some((z) => z === canonical)) out.push(canonical);
+    if (canonical === null) continue;
+    if (seen ? seen.has(canonical) : out.some((z) => z === canonical)) continue;
+    out.push(canonical);
+    // Provenance is overwhelmingly 0-2 identities wide. Keep that hot path
+    // allocation-free, but stop rescanning the full prefix for wide histories.
+    if (seen == null && out.length === 8) seen = new Set(out);
+    else if (seen) seen.add(canonical);
   }
   return out;
 }
@@ -54,9 +61,17 @@ export function sourceOf(source = null) {
 }
 export function mergeSource(...sources) {
   const out = sourceOf();
+  const seen = Object.create(null);
   for (const s of sources) {
     const x = sourceOf(s);
-    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => z === v)) out[k].push(v);
+    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) {
+      const indexed = seen[k];
+      if (indexed ? indexed.has(v) : out[k].some((z) => z === v)) continue;
+      out[k].push(v);
+      // As above, avoid Set allocation for the ordinary tiny source tuple.
+      if (indexed) indexed.add(v);
+      else if (out[k].length === 8) seen[k] = new Set(out[k]);
+    }
     out.evidence.push(...x.evidence);
   }
   return out;

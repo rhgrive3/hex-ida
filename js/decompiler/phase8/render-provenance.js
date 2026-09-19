@@ -142,17 +142,18 @@ function canonicalList(values, sortNumeric) {
 
 // Entity/reverse-map identities remain JSON-safe, while the transform ledger
 // retains typed address identity for audit and replay checks.
-function canonicalLedgerAddresses(values) {
-  const typed = sourceOf({ addresses:values }).addresses;
-  const out = [];
-  for (const value of typed) {
-    if (!out.some((existing) => existing === value)) out.push(value);
-  }
+function sortLedgerAddresses(out) {
   out.sort((left, right) => {
     if (typeof left === 'bigint' && typeof right === 'bigint') return left < right ? -1 : left > right ? 1 : 0;
     return String(left).localeCompare(String(right), 'en');
   });
   return out;
+}
+
+function canonicalLedgerAddresses(values) {
+  // sourceOf already returns a fresh, ===-deduplicated typed address array.
+  // Rechecking every prefix here used to turn wide origin histories quadratic.
+  return sortLedgerAddresses(sourceOf({ addresses:values }).addresses);
 }
 
 function canonicalOrigins(raw) {
@@ -164,22 +165,14 @@ function canonicalOrigins(raw) {
     // rejects stringified addresses; converting BigInt here used to erase the
     // producer address on the next typed normalization. Public entity origins
     // are JSON-safe'd only in freezeOrigins below.
-    addresses: canonicalLedgerAddresses(typed.addresses),
+    // `typed` is already a fresh canonical source tuple, so avoid routing
+    // addresses through sourceOf a second time merely to sort them.
+    addresses: sortLedgerAddresses(typed.addresses),
     ir: canonicalList(typed.ir, false),
     ssaRefs: [
       ...canonicalList(typed.ssaDefs.map((value) => `def:${value}`), false),
       ...canonicalList(typed.ssaUses.map((value) => `use:${value}`), false),
     ].sort((left, right) => left.localeCompare(right, 'en')),
-  };
-}
-
-function mergeOrigins(left, right) {
-  const rightCanonical = canonicalOrigins(right);
-  return {
-    rows:canonicalList([...left.rows, ...rightCanonical.rows], true),
-    addresses:canonicalLedgerAddresses([...left.addresses, ...rightCanonical.addresses]),
-    ir:canonicalList([...left.ir, ...rightCanonical.ir], false),
-    ssaRefs:canonicalList([...left.ssaRefs, ...rightCanonical.ssaRefs], false),
   };
 }
 
@@ -200,17 +193,79 @@ function originKeySet(origins) {
   return new Set(entityOriginEntries(origins).map(([kind, value]) => originKey(kind, value)));
 }
 
-function recordFeedsEntity(record, entityOriginKeys, bound) {
-  // An initial omission has no pre-existing C line and no known replacement.
-  // Sharing an origin with a visible expression is not a producer edge.
-  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration', 'typed-call-result', 'stack-escape-invalidation', 'abi-argument-binding'].includes(record.kind)) return false;
-  // A rewrite's consumed/remaining sources do not establish which C line
-  // uses its result. In particular, a shared input is not a replacement edge.
-  // Keep these records queryable without inventing a rendered consumer.
-  if (record.originHistory || ['solver-constant','solver-scalar','proved-scalar-cse'].includes(record.kind)) return bound;
-  const recordOrigins = canonicalOrigins(record?.origin ?? {});
-  return entityOriginEntries(recordOrigins)
-    .some(([kind, value]) => entityOriginKeys.has(originKey(kind, value)));
+const NON_FEEDING_RECORD_KINDS = new Set([
+  'display-suppression', 'public-state-normalization', 'abi-state-restoration',
+  'public-location-restoration', 'typed-call-result', 'stack-escape-invalidation',
+  'abi-argument-binding',
+]);
+const BOUND_ONLY_RECORD_KINDS = new Set(['solver-constant', 'solver-scalar', 'proved-scalar-cse']);
+
+function recordFeedDescriptor(record) {
+  // These records can never become a rendered producer, so do not normalize
+  // origins that the entity association loop will never inspect or merge.
+  if (NON_FEEDING_RECORD_KINDS.has(record.kind)) return Object.freeze({ mode:'never' });
+  const origins = canonicalOrigins(record?.origin ?? {});
+  const originKeys = originKeySet(origins);
+  if (record.originHistory || BOUND_ONLY_RECORD_KINDS.has(record.kind)) {
+    return Object.freeze({ mode:'bound', origins, originKeys });
+  }
+  return Object.freeze({ mode:'origin', origins, originKeys });
+}
+
+function recordFeedsEntity(descriptor, entityOriginKeys, bound) {
+  if (descriptor.mode === 'never') return false;
+  if (descriptor.mode === 'bound') return bound;
+  for (const key of descriptor.originKeys) if (entityOriginKeys.has(key)) return true;
+  return false;
+}
+
+
+function mergeOriginParts(parts) {
+  if (parts.length === 1) return parts[0];
+  const rows = [], addresses = [], ir = [], ssaRefs = [];
+  for (const origins of parts) {
+    rows.push(...origins.rows);
+    addresses.push(...origins.addresses);
+    ir.push(...origins.ir);
+    ssaRefs.push(...origins.ssaRefs);
+  }
+  return {
+    rows:canonicalList(rows, true),
+    addresses:canonicalLedgerAddresses(addresses),
+    ir:canonicalList(ir, false),
+    ssaRefs:canonicalList(ssaRefs, false),
+  };
+}
+
+function minHeapPush(heap, value) {
+  let index = heap.length;
+  heap.push(value);
+  while (index > 0) {
+    const parent = (index - 1) >> 1;
+    if (heap[parent] <= value) break;
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = value;
+}
+
+function minHeapPop(heap) {
+  if (!heap.length) return null;
+  const first = heap[0];
+  const last = heap.pop();
+  if (!heap.length) return first;
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) break;
+    const right = left + 1;
+    const child = right < heap.length && heap[right] < heap[left] ? right : left;
+    if (heap[child] >= last) break;
+    heap[index] = heap[child];
+    index = child;
+  }
+  heap[index] = last;
+  return first;
 }
 
 function emptyOrigins() {
@@ -625,8 +680,29 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
 
   const entities = {};
   const reverse = new Map();
+  const recordWitnesses = ledgerRecords.map(renderRecordWitnesses);
+  const witnessFeedDescriptors = new Map();
+  const originFeedIndex = new Map(), boundFeedIndex = new Map();
+  for (let recordIndex = 0; recordIndex < recordWitnesses.length; recordIndex += 1) {
+    for (const witness of recordWitnesses[recordIndex]) {
+      const descriptor = recordFeedDescriptor(witness);
+      witnessFeedDescriptors.set(witness, descriptor);
+      if (descriptor.mode === 'origin') {
+        for (const key of descriptor.originKeys) {
+          if (!originFeedIndex.has(key)) originFeedIndex.set(key, []);
+          originFeedIndex.get(key).push(recordIndex);
+        }
+      } else if (descriptor.mode === 'bound') {
+        const producer = historyProducers.get(witness);
+        if (producer != null) {
+          if (!boundFeedIndex.has(producer)) boundFeedIndex.set(producer, []);
+          boundFeedIndex.get(producer).push(recordIndex);
+        }
+      }
+    }
+  }
   const entityRefsByRecord = ledgerRecords.map(() => new Set());
-  const entityRefsByWitness = new Map(ledgerRecords.flatMap(renderRecordWitnesses).map(record => [record, new Set()]));
+  const entityRefsByWitness = new Map(recordWitnesses.flat().map(record => [record, new Set()]));
   const boundLines = [];
   const lineCount = Math.min(result.lines.length, resolvedBudget.maxEntities);
   if (result.lines.length > lineCount) {
@@ -645,23 +721,47 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const boundRecords = new Set(binding ?? []);
     if (binding) boundLines.push([line, binding]);
     let origins = canonicalOrigins(raw);
-    let entityOriginKeys = originKeySet(origins);
+    const originParts = [origins];
+    const entityOriginKeys = originKeySet(origins);
+    const pending = [], queued = new Set();
+    let currentRecordIndex = -1;
+    const queueRecord = recordIndex => {
+      if (recordIndex <= currentRecordIndex || queued.has(recordIndex)) return;
+      queued.add(recordIndex);
+      minHeapPush(pending, recordIndex);
+    };
+    const queueOriginKey = key => {
+      for (const recordIndex of originFeedIndex.get(key) ?? []) queueRecord(recordIndex);
+    };
+    for (const key of entityOriginKeys) queueOriginKey(key);
+    for (const producer of boundRecords) {
+      for (const recordIndex of boundFeedIndex.get(producer) ?? []) queueRecord(recordIndex);
+    }
 
     const recordRefs = [];
-    for (let recordIndex = 0; recordIndex < ledgerRecords.length; recordIndex += 1) {
-      const record = ledgerRecords[recordIndex];
+    while (pending.length) {
+      const recordIndex = minHeapPop(pending);
+      currentRecordIndex = recordIndex;
       let feeds = false;
-      for (const witness of renderRecordWitnesses(record)) {
-        if (!recordFeedsEntity(witness, entityOriginKeys, boundRecords.has(historyProducers.get(witness)))) continue;
+      for (const witness of recordWitnesses[recordIndex]) {
+        const descriptor = witnessFeedDescriptors.get(witness);
+        if (!recordFeedsEntity(descriptor, entityOriginKeys, boundRecords.has(historyProducers.get(witness)))) continue;
         feeds = true;
         entityRefsByWitness.get(witness).add(entityKey);
-        origins = mergeOrigins(origins, witness.origin);
-        entityOriginKeys = originKeySet(origins);
+        originParts.push(descriptor.origins);
+        // The old sequential pass only makes newly acquired identities visible
+        // to later records. Queue exactly those later records; never revisit an
+        // earlier record that already failed its feed test.
+        for (const key of descriptor.originKeys) if (!entityOriginKeys.has(key)) {
+          entityOriginKeys.add(key);
+          queueOriginKey(key);
+        }
       }
       if (!feeds) continue;
       recordRefs.push(recordIndex);
       entityRefsByRecord[recordIndex].add(entityKey);
     }
+    origins = mergeOriginParts(originParts);
 
     const entityReasons = [];
     let complete = originsTotalSize(origins) > 0;
@@ -818,6 +918,25 @@ function cancelledMap(resolvedBudget) {
   });
 }
 
+function frozenEntityRecordRefIndex(entities) {
+  if (!Object.isFrozen(entities)) return null;
+  const byRecord = new Map();
+  for (const entity of Object.values(entities)) {
+    if (!entity || typeof entity !== 'object' || !Object.isFrozen(entity)) return null;
+    const keyDescriptor = Object.getOwnPropertyDescriptor(entity, 'entityKey');
+    const refsDescriptor = Object.getOwnPropertyDescriptor(entity, 'recordRefs');
+    if (!keyDescriptor || !Object.hasOwn(keyDescriptor, 'value')
+        || !refsDescriptor || !Object.hasOwn(refsDescriptor, 'value')
+        || !Array.isArray(refsDescriptor.value) || !Object.isFrozen(refsDescriptor.value)) return null;
+    for (const recordIndex of refsDescriptor.value) {
+      let refs = byRecord.get(recordIndex);
+      if (!refs) byRecord.set(recordIndex, refs = []);
+      refs.push(keyDescriptor.value);
+    }
+  }
+  return byRecord;
+}
+
 export function validateRenderProvenance(provenanceMap, { snapshotId = null, shouldAbort = null } = {}) {
   if (!provenanceMap || typeof provenanceMap !== 'object' || Array.isArray(provenanceMap)) fail('phase8-render-provenance-map-invalid');
   if (provenanceMap.version !== RENDER_PROVENANCE_VERSION) fail('phase8-render-provenance-map-version-invalid');
@@ -829,6 +948,11 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
   const validationRecords = [], witnessOwners = new Map();
   let groupedWitnesses = 0, witnessCount = 0;
   const witnessLimit = provenanceMap.budget?.maxConsumerWitnesses ?? MAX_EXPRESSION_CONSUMER_WITNESSES;
+  // Canonical provenance maps are deeply immutable. Index their record -> entity
+  // relation once instead of rescanning every entity for every consumer group.
+  // Keep the exact legacy reads/cancellation timing for mutable or callback-driven
+  // validation, where externally visible mutation or accessors could matter.
+  const entityRefsByRecord = typeof shouldAbort === 'function' ? null : frozenEntityRecordRefIndex(provenanceMap.entities);
   for (const [index, record] of reasons.has('cancelled') ? [] : provenanceMap.ledger.entries()) {
     if (typeof shouldAbort === 'function' && shouldAbort() === true) { reasons.add('cancelled'); break; }
     if (record?.kind !== 'state-consumer-group' && !Object.hasOwn(record ?? {}, 'consumerWitnesses')) {
@@ -869,8 +993,12 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     }
     valid &&= Array.isArray(record.producedRefs) && record.producedRefs.length === refs.size
       && record.producedRefs.every(ref => refs.has(ref));
-    for (const entity of Object.values(provenanceMap.entities)) {
-      if (entity?.recordRefs?.includes(index) && !refs.has(entity.entityKey)) valid = false;
+    if (entityRefsByRecord) {
+      for (const entityKey of entityRefsByRecord.get(index) ?? []) if (!refs.has(entityKey)) valid = false;
+    } else {
+      for (const entity of Object.values(provenanceMap.entities)) {
+        if (entity?.recordRefs?.includes(index) && !refs.has(entity.entityKey)) valid = false;
+      }
     }
     if (!valid) reasons.add('invalid-state-consumer-group');
   }
