@@ -39,13 +39,32 @@ export async function digestFile(path) {
   return { size, sha256: hash.digest('hex') };
 }
 
-export async function verify(name, path, spec) {
+class FixtureVerificationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'FixtureVerificationError';
+    this.repairable = true;
+  }
+}
+
+function invalidFixture(message) {
+  return new FixtureVerificationError(message);
+}
+
+export async function verify(name, path, spec, { statImpl = stat, digestFileImpl = digestFile } = {}) {
   let info;
-  try { info = await stat(path); } catch { throw new Error(`${name}: fixture is missing at ${path}`); }
-  if (!info.isFile()) throw new Error(`${name}: fixture path is not a file`);
-  if (info.size !== spec.size) throw new Error(`${name}: size mismatch (${info.size} != ${spec.size})`);
-  const digest = await digestFile(path);
-  if (digest.sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
+  try {
+    info = await statImpl(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      throw invalidFixture(`${name}: fixture is missing at ${path}`);
+    }
+    throw error;
+  }
+  if (!info.isFile()) throw invalidFixture(`${name}: fixture path is not a file`);
+  if (info.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${info.size} != ${spec.size})`);
+  const digest = await digestFileImpl(path);
+  if (digest.sha256 !== spec.sha256) throw invalidFixture(`${name}: SHA-256 mismatch`);
   return digest;
 }
 
@@ -91,14 +110,14 @@ export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
   }
 }
 
-export async function fetchFixture(name, spec) {
+export async function fetchFixture(name, spec, { verifyImpl = verify, fetchImpl = fetchWithHttpsRedirects } = {}) {
   const target = join(outputDir, spec.file);
   try {
-    await verify(name, target, spec);
+    await verifyImpl(name, target, spec);
     console.log(`${name}: verified existing fixture`);
     return;
   } catch (error) {
-    if (checkOnly) throw error;
+    if (checkOnly || error?.repairable !== true) throw error;
   }
 
   const url = process.env[spec.urlEnv];
@@ -107,7 +126,7 @@ export async function fetchFixture(name, spec) {
 
   await mkdir(dirname(target), { recursive:true });
   const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
-  const response = await fetchWithHttpsRedirects(url);
+  const response = await fetchImpl(url);
   if (!response.ok || !response.body) {
     await releaseBody(response);
     throw new Error(`${name}: download failed with HTTP ${response.status}`);
@@ -133,7 +152,7 @@ export async function fetchFixture(name, spec) {
     if (size !== spec.size) throw new Error(`${name}: size mismatch (${size} != ${spec.size})`);
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
     try {
-      await verify(name, target, spec);
+      await verifyImpl(name, target, spec);
       await rm(temp, { force: true });
       console.log(`${name}: downloaded and verified`);
       return;
