@@ -37,6 +37,17 @@ fi
 branch="${CIRCLE_BRANCH:-}"
 head="$(git rev-parse HEAD)"
 
+changed_file=""
+cleanup_changed_file() {
+  if [[ -n "$changed_file" ]]; then rm -f -- "$changed_file"; fi
+}
+trap cleanup_changed_file EXIT
+if ! changed_file="$(mktemp)"; then
+  echo 'could not allocate impact path buffer; running lane conservatively' >&2
+  printf 'true\n'
+  exit 0
+fi
+
 # Missing provider branch metadata must never turn into a false skip. Running an
 # unnecessary lane is cheaper than accepting an unvalidated commit.
 if [[ -z "$branch" ]]; then
@@ -105,7 +116,7 @@ if [[ "$branch" == 'main' ]]; then
     printf 'true\n'
     exit 0
   fi
-  if ! changed="$(git diff --name-only "$parent" HEAD)"; then
+  if ! git diff --name-only -z "$parent" HEAD >"$changed_file"; then
     echo 'could not diff main commit against its parent; running lane conservatively' >&2
     printf 'true\n'
     exit 0
@@ -123,7 +134,7 @@ else
     printf 'true\n'
     exit 0
   fi
-  if ! changed="$(git diff --name-only origin/main...HEAD)"; then
+  if ! git diff --name-only -z origin/main...HEAD >"$changed_file"; then
     echo 'could not diff branch against origin/main; running lane conservatively' >&2
     printf 'true\n'
     exit 0
@@ -131,7 +142,7 @@ else
 fi
 
 set +e
-printf '%s\n' "$changed" | grep -Eq "$pattern"
+grep -zEq "$pattern" "$changed_file"
 match_status=$?
 set -e
 case "$match_status" in
