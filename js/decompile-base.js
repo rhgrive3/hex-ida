@@ -307,7 +307,11 @@ function ensureLegacyLabel(lines, row, label, address) {
   const open = lines.findIndex((l) => l.kind === 'ctrl' && l.text === '{');
   const floor = open >= 0 ? open + 1 : 1;
   let at = lines.findIndex((l, i) => i >= floor && l.row != null && l.row >= row && l.kind !== 'sig');
-  if (at < 0) at = lines.findIndex((l, i) => i >= floor && l.kind === 'ctrl' && l.text === '}');
+  if (at < 0) {
+    const functionIndent = open >= 0 ? (lines[open]?.indent ?? 0) : null;
+    at = lines.findIndex((l, i) => i >= floor && l.kind === 'ctrl' && l.text === '}'
+      && (functionIndent == null || (l.indent ?? 0) === functionIndent));
+  }
   if (at < 0) at = Math.min(floor, lines.length);
   const indent = Math.max(1, lines[at]?.indent || 1);
   lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: address, note: null });
