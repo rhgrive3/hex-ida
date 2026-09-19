@@ -71,14 +71,22 @@ export function buildNoreturnContinuationProposal({ binding, calls, authority, l
   const records = [];
   let considered = 0;
   let truncated = false;
-  for (const call of calls || []) {
-    if (considered >= maxCandidates) { truncated = true; break; }
-    considered += 1;
-    const site = asAddress(call?.site);
-    const target = asAddress(call?.target);
-    if (site == null || target == null) continue;
-    const candidate = deriveCandidate({ site, target, authority });
-    if (candidate) records.push(candidate);
+  const callSource = calls == null ? [] : calls;
+  if (typeof callSource[Symbol.iterator] !== 'function') {
+    return incompleteProposal(binding, 'calls-not-iterable');
+  }
+  try {
+    for (const call of callSource) {
+      if (considered >= maxCandidates) { truncated = true; break; }
+      considered += 1;
+      const site = asAddress(call?.site);
+      const target = asAddress(call?.target);
+      if (site == null || target == null) continue;
+      const candidate = deriveCandidate({ site, target, authority });
+      if (candidate) records.push(candidate);
+    }
+  } catch {
+    return incompleteProposal(binding, 'calls-iteration-failed');
   }
 
   if (truncated) return incompleteProposal(binding, 'candidate-enumeration-truncated');
