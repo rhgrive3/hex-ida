@@ -41,13 +41,12 @@ function acquireWriterLock(storeDir) {
     if (error?.code !== 'EEXIST') throw error;
     let stale = false;
     try { stale = Date.now() - fs.statSync(file).mtimeMs > LOCK_STALE_MS; } catch {}
-    if (stale) {
-      try { fs.unlinkSync(file); } catch {}
-      const fd = fs.openSync(file, 'wx');
-      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, host: process.env.HOSTNAME || null, createdAt: new Date().toISOString(), recovered: true }));
-      fs.closeSync(fd);
-      return file;
-    }
+    // Never steal a stale-looking lock automatically. A stat→unlink→create
+    // recovery has an unavoidable TOCTOU window where one contender can delete
+    // another contender's freshly-created lock and admit two writers.
+    // Preserve the lock and fail closed; operators can remove a known-orphaned
+    // lock explicitly before resuming the durable run.
+    if (stale) throw new Error('measurement-writer-stale-lock');
     throw new Error('measurement-writer-busy');
   }
 }
