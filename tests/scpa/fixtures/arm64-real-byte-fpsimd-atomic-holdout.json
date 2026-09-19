@@ -1,0 +1,80 @@
+{
+  "schema": "arm64-real-byte-fpsimd-atomic-holdout/v1",
+  "source": "arm64-real-byte-fpsimd-atomic-holdout.s",
+  "binary": "arm64-real-byte-fpsimd-atomic-holdout.elf",
+  "sourceSha256": "d39ce5825075084789bb1a13ed3a98596c4e604877101a69301475e3b3f04def",
+  "binarySha256": "79afbdaa18ae2c7749edf0925ec650f41b31f1af336a8d79cdd86776444de114",
+  "compiler": "clang 14.0.0 / lld 14.0.0",
+  "targetTriple": "aarch64-linux-gnu",
+  "rebuild": [
+    "timeout",
+    "60s",
+    "clang",
+    "--target=aarch64-linux-gnu",
+    "-fuse-ld=lld",
+    "-nostdlib",
+    "-Wl,-Ttext=0x1000",
+    "-Wl,-e,fp_scalar_arith",
+    "-Wl,--build-id=none",
+    "arm64-real-byte-fpsimd-atomic-holdout.s",
+    "-o",
+    "arm64-real-byte-fpsimd-atomic-holdout.elf"
+  ],
+  "cases": [
+    {
+      "id": "fp-scalar-arithmetic",
+      "function": "fp_scalar_arith",
+      "start": "0x1000",
+      "end": "0x1008",
+      "classification": "exact",
+      "oracle": "FADD D0, D1, D2 reads binary64 D1/D2, writes binary64 D0 with FPCR rounding and FPSR status; width/format identity is binary64",
+      "bytesSha256": "8023eb12bdc5d9c15d13bf385d1b7c5f8875b46380bbf8b3a35b5615dc0e6289"
+    },
+    {
+      "id": "fp-compare-flags",
+      "function": "fp_compare_branch",
+      "start": "0x1008",
+      "end": "0x1020",
+      "classification": "partial",
+      "oracle": "FCMP D0, D1 produces NZCV (and FPSR) from binary64 operands as the canonical nzcv PSTATE state; B.EQ reads the NZCV.Z generic flag. The generic flag model cannot bind the FP owner's nzcv state to the integer flag cell, so the branch condition stays an explicit undefined (fail-closed) and no flag dependency is fabricated",
+      "bytesSha256": "75e051863906069a765da43cea0d9677889f2e5a0ec01a044b4b8bfde25f873f"
+    },
+    {
+      "id": "simd-vector-arithmetic",
+      "function": "simd_vector_add",
+      "start": "0x1020",
+      "end": "0x1028",
+      "classification": "exact",
+      "oracle": "ADD V0.4S, V1.4S, V2.4S is a 128-bit vector add of four 32-bit lanes; lane shape 4S and source/destination V-register identity are exact",
+      "bytesSha256": "f9550d28a17c5e873cc000228420d6f3696133922a7d956df5c39ca0d46037ff"
+    },
+    {
+      "id": "acquire-load",
+      "function": "acquire_load",
+      "start": "0x1028",
+      "end": "0x1030",
+      "classification": "exact",
+      "oracle": "LDAR X0, [X1] performs an acquire-ordered 64-bit memory read into X0 with address provenance from X1",
+      "bytesSha256": "f759243f2cd65cd8613e62fcb5e3cc5c831c6363091af7c8aa382b7fa48bd9c7"
+    },
+    {
+      "id": "release-store",
+      "function": "release_store",
+      "start": "0x1030",
+      "end": "0x1038",
+      "classification": "exact",
+      "oracle": "STLR X0, [X1] performs a release-ordered 64-bit memory write of X0 with address provenance from X1",
+      "bytesSha256": "87c6f6c0a0e8b85f2e3f584444f21471b8c507825371f7f87d655438da9f8082"
+    },
+    {
+      "id": "exclusive-reservation",
+      "function": "exclusive_pair",
+      "start": "0x1038",
+      "end": "0x1044",
+      "classification": "exact",
+      "oracle": "LDXR X0, [X1] sets the exclusive monitor and reads memory; STXR W2, X0, [X1] conditionally stores X0 and writes W2 status (0 success / 1 failure); the reservation monitor and conditional store-success are explicit intrinsic state, and the conditional write stays a conservative may-write, never an ordinary load/store pair",
+      "bytesSha256": "3e41b27bcbb5234f1a9be967d696405eb36d1f8ca4219f811d1a4f1b658f3eea"
+    }
+  ],
+  "claim": "Test-owned AArch64 source and linked ELF. Oracle is an independent architecture contract (A64 register/width/ordering/status roles), not product pseudocode, CodeFuse, IDA, or reference-renderer text."
+}
