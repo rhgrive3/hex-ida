@@ -231,7 +231,7 @@ test('fixture 8: candidate validation is batch-atomic and a rejected batch mutat
   const symbols = makeIndex();
   const proposal = buildProposal();
   const result = commit({ symbols, proposal, validateCandidate: () => false });
-  assert.equal(result.status, 'no-op');
+  assert.equal(result.status, 'stale');
   assert.deepEqual([...symbols.funcs], [CALLER, FATAL, RETURNS]);
   assert.equal(symbols.functionTopologyRevision, 0);
 });
