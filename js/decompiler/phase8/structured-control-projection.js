@@ -111,27 +111,6 @@ function controlSource(inst, block = null, ir = null, opts = {}) {
   });
 }
 
-function invertConditionText(text) {
-  if (!text || typeof text !== 'string') return '!condition';
-  const trimmed = text.trim();
-  const eqMatch = trimmed.match(/^(.+?)\s*==\s*(.+)$/);
-  if (eqMatch) return `${eqMatch[1]} != ${eqMatch[2]}`;
-  const neMatch = trimmed.match(/^(.+?)\s*!=\s*(.+)$/);
-  if (neMatch) return `${neMatch[1]} == ${neMatch[2]}`;
-  const lteMatch = trimmed.match(/^(.+?)\s*<=\s*(.+)$/);
-  if (lteMatch) return `${lteMatch[1]} > ${lteMatch[2]}`;
-  const gteMatch = trimmed.match(/^(.+?)\s*>=\s*(.+)$/);
-  if (gteMatch) return `${gteMatch[1]} < ${gteMatch[2]}`;
-  const ltMatch = trimmed.match(/^(.+?)\s*<\s*(.+)$/);
-  if (ltMatch) return `${ltMatch[1]} >= ${ltMatch[2]}`;
-  const gtMatch = trimmed.match(/^(.+?)\s*>\s*(.+)$/);
-  if (gtMatch) return `${gtMatch[1]} <= ${gtMatch[2]}`;
-  if (trimmed.startsWith('!(') && trimmed.endsWith(')')) {
-    return trimmed.slice(2, -1);
-  }
-  return `!(${trimmed})`;
-}
-
 function blockOfNode(node, ir, opts = {}) {
   if (!node) return null;
   if (typeof node.block === 'number') return node.block;
@@ -215,50 +194,141 @@ function branchTargetsOf(entryBlock, ir, opts = {}) {
   return null;
 }
 
+function relationContains(sets, tree, ancestor, node) {
+  if (ancestor === node) return true;
+  const set = sets?.[node];
+  if (set != null) {
+    if (typeof set.has === 'function') return set.has(ancestor);
+    if (Array.isArray(set)) return set.includes(ancestor);
+    if (typeof set[Symbol.iterator] === 'function') return [...set].includes(ancestor);
+  }
+  if (tree == null) return null;
+  let current = node;
+  const visited = new Set();
+  while (current != null && current >= 0 && !visited.has(current) && visited.size < 4096) {
+    visited.add(current);
+    const next = tree?.[current];
+    if (next == null || next === current) return false;
+    if (next === ancestor) return true;
+    current = next;
+  }
+  return false;
+}
+
+function unsafeProjectionEdge(edge) {
+  if (!edge) return true;
+  if (edge.construct === 'constraint-edge' || edge.construct === 'unknown' || edge.construct === 'residual-goto') return true;
+  if (typeof edge.construct === 'string' && edge.construct.startsWith('loop-')) return true;
+  if (edge.construct === 'switch-case' || edge.construct === 'switch-join') return true;
+  return Array.isArray(edge.kinds) && edge.kinds.some((kind) => kind === 'unwind' || kind === 'exception');
+}
+
+function collectArmBlocks(start, entry, join, byIndex) {
+  if (start === join) return new Set();
+  const blocks = new Set();
+  const pending = [start];
+  while (pending.length > 0) {
+    const index = pending.pop();
+    if (index === join) continue;
+    if (index === entry || blocks.has(index)) {
+      if (index === entry) return null;
+      continue;
+    }
+    const block = byIndex.get(index);
+    if (!block || !Array.isArray(block.succ) || block.succ.length === 0) return null;
+    blocks.add(index);
+    if (blocks.size > byIndex.size) return null;
+    for (const target of block.succ) {
+      if (target === join) continue;
+      if (!byIndex.has(target)) return null;
+      pending.push(target);
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Proves the complete arm partition for one canonical conditional region.
+ * The structuring artifact currently publishes immediate non-join successors
+ * in region.members, so the projector expands each arm only under dominance,
+ * post-dominance, single-entry and edge-closure proofs. Any ambiguity rejects
+ * the projection rather than guessing where a block belongs.
+ */
+function conditionalRegionPartition(region, facts, cfg, dominators) {
+  if (!region || region.kind !== 'conditional') return null;
+  if (!Array.isArray(region.exits) || region.exits.length !== 1) return null;
+  if (!Array.isArray(region.members) || !Array.isArray(facts?.edges)) return null;
+  const entry = region.entry;
+  const join = region.exits[0];
+  if (!Number.isInteger(entry) || !Number.isInteger(join) || entry === join) return null;
+
+  const byIndex = new Map((cfg?.blocks ?? []).map((block) => [block?.index, block]));
+  const entryBlock = byIndex.get(entry);
+  const joinBlock = byIndex.get(join);
+  if (!entryBlock || !joinBlock || !Array.isArray(entryBlock.succ) || entryBlock.succ.length !== 2) return null;
+  if (entryBlock.succ[0] === entryBlock.succ[1]) return null;
+
+  // The canonical structurer defines the conditional join as entry.ipdom and
+  // publishes the immediate non-join successors as members. Bind to that exact
+  // evidence so a forged/stale region cannot choose its own exit or omit an arm.
+  if (dominators?.ipdom?.[entry] !== join) return null;
+  const declaredMembers = new Set(region.members);
+  const expectedMembers = new Set(entryBlock.succ.filter((target) => target !== join));
+  if (declaredMembers.size !== expectedMembers.size
+      || [...expectedMembers].some((target) => !declaredMembers.has(target))) return null;
+
+  if (Array.isArray(region.constraints) && region.constraints.length > 0) return null;
+  if (Array.isArray(region.residualGotos) && region.residualGotos.length > 0) return null;
+
+  const armsByTarget = new Map();
+  for (const target of entryBlock.succ) {
+    const arm = collectArmBlocks(target, entry, join, byIndex);
+    if (arm == null) return null;
+    armsByTarget.set(target, arm);
+  }
+
+  const [leftTarget, rightTarget] = entryBlock.succ;
+  const left = armsByTarget.get(leftTarget);
+  const right = armsByTarget.get(rightTarget);
+  if ([...left].some((index) => right.has(index))) return null;
+
+  const armBlocks = new Set([...left, ...right]);
+  if (relationContains(dominators?.postDominators, dominators?.ipdom, join, entry) !== true) return null;
+  for (const index of armBlocks) {
+    if (relationContains(dominators?.dominators, dominators?.idom, entry, index) !== true) return null;
+    if (relationContains(dominators?.postDominators, dominators?.ipdom, join, index) !== true) return null;
+
+    const block = byIndex.get(index);
+    if (!Array.isArray(block?.pred)) return null;
+    const isRoot = expectedMembers.has(index);
+    for (const predecessor of block.pred) {
+      if (isRoot) {
+        if (predecessor !== entry) return null;
+      } else if (!armBlocks.has(predecessor) && predecessor !== entry) {
+        return null;
+      }
+    }
+    for (const successor of block.succ ?? []) {
+      if (successor !== join && !armBlocks.has(successor)) return null;
+    }
+  }
+
+  const regionBlocks = new Set([entry, ...armBlocks]);
+  for (const edge of facts.edges) {
+    if (!regionBlocks.has(edge.from)) continue;
+    if (unsafeProjectionEdge(edge)) return null;
+    if (edge.to !== join && !regionBlocks.has(edge.to)) return null;
+  }
+
+  return { entry, join, byIndex, armBlocks, armsByTarget };
+}
+
 /**
  * Checks whether a candidate conditional region is completely reducible, proven,
  * and safe for adoption into C control projection.
  */
 export function isAdoptableConditionalRegion(region, facts, cfg, dominators) {
-  if (!region || region.kind !== 'conditional') return false;
-  if (!Array.isArray(region.exits) || region.exits.length !== 1) return false;
-  const entry = region.entry;
-  const join = region.exits[0];
-  if (typeof entry !== 'number' || typeof join !== 'number') return false;
-  if (entry === join) return false;
-
-  const entryBlock = cfg.blocks?.[entry];
-  const joinBlock = cfg.blocks?.[join];
-  if (!entryBlock || !joinBlock) return false;
-  if (entryBlock.succ.length !== 2) return false;
-
-  // Region must be free of constraints and residual gotos
-  if (Array.isArray(region.constraints) && region.constraints.length > 0) return false;
-  if (Array.isArray(region.residualGotos) && region.residualGotos.length > 0) return false;
-
-  const regionBlocks = new Set([entry, ...(region.members ?? [])]);
-  const edges = facts.edges ?? [];
-  for (const edge of edges) {
-    if (regionBlocks.has(edge.from)) {
-      if (edge.construct === 'constraint-edge' || edge.construct === 'unknown' || edge.construct === 'residual-goto') {
-        return false;
-      }
-      if (typeof edge.construct === 'string' && edge.construct.startsWith('loop-')) {
-        return false;
-      }
-      if (edge.construct === 'switch-case' || edge.construct === 'switch-join') {
-        return false;
-      }
-      if (Array.isArray(edge.kinds) && edge.kinds.some(k => k === 'unwind' || k === 'exception')) {
-        return false;
-      }
-    }
-  }
-
-  const [succ0, succ1] = entryBlock.succ;
-  if (succ0 === join && succ1 === join) return false;
-
-  return true;
+  return conditionalRegionPartition(region, facts, cfg, dominators) != null;
 }
 
 function dominatorDepth(dominators, block) {
@@ -320,33 +390,35 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
   const cfg = analysis.get('cfg') ?? { blocks: result.ir.blocks };
   const dominators = analysis.get('dominators') ?? { idom: result.ir.idom, ipdom: result.ir.ipdom };
 
-  // Collect candidate adoptable regions
+  // Collect candidate adoptable regions together with the proved complete
+  // arm partition. Reusing the same proof below prevents validation/rendering
+  // from disagreeing about which blocks belong to an arm.
   const candidateRegions = [];
   for (const region of facts.regions ?? []) {
-    if (isAdoptableConditionalRegion(region, facts, cfg, dominators)) {
-      candidateRegions.push(region);
-    }
+    const partition = conditionalRegionPartition(region, facts, cfg, dominators);
+    if (partition) candidateRegions.push({ region, partition });
   }
   if (candidateRegions.length === 0) return result;
 
   // Sort candidate regions innermost first (descending dominator depth, then descending entry index)
   candidateRegions.sort((left, right) => {
-    const depthLeft = dominatorDepth(dominators, left.entry);
-    const depthRight = dominatorDepth(dominators, right.entry);
+    const depthLeft = dominatorDepth(dominators, left.region.entry);
+    const depthRight = dominatorDepth(dominators, right.region.entry);
     if (depthLeft !== depthRight) return depthRight - depthLeft;
-    return right.entry - left.entry;
+    return right.region.entry - left.region.entry;
   });
 
   let workingBody = [...result.cAst.body];
   const adoptedRecords = [];
   const adoptedRegions = [];
 
-  for (const region of candidateRegions) {
+  for (const candidate of candidateRegions) {
     if (opts.shouldAbort?.() === true) return result;
+    const { region, partition } = candidate;
     const entry = region.entry;
     const join = region.exits[0];
-    const entryBlock = result.ir.blocks[entry];
-    const joinBlock = result.ir.blocks[join];
+    const entryBlock = (result.ir.blocks ?? []).find((block) => block?.index === entry);
+    const joinBlock = (result.ir.blocks ?? []).find((block) => block?.index === join);
     if (!entryBlock || !joinBlock) continue;
 
     const targets = branchTargetsOf(entryBlock, result.ir, opts);
@@ -400,16 +472,21 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const existingBranchNode = workingBody[branchIndex];
     if (!condText) {
       const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*(?:goto\s+\w+;|\{)/);
-      if (match) {
-        condText = invert ? invertConditionText(match[1]) : match[1];
-      }
+      const expression = match?.[1]?.trim();
+      if (expression) condText = invert ? `!(${expression})` : expression;
     }
-    if (!condText) condText = 'condition';
+    // Missing condition text is not permission to invent a placeholder.
+    if (!condText) continue;
 
     const entryIndent = existingBranchNode.indent ?? 1;
-    const armBlocks = new Set(isOneSided ? [ifArm] : [ifArm, elseArm]);
-    const ifArmBlocks = new Set([ifArm]);
-    const elseArmBlocks = new Set(isOneSided ? [] : [elseArm]);
+    const trueArmBlocks = partition.armsByTarget.get(trueTarget);
+    const falseArmBlocks = partition.armsByTarget.get(falseTarget);
+    if (!trueArmBlocks || !falseArmBlocks) continue;
+    const ifArmBlocks = new Set(isOneSided
+      ? [...(invert ? falseArmBlocks : trueArmBlocks)]
+      : [...trueArmBlocks]);
+    const elseArmBlocks = new Set(isOneSided ? [] : [...falseArmBlocks]);
+    const armBlocks = new Set([...ifArmBlocks, ...elseArmBlocks]);
 
     // Match the producer's real target address, never a block row/index or a
     // case-sensitive rendering of the label text.
@@ -426,10 +503,12 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       return b != null && blocks.has(b);
     };
 
-    const isJumpToJoin = (node) => {
-      if (node.kind !== 'stmt' && node.kind !== 'ctrl') return false;
-      if (typeof node.text !== 'string') return false;
-      return textJumpsToAddress(node.text, joinAddress);
+    const isRemovableTailJumpToJoin = (node) => {
+      if (node.kind !== 'stmt' || typeof node.text !== 'string') return false;
+      if (!textJumpsToAddress(node.text, joinAddress)) return false;
+      const blockIndex = blockOfNode(node, result.ir, opts);
+      const block = partition.byIndex.get(blockIndex);
+      return Array.isArray(block?.succ) && block.succ.length === 1 && block.succ[0] === join;
     };
 
     const isBlockLabel = (node, blockIdx) => {
@@ -438,20 +517,26 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       return b === blockIdx;
     };
 
-    // Extract statements for ifArm and elseArm
-    const extractArmStatements = (blocks) => {
+    // Extract complete arm bodies in producer order. Only the immediate arm
+    // entry label and an unconditional tail jump to the proven join are
+    // redundant. Internal labels/gotos remain intact unless an inner region
+    // was already projected, preserving nested control flow fail-closed.
+    const extractArmStatements = (blocks, root) => {
       const stmts = [];
       for (const node of workingBody) {
         if (!isArmNode(node, blocks)) continue;
-        if (node.kind === 'label') continue; // Omit arm entry labels
-        if (isJumpToJoin(node)) continue;    // Omit jumps to join
+        const blockIndex = blockOfNode(node, result.ir, opts);
+        if (node.kind === 'label' && blockIndex === root) continue;
+        if (isRemovableTailJumpToJoin(node)) continue;
         stmts.push(node);
       }
       return stmts;
     };
 
-    const ifArmStmts = extractArmStatements(ifArmBlocks);
-    const elseArmStmts = isOneSided ? [] : extractArmStatements(elseArmBlocks);
+    const ifArmStmts = extractArmStatements(ifArmBlocks, ifArm);
+    const elseArmStmts = isOneSided ? [] : extractArmStatements(elseArmBlocks, elseArm);
+    const retainedArmJumpToJoin = [...ifArmStmts, ...elseArmStmts]
+      .some((node) => textJumpsToAddress(node.text, joinAddress));
 
     // Build the structured nodes
     const headerNode = {
@@ -521,8 +606,8 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
         nodesToRemove.add(node);
       }
     }
-    // 3. Join label if unreferenced
-    if (!otherJumpsToJoin) {
+    // 3. Join label only when no rewritten or external jump still references it.
+    if (!otherJumpsToJoin && !retainedArmJumpToJoin) {
       for (const node of workingBody) {
         if (isBlockLabel(node, join)) {
           nodesToRemove.add(node);
