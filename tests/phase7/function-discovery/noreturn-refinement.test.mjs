@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SymbolIndex } from '../../../js/symbols.js';
 import { buildNoreturnContinuationProposal } from '../../../js/analysis/discovery/noreturn-refinement.js';
 import { commitFunctionTopologyRefinement, TOPOLOGY_REFINEMENT_FORBIDDEN_DEPENDENCY } from '../../../js/analysis/discovery/topology-refinement-transaction.js';
+import { installSharedAppArtifacts } from '../../../js/analysis/shared-app-artifacts.js';
 
 /*
  * B1a — downstream noreturn-continuation refinement.
@@ -297,6 +298,28 @@ test('contract: bootstrap completeness and discovery identity are never rewritte
   assert.equal(symbols.functionStartsComplete, true);
   assert.deepEqual(symbols.functionDiscovery, cached);
   assert.deepEqual(symbols.functionDiscovery, { ...cached });
+});
+
+test('orchestration: an early no-op never pins the single-flight after evidence becomes ready', async () => {
+  const symbols = makeIndex({ functionDiscovery: { complete:true, discoveryKey:'discovery:fixture', attempted:true } });
+  const app = {
+    backend:{ gen:1 },
+    symbols,
+    noreturnTopologyRefinement:{ enabled:true },
+  };
+  installSharedAppArtifacts(app);
+
+  assert.equal(await app.ensureNoreturnFunctionRefinement(), null);
+  assert.equal(app.__noreturnRefinementBusy, null, 'settled no-op must release the in-flight slot');
+
+  // Readiness changes independently of epoch/symbol generation. A second call
+  // must execute again rather than returning the previously settled null.
+  app.noreturnRefinementAuthority = {};
+  app.program = {};
+  const second = app.ensureNoreturnFunctionRefinement();
+  assert.notEqual(app.__noreturnRefinementBusy, null, 'second call must start a fresh refinement attempt');
+  await second;
+  assert.equal(app.__noreturnRefinementBusy, null);
 });
 
 test('dependency guard: the transaction never depends on the byte-rewrite transaction', () => {
