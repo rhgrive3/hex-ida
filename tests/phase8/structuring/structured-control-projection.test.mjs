@@ -803,3 +803,56 @@ test('16. provenance, line histories, and render metadata are correctly populate
   // 5. Render provenance
   assert.ok(projected.renderProvenance, 'renderProvenance must be built when requested');
 });
+
+
+// 17. Stale/corrupt conditional facts cannot upgrade non-cbr control flow
+test('17. non-cbr canonical entry terminators fail closed', () => {
+  const region = {
+    kind: 'conditional',
+    entry: 0,
+    exits: [3],
+    members: [1, 2],
+    constraints: [],
+    residualGotos: [],
+  };
+  const facts = {
+    edges: [
+      { from: 0, to: 1, construct: 'if-branch' },
+      { from: 0, to: 2, construct: 'if-branch' },
+      { from: 1, to: 3, construct: 'sequence' },
+      { from: 2, to: 3, construct: 'sequence' },
+    ],
+  };
+  const dominators = {
+    idom: [0, 0, 0, 0],
+    ipdom: [3, 3, 3, 3],
+    dominators: [
+      new Set([0]),
+      new Set([0, 1]),
+      new Set([0, 2]),
+      new Set([0, 3]),
+    ],
+    postDominators: [
+      new Set([0, 3]),
+      new Set([1, 3]),
+      new Set([2, 3]),
+      new Set([3]),
+    ],
+  };
+
+  for (const op of ['br', 'switch']) {
+    const cfg = {
+      blocks: [
+        { index: 0, succ: [1, 2], pred: [], insts: [{ op, extra: { targetBlock: 1 } }] },
+        { index: 1, succ: [3], pred: [0], insts: [{ op: 'br', extra: { targetBlock: 3 } }] },
+        { index: 2, succ: [3], pred: [0], insts: [{ op: 'br', extra: { targetBlock: 3 } }] },
+        { index: 3, succ: [], pred: [1, 2], insts: [{ op: 'ret' }] },
+      ],
+    };
+    assert.equal(
+      isAdoptableConditionalRegion(region, facts, cfg, dominators),
+      false,
+      `${op} entry terminator must not be adoptable as a conditional region`,
+    );
+  }
+});
