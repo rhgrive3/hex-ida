@@ -2013,7 +2013,6 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     } },
   };
   representationStages.set(enhanced, { ir:enhanced.ir, stage:phase8 });
-  if (globalThis.__hexCapture) globalThis.__hexLastResult = enhanced; // PERF-PROBE
   return enhanced;
 }
 
