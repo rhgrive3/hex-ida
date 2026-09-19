@@ -173,8 +173,8 @@ function hasUnconditionalTransfer(bundle) {
   return (bundle.controlEffects || []).some((effect) => effect?.kind === 'branch' || effect?.kind === 'leave');
 }
 
-function handlerEntryStack(region) {
-  if (region?.handlerKind === 'catch' || region?.handlerKind === 'filter') return [{ bits:64 }];
+function handlerEntryStack(region, bits = 64) {
+  if (region?.handlerKind === 'catch' || region?.handlerKind === 'filter') return [{ bits }];
   return [];
 }
 
@@ -251,13 +251,22 @@ export function validateCilEffectFunction(decoded, context = {}) {
     }
   };
 
+  const has32BitNative = (decoded?.bundles || []).some((b) =>
+    (b.consumedValues || []).some((v) => (v?.stackType === 'object-ref' || v?.stackType === 'native-int') && v?.bits === 32)
+  );
+  const nativePointerBits = decoded?.nativePointerBits
+    ?? (decoded?.image?.requires32Bit ? 32 : null)
+    ?? (context?.requires32Bit ? 32 : null)
+    ?? (context?.nativePointerBits ?? (has32BitNative ? 32 : 64));
+  const handlerBits = nativePointerBits === 32 || has32BitNative ? 32 : 64;
+
   if (bundles.length > 0 && safeInteger(bundles[0]?.bytecodeOffset)) enqueue(bundles[0].bytecodeOffset, [], null);
   for (const region of regions) {
     if (safeInteger(region?.handlerOffset) && offsets.has(region.handlerOffset)) {
-      enqueue(region.handlerOffset, handlerEntryStack(region), null);
+      enqueue(region.handlerOffset, handlerEntryStack(region, handlerBits), null);
     }
     if (safeInteger(region?.filterOffset) && offsets.has(region.filterOffset)) {
-      enqueue(region.filterOffset, [{ bits:64 }], null);
+      enqueue(region.filterOffset, [{ bits: handlerBits }], null);
     }
   }
 
