@@ -32,6 +32,7 @@ export function parseCheckSteps(checkScript) {
   let inDouble = false;
   let inBacktick = false;
   let escaped = false;
+  const commandSubstitutions = [];
   const str = String(checkScript);
 
   for (let i = 0; i < str.length; i++) {
@@ -61,7 +62,31 @@ export function parseCheckSteps(checkScript) {
       current += ch;
       continue;
     }
-    if (!inSingle && !inDouble && !inBacktick && ch === '&' && str[i + 1] === '&') {
+    // An unquoted command substitution is part of the surrounding canonical
+    // shell step. Track its balanced parenthesis extent so an internal && is
+    // never reinterpreted as a parallel-step boundary. Quoted substitutions
+    // are already protected by the quote state above.
+    if (!inSingle && !inDouble && !inBacktick && ch === '$' && str[i + 1] === '(') {
+      commandSubstitutions.push(1);
+      current += '$(';
+      i++;
+      continue;
+    }
+    if (!inSingle && !inDouble && !inBacktick && commandSubstitutions.length > 0) {
+      const last = commandSubstitutions.length - 1;
+      if (ch === '(') {
+        commandSubstitutions[last]++;
+        current += ch;
+        continue;
+      }
+      if (ch === ')') {
+        commandSubstitutions[last]--;
+        current += ch;
+        if (commandSubstitutions[last] === 0) commandSubstitutions.pop();
+        continue;
+      }
+    }
+    if (!inSingle && !inDouble && !inBacktick && commandSubstitutions.length === 0 && ch === '&' && str[i + 1] === '&') {
       const step = current.trim();
       if (step) steps.push(step);
       current = '';
@@ -72,6 +97,9 @@ export function parseCheckSteps(checkScript) {
   }
   if (escaped || inSingle || inDouble || inBacktick) {
     throw new Error('run-check-parallel: malformed shell syntax in check script (unclosed quote or dangling escape)');
+  }
+  if (commandSubstitutions.length > 0) {
+    throw new Error('run-check-parallel: malformed shell syntax in check script (unclosed command substitution)');
   }
   const last = current.trim();
   if (last) steps.push(last);
