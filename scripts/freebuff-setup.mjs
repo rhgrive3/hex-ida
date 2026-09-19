@@ -83,7 +83,57 @@ exec "$REPO/.tools/npm/bin/freebuff" "$@"
 `;
 }
 
-export function copyIfMissing(src, dst, executable = false) {
+function pathIsWithin(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+export function ensureSafeDirectory(root, target) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (!pathIsWithin(resolvedRoot, resolvedTarget)) {
+    throw new Error(`freebuff setup: unsafe directory outside containment root: ${resolvedTarget}`);
+  }
+
+  let rootEntry = null;
+  try {
+    rootEntry = fs.lstatSync(resolvedRoot);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    fs.mkdirSync(resolvedRoot, { recursive: true });
+    rootEntry = fs.lstatSync(resolvedRoot);
+  }
+  if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+    throw new Error(`freebuff setup: unsafe containment root is not a real directory: ${resolvedRoot}`);
+  }
+
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  if (!relative) return resolvedTarget;
+  let current = resolvedRoot;
+  for (const part of relative.split(path.sep)) {
+    current = path.join(current, part);
+    try {
+      const entry = fs.lstatSync(current);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`freebuff setup: unsafe directory ancestor: ${current}`);
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      fs.mkdirSync(current);
+      const entry = fs.lstatSync(current);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`freebuff setup: unsafe directory ancestor: ${current}`);
+      }
+    }
+  }
+  return resolvedTarget;
+}
+
+export function copyIfMissing(src, dst, executable = false, containmentRoot = null) {
+  // Validate every parent before even inspecting the leaf: lstat(dst) follows
+  // intermediate symlinks and must not be allowed to escape the HOME boundary.
+  if (containmentRoot) ensureSafeDirectory(containmentRoot, path.dirname(dst));
+  else fs.mkdirSync(path.dirname(dst), { recursive: true });
   // Destination occupancy must be checked without following the final symlink.
   // COPYFILE_EXCL closes the race between the lstat and the actual copy.
   try {
@@ -93,7 +143,6 @@ export function copyIfMissing(src, dst, executable = false) {
     if (error?.code !== 'ENOENT') return false;
   }
   if (!fs.existsSync(src)) return false;
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
   try {
     fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL);
   } catch (error) {
@@ -111,9 +160,9 @@ export function copyIfMissing(src, dst, executable = false) {
 
 // Legacy homes use absolute symlinks into the legacy shared dir; recreate
 // them as repo-relative links into the repo-local shared dir.
-function ensureHomeLinks(homeDir) {
+export function ensureHomeLinks(homeDir) {
   const manicode = path.join(homeDir, '.config', 'manicode');
-  fs.mkdirSync(manicode, { recursive: true });
+  ensureSafeDirectory(homeDir, manicode);
   const links = {
     'message-history.json': '../../../../shared/history/message-history.json',
     projects: '../../../../shared/history/projects',
@@ -152,8 +201,31 @@ function cmpVersions(a, b) {
   return 0;
 }
 
-function realBinary(p) {
+function isSafeExistingPath(root, target) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (!pathIsWithin(resolvedRoot, resolvedTarget)) return false;
   try {
+    const rootEntry = fs.lstatSync(resolvedRoot);
+    if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) return false;
+    const relative = path.relative(resolvedRoot, resolvedTarget);
+    const parts = relative ? relative.split(path.sep) : [];
+    let current = resolvedRoot;
+    for (let i = 0; i < parts.length; i++) {
+      current = path.join(current, parts[i]);
+      const entry = fs.lstatSync(current);
+      if (entry.isSymbolicLink()) return false;
+      if (i < parts.length - 1 && !entry.isDirectory()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function realBinary(p, containmentRoot = null) {
+  try {
+    if (containmentRoot && !isSafeExistingPath(containmentRoot, p)) return false;
     return fs.statSync(p).isFile() && !fs.lstatSync(p).isSymbolicLink();
   } catch {
     return false;
@@ -170,11 +242,43 @@ function binaryVersion(bin) {
   }
 }
 
+export function publishExecutableAtomically(src, dst, expectedVersion, { versionProbe = binaryVersion } = {}) {
+  const dir = path.dirname(dst);
+  ensureSafeDirectory(dir, dir);
+  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  try {
+    fs.copyFileSync(src, tmp, fs.constants.COPYFILE_EXCL);
+    fs.chmodSync(tmp, 0o755);
+    const stagedVersion = versionProbe(tmp);
+    if (expectedVersion && stagedVersion !== expectedVersion) {
+      throw new Error(`freebuff setup: staged shared binary version mismatch (${stagedVersion || 'unknown'} != ${expectedVersion})`);
+    }
+    fs.renameSync(tmp, dst);
+    return stagedVersion;
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+  }
+}
+
+function publishTextAtomically(dst, content, mode = 0o600) {
+  const dir = path.dirname(dst);
+  ensureSafeDirectory(dir, dir);
+  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  try {
+    fs.writeFileSync(tmp, content, { flag: 'wx', mode });
+    fs.renameSync(tmp, dst);
+    return true;
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+  }
+}
+
 // Keep one shared binary copy; returns { path, version } or null when no
 // usable copy exists anywhere yet (first launch then downloads for its HOME).
 function ensureSharedBinary() {
+  ensureSafeDirectory(DATA_ROOT, path.dirname(SHARED_BIN));
   let sharedBest = null;
-  if (realBinary(SHARED_BIN)) {
+  if (realBinary(SHARED_BIN, SHARED_ROOT)) {
     const v = binaryVersion(SHARED_BIN) || (() => {
       try { return fs.readFileSync(SHARED_BIN_VERSION, 'utf8').trim() || null; } catch { return null; }
     })();
@@ -187,7 +291,7 @@ function ensureSharedBinary() {
   for (const base of [DATA_ROOT, LEGACY_ROOT]) {
     for (const n of NUMS) {
       const p = path.join(base, n, 'home', '.config', 'manicode', 'freebuff');
-      if (!realBinary(p)) continue;
+      if (!realBinary(p, base)) continue;
       const v = binaryVersion(p);
       if (!v) continue;
       if (!best || cmpVersions(best.version, v) < 0) best = { path: p, version: v };
@@ -196,21 +300,28 @@ function ensureSharedBinary() {
   if (!best) return null;
   if (!sharedBest || best.path !== SHARED_BIN || cmpVersions(sharedBest.version, best.version) < 0) {
     try {
-      fs.mkdirSync(path.dirname(SHARED_BIN), { recursive: true });
       if (best.path !== SHARED_BIN) {
-        fs.copyFileSync(best.path, SHARED_BIN);
-        fs.chmodSync(SHARED_BIN, 0o755);
+        // Stage in the shared directory, validate the complete executable, and
+        // only then atomically rename over the live path. Existing HOME links
+        // therefore observe complete old-or-new bytes, never an in-place copy.
+        publishExecutableAtomically(best.path, SHARED_BIN, best.version);
       }
-      fs.writeFileSync(SHARED_BIN_VERSION, `${best.version}\n`);
-      return { path: SHARED_BIN, version: best.version };
     } catch {
       return sharedBest;
     }
+    try {
+      publishTextAtomically(SHARED_BIN_VERSION, `${best.version}\n`);
+    } catch {
+      // The executable itself is authoritative. A later setup can repair the
+      // advisory sidecar without downgrading a successfully published binary.
+    }
+    return { path: SHARED_BIN, version: best.version };
   }
   return sharedBest;
 }
 
-export function ensureMetadata(dir, shared) {
+export function ensureMetadata(dir, shared, containmentRoot = dir) {
+  ensureSafeDirectory(containmentRoot, dir);
   const metaPath = path.join(dir, 'freebuff-metadata.json');
   const expectedTarget = `${process.platform}-${process.arch}`;
   let currentEntry = null;
@@ -253,6 +364,7 @@ export function ensureMetadata(dir, shared) {
 // and their future background updates are left alone.
 function linkSharedBinary(home, shared) {
   const dir = path.join(home, '.config', 'manicode');
+  ensureSafeDirectory(home, dir);
   const bin = path.join(dir, 'freebuff');
   let linked = false;
   try {
@@ -272,24 +384,26 @@ function linkSharedBinary(home, shared) {
       return false;
     }
   }
-  const metaUpdated = ensureMetadata(dir, shared);
+  const metaUpdated = ensureMetadata(dir, shared, home);
   return linked || metaUpdated;
 }
 
 function ensureShared() {
+  ensureSafeDirectory(DATA_ROOT, SHARED_ROOT);
   let migrated = 0;
   const repoShared = path.join(REPO_DATA_ROOT, 'shared');
   for (const rel of SHARED_FILES) {
     const dst = path.join(SHARED_ROOT, rel);
+    ensureSafeDirectory(SHARED_ROOT, path.dirname(dst));
     if (fs.existsSync(dst)) continue;
     if (moveIfMissing(path.join(repoShared, rel), dst)) {
       migrated++;
       continue;
     }
     const src = path.join(LEGACY_ROOT, 'shared', rel);
-    if (copyIfMissing(src, dst, !rel.endsWith('.json'))) migrated++;
+    if (copyIfMissing(src, dst, !rel.endsWith('.json'), SHARED_ROOT)) migrated++;
   }
-  fs.mkdirSync(path.join(SHARED_ROOT, 'history', 'projects'), { recursive: true });
+  ensureSafeDirectory(SHARED_ROOT, path.join(SHARED_ROOT, 'history', 'projects'));
   return migrated;
 }
 
@@ -298,17 +412,33 @@ function ensureHome(n, shared) {
   const repoHome = path.join(REPO_DATA_ROOT, n, 'home');
   const legacy = path.join(LEGACY_ROOT, n, 'home');
   let migrated = 0;
-  if (moveIfMissing(repoHome, home)) {
+
+  // Persistent HOME ancestors are untrusted state. Validate each directory
+  // entry without following symlinks before any migration or child mutation.
+  ensureSafeDirectory(DATA_ROOT, path.dirname(home));
+  let homeExists = false;
+  try {
+    const homeEntry = fs.lstatSync(home);
+    if (homeEntry.isSymbolicLink() || !homeEntry.isDirectory()) {
+      throw new Error(`freebuff setup: unsafe HOME entry: ${home}`);
+    }
+    homeExists = true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  if (!homeExists && moveIfMissing(repoHome, home)) {
     migrated++;
-  } else if (fs.existsSync(repoHome)) {
+  }
+  ensureSafeDirectory(DATA_ROOT, home);
+  if (fs.existsSync(repoHome)) {
     for (const rel of HOME_FILES) {
-      if (copyIfMissing(path.join(repoHome, rel), path.join(home, rel))) migrated++;
+      if (copyIfMissing(path.join(repoHome, rel), path.join(home, rel), false, home)) migrated++;
     }
   }
-  fs.mkdirSync(home, { recursive: true });
   const sharedMigrated = ensureShared();
   for (const rel of HOME_FILES) {
-    if (copyIfMissing(path.join(legacy, rel), path.join(home, rel))) migrated++;
+    if (copyIfMissing(path.join(legacy, rel), path.join(home, rel), false, home)) migrated++;
   }
   ensureHomeLinks(home);
   if (shared && linkSharedBinary(home, shared)) migrated++;
