@@ -560,7 +560,19 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const semanticValueById = new Map(ir.values.map((value) => [value.id, value]));
   const producerByValueId = new Map();
-  for (const node of ir.nodes) for (const valueId of node.outputs || []) producerByValueId.set(valueId, node);
+  const registerStateWriteValueIds = new Set();
+  const firstConsumerNodeByValueId = new Map();
+  const multiConsumerNodeValueIds = new Set();
+  for (const node of ir.nodes) {
+    for (const valueId of node.outputs || []) producerByValueId.set(valueId, node);
+    if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'register' && node.inputs?.[0] != null) {
+      registerStateWriteValueIds.add(node.inputs[0]);
+    }
+    for (const valueId of node.inputs || []) {
+      if (!firstConsumerNodeByValueId.has(valueId)) firstConsumerNodeByValueId.set(valueId, node.id);
+      else if (firstConsumerNodeByValueId.get(valueId) !== node.id) multiConsumerNodeValueIds.add(valueId);
+    }
+  }
   const orderedBlocks = blockOrder(ir);
   const blockIndexById = new Map(orderedBlocks.map((block, index) => [block.id, index]));
   const legacyBlocks = orderedBlocks.map((block, index) => ({
@@ -675,6 +687,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         stateProjection,
         comparisonCarrierByNodeId,
         canonicalValueUseIds,
+        registerStateWriteValueIds,
+        firstConsumerNodeByValueId,
+        multiConsumerNodeValueIds,
         physicalStateCurrent,
         blockBySemanticId,
         options,

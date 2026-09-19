@@ -357,6 +357,15 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   }));
   const loopsByHeader = new Map(loops.map((loop) => [loop.header, loop]));
   const nodeSets = new Map(loops.map((loop) => [loop.header, new Set(loop.nodes)]));
+  // Loop membership is immutable for this pass. Index it once so edge
+  // classification does not rescan every loop for every CFG edge/block.
+  const loopsByNode = new Map();
+  for (const loop of loops) {
+    for (const index of loop.nodes) {
+      const members = loopsByNode.get(index);
+      if (members) members.push(loop); else loopsByNode.set(index, [loop]);
+    }
+  }
 
   // A switch-headed natural loop whose distinct case blocks are all direct
   // latches back to the same header is dispatcher-shaped control flow. It may
@@ -383,8 +392,8 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
 
   const dispatcherLoopOf = (index) => {
     let best = null;
-    for (const loop of loops) {
-      if (!dispatcherLoopHeaders.has(loop.header) || !nodeSets.get(loop.header).has(index)) continue;
+    for (const loop of loopsByNode.get(index) ?? []) {
+      if (!dispatcherLoopHeaders.has(loop.header)) continue;
       if (best == null || loop.nodes.length < best.nodes.length) best = loop;
     }
     return best;
@@ -392,8 +401,7 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
 
   const innermostLoopOf = (index) => {
     let best = null;
-    for (const loop of loops) {
-      if (!nodeSets.get(loop.header).has(index)) continue;
+    for (const loop of loopsByNode.get(index) ?? []) {
       if (best == null || loop.nodes.length < best.nodes.length) best = loop;
     }
     return best;
@@ -402,9 +410,9 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   // not the target. A nested edge leaves the inner loop, not the outer.
   const loopExitedBy = (from, to) => {
     let best = null;
-    for (const loop of loops) {
+    for (const loop of loopsByNode.get(from) ?? []) {
       const nodes = nodeSets.get(loop.header);
-      if (!nodes.has(from) || nodes.has(to)) continue;
+      if (nodes.has(to)) continue;
       if (best == null || loop.nodes.length < best.nodes.length) best = loop;
     }
     return best;
@@ -438,6 +446,18 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   const residualGotoEdges = edges.filter((record) => GOTO_CONSTRUCTS.has(record.construct));
   const constraintEdges = edges.filter((record) => record.construct === 'constraint-edge');
   const unknownEdges = edges.filter((record) => record.construct === 'unknown');
+  const constraintEdgesByFrom = new Map(), residualGotoEdgesByFrom = new Map();
+  const constraintEdgesByLoopHeader = new Map(), residualGotoEdgesByLoopHeader = new Map();
+  const indexEdge = (byFrom, byLoopHeader, edge) => {
+    const list = byFrom.get(edge.from);
+    if (list) list.push(edge); else byFrom.set(edge.from, [edge]);
+    for (const loop of loopsByNode.get(edge.from) ?? []) {
+      const loopEdges = byLoopHeader.get(loop.header);
+      if (loopEdges) loopEdges.push(edge); else byLoopHeader.set(loop.header, [edge]);
+    }
+  };
+  for (const edge of constraintEdges) indexEdge(constraintEdgesByFrom, constraintEdgesByLoopHeader, edge);
+  for (const edge of residualGotoEdges) indexEdge(residualGotoEdgesByFrom, residualGotoEdgesByLoopHeader, edge);
 
   // Regions. A loop region per loop the artifact proved; a conditional or switch
   // region per branching block that has a join. Nothing is invented for a block
@@ -454,9 +474,9 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
       depth: loop.depth,
       parentEntry: loop.parentHeader,
       // Edges the region must honour but no construct describes.
-      constraints: Object.freeze(constraintEdges.filter((edge) => nodeSets.get(loop.header).has(edge.from))
+      constraints: Object.freeze((constraintEdgesByLoopHeader.get(loop.header) ?? [])
         .map((edge) => `${edge.from}->${edge.to}:${edge.kinds.join('|')}`)),
-      residualGotos: Object.freeze(residualGotoEdges.filter((edge) => nodeSets.get(loop.header).has(edge.from))
+      residualGotos: Object.freeze((residualGotoEdgesByLoopHeader.get(loop.header) ?? [])
         .map((edge) => `${edge.from}->${edge.to}`)),
       origin: Object.freeze({ instructionIds: Object.freeze([...new Set(loop.nodes.flatMap((index) => originIdsOf(byIndex.get(index))))].sort()) }),
     }));
@@ -478,8 +498,8 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
       members: Object.freeze(successors.map((edge) => edge.to).filter((target) => target !== join).sort((left, right) => left - right)),
       depth: innermostLoopOf(index)?.depth ?? null,
       parentEntry: innermostLoopOf(index)?.header ?? null,
-      constraints: Object.freeze(constraintEdges.filter((edge) => edge.from === index).map((edge) => `${edge.from}->${edge.to}:${edge.kinds.join('|')}`)),
-      residualGotos: Object.freeze(residualGotoEdges.filter((edge) => edge.from === index).map((edge) => `${edge.from}->${edge.to}`)),
+      constraints: Object.freeze((constraintEdgesByFrom.get(index) ?? []).map((edge) => `${edge.from}->${edge.to}:${edge.kinds.join('|')}`)),
+      residualGotos: Object.freeze((residualGotoEdgesByFrom.get(index) ?? []).map((edge) => `${edge.from}->${edge.to}`)),
       origin: Object.freeze({ instructionIds: Object.freeze(originIdsOf(block)) }),
     }));
   }

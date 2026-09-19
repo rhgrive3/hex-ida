@@ -339,9 +339,18 @@ export function addWithCarryOperands(node, context) {
 }
 
 function hasRegisterStateWriteForValue(valueId, context) {
+  if (context.registerStateWriteValueIds) return context.registerStateWriteValueIds.has(valueId);
   return context.ir.nodes.some((candidate) => candidate.kind === 'state-write'
     && candidate.inputs?.[0] === valueId
     && candidate.variable?.physicalIdentity?.kind === 'register');
+}
+
+function valueIsConsumedByOtherNode(valueId, node, context) {
+  if (context.firstConsumerNodeByValueId) {
+    const first = context.firstConsumerNodeByValueId.get(valueId);
+    return first != null && (first !== node.id || context.multiConsumerNodeValueIds?.has(valueId));
+  }
+  return context.ir.nodes.some((candidate) => candidate.id !== node.id && candidate.inputs?.includes(valueId));
 }
 
 // A deterministic value projection is only a faithful stand-in for the
@@ -586,8 +595,7 @@ export function projectNode(node, context) {
       if (carrier) {
         const resultValueId = node.outputs?.[0] ?? null;
         const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);
-        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>
-          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));
+        const resultIsConsumed = resultValueId != null && valueIsConsumedByOtherNode(resultValueId, node, context);
         if (!resultIsWritten && !resultIsConsumed) {
           inst.op = V1_OP.CMP;
           inst.dst = carrier;
@@ -941,8 +949,7 @@ export function projectNode(node, context) {
       if (addSub) {
         const resultValueId = node.outputs?.[0] ?? null;
         const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);
-        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>
-          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));
+        const resultIsConsumed = resultValueId != null && valueIsConsumedByOtherNode(resultValueId, node, context);
         const args = [addSub.lhs, addSub.rhs];
         if (!addSub.plainArithmetic) {
           // Exact a + canonical_addend + zero_extend(C). The subtraction

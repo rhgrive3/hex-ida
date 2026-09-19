@@ -815,6 +815,33 @@ function composeReturns(local, locals, solved, component, snapshotId, checkpoint
   const add = fact => { facts.set(JSON.stringify(fact), fact); };
   const direct = new Map(local.directCalls.map(call => [call.callSiteId, call]));
   const indirect = new Map(local.indirectCallSets.map(call => [call.callSiteId, call]));
+  // Many return-equation rows can reference different positions of the same
+  // immutable solved callee. Group those canonical rows lazily once per callee
+  // instead of filtering its complete return vector for every equation row.
+  const returnFactsByCallee = new Map();
+  const returnSiteIndexesByCallee = new Map();
+  const returnFactsAt = (callee, returnIndex) => {
+    let byIndex = returnFactsByCallee.get(callee);
+    if (!byIndex) {
+      byIndex = new Map();
+      for (const fact of callee.returnProvenance) {
+        const index = fact.returnIndex ?? 0;
+        const list = byIndex.get(index);
+        if (list) list.push(fact);
+        else byIndex.set(index, [fact]);
+      }
+      returnFactsByCallee.set(callee, byIndex);
+    }
+    return byIndex.get(returnIndex) ?? [];
+  };
+  const hasReturnSite = (callee, returnIndex) => {
+    let indexes = returnSiteIndexesByCallee.get(callee);
+    if (!indexes) {
+      indexes = new Set((callee.returnEquations?.sites ?? []).map(site => site.returnIndex));
+      returnSiteIndexesByCallee.set(callee, indexes);
+    }
+    return indexes.has(returnIndex);
+  };
   for (const row of local.returnEquations.rows) {
     checkpoint();
     if (row.kind === 'fact') { add(row.fact); }
@@ -834,9 +861,9 @@ function composeReturns(local, locals, solved, component, snapshotId, checkpoint
           || callee.status.completeness !== 'complete' || callee.unknownCallEffects.length) {
           add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
         }
-        const alternatives = callee.returnProvenance.filter(fact => (fact.returnIndex ?? 0) === row.callReturnIndex);
+        const alternatives = returnFactsAt(callee, row.callReturnIndex);
         if (!alternatives.length && (groundUnresolved || !component.includes(target)
-          || !callee.returnEquations?.sites.some(site => site.returnIndex === row.callReturnIndex))) {
+          || !hasReturnSite(callee, row.callReturnIndex))) {
           add({ kind:'unknown', returnIndex:row.returnIndex });
         }
         for (const alternative of alternatives) {

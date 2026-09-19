@@ -433,6 +433,7 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
     // Fixed-offset observations, merged per offset. A field is an observation
     // about bytes, not a name; naming is a later, refinement-layer concern.
     const byOffset = new Map();
+    const originIdsByOffset = new Map();
     for (const access of accesses) {
       if (access.indexed || access.offset == null) continue;
       const key = String(access.offset);
@@ -441,10 +442,16 @@ export function runAggregatePass(context = {}, budget = {}, area = null) {
           offset: access.offset, widthBits: access.widthBits, byteWidth: access.byteWidth,
           reads: 0, writes: 0, origin: [],
         });
+        originIdsByOffset.set(key, new Set());
       }
       const field = byOffset.get(key);
       if (access.op === 'load') field.reads += 1; else field.writes += 1;
-      for (const id of access.origin) if (!field.origin.includes(id)) field.origin.push(id);
+      const seenOrigins = originIdsByOffset.get(key);
+      for (const id of access.origin) {
+        if (seenOrigins.has(id)) continue;
+        seenOrigins.add(id);
+        field.origin.push(id);
+      }
       if (access.widthBits !== field.widthBits) {
         // Two widths at one offset is exactly the union/struct question. It is
         // recorded, and the wider observation is kept so the extent stays honest.

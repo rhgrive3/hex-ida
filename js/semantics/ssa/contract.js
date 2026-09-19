@@ -270,8 +270,36 @@ export function createSemanticSsaContract(input, options = {}) {
   }
 
   const cfgInfo = cfgMaps(cfg);
+  // Canonical CFGs are deeply frozen by createSemanticCfg(). Only cache facts for
+  // that immutable production form; mutable caller-supplied CFGs keep the exact
+  // legacy re-read behavior below.
+  const cacheCfgFacts = cfgInfo && Object.isFrozen(cfg) && Object.isFrozen(cfg.blocks);
+  let cachedVirtualEntryPredecessor;
+  let hasCachedVirtualEntryPredecessor = false;
+  const virtualEntryPredecessor = () => {
+    if (!cacheCfgFacts) return semanticSsaVirtualEntryPredecessor(cfg);
+    if (!hasCachedVirtualEntryPredecessor) {
+      cachedVirtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
+      hasCachedVirtualEntryPredecessor = true;
+    }
+    return cachedVirtualEntryPredecessor;
+  };
+  // PHI validation can visit many definitions in the same block. Cache CFG-derived
+  // facts once per contract instead of rescanning the whole CFG for every PHI.
+  const phiPredecessorCache = new Map();
+  const phiPredecessorInfo = (blockId, block) => {
+    if (phiPredecessorCache.has(blockId)) return phiPredecessorCache.get(blockId);
+    const hasVirtualEntry = blockId === cfg.entryBlockId && block.predecessors.length > 0;
+    const expected = block.predecessors.slice();
+    if (hasVirtualEntry) expected.push(virtualEntryPredecessor());
+    expected.sort();
+    const info = { hasVirtualEntry, expected, members: new Set(expected) };
+    phiPredecessorCache.set(blockId, info);
+    return info;
+  };
   // Dominance is computed at most once per contract validation (#5413).
   const dominanceCache = new Map();
+  const dominatorSetCache = new Map();
   const useIds = new Set();
   for (const use of uses) {
     assertNotAborted(options);
@@ -300,14 +328,30 @@ export function createSemanticSsaContract(input, options = {}) {
     if (!block) fail('semantic-ssa-invalid-definition-block');
     const incomingPreds = definition.incoming.map((item) => item.predecessorBlockId);
     if (new Set(incomingPreds).size !== incomingPreds.length) fail('semantic-ssa-duplicate-phi-predecessor');
-    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
-    const hasVirtualEntry = definition.blockId === cfg.entryBlockId && block.predecessors.length > 0;
-    for (const pred of incomingPreds) {
-      if (hasVirtualEntry && pred === virtualEntryPredecessor) continue;
-      if (!block.predecessors.includes(pred)) fail('semantic-ssa-phi-predecessor-not-in-cfg');
-    }
-    if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(semanticSsaPhiPredecessors(cfg, definition.blockId))) {
-      fail('semantic-ssa-phi-predecessor-set-incomplete');
+    let hasVirtualEntry;
+    let currentVirtualEntryPredecessor;
+    if (!cacheCfgFacts) {
+      currentVirtualEntryPredecessor = virtualEntryPredecessor();
+      hasVirtualEntry = definition.blockId === cfg.entryBlockId && block.predecessors.length > 0;
+      for (const pred of incomingPreds) {
+        if (hasVirtualEntry && pred === currentVirtualEntryPredecessor) continue;
+        if (!block.predecessors.includes(pred)) fail('semantic-ssa-phi-predecessor-not-in-cfg');
+      }
+      if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(semanticSsaPhiPredecessors(cfg, definition.blockId))) {
+        fail('semantic-ssa-phi-predecessor-set-incomplete');
+      }
+    } else {
+      const predecessorInfo = phiPredecessorInfo(definition.blockId, block);
+      ({ hasVirtualEntry } = predecessorInfo);
+      currentVirtualEntryPredecessor = virtualEntryPredecessor();
+      for (const pred of incomingPreds) {
+        if (!predecessorInfo.members.has(pred)) fail('semantic-ssa-phi-predecessor-not-in-cfg');
+      }
+      const sortedIncomingPreds = incomingPreds.slice().sort();
+      if (sortedIncomingPreds.length !== predecessorInfo.expected.length
+        || sortedIncomingPreds.some((pred, index) => pred !== predecessorInfo.expected[index])) {
+        fail('semantic-ssa-phi-predecessor-set-incomplete');
+      }
     }
     // Each phi argument must be available on its own edge (#5413): the
     // argument's definition block must be the predecessor itself or dominate
@@ -317,14 +361,18 @@ export function createSemanticSsaContract(input, options = {}) {
     const dominance = dominanceFor(cfg, dominanceCache);
     for (const incoming of definition.incoming) {
       const prior = definitionByValue.get(incoming.valueId);
-      if (hasVirtualEntry && incoming.predecessorBlockId === virtualEntryPredecessor) {
+      if (hasVirtualEntry && incoming.predecessorBlockId === currentVirtualEntryPredecessor) {
         if (!['entry-seed', 'implicit-undef'].includes(prior?.proof?.kind)) fail('semantic-ssa-entry-phi-seed-required');
         if (prior?.blockId !== cfg.entryBlockId) fail('semantic-ssa-entry-phi-seed-block-mismatch');
         continue;
       }
       if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
-      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
-      if (!dominators?.includes(prior.blockId)) fail('semantic-ssa-phi-incoming-edge-mismatch');
+      let dominators = dominatorSetCache.get(incoming.predecessorBlockId);
+      if (!dominators) {
+        dominators = new Set(dominance?.dominators?.[incoming.predecessorBlockId] ?? []);
+        dominatorSetCache.set(incoming.predecessorBlockId, dominators);
+      }
+      if (!dominators.has(prior.blockId)) fail('semantic-ssa-phi-incoming-edge-mismatch');
     }
   }
 

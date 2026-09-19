@@ -168,18 +168,23 @@ function fallbackLocation(inst) {
   return { key: `unknown:${inst.semanticNodeId ?? inst.id ?? 'memory'}`, kind: V1_MK.UNKNOWN, size: inst.addr.size ?? null };
 }
 
-function representativeProjectedAddress(regionId, memorySsa, instructionBySemanticId) {
+function representativeProjectedAddresses(memorySsa, instructionBySemanticId) {
+  // The legacy projection prefers the first precise definition address for a
+  // region, then the first precise use only when no definition supplied one.
+  // Compute that same choice in two artifact-wide passes instead of rescanning
+  // definitions and uses once per region.
+  const byRegion = new Map();
   for (const definition of memorySsa.definitions) {
-    if (definition.regionId !== regionId || definition.sourceEntityId == null) continue;
+    if (byRegion.has(definition.regionId) || definition.sourceEntityId == null) continue;
     const address = instructionBySemanticId.get(definition.sourceEntityId)?.addr ?? null;
-    if (preciseProjectedAddress(address)) return address;
+    if (preciseProjectedAddress(address)) byRegion.set(definition.regionId, address);
   }
   for (const use of memorySsa.uses) {
-    if (use.regionId !== regionId) continue;
+    if (byRegion.has(use.regionId)) continue;
     const address = instructionBySemanticId.get(use.sourceEntityId)?.addr ?? null;
-    if (preciseProjectedAddress(address)) return address;
+    if (preciseProjectedAddress(address)) byRegion.set(use.regionId, address);
   }
-  return null;
+  return byRegion;
 }
 
 function accessLocation(regionId, source, regionById, locationByRegion, valuesById) {
@@ -210,11 +215,11 @@ function canonicalRangeKey(range) {
  * contracts (for example #359) intact without recreating the removed private
  * stack-flow engine or allowing a serialized clone to mint a pointer.
  */
-function canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById) {
+function canonicalCompatibilityStore(memorySsa, use, memoryNodeById, definitionByCanonicalId, metadataById) {
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || use?.aliasRelation !== 'must') return null;
   const memoryNode = memoryNodeById.get(String(use.reachingDefinitionId)) ?? null;
-  const definition = memorySsa.definitions.find((item) => String(item.id) === String(use.reachingDefinitionId)) ?? null;
+  const definition = definitionByCanonicalId.get(String(use.reachingDefinitionId)) ?? null;
   const loadMetadata = metadataById.get(String(use.id)) ?? null;
   const storeMetadata = metadataById.get(String(use.reachingDefinitionId)) ?? null;
   if (!memoryNode || memoryNode.kind !== 'store' || !definition
@@ -306,9 +311,10 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
   const operandTransitions = [];
   propagateScalarConstants(projected, constantObserver);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
+  const representativeAddressByRegion = representativeProjectedAddresses(memorySsa, instructionBySemanticId);
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
-    const loc = legacyLocation(region, valuesById, representativeProjectedAddress(region.id, memorySsa, instructionBySemanticId));
+    const loc = legacyLocation(region, valuesById, representativeAddressByRegion.get(region.id) ?? null);
     locationByRegion.set(region.id, loc);
     projected.locations.set(loc.key, loc);
   }
@@ -345,6 +351,13 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
   );
 
   const definitionById = new Map(memorySsa.definitions.map((definition) => [definition.id, definition]));
+  // Compatibility reaching-store checks use string identity by contract. Keep
+  // the old first-match semantics while indexing that identity once per artifact.
+  const definitionByCanonicalId = new Map();
+  for (const definition of memorySsa.definitions) {
+    const key = String(definition.id);
+    if (!definitionByCanonicalId.has(key)) definitionByCanonicalId.set(key, definition);
+  }
   for (const definition of memorySsa.definitions) {
     const memoryNode = memoryNodeById.get(definition.id);
     if (definition.previousDefinitionIds.length) {
@@ -465,7 +478,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
       }
 
       const compatibilityStore = source.op === V1_OP.LOAD
-        ? canonicalCompatibilityStore(memorySsa, use, memoryNodeById, metadataById)
+        ? canonicalCompatibilityStore(memorySsa, use, memoryNodeById, definitionByCanonicalId, metadataById)
         : null;
       if (compatibilityStore) source.reachingStore = compatibilityStore;
       if (mergedFact.status !== 'exact' && !forwardedStackOperand) {
