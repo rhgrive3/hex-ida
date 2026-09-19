@@ -4,6 +4,27 @@ import { elfLoaderEntrySectionAnalysisWindow, mappedELFFileSpanForVa } from './e
 
 const W = globalThis.Words;
 
+function uniqueExecutableFileSpan(image, start, size) {
+  const end = start + size;
+  const span = mappedELFFileSpanForVa(image, start, size);
+  const owner = span?.segment;
+  if (!owner || owner.source !== 'PT_LOAD' || owner.perms?.execute !== true || end <= start) return null;
+  let owners = 0;
+  for (const segment of image.segments || []) {
+    if (!segment || segment.source !== 'PT_LOAD') continue;
+    const lo = BigInt(segment.address ?? 0n);
+    const bytes = BigInt(segment.size ?? 0n);
+    if (bytes <= 0n) continue;
+    const hi = lo + bytes;
+    if (start >= hi || end <= lo) continue;
+    if (segment !== owner || start < lo || end > hi) return null;
+    const fileSize = BigInt(Object.hasOwn(segment, 'fileSize') ? (segment.fileSize ?? 0n) : bytes);
+    if (start - lo + size > fileSize) return null;
+    owners++;
+  }
+  return owners === 1 ? span : null;
+}
+
 // A loader entry proves the start, not the end. Only a fully file-backed,
 // straight-line section ending in RET supplies the missing extent evidence.
 // Reuse the production word classifier; unknown/control/system instructions
@@ -24,7 +45,7 @@ export function retainElfLoaderEntryExtents(image) {
     const size = window.end - window.start;
     // Bound optional proof work independently of attacker-controlled section size.
     if (size > 4096n || size % 4n !== 0n || window.start % 4n !== 0n) return fn;
-    const span = mappedELFFileSpanForVa(image, window.start, size);
+    const span = uniqueExecutableFileSpan(image, window.start, size);
     if (!span) return fn;
     for (let offset = 0; offset < Number(size); offset += 4) {
       const pc = window.start + BigInt(offset);
