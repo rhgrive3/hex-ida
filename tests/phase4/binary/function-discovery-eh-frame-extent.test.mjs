@@ -145,6 +145,49 @@ test('FDE extent: range crossing file-backed coverage stays start-only', () => {
   assert.equal(seeds[0].end, null);
 });
 
+test('FDE extent: overlapping non-executable PT_LOAD cannot lend file bytes to executable zero-fill', () => {
+  const fixture = buildFixture({
+    rows: [[0x1010n, EH_FRAME_ADDR + 0x20n]],
+    ranges: [0x20n],
+    segmentFileSize: 0x10,
+  });
+  fixture.image.addSegment({
+    name: 'LOAD-ro-overlap',
+    address: TEXT_ADDR,
+    size: 0x80n,
+    fileOffset: 0x80n,
+    fileSize: 0x80n,
+    perms: { read: true, execute: false },
+    source: 'PT_LOAD',
+  });
+  parseEhFrameHeader(fixture.r, fixture.header, fixture.image, 64, null);
+  const seeds = unwindSeeds(fixture.image);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].size, null);
+  assert.equal(seeds[0].end, null);
+});
+
+test('FDE extent: any overlapping second PT_LOAD keeps an otherwise file-backed extent start-only', () => {
+  const fixture = buildFixture({
+    rows: [[0x1010n, EH_FRAME_ADDR + 0x20n]],
+    ranges: [0x20n],
+  });
+  fixture.image.addSegment({
+    name: 'LOAD-ro-overlap',
+    address: TEXT_ADDR,
+    size: 0x80n,
+    fileOffset: 0x80n,
+    fileSize: 0x80n,
+    perms: { read: true, execute: false },
+    source: 'PT_LOAD',
+  });
+  parseEhFrameHeader(fixture.r, fixture.header, fixture.image, 64, null);
+  const seeds = unwindSeeds(fixture.image);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].size, null);
+  assert.equal(seeds[0].end, null);
+});
+
 test('FDE extent: section-only image without PT_LOAD stays start-only', () => {
   const image = parse({
     rows: [[0x1010n, EH_FRAME_ADDR + 0x20n]],
