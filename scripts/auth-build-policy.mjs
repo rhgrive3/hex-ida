@@ -7,7 +7,12 @@ const DEFAULT_REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.u
 
 function normalizeInputPath(rawPath, repoRoot = DEFAULT_REPO_ROOT) {
   const normalized = String(rawPath ?? '').replaceAll('\\', '/');
-  if (repoRoot && (normalized === repoRoot || normalized.startsWith(`${repoRoot}/`))) {
+  if (!repoRoot) return normalized;
+  if (repoRoot === '/') {
+    return normalized.startsWith('/') ? normalized.slice(1) : normalized;
+  }
+  if (normalized === repoRoot) return '';
+  if (normalized.startsWith(`${repoRoot}/`)) {
     return normalized.slice(repoRoot.length + 1);
   }
   return normalized;
@@ -36,7 +41,10 @@ export function assertStandardGraph(metafile, label) {
 export function assertPrivilegedGraph(metafile, kind, options = {}) {
   if (kind !== 'parent' && kind !== 'child') throw new Error(`Unsupported privileged bundle kind: ${String(kind)}`);
   const repoRoot = options?.repoRoot != null
-    ? String(options.repoRoot).replaceAll('\\', '/').replace(/\/+$/, '')
+    ? (() => {
+        const normalized = String(options.repoRoot).replaceAll('\\', '/');
+        return /^\/+$/u.test(normalized) ? '/' : normalized.replace(/\/+$/, '');
+      })()
     : DEFAULT_REPO_ROOT;
   const rawInputs = Object.keys(metafile?.inputs || {});
   const inputSet = new Set(rawInputs.map((val) => normalizeInputPath(val, repoRoot)));
