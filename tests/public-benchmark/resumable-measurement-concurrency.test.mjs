@@ -28,3 +28,21 @@ test('concurrent resumptions fail closed instead of losing attempts', async () =
   const summary = await first;
   assert.equal(summary.counts.PASS, 1);
 });
+
+
+test('stale writer locks are never stolen automatically', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-resumable-stale-lock-'));
+  const storeDir = path.join(root, 'run');
+  fs.mkdirSync(storeDir, { recursive:true });
+  const lockFile = path.join(storeDir, '.writer.lock');
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: 1, createdAt: 'old' }));
+  const old = new Date(Date.now() - 7 * 60 * 60 * 1000);
+  fs.utimesSync(lockFile, old, old);
+  const manifest = { schema: 'test-manifest/v1', cases: [{ id: 'case-a' }] };
+
+  await assert.rejects(
+    measureCases({ storeDir, manifest, headSha: HEAD, runCase: async () => ({ state: 'PASS' }) }),
+    /measurement-writer-stale-lock/,
+  );
+  assert.equal(fs.existsSync(lockFile), true, 'stale lock must remain for explicit operator recovery');
+});
