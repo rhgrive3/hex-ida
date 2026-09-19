@@ -8,6 +8,7 @@ import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index
 import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
 import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
+import { applyStructuredControlProjection } from './phase8/structured-control-projection.js';
 import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import { createQueryGuard } from '../symbolic/memory/query-state.js';
 import {
@@ -318,18 +319,51 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   return result;
 }
 
+const DEMANDED_STRUCTURING_STAGES = Object.freeze([
+  'canonical-facts',
+  'scalar-optimization',
+  'loop-facts',
+  'structuring',
+]);
+
+function shouldDemandStructuring(result, opts) {
+  if (opts.phase8Structuring === false || opts.phase8ControlProjection === false) return false;
+  if (opts.phase8PrepareProof === true || opts.phase8ProofOnlyRewrites === true) return false;
+  if (opts.phase8Structuring === true || opts.phase8ControlProjection === true) return true;
+  const body = result?.cAst?.body;
+  if (!Array.isArray(body)) return false;
+  const hasResidualConditionalGoto = body.some(n =>
+    typeof n.text === 'string' && (n.text.includes('goto loc_') && n.text.startsWith('if '))
+  );
+  if (!hasResidualConditionalGoto) return false;
+  return Array.isArray(result.ir?.instructions) && result.ir.instructions.some(i => i.op === 'cbr');
+}
+
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
-    // The intermediate representation API and explicit proof preparation keep
-    // their existing pre-projection endpoint. Product presentation facades
-    // request the final map; a zero history allowance still disables history.
-    if (opts.renderProvenance !== true || opts.phase8PrepareProof === true
-        || opts.renderProvenanceBudget?.maxTransformRecords === 0) return result;
-    // Projection is part of ordinary presentation, not permission to run the
-    // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
-    return interactiveStage?.ledger?.published === true && interactiveStage.analysis
-      ? applyPhase8Projection(result, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true }) : result;
+    let projected = result;
+    const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
+      && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
+    if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
+      projected = applyPhase8Projection(projected, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true });
+    }
+    if (shouldDemandStructuring(projected, opts)) {
+      const structuringBudget = {
+        stages: DEMANDED_STRUCTURING_STAGES,
+        maxWorkItems: opts.phase8StructuringWorkBudget ?? 5000,
+        shouldAbort: opts.shouldAbort,
+        budgetClass: 'standard',
+      };
+      const structuringStage = runPhase8Stage(
+        { ir: result.ir, types: result.types, opts },
+        structuringBudget,
+      );
+      if (structuringStage.ledger?.published === true && structuringStage.analysis) {
+        projected = applyStructuredControlProjection(projected, structuringStage.analysis, opts);
+      }
+    }
+    return projected;
   }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
@@ -366,6 +400,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
   }
   updated = applyPhase8Projection(updated, stage.analysis, opts);
+  updated = applyStructuredControlProjection(updated, stage.analysis, opts);
   return updated;
 }
 

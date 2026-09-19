@@ -34,6 +34,19 @@ import { INDUCTION_PASS, runInductionPass } from './induction.js';
 import { STRUCTURING_PASS, runStructuringPass } from './structuring.js';
 import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
 import { PROVIDER_INTERFACE_VERSION, PROVIDER_PASS, REGISTERED_PROVIDERS, createProvider, runProviderPass } from './providers.js';
+import {
+  applyStructuredControlProjection,
+  readStructuredControlProjection,
+  STRUCTURED_CONTROL_PROJECTION_VERSION,
+  isAdoptableConditionalRegion,
+} from './structured-control-projection.js';
+
+export {
+  applyStructuredControlProjection,
+  readStructuredControlProjection,
+  STRUCTURED_CONTROL_PROJECTION_VERSION,
+  isAdoptableConditionalRegion,
+};
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, isCanonicalPassResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
