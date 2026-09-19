@@ -75,6 +75,12 @@ jobs:
               --branch "$HEAD_REF" --phase 7 \
               --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
             node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "e/b1a-noreturn-refinement-20260919" ]]; then
+            # PR #9232: exact cross-lane projection for B1a topology refinement.
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
           elif [[ "$HEAD_REF" == "integration-candidate/benchmark-auth-20260914" ]]; then
             # Validate every foreign path before passing the Phase 7-owned subset.
             FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \

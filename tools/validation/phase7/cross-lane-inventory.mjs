@@ -23,6 +23,12 @@ const AGY_ISSUE_FOLLOWUP_LANE = 'codex/agy-issue-followup-20260918';
 // Each route fails closed on any undeclared foreign path before projecting the
 // Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  "e/b1a-noreturn-refinement-20260919": Object.freeze([
+    ".circleci/config.yml",
+    "js/symbols.js",
+    "tests/phase4/binary/c1-elf-relocation-target-adversarial.test.mjs",
+    "tests/phase4/binary/function-discovery-plt-resolver-adversarial.test.mjs",
+  ]),
   "recovery/t016-discovery-artifact-20260916": Object.freeze([
     ".circleci/config.yml",
     "js/rebuild/transaction-v2.js",
