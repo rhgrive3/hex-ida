@@ -12,6 +12,51 @@ const outputDir = join(root, 'tests/.real-fixtures');
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const requested = args.filter((arg) => arg !== '--check');
+export const DEFAULT_FIXTURE_DOWNLOAD_TIMEOUT_MS = 120_000;
+
+export class FixtureDownloadTimeoutError extends Error {
+  constructor(name, timeoutMs) {
+    super(`${name}: fixture download timed out after ${timeoutMs}ms`);
+    this.name = 'FixtureDownloadTimeoutError';
+  }
+}
+
+function createDownloadDeadline(name, timeoutMs) {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) throw new TypeError('fixture download timeout must be a positive finite number');
+  const controller = new AbortController();
+  const reason = new FixtureDownloadTimeoutError(name, ms);
+  const timer = setTimeout(() => controller.abort(reason), ms);
+  return Object.freeze({
+    controller,
+    reason,
+    clear() { clearTimeout(timer); },
+  });
+}
+
+function abortReason(signal, fallback) {
+  if (signal?.aborted && signal.reason instanceof FixtureDownloadTimeoutError) return signal.reason;
+  return fallback;
+}
+
+function raceWithAbort(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(value).then(
+      (result) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function fixture(name) {
   const spec = manifest.fixtures[name];
@@ -78,39 +123,58 @@ export async function releaseBody(response) {
   } catch {}
 }
 
-export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
+export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10, {
+  fetchImpl = globalThis.fetch,
+  signal = null,
+  timeoutMs = DEFAULT_FIXTURE_DOWNLOAD_TIMEOUT_MS,
+} = {}) {
+  const ownedDeadline = signal ? null : createDownloadDeadline('fixture request', timeoutMs);
+  const activeSignal = signal || ownedDeadline.controller.signal;
   let currentUrl = initialUrl;
   let redirects = 0;
-  while (true) {
-    if (!/^https:\/\//i.test(currentUrl)) {
-      throw new Error(`Insecure redirect URL or downgrade forbidden: ${currentUrl}`);
+  try {
+    while (true) {
+      if (!/^https:\/\//i.test(currentUrl)) {
+        throw new Error(`Insecure redirect URL or downgrade forbidden: ${currentUrl}`);
+      }
+      const response = await raceWithAbort(
+        fetchImpl(currentUrl, { redirect: 'manual', signal: activeSignal }),
+        activeSignal,
+      );
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        redirects++;
+        if (redirects > maxRedirects) {
+          await raceWithAbort(releaseBody(response), activeSignal);
+          throw new Error('Too many HTTP redirects');
+        }
+        const location = response.headers?.get?.('location') ?? response.headers?.location;
+        if (!location) {
+          await raceWithAbort(releaseBody(response), activeSignal);
+          throw new Error('Redirect missing Location header');
+        }
+        try {
+          currentUrl = new URL(location, currentUrl).href;
+        } catch (err) {
+          await raceWithAbort(releaseBody(response), activeSignal);
+          throw err;
+        }
+        await raceWithAbort(releaseBody(response), activeSignal);
+        continue;
+      }
+      return response;
     }
-    const response = await fetch(currentUrl, { redirect: 'manual' });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      redirects++;
-      if (redirects > maxRedirects) {
-        await releaseBody(response);
-        throw new Error('Too many HTTP redirects');
-      }
-      const location = response.headers?.get?.('location') ?? response.headers?.location;
-      if (!location) {
-        await releaseBody(response);
-        throw new Error('Redirect missing Location header');
-      }
-      try {
-        currentUrl = new URL(location, currentUrl).href;
-      } catch (err) {
-        await releaseBody(response);
-        throw err;
-      }
-      await releaseBody(response);
-      continue;
-    }
-    return response;
+  } catch (error) {
+    throw abortReason(activeSignal, error);
+  } finally {
+    ownedDeadline?.clear();
   }
 }
 
-export async function fetchFixture(name, spec, { verifyImpl = verify, fetchImpl = fetchWithHttpsRedirects } = {}) {
+export async function fetchFixture(name, spec, {
+  verifyImpl = verify,
+  fetchImpl = fetchWithHttpsRedirects,
+  timeoutMs = DEFAULT_FIXTURE_DOWNLOAD_TIMEOUT_MS,
+} = {}) {
   const target = join(outputDir, spec.file);
   try {
     await verifyImpl(name, target, spec);
@@ -126,18 +190,28 @@ export async function fetchFixture(name, spec, { verifyImpl = verify, fetchImpl 
 
   await mkdir(dirname(target), { recursive:true });
   const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
-  const response = await fetchImpl(url);
-  if (!response.ok || !response.body) {
-    await releaseBody(response);
-    throw new Error(`${name}: download failed with HTTP ${response.status}`);
-  }
-
-  const hash = createHash('sha256');
-  const output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
+  const deadline = createDownloadDeadline(name, timeoutMs);
+  const { signal } = deadline.controller;
+  let response = null;
+  let output = null;
   let streamError = null;
-  output.on('error', (err) => { streamError = streamError || err; });
-  let size = 0;
+
   try {
+    response = await raceWithAbort(
+      fetchImpl(url, 10, { signal, timeoutMs }),
+      signal,
+    );
+    if (!response.ok || !response.body) {
+      await raceWithAbort(releaseBody(response), signal);
+      const status = response.status;
+      response = null;
+      throw new Error(`${name}: download failed with HTTP ${status}`);
+    }
+
+    const hash = createHash('sha256');
+    output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
+    output.on('error', (err) => { streamError = streamError || err; });
+    let size = 0;
     async function* validateAndHash(source) {
       for await (const chunk of source) {
         const bytes = Buffer.from(chunk);
@@ -147,7 +221,7 @@ export async function fetchFixture(name, spec, { verifyImpl = verify, fetchImpl 
         yield bytes;
       }
     }
-    await pipeline(validateAndHash(response.body), output);
+    await raceWithAbort(pipeline(validateAndHash(response.body), output, { signal }), signal);
     const sha256 = hash.digest('hex');
     if (size !== spec.size) throw new Error(`${name}: size mismatch (${size} != ${spec.size})`);
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
@@ -169,9 +243,23 @@ export async function fetchFixture(name, spec, { verifyImpl = verify, fetchImpl 
     }
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
-    output.destroy();
+    if (output && !output.closed) {
+      const outputClosed = new Promise((resolve) => output.once('close', resolve));
+      output.destroy();
+      await outputClosed;
+    } else {
+      output?.destroy();
+    }
+    if (signal.aborted && response?.body) {
+      // pipeline abort normally destroys the body; this is a best-effort final
+      // release for custom response bodies without waiting beyond the deadline.
+      try { response.body.destroy?.(); } catch {}
+      try { void response.body.cancel?.(); } catch {}
+    }
     await rm(temp, { force:true });
-    throw streamError || error;
+    throw abortReason(signal, streamError || error);
+  } finally {
+    deadline.clear();
   }
 }
 
