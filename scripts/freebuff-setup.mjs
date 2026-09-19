@@ -28,6 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -82,11 +83,23 @@ exec "$REPO/.tools/npm/bin/freebuff" "$@"
 `;
 }
 
-function copyIfMissing(src, dst, executable = false) {
-  if (fs.existsSync(dst)) return false;
+export function copyIfMissing(src, dst, executable = false) {
+  // Destination occupancy must be checked without following the final symlink.
+  // COPYFILE_EXCL closes the race between the lstat and the actual copy.
+  try {
+    fs.lstatSync(dst);
+    return false;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false;
+  }
   if (!fs.existsSync(src)) return false;
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.copyFileSync(src, dst);
+  try {
+    fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL);
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    throw error;
+  }
   if (executable) fs.chmodSync(dst, 0o755);
   else if (dst.endsWith('.json')) {
     try {
@@ -197,21 +210,41 @@ function ensureSharedBinary() {
   return sharedBest;
 }
 
-function ensureMetadata(dir, shared) {
+export function ensureMetadata(dir, shared) {
   const metaPath = path.join(dir, 'freebuff-metadata.json');
   const expectedTarget = `${process.platform}-${process.arch}`;
+  let currentEntry = null;
   try {
-    const cur = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (cur.version === shared.version && cur.target === expectedTarget) return false;
-  } catch {}
+    currentEntry = fs.lstatSync(metaPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false;
+  }
+
+  // Only read an existing regular metadata file. In particular, never follow
+  // a symlink leaf while deciding whether reconciliation is needed.
+  if (currentEntry?.isFile()) {
+    try {
+      const cur = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (cur.version === shared.version && cur.target === expectedTarget) return false;
+    } catch {}
+  }
+
+  const content = `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`;
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.freebuff-metadata.json.tmp-${process.pid}-${randomUUID()}`);
   try {
-    fs.writeFileSync(
-      metaPath,
-      `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`,
-    );
+    // Publish through a new regular file in the same directory, then rename
+    // over the leaf. rename replaces a symlink directory entry; it does not
+    // follow the symlink target.
+    fs.writeFileSync(tmp, content, { flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmp, metaPath);
     return true;
   } catch {
     return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
   }
 }
 
