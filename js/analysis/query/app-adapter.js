@@ -2,6 +2,7 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { buildCfg, EDGE } from '../../cfg.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -277,6 +278,61 @@ function rangeFor(app, id) {
     complete:!crossed,
     reason:crossed ? 'symbol-range-crosses-executable-region' : null,
     provenance:'executable-region+proven-function-extent',
+  };
+}
+
+export function proveClosedArm64AnalysisWindow(model, range, symbols) {
+  if (!model || !range || range.complete !== false || range.reason !== 'function-end-unproven') return null;
+  if (model.truncated === true || !Array.isArray(model.instructions) || model.instructions.length === 0) return null;
+  const evidence = symbols?.functionEvidence?.(range.start) ?? null;
+  if (evidence?.confirmed !== true) return null;
+  const byAddress = new Map();
+  const byRow = new Map();
+  for (const instruction of model.instructions) {
+    if (instruction?.address == null || !Number.isSafeInteger(instruction?.row)) return null;
+    if (instruction.data === true || instruction.unknown === true || instruction.analysisError || instruction.parseError) return null;
+    byAddress.set(BigInt(instruction.address).toString(), instruction.row);
+    byRow.set(instruction.row, instruction);
+  }
+  const cfg = buildCfg(model, {
+    rowOfAddress(address) {
+      try { return byAddress.get(BigInt(address).toString()) ?? null; }
+      catch { return null; }
+    },
+  });
+  if (!Array.isArray(cfg?.nodes) || cfg.entry == null || cfg.entry < 0 || !cfg.nodes[cfg.entry]) return null;
+  const seen = new Set();
+  const stack = [cfg.entry];
+  while (stack.length) {
+    const index = stack.pop();
+    if (seen.has(index)) continue;
+    const node = cfg.nodes[index];
+    if (!node) return null;
+    seen.add(index);
+    const term = node.terminator;
+    if (!term) return null;
+    const successors = Array.isArray(node.succ) ? node.succ : [];
+    if (successors.some((edge) => edge?.kind === EDGE.UNKNOWN)) return null;
+    let hasLocalSuccessor = false;
+    const sourceTerm = byRow.get(term.row);
+    let hasProvenExit = term.isReturn === true || sourceTerm?.isTailCall === true;
+    for (const edge of successors) {
+      if (edge?.to >= 0) {
+        hasLocalSuccessor = true;
+        stack.push(edge.to);
+        continue;
+      }
+      if (edge?.outside !== true || edge?.kind !== EDGE.JUMP || edge?.target == null) return null;
+      const external = symbols?.functionAt?.(BigInt(edge.target));
+      if (!external || BigInt(external.start) !== BigInt(edge.target)) return null;
+      hasProvenExit = true;
+    }
+    if (!hasLocalSuccessor && !hasProvenExit) return null;
+  }
+  return {
+    complete:true,
+    provenance:'control-flow-closed-within-analysis-window',
+    reachableBlocks:seen.size,
   };
 }
 
@@ -1073,7 +1129,14 @@ export function createAppAnalysisQueryAdapter(app) {
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
       });
-      return publish(projection, result.status?.completeness, functionStatus);
+      const closure = result.status?.completeness === 'partial' && functionStatus.reason === 'function-end-unproven'
+        ? proveClosedArm64AnalysisWindow(result.value.model, {
+            complete:false, reason:functionStatus.reason, start:address,
+          }, app?.symbols)
+        : null;
+      return closure
+        ? publish(projection, 'complete', { reason:null, provenance:closure.provenance, analysisWindowClosed:true })
+        : publish(projection, result.status?.completeness, functionStatus);
     },
 
     async translationUnit(_snapshot, ids, options = {}) {
