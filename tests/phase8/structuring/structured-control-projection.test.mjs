@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { sourceOf } from '../../../js/decompiler/ast/nodes.js';
+import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { PASS_STAGES } from '../../../js/decompiler/phase8/contract.js';
 import {
   applyStructuredControlProjection,
@@ -74,6 +75,17 @@ function oneSidedIr() {
   const f = fixture('one-sided');
   const cond = f.block(0, { succ: [1, 2] }).opaque(1);
   f.conditionalBranch(cond, 1, 2);
+  f.block(1, { succ: [2] }).store(f.constant(100, 32));
+  f.branch(2);
+  f.block(2).ret();
+  return withArm64ProducerLayout(f.build());
+}
+
+function invertedOneSidedIr() {
+  const f = fixture('inverted-one-sided');
+  const cond = f.block(0, { succ: [1, 2] }).opaque(1);
+  // Taken branch goes directly to the join; the fallthrough arm is block 1.
+  f.conditionalBranch(cond, 2, 1);
   f.block(1, { succ: [2] }).store(f.constant(100, 32));
   f.branch(2);
   f.block(2).ret();
@@ -266,6 +278,12 @@ test('3. nested reducible conditional maintains distinct inner and outer joins',
   assert.ok(projected.pseudocode.includes('s3 = 333;'));
   assert.ok(projected.pseudocode.includes('s4 = 444;'));
   assert.ok(projected.pseudocode.includes('return s;'));
+  const nestedTexts = projected.cAst.body.map((node) => node.text);
+  const outerElse = nestedTexts.lastIndexOf('} else {');
+  assert.ok(outerElse >= 0, 'outer conditional must retain its else partition');
+  assert.ok(nestedTexts.indexOf('s2 = 222;') < outerElse, 'inner true statement must remain inside outer if arm');
+  assert.ok(nestedTexts.indexOf('s3 = 333;') < outerElse, 'inner join statement must remain inside outer if arm');
+  assert.ok(nestedTexts.indexOf('s4 = 444;') > outerElse, 'outer false statement must remain inside outer else arm');
   const meta = readStructuredControlProjection(projected);
   assert.ok(meta);
   assert.ok(meta.adoptedRegions.length >= 1);
@@ -575,8 +593,154 @@ test('12. successor order is never used as branch polarity evidence', () => {
   assert.equal(projected.pseudocode, 'legacy-polarity');
 });
 
-// 13. Provenance and metadata
-test('13. provenance, line histories, and render metadata are correctly populated', () => {
+// 13. Malformed/non-SESE canonical region must fail closed
+test('13. malformed conditional region cannot choose a non-postdominating join', () => {
+  const ir = diamondIr();
+  const { analysis, facts } = analyze(ir);
+  const real = facts.regions.find((region) => region.kind === 'conditional' && region.entry === 0);
+  assert.ok(real);
+
+  const malformed = {
+    ...real,
+    exits: [1],
+    members: [2],
+  };
+  const malformedFacts = { ...facts, regions: [malformed] };
+  const cfg = analysis.get('cfg');
+  const dominators = analysis.get('dominators');
+  assert.equal(
+    isAdoptableConditionalRegion(malformed, malformedFacts, cfg, dominators),
+    false,
+    'declared join must be the proven immediate post-dominator',
+  );
+
+  const body = [
+    makeLine('ctrl', 1, 'if (c0) goto loc_1004;', 0, 0, 0x1000),
+    makeLine('stmt', 1, 'goto loc_1008;', 0, 1, 0x1002),
+    makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
+    makeLine('stmt', 1, 'x = 42;', 1, 3, 0x1004),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
+    makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
+    makeLine('stmt', 1, 'x = 99;', 2, 6, 0x1008),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
+    makeLine('stmt', 1, 'return x;', 3, 9, 0x100c),
+  ];
+  const result = {
+    ir,
+    types: {},
+    cAst: { kind: 'CProgram', body, source: sourceOf() },
+    lines: body,
+    pseudocode: 'legacy-non-sese',
+    rewriteProof: [],
+    metrics: {},
+  };
+  const malformedAnalysis = {
+    get(key) {
+      if (key === 'structuredRegions') return malformedFacts;
+      return analysis.get(key);
+    },
+  };
+  assert.equal(
+    applyStructuredControlProjection(result, malformedAnalysis),
+    result,
+    'malformed region must preserve the original AST and pseudocode',
+  );
+});
+
+// 14. Fallback inversion preserves the complete compound condition
+test('14. fallback inversion negates the whole compound condition', () => {
+  const ir = invertedOneSidedIr();
+  const term = ir.blocks[0].insts.find((inst) => inst.op === 'cbr');
+  assert.ok(term);
+  term.cond = null;
+  term.extra = { ...(term.extra ?? {}), kind: 'mystery', cond: null };
+  const { analysis } = analyze(ir);
+
+  const body = [
+    makeLine('ctrl', 1, 'if (a == b && c) goto loc_1008;', 0, 0, 0x1000),
+    makeLine('stmt', 1, 'goto loc_1004;', 0, 1, 0x1002),
+    makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
+    makeLine('stmt', 1, 'x = 100;', 1, 3, 0x1004),
+    makeLine('stmt', 1, 'goto loc_1008;', 1, 4, 0x1006),
+    makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
+    makeLine('stmt', 1, 'return x;', 2, 6, 0x1008),
+  ];
+  const result = {
+    ir,
+    types: {},
+    cAst: { kind: 'CProgram', body, source: sourceOf() },
+    lines: body,
+    pseudocode: '',
+    rewriteProof: [],
+    metrics: {},
+  };
+
+  const projected = applyStructuredControlProjection(result, analysis);
+  assert.notEqual(projected, result);
+  assert.ok(projected.pseudocode.includes('if (!(a == b && c)) {'));
+  assert.ok(!projected.pseudocode.includes('a != b && c'));
+});
+
+// 15. Optimized pipeline must honor every structured-projection control
+test('15. optimized pipeline honors structured-control projection option gates', () => {
+  const run = (options = {}) => {
+    const ir = diamondIr();
+    const body = [
+      makeLine('ctrl', 1, 'if (c0) goto loc_1004;', 0, 0, 0x1000),
+      makeLine('stmt', 1, 'goto loc_1008;', 0, 1, 0x1002),
+      makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
+      makeLine('stmt', 1, 'x = 42;', 1, 3, 0x1004),
+      makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
+      makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
+      makeLine('stmt', 1, 'x = 99;', 2, 6, 0x1008),
+      makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+      makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
+      makeLine('stmt', 1, 'return x;', 3, 9, 0x100c),
+    ];
+    const seed = {
+      semantic: true,
+      ir,
+      types: {},
+      cAst: { kind: 'CProgram', body, source: sourceOf() },
+      lines: body,
+      pseudocode: body.map((node) => node.text).join('\n'),
+      rewriteProof: [],
+      metrics: {},
+      ctx: {},
+    };
+    return enhanceSemanticDecompilation(seed, null, {
+      phase8Optimize: true,
+      phase8TimeBudgetMs: 5000,
+      decompilerTimeBudgetMs: 5000,
+      ...options,
+    });
+  };
+
+  const enabled = run({ phase8ControlProjection: true });
+  assert.ok(
+    enabled.rewriteProof?.some((record) => record.rule === 'project-canonical-structured-conditional')
+      || readStructuredControlProjection(enabled),
+    'control case must reach the optimized structured projection path',
+  );
+
+  for (const options of [
+    { phase8ControlProjection: false },
+    { phase8Structuring: false },
+    { phase8PrepareProof: true },
+    { phase8ProofOnlyRewrites: true },
+  ]) {
+    const result = run(options);
+    assert.ok(
+      !result.rewriteProof?.some((record) => record.rule === 'project-canonical-structured-conditional'),
+      `structured projection must stay disabled for ${JSON.stringify(options)}`,
+    );
+    assert.equal(readStructuredControlProjection(result), null);
+  }
+});
+
+// 16. Provenance and metadata
+test('16. provenance, line histories, and render metadata are correctly populated', () => {
   const ir = diamondIr();
   const { analysis } = analyze(ir);
 
