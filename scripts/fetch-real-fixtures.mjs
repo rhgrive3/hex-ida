@@ -138,7 +138,16 @@ export async function fetchFixture(name, spec) {
       console.log(`${name}: downloaded and verified`);
       return;
     } catch {}
-    await rename(temp, target);
+    try {
+      await rename(temp, target);
+    } catch (renameErr) {
+      if (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM' || process.platform === 'win32') {
+        await rm(target, { force: true });
+        await rename(temp, target);
+      } else {
+        throw renameErr;
+      }
+    }
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
     output.destroy();
