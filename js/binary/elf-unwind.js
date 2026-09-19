@@ -1,5 +1,5 @@
 import { functionSeed } from './model.js';
-import { elfExactFunctionStartRejection } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, mappedELFFileSpanForVa } from './elf-mapping.js';
 
 const DW_EH_PE_OMIT = 0xff;
 const MAX_EH_RECORDS = 10_000_000;
@@ -427,7 +427,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         // and keeps the header validation partial, never `verified:true` truth.
         const targetRejection = elfExactFunctionStartRejection(image, decoded.initial);
         if (targetRejection) throw new Error(`FDE initial location ${targetRejection}`);
-        candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
+        candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind, range:decoded.range });
       } catch (entryError) {
         if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;
         invalidEntries++;
@@ -439,6 +439,14 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     let added = 0;
     let outputComplete = true;
     const addedSeen = new Set();
+    // An FDE address range is exact PC-range authority for its function, but
+    // only when exactly one verified FDE claims that start. Ambiguous starts
+    // keep their start-only seed, exactly as before.
+    const claimsByAddress = new Map();
+    for (const candidate of candidates) {
+      const claimKey = candidate.address.toString();
+      claimsByAddress.set(claimKey, (claimsByAddress.get(claimKey) || 0) + 1);
+    }
     for (const candidate of candidates) {
       const key = candidate.address.toString();
       if (addedSeen.has(key)) continue;
@@ -450,6 +458,12 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         break;
       }
       image.functions.push(functionSeed(candidate.address, {
+        // The row loop already proved range > 0 inside one executable range.
+        // Retain it as exact extent only with the full span file-backed in a
+        // single PT_LOAD; anything else stays a start-only seed.
+        ...((claimsByAddress.get(key) === 1 && candidate.range != null && candidate.range > 0n
+          && mappedELFFileSpanForVa(image, candidate.address, candidate.range))
+          ? { size:candidate.range } : {}),
         source:'unwind',
         confidence:candidate.domainKind === 'section' ? 0.985 : 0.97,
         exactFunctionStart:true,
