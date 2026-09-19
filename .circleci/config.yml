@@ -165,6 +165,15 @@ jobs:
                   --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              e/b1a-noreturn-refinement-20260919)
+                # PR #9232 spans Phase 7 analysis plus exact SymbolIndex/Phase 4 evidence.
+                # Reject every undeclared foreign path before validating the Phase 7 subset.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               integration/arch-defects-progress-20260918)
                 # PR #9203 combines the reviewed architecture invariant work with
                 # the Phase 7 query DTO repair. The exact helper rejects every

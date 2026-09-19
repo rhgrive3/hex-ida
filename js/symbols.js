@@ -137,6 +137,14 @@ export class SymbolIndex {
     /* Rename は元の symbol table に存在しない stripped function にも付く。
        nearest() を描画ごと O(rename count) にしないため、変更時だけ sorted index を再構築する。 */
     this._renameAddrs = [];
+    /* Function topology is a semantic identity separate from the byte/analysis
+       epoch. `gen` changes for non-topology edits too, so a downstream topology
+       refinement publishes its own monotone revision. `functionTopologyEnds`
+       overlays an *effective* ownership bound (the new split start) on top of
+       the declared/source extent retained in `funcEnds`; the raw loader
+       evidence is never overwritten. */
+    this.functionTopologyRevision = 0;
+    this.functionTopologyEnds = new Map();
     this.gen = ++SymbolIndex.gen;  // 解説のキャッシュ鍵に使う
   }
 
@@ -312,9 +320,31 @@ export class SymbolIndex {
     if (index < 0 || index >= this.funcs.length) return null;
     const start = this.funcs[index];
     const region = this._functionRegion(start);
-    if (!this.funcEnds || index >= this.funcEnds.length) return null;
-    const explicit = this.funcEnds[index];
-    if (explicit == null || explicit <= start) return null;
+    const cap = this.functionTopologyEnds.size ? (this.functionTopologyEnds.get(start.toString()) ?? null) : null;
+    let declared = null;
+    if (this.funcEnds && index < this.funcEnds.length) {
+      const explicit = this.funcEnds[index];
+      if (explicit != null && explicit > start && !(region && explicit > region.end)) declared = explicit;
+    }
+    if (declared == null && cap == null) return null;
+    /* The declared/source extent is evidence; the effective bound is the
+       intersection of that evidence with any installed split. */
+    const effective = declared == null ? cap : (cap == null || declared < cap ? declared : cap);
+    if (effective == null || effective <= start) return null;
+    if (region && effective > region.end) return null;
+    return effective;
+  }
+
+  /**
+   * Raw declared/source function end, ignoring any effective split overlay.
+   * Presentation and provenance read this; ownership reads `_functionEnd`. */
+  declaredFunctionEnd(addr) {
+    const i = this._floor(this.funcs, addr);
+    if (i < 0 || this.funcs[i] !== addr) return null;
+    if (!this.funcEnds || i >= this.funcEnds.length) return null;
+    const explicit = this.funcEnds[i];
+    if (explicit == null || explicit <= addr) return null;
+    const region = this._functionRegion(addr);
     if (region && explicit > region.end) return null;
     return explicit;
   }
@@ -554,6 +584,94 @@ export class SymbolIndex {
     this.funcEnds = hasExactEnd ? ends : null;
     this.gen = ++SymbolIndex.gen;
     return added;
+  }
+
+  /**
+   * Atomic append-only function-topology refinement (B1a).
+   *
+   * Adds starts that carry downstream semantic authority (a locally-defined
+   * proven-noreturn callee's post-call continuation), and installs the matching
+   * *effective* ownership split on each predecessor so an existing declared
+   * extent cannot keep describing addresses after the new start. Existing
+   * starts are never moved or deleted, duplicates are no-ops, and the raw
+   * declared ends stay available through `funcEnds`/`declaredFunctionEnd`.
+   *
+   * One call is one topology transaction: it bumps `gen` and
+   * `functionTopologyRevision` at most once, and a zero-addition call is a
+   * complete no-op (no generation or revision change).
+   */
+  applyFunctionTopologyRefinement(additions, provenance = { source: 'noreturn-continuation-refinement', confidence: 0.6, confirmed: false }) {
+    const list = Array.isArray(additions) ? additions : [];
+    const have = new Set();
+    for (const start of this.funcs) have.add(start.toString());
+    const canonical = [];
+    for (const raw of list) {
+      const value = raw && typeof raw === 'object' ? (raw.start ?? raw.address) : raw;
+      const addr = canonicalMetadataAddress(value);
+      if (addr == null || have.has(addr.toString())) continue;
+      have.add(addr.toString());
+      canonical.push({ start: addr, raw });
+    }
+    canonical.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+
+    /* Compute predecessor effective bounds from the pre-refinement topology so
+       the split is derived from the state the refinement proposal was built on. */
+    const priorBound = new Map();
+    for (let i = 0; i < this.funcs.length; i++) {
+      const start = this.funcs[i];
+      const declared = this._functionEnd(i);
+      const next = i + 1 < this.funcs.length ? this.funcs[i + 1] : null;
+      const bound = declared != null ? declared : (next != null && next > start && next - start <= 0x40000n ? next : null);
+      priorBound.set(start.toString(), bound);
+    }
+
+    for (const { start } of canonical) {
+      let predKey = null;
+      for (let i = 0; i < this.funcs.length; i++) {
+        const candidate = this.funcs[i];
+        if (candidate >= start) break;
+        const bound = priorBound.get(candidate.toString());
+        if (bound != null && start < bound) predKey = candidate.toString();
+      }
+      if (predKey == null) continue;
+      const previous = this.functionTopologyEnds.get(predKey);
+      if (previous == null || start < previous) this.functionTopologyEnds.set(predKey, start);
+    }
+
+    if (!canonical.length) return { added: 0, revision: this.functionTopologyRevision };
+
+    const declaredEnds = new Map();
+    for (let i = 0; i < this.funcs.length; i++) {
+      const declared = this.funcEnds && i < this.funcEnds.length ? this.funcEnds[i] : null;
+      if (declared != null && declared > this.funcs[i]) declaredEnds.set(this.funcs[i].toString(), declared);
+    }
+    const all = Array.from(this.funcs);
+    for (const { start } of canonical) all.push(start);
+    all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const out = new BigUint64Array(all.length);
+    const ends = new BigUint64Array(all.length);
+    let hasExactEnd = false;
+    for (let i = 0; i < all.length; i++) {
+      out[i] = all[i];
+      const declared = declaredEnds.get(all[i].toString());
+      if (declared != null) { ends[i] = declared; hasExactEnd = true; }
+    }
+    this.funcs = out;
+    this.funcEnds = hasExactEnd ? ends : null;
+    for (const { start, raw } of canonical) {
+      const extra = raw && typeof raw === 'object' ? raw.provenance : null;
+      this.functionProvenance.set(start.toString(), { ...provenance, ...(extra || {}) });
+    }
+    this.gen = ++SymbolIndex.gen;
+    this.functionTopologyRevision += 1;
+    return { added: canonical.length, revision: this.functionTopologyRevision };
+  }
+
+  /** Canonical digest of the current effective function-start set. */
+  functionTopologyStartDigest() {
+    let out = '';
+    for (let i = 0; i < this.funcs.length; i++) out += this.funcs[i].toString(16) + ',';
+    return out;
   }
 
   /** 推測で得た関数の先頭を取り込む（LC_FUNCTION_STARTS がないとき）。 */

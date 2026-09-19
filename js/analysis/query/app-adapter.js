@@ -193,7 +193,16 @@ function isPlainObject(value) {
 
 function artifactVersions(app) {
   const value = app?.analysisArtifactVersions ?? app?.artifactVersions;
-  return isPlainObject(value) ? { ...value } : {};
+  const versions = isPlainObject(value) ? { ...value } : {};
+  // Function topology is an internal semantic identity, not caller data. A
+  // downstream topology refinement (B1a) bumps it, so a pre-refinement query or
+  // summary snapshot becomes stale without the byte/analysis epoch moving. The
+  // reserved value always wins over a caller-provided one.
+  const revision = app?.symbols?.functionTopologyRevision;
+  if (Number.isSafeInteger(revision) && revision >= 0) {
+    versions.functionTopology = { revision };
+  }
+  return versions;
 }
 
 function currentInfo(app) { return storeValue(app, 'fileInfo'); }
