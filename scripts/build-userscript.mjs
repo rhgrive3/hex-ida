@@ -228,10 +228,12 @@ function scanImportScriptsCalls(source) {
             const argsEnd = after;
             after++;
             let callEnd = after;
-            while (callEnd < len && /[\s;]/.test(source[callEnd])) {
-              if (source[callEnd] === ';') { callEnd++; break; }
-              callEnd++;
-            }
+            // Consume only horizontal spacing before an optional semicolon.
+            // A semicolonless importScripts() call owns no following newline;
+            // preserving that record boundary keeps inlined source separated
+            // from the next statement.
+            while (callEnd < len && /[ \t\r\f\v]/.test(source[callEnd])) callEnd++;
+            if (source[callEnd] === ';') callEnd++;
             matches.push({
               start: callStart,
               end: callEnd,
