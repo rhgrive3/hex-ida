@@ -114,6 +114,13 @@ test('the raw lane invokes the compiler with repository-relative paths', async (
   const invocations = [];
   const spawnImpl = (command, args, options) => {
     invocations.push({ command, args, cwd: options?.cwd });
+    for (const arg of args.filter((value) => String(value).endsWith('.c'))) {
+      assert.equal(
+        fs.existsSync(path.resolve(options.cwd, arg)),
+        true,
+        `dry-run compiler input must be materialized before spawn: ${arg}`,
+      );
+    }
     return failingChild();
   };
 
