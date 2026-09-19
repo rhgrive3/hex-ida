@@ -25,6 +25,12 @@ async function syncDirectory(directory, io) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
+async function assertRegularPublicationInput(file, expected, io) {
+  const stat = await io.lstat(file);
+  if (!stat.isFile()) throw new Error(`userscript-publication-non-regular-input:${file}`);
+  if (!(await io.readFile(file)).equals(expected)) throw new Error(`userscript-publication-stale-input:${file}`);
+}
+
 // Never truncate an existing generated file before the replacement has been
 // written, synced and read back. A directory-sync failure still fails the build.
 export async function writeFileVerified(file, content, { io = fs } = {}) {
@@ -50,9 +56,14 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
   let retainRecovery = false;
   let primaryError = null;
   try {
+    // Preflight both members before staging or creating backups. readFile()
+    // follows symlinks while rename() replaces the directory entry, so a
+    // symlink would validate one filesystem object and publish over another.
+    for (const [index, entry] of entries.entries()) {
+      await assertRegularPublicationInput(paths[index], entry.expected, io);
+    }
     for (const [index, entry] of entries.entries()) {
       const file = paths[index];
-      if (!(await io.readFile(file)).equals(entry.expected)) throw new Error(`userscript-publication-stale-input:${file}`);
       const record = { file, backup:`${file}.${randomUUID()}.backup`, temporary:null, backedUp:false, published:false };
       records.push(record);
       record.temporary = await stageFile(file, entry.content, io);
@@ -60,7 +71,7 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
     }
     await syncDirectory(directory, io);
     for (const [index, record] of records.entries()) {
-      if (!(await io.readFile(record.file)).equals(entries[index].expected)) throw new Error(`userscript-publication-stale-input:${record.file}`);
+      await assertRegularPublicationInput(record.file, entries[index].expected, io);
       await io.rename(record.temporary, record.file); record.published = true;
     }
     await syncDirectory(directory, io);
