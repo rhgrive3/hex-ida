@@ -72,7 +72,13 @@ export function buildNoreturnContinuationProposal({ binding, calls, authority, l
   let considered = 0;
   let truncated = false;
   const callSource = calls == null ? [] : calls;
-  if (typeof callSource[Symbol.iterator] !== 'function') {
+  let iterator;
+  try {
+    iterator = callSource[Symbol.iterator];
+  } catch {
+    return incompleteProposal(binding, 'calls-iteration-failed');
+  }
+  if (typeof iterator !== 'function') {
     return incompleteProposal(binding, 'calls-not-iterable');
   }
   try {
