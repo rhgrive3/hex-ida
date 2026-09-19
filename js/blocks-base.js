@@ -1116,7 +1116,9 @@ export function analyzeDataFlow(insns, opts) {
 
     /* ── 呼び出し ── */
     if (insn.isCall) {
-      const name = insn.callTarget != null && o.symbolFor ? o.symbolFor(insn.callTarget) : null;
+      const tailProof = indirectExternalTailTransferProof(insn);
+      const name = tailProof?.targetName
+        || (insn.callTarget != null && o.symbolFor ? o.symbolFor(insn.callTarget) : null);
       const api = apiInfo(name);
       const args = [];
       for (let a = 0; a <= 7; a++) {
@@ -1136,7 +1138,8 @@ export function analyzeDataFlow(insns, opts) {
         row: insn.row, address: insn.address, target: insn.callTarget,
         name: name || null, api: api || null, args,
         selector: sel ? sel[1] : null,
-        indirect: !insn.callTarget,
+        indirect: insn.callTarget == null && !tailProof,
+        ...(tailProof ? { tailTransfer:true, pointerAddress:tailProof.pointerAddress } : {}),
       };
       calls.push(call);
       // 呼び出しで x0〜x17 は壊れる。x0 だけは戻り値として意味を持つ。
@@ -1567,6 +1570,64 @@ function valueAt(flow, row, reg) {
    まとめ: 関数 1 つぶんの Semantic Model
    ──────────────────────────────────────────────────────────── */
 
+const indirectExternalTailTransferProofs = new WeakMap();
+const EXTERNAL_SYMBOL_NAME = /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/;
+
+/**
+ * Private proof issued only by the legacy dataflow builder after it traces an
+ * indirect BR target to a loader-published external pointer symbol. Plain model
+ * objects cannot mint this authority by copying fields onto an instruction.
+ */
+export function indirectExternalTailTransferProof(instruction) {
+  return instruction && typeof instruction === 'object'
+    ? (indirectExternalTailTransferProofs.get(instruction) || null)
+    : null;
+}
+
+function markIndirectExternalTailTransfers(insns, bbInfo, flow, options) {
+  const resolveExternalPointer = typeof options?.externalPointerSymbolFor === 'function'
+    ? options.externalPointerSymbolFor : null;
+  if (!resolveExternalPointer || !Array.isArray(insns) || !insns.length || !flow?.byRow) return false;
+  let changed = false;
+  const instructionByRow = new Map(insns.map((instruction) => [instruction.row, instruction]));
+  for (const block of bbInfo?.blocks || []) {
+    const blockInsns = block.rows.map((row) => instructionByRow.get(row)).filter(Boolean);
+    const term = blockInsns.length ? blockInsns[blockInsns.length - 1] : null;
+    if (!term || String(term.mnemonic || '').toLowerCase() !== 'br' || term.ops?.length !== 1) continue;
+    const targetReg = regKey(term.ops[0]);
+    if (!targetReg) continue;
+
+    let reaching = null;
+    for (let i = blockInsns.length - 2; i >= 0; i--) {
+      const candidate = blockInsns[i];
+      if (candidate.writes?.includes(targetReg)) {
+        const events = flow.byRow.get(candidate.row) || [];
+        reaching = [...events].reverse().find((event) => event?.to === targetReg)?.value || null;
+        break;
+      }
+    }
+    if (!reaching || reaching.kind !== 'loaded' || typeof reaching.addr !== 'bigint' || reaching.conf < SCORE.high) continue;
+    let name = null;
+    try { name = resolveExternalPointer(reaching.addr); } catch { name = null; }
+    if (typeof name !== 'string' || !EXTERNAL_SYMBOL_NAME.test(name)) continue;
+
+    const proof = Object.freeze({
+      kind:'external-symbol-pointer-tail-transfer',
+      targetName:name,
+      pointerAddress:reaching.addr,
+      targetRegister:targetReg,
+      sourceRow:reaching.def,
+      branchRow:term.row,
+    });
+    indirectExternalTailTransferProofs.set(term, proof);
+    term.isCall = true;
+    term.isTailCall = true;
+    term.role = ROLE.FUNCTION_CALL;
+    changed = true;
+  }
+  return changed;
+}
+
 const MAX_MODEL_INSTRUCTIONS = 6000;   // これ以上は意味解析をあきらめる（表示は続く）
 
 /**
@@ -1604,8 +1665,15 @@ export function buildSemanticModel(raw, opts) {
   }
 
   markTailCalls(insns, o, truncated);
-  const bbInfo = buildBasicBlocks(insns, o);
-  const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows, blocks: bbInfo.blocks, preds: bbInfo.preds }, o));
+  let bbInfo = buildBasicBlocks(insns, o);
+  let flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows, blocks: bbInfo.blocks, preds: bbInfo.preds }, o));
+  if (markIndirectExternalTailTransfers(insns, bbInfo, flow, o)) {
+    // Tail-transfer classification changes CFG termination and call dataflow.
+    // Rebuild both from the now-proven instruction facts; do not patch either
+    // graph after the fact.
+    bbInfo = buildBasicBlocks(insns, o);
+    flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows, blocks: bbInfo.blocks, preds: bbInfo.preds }, o));
+  }
   const semantic = buildSemanticBlocks(insns, bbInfo, flow, o);
 
   const model = {
