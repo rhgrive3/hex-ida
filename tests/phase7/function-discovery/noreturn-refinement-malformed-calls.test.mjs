@@ -49,3 +49,15 @@ test('iterator failure fails closed and discards partial enumeration', () => {
   assert.equal(proposal.status.stopReason, 'calls-iteration-failed');
   assert.deepEqual(proposal.candidates, []);
 });
+
+
+test('throwing iterator getter fails closed without escaping', () => {
+  const calls = {};
+  Object.defineProperty(calls, Symbol.iterator, {
+    get() { throw new Error('iterator getter failed'); },
+  });
+  const proposal = buildNoreturnContinuationProposal({ binding, calls, authority: authority() });
+  assert.equal(proposal.status.completeness, 'incomplete');
+  assert.equal(proposal.status.stopReason, 'calls-iteration-failed');
+  assert.deepEqual(proposal.candidates, []);
+});
