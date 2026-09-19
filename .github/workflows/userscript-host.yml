@@ -74,16 +74,20 @@ jobs:
         run: node tests/dev-agent/dynamic-task-graph.mjs
       - name: Diagnostic userscript group 1 - dev agent
         run: npm run dev-agent:test
-      - name: Diagnostic userscript group 2 - pre-build contracts
-        shell: bash
-        run: |
-          set -euo pipefail
-          node tests/userscript-importscripts-literals.mjs
-          node tests/issue-5034-worker-blob-url-cleanup.mjs
-          node tests/issue-4940-onready-callback-isolation.mjs
-          node tests/issue-5017-protected-worker-cleanup-ownership.mjs
-          node tests/issue-4968-array-key-precision.mjs
-          node tests/issue-5016-protected-workers-origin-guard.mjs
+      # TEMP #9283 diagnostic: split the previously grouped pre-build checks
+      # so CI metadata identifies the first failing test without fetching logs.
+      - name: Diagnostic pre-build - importScripts literals
+        run: node tests/userscript-importscripts-literals.mjs
+      - name: Diagnostic pre-build - worker blob URL cleanup
+        run: node tests/issue-5034-worker-blob-url-cleanup.mjs
+      - name: Diagnostic pre-build - onReady isolation
+        run: node tests/issue-4940-onready-callback-isolation.mjs
+      - name: Diagnostic pre-build - protected worker cleanup
+        run: node tests/issue-5017-protected-worker-cleanup-ownership.mjs
+      - name: Diagnostic pre-build - array key precision
+        run: node tests/issue-4968-array-key-precision.mjs
+      - name: Diagnostic pre-build - protected worker origin guard
+        run: node tests/issue-5016-protected-workers-origin-guard.mjs
       - name: Diagnostic userscript group 3 - build and syntax
         shell: bash
         run: |
