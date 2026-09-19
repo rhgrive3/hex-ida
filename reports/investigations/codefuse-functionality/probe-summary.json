@@ -1,0 +1,208 @@
+{
+  "schema": "hex-codefuse-functionality-probe-summary/v1",
+  "generatedAt": "2026-09-18T18:03:13.110Z",
+  "upstream": {
+    "repository": "https://github.com/codefuse-ai/CodeFuse-DeBench",
+    "pinnedCommit": "c956988f8e16c85eafd4f7fd91b27feaa86bcb2b",
+    "pinnedCommitDate": "2026-05-29T02:38:08Z",
+    "step2States": [
+      "success",
+      "linker_failed",
+      "compile_failed"
+    ],
+    "step3ProgramStates": [
+      "exact",
+      "partial",
+      "fail",
+      "unsupported"
+    ],
+    "metricDefinitions": {
+      "readability": "mean of the L1-L5 overview scores",
+      "recompilability": "Full Success (FS) rate",
+      "functionality": "program-level Exact Stdout + Partial rate"
+    }
+  },
+  "identity": {
+    "headSha": "8cbd9bf0b020925a24c91caa35a9f875eab8e21a",
+    "originMainSha": "37042c9e5e521183055a5cfd363ea0b8019978cb",
+    "worktreeDirty": false,
+    "benchmarkManifest": "benchmarks/public/codefuse-arm64/manifest.json",
+    "benchmarkManifestSha256": "de5d7726ef6bb18649a0b8cc5e4d261e01873eb7ae2c5734d203fed7c8eef992",
+    "benchmarkCaseTotal": 160
+  },
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.20.0",
+    "compiler": {
+      "command": "cc",
+      "version": "cc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+      "status": 0,
+      "timedOut": false
+    },
+    "measuredArchitecture": "x64",
+    "faithfulToUpstreamArchitecture": false
+  },
+  "llm": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "model": "qwen2.5-coder:7b",
+    "apiKeyEnv": "CODEFUSE_LLM_API_KEY",
+    "apiKeyPresent": false,
+    "timeoutMs": 60000,
+    "maxRepairAttempts": 8,
+    "temperature": 0,
+    "enabled": true,
+    "disabledReason": null,
+    "reachable": false,
+    "reachabilityReason": "llm-endpoint-unreachable:fetch failed"
+  },
+  "selection": {
+    "count": 5,
+    "coverage": {
+      "compilers": [
+        "clang",
+        "gcc"
+      ],
+      "optimizations": [
+        "O0",
+        "O1",
+        "O2",
+        "O3",
+        "Os"
+      ],
+      "debugValues": [
+        false,
+        true
+      ]
+    },
+    "caseIds": [
+      "1/1_clang_O0_g",
+      "1/1_gcc_O1_no_g",
+      "1/1_clang_O2_g",
+      "1/1_clang_O3_g",
+      "1/1_clang_Os_g"
+    ]
+  },
+  "rawRecompilability": {
+    "input": "codefuse-preprocessed",
+    "denominator": 5,
+    "passed": 0,
+    "failed": 5,
+    "timeout": 0
+  },
+  "rawFunctionTextRecompilability": {
+    "input": "raw-function-text",
+    "passed": 0,
+    "failed": 5
+  },
+  "repairedRecompilability": {
+    "supported": false,
+    "reachability": {
+      "reachable": false,
+      "reason": "llm-endpoint-unreachable:fetch failed",
+      "status": null
+    },
+    "denominator": 5,
+    "passed": 0,
+    "failed": 0,
+    "unsupported": 5
+  },
+  "rawFunctionality": {
+    "denominator": 5,
+    "exact": 0,
+    "partial": 0,
+    "exactPartialRate": 0
+  },
+  "repairedFunctionality": {
+    "denominator": 5,
+    "exact": 0,
+    "partial": 0,
+    "exactPartialRate": 0
+  },
+  "counts": {
+    "selected": 5,
+    "artifactMissing": 0,
+    "rawTimeout": 0,
+    "rawCrashOrFailure": 5,
+    "llmUnsupported": 5,
+    "functionalityUnsupported": 5
+  },
+  "fairness": {
+    "comparisonClass": "same benchmark, NO reachable repair model",
+    "officialNumbersComparable": false,
+    "note": "Published IDA/Ghidra recompilability and functionality rates were produced with the upstream LLM/repair/runtime configuration. Raw Hex values must not be presented as the same metric without matching that configuration."
+  },
+  "blockers": [
+    "aarch64-cross-toolchain-not-configured",
+    "arm64-execution-runtime-not-configured",
+    "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+  ],
+  "cases": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "artifactAvailable": true,
+      "rawRecompilable": false,
+      "rawState": "compile_failed",
+      "rawFirstError": "‘global_13FD8’ undeclared (first use in this function)",
+      "llmStatus": "unsupported",
+      "rawFunctionality": "unsupported",
+      "repairedFunctionality": "unsupported",
+      "blockers": [
+        "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+      ]
+    },
+    {
+      "caseId": "1/1_gcc_O1_no_g",
+      "artifactAvailable": true,
+      "rawRecompilable": false,
+      "rawState": "compile_failed",
+      "rawFirstError": "‘global_13FF0’ undeclared (first use in this function)",
+      "llmStatus": "unsupported",
+      "rawFunctionality": "unsupported",
+      "repairedFunctionality": "unsupported",
+      "blockers": [
+        "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+      ]
+    },
+    {
+      "caseId": "1/1_clang_O2_g",
+      "artifactAvailable": true,
+      "rawRecompilable": false,
+      "rawState": "compile_failed",
+      "rawFirstError": "‘global_12FD8’ undeclared (first use in this function)",
+      "llmStatus": "unsupported",
+      "rawFunctionality": "unsupported",
+      "repairedFunctionality": "unsupported",
+      "blockers": [
+        "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+      ]
+    },
+    {
+      "caseId": "1/1_clang_O3_g",
+      "artifactAvailable": true,
+      "rawRecompilable": false,
+      "rawState": "compile_failed",
+      "rawFirstError": "‘global_12FD8’ undeclared (first use in this function)",
+      "llmStatus": "unsupported",
+      "rawFunctionality": "unsupported",
+      "repairedFunctionality": "unsupported",
+      "blockers": [
+        "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+      ]
+    },
+    {
+      "caseId": "1/1_clang_Os_g",
+      "artifactAvailable": true,
+      "rawRecompilable": false,
+      "rawState": "compile_failed",
+      "rawFirstError": "‘global_12FD8’ undeclared (first use in this function)",
+      "llmStatus": "unsupported",
+      "rawFunctionality": "unsupported",
+      "repairedFunctionality": "unsupported",
+      "blockers": [
+        "llm-endpoint-unavailable:llm-endpoint-unreachable:fetch failed"
+      ]
+    }
+  ]
+}
