@@ -36,6 +36,7 @@ import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
 import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate,
   projectedMemoryOperandTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
 import { createProjectionIrObserver, PROJECTION_LIMITS } from './core/identity/live-data.js';
+import { indirectExternalTailTransferProof } from './blocks-base.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
@@ -1636,6 +1637,11 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const rowOfAddress = rowResolver(model, opts);
   const legacyCfg = opts.cfg ?? buildCfg(model, { rowOfAddress });
   const instructionByRow = new Map(model.instructions.map((instruction) => [instruction.row, instruction]));
+  const externalTailTransfers = Object.create(null);
+  for (const instruction of model.instructions) {
+    const proof = indirectExternalTailTransferProof(instruction);
+    if (proof && instruction.address != null) externalTailTransfers[String(instruction.address)] = proof;
+  }
   const blocks = legacyCfg.nodes.map((node) => {
     const instructions = [];
     for (let row = node.startRow; row <= node.endRow; row++) {
@@ -1671,6 +1677,10 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     canonicalStartIdentity: { address: model.startAddress ?? model.instructions[0].address },
     entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
     blocks,
+    machineEffectsContext: {
+      ...(opts.machineEffectsContext ?? {}),
+      legacyExternalTailTransfers: Object.freeze(externalTailTransfers),
+    },
     abiAdapter,
     rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),
   }, {
