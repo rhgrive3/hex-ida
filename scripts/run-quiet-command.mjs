@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const MAX_FAILURE_TAIL_BYTES = 64 * 1024;
+const DEFAULT_TERMINATION_GRACE_MS = 1_000;
+const DEFAULT_FORCE_SETTLE_MS = 1_000;
 
 export function parseQuietCommandArgs(argv) {
   let label = 'command';
@@ -57,6 +59,45 @@ function waitForChild(child) {
   });
 }
 
+function createTerminationController(child, { graceMs, forceSettleMs }) {
+  let requested = false;
+  let stopped = false;
+  let graceTimer = null;
+  let forceSettleTimer = null;
+  let resolveForced;
+  const forcedStatus = new Promise((resolve) => { resolveForced = resolve; });
+
+  const childAppearsRunning = () => child.exitCode == null && child.signalCode == null;
+  const stop = () => {
+    stopped = true;
+    if (graceTimer) clearTimeout(graceTimer);
+    if (forceSettleTimer) clearTimeout(forceSettleTimer);
+  };
+
+  const request = () => {
+    if (requested || stopped || !childAppearsRunning()) return;
+    requested = true;
+    try { child.kill('SIGTERM'); } catch {}
+    graceTimer = setTimeout(() => {
+      if (stopped || !childAppearsRunning()) return;
+      try { child.kill('SIGKILL'); } catch {}
+      forceSettleTimer = setTimeout(() => {
+        if (stopped) return;
+        // SIGKILL is the strongest termination available through ChildProcess.
+        // Do not let a missing/hostile close event keep the quiet runner alive
+        // after we have issued it. Detach owned pipes so a pathological child
+        // cannot retain this process while the original sink failure is surfaced.
+        try { child.stdout?.destroy?.(); } catch {}
+        try { child.stderr?.destroy?.(); } catch {}
+        try { child.unref?.(); } catch {}
+        resolveForced({ code: null, signal: 'SIGKILL', error: null });
+      }, forceSettleMs);
+    }, graceMs);
+  };
+
+  return Object.freeze({ forcedStatus, request, stop });
+}
+
 export async function runQuietCommand({
   label,
   command,
@@ -68,6 +109,8 @@ export async function runQuietCommand({
   spawnImpl = spawn,
   tempRoot = os.tmpdir(),
   createLogStream = (filePath) => fs.createWriteStream(filePath, { flags: 'wx', mode: 0o600 }),
+  terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
+  forceSettleMs = DEFAULT_FORCE_SETTLE_MS,
 } = {}) {
   if (!label || !command) throw new TypeError('label and command are required');
   const selectedMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
@@ -107,6 +150,7 @@ export async function runQuietCommand({
   let tail = Buffer.alloc(0);
   let logError = null;
   let child;
+  let terminationController = null;
 
   let backpressured = false;
   const sources = new Set();
@@ -133,11 +177,9 @@ export async function runQuietCommand({
 
   log.on('drain', resumeSources);
   log.on('error', (error) => {
-    logError = error;
+    if (!logError) logError = error;
     resumeSources();
-    if (child && child.exitCode === null && child.signalCode === null) {
-      try { child.kill(); } catch {}
-    }
+    terminationController?.request();
   });
 
   try {
@@ -152,6 +194,13 @@ export async function runQuietCommand({
     cleanupDirectory();
     throw error;
   }
+
+  const childStatus = waitForChild(child);
+  terminationController = createTerminationController(child, {
+    graceMs: Math.max(0, Number(terminationGraceMs) || 0),
+    forceSettleMs: Math.max(0, Number(forceSettleMs) || 0),
+  });
+  if (logError) terminationController.request();
 
   if (child.stdout) sources.add(child.stdout);
   if (child.stderr) sources.add(child.stderr);
@@ -173,7 +222,8 @@ export async function runQuietCommand({
   capture(child.stdout, '');
   capture(child.stderr, '[stderr] ');
 
-  const status = await waitForChild(child);
+  const status = await Promise.race([childStatus, terminationController.forcedStatus]);
+  terminationController.stop();
   if (status.error) {
     const diagnostic = Buffer.from(`${status.error.stack || status.error}\n`);
     tail = appendTail(tail, diagnostic);
