@@ -1134,3 +1134,34 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
 console.log('phase7 agy issue follow-up cross-lane ownership routing: PASS');
+
+
+const b1aBranch = "e/b1a-noreturn-refinement-20260919";
+const b1aOwnedFiles = [
+  ".github/workflows/phase7-ownership.yml",
+  "js/analysis/discovery/noreturn-refinement.js",
+  "js/analysis/discovery/topology-refinement-transaction.js",
+  "js/analysis/query/app-adapter.js",
+  "js/analysis/shared-app-artifacts.js",
+  "tests/phase7/function-discovery/noreturn-refinement-malformed-calls.test.mjs",
+  "tests/phase7/function-discovery/noreturn-refinement-transaction-atomicity.test.mjs",
+  "tests/phase7/function-discovery/noreturn-refinement.test.mjs",
+  "tests/phase7/ownership/cross-lane-routing.test.mjs",
+  "tools/validation/phase7/cross-lane-inventory.mjs"
+];
+const b1aForeignFiles = CROSS_LANE_ROUTES[b1aBranch];
+assert.deepEqual(
+  validateCrossLaneInventory(b1aBranch, [...b1aOwnedFiles, ...b1aForeignFiles]),
+  [...b1aOwnedFiles].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+  'the #9232 route must return only Phase 7-owned paths',
+);
+assert.throws(
+  () => validateCrossLaneInventory(b1aBranch, [...b1aOwnedFiles, ...b1aForeignFiles, 'js/ui/__undeclared_9232.js']),
+  /unexpected foreign paths/,
+);
+for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml']) {
+  const workflow = readFileSync(file, 'utf8');
+  assert.ok(workflow.includes(b1aBranch));
+  assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
+}
+console.log('phase7 #9232 cross-lane ownership routing: PASS');
