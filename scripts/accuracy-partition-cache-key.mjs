@@ -73,7 +73,10 @@ export function partitionFiles(root = ROOT, partition) {
   return [...new Set(selected)].sort();
 }
 
-export function partitionDigest(root = ROOT, partition) {
+export function partitionDigest(root = ROOT, partition, {
+  fsImpl = fs,
+  partitionFilesImpl = partitionFiles,
+} = {}) {
   if (!Object.hasOwn(PARTITIONS, partition)) throw new Error(`unknown accuracy partition: ${partition}`);
   const hash=crypto.createHash('sha256');
   const pseudoc=partition.startsWith('pseudoc-');
@@ -81,24 +84,32 @@ export function partitionDigest(root = ROOT, partition) {
     ? `kind=pseudoc;features=pseudoc;heap=2600;workers=2;shard=${partition.slice('pseudoc-'.length)}/4`
     : `kind=nonpseudoc;features=${PARTITIONS[partition].join(',')};heap=4096`;
   hash.update(`accuracy-result-v8\0${partition}\0${contract}\0`);
-  for (const relative of partitionFiles(root, partition)) {
+  for (const relative of partitionFilesImpl(root, partition)) {
     const fullPath = path.join(root, relative);
     hash.update(relative);
     hash.update('\0');
-    try {
-      const lstat = fs.lstatSync(fullPath);
-      if (lstat.isSymbolicLink()) {
-        hash.update('symlink:');
-        hash.update(fs.readlinkSync(fullPath));
-        hash.update('\0');
+
+    // Once traversal selected an input, hashing must either account for its
+    // identity/bytes or fail closed. Do not turn EACCES/EIO/races into an
+    // apparently valid digest with an empty payload.
+    const lstat = fsImpl.lstatSync(fullPath);
+    if (lstat.isSymbolicLink()) {
+      hash.update('symlink:');
+      hash.update(fsImpl.readlinkSync(fullPath));
+      hash.update('\0');
+      try {
+        const stat = fsImpl.statSync(fullPath);
+        if (stat.isFile()) hash.update(fsImpl.readFileSync(fullPath));
+      } catch (error) {
+        // A broken target is an intentional, already-represented symlink state
+        // (#9199). Other failures mean the selected input could not be hashed.
+        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
       }
-    } catch {}
-    try {
-      const stat = fs.statSync(fullPath);
-      if (stat.isFile()) {
-        hash.update(fs.readFileSync(fullPath));
-      }
-    } catch {}
+    } else if (lstat.isFile()) {
+      hash.update(fsImpl.readFileSync(fullPath));
+    } else {
+      throw new Error(`selected accuracy input is not a file or symlink: ${relative}`);
+    }
     hash.update('\0');
   }
   return hash.digest('hex');

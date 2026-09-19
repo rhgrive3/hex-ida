@@ -168,7 +168,7 @@ try {
 
   result = runSync('release', ['--rebuild']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /push raced with release/);
+  assert.match(result.stdout, /release advanced before attempt 1; rebuilding latest remote tip/);
   assert.equal(sh(origin, ['show', 'release:README.md']).trim(), 'late');
   assert.equal(sh(work, ['status', '--porcelain', '--untracked-files=all']), '');
 } finally {

@@ -64,7 +64,7 @@ const SHARED_BIN_VERSION = path.join(SHARED_ROOT, 'manicode', 'freebuff.version'
 // restorer itself. Wrappers are generated, not mirrored (they embed no state).
 const MIRRORED = ['scripts/freebuff-setup.mjs', 'tests/freebuff-wrappers.mjs'];
 
-function wrapperScript(n) {
+export function wrapperScript(n) {
   return `#!/usr/bin/env bash
 # freebuff-${n} — isolated-HOME wrapper (tracked).
 # HOME lives under /mnt/workspace/.dev-state: outside the repo (git
@@ -496,22 +496,30 @@ function ensureLauncher() {
   return true;
 }
 
-function ensureWrappers() {
+export function ensureWrappers(root = ROOT) {
   let wrote = 0;
   for (const n of NUMS) {
-    const p = path.join(ROOT, `freebuff-${n}`);
+    const p = path.join(root, `freebuff-${n}`);
     const content = wrapperScript(n);
-    let cur = null;
+    let entry = null;
     try {
-      cur = fs.readFileSync(p, 'utf8');
-    } catch {}
-    if (cur !== content) {
-      fs.writeFileSync(p, content, { mode: 0o755 });
-      try {
-        fs.chmodSync(p, 0o755);
-      } catch {}
-      wrote++;
+      entry = fs.lstatSync(p);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
     }
+
+    let healthy = false;
+    if (entry?.isFile() && !entry.isSymbolicLink()) {
+      const cur = fs.readFileSync(p, 'utf8');
+      healthy = cur === content && (entry.mode & 0o111) !== 0;
+    }
+    if (healthy) continue;
+
+    // Never write/chmod through the existing wrapper leaf. A same-directory
+    // exclusive temp file followed by rename replaces a symlink entry itself,
+    // leaving any external target untouched and publishing complete bytes.
+    publishTextAtomically(p, content, 0o755);
+    wrote++;
   }
   return wrote;
 }

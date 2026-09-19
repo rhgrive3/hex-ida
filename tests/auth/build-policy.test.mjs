@@ -98,6 +98,7 @@ test('local D1 configuration is usable but production sentinel is explicitly rej
 
 test('JSONC loader accepts inline comments, trailing commas, and comment-like string data', () => {
   const config = parseJsonc(`{
+    "main": "./worker-entry.js",
     "d1_databases": [{
       "binding": "AUTH_DB", // deployment binding
       "database_name": "hex-auth",
