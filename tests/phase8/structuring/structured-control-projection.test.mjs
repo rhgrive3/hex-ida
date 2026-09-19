@@ -529,8 +529,6 @@ test('11. edge-accounting corruption rejects adoption', () => {
 // 12. Unknown branch polarity must fail closed
 test('12. successor order is never used as branch polarity evidence', () => {
   const ir = diamondIr();
-  const { analysis } = analyze(ir);
-
   const entry = ir.blocks[0];
   delete entry.successorEdges;
   const term = entry.insts.find(i => i.op === 'cbr');
@@ -541,8 +539,14 @@ test('12. successor order is never used as branch polarity evidence', () => {
   }
 
   // Deliberately choose an order that would invert semantics if interpreted as
-  // [true, false]. The projector must leave the legacy rendering untouched.
+  // [true, false]. Structuring may still prove the region shape from the CFG,
+  // but the projector has no evidence for which successor is the taken arm.
   entry.succ = [2, 1];
+  const { analysis, facts } = analyze(ir);
+  assert.ok(
+    facts.regions.some(region => region.kind === 'conditional' && region.entry === 0),
+    'the regression must reach projection with a proven conditional region',
+  );
 
   const body = [
     makeLine('ctrl', 1, 'if (c0) goto loc_1004;', 0, 0, 0x1000),
