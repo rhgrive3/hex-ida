@@ -35,7 +35,7 @@ if (isMain) {
     for (const [name, script] of Object.entries(pkg.scripts ?? {})) console.log(`${name.padEnd(24)} ${script}`);
     process.exit(0);
   }
-  if (!(pkg.scripts?.[first])) {
+  if (!Object.hasOwn(pkg.scripts ?? {}, first)) {
     console.error(`unknown npm script: ${first}`);
     usage();
   }
