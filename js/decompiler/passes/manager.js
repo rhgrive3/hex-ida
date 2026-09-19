@@ -11,6 +11,7 @@ function validTimeBudgetMs(value, fallback) {
 }
 
 function capturePassState(state) {
+  const __t0 = globalThis.__hexPerfProbe ? performance.now() : 0; // PERF-PROBE
   const pending = [state], seen = new Set(), records = [];
   while (pending.length) {
     const value = pending.pop();
@@ -31,6 +32,7 @@ function capturePassState(state) {
     if (map) for (const [key, entry] of entries) pending.push(key, entry);
     if (set) for (const entry of entries) pending.push(entry);
   }
+  if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length); // PERF-PROBE
   return () => {
     for (const { value, proto, descriptors, entries, map, set, time } of records) {
       if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
@@ -163,6 +165,7 @@ export class PassManager {
     materializeLegacyExactStackValues(state);
     state.passElapsedMs = clock() - totalStart;
     state.passDeadlineExceeded = state.passElapsedMs > totalBudget;
+    globalThis.__hexPerfProbe?.recordPasses?.(state.passMetrics, state.passElapsedMs); // PERF-PROBE
     return state;
   }
 }

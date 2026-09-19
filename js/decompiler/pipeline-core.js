@@ -8,7 +8,7 @@ import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, same
 import { RewriteEngine, createExpressionOriginHistoryRecorder } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { createProjectionIrObserver } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch } from '../core/identity/live-data.js';
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
@@ -1057,16 +1057,28 @@ function buildCanonicalExpressions(state) {
     budget.edges = 0; budget.reasons.add('compat-state-construction-observation-unavailable');
   }
   state.stateHistoryTransaction = transaction;
+  // One synchronous construction pass reuses a single freshness answer per
+  // observation instead of re-walking the unchanged canonical graph for every
+  // selection and consumer. The batch is bound to this pass execution only and
+  // is settled below before any record is published; a net mutation during the
+  // pass makes the whole construction stale and fails closed.
+  const validation = createValidationBatch();
+  let staleObservations = 0;
   try {
-    for (const value of state.ir.values || []) buildValue(value, state);
+    validation.run(() => {
+      for (const value of state.ir.values || []) buildValue(value, state);
+    });
   } finally {
     delete state.stateHistoryTransaction;
+    staleObservations = validation.settle();
     // The shared producer is checked once after construction, never carried
     // across this boundary. Consumer reads still perform their fresh checks.
+    const stale = staleObservations > 0;
     const matches = new Map();
-    for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, initiallyCurrent && check());
+    for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, !stale && initiallyCurrent && check());
     for (const [key, records] of state.buildHistories || []) {
       const retained = records.filter(record => {
+        if (stale) return false;
         const observation = buildHistoryObservations.get(record);
         if (!observation?.producerChecks?.some(check => transaction.checks.has(check))) return true;
         for (const check of observation.producerChecks) {
@@ -2001,6 +2013,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     } },
   };
   representationStages.set(enhanced, { ir:enhanced.ir, stage:phase8 });
+  if (globalThis.__hexCapture) globalThis.__hexLastResult = enhanced; // PERF-PROBE
   return enhanced;
 }
 
