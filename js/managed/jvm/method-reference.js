@@ -75,10 +75,11 @@ function valueModelForType(type, descriptor) {
   if (type?.kind === 'object' || type?.kind === 'array') {
     return Object.freeze({
       descriptor,
-      bits: 64,
+      bits: 32,
       category: 1,
       slots: 1,
       valueKind: 'reference',
+      type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
     });
   }
   return null;
