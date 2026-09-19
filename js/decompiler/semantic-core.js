@@ -236,6 +236,12 @@ export function readSemanticControlLineHistory(line, ir) {
   return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
 }
 
+export function registerSemanticControlLineHistory(line, entry) {
+  if (line && typeof line === 'object' && entry && typeof entry === 'object') {
+    controlRenderLines.set(line, entry);
+  }
+}
+
 export function readSemanticControlRenderHistory(result) {
   const entry = controlRenderHistories.get(result);
   return entry && entry.ir === result.ir && entry.disposition === result.semanticControlRenderHistory ? entry : null;
