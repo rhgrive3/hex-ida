@@ -1224,7 +1224,11 @@ export function buildBasicBlocks(insns, opts) {
         joinRows.add(trow);
       }
     }
-    if (!insn.isCall && inRange(insn.row + 1)) leaders.add(insn.row + 1);
+    // Ordinary calls fall through, so they do not end a basic block. A tail
+    // call is different: it is a proven function exit and any following bytes
+    // in a bounded analysis window are padding/unreachable code. Split after
+    // it so trailing NOPs cannot hide the real terminator.
+    if ((!insn.isCall || insn.isTailCall) && inRange(insn.row + 1)) leaders.add(insn.row + 1);
   }
   if (o.extraLeaders) for (const r of o.extraLeaders) if (inRange(r)) leaders.add(r);
 
