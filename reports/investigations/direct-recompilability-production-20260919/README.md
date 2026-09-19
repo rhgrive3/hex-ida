@@ -1,6 +1,6 @@
 # G direct recompilability repair campaign
 
-Status: IN PROGRESS; G must not be closed from this checkpoint.
+Status: MERGEABLE INCREMENT; this PR does not close G. The fresh 160-case campaign remains a separate follow-up measurement.
 
 Base: `82a10ee1c84970f73d8e8c4eab23fc2bfd0e51b2`, including Phase 2 PR #9226.
 Phase 1 source commits: `a20983b0a`, `10d53eeee`, `0313cef5c`.
@@ -9,7 +9,11 @@ PR: https://github.com/rhgrive3/hex-ida/pull/9229
 
 The existing raw baseline and public benchmark artifacts are unchanged. Historical
 counts are not subtracted to estimate remaining defects. Full fresh corpus counts
-are pending. A host C compiler probe does not establish ARM64 execution correctness.
+are still pending and are explicitly **not** a merge claim of this focused emitter
+fix. This PR lands independently reproduced counterexamples, mutation-killing
+regressions, resumable/fail-closed measurement infrastructure, and the corresponding
+production repairs; it must not be cited as corpus-wide G closure. A host C compiler
+probe does not establish ARM64 execution correctness.
 
 ## Confirmed additional production defect
 
