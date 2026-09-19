@@ -59,9 +59,27 @@ export async function acquireDistributedQuota(request, env, sessionId) {
     const disconnect = request?.signal && !request.signal.aborted
       ? new Promise((_resolve, reject) => { request.signal.addEventListener('abort', () => reject(new Error('quota-acquire-disconnected')), { once: true }); })
       : (request?.signal?.aborted ? Promise.reject(new Error('quota-acquire-disconnected')) : null);
-    const result = await (disconnect
-      ? Promise.race([boundedRpc(stub.acquire({ sessionId: quotaSessionId(sessionId) }), 'acquire', env), disconnect])
-      : boundedRpc(stub.acquire({ sessionId: quotaSessionId(sessionId) }), 'acquire', env));
+    const acquirePromise = stub.acquire({ sessionId: quotaSessionId(sessionId) });
+    let abandoned = false;
+    if (acquirePromise && typeof acquirePromise.then === 'function') {
+      acquirePromise.then((res) => {
+        if (abandoned && res?.allowed && res?.token) {
+          try {
+            const rel = stub.release(res.token);
+            if (rel && typeof rel.catch === 'function') rel.catch(() => {});
+          } catch {}
+        }
+      }).catch(() => {});
+    }
+    let result;
+    try {
+      result = await (disconnect
+        ? Promise.race([boundedRpc(acquirePromise, 'acquire', env), disconnect])
+        : boundedRpc(acquirePromise, 'acquire', env));
+    } catch (err) {
+      abandoned = true;
+      throw err;
+    }
     if (!result?.allowed) {
       const retrySeconds = Math.max(1, Math.ceil(Number(result?.retryAfterMs || 1000) / 1000));
       const code = result?.reason === 'concurrency' ? 'concurrency_limited' : 'rate_limited';

@@ -567,7 +567,7 @@ function backendIdentityPart(backend) {
   return stableId == null ? 'ns' + namespace : 'ns' + namespace + ':' + stableId;
 }
 
-function cacheKey(backend, region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
+function cacheKey(backend, region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS, opts = {}) {
   const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
   const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
   // Region identity is cache authority (#3311): structured values must not
@@ -578,7 +578,19 @@ function cacheKey(backend, region, startRow, endRow, symbols, maxRows = MAX_INST
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
     try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return 'structured:opaque'; }
   };
-  return [backendIdentityPart(backend), symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
+  const pointerContext = {
+    architecture: opts?.architecture ?? opts?.arch ?? null,
+    pointerWidth: opts?.pointerWidth ?? null,
+    pointerBytes: opts?.pointerBytes ?? opts?.pointerSize ?? null,
+    pointerBits: opts?.pointerBits ?? null,
+  };
+  const pointerPart = [
+    identityPart(pointerContext.architecture),
+    identityPart(pointerContext.pointerWidth),
+    identityPart(pointerContext.pointerBytes),
+    identityPart(pointerContext.pointerBits),
+  ].join(',');
+  return [backendIdentityPart(backend), symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows, 'ptr=' + pointerPart].join(':');
 }
 
 function makeShared(map, key, producer) {
@@ -726,7 +738,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   analysisAbortSignalMethods(signal);
   throwIfAborted(signal);
   const budget = rowBudget(opts);
-  const key = cacheKey(backend, region, startRow, endRow, symbols, budget);
+  const key = cacheKey(backend, region, startRow, endRow, symbols, budget, opts);
   const wantTexts = opts.texts !== false;
   let res = cache.get(key);
   if (res) {
