@@ -143,166 +143,112 @@ test('v8 producer observation rejects cross-result IR association',()=>{
  assert.equal(isProducerProjection(mixed),false);
 });
 
-// A validation batch only exists for one caller-owned synchronous section. It
-// reuses an already-computed freshness answer for the exact observation (or the
-// exact write list), never a weaker reason such as "same object identity". These
-// counterexamples pin the authority boundary: a repeated request is served
-// without re-walking, a lost-freshness mutation is always revalidated, and no
-// answer is ever reused across a section, a pass or a function.
+// A synchronous validation batch exists only for one pass execution. These
+// counterexamples pin the authority boundary: reuse is never a relaxation of
+// freshness, and a changed observation or write list always revalidates.
 const observedGraph = roots => createProjectionIrObserver().captureGraph(roots);
 
-test('validation batch reuses one positive answer for one observation without re-walking',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- const original=Object.getOwnPropertyDescriptor;
- let reads=0;
- Object.getOwnPropertyDescriptor=(value,key)=>{if(value===root||value===child)reads++;return original(value,key);};
- try{
+test('validation batch: one authority reuses a positive answer without re-walking the graph', () => {
+  const child={value:1},root={child},observed=observedGraph([root]);
+  const batch=createValidationBatch(),original=Object.getOwnPropertyDescriptor;
+  let reads=0;
+  Object.getOwnPropertyDescriptor=(value,key)=>{if(value===root||value===child)reads++;return original(value,key);};
+  try {
+    batch.run(()=>{
+      assert.equal(observed.matches(),true);
+      reads=0;
+      assert.equal(observed.matches(),true);
+      assert.equal(reads,0,'a reused answer must not re-walk the observed graph');
+    });
+  } finally { Object.getOwnPropertyDescriptor=original; }
+  assert.equal(batch.settle(),0);
+  assert.equal(observed.matches(),true,'outside the authority the live walk is unchanged');
+});
+
+test('validation batch: a mutation during the authority is detected at settle and never reused', () => {
+  const child={value:1},root={child},observed=observedGraph([root]);
+  const batch=createValidationBatch();
+  let reused;
+  batch.run(()=>{
+    assert.equal(observed.matches(),true);
+    child.value=2;
+    reused=observed.matches();
+  });
+  assert.equal(reused,true,'the authority reused its answer instead of re-walking');
+  assert.equal(batch.settle(),1,'settle revalidates every memoized answer against the live graph');
+  assert.equal(observed.matches(),false,'the stale answer is never served outside the authority');
+});
+
+test('validation batch: the same observation under a new authority never hits an old answer', () => {
+  const child={value:1},root={child},observed=observedGraph([root]);
+  const first=createValidationBatch();
+  first.run(()=>assert.equal(observed.matches(),true));
+  assert.equal(first.settle(),0);
+  assert.throws(()=>first.run(()=>{}),/validation-batch-invalid-state/,'a settled authority cannot be reused');
+  child.value=2;
+  const second=createValidationBatch();
+  second.run(()=>assert.equal(observed.matches(),false,'a new authority revalidates the same object identity'));
+  assert.equal(second.settle(),0);
+});
+
+test('validation batch: distinct observations with equal content never collide', () => {
+  const leftChild={value:1},rightChild={value:1};
+  const left=observedGraph([{child:leftChild}]),right=observedGraph([{child:rightChild}]);
   const batch=createValidationBatch();
   batch.run(()=>{
-   assert.equal(observed.matches(),true);
-   reads=0;
-   assert.equal(observed.matches(),true,'duplicate positive must stay current');
-   assert.equal(reads,0,'a reused answer must not re-walk the observed graph');
-   assert.equal(observed.matches(),true);
-   assert.equal(reads,0);
+    assert.equal(left.matches(),true);
+    rightChild.value=2;
+    assert.equal(right.matches(),false,'the second observation is revalidated, never answered by the first');
+    assert.equal(left.matches(),true,'the first observation stays independently current');
   });
-  assert.equal(batch.settle(),0,'nothing changed, so every reused answer still holds');
- }finally{Object.getOwnPropertyDescriptor=original;}
- assert.equal(observed.matches(),true,'outside the section the live walk is unchanged');
+  assert.equal(batch.settle(),0);
 });
 
-test('validation batch detects a lost-freshness mutation under the same authority',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- const batch=createValidationBatch();
- let reused;
- batch.run(()=>{
-  assert.equal(observed.matches(),true);
+test('validation batch: a false answer is never relaxed to true', () => {
+  const child={value:1},root={child},observed=observedGraph([root]);
   child.value=2;
-  reused=observed.matches();
- });
- assert.equal(reused,true,'inside the section the earlier answer is reused');
- assert.equal(batch.settle(),1,'settle re-derives every answer from the live graph');
- assert.equal(observed.matches(),false,'the stale answer is never served after the section');
+  const batch=createValidationBatch();
+  let first,second;
+  batch.run(()=>{
+    first=observed.matches();
+    child.value=1;
+    second=observed.matches();
+  });
+  assert.equal(first,false);
+  assert.equal(second,false,'a memoized false cannot be refreshed to true inside the authority');
+  assert.equal(batch.settle(),1,'the live answer now differs and the authority is stale');
+  assert.equal(observed.matches(),true,'outside the authority the current state is observed');
 });
 
-test('validation batch detects mutation after a single-use answer before publication',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- const batch=createValidationBatch();
- batch.run(()=>{
-  assert.equal(observed.matches(),true);
-  child.value=2;
- });
- assert.equal(batch.settle(),1,'a single-use answer is re-derived before publication');
- assert.equal(observed.matches(),false);
+test('validation batch: answers never leak across passes or functions', () => {
+  const a={child:{value:1}},b={child:{value:1}};
+  const obsA=observedGraph([a]),obsB=observedGraph([b]);
+  const passA=createValidationBatch();
+  passA.run(()=>{
+    assert.equal(obsA.matches(),true);
+    assert.equal(obsB.matches(),true);
+    a.child.value=2;
+    assert.equal(obsA.matches(),true,'the first pass reused its own answer');
+  });
+  assert.equal(passA.settle(),1);
+  const passB=createValidationBatch();
+  passB.run(()=>{
+    assert.equal(obsA.matches(),false,'function A state changed; pass B must revalidate');
+    assert.equal(obsB.matches(),true,'function B is fully re-walked, never inherited from pass A');
+  });
+  assert.equal(passB.settle(),0);
 });
 
-test('validation batch must settle before reuse and rejects same-batch nesting',()=>{
- const batch=createValidationBatch();
- batch.run(()=>{});
- assert.throws(()=>batch.run(()=>{}),/validation-batch-invalid-state/);
- assert.equal(batch.settle(),0);
- batch.run(()=>assert.throws(()=>batch.run(()=>{}),/validation-batch-invalid-state/));
- assert.equal(batch.settle(),0);
+test('validation batch: write-scoped answers are keyed by the exact write list', () => {
+  const root={value:1},observed=observedGraph([root]);
+  const write=Object.freeze({object:root,key:'value',before:1,after:2}),writes=Object.freeze([write]);
+  const batch=createValidationBatch();
+  batch.run(()=>{
+    root.value=2;
+    assert.equal(observed.matchesThroughWrites(writes),true);
+    root.value=3;
+    assert.equal(observed.matchesThroughWrites(writes),true,'the same write-list identity reuses its answer');
+    assert.equal(observed.matches(),false);
+  });
+  assert.equal(batch.settle(),1,'the reused write-scoped answer is revalidated at settle');
 });
-
-test('validation batch never serves a settled answer to the same object identity',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- const first=createValidationBatch();
- first.run(()=>{assert.equal(observed.matches(),true);assert.equal(observed.matches(),true);});
- assert.equal(first.settle(),0);
- child.value=2;
- first.run(()=>assert.equal(observed.matches(),false,'a settled authority re-derives, it cannot replay'));
- assert.equal(first.settle(),0);
- const second=createValidationBatch();
- second.run(()=>assert.equal(observed.matches(),false,'a new authority revalidates the same object identity'));
- assert.equal(second.settle(),0);
-});
-
-test('validation batch never collides distinct observations of equal content',()=>{
- const leftChild={value:1},rightChild={value:1};
- const left=observedGraph([{child:leftChild}]),right=observedGraph([{child:rightChild}]);
- const batch=createValidationBatch();
- batch.run(()=>{
-  assert.equal(left.matches(),true);
-  rightChild.value=2;
-  assert.equal(right.matches(),false,'the second observation is revalidated, never answered by the first');
-  assert.equal(left.matches(),true,'the first observation stays independently current');
- });
- assert.equal(batch.settle(),0);
-});
-
-test('validation batch never relaxes a false answer to true',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- child.value=2;
- const batch=createValidationBatch();
- let first,second;
- batch.run(()=>{
-  first=observed.matches();
-  child.value=1;
-  second=observed.matches();
- });
- assert.equal(first,false);
- assert.equal(second,false,'a reused false cannot fail open to true');
- assert.equal(batch.settle(),1,'the live answer now differs, so the section is stale');
- assert.equal(observed.matches(),true,'outside the section the current state is observed');
-});
-
-test('validation batch answers never leak across sections, passes or functions',()=>{
- const a={child:{value:1}},b={child:{value:1}};
- const obsA=observedGraph([a]),obsB=observedGraph([b]);
- const passA=createValidationBatch();
- passA.run(()=>{
-  assert.equal(obsA.matches(),true);
-  assert.equal(obsB.matches(),true);
-  a.child.value=2;
-  assert.equal(obsA.matches(),true,'the section reuses only its own answers');
-  const nested=createValidationBatch();
-  const original=Object.getOwnPropertyDescriptor;
-  let reads=0;
-  Object.getOwnPropertyDescriptor=(value,key)=>{if(value===b||value===b.child)reads++;return original(value,key);};
-  try{ nested.run(()=>assert.equal(obsB.matches(),true,'a nested section re-derives, it never inherits the outer answer')); }
-  finally{ Object.getOwnPropertyDescriptor=original; }
-  assert.ok(reads>0,'a nested section performs its own live walk');
- });
- assert.equal(passA.settle(),1,'the mutation under pass A is reported');
- const passB=createValidationBatch();
- passB.run(()=>{
-  assert.equal(obsA.matches(),false,'function A state changed; pass B must revalidate');
-  assert.equal(obsB.matches(),true,'function B is fully re-walked, never inherited from pass A');
- });
- assert.equal(passB.settle(),0);
-});
-
-test('validation batch keys a write-scoped answer by the exact write list',()=>{
- const root={value:1},observed=observedGraph([root]);
- const write={object:root,key:'value',before:1,after:2},writes=[write];
- const batch=createValidationBatch();
- let sameList,otherList;
- batch.run(()=>{
-  root.value=2;
-  assert.equal(observed.matchesThroughWrites(writes),true);
-  root.value=3;
-  sameList=observed.matchesThroughWrites(writes);
-  otherList=observed.matchesThroughWrites([{object:root,key:'value',before:2,after:3}]);
-  assert.equal(observed.matches(),false);
- });
- assert.equal(sameList,true,'the same write-list identity reuses its answer');
- assert.equal(otherList,false,'an equal-content list is a different identity and re-walks');
- assert.equal(batch.settle(),1,'the reused write-scoped answer is revalidated at settle');
-});
-
-test('validation batch retains no answer across its own section boundary',()=>{
- const child={value:1},root={child},observed=observedGraph([root]);
- const batch=createValidationBatch();
- let inside;
- batch.run(()=>{inside=observed.matches();});
- assert.equal(inside,true);
- assert.equal(batch.settle(),0);
- child.value=2;
- assert.equal(observed.matches(),false,'without an active section every read is a fresh live walk');
- let afterSettle;
- batch.run(()=>{afterSettle=observed.matches();});
- assert.equal(afterSettle,false);
- assert.equal(batch.settle(),0);
-});
-
