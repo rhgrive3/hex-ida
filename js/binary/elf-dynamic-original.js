@@ -45,6 +45,7 @@ const AAELF64_PLT_THUNK_BYTES = 16n;
 const AAELF64_PLT_RELA_BYTES = 24n;
 
 const AARCH64_STP_X16_X30_PRE = 0xa9bf7bf0;
+const AARCH64_NOP = 0xd503201f;
 const AARCH64_ADRP_MASK = 0x9f000000;
 const AARCH64_ADRP = 0x90000000;
 const AARCH64_LDR_X_UNSIGNED_MASK = 0xffc00000;
@@ -407,9 +408,16 @@ function decodeAarch64PltTail(r, image, address) {
 }
 
 function decodeAarch64PltResolver(r, image, address) {
-  if (!executableELFRange(image, address, 20n)) return null;
-  const span = mappedELFFileSpanForVa(image, address, 20n);
+  // AAELF64 PLT0 is exactly 32 bytes: STP + 16-byte resolver tail + 3x NOP
+  // padding. The trailing padding is validated explicitly so the 32-byte
+  // extent claim below never covers unproven bytes, and thunk bytes at
+  // address+32 are never owned by this extent.
+  if (!executableELFRange(image, address, AAELF64_PLT_RESOLVER_BYTES)) return null;
+  const span = mappedELFFileSpanForVa(image, address, AAELF64_PLT_RESOLVER_BYTES);
   if (!span || r.u32(span.start) !== AARCH64_STP_X16_X30_PRE) return null;
+  if (r.u32(span.start + 20) !== AARCH64_NOP
+    || r.u32(span.start + 24) !== AARCH64_NOP
+    || r.u32(span.start + 28) !== AARCH64_NOP) return null;
   return decodeAarch64PltTail(r, image, address + 4n);
 }
 
@@ -509,12 +517,18 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
 function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
   const address = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
   if (address == null) return;
+  // The finder proves the full 32-byte PLT0 extent: STP head, GOT-linked
+  // resolver tail (DT_PLTGOT+16), 3x NOP padding, ordered R_AARCH64_JUMP_SLOT
+  // thunks immediately following, unique match in executable PT_LOADs, and
+  // file-backed bytes. That is exact-extent authority for these 32 bytes
+  // only — never for the following thunks, never from section names.
   image.functions.push(functionSeed(address, {
+    size: AAELF64_PLT_RESOLVER_BYTES,
     source: 'elf-plt-structure',
-    confidence: 0.65,
+    confidence: 0.95,
     kind: 'stub',
-    exactFunctionStart: false,
-    functionStartEvidence: 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, and resolver/thunk instruction structure',
+    exactFunctionStart: true,
+    functionStartEvidence: 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, resolver/thunk instruction structure, 32-byte NOP-padded extent, and unique executable PT_LOAD match',
   }));
   image.metadata.aarch64PltResolver = {
     address,

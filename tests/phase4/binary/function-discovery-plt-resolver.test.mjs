@@ -55,6 +55,9 @@ function writeTail(view, offset, gotAddress) {
 function writeResolver(view, offset, gotAddress = GOT + 0x10n) {
   writeU32(view, offset, 0xa9bf7bf0);
   writeTail(view, offset + 4, gotAddress);
+  writeU32(view, offset + 20, 0xd503201f);
+  writeU32(view, offset + 24, 0xd503201f);
+  writeU32(view, offset + 28, 0xd503201f);
 }
 
 function sectionNameTable() {
@@ -174,8 +177,10 @@ test('A2 prime: dynamic AAELF64 PLT structure adds exactly the resolver stub sta
   assert.equal(seeds.length, 1);
   assert.equal(seeds[0].address, RESOLVER);
   assert.equal(seeds[0].kind, 'stub');
-  assert.equal(seeds[0].exactFunctionStart, false);
-  assert.equal(seeds[0].confidence, 0.65);
+  assert.equal(seeds[0].exactFunctionStart, true);
+  assert.equal(seeds[0].confidence, 0.95);
+  assert.equal(seeds[0].size, 32n);
+  assert.equal(seeds[0].end, RESOLVER + 32n);
   assert.match(seeds[0].functionStartEvidence, /DT_PLTGOT.*DT_JMPREL.*R_AARCH64_JUMP_SLOT/);
   assert.deepEqual(image.metadata.aarch64PltResolver, { address: RESOLVER, source: 'elf-plt-structure' });
 
@@ -183,6 +188,9 @@ test('A2 prime: dynamic AAELF64 PLT structure adds exactly the resolver stub sta
     const thunk = RESOLVER + 32n + 16n * BigInt(i);
     assert.equal(image.functions.some((fn) => fn.address === thunk), false, 'import thunks are table entries, not function starts');
   }
+  // Exact 32-byte extent: decode window must not exceed 32 bytes and must not
+  // own the first thunk byte at RESOLVER+32.
+  assert.equal(seeds[0].address + seeds[0].size, RESOLVER + 32n);
   assert.deepEqual(image.functions.map((fn) => fn.address), [RESOLVER], 'ordinary .text/.init/veneer executable regions gain no starts');
   assert.notEqual(RESOLVER, BASE + 0x160n, 'resolver evidence is not the executable section start');
 });
@@ -208,4 +216,34 @@ test('A2 prime negative: resolver-shaped code with the wrong PLTGOT relation add
   const image = parseELF(buildFixture({ resolverGot: GOT + 0x18n }));
   assert.equal(pltSeeds(image).length, 0);
   assert.equal(image.functions.length, 0);
+});
+
+test('A2 prime extent: corrupted NOP padding fails closed without privilege', () => {
+  const bytes = buildFixture();
+  const view = new DataView(bytes.buffer);
+  view.setUint32(RESOLVER_OFF + 24, 0xd503209f, true);
+  const image = parseELF(bytes);
+  assert.equal(pltSeeds(image).length, 0);
+  assert.equal(image.metadata.aarch64PltResolver, undefined);
+});
+
+test('A2 prime extent: truncated resolver tail fails closed without privilege', () => {
+  const bytes = buildFixture().slice(0, RESOLVER_OFF + 20);
+  const image = parseELF(bytes);
+  assert.equal(pltSeeds(image).length, 0);
+  assert.equal(image.metadata.aarch64PltResolver, undefined);
+});
+
+test('A2 prime extent: 32-byte window owns no thunk bytes', () => {
+  const image = parseELF(buildFixture());
+  const seeds = pltSeeds(image);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].size, 32n);
+  const extentEnd = seeds[0].address + seeds[0].size;
+  for (let i = 0; i < JUMP_SLOTS.length; i++) {
+    const thunk = RESOLVER + 32n + 16n * BigInt(i);
+    assert.ok(thunk >= extentEnd, 'thunk bytes lie outside the resolver extent');
+    assert.ok(extentEnd <= thunk, 'resolver extent ends exactly at the first thunk');
+  }
+  assert.equal(extentEnd, RESOLVER + 32n);
 });
