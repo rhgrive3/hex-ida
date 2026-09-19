@@ -194,3 +194,27 @@ test('Dependabot workflow group uses an exact Phase 8 cross-lane route', () => {
   const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
   assert.ok(fallback.includes(branch));
 });
+
+
+test('#9229 G emitter repair uses an exact Phase 8 cross-lane route', () => {
+  const branch = "fix/g-recompilability-production-20260919";
+  const owned = [
+  ".github/workflows/phase8-ownership.yml",
+  "js/decompiler/pipeline-core.js",
+  "js/decompiler/semantic-core.js",
+  "tests/phase8/ownership/cross-lane-routing.test.mjs",
+  "tools/validation/phase8/cross-lane-inventory.mjs"
+];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, [...owned, ...foreign]),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...owned, ...foreign, 'js/ui/__undeclared_9229.js']),
+    /unexpected foreign paths/,
+  );
+  assert.ok(CONFIG.includes(branch));
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch));
+});
