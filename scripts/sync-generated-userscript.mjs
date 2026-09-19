@@ -27,6 +27,33 @@ const branch = process.env.GITHUB_REF_NAME || gitRead(['rev-parse', '--abbrev-re
 const eventName = process.env.GITHUB_EVENT_NAME || '';
 const maxAttempts = 4;
 
+// Establish the authoritative remote tip before attempt 1 as well. Minimal
+// or detached checkouts are not required to pre-populate origin/<branch>.
+fetchRemoteBranch();
+const initialRemoteRef = `refs/remotes/origin/${branch}`;
+const initialRemoteTip = gitRead(['rev-parse', initialRemoteRef]);
+const initialLocalTip = gitRead(['rev-parse', 'HEAD']);
+if (initialLocalTip !== initialRemoteTip) {
+  // Do not erase unexpected local source edits just because the remote moved.
+  // Canonical generated outputs are rebuild-owned and may be discarded safely;
+  // off-list/deleted state retains the same fail-closed diagnostics as below.
+  const initialState = collectState();
+  const initialDecision = resolveCanonicalGeneratedOutputCommit({
+    eventName,
+    refName: branch,
+    changedPaths: initialState.changed,
+    deletedPaths: initialState.deleted,
+  });
+  if (initialDecision.offList.length > 0) {
+    fail(`refusing to auto-commit; non-canonical changes present: ${initialDecision.offList.join(', ')}`);
+  }
+  if (initialDecision.deletions.length > 0) {
+    fail(`refusing to commit deleted canonical output: ${initialDecision.deletions.join(', ')}`);
+  }
+  gitOk(['reset', '--hard', initialRemoteRef]);
+  console.log(`generated-userscript-sync: ${branch} advanced before attempt 1; rebuilding latest remote tip.`);
+}
+
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   if (attempt > 1) {
     fetchRemoteBranch();
