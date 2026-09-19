@@ -1171,7 +1171,7 @@ const perfIndexBranch = "perf/index-repeated-semantic-lookups";
 const perfIndexOwnedFiles = [
   "js/analysis/summary/interprocedural.js",
   "tests/phase7/ownership/cross-lane-routing.test.mjs",
-  "tools/validation/phase7/cross-lane-inventory.mjs"
+  "tools/validation/phase7/cross-lane-inventory.mjs",
 ];
 const perfIndexForeignFiles = CROSS_LANE_ROUTES[perfIndexBranch];
 assert.deepEqual(
@@ -1192,6 +1192,7 @@ assert.deepEqual(
   "js/semantics/compat/semantic-ir-v2-to-v1.js",
   "js/semantics/ir/from-machine-effects.js",
   "js/semantics/memoryssa/build.js",
+  "js/semantics/memoryssa/contract.js",
   "js/semantics/memoryssa/operand-forwarding.js",
   "js/semantics/memoryssa/queries.js",
   "js/semantics/ssa/build.js",
@@ -1207,6 +1208,7 @@ assert.deepEqual(
   "tests/performance/conditional-region-reachability-indexing.test.mjs",
   "tests/performance/interprocedural-return-provenance-indexing.test.mjs",
   "tests/performance/machine-effect-lowering-value-indexing.test.mjs",
+  "tests/performance/memoryssa-contract-validation-indexing.test.mjs",
   "tests/performance/memoryssa-operand-forwarding-indexing.test.mjs",
   "tests/performance/memoryssa-query-indexing.test.mjs",
   "tests/performance/memoryssa-stack-escape-indexing.test.mjs",
@@ -1220,7 +1222,7 @@ assert.deepEqual(
   "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
   "tests/phase8/ownership/cross-lane-routing.test.mjs",
   "tests/phase8/scalar/sccp.test.mjs",
-  "tools/validation/phase8/cross-lane-inventory.mjs"
+  "tools/validation/phase8/cross-lane-inventory.mjs",
 ],
   'the #9263 Phase 7 route must enumerate every foreign path exactly',
 );

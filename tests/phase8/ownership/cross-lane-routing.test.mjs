@@ -234,7 +234,7 @@ test('#9263 performance indexing branch uses an exact Phase 8 cross-lane route',
   "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
   "tests/phase8/ownership/cross-lane-routing.test.mjs",
   "tests/phase8/scalar/sccp.test.mjs",
-  "tools/validation/phase8/cross-lane-inventory.mjs"
+  "tools/validation/phase8/cross-lane-inventory.mjs",
 ];
   const foreign = CROSS_LANE_ROUTES[branch];
   assert.deepEqual(foreign, [
@@ -246,6 +246,7 @@ test('#9263 performance indexing branch uses an exact Phase 8 cross-lane route',
   "js/semantics/compat/semantic-ir-v2-to-v1.js",
   "js/semantics/ir/from-machine-effects.js",
   "js/semantics/memoryssa/build.js",
+  "js/semantics/memoryssa/contract.js",
   "js/semantics/memoryssa/operand-forwarding.js",
   "js/semantics/memoryssa/queries.js",
   "js/semantics/ssa/build.js",
@@ -261,6 +262,7 @@ test('#9263 performance indexing branch uses an exact Phase 8 cross-lane route',
   "tests/performance/conditional-region-reachability-indexing.test.mjs",
   "tests/performance/interprocedural-return-provenance-indexing.test.mjs",
   "tests/performance/machine-effect-lowering-value-indexing.test.mjs",
+  "tests/performance/memoryssa-contract-validation-indexing.test.mjs",
   "tests/performance/memoryssa-operand-forwarding-indexing.test.mjs",
   "tests/performance/memoryssa-query-indexing.test.mjs",
   "tests/performance/memoryssa-stack-escape-indexing.test.mjs",
@@ -272,7 +274,7 @@ test('#9263 performance indexing branch uses an exact Phase 8 cross-lane route',
   "tests/performance/ssa-query-indexing.test.mjs",
   "tests/performance/structuring-edge-indexing.test.mjs",
   "tests/phase7/ownership/cross-lane-routing.test.mjs",
-  "tools/validation/phase7/cross-lane-inventory.mjs"
+  "tools/validation/phase7/cross-lane-inventory.mjs",
 ], 'the #9263 Phase 8 route must enumerate every foreign path exactly');
   assert.deepEqual(
     validateCrossLaneInventory(branch, [...owned, ...foreign]),
