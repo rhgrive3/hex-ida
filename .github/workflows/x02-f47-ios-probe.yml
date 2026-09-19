@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -86,7 +86,7 @@ jobs:
           JSON
           cat build/f47-build-evidence.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: HEX-F47-Probe-${{ github.sha }}
           path: |
