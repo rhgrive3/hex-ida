@@ -1,80 +1,75 @@
 import { isReusableOriginSet } from './origin.js';
 
-// A synchronous validation batch. It exists only for the duration of one
-// caller-owned synchronous section and memoizes the exact "still current"
-// answer for a single observation so one pass does not re-walk an unchanged
-// object graph hundreds of times. It is not a cache of authority:
-//   * the memoized value is the full boolean answer; a fail-closed `false` is
-//     never relaxed to `true`;
+// A caller-owned synchronous validation batch. It exists only for the duration
+// of one explicit caller section (see `run`) and lets that section reuse one
+// already-computed freshness answer per observation instead of re-walking an
+// unchanged object graph for every selection. It is deliberately not a cache of
+// authority:
+//   * the reused value is the exact boolean the matcher returned; a fail-closed
+//     `false` is never relaxed to `true`;
 //   * write-scoped matching (`matchesThroughWrites`) is memoized per exact
-//     write-list identity, never by observation alone;
-//   * `settle()` revalidates every memoized (observation, answer) pair against
-//     the live graph before the caller may publish anything. Any pair whose
-//     live answer differs makes the batch stale and the caller MUST fail closed.
-// The batch is bound to one synchronous pass execution and is never retained
-// across decompiles, functions, passes or analysis epochs.
-let currentValidationBatch = null;
+//     write-list identity, never per observation alone;
+//   * an answer is only reused inside the section, and `settle()` re-derives
+//     every reused answer from the live graph before the caller may publish
+//     anything. It returns the number of answers that no longer hold; a caller
+//     that sees any must fail closed, because the observed graph changed under
+//     the section it had already answered for;
+//   * the batch is bound to one synchronous caller section and is never
+//     retained across decompiles, functions, passes or analysis epochs.
+// The identity it keys on is the private per-capture token of one observation
+// plus the exact write-list object, i.e. only identities this module already
+// uses to justify an answer. Object identity alone never justifies a reuse.
+let activeValidationBatch = null;
+
 export function createValidationBatch() {
-  let running = false, settled = false;
-  let results = new WeakMap();
-  let writeResults = new WeakMap();
-  const rechecks = [];
+  let answers = new Map();
+  const remembered = [];
+  const slot = (id, writes) => {
+    let entry = answers.get(id);
+    if (entry === undefined) answers.set(id, entry = { plain: null, writes: new WeakMap() });
+    if (writes === null) return entry.plain ??= {};
+    let held = entry.writes.get(writes);
+    if (held === undefined) entry.writes.set(writes, held = {});
+    return held;
+  };
   const batch = {
+    // Execute one caller-owned synchronous section under this batch. Every
+    // section starts with no answers, so a section never reuses an answer
+    // recorded by an earlier section. A nested section runs under its own
+    // batch, so it never reuses an outer answer it cannot re-derive itself.
     run(fn) {
-      if (running || settled) throw new Error('validation-batch-invalid-state');
-      running = true;
-      const previous = currentValidationBatch;
-      currentValidationBatch = batch;
-      try { return fn(); } finally { currentValidationBatch = previous; running = false; }
+      answers = new Map();
+      const previous = activeValidationBatch;
+      activeValidationBatch = batch;
+      try { return fn(); } finally { activeValidationBatch = previous; }
     },
-    known(id, writes) { return writes === null ? results.get(id) : writeResults.get(id)?.get(writes); },
+    known(id, writes) {
+      const held = slot(id, writes);
+      if (held.answered !== true) return undefined;
+      held.reused = true;
+      return held.value;
+    },
     remember(id, writes, value, recheck) {
-      if (writes === null) results.set(id, value);
-      else {
-        let perObservation = writeResults.get(id);
-        if (!perObservation) writeResults.set(id, perObservation = new WeakMap());
-        perObservation.set(writes, value);
-      }
-      rechecks.push({ value, recheck });
+      const held = slot(id, writes);
+      if (held.answered === true) return;
+      held.answered = true;
+      held.value = value;
+      held.recheck = recheck;
+      remembered.push(held);
     },
-    // Revalidate every answer reused during the batch. Returns the number of
-    // observations whose live answer differs. A non-zero result means the
-    // observed graph changed during the batch, so no memoized answer may be
-    // published.
+    // Re-derive every reused answer from live state. Only answers that were
+    // actually handed back more than once need re-derivation: a single-use
+    // answer was already computed from live state inside the section.
     settle() {
-      const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-      const t0 = probe ? performance.now() : 0; // PERF-PROBE
       let stale = 0;
-      for (const { value, recheck } of rechecks) if (recheck() !== value) stale++;
-      if (probe) { probe.settleRechecks = (probe.settleRechecks || 0) + rechecks.length; probe.settleMs = (probe.settleMs || 0) + (performance.now() - t0); } // PERF-PROBE
-      rechecks.length = 0;
-      results = new WeakMap();
-      writeResults = new WeakMap();
-      settled = true;
+      for (const held of remembered) if (held.reused === true && held.recheck() !== held.value) stale++;
+      answers = new Map();
+      remembered.length = 0;
       return stale;
     },
   };
   return Object.freeze(batch);
 }
-
-// PERF-PROBE-START (temporary instrumentation; removed before commit)
-function perfProbeRecord(perfProbe, t0, result, id) {
-  const t1 = performance.now();
-  perfProbe.calls++;
-  perfProbe.ms += t1 - t0;
-  let rec = perfProbe.obs.get(id);
-  if (!rec) { rec = { calls: 0, ms: 0, trueCount: 0, falseCount: 0, callers: perfProbe.stacks ? new Map() : null, origin: id.origin }; perfProbe.obs.set(id, rec); perfProbe.obsList.push(rec); }
-  rec.calls++;
-  rec.ms += t1 - t0;
-  if (result) rec.trueCount++; else rec.falseCount++;
-  if (perfProbe.stacks) {
-    const lines = (new Error().stack || '').split('\n');
-    const frame = lines.slice(2, 7).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ');
-    perfProbe.callers.set(frame, (perfProbe.callers.get(frame) || 0) + 1);
-    if (rec.callers) rec.callers.set(frame, (rec.callers.get(frame) || 0) + 1);
-  }
-}
-// PERF-PROBE-END
 
 /** Shared bounded plain-data observation. No semantic evaluation or proof issuance.
  * Existing solver/decompiler entry points re-export these exact implementations. */
@@ -364,33 +359,18 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
   }
   check();
   const normalizationCurrent = normalizationGuard(originCertificates, dataGuards);
-  // PERF-PROBE-START
-  const probeId = globalThis.__hexPerfProbe ? { origin: (new Error().stack || '').split('\n').slice(2, 6).map(l => l.trim().replace(/^at\s+/, '').replace(/\s*\(file:\/\/[^)]*\)/, '')).join(' <- ') } : {};
-  // PERF-PROBE-END
   const memoId = {};
+  // The private per-capture token above is the observation identity this batch
+  // keys on: one observation object answers for itself and for an exact write
+  // list, and nothing else can be served from its slot.
   function matches(writes = null) {
-    const batch = currentValidationBatch;
-    if (batch !== null && (writes === null || Array.isArray(writes))) {
-      const known = batch.known(memoId, writes);
-      if (known !== undefined) {
-        const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-        if (probe) probe.memoHits = (probe.memoHits || 0) + 1; // PERF-PROBE
-        return known;
-      }
-      const result = matchesBody(writes);
-      batch.remember(memoId, writes, result, () => matchesBody(writes));
-      return result;
-    }
-    return matchesBody(writes);
-  }
-  function matchesBody(writes = null) {
-    const probe = globalThis.__hexPerfProbe; // PERF-PROBE
-    if (probe) { // PERF-PROBE
-      const t0 = performance.now(); let r;
-      try { r = matchesBodyCore(writes); } finally { perfProbeRecord(probe, t0, r, probeId); }
-      return r;
-    } // PERF-PROBE
-    return matchesBodyCore(writes);
+    const batch = activeValidationBatch;
+    if (batch === null || (writes !== null && !Array.isArray(writes))) return matchesBodyCore(writes);
+    const known = batch.known(memoId, writes);
+    if (known !== undefined) return known;
+    const answer = matchesBodyCore(writes);
+    batch.remember(memoId, writes, answer, () => matchesBodyCore(writes));
+    return answer;
   }
   function matchesBodyCore(writes = null) {
     try {
