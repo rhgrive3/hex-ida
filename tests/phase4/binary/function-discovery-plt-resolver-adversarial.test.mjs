@@ -107,6 +107,7 @@ function buildFixture({
   machine = EM_AARCH64,
   dataEncoding = 1,
   resolverOffset = RESOLVER_OFF,
+  resolverPaddingWord = 0xd503201f,
 } = {}) {
   const le = dataEncoding === 1;
   const bytes = new Uint8Array(0x700);
@@ -160,6 +161,7 @@ function buildFixture({
   const order = thunkSlotOrder || JUMP_SLOTS.map((_, index) => index);
   const writeStructure = (resolverAt) => {
     writeResolver(w, resolverAt, resolverGot);
+    for (const off of [20, 24, 28]) w.u32(resolverAt + off, resolverPaddingWord);
     for (let i = 0; i < JUMP_SLOTS.length; i++) {
       writeTail(w, resolverAt + thunkDelta + i * 16, JUMP_SLOTS[order[i]]);
     }
@@ -220,7 +222,9 @@ test('fixture sanity: the baseline structural layout still yields exactly one se
   const seeds = pltSeeds(image);
   assert.equal(seeds.length, 1);
   assert.equal(seeds[0].address, RESOLVER);
-  assert.deepEqual(image.metadata.aarch64PltResolver, { address: RESOLVER, source: 'elf-plt-structure' });
+  assert.equal(seeds[0].exactFunctionStart, true);
+  assert.equal(seeds[0].size, 32n);
+  assert.deepEqual(image.metadata.aarch64PltResolver, { address: RESOLVER, source: 'elf-plt-structure', size:32n, extent:'validated-classic-aaelf64-plt0' });
 });
 
 test('counterexample: DT_PLTREL other than RELA fails closed', () => {
@@ -229,6 +233,17 @@ test('counterexample: DT_PLTREL other than RELA fails closed', () => {
 
 test('counterexample: an ambiguous duplicate DT_JMPREL tag fails closed', () => {
   assertNoStructuralSeed({ duplicateJmprel: true }, 'two DT_JMPREL values are not a singleton anchor');
+});
+
+test('non-classic resolver padding keeps start evidence but does not mint exact extent authority', () => {
+  const image = parseELF(buildFixture({ resolverPaddingWord: 0 }));
+  const seeds = pltSeeds(image);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].address, RESOLVER);
+  assert.equal(seeds[0].exactFunctionStart, false);
+  assert.equal(seeds[0].size, null);
+  assert.equal(seeds[0].confidence, 0.65);
+  assert.deepEqual(image.metadata.aarch64PltResolver, { address:RESOLVER, source:'elf-plt-structure' });
 });
 
 test('counterexample: two structurally complete resolvers fail closed', () => {
