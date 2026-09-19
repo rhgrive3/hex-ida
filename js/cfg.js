@@ -114,7 +114,7 @@ export function buildCfg(model, opts) {
       if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
       continue;
     }
-    if (term.isReturn) { node.isExit = true; continue; }
+    if (term.isReturn || term.isTailCall) { node.isExit = true; continue; }
 
     if (term.isCall && term.branchTarget != null) {
       if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
