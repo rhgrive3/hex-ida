@@ -1,0 +1,10 @@
+{
+  "_comment": "External LLM configuration for the CodeFuse Step 2 repair lane. Defaults target a local Ollama OpenAI-compatible endpoint; no paid provider is hardcoded. Copy to llm.config.json (or point CODEFUSE_LLM_CONFIG at it) and override any field with the CODEFUSE_LLM_* environment variables. Never commit a real API key; set the env var named by apiKeyEnv instead.",
+  "provider": "openai-compatible",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "model": "qwen2.5-coder:7b",
+  "apiKeyEnv": "CODEFUSE_LLM_API_KEY",
+  "timeoutMs": 60000,
+  "maxRepairAttempts": 8,
+  "temperature": 0
+}

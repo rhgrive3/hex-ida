@@ -42,6 +42,8 @@ jobs:
         run: npm run module-boundaries:test
       - name: Evidence writer contracts
         run: npm run evidence-writers:test
+      - name: CodeFuse functionality lane contracts
+        run: npm run codefuse:functionality:test
       - name: Core identity and evidence contracts
         run: npm run core:test
       - name: CI development-mode contract
