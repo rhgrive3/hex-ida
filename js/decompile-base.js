@@ -304,11 +304,22 @@ function detachedExceptionComponents(result, model, opts) {
 
 function ensureLegacyLabel(lines, row, label, address) {
   if (lines.some((l) => String(l.text || '').replace(/:$/, '') === label)) return;
-  let at = lines.findIndex((l) => l.row != null && l.row >= row && l.kind !== 'sig');
-  if (at < 0) at = Math.max(1, lines.findIndex((l) => l.kind === 'ctrl' && l.text === '}'));
-  if (at < 0) at = lines.length;
+  const open = lines.findIndex((l) => l.kind === 'ctrl' && l.text === '{');
+  const floor = open >= 0 ? open + 1 : 1;
+  let at = lines.findIndex((l, i) => i >= floor && l.row != null && l.row >= row && l.kind !== 'sig');
+  if (at < 0) {
+    const functionIndent = open >= 0 ? (lines[open]?.indent ?? 0) : null;
+    at = lines.findIndex((l, i) => i >= floor && l.kind === 'ctrl' && l.text === '}'
+      && (functionIndent == null || (l.indent ?? 0) === functionIndent));
+  }
+  if (at < 0) at = Math.min(floor, lines.length);
   const indent = Math.max(1, lines[at]?.indent || 1);
   lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: address, note: null });
+}
+
+export function ensureLegacyLabelForTesting(lines, row, label, address = null) {
+  ensureLegacyLabel(lines, row, label, address);
+  return lines;
 }
 
 function ensureLegacyGoto(lines, edge, label) {
@@ -323,8 +334,13 @@ function ensureLegacyGoto(lines, edge, label) {
   })));
   const existing = lines.find(l => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`));
   if (existing) { existing.source = mergeSource(existing.source, source); return true; }
+  const open = lines.findIndex((l) => l.kind === 'ctrl' && l.text === '{');
+  const functionIndent = open >= 0 ? (lines[open]?.indent ?? 0) : 0;
+  const close = lines.findIndex((l, i) =>
+    i > open && l.kind === 'ctrl' && l.text === '}' && (l.indent ?? 0) === functionIndent);
+  const ceiling = close >= 0 ? close : lines.length;
   let at = -1;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = Math.max(0, open + 1); i < ceiling; i++) {
     const r = lines[i]?.row;
     if (r != null && r <= edge.from.endRow) at = i;
   }
@@ -332,6 +348,10 @@ function ensureLegacyGoto(lines, edge, label) {
   const indent = Math.max(1, lines[at]?.indent || 1);
   lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: from.address ?? null, note: null, source });
   return true;
+}
+
+export function ensureLegacyGotoForTesting(lines, edge, label) {
+  return ensureLegacyGoto(lines, edge, label);
 }
 
 function ensureSemanticLabel(result, model, opts, bi) {
