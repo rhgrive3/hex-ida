@@ -356,7 +356,7 @@ export const DECOMPILE_INTERNAL_FIELDS = Object.freeze([
   'sourceMap', 'prototype', 'aggregateLayouts', 'rewriteProof', 'rewriteStats',
   'passMetrics', 'phase8', 'phase8Projection', 'metrics', 'importantInputs',
   'importantOutputs', 'sideEffects', 'conditions', 'expressionHistoryBinding',
-  'semanticSuppressionHistory', 'semanticStatementRenderHistory',
+  'semanticSuppressionHistory', 'semanticStatementRenderHistory', 'semanticControlRenderHistory',
   'semanticStoreRenderHistory', 'switchRenderHistory', 'legacyFallback',
 ]);
 
