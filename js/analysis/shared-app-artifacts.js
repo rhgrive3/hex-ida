@@ -659,9 +659,14 @@ export function installSharedAppArtifacts(app) {
     const key = `noreturn-refinement:${app.symbols?.functionDiscovery?.discoveryKey ?? 'none'}:${epochOf(app)}:${app.symbols?.gen ?? 0}`;
     const existing = app.__noreturnRefinementBusy;
     if (existing && existing.key === key) return existing.promise;
-    const promise = runNoreturnRefinement(app).catch(() => null);
-    Object.defineProperty(app, '__noreturnRefinementBusy', { value: { key, promise }, configurable: true });
-    return promise;
+    const entry = { key, promise:null };
+    entry.promise = runNoreturnRefinement(app).catch(() => null).finally(() => {
+      if (app.__noreturnRefinementBusy === entry) {
+        Object.defineProperty(app, '__noreturnRefinementBusy', { value:null, configurable:true });
+      }
+    });
+    Object.defineProperty(app, '__noreturnRefinementBusy', { value:entry, configurable:true });
+    return entry.promise;
   };
 
   // Investigation, schema recovery, Globals, and legacy callers now converge on
