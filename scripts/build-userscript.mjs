@@ -141,6 +141,7 @@ function resolvedImportScriptsArguments(args, from) {
 function scanImportScriptsCalls(source) {
   const matches = [];
   let i = 0;
+  let lastSignificantCodeChar = '';
   const len = source.length;
   while (i < len) {
     const ch = source[i];
@@ -188,7 +189,10 @@ function scanImportScriptsCalls(source) {
     }
     if (source.startsWith('importScripts', i)) {
       const prevChar = i > 0 ? source[i - 1] : '';
-      if (!/[a-zA-Z0-9_$]/.test(prevChar)) {
+      // Bare worker-global importScripts() is supported. A property named
+      // importScripts on any receiver (including optional chaining and spacing
+      // or comments around the dot) is ordinary JavaScript and must be preserved.
+      if (!/[a-zA-Z0-9_$]/.test(prevChar) && lastSignificantCodeChar !== '.') {
         let after = i + 'importScripts'.length;
         const nextChar = source[after] || '';
         if (!/[a-zA-Z0-9_$]/.test(nextChar)) {
@@ -245,6 +249,7 @@ function scanImportScriptsCalls(source) {
         }
       }
     }
+    if (!/\s/.test(ch)) lastSignificantCodeChar = ch;
     i++;
   }
   return matches;
