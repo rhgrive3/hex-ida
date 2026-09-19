@@ -711,7 +711,13 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const field = resolveJvmFieldRef(jvmClass, fieldIdx, { resolveDeclaredFlags: true });
           mnemonic = opcode === 0xb2 ? 'getstatic' : opcode === 0xb3 ? 'putstatic' : opcode === 0xb4 ? 'getfield' : 'putfield';
 
-          const receiver = { id: 'obj', bits: 64, category: 1, valueKind: 'reference' };
+          const receiver = {
+            id: 'obj',
+            bits: 32,
+            category: 1,
+            valueKind: 'reference',
+            type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
+          };
           if (!field) {
             completeness = 'partial';
             if (isWrite) consumedValues.push({ id: 'val', typeUnknown: true });
@@ -741,6 +747,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             descriptor: field.descriptor,
             ...(field.valueKind === 'float' ? { type: { kind: 'float', widthBits: 32, format: 'binary32' } } : {}),
             ...(field.valueKind === 'double' ? { type: { kind: 'float', widthBits: 64, format: 'binary64' } } : {}),
+            ...(field.valueKind === 'reference' ? { type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' } } : {}),
           };
           if (isWrite) {
             consumedValues.push({ id: 'val', ...value });

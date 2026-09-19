@@ -36,10 +36,18 @@ function candidates() {
   return out;
 }
 
+function isFile(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function entry(name) {
   for (const d of candidates()) {
     const f = path.join(d, name);
-    if (fs.existsSync(f)) return f;
+    if (isFile(f)) return f;
   }
   return path.join(dir, 'dist', 'claude', name); // last-ditch; import will no-op if absent
 }

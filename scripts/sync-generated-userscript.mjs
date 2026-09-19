@@ -104,13 +104,13 @@ function collectState() {
   }
 
   const deleted = [...new Set([
-    ...names(gitRead(['ls-files', '--deleted', '--', ...CANONICAL_GENERATED_OUTPUT_PATHS])),
-    ...names(gitRead(['diff', '--cached', '--diff-filter=D', '--name-only', '--', ...CANONICAL_GENERATED_OUTPUT_PATHS])),
+    ...names(gitReadRaw(['ls-files', '-z', '--deleted', '--', ...CANONICAL_GENERATED_OUTPUT_PATHS])),
+    ...names(gitReadRaw(['diff', '-z', '--cached', '--diff-filter=D', '--name-only', '--', ...CANONICAL_GENERATED_OUTPUT_PATHS])),
   ])];
   const changed = [...new Set([
-    ...names(gitRead(['diff', '--name-only', '--', '.'])),
-    ...names(gitRead(['diff', '--cached', '--name-only', '--', '.'])),
-    ...names(gitRead(['ls-files', '--others', '--exclude-standard'])),
+    ...names(gitReadRaw(['diff', '-z', '--name-only', '--', '.'])),
+    ...names(gitReadRaw(['diff', '-z', '--cached', '--name-only', '--', '.'])),
+    ...names(gitReadRaw(['ls-files', '-z', '--others', '--exclude-standard'])),
     ...deleted,
   ])];
   return { changed, deleted };
@@ -126,7 +126,15 @@ function fetchRemoteBranch() {
 }
 
 function names(output) {
-  return output ? output.split('\n').map((line) => line.trim()).filter(Boolean) : [];
+  return output ? output.split('\0').filter(Boolean) : [];
+}
+
+function gitReadRaw(args) {
+  const result = run('git', args, { allowFailure: true });
+  if (result.status !== 0) {
+    fail(`git ${args.join(' ')} failed: ${detail(result)}`);
+  }
+  return result.stdout;
 }
 
 function gitRead(args) {

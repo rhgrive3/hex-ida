@@ -160,20 +160,17 @@ function binaryVersion(bin) {
 // Keep one shared binary copy; returns { path, version } or null when no
 // usable copy exists anywhere yet (first launch then downloads for its HOME).
 function ensureSharedBinary() {
+  let sharedBest = null;
   if (realBinary(SHARED_BIN)) {
-    let v = null;
-    try {
-      v = fs.readFileSync(SHARED_BIN_VERSION, 'utf8').trim() || null;
-    } catch {}
-    v ||= binaryVersion(SHARED_BIN);
+    const v = binaryVersion(SHARED_BIN) || (() => {
+      try { return fs.readFileSync(SHARED_BIN_VERSION, 'utf8').trim() || null; } catch { return null; }
+    })();
     if (v) {
-      try {
-        fs.writeFileSync(SHARED_BIN_VERSION, `${v}\n`);
-      } catch {}
-      return { path: SHARED_BIN, version: v };
+      sharedBest = { path: SHARED_BIN, version: v };
     }
   }
-  let best = null;
+
+  let best = sharedBest;
   for (const base of [DATA_ROOT, LEGACY_ROOT]) {
     for (const n of NUMS) {
       const p = path.join(base, n, 'home', '.config', 'manicode', 'freebuff');
@@ -184,14 +181,37 @@ function ensureSharedBinary() {
     }
   }
   if (!best) return null;
+  if (!sharedBest || best.path !== SHARED_BIN || cmpVersions(sharedBest.version, best.version) < 0) {
+    try {
+      fs.mkdirSync(path.dirname(SHARED_BIN), { recursive: true });
+      if (best.path !== SHARED_BIN) {
+        fs.copyFileSync(best.path, SHARED_BIN);
+        fs.chmodSync(SHARED_BIN, 0o755);
+      }
+      fs.writeFileSync(SHARED_BIN_VERSION, `${best.version}\n`);
+      return { path: SHARED_BIN, version: best.version };
+    } catch {
+      return sharedBest;
+    }
+  }
+  return sharedBest;
+}
+
+function ensureMetadata(dir, shared) {
+  const metaPath = path.join(dir, 'freebuff-metadata.json');
+  const expectedTarget = `${process.platform}-${process.arch}`;
   try {
-    fs.mkdirSync(path.dirname(SHARED_BIN), { recursive: true });
-    fs.copyFileSync(best.path, SHARED_BIN);
-    fs.chmodSync(SHARED_BIN, 0o755);
-    fs.writeFileSync(SHARED_BIN_VERSION, `${best.version}\n`);
-    return { path: SHARED_BIN, version: best.version };
+    const cur = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (cur.version === shared.version && cur.target === expectedTarget) return false;
+  } catch {}
+  try {
+    fs.writeFileSync(
+      metaPath,
+      `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`,
+    );
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -201,25 +221,26 @@ function ensureSharedBinary() {
 function linkSharedBinary(home, shared) {
   const dir = path.join(home, '.config', 'manicode');
   const bin = path.join(dir, 'freebuff');
+  let linked = false;
   try {
     const st = fs.lstatSync(bin);
     if (!st.isSymbolicLink()) return false;
-    if (fs.readlinkSync(bin) === shared.path) return false; // already linked
-    fs.rmSync(bin, { force: true });
+    if (fs.readlinkSync(bin) !== shared.path) {
+      fs.rmSync(bin, { force: true });
+      fs.symlinkSync(shared.path, bin);
+      linked = true;
+    }
   } catch {
-    // Absent (or unreadable): proceed to link, failures handled below.
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.symlinkSync(shared.path, bin);
+      linked = true;
+    } catch {
+      return false;
+    }
   }
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.symlinkSync(shared.path, bin);
-    fs.writeFileSync(
-      path.join(dir, 'freebuff-metadata.json'),
-      `${JSON.stringify({ version: shared.version, target: `${process.platform}-${process.arch}` }, null, 2)}\n`,
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  const metaUpdated = ensureMetadata(dir, shared);
+  return linked || metaUpdated;
 }
 
 function ensureShared() {
@@ -244,7 +265,13 @@ function ensureHome(n, shared) {
   const repoHome = path.join(REPO_DATA_ROOT, n, 'home');
   const legacy = path.join(LEGACY_ROOT, n, 'home');
   let migrated = 0;
-  if (moveIfMissing(repoHome, home)) migrated++;
+  if (moveIfMissing(repoHome, home)) {
+    migrated++;
+  } else if (fs.existsSync(repoHome)) {
+    for (const rel of HOME_FILES) {
+      if (copyIfMissing(path.join(repoHome, rel), path.join(home, rel))) migrated++;
+    }
+  }
   fs.mkdirSync(home, { recursive: true });
   const sharedMigrated = ensureShared();
   for (const rel of HOME_FILES) {
@@ -265,11 +292,20 @@ function ensureHome(n, shared) {
 }
 
 function cleanupRepoData() {
-  // Remove the old in-repo data root once every number has moved out; an
-  // in-repo HOME would re-trigger the startup picker if ever reused.
+  // Remove the old in-repo data root once every number has moved out and
+  // no unmigrated HOME_FILES remain in REPO_DATA_ROOT.
   try {
+    if (!fs.existsSync(REPO_DATA_ROOT)) return false;
     for (const n of NUMS) {
       if (!fs.existsSync(path.join(DATA_ROOT, n, 'home', '.config', 'manicode', 'credentials.json'))) return false;
+      const repoHome = path.join(REPO_DATA_ROOT, n, 'home');
+      if (fs.existsSync(repoHome)) {
+        for (const rel of HOME_FILES) {
+          const repoFile = path.join(repoHome, rel);
+          const dstFile = path.join(DATA_ROOT, n, 'home', rel);
+          if (fs.existsSync(repoFile) && !fs.existsSync(dstFile)) return false;
+        }
+      }
     }
     fs.rmSync(REPO_DATA_ROOT, { recursive: true, force: true });
     return true;
@@ -280,7 +316,11 @@ function cleanupRepoData() {
 
 function ensureLauncher() {
   const launcher = path.join(ROOT, '.tools', 'npm', 'bin', 'freebuff');
-  if (fs.existsSync(launcher)) return false;
+  try {
+    const st = fs.statSync(launcher);
+    if (st.isFile()) return false;
+    fs.rmSync(launcher, { recursive: true, force: true });
+  } catch {}
   fs.mkdirSync(path.join(ROOT, '.tools', 'npm'), { recursive: true });
   const r = spawnSync('npm', ['install', '-g', '--prefix', path.join(ROOT, '.tools', 'npm'), 'freebuff@latest'], {
     cwd: ROOT,
@@ -320,15 +360,20 @@ function ensureMirror() {
       const src = path.join(ROOT, rel);
       const dst = path.join(MIRROR_ROOT, rel);
       const content = fs.readFileSync(src, 'utf8');
-      let cur = null;
       try {
-        cur = fs.readFileSync(dst, 'utf8');
+        const st = fs.lstatSync(dst);
+        if (st.isSymbolicLink()) {
+          fs.rmSync(dst, { force: true });
+        } else if (st.isFile()) {
+          const cur = fs.readFileSync(dst, 'utf8');
+          if (cur === content) continue;
+        }
       } catch {}
-      if (cur !== content) {
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.writeFileSync(dst, content);
-        wrote++;
-      }
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      const tmp = `${dst}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmp, content);
+      fs.renameSync(tmp, dst);
+      wrote++;
     }
   } catch {}
   return wrote;

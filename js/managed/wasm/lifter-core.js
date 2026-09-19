@@ -4,6 +4,7 @@ import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFuncti
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
 import { wasmModuleIndex } from './module-index.js';
+import { validateWasmFunctionTypes } from './validator.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -121,6 +122,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   let currentStackHeight = 0;
   let frameSeq = 0;
   let stoppedOnUnsupported = false;
+  const selectTypes = options?.selectTypes ?? validateWasmFunctionTypes(funcIndex, wasmModule, options)?.selectTypes;
 
   const functionFrame = { id: `frame_${frameSeq++}`, kind: 'function', startOffset: 0, bodyOffset: 0, stackHeight: 0, params: [], results: funcType.results.slice(), pendingBranches: [], polymorphic: false, elseSeen: false };
   const controlStack = [functionFrame];
@@ -329,8 +331,26 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       }
       case 0x1a: mnemonic = 'drop'; consumedValues.push({ id: 'top' }); consume(1); break;
-      case 0x1b:
-        mnemonic = 'select'; consumedValues.push({ id: 'cond', bits: 32 }, { id: 'val2' }, { id: 'val1' }); consume(3); producedValues.push({ bits: 32 }); produce(1); break;
+      case 0x1b: {
+        mnemonic = 'select';
+        const st = selectTypes?.get(opOffset);
+        const bits = st ? typeBits(st) : 32;
+        consumedValues.push(
+          { id: 'cond', bits: 32 },
+          st ? { id: 'val2', bits, type: st } : { id: 'val2' },
+          st ? { id: 'val1', bits, type: st } : { id: 'val1' },
+        );
+        consume(3);
+        if (st) {
+          producedValues.push({ bits, type: st });
+        } else {
+          producedValues.push({ bits: 32 });
+          completeness = 'partial';
+          unknownEffects.push({ reason: 'wasm-untyped-select-result', categories: ['types'] });
+        }
+        produce(1);
+        break;
+      }
       case 0x20: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
         if (r.value >= localTotalCount) fail('wasm-invalid-local-index');

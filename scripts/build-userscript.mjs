@@ -138,17 +138,139 @@ function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)
     .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
 }
+function scanImportScriptsCalls(source) {
+  const matches = [];
+  let i = 0;
+  const len = source.length;
+  while (i < len) {
+    const ch = source[i];
+    if (ch === '/' && source[i + 1] === '/') {
+      i += 2;
+      while (i < len && source[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      i += 2;
+      while (i < len && !(source[i] === '*' && source[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === '\'' || ch === '"') {
+      const quote = ch;
+      i++;
+      while (i < len && source[i] !== quote) {
+        if (source[i] === '\\') i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (ch === '`') {
+      i++;
+      while (i < len && source[i] !== '`') {
+        if (source[i] === '\\') {
+          i += 2;
+        } else if (source[i] === '$' && source[i + 1] === '{') {
+          i += 2;
+          let braceDepth = 1;
+          while (i < len && braceDepth > 0) {
+            if (source[i] === '{') braceDepth++;
+            else if (source[i] === '}') braceDepth--;
+            else if (source[i] === '\\') i++;
+            i++;
+          }
+        } else {
+          i++;
+        }
+      }
+      i++;
+      continue;
+    }
+    if (source.startsWith('importScripts', i)) {
+      const prevChar = i > 0 ? source[i - 1] : '';
+      if (!/[a-zA-Z0-9_$]/.test(prevChar)) {
+        let after = i + 'importScripts'.length;
+        const nextChar = source[after] || '';
+        if (!/[a-zA-Z0-9_$]/.test(nextChar)) {
+          while (after < len && /\s/.test(source[after])) after++;
+          if (source[after] === '(') {
+            const callStart = i;
+            after++;
+            let depth = 1;
+            const argsStart = after;
+            while (after < len && depth > 0) {
+              const c = source[after];
+              if (c === '/' && source[after + 1] === '/') {
+                after += 2;
+                while (after < len && source[after] !== '\n') after++;
+                continue;
+              }
+              if (c === '/' && source[after + 1] === '*') {
+                after += 2;
+                while (after < len && !(source[after] === '*' && source[after + 1] === '/')) after++;
+                after += 2;
+                continue;
+              }
+              if (c === '\'' || c === '"') {
+                const q = c;
+                after++;
+                while (after < len && source[after] !== q) {
+                  if (source[after] === '\\') after++;
+                  after++;
+                }
+                after++;
+                continue;
+              }
+              if (c === '(') depth++;
+              else if (c === ')') depth--;
+              if (depth > 0) after++;
+            }
+            const argsEnd = after;
+            after++;
+            let callEnd = after;
+            while (callEnd < len && /[\s;]/.test(source[callEnd])) {
+              if (source[callEnd] === ';') { callEnd++; break; }
+              callEnd++;
+            }
+            matches.push({
+              start: callStart,
+              end: callEnd,
+              args: source.slice(argsStart, argsEnd),
+            });
+            i = callEnd;
+            continue;
+          }
+        }
+      }
+    }
+    i++;
+  }
+  return matches;
+}
 export function parseImports(source, from) {
   const out = [];
-  for (const call of source.matchAll(/\bimportScripts\s*\(([\s\S]*?)\)(?:\s*;)?/g)) out.push(...resolvedImportScriptsArguments(call[1], from));
+  for (const call of scanImportScriptsCalls(source)) {
+    out.push(...resolvedImportScriptsArguments(call.args, from));
+  }
   return out;
 }
 export function inlineImports(path, sources, stack = []) {
   if (stack.includes(path)) throw new Error(`Worker import cycle: ${[...stack, path].join(' -> ')}`);
   const source = sources.get(path); if (source == null) throw new Error(`Missing worker source: ${path}`);
-  return source.replace(/\bimportScripts\s*\(([\s\S]*?)\)(?:\s*;)?/g, (_all, args) => resolvedImportScriptsArguments(args, path)
-    .map((dependency) => inlineImports(dependency, sources, [...stack, path]))
-    .join('\n'));
+  const calls = scanImportScriptsCalls(source);
+  if (calls.length === 0) return source;
+  let result = '';
+  let lastIndex = 0;
+  for (const call of calls) {
+    result += source.slice(lastIndex, call.start);
+    const inlined = resolvedImportScriptsArguments(call.args, path)
+      .map((dependency) => inlineImports(dependency, sources, [...stack, path]))
+      .join('\n');
+    result += inlined;
+    lastIndex = call.end;
+  }
+  result += source.slice(lastIndex);
+  return result;
 }
 function normalizePath(value) { const path = posix.normalize(String(value).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, ''); if (!path || path.startsWith('../')) throw new Error(`Path escapes repository: ${value}`); return path; }
 

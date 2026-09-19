@@ -2103,7 +2103,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
     if (wanted.has(key)) continue;
     wanted.set(key, { want, size: Number(it.size) || 0, out: [] });
   }
-  if (!wanted.size) return { results: [], groups: {}, cancelled: false, capped: false };
+  if (!wanted.size) return { results: [], groups: {}, cancelled: false, capped: false, complete: true };
 
   const allFull = () => {
     for (const s of wanted.values()) if (s.out.length < cap) return false;
@@ -2113,7 +2113,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
   let found = 0;
   let pos = 0;
   while (pos < total && !allFull()) {
-    if (cancelled(requestId)) return { results: firstOf(), groups: groupsOf(), cancelled: true };
+    if (cancelled(requestId)) return { results: firstOf(), groups: groupsOf(), cancelled: true, capped: false, complete: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -2150,7 +2150,8 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
     await yieldToQueue();
   }
   const capped = Array.from(wanted.values()).some((s) => s.out.length >= cap);
-  return { results: firstOf(), groups: groupsOf(), cancelled: false, capped };
+  const complete = pos >= total && !capped;
+  return { results: firstOf(), groups: groupsOf(), cancelled: false, capped, complete };
 
   function firstOf() {
     // 1 つだけ頼まれたとき用。これまでの呼び出し元がそのまま動くようにする。

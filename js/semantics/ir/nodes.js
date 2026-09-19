@@ -53,7 +53,7 @@ export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
 
 export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.entries({
   const: { inputs: [0, 0], outputs: [1, 1] },
-  copy: { inputs: [1, 1], outputs: [1, 1] },
+  copy: { inputs: [1, 1], outputs: [1, null] },
   unary: { inputs: [1, 1], outputs: [1, 1] },
   binary: { inputs: [2, 2], outputs: [1, 1] },
   compare: { inputs: [2, 2], outputs: [1, 1] },

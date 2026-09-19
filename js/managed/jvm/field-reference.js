@@ -43,7 +43,7 @@ const PRIMITIVE_FIELD_DESCRIPTORS = Object.freeze(Object.assign(Object.create(nu
 // shared bridge's canonical field-address entry carries the same width), so a
 // reference field stores exactly that width; no separate HotSpot-style
 // compressed-oop authority is invented here (#8799).
-const JVM_REFERENCE_STORAGE_BITS = 64;
+const JVM_REFERENCE_STORAGE_BITS = 32;
 
 export function classifyJvmFieldDescriptor(descriptor) {
   if (typeof descriptor !== 'string' || descriptor.length === 0) return null;
@@ -61,8 +61,9 @@ export function classifyJvmFieldDescriptor(descriptor) {
     const name = descriptor.slice(1, -1);
     if (!validInternalClassName(name)) return null;
     return Object.freeze({
-      descriptor, bits: 64, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
+      descriptor, bits: 32, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
       valueKind: 'reference', storageByteWidth: JVM_REFERENCE_STORAGE_BITS / 8,
+      type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
     });
   }
 
@@ -78,8 +79,9 @@ export function classifyJvmFieldDescriptor(descriptor) {
       return null;
     }
     return Object.freeze({
-      descriptor, bits: 64, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
+      descriptor, bits: 32, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
       valueKind: 'reference', storageByteWidth: JVM_REFERENCE_STORAGE_BITS / 8,
+      type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
     });
   }
 

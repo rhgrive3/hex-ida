@@ -79,6 +79,9 @@ function writeTail(w, offset, gotAddress) {
 function writeResolver(w, offset, gotAddress) {
   w.u32(offset, 0xa9bf7bf0);
   writeTail(w, offset + 4, gotAddress);
+  w.u32(offset + 20, 0xd503201f);
+  w.u32(offset + 24, 0xd503201f);
+  w.u32(offset + 28, 0xd503201f);
 }
 
 function sectionNameTable() {

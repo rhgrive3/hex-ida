@@ -44,7 +44,8 @@ function preserveNarrowLoadExtensionSemantics(lifted, options) {
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const validation = validateWasmFunctionTypes(funcIndex, wasmModule, options);
-  const lifted = preserveNarrowLoadExtensionSemantics(liftWasmFunctionCore(funcIndex, wasmModule, options), options);
+  const coreOptions = { ...options, selectTypes: validation.selectTypes };
+  const lifted = preserveNarrowLoadExtensionSemantics(liftWasmFunctionCore(funcIndex, wasmModule, coreOptions), options);
   return Object.freeze({
     ...lifted,
     metadata: Object.freeze({

@@ -23,6 +23,9 @@ import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
 import { analyzeFunctionCached, describeFunction, supportsArm64SemanticAnalysis } from './analyze.js';
 import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
+import { showXrefs } from './ui/panels/navigation.js';
+import { showField } from './ui/panels/field-access.js';
+export { showXrefs, showField };
 import { levelOf } from './blocks.js';
 import {
   functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
@@ -740,7 +743,7 @@ export function showStrings(app) {
 
 /* ── 参照元（ここを使っている場所） ──────────────────────── */
 
-export function showXrefs(app, target) {
+function showXrefsLegacy(app, target) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const codeRegion = pickCodeRegion(app) || region;
@@ -1936,8 +1939,7 @@ export function showClass(app, className) {
   }
 }
 
-/** 値 1 つ。「HP はどこで書き換えられているのか」に答える画面。 */
-export function showField(app, className, field) {
+function showFieldLegacy(app, className, field) {
   const sheet = new Sheet(className + '.' + plainFieldName(field.name), {
     onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
   });

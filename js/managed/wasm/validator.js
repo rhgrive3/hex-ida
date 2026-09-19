@@ -73,6 +73,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
   const budget = createVMEffectBudgetTracker(options);
   const stack = [];
   const frames = [{ kind: 'function', height: 0, params: EMPTY_TYPES, results: funcType.results, polymorphic: false, elseSeen: false }];
+  const selectTypes = new Map();
   let pos = 0;
   let complete = true;
 
@@ -223,6 +224,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         pop(UNKNOWN);
         break;
       case 0x1b: {
+        const opOffset = pos - 1;
         pop(I32, 'wasm-stack-underflow-select');
         const rhs = pop(UNKNOWN, 'wasm-stack-underflow-select');
         const lhs = pop(UNKNOWN, 'wasm-stack-underflow-select');
@@ -230,6 +232,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const resultType = lhs === UNKNOWN ? rhs : lhs;
         if (resultType !== UNKNOWN && !PLAIN_SELECT_TYPES.has(resultType)) fail('wasm-invalid-select-type');
         stack.push(resultType);
+        if (resultType !== UNKNOWN) selectTypes.set(opOffset, resultType);
         break;
       }
       case 0x20: {
@@ -291,5 +294,5 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
   }
 
   if (frames.length !== 0) fail('wasm-missing-function-end');
-  return Object.freeze({ complete });
+  return Object.freeze({ complete, selectTypes });
 }

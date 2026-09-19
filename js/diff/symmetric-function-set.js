@@ -71,6 +71,7 @@ function regionFor(regions, address) {
 }
 function functionDescriptors(symbols, regions, architecture, limit) {
   const funcs = symbols?.funcs || [];
+  const funcEnds = symbols?.funcEnds || null;
   const total = Number(funcs.length || 0);
   const count = Math.min(total, normalizeFunctionLimit(limit));
   const descriptors = [];
@@ -82,8 +83,10 @@ function functionDescriptors(symbols, regions, architecture, limit) {
       continue;
     }
     const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
+    const exactEnd = funcEnds && index < funcEnds.length ? BigInt(funcEnds[index]) : 0n;
     const next = index + 1 < funcs.length ? BigInt(funcs[index + 1]) : regionEnd;
-    const end = next > address && next <= regionEnd ? next : regionEnd;
+    const fallbackEnd = next > address && next <= regionEnd ? next : regionEnd;
+    const end = exactEnd > address && exactEnd <= regionEnd ? exactEnd : fallbackEnd;
     descriptors.push({ index, address, name:symbols?.nameAt?.(address) || null, size:Number(end - address), architecture, region, end, parts:[], missing:false });
   }
   return { descriptors, total, count };
