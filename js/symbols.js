@@ -562,11 +562,26 @@ export class SymbolIndex {
       if (end != null && end > start) exactEnds.set(start.toString(), end);
     }
     const all = Array.from(have);
+    // Scanner guesses cannot split an already-proven function body. Keep
+    // independent confirmed metadata and explicit topology refinement separate.
+    // Prefix maxima also cover overlapping source extents without a quadratic
+    // candidate-by-function scan; unknown ends provide no exclusion evidence.
+    const coveredEnds = [];
+    let coveredEnd = 0n;
+    if (provenance.source === 'heuristic' && provenance.confirmed !== true) {
+      for (let i = 0; i < this.funcs.length; i++) {
+        const end = this._functionEnd(i);
+        if (end != null && end > coveredEnd) coveredEnd = end;
+        coveredEnds.push(coveredEnd);
+      }
+    }
     let added = 0;
     for (const a of list) {
       if (a == null) continue;
       const addr = canonicalMetadataAddress(a);
       if (addr == null || have.has(addr)) continue;
+      const owner = coveredEnds.length ? this._floor(this.funcs, addr) : -1;
+      if (owner >= 0 && addr < coveredEnds[owner]) continue;
       have.add(addr); all.push(addr); added++;
       this.functionProvenance.set(addr.toString(), { ...provenance });
     }

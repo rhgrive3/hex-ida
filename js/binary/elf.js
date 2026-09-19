@@ -3,6 +3,7 @@ import { elfExactFunctionStartRejection, elfFunctionExtentRejection, executableE
 import { markELFMetadataPartial } from './elf-budget.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
+import { retainElfLoaderEntryExtents } from './elf-loader-entry-extent.js';
 
 function executableOwnerForSymbol(image, symbol) {
   return executableELFRange(image, symbol.address, symbol.size || 0n, symbol.sectionIndex ?? null);
@@ -63,5 +64,5 @@ function validateElfVersion(input) {
 
 export function parseELF(input, options = {}) {
   validateElfVersion(input);
-  return repairElfZeroAddressFunctionSeeds(parseELFCore(input, options));
+  return retainElfLoaderEntryExtents(repairElfZeroAddressFunctionSeeds(parseELFCore(input, options)));
 }
