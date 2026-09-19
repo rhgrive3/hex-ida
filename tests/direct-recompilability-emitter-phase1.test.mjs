@@ -41,6 +41,26 @@ test('legacy label repair never inserts a label between declarator and opening b
   ]);
 });
 
+test('legacy label fallback skips nested control closes', () => {
+  const lines = [
+    { kind: 'sig', indent: 0, text: 'void nested_label(void)', row: 0 },
+    { kind: 'ctrl', indent: 0, text: '{', row: 0 },
+    { kind: 'ctrl', indent: 1, text: 'if (flag) {', row: 1 },
+    { kind: 'stmt', indent: 2, text: 'inside();', row: 2 },
+    { kind: 'ctrl', indent: 1, text: '}', row: 2 },
+    { kind: 'ctrl', indent: 0, text: '}', row: 3 },
+  ];
+
+  ensureLegacyLabelForTesting(lines, 99, 'loc_DEAD', 0xdeadn);
+
+  const nestedClose = lines.findIndex((line) => line.kind === 'ctrl' && line.indent === 1 && line.text === '}');
+  const labelIndex = lines.findIndex((line) => line.text === 'loc_DEAD:');
+  const functionClose = lines.findIndex((line) => line.kind === 'ctrl' && line.indent === 0 && line.text === '}');
+
+  assert.ok(labelIndex > nestedClose, 'fallback label must not be inserted into the nested control body');
+  assert.ok(labelIndex < functionClose, 'fallback label must remain inside the function body');
+});
+
 test('shared-cleanup goto is emitted before the function closing brace', () => {
   const { raw, opts, model } = modelOf([
     { address: 0x1000, mn: 'cbnz', ops: 'x0, 0x100c' },
