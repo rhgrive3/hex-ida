@@ -59,6 +59,37 @@ function sameExecutableRange(image, start, range) {
     && BigInt(aSeg.size ?? -1n) === BigInt(bSeg.size ?? -2n);
 }
 
+
+function uniqueExecutableFileSpan(image, start, range) {
+  const begin = BigInt(start);
+  const size = BigInt(range);
+  if (size <= 0n) return null;
+  const end = begin + size;
+  if (end <= begin) return null;
+  const mapped = mappedELFFileSpanForVa(image, begin, size);
+  const owner = mapped?.segment;
+  if (!owner || owner.source !== 'PT_LOAD' || owner.perms?.execute !== true) return null;
+  let owners = 0;
+  for (const segment of image?.segments || []) {
+    if (!segment || segment.source !== 'PT_LOAD') continue;
+    const segStart = BigInt(segment.address ?? 0n);
+    const segSize = BigInt(segment.size ?? 0n);
+    if (segSize <= 0n) continue;
+    const segEnd = segStart + segSize;
+    const overlapStart = begin > segStart ? begin : segStart;
+    const overlapEnd = end < segEnd ? end : segEnd;
+    if (overlapStart >= overlapEnd) continue;
+    // Exact extent authority is intentionally stricter than ordinary mapping:
+    // one and only one PT_LOAD must own the whole range and the same owner must
+    // supply every file byte. Any overlapping second owner is ambiguous here.
+    if (segment !== owner || begin < segStart || end > segEnd) return null;
+    const fileSize = BigInt(Object.hasOwn(segment, 'fileSize') ? (segment.fileSize ?? 0n) : (segment.size ?? 0n));
+    if (begin - segStart + size > fileSize) return null;
+    owners++;
+  }
+  return owners === 1 ? mapped : null;
+}
+
 function instructionAlignment(image) {
   const arch = String(image?.architecture || image?.arch || '').toLowerCase();
   if (arch === 'arm64' || arch === 'aarch64') return 4n;
@@ -460,9 +491,9 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
       image.functions.push(functionSeed(candidate.address, {
         // The row loop already proved range > 0 inside one executable range.
         // Retain it as exact extent only with the full span file-backed in a
-        // single PT_LOAD; anything else stays a start-only seed.
+        // single executable PT_LOAD with no overlapping PT_LOAD owner; anything else stays start-only.
         ...((claimsByAddress.get(key) === 1 && candidate.range != null && candidate.range > 0n
-          && mappedELFFileSpanForVa(image, candidate.address, candidate.range))
+          && uniqueExecutableFileSpan(image, candidate.address, candidate.range))
           ? { size:candidate.range } : {}),
         source:'unwind',
         confidence:candidate.domainKind === 'section' ? 0.985 : 0.97,
