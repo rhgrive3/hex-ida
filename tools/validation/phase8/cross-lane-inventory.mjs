@@ -15,6 +15,15 @@ const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a'
 // candidate. Phase 8 validates only its own subset; every foreign path is
 // enumerated so this route cannot become a general ownership exemption.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  "fix/g-recompilability-production-20260919": Object.freeze([
+    ".circleci/config.yml",
+    "js/decompile-base.js",
+    "reports/investigations/direct-recompilability-production-20260919/README.md",
+    "tests/direct-recompilability-emitter-phase1.test.mjs",
+    "tests/helpers/recompilability-mutation-loader.mjs",
+    "tests/public-benchmark/g-timeout-incomplete-regression.test.mjs",
+    "tests/public-benchmark/resumable-measurement-g-regression.test.mjs",
+  ]),
   "codex/issue-campaign-20260914-lane-12-batch-02": Object.freeze([
     ".circleci/config.yml",
     "js/analysis/summary/interprocedural.js",
