@@ -210,7 +210,9 @@ function branchTargetsOf(entryBlock, ir, opts = {}) {
     return { trueTarget: target, falseTarget };
   }
 
-  return { trueTarget: succ[0], falseTarget: succ[1] };
+  // Successor order is not semantic polarity. If neither canonical edge
+  // metadata nor the branch instruction proves the taken target, do not guess.
+  return null;
 }
 
 /**
