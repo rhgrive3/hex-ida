@@ -46,20 +46,48 @@ export function readStructuredControlProjection(result) {
   }
 }
 
-function hex(v) {
-  if (v == null) return '0';
-  return typeof v === 'bigint' ? v.toString(16) : Number(v).toString(16);
+function asAddress(value) {
+  if (value == null) return null;
+  try { return typeof value === 'bigint' ? value : BigInt(value); }
+  catch { return null; }
 }
 
-function blockAddress(block) {
-  if (!block) return 0n;
-  if (block.address != null) return typeof block.address === 'bigint' ? block.address : BigInt(block.address);
-  if (block.startRow != null) return BigInt(block.startRow);
-  if (block.insts?.[0]?.address != null) {
-    const addr = block.insts[0].address;
-    return typeof addr === 'bigint' ? addr : BigInt(addr);
+function addressAtRow(row, ir, opts = {}) {
+  if (row == null) return null;
+  try {
+    const resolved = opts.addressOfRow?.(row);
+    const address = asAddress(resolved);
+    if (address != null) return address;
+  } catch { /* Fall through to IR evidence. */ }
+  const instruction = ir?.instructions?.find((candidate) =>
+    candidate?.row === row && candidate?.address != null
+  );
+  return asAddress(instruction?.address);
+}
+
+function blockAddress(block, ir, opts = {}) {
+  if (!block) return null;
+  const explicit = asAddress(block.address);
+  if (explicit != null) return explicit;
+  const rowAddress = addressAtRow(block.startRow, ir, opts);
+  if (rowAddress != null) return rowAddress;
+  const localInstruction = block.insts?.find((candidate) =>
+    candidate?.row === block.startRow && candidate?.address != null
+  );
+  return asAddress(localInstruction?.address);
+}
+
+function textJumpsToAddress(text, address) {
+  const target = asAddress(address);
+  if (typeof text !== 'string' || target == null) return false;
+  const pattern = /\bgoto\s+loc_([0-9a-fA-F]+)\s*;/g;
+  let match;
+  while ((match = pattern.exec(text)) != null) {
+    try {
+      if (BigInt(`0x${match[1]}`) === target) return true;
+    } catch { /* Ignore malformed labels. */ }
   }
-  return BigInt(block.index);
+  return false;
 }
 
 function terminatorOf(block) {
@@ -71,9 +99,9 @@ function terminatorOf(block) {
   return null;
 }
 
-function controlSource(inst, block = null) {
+function controlSource(inst, block = null, ir = null, opts = {}) {
   const row = inst?.row ?? block?.startRow ?? null;
-  const address = inst?.address ?? (block ? blockAddress(block) : null);
+  const address = inst?.address ?? (block ? blockAddress(block, ir, opts) : null);
   const irIds = inst ? [inst.id] : (block?.insts ?? []).map(i => i.id).filter(Boolean);
   return sourceOf({
     row,
@@ -104,7 +132,7 @@ function invertConditionText(text) {
   return `!(${trimmed})`;
 }
 
-function blockOfNode(node, ir) {
+function blockOfNode(node, ir, opts = {}) {
   if (!node) return null;
   if (typeof node.block === 'number') return node.block;
   if (typeof node.semantic?.block === 'number') return node.semantic.block;
@@ -133,7 +161,7 @@ function blockOfNode(node, ir) {
     if (labelMatch) {
       try {
         const addr = BigInt('0x' + labelMatch[1]);
-        const block = ir.blocks.find(b => blockAddress(b) === addr || b.address === addr);
+        const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
         if (block) return block.index;
       } catch { /* Ignore */ }
     }
@@ -146,7 +174,7 @@ function blockOfNode(node, ir) {
   if (node.addr != null && Array.isArray(ir.blocks)) {
     try {
       const addr = typeof node.addr === 'bigint' ? node.addr : BigInt(node.addr);
-      const block = ir.blocks.find(b => blockAddress(b) === addr);
+      const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
       if (block) return block.index;
     } catch { /* Ignore */ }
   }
@@ -249,14 +277,14 @@ function dominatorDepth(dominators, block) {
 /**
  * Checks if a candidate region is already structured in the current C AST.
  */
-function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir) {
+function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir, opts = {}) {
   const body = cAst?.body ?? [];
   for (let i = 0; i < body.length; i++) {
     const node = body[i];
     if (node.kind === 'ctrl' && typeof node.text === 'string' && node.text.startsWith('if ') && node.text.endsWith('{')) {
-      const block = blockOfNode(node, ir);
+      const block = blockOfNode(node, ir, opts);
       if (block === entry) {
-        const hasGoto = body.some(n => blockOfNode(n, ir) === entry && n.text?.includes('goto loc_'));
+        const hasGoto = body.some(n => blockOfNode(n, ir, opts) === entry && n.text?.includes('goto loc_'));
         if (!hasGoto) return true;
       }
     }
@@ -343,7 +371,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     }
 
     // Check if existing renderer already emitted the exact canonical structure
-    if (isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, { body: workingBody }, result.ir)) {
+    if (isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, { body: workingBody }, result.ir, opts)) {
       continue;
     }
 
@@ -361,7 +389,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
 
     // Find the entry branch node in workingBody
     const branchIndex = workingBody.findIndex(n => {
-      if (blockOfNode(n, result.ir) !== entry) return false;
+      if (blockOfNode(n, result.ir, opts) !== entry) return false;
       if (n.kind !== 'ctrl' && n.kind !== 'stmt') return false;
       return typeof n.text === 'string' && (n.text.startsWith('if ') || n.text.includes('goto loc_'));
     });
@@ -381,29 +409,30 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const ifArmBlocks = new Set([ifArm]);
     const elseArmBlocks = new Set(isOneSided ? [] : [elseArm]);
 
-    // Check if any block outside the region jumps to join
-    const joinAddrHex = hex(blockAddress(joinBlock));
-    const joinGotoTargetText = `goto loc_${joinAddrHex};`;
+    // Match the producer's real target address, never a block row/index or a
+    // case-sensitive rendering of the label text.
+    const joinAddress = blockAddress(joinBlock, result.ir, opts);
+    if (joinAddress == null) continue;
     const otherJumpsToJoin = workingBody.some(n => {
-      const b = blockOfNode(n, result.ir);
+      const b = blockOfNode(n, result.ir, opts);
       if (b === entry || armBlocks.has(b)) return false;
-      return typeof n.text === 'string' && n.text.includes(joinGotoTargetText);
+      return textJumpsToAddress(n.text, joinAddress);
     });
 
     const isArmNode = (node, blocks) => {
-      const b = blockOfNode(node, result.ir);
+      const b = blockOfNode(node, result.ir, opts);
       return b != null && blocks.has(b);
     };
 
     const isJumpToJoin = (node) => {
       if (node.kind !== 'stmt' && node.kind !== 'ctrl') return false;
       if (typeof node.text !== 'string') return false;
-      return node.text.includes(joinGotoTargetText);
+      return textJumpsToAddress(node.text, joinAddress);
     };
 
     const isBlockLabel = (node, blockIdx) => {
       if (node.kind !== 'label') return false;
-      const b = blockOfNode(node, result.ir);
+      const b = blockOfNode(node, result.ir, opts);
       return b === blockIdx;
     };
 
@@ -428,8 +457,8 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       indent: entryIndent,
       text: `if (${condText}) {`,
       row: term.row ?? entryBlock.startRow ?? null,
-      addr: term.address ?? blockAddress(entryBlock),
-      source: controlSource(term, entryBlock),
+      addr: term.address ?? blockAddress(entryBlock, result.ir, opts),
+      source: controlSource(term, entryBlock, result.ir, opts),
       semantic: { op: 'control-render', ir: term.id, expression: null },
     };
 
@@ -477,7 +506,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const nodesToRemove = new Set();
     // 1. Entry branch and false jump
     for (const node of workingBody) {
-      const b = blockOfNode(node, result.ir);
+      const b = blockOfNode(node, result.ir, opts);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
           nodesToRemove.add(node);
@@ -615,8 +644,9 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     isCurrent: () => updatedResult.cAst === newProgram,
   });
 
+  // Keep observer-bearing metadata entirely internal. Publishing it on the
+  // result would cross the analysis-query DTO boundary with live functions.
   structuredControlProjections.set(newProgram, projectionMetadata);
-  updatedResult.structuredControlProjection = projectionMetadata;
 
   if (opts.renderProvenance === true) {
     updatedResult.renderProvenance = buildRenderProvenance({
