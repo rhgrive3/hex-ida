@@ -43,7 +43,7 @@ for (const n of NUMS) {
   const p = path.join(root, name);
   let stat = null;
   try {
-    stat = fs.statSync(p);
+    stat = fs.lstatSync(p);
   } catch {
     check(false, `${name}: missing at repo root (run npm run freebuff:setup)`);
     continue;
