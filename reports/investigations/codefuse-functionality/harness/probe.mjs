@@ -136,8 +136,8 @@ export async function runProbe({
   const selection = selectProbeCases(manifest.cases, count);
 
   const workDir = path.join(outDir, '.work');
-  const sourcesDir = path.join(outDir, 'per-case/sources');
-  if (writeArtifacts) fs.rmSync(workDir, { recursive: true, force: true });
+  const sourcesDir = writeArtifacts ? path.join(outDir, 'per-case/sources') : path.join(workDir, 'sources');
+  fs.rmSync(workDir, { recursive: true, force: true });
 
   const llmConfig = loadLlmConfig({ file: llmConfigPath, env });
   // Enabled configuration is not reachability. Prove the endpoint answers within
@@ -192,9 +192,12 @@ export async function runProbe({
     };
     record.excludedFunctions = variants.excluded;
 
+    // The compiler always needs real source files. In dry-run mode they live
+    // under .work/sources and are removed below; only persistent evidence is
+    // suppressed.
+    writeText(rawFile, variants.raw.text);
+    writeText(preFile, prepared.code);
     if (writeArtifacts) {
-      writeText(rawFile, variants.raw.text);
-      writeText(preFile, prepared.code);
       if (variants.translationUnit.available) {
         writeText(path.join(sourcesDir, `${slug}.${SOURCE_VARIANTS.translationUnit}.c`), variants.translationUnit.text);
       }
@@ -359,8 +362,8 @@ export async function runProbe({
   if (writeArtifacts) {
     for (const entry of perCase) writeJson(path.join(outDir, 'per-case', `${slugify(entry.caseId)}.json`), entry);
     writeJson(path.join(outDir, 'probe-summary.json'), summary);
-    fs.rmSync(workDir, { recursive: true, force: true });
   }
+  fs.rmSync(workDir, { recursive: true, force: true });
   return { summary, perCase };
 }
 
