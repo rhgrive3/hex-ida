@@ -84,7 +84,9 @@ function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRan
 function initialOffset(info, page) {
   const start = info.starts[page];
   if (start === PAGE_ATTR_NO_REBASE) return null;
-  return start;
+  // dyld_cache_slide_info5 page_starts entries are pointer5 element offsets,
+  // just like offsetToNextPointer. Each unit advances one 64-bit pointer.
+  return start * 8;
 }
 
 export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRecords, targetRange = null) {
