@@ -133,6 +133,34 @@ try {
   }
 
   {
+    for (const [symlinkIndex, targetKind] of [[0, 'relative'], [1, 'absolute']]) {
+      const directory = path.join(root, String(ordinal++)); await fs.mkdir(directory);
+      const targetPaths = [path.join(directory, 'real-loader'), path.join(directory, 'real-release')];
+      const publicationPaths = [path.join(directory, 'loader'), path.join(directory, 'release')];
+      const expected = [Buffer.from('old loader'), Buffer.from('old release')];
+      const content = ['new loader', 'new release'];
+      for (let i = 0; i < targetPaths.length; i++) await fs.writeFile(targetPaths[i], expected[i]);
+      for (let i = 0; i < publicationPaths.length; i++) {
+        if (i === symlinkIndex) {
+          const target = targetKind === 'relative' ? path.basename(targetPaths[i]) : targetPaths[i];
+          await fs.symlink(target, publicationPaths[i]);
+        } else {
+          await fs.writeFile(publicationPaths[i], expected[i]);
+        }
+      }
+      const entries = publicationPaths.map((file, i) => ({ path:file, expected:expected[i], content:content[i] }));
+      await assert.rejects(publishUserscriptFiles(entries), /non-regular-input/);
+      assert.equal((await fs.lstat(publicationPaths[symlinkIndex])).isSymbolicLink(), true);
+      for (let i = 0; i < targetPaths.length; i++) assert.deepEqual(await fs.readFile(targetPaths[i]), expected[i]);
+      for (let i = 0; i < publicationPaths.length; i++) {
+        if (i !== symlinkIndex) assert.deepEqual(await fs.readFile(publicationPaths[i]), expected[i]);
+      }
+      const names = (await fs.readdir(directory)).sort();
+      assert.deepEqual(names, ['loader', 'real-loader', 'real-release', 'release']);
+    }
+  }
+
+  {
     const { directory, entries } = await fixture();
     const file = entries[0].path;
     const io = { ...fs, async open(target, flags) {
