@@ -339,6 +339,17 @@ function shouldDemandStructuring(result, opts) {
   return Array.isArray(result.ir?.instructions) && result.ir.instructions.some(i => i.op === 'cbr');
 }
 
+function structuredControlProjectionOptions(model, opts) {
+  if (!Array.isArray(model?.instructions) || model.instructions.length === 0) return opts;
+  const addressByRow = new Map();
+  for (const instruction of model.instructions) {
+    if (instruction?.row == null || instruction?.address == null || addressByRow.has(instruction.row)) continue;
+    addressByRow.set(instruction.row, instruction.address);
+  }
+  if (addressByRow.size === 0) return opts;
+  return { ...opts, addressOfRow:(row) => addressByRow.get(row) ?? null };
+}
+
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
@@ -360,7 +371,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         structuringBudget,
       );
       if (structuringStage.ledger?.published === true && structuringStage.analysis) {
-        projected = applyStructuredControlProjection(projected, structuringStage.analysis, opts);
+        projected = applyStructuredControlProjection(projected, structuringStage.analysis, structuredControlProjectionOptions(model, opts));
       }
     }
     return projected;
@@ -400,7 +411,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
   }
   updated = applyPhase8Projection(updated, stage.analysis, opts);
-  updated = applyStructuredControlProjection(updated, stage.analysis, opts);
+  updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, opts));
   return updated;
 }
 
