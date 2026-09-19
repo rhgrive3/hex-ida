@@ -41,6 +41,23 @@ function makeLine(kind, indent, text, block, row, addr) {
   return node;
 }
 
+function withArm64ProducerLayout(ir, baseAddress = 0x1000n) {
+  const instructions = [];
+  for (const block of ir.blocks ?? []) {
+    const row = block.index;
+    block.startRow = row;
+    block.endRow = row;
+    delete block.address;
+    for (const instruction of block.insts ?? []) {
+      instruction.row = row;
+      instruction.address = baseAddress + BigInt(row) * 4n;
+      instructions.push(instruction);
+    }
+  }
+  ir.instructions = instructions;
+  return ir;
+}
+
 function diamondIr() {
   const f = fixture('diamond');
   const cond = f.block(0, { succ: [1, 2] }).opaque(1);
@@ -50,12 +67,7 @@ function diamondIr() {
   f.block(2, { succ: [3] }).store(f.constant(99, 32));
   f.branch(3);
   f.block(3).ret();
-  const ir = f.build();
-  ir.blocks[0].address = 0x1000n;
-  ir.blocks[1].address = 0x1004n;
-  ir.blocks[2].address = 0x1008n;
-  ir.blocks[3].address = 0x100cn;
-  return ir;
+  return withArm64ProducerLayout(f.build());
 }
 
 function oneSidedIr() {
@@ -65,11 +77,7 @@ function oneSidedIr() {
   f.block(1, { succ: [2] }).store(f.constant(100, 32));
   f.branch(2);
   f.block(2).ret();
-  const ir = f.build();
-  ir.blocks[0].address = 0x1000n;
-  ir.blocks[1].address = 0x1004n;
-  ir.blocks[2].address = 0x1008n;
-  return ir;
+  return withArm64ProducerLayout(f.build());
 }
 
 function nestedIr() {
@@ -91,14 +99,7 @@ function nestedIr() {
   f.branch(5);
   // Block 5: outer join
   f.block(5).ret();
-  const ir = f.build();
-  ir.blocks[0].address = 0x1000n;
-  ir.blocks[1].address = 0x1004n;
-  ir.blocks[2].address = 0x1008n;
-  ir.blocks[3].address = 0x100cn;
-  ir.blocks[4].address = 0x1010n;
-  ir.blocks[5].address = 0x1014n;
-  return ir;
+  return withArm64ProducerLayout(f.build());
 }
 
 function irreducibleIr() {
@@ -109,7 +110,7 @@ function irreducibleIr() {
   f.block(2, { succ: [1, 3] });
   f.conditionalBranch(f.opaque(1), 1, 3);
   f.block(3).ret();
-  return f.build({ loops: [{ header: 1, latches: new Set([2]), nodes: new Set([1, 2]), exits: new Set([3]) }] });
+  return withArm64ProducerLayout(f.build({ loops: [{ header: 1, latches: new Set([2]), nodes: new Set([1, 2]), exits: new Set([3]) }] }));
 }
 
 function unwindIr() {
@@ -120,7 +121,7 @@ function unwindIr() {
   f.block(2, { succ: [3] }).branch(3);
   f.block(3).ret();
   f.block(4).ret();
-  return f.build();
+  return withArm64ProducerLayout(f.build());
 }
 
 function switchFallthroughIr() {
@@ -131,7 +132,7 @@ function switchFallthroughIr() {
   f.block(2, { succ: [4] }).branch(4);
   f.block(3, { succ: [4] }).branch(4);
   f.block(4).ret();
-  return f.build();
+  return withArm64ProducerLayout(f.build());
 }
 
 function flattenedDispatcherIr() {
@@ -142,12 +143,15 @@ function flattenedDispatcherIr() {
   f.block(2, { succ: [1] }).branch(1);
   f.block(3, { succ: [1] }).branch(1);
   f.block(4).ret();
-  return f.build();
+  return withArm64ProducerLayout(f.build());
 }
 
 // 1. Reducible if/else diamond
 test('1. reducible if/else diamond emits structured if/else and preserves semantics', () => {
   const ir = diamondIr();
+  assert.equal(Object.prototype.hasOwnProperty.call(ir.blocks[0], 'address'), false,
+    'real ARM64 blocks expose rows, not a synthetic block.address');
+  assert.equal(ir.instructions.find(i => i.row === ir.blocks[3].startRow)?.address, 0x100Cn);
   const { analysis } = analyze(ir);
 
   const body = [
@@ -155,11 +159,11 @@ test('1. reducible if/else diamond emits structured if/else and preserves semant
     makeLine('stmt', 1, 'goto loc_1008;', 0, 1, 0x1002),
     makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
     makeLine('stmt', 1, 'x = 42;', 1, 3, 0x1004),
-    makeLine('stmt', 1, 'goto loc_100c;', 1, 4, 0x1006),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
     makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
     makeLine('stmt', 1, 'x = 99;', 2, 6, 0x1008),
-    makeLine('stmt', 1, 'goto loc_100c;', 2, 7, 0x100a),
-    makeLine('label', 0, 'loc_100c:', 3, 8, 0x100c),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
     makeLine('stmt', 1, 'return x;', 3, 9, 0x100c),
   ];
 
@@ -231,11 +235,11 @@ test('3. nested reducible conditional maintains distinct inner and outer joins',
     makeLine('stmt', 1, 'goto loc_1010;', 0, 1, 0x1002),
     makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
     makeLine('ctrl', 1, 'if (c1) goto loc_1008;', 1, 3, 0x1004),
-    makeLine('stmt', 1, 'goto loc_100c;', 1, 4, 0x1006),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
     makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
     makeLine('stmt', 1, 's2 = 222;', 2, 6, 0x1008),
-    makeLine('stmt', 1, 'goto loc_100c;', 2, 7, 0x100a),
-    makeLine('label', 0, 'loc_100c:', 3, 8, 0x100c),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
     makeLine('stmt', 1, 's3 = 333;', 3, 9, 0x100c),
     makeLine('stmt', 1, 'goto loc_1014;', 3, 10, 0x100e),
     makeLine('label', 0, 'loc_1010:', 4, 11, 0x1010),
@@ -278,12 +282,12 @@ test('4. observable operations count and relative order are exactly preserved', 
     makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
     makeLine('stmt', 1, 'store1();', 1, 3, 0x1004),
     makeLine('stmt', 1, 'call1();', 1, 4, 0x1005),
-    makeLine('stmt', 1, 'goto loc_100c;', 1, 5, 0x1006),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 5, 0x1006),
     makeLine('label', 0, 'loc_1008:', 2, 6, 0x1008),
     makeLine('stmt', 1, 'store2();', 2, 7, 0x1008),
     makeLine('stmt', 1, 'call2();', 2, 8, 0x1009),
-    makeLine('stmt', 1, 'goto loc_100c;', 2, 9, 0x100a),
-    makeLine('label', 0, 'loc_100c:', 3, 10, 0x100c),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 9, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 10, 0x100c),
     makeLine('stmt', 1, 'return 0;', 3, 11, 0x100c),
   ];
 
@@ -323,8 +327,8 @@ test('5. irreducible CFG falls back cleanly to unmodified output', () => {
     makeLine('stmt', 1, 'goto loc_1008;', 1, 3, 0x1004),
     makeLine('label', 0, 'loc_1008:', 2, 4, 0x1008),
     makeLine('ctrl', 1, 'if (c1) goto loc_1004;', 2, 5, 0x1008),
-    makeLine('stmt', 1, 'goto loc_100c;', 2, 6, 0x100a),
-    makeLine('label', 0, 'loc_100c:', 3, 7, 0x100c),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 6, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 7, 0x100c),
     makeLine('stmt', 1, 'return;', 3, 8, 0x100c),
   ];
 
@@ -381,10 +385,10 @@ test('7. flattened dispatcher preserves residual jumps', () => {
   const body = [
     makeLine('stmt', 1, 'goto loc_1004;', 0, 0, 0x1000),
     makeLine('label', 0, 'loc_1004:', 1, 1, 0x1004),
-    makeLine('stmt', 1, 'switch (state) { case 0: goto loc_1008; case 1: goto loc_100c; default: goto loc_1010; }', 1, 2, 0x1004),
+    makeLine('stmt', 1, 'switch (state) { case 0: goto loc_1008; case 1: goto loc_100C; default: goto loc_1010; }', 1, 2, 0x1004),
     makeLine('label', 0, 'loc_1008:', 2, 3, 0x1008),
     makeLine('stmt', 1, 'goto loc_1004;', 2, 4, 0x1008),
-    makeLine('label', 0, 'loc_100c:', 3, 5, 0x100c),
+    makeLine('label', 0, 'loc_100C:', 3, 5, 0x100c),
     makeLine('stmt', 1, 'goto loc_1004;', 3, 6, 0x100c),
     makeLine('label', 0, 'loc_1010:', 4, 7, 0x1010),
     makeLine('stmt', 1, 'return;', 4, 8, 0x1010),
@@ -532,11 +536,11 @@ test('12. provenance, line histories, and render metadata are correctly populate
     makeLine('stmt', 1, 'goto loc_1008;', 0, 1, 0x1002),
     makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
     makeLine('stmt', 1, 'x = 42;', 1, 3, 0x1004),
-    makeLine('stmt', 1, 'goto loc_100c;', 1, 4, 0x1006),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
     makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
     makeLine('stmt', 1, 'x = 99;', 2, 6, 0x1008),
-    makeLine('stmt', 1, 'goto loc_100c;', 2, 7, 0x100a),
-    makeLine('label', 0, 'loc_100c:', 3, 8, 0x100c),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
     makeLine('stmt', 1, 'return x;', 3, 9, 0x100c),
   ];
 
@@ -557,6 +561,11 @@ test('12. provenance, line histories, and render metadata are correctly populate
   // 1. Metadata via readStructuredControlProjection
   const meta = readStructuredControlProjection(projected);
   assert.ok(meta, 'structured control projection metadata must exist');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(projected, 'structuredControlProjection'),
+    false,
+    'observer-bearing projection metadata must stay behind the public result boundary',
+  );
   assert.equal(meta.version, STRUCTURED_CONTROL_PROJECTION_VERSION);
   assert.equal(meta.completeness, 'complete');
   assert.equal(meta.ir, ir);
