@@ -326,9 +326,14 @@ const DEMANDED_STRUCTURING_STAGES = Object.freeze([
   'structuring',
 ]);
 
-function shouldDemandStructuring(result, opts) {
+function allowsStructuredControlProjection(opts) {
   if (opts.phase8Structuring === false || opts.phase8ControlProjection === false) return false;
   if (opts.phase8PrepareProof === true || opts.phase8ProofOnlyRewrites === true) return false;
+  return true;
+}
+
+function shouldDemandStructuring(result, opts) {
+  if (!allowsStructuredControlProjection(opts)) return false;
   if (opts.phase8Structuring === true || opts.phase8ControlProjection === true) return true;
   const body = result?.cAst?.body;
   if (!Array.isArray(body)) return false;
@@ -411,7 +416,9 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
   }
   updated = applyPhase8Projection(updated, stage.analysis, opts);
-  updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, opts));
+  if (allowsStructuredControlProjection(opts)) {
+    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, opts));
+  }
   return updated;
 }
 
