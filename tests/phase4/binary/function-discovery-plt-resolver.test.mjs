@@ -124,6 +124,7 @@ function buildFixture({
   });
 
   writeResolver(view, RESOLVER_OFF, resolverGot);
+  for (const off of [20, 24, 28]) writeU32(view, RESOLVER_OFF + off, 0xd503201f);
   for (let i = 0; i < JUMP_SLOTS.length; i++) {
     writeTail(view, RESOLVER_OFF + thunkDelta + i * 16, JUMP_SLOTS[i]);
     const p = JMPREL_OFF + i * 24;
@@ -174,10 +175,12 @@ test('A2 prime: dynamic AAELF64 PLT structure adds exactly the resolver stub sta
   assert.equal(seeds.length, 1);
   assert.equal(seeds[0].address, RESOLVER);
   assert.equal(seeds[0].kind, 'stub');
-  assert.equal(seeds[0].exactFunctionStart, false);
-  assert.equal(seeds[0].confidence, 0.65);
+  assert.equal(seeds[0].exactFunctionStart, true);
+  assert.equal(seeds[0].confidence, 0.995);
+  assert.equal(seeds[0].size, 32n);
+  assert.equal(seeds[0].extentConfidence, 0.995);
   assert.match(seeds[0].functionStartEvidence, /DT_PLTGOT.*DT_JMPREL.*R_AARCH64_JUMP_SLOT/);
-  assert.deepEqual(image.metadata.aarch64PltResolver, { address: RESOLVER, source: 'elf-plt-structure' });
+  assert.deepEqual(image.metadata.aarch64PltResolver, { address: RESOLVER, source: 'elf-plt-structure', size:32n, extent:'validated-classic-aaelf64-plt0' });
 
   for (let i = 0; i < JUMP_SLOTS.length; i++) {
     const thunk = RESOLVER + 32n + 16n * BigInt(i);
