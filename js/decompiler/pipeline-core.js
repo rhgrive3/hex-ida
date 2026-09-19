@@ -1059,8 +1059,8 @@ function buildCanonicalExpressions(state) {
   state.stateHistoryTransaction = transaction;
   // One synchronous construction section reuses a single freshness answer per
   // observation instead of re-walking the unchanged canonical graph for every
-  // selection a value participates in. The batch re-derives every answer it
-  // handed back more than once before construction returns (`settle`), so a
+  // selection a value participates in. The batch re-derives every answer used
+  // during construction before construction returns (`settle`), so a
   // mutation anywhere under the section is detected here and the whole producer
   // transaction fails closed below, exactly like a stale check. Answers are
   // never reused past this section: every consumer read outside it still
@@ -1080,6 +1080,7 @@ function buildCanonicalExpressions(state) {
     for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, !constructionStale && initiallyCurrent && check());
     for (const [key, records] of state.buildHistories || []) {
       const retained = records.filter(record => {
+        if (constructionStale) return false;
         const observation = buildHistoryObservations.get(record);
         if (!observation?.producerChecks?.some(check => transaction.checks.has(check))) return true;
         for (const check of observation.producerChecks) {

@@ -10,7 +10,7 @@ import { isReusableOriginSet } from './origin.js';
 //   * write-scoped matching (`matchesThroughWrites`) is memoized per exact
 //     write-list identity, never per observation alone;
 //   * an answer is only reused inside the section, and `settle()` re-derives
-//     every reused answer from the live graph before the caller may publish
+//     every answer used by the section from the live graph before the caller may publish
 //     anything. It returns the number of answers that no longer hold; a caller
 //     that sees any must fail closed, because the observed graph changed under
 //     the section it had already answered for;
@@ -22,6 +22,7 @@ import { isReusableOriginSet } from './origin.js';
 let activeValidationBatch = null;
 
 export function createValidationBatch() {
+  let running = false, pending = false;
   let answers = new Map();
   const remembered = [];
   const slot = (id, writes) => {
@@ -38,15 +39,20 @@ export function createValidationBatch() {
     // recorded by an earlier section. A nested section runs under its own
     // batch, so it never reuses an outer answer it cannot re-derive itself.
     run(fn) {
+      if (running || pending) throw new Error('validation-batch-invalid-state');
       answers = new Map();
+      running = true;
       const previous = activeValidationBatch;
       activeValidationBatch = batch;
-      try { return fn(); } finally { activeValidationBatch = previous; }
+      try { return fn(); } finally {
+        activeValidationBatch = previous;
+        running = false;
+        pending = true;
+      }
     },
     known(id, writes) {
       const held = slot(id, writes);
       if (held.answered !== true) return undefined;
-      held.reused = true;
       return held.value;
     },
     remember(id, writes, value, recheck) {
@@ -57,14 +63,16 @@ export function createValidationBatch() {
       held.recheck = recheck;
       remembered.push(held);
     },
-    // Re-derive every reused answer from live state. Only answers that were
-    // actually handed back more than once need re-derivation: a single-use
-    // answer was already computed from live state inside the section.
+    // Re-derive every answer that influenced the section from live state before
+    // publication. A single-use answer can become stale after its first read,
+    // so it has the same publication obligation as a reused answer.
     settle() {
+      if (running) throw new Error('validation-batch-invalid-state');
       let stale = 0;
-      for (const held of remembered) if (held.reused === true && held.recheck() !== held.value) stale++;
+      for (const held of remembered) if (held.recheck() !== held.value) stale++;
       answers = new Map();
       remembered.length = 0;
+      pending = false;
       return stale;
     },
   };

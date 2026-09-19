@@ -181,8 +181,28 @@ test('validation batch detects a lost-freshness mutation under the same authorit
   reused=observed.matches();
  });
  assert.equal(reused,true,'inside the section the earlier answer is reused');
- assert.equal(batch.settle(),1,'settle re-derives every reused answer from the live graph');
+ assert.equal(batch.settle(),1,'settle re-derives every answer from the live graph');
  assert.equal(observed.matches(),false,'the stale answer is never served after the section');
+});
+
+test('validation batch detects mutation after a single-use answer before publication',()=>{
+ const child={value:1},root={child},observed=observedGraph([root]);
+ const batch=createValidationBatch();
+ batch.run(()=>{
+  assert.equal(observed.matches(),true);
+  child.value=2;
+ });
+ assert.equal(batch.settle(),1,'a single-use answer is re-derived before publication');
+ assert.equal(observed.matches(),false);
+});
+
+test('validation batch must settle before reuse and rejects same-batch nesting',()=>{
+ const batch=createValidationBatch();
+ batch.run(()=>{});
+ assert.throws(()=>batch.run(()=>{}),/validation-batch-invalid-state/);
+ assert.equal(batch.settle(),0);
+ batch.run(()=>assert.throws(()=>batch.run(()=>{}),/validation-batch-invalid-state/));
+ assert.equal(batch.settle(),0);
 });
 
 test('validation batch never serves a settled answer to the same object identity',()=>{
@@ -277,6 +297,7 @@ test('validation batch retains no answer across its own section boundary',()=>{
  let inside;
  batch.run(()=>{inside=observed.matches();});
  assert.equal(inside,true);
+ assert.equal(batch.settle(),0);
  child.value=2;
  assert.equal(observed.matches(),false,'without an active section every read is a fresh live walk');
  let afterSettle;
