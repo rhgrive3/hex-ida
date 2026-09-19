@@ -231,20 +231,47 @@ export function unrolledTablesFromFixed(fixed) {
   return tables;
 }
 
+function indexFactsByReg(facts) {
+  const index = new Map();
+  for (const fact of facts) {
+    let list = index.get(fact.reg);
+    if (!list) index.set(fact.reg, list = []);
+    list.push(fact);
+  }
+  return index;
+}
+
+function indexScales(scales) {
+  const index = new Map();
+  for (const scale of scales) {
+    const key = `${scale.base}:${scale.index}`;
+    let list = index.get(key);
+    if (!list) index.set(key, list = []);
+    list.push(scale);
+  }
+  return index;
+}
+
 function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
   const tables = [];
   const seen = new Set();
+  // These fact arrays are immutable for the duration of buildSchema. Index once
+  // by the keys every loop query already uses instead of repeatedly filter+sort
+  // scanning the complete fact set for each candidate table.
+  const bumpedByReg = loops.length ? indexFactsByReg(bumped) : null;
+  const cmpsByReg = loops.length ? indexFactsByReg(cmps) : null;
+  const scalesByPair = loops.length ? indexScales(scales) : null;
   for (const l of loops) {
     const key = l.base + ':' + l.index + ':' + l.stride;
     if (seen.has(key)) continue;
     seen.add(key);
-    const step = nearestFact(bumped, l.index, l, (x) => x.imm === 1);
-    const bound = nearestFact(cmps, l.index, l, (x) => x.value > 1 && x.value <= MAX_COLUMNS);
+    const step = nearestFact(bumpedByReg.get(l.index) ?? [], l, (x) => x.imm === 1);
+    const bound = nearestFact(cmpsByReg.get(l.index) ?? [], l, (x) => x.value > 1 && x.value <= MAX_COLUMNS);
     const columns = (step && step.imm === 1 && bound && bound.value > 1 && bound.value <= MAX_COLUMNS) ? bound.value : null;
-    const rec = nearestFact(bumped, l.base, l, (x) => x.imm > l.stride && x.imm <= MAX_RECORD);
+    const rec = nearestFact(bumpedByReg.get(l.base) ?? [], l, (x) => x.imm > l.stride && x.imm <= MAX_RECORD);
     const recordStride = rec && rec.imm > l.stride && rec.imm <= MAX_RECORD ? rec.imm : null;
     const consistent = columns != null && recordStride != null ? recordStride === columns * l.stride : null;
-    tables.push(makeIndexedTable({ columns, stride: l.stride, size: l.size, recordStride, consistent, storeAddr: l.addr, records: recordCountOf(cmps, bumped, l), scaled: scaledColumns(scales, l), fromCall: l.fromCall }));
+    tables.push(makeIndexedTable({ columns, stride: l.stride, size: l.size, recordStride, consistent, storeAddr: l.addr, records: recordCountOf(cmps, bumpedByReg, l), scaled: scaledColumns(scalesByPair.get(`${l.base}:${l.index}`) ?? [], l), fromCall: l.fromCall }));
   }
 
   tables.push(...unrolledTablesFromFixed(fixed));
@@ -264,14 +291,19 @@ function makeIndexedTable(t) {
   };
 }
 
-function recordCountOf(cmps, bumped, table) {
-  const candidates = cmps.filter((c) => c.reg !== table.base && c.reg !== table.index && c.value > 1 && c.value <= 4096 && sameLoopOrNearby(c, table));
-  candidates.sort((a, b) => Math.abs(a.row - table.row) - Math.abs(b.row - table.row));
-  for (const c of candidates) {
-    const step = nearestFact(bumped, c.reg, c, (x) => x.imm === 1);
-    if (step && sameLoopOrNearby(step, table)) return c.value;
+function recordCountOf(cmps, bumpedByReg, table) {
+  // Equivalent to stable sort-by-distance then first matching stepped counter,
+  // but without materializing/sorting the candidate list for every table.
+  let best = null;
+  let bestDistance = Infinity;
+  for (const c of cmps) {
+    if (c.reg === table.base || c.reg === table.index || c.value <= 1 || c.value > 4096 || !sameLoopOrNearby(c, table)) continue;
+    const step = nearestFact(bumpedByReg.get(c.reg) ?? [], c, (x) => x.imm === 1);
+    if (!step || !sameLoopOrNearby(step, table)) continue;
+    const distance = Math.abs(c.row - table.row);
+    if (distance < bestDistance) { best = c; bestDistance = distance; }
   }
-  return null;
+  return best?.value ?? null;
 }
 
 function scaledColumns(scales, table) {
@@ -283,10 +315,17 @@ function scaledColumns(scales, table) {
   return out;
 }
 
-function nearestFact(facts, reg, anchor, accept) {
-  const list = facts.filter((x) => x.reg === reg && (!accept || accept(x)) && sameLoopOrNearby(x, anchor));
-  list.sort((a, b) => Math.abs(a.row - anchor.row) - Math.abs(b.row - anchor.row));
-  return list[0] || null;
+function nearestFact(facts, anchor, accept) {
+  // facts are already narrowed to one register. A single stable scan has the
+  // same tie behavior as filter()+stable sort() while avoiding both allocations.
+  let best = null;
+  let bestDistance = Infinity;
+  for (const fact of facts) {
+    if ((accept && !accept(fact)) || !sameLoopOrNearby(fact, anchor)) continue;
+    const distance = Math.abs(fact.row - anchor.row);
+    if (distance < bestDistance) { best = fact; bestDistance = distance; }
+  }
+  return best;
 }
 
 function sameLoopOrNearby(a, b) {
