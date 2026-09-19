@@ -174,6 +174,12 @@ function branchTargetsOf(entryBlock, ir, opts = {}) {
   const succ = entryBlock?.succ ?? [];
   if (succ.length !== 2) return null;
 
+  // Canonical branch polarity is meaningful only for a proven conditional
+  // terminator. Stale edge metadata or rendered C text must never upgrade a
+  // br/switch into a conditional projection.
+  const term = terminatorOf(entryBlock);
+  if (term?.op !== 'cbr') return null;
+
   for (const edge of entryBlock.successorEdges ?? []) {
     if (edge.kinds?.includes('conditional-true') || edge.kind === 'conditional-true') {
       const trueTarget = edge.to;
@@ -182,8 +188,7 @@ function branchTargetsOf(entryBlock, ir, opts = {}) {
     }
   }
 
-  const term = terminatorOf(entryBlock);
-  const target = term?.extra?.targetBlock ?? targetBlock(ir, term, opts.rowOfAddress);
+  const target = term.extra?.targetBlock ?? targetBlock(ir, term, opts.rowOfAddress);
   if (target != null && succ.includes(target)) {
     const falseTarget = succ.find(s => s !== target);
     return { trueTarget: target, falseTarget };
@@ -267,6 +272,7 @@ function conditionalRegionPartition(region, facts, cfg, dominators) {
   const joinBlock = byIndex.get(join);
   if (!entryBlock || !joinBlock || !Array.isArray(entryBlock.succ) || entryBlock.succ.length !== 2) return null;
   if (entryBlock.succ[0] === entryBlock.succ[1]) return null;
+  if (terminatorOf(entryBlock)?.op !== 'cbr') return null;
 
   // The canonical structurer defines the conditional join as entry.ipdom and
   // publishes the immediate non-join successors as members. Bind to that exact
