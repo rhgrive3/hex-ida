@@ -526,8 +526,53 @@ test('11. edge-accounting corruption rejects adoption', () => {
   assert.equal(rejected, result, 'corrupted edge accounting must reject adoption');
 });
 
-// 12. Provenance and metadata
-test('12. provenance, line histories, and render metadata are correctly populated', () => {
+// 12. Unknown branch polarity must fail closed
+test('12. successor order is never used as branch polarity evidence', () => {
+  const ir = diamondIr();
+  const { analysis } = analyze(ir);
+
+  const entry = ir.blocks[0];
+  delete entry.successorEdges;
+  const term = entry.insts.find(i => i.op === 'cbr');
+  assert.ok(term);
+  if (term.extra) {
+    delete term.extra.targetBlock;
+    delete term.extra.target;
+  }
+
+  // Deliberately choose an order that would invert semantics if interpreted as
+  // [true, false]. The projector must leave the legacy rendering untouched.
+  entry.succ = [2, 1];
+
+  const body = [
+    makeLine('ctrl', 1, 'if (c0) goto loc_1004;', 0, 0, 0x1000),
+    makeLine('stmt', 1, 'goto loc_1008;', 0, 1, 0x1002),
+    makeLine('label', 0, 'loc_1004:', 1, 2, 0x1004),
+    makeLine('stmt', 1, 'x = 42;', 1, 3, 0x1004),
+    makeLine('stmt', 1, 'goto loc_100C;', 1, 4, 0x1006),
+    makeLine('label', 0, 'loc_1008:', 2, 5, 0x1008),
+    makeLine('stmt', 1, 'x = 99;', 2, 6, 0x1008),
+    makeLine('stmt', 1, 'goto loc_100C;', 2, 7, 0x100a),
+    makeLine('label', 0, 'loc_100C:', 3, 8, 0x100c),
+    makeLine('stmt', 1, 'return x;', 3, 9, 0x100c),
+  ];
+  const result = {
+    ir,
+    types: {},
+    cAst: { kind: 'CProgram', body, source: sourceOf() },
+    lines: body,
+    pseudocode: 'legacy-polarity',
+    rewriteProof: [],
+    metrics: {},
+  };
+
+  const projected = applyStructuredControlProjection(result, analysis);
+  assert.equal(projected, result, 'unknown branch polarity must preserve the original result');
+  assert.equal(projected.pseudocode, 'legacy-polarity');
+});
+
+// 13. Provenance and metadata
+test('13. provenance, line histories, and render metadata are correctly populated', () => {
   const ir = diamondIr();
   const { analysis } = analyze(ir);
 
