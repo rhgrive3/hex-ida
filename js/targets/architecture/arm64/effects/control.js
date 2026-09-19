@@ -289,6 +289,21 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     if (ops.length !== 1 || !isIndirectControlRegister(ops[0])) {
       return ctx.partial('arm64-br-operand-shape-invalid', ['control','registers'], undefined, { kind:'unknown', reason:'arm64-br-operand-shape-invalid' });
     }
+    const address = instructionAddress(instruction);
+    const external = address == null ? null : options?.legacyExternalTailTransfers?.[String(address)] ?? null;
+    const externalName = external?.kind === 'external-symbol-pointer-tail-transfer'
+      && typeof external.targetName === 'string' && LEGACY_DIRECT_CALL_SYMBOL.test(external.targetName)
+      && typeof external.pointerAddress === 'bigint'
+      ? external.targetName : null;
+    if (externalName) {
+      return ctx.finish({
+        controlEffect: { kind:'call', target:{ kind:'symbolic-code-reference', name:externalName } },
+        metadata: {
+          family:'control', operation:'br', indirect:true, tailTransfer:true,
+          targetEvidence:'loader-external-pointer-symbol', pointerAddress:external.pointerAddress.toString(),
+        },
+      });
+    }
     const target = ctx.readRegister(ops[0]);
     if (!target) {
       return ctx.partial('arm64-br-target-register-unmodelled', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-br-target-register-unmodelled' });
