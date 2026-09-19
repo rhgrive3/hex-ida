@@ -85,3 +85,88 @@ test('decompile query still rejects unrelated unclonable fields', async () => {
   assert.equal(typeof producerValue.ir.defUse, 'function');
   assert.equal(typeof producerValue.metadata.callback, 'function');
 });
+
+// The semantic decompiler attaches a frozen control-render disposition to
+// results whose rendering exercised control forms (the same producer-owned
+// ledger family as semanticStatementRenderHistory). It is internal by
+// contract: never published, never a completeness loss.
+test('decompile query treats the control render history as internal, not drift', async () => {
+  const producerValue = {
+    pseudocode: 'int f(int x) { if (x) return 1; return 0; }',
+    lines: [{ kind: 'if', indent: 0, text: 'if (x) {', row: 0, addr: 0 }],
+    semanticControlRenderHistory: Object.freeze({
+      scope: 'initial-control-render-producer',
+      completeness: 'complete',
+      reasons: Object.freeze([]),
+    }),
+  };
+  const api = apiFor(producerValue);
+  const snapshot = await api.snapshot();
+  const result = await api.decompile(snapshot, '0x1000');
+
+  assert.equal(result.status.completeness, 'complete');
+  assert.equal(result.status.reason ?? null, null);
+  assert.equal(result.value.pseudocode, producerValue.pseudocode);
+  assert.deepEqual(result.value.lines, producerValue.lines);
+  assert.equal(Object.hasOwn(result.value, 'semanticControlRenderHistory'), false);
+  assert.equal(DECOMPILE_INTERNAL_FIELDS.includes('semanticControlRenderHistory'), true);
+  assert.equal(DECOMPILE_PUBLIC_FIELDS.includes('semanticControlRenderHistory'), false);
+});
+
+test('decompile query still reports a near-miss control history name as drift', async () => {
+  const producerValue = {
+    pseudocode: 'int f(void) { return 1; }',
+    semanticControlRenderHistories: { scope: 'typo-guard' },
+  };
+  const api = apiFor(producerValue);
+  const snapshot = await api.snapshot();
+  const result = await api.decompile(snapshot, '0x1000');
+
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.reason, 'decompile-projection-schema-drift');
+  assert.deepEqual(result.status.projection.unexpected, ['semanticControlRenderHistories']);
+  assert.equal(result.value.pseudocode, producerValue.pseudocode);
+  assert.equal(Object.hasOwn(result.value, 'semanticControlRenderHistories'), false);
+});
+
+test('decompile query keeps an ordinary pseudocode-only result complete', async () => {
+  const producerValue = { pseudocode: 'int f(void) { return 1; }' };
+  const api = apiFor(producerValue);
+  const snapshot = await api.snapshot();
+  const result = await api.decompile(snapshot, '0x1000');
+
+  assert.equal(result.status.completeness, 'complete');
+  assert.equal(result.value.pseudocode, producerValue.pseudocode);
+});
+
+test('decompile query still rejects an unclonable unknown field after the history allowlist', async () => {
+  const producerValue = {
+    pseudocode: 'int f(void) { return 1; }',
+    semanticControlRenderHistory: Object.freeze({
+      scope: 'initial-control-render-producer',
+      completeness: 'complete',
+      reasons: Object.freeze([]),
+    }),
+    extra: { callback: () => 'must remain fail-closed' },
+  };
+  const api = apiFor(producerValue);
+  const snapshot = await api.snapshot();
+
+  await assert.rejects(
+    api.decompile(snapshot, '0x1000'),
+    /analysis-query-value-unclonable/,
+  );
+});
+
+test('decompile query treats a case-variant history name as drift, not internal', async () => {
+  const producerValue = {
+    pseudocode: 'int f(void) { return 1; }',
+    SemanticControlRenderHistory: { scope: 'case-guard' },
+  };
+  const api = apiFor(producerValue);
+  const snapshot = await api.snapshot();
+  const result = await api.decompile(snapshot, '0x1000');
+
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.reason, 'decompile-projection-schema-drift');
+});
