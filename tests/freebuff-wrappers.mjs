@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -95,7 +96,7 @@ check(setupSrc.includes('SHARED_BIN'), 'setup must share one binary copy across 
 check(setupSrc.includes('symlinkSync'), 'setup must link (not re-download) missing per-HOME binaries');
 
 // #9200: freebuff-setup CLI argument grammar and validation
-const { parseArgs } = await import('../scripts/freebuff-setup.mjs');
+const { copyIfMissing, ensureMetadata, parseArgs } = await import('../scripts/freebuff-setup.mjs');
 assert.deepEqual(parseArgs([]), { mode: 'full' });
 assert.deepEqual(parseArgs(['--ensure', '1']), { mode: 'ensure', num: '1' });
 assert.deepEqual(parseArgs(['--ensure', '8']), { mode: 'ensure', num: '8' });
@@ -106,6 +107,74 @@ assert.throws(() => parseArgs(['--ensure']), /invalid --ensure selector '<missin
 assert.throws(() => parseArgs(['--ensure', '1', '--typo']), /invalid --ensure selector/);
 assert.throws(() => parseArgs(['--unknown']), /unrecognized argument/);
 assert.throws(() => parseArgs(['garbage']), /unrecognized argument/);
+
+// #9274: migration destinations are untrusted persistent filesystem leaves.
+// A dangling destination symlink must count as occupied, and the exclusive
+// copy closes the lstat/copy race without changing destination-wins semantics.
+const symlinkFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-freebuff-symlink-'));
+try {
+  const src = path.join(symlinkFixtureRoot, 'legacy', 'settings.json');
+  const dst = path.join(symlinkFixtureRoot, 'home', 'settings.json');
+  fs.mkdirSync(path.dirname(src), { recursive: true });
+  fs.writeFileSync(src, '{"marker":"legacy"}\n');
+
+  assert.equal(copyIfMissing(src, dst), true);
+  assert.equal(fs.readFileSync(dst, 'utf8'), '{"marker":"legacy"}\n');
+
+  fs.writeFileSync(src, '{"marker":"new-source"}\n');
+  assert.equal(copyIfMissing(src, dst), false);
+  assert.equal(fs.readFileSync(dst, 'utf8'), '{"marker":"legacy"}\n');
+
+  const danglingTarget = path.join(symlinkFixtureRoot, 'outside-created.json');
+  const danglingDst = path.join(symlinkFixtureRoot, 'home', 'dangling-settings.json');
+  fs.symlinkSync(danglingTarget, danglingDst);
+  assert.equal(copyIfMissing(src, danglingDst), false);
+  assert.equal(fs.existsSync(danglingTarget), false);
+  assert.equal(fs.lstatSync(danglingDst).isSymbolicLink(), true);
+
+  const existingTarget = path.join(symlinkFixtureRoot, 'outside-existing.json');
+  const existingLink = path.join(symlinkFixtureRoot, 'home', 'existing-target-settings.json');
+  fs.writeFileSync(existingTarget, 'KEEP\n');
+  fs.symlinkSync(existingTarget, existingLink);
+  assert.equal(copyIfMissing(src, existingLink), false);
+  assert.equal(fs.readFileSync(existingTarget, 'utf8'), 'KEEP\n');
+
+  // #9272: metadata reconciliation may replace the leaf, but must never
+  // write through it. Both existing-target and dangling symlinks are covered.
+  const metadataDir = path.join(symlinkFixtureRoot, 'metadata-home');
+  const metadataPath = path.join(metadataDir, 'freebuff-metadata.json');
+  const shared = { version: '9.9.9' };
+  const expectedTarget = `${process.platform}-${process.arch}`;
+  fs.mkdirSync(metadataDir, { recursive: true });
+
+  const metadataVictim = path.join(symlinkFixtureRoot, 'metadata-victim.json');
+  fs.writeFileSync(metadataVictim, 'KEEP\n');
+  fs.symlinkSync(metadataVictim, metadataPath);
+  assert.equal(ensureMetadata(metadataDir, shared), true);
+  assert.equal(fs.readFileSync(metadataVictim, 'utf8'), 'KEEP\n');
+  assert.equal(fs.lstatSync(metadataPath).isFile(), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(metadataPath, 'utf8')), {
+    version: shared.version,
+    target: expectedTarget,
+  });
+
+  fs.rmSync(metadataPath, { force: true });
+  const missingMetadataVictim = path.join(symlinkFixtureRoot, 'metadata-missing-victim.json');
+  fs.symlinkSync(missingMetadataVictim, metadataPath);
+  assert.equal(ensureMetadata(metadataDir, shared), true);
+  assert.equal(fs.existsSync(missingMetadataVictim), false);
+  assert.equal(fs.lstatSync(metadataPath).isFile(), true);
+
+  assert.equal(ensureMetadata(metadataDir, shared), false);
+  fs.writeFileSync(metadataPath, '{"version":"stale","target":"stale"}\n');
+  assert.equal(ensureMetadata(metadataDir, shared), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(metadataPath, 'utf8')), {
+    version: shared.version,
+    target: expectedTarget,
+  });
+} finally {
+  fs.rmSync(symlinkFixtureRoot, { recursive: true, force: true });
+}
 
 const setupScript = path.join(root, 'scripts/freebuff-setup.mjs');
 const badEnsure9 = spawnSync(process.execPath, [setupScript, '--ensure', '9'], { cwd: root, encoding: 'utf8' });
