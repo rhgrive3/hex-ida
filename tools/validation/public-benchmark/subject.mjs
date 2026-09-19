@@ -43,22 +43,14 @@ try {
           state: value ? (completeness === 'complete' ? 'PASS' : String(completeness).toUpperCase()) : 'UNSUPPORTED',
           completeness,
           pseudocode: value?.pseudocode ?? value?.code ?? null,
-          // TEMPORARY Phase-2 PARTIAL diagnostic (remove after classification):
-          // pass through the existing first-divergence reason and minimal
-          // provenance without changing any analysis semantics.
-          hasExactEnd: fn.end != null,
-          reason: response?.status?.reason ?? value?.completeness?.reason ?? null,
-          provenance: value?.completeness?.provenance ?? null,
         });
       } catch (error) {
         functions.push({
           address: String(fn.address),
           name: fn.name ?? null,
-          end: fn.end == null ? null : String(fn.end),
           state: error?.name === 'AbortError' ? 'TIMEOUT' : 'CRASH',
           reason: String(error?.message || error),
           pseudocode: null,
-          hasExactEnd: fn.end != null,
         });
       }
     }
