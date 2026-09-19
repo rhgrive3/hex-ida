@@ -14,6 +14,7 @@ import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
 import { buildSemanticModel, attachTexts } from './blocks.js';
 import { LRU } from './lru.js';
+import { SYM_POINTER } from './symbols.js';
 
 const MAX_INSTRUCTIONS = 40000;
 const MAX_MODEL_ROWS = 6000;
@@ -495,6 +496,11 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   res.model = buildSemanticModel(rawInsns, {
     startRow, endRow: end, name,
     symbolFor: (a) => (symbols ? (symbols.nameAt(a) || null) : null),
+    externalPointerSymbolFor: (a) => {
+      if (!symbols || typeof symbols.exact !== 'function') return null;
+      const entry = symbols.exact(a);
+      return entry && entry.kind === SYM_POINTER && typeof entry.name === 'string' ? entry.name : null;
+    },
     rowOfAddress: (a) => {
       if (a == null) return null;
       const rel = a - region.vmAddr;
