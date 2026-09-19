@@ -153,9 +153,11 @@ test('C3. the exported schema cannot be mutated to reclassify a field', async ()
   const result = await run({
     pseudocode: 'int f(void) { return 1; }',
     ir: { values: [], defUse: () => new Map() },
+    semanticControlRenderHistory: { completeness:'complete', byControlId:new Map() },
   });
   assert.equal(result.completeness, 'complete');
   assert.equal(Object.hasOwn(result.value, 'ir'), false);
+  assert.equal(Object.hasOwn(result.value, 'semanticControlRenderHistory'), false);
   assert.equal(result.value.pseudocode, 'int f(void) { return 1; }');
 });
 
