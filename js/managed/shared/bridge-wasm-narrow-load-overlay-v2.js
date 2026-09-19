@@ -90,7 +90,7 @@ export function overlayWasmNarrowLoadExtensions(fn, lowered, options = {}) {
     if (!load) fail('managed-wasm-narrow-load-semantic-node-mismatch');
     if (load.outputs.length !== 1
         || load.memory?.widthBits !== contract.sourceBits
-        || load.completeness !== 'complete') {
+        || (load.completeness !== 'complete' && load.completeness !== 'partial')) {
       fail('managed-wasm-narrow-load-semantic-node-mismatch');
     }
 

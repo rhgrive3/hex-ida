@@ -444,7 +444,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       let opOutputs = [];
       if (b.producedValues && b.producedValues.length > 0) {
         const producedTypes = b.producedValues.map((p) => resolveVMValueType(p.type, p.bits));
-        if (producedTypes.some((t) => t == null)
+        if ((producedTypes.some((t) => t == null) || /^(?:dup)/.test(b.mnemonic || ''))
           && !(b.memoryEffects?.length || b.callEffects?.length || b.controlEffects?.length)) {
           const sources = [...readValues, ...consumedInputs];
           const sourceTypes = sources.map((id) => valueTypeByValueId.get(id));
@@ -455,7 +455,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           }
           if (propagate) {
             for (let ti = 0; ti < producedTypes.length; ti++) {
-              if (producedTypes[ti] == null) producedTypes[ti] = sourceTypes[0];
+              if (producedTypes[ti] == null || /^(?:dup)/.test(b.mnemonic || '')) producedTypes[ti] = sourceTypes[0];
             }
           }
         }
@@ -521,24 +521,40 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           nodeKind = 'binary';
         } else if (managedMnemonicIsCompare(mn)) {
           nodeKind = 'compare';
-        } else if (mn.includes('const') || (frontendId === 'jvm' && (mn === 'bipush' || mn === 'sipush'))) {
+        } else if (mn.includes('const') || /^(?:ldc|ldnull|ldstr|ldtoken|iconst|lconst|fconst|aconst|bipush|sipush)/.test(mn)) {
           nodeKind = 'const';
+        } else if ((mn === 'select' || b.opcode === 0x1b) && allInputs.length === 3 && opOutputs.length === 1) {
+          nodeKind = 'select';
+        } else if (/^(?:dup)/.test(mn) && allInputs.length === 1 && opOutputs.length >= 2) {
+          nodeKind = 'copy';
+        } else if (readValues.length > 0 && opOutputs.length > 0) {
+          nodeKind = 'copy';
         } else {
           nodeKind = opOutputs.length > 0 ? 'unary' : 'barrier';
         }
       }
 
       const completeness = b.completeness === 'exact' ? 'complete' : b.completeness === 'unknown' ? 'unknown' : 'partial';
+      const nodeInputs = nodeKind === 'select' && allInputs.length === 3
+        ? [allInputs[2], allInputs[0], allInputs[1]]
+        : allInputs;
       const nodePayload = {
         id: mainNodeId,
         blockId: blkId,
         kind: nodeKind,
-        inputs: allInputs,
+        inputs: nodeInputs,
         outputs: opOutputs,
         origin: nodeOrigin,
         sourceEffectIds: [b.operationId],
         completeness,
       };
+      if (nodeKind === 'copy' && /^(?:dup)/.test(b.mnemonic || '') && allInputs.length === 1 && opOutputs.length >= 2) {
+        nodePayload.attributes = {
+          stackManipulation: 'dup',
+          duplicatedValueId: allInputs[0],
+          duplicateValueIds: opOutputs,
+        };
+      }
 
       if (completeness !== 'complete') {
         nodePayload.unknown = {
