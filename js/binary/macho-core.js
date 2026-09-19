@@ -17,6 +17,13 @@ export function machOImageAuthority(image) {
   return image && typeof image === 'object' ? ISSUED_MACHO_IMAGES.get(image) ?? null : null;
 }
 
+export function reissueMachOImageAuthority(clone, producer) {
+  const authority = ISSUED_MACHO_IMAGES.get(producer);
+  if (authority && clone && typeof clone === 'object') {
+    ISSUED_MACHO_IMAGES.set(clone, authority);
+  }
+}
+
 function boundIdentity(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }

@@ -14,6 +14,16 @@ function advancePointerMetadata(image) {
 export function machOPointerMetadataRevision(image) {
   return (CHAINED_POINTER_REVISIONS.get(image) ?? 0n).toString();
 }
+
+export function cloneChainedPointerMetadata(clone, producer) {
+  if (!clone || !producer) return;
+  const sites = CHAINED_POINTER_SITES.get(producer);
+  if (sites) CHAINED_POINTER_SITES.set(clone, new Map(sites));
+  const coverage = CHAINED_POINTER_COVERAGE.get(producer);
+  if (coverage) CHAINED_POINTER_COVERAGE.set(clone, Array.isArray(coverage) ? [...coverage] : coverage);
+  const revision = CHAINED_POINTER_REVISIONS.get(producer);
+  if (revision != null) CHAINED_POINTER_REVISIONS.set(clone, revision);
+}
 /** Read-only metadata description. A reconstructed encoded target is NOT proof
  * that AUT succeeds, that a memory load occurred, or that execution can call it.
  * Retained key/diversity fields are encoded metadata, not the runtime PAC key

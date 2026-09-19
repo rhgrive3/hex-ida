@@ -1,5 +1,8 @@
 import { parseMachOSource as parseMachOSourceRaw } from './source-loaders.js';
-import { resolveMachOMetadataLimits } from './macho-budget.js';
+import { resolveMachOMetadataLimits, createMachOMetadataBudget, ensureMachOMetadataBudget } from './macho-budget.js';
+import { reissueMachOImageAuthority } from './macho-core.js';
+import { cloneChainedPointerMetadata } from './macho-dyld.js';
+import { fnv1a64 } from './fingerprint.js';
 
 /*
  * Selected FAT Mach-O slices are shared producer artifacts. Keep the cache at
@@ -13,6 +16,31 @@ import { resolveMachOMetadataLimits } from './macho-budget.js';
  * one UI/query cancellation destroying work another consumer still needs.
  */
 const CACHE = new WeakMap();
+const DYLD_CACHE_IDS = new WeakMap();
+let nextDyldCacheId = 1;
+
+function dyldCacheKey(cache) {
+  if (cache == null) return null;
+  if (typeof cache !== 'object' && typeof cache !== 'function') return String(cache);
+  let id = DYLD_CACHE_IDS.get(cache);
+  if (!id) {
+    id = nextDyldCacheId++;
+    DYLD_CACHE_IDS.set(cache, id);
+  }
+  return id;
+}
+
+function sourceContentIdentity(source) {
+  if (!source) return null;
+  if (source.immutable === true) return 'immutable';
+  if (source.contentIdentity != null) return String(source.contentIdentity);
+  if (source.revision != null) return String(source.revision);
+  if (source.contentDigest != null) return String(source.contentDigest);
+  if (source.bytes instanceof Uint8Array) {
+    return `bytes_${fnv1a64(source.bytes).toString(16)}`;
+  }
+  return null;
+}
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -63,7 +91,24 @@ function producerRangeOptions(value) {
 function cloneCachedArtifact(value) {
   const shared = new Set();
   if (value?.source && typeof value.source === 'object') shared.add(value.source);
-  return cloneValue(value, new Map(), shared);
+  const copy = cloneValue(value, new Map(), shared);
+  if (copy && typeof copy === 'object') {
+    const producerBudget = value.__machoMetadataBudget;
+    if (producerBudget) {
+      const budget = createMachOMetadataBudget(copy, {
+        signal: copy.signal,
+        limits: producerBudget.limits,
+      });
+      if (producerBudget.used) {
+        Object.assign(budget.used, producerBudget.used);
+        budget.used.warnings = Math.min(copy.warnings?.length || 0, budget.limits.warnings);
+      }
+      ensureMachOMetadataBudget(copy, budget);
+    }
+    reissueMachOImageAuthority(copy, value);
+    cloneChainedPointerMetadata(copy, value);
+  }
+  return copy;
 }
 
 function cloneValue(value, seen, shared) {
@@ -111,6 +156,7 @@ function cloneValue(value, seen, shared) {
   const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
   seen.set(value, copy);
   for (const key of Reflect.ownKeys(value)) {
+    if (key === '__machoMetadataBudget') continue;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor) continue;
     if ('value' in descriptor) descriptor.value = cloneValue(descriptor.value, seen, shared);
@@ -119,9 +165,9 @@ function cloneValue(value, seen, shared) {
   return copy;
 }
 
-function cacheKey(options = {}) {
+function cacheKey(options = {}, source = null) {
   const ranges = options.ranges || {};
-  const source = options.source || {};
+  const sourceOpts = options.source || {};
   const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
@@ -132,9 +178,11 @@ function cacheKey(options = {}) {
     // served to a strict caller (or the strict default) without re-validation.
     strictPageAlignment: options.strictPageAlignment !== false,
     strings,
+    dyldCache: dyldCacheKey(options.dyldCache),
+    sourceContent: sourceContentIdentity(source),
     metadataLimits: resolveMachOMetadataLimits(options.metadataLimits || {}),
     source: {
-      maxReadLength: normalizeScalar(source.maxReadLength),
+      maxReadLength: normalizeScalar(sourceOpts.maxReadLength),
     },
     ranges: {
       pageSize: normalizeScalar(ranges.pageSize),
@@ -210,7 +258,9 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   // by reference) can change between calls while the cached image still
   // reflects the old bytes — the cache would launder that mismatch into a
   // "confirmed" parse (#5536).
-  const cacheable = !!source && !(input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input) || (typeof Blob !== 'undefined' && input instanceof Blob));
+  const isDirectBuffer = input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input) || (typeof Blob !== 'undefined' && input instanceof Blob);
+  const isCustomMutable = source && source.mutable === true && sourceContentIdentity(source) === null;
+  const cacheable = !!source && !isDirectBuffer && !isCustomMutable;
   const selected = options.sliceIndex != null;
   if (!source || !cacheable || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
 
@@ -220,7 +270,7 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
   if (signal?.aborted) return Promise.reject(abortError(signal));
 
   const cache = sourceCache(source);
-  const key = cacheKey({ ...options, ranges:effectiveRangeOptions });
+  const key = cacheKey({ ...options, ranges:effectiveRangeOptions }, source);
   let entry = cache.get(key);
   if (entry && (entry.retired || entry.controller.signal.aborted)) {
     if (cache.get(key) === entry) cache.delete(key);
