@@ -105,5 +105,9 @@ export function partitionDigest(root = ROOT, partition) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.length !== 3) {
+    console.error('Usage: accuracy-partition-cache-key.mjs <partition>');
+    process.exit(1);
+  }
   process.stdout.write(partitionDigest(ROOT, process.argv[2]) + '\n');
 }
