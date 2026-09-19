@@ -563,10 +563,26 @@ export class SymbolIndex {
     }
     const all = Array.from(have);
     let added = 0;
+    const unconfirmedHeuristic = provenance?.source === 'heuristic' && provenance?.confirmed !== true;
     for (const a of list) {
       if (a == null) continue;
       const addr = canonicalMetadataAddress(a);
       if (addr == null || have.has(addr)) continue;
+      /* A low-confidence scan may rediscover jump-table case labels, local
+         return blocks, or other interior basic blocks. When the loader has
+         already published an exact declared extent for the containing
+         function, that stronger ownership evidence wins: an unconfirmed
+         heuristic is not allowed to split the proven function body. Stronger
+         metadata/direct evidence still flows through this generic insertion
+         boundary unchanged. */
+      if (unconfirmedHeuristic) {
+        const ownerIndex = this._floor(this.funcs, addr);
+        if (ownerIndex >= 0) {
+          const ownerStart = this.funcs[ownerIndex];
+          const ownerEnd = ownerStart < addr ? this.declaredFunctionEnd(ownerStart) : null;
+          if (ownerEnd != null && addr < ownerEnd) continue;
+        }
+      }
       have.add(addr); all.push(addr); added++;
       this.functionProvenance.set(addr.toString(), { ...provenance });
     }
