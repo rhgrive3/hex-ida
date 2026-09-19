@@ -8,7 +8,7 @@ import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, same
 import { RewriteEngine, createExpressionOriginHistoryRecorder } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { createProjectionIrObserver, createValidationBatch } from '../core/identity/live-data.js';
+import { createProjectionIrObserver } from '../core/identity/live-data.js';
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
@@ -1046,8 +1046,18 @@ function buildCanonicalExpressions(state) {
     if (budget.edges < 0) throw new Error('state-construction-budget');
     const own = (key) => Object.getOwnPropertyDescriptor(state.ir, key)?.value;
     const valueMembers = new WeakSet(values), instructionMembers = new WeakSet(instructions);
-    transaction.observation = Object.freeze({ kind:'compat-state', matches:() => own('values') === values
-      && own('blocks') === blocks && own('instructions') === instructions && captured.matches(),
+    const liveMatches = () => own('values') === values
+      && own('blocks') === blocks && own('instructions') === instructions && captured.matches();
+    let cached = false, cachedValue = false;
+    const matches = () => {
+      // Reuse is scoped to this exact synchronous construction transaction.
+      // Outside it, every consumer performs the original live check.
+      if (state.stateHistoryTransaction !== transaction) return liveMatches();
+      if (!cached) { cachedValue = liveMatches(); cached = true; }
+      return cachedValue;
+    };
+    transaction.settleSharedObservation = () => !cached || liveMatches() === cachedValue;
+    transaction.observation = Object.freeze({ kind:'compat-state', matches,
     contains:(value, instruction) => (value == null || valueMembers.has(value)) && (instruction == null || instructionMembers.has(instruction)) });
     // Keep the original data observation for later C-AST consumers too. It
     // never caches currentness: every selection and read rechecks this matcher,
@@ -1057,25 +1067,16 @@ function buildCanonicalExpressions(state) {
     budget.edges = 0; budget.reasons.add('compat-state-construction-observation-unavailable');
   }
   state.stateHistoryTransaction = transaction;
-  // One synchronous construction section reuses a single freshness answer per
-  // observation instead of re-walking the unchanged canonical graph for every
-  // selection a value participates in. The batch re-derives every answer used
-  // during construction before construction returns (`settle`), so a
-  // mutation anywhere under the section is detected here and the whole producer
-  // transaction fails closed below, exactly like a stale check. Answers are
-  // never reused past this section: every consumer read outside it still
-  // performs its own fresh check against the live graph.
-  const validation = createValidationBatch();
+  // Reuse only the one shared construction-input observation. Output and
+  // consumer observations continue to validate live on every read. The shared
+  // answer is re-derived after construction before any history can publish;
+  // any disagreement invalidates the complete construction transaction.
   let constructionStale = false;
   try {
-    validation.run(() => {
-      for (const value of state.ir.values || []) buildValue(value, state);
-    });
+    for (const value of state.ir.values || []) buildValue(value, state);
   } finally {
     delete state.stateHistoryTransaction;
-    constructionStale = validation.settle() > 0;
-    // The shared producer is checked once after construction, never carried
-    // across this boundary. Consumer reads still perform their fresh checks.
+    constructionStale = transaction.settleSharedObservation?.() === false;
     const matches = new Map();
     for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, !constructionStale && initiallyCurrent && check());
     for (const [key, records] of state.buildHistories || []) {
