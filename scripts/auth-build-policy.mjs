@@ -5,14 +5,14 @@ import { fileURLToPath } from 'node:url';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const DEFAULT_REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url))).replaceAll('\\', '/');
 
-function normalizeInputPath(rawPath, repoRoot = DEFAULT_REPO_ROOT) {
+function normalizeInputPath(rawPath, repoRoot = DEFAULT_REPO_ROOT, { caseInsensitive = false } = {}) {
   const normalized = String(rawPath ?? '').replaceAll('\\', '/');
   if (!repoRoot) return normalized;
-  if (repoRoot === '/') {
-    return normalized.startsWith('/') ? normalized.slice(1) : normalized;
-  }
-  if (normalized === repoRoot) return '';
-  if (normalized.startsWith(`${repoRoot}/`)) {
+  if (repoRoot === '/') return normalized.startsWith('/') ? normalized.slice(1) : normalized;
+  const comparablePath = caseInsensitive ? normalized.toLowerCase() : normalized;
+  const comparableRoot = caseInsensitive ? repoRoot.toLowerCase() : repoRoot;
+  if (comparablePath === comparableRoot) return '';
+  if (comparablePath.startsWith(`${comparableRoot}/`)) {
     return normalized.slice(repoRoot.length + 1);
   }
   return normalized;
@@ -47,7 +47,8 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
       })()
     : DEFAULT_REPO_ROOT;
   const rawInputs = Object.keys(metafile?.inputs || {});
-  const inputSet = new Set(rawInputs.map((val) => normalizeInputPath(val, repoRoot)));
+  const caseInsensitive = (options?.platform ?? process.platform) === 'win32';
+  const inputSet = new Set(rawInputs.map((val) => normalizeInputPath(val, repoRoot, { caseInsensitive })));
   const required = kind === 'parent'
     ? ['js/userscript/dev/parent-worker-runtime.js', 'js/userscript/dev/parent-rpc.js', 'js/userscript/dev/bootstrap-host.js']
     : ['js/ai/dev/supervisor/dev-supervisor-v0.js', 'js/ai/dev/ui/settings.js', 'js/ai/dev/ui/engine-router.js', 'js/ai/dev/ui/controls.js'];

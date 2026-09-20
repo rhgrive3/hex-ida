@@ -26,18 +26,17 @@ test('canonical production deploy validates the default config before invoking W
   });
 
   assert.equal(status, 0);
-  assert.deepEqual(calls, [
-    {
-      command: process.execPath,
-      args: [resolve(repoRoot, 'scripts/validate-auth-config.mjs')],
-      options: { cwd: repoRoot, stdio: 'inherit' },
-    },
-    {
-      command: process.execPath,
-      args: [resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js'), 'deploy'],
-      options: { cwd: repoRoot, stdio: 'inherit' },
-    },
-  ]);
+  assert.equal(calls.length, 2);
+  const validator = calls[0];
+  const deployment = calls[1];
+  assert.equal(validator.command, process.execPath);
+  assert.equal(validator.args[0], resolve(repoRoot, 'scripts/validate-auth-config.mjs'));
+  assert.match(validator.args[1], /^--config=.*\.wrangler\.production-snapshot-/);
+  const snapshotPath = validator.args[1].slice('--config='.length);
+  assert.deepEqual(validator.options, { cwd:repoRoot, stdio:'inherit' });
+  assert.equal(deployment.command, process.execPath);
+  assert.deepEqual(deployment.args, [resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js'), 'deploy', '--config', snapshotPath]);
+  assert.deepEqual(deployment.options, { cwd:repoRoot, stdio:'inherit' });
 });
 
 test('production deploy stops before Wrangler when auth config validation fails', () => {

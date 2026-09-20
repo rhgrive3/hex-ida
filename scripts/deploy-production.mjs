@@ -1,10 +1,13 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const validatorPath = resolve(repoRoot, 'scripts/validate-auth-config.mjs');
 const wranglerPath = resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js');
+const productionConfigPath = resolve(repoRoot, 'wrangler.jsonc');
 
 export class SubprocessSignalError extends Error {
   constructor(label, signal) {
@@ -21,14 +24,37 @@ export function subprocessStatus(result, label) {
   return result.status;
 }
 
-export function runProductionDeploy({ run = spawnSync, args = [] } = {}) {
+export function runProductionDeploy({
+  run = spawnSync,
+  args = [],
+  configPath = productionConfigPath,
+  readFileSync = fs.readFileSync,
+  writeFileSync = fs.writeFileSync,
+  readSnapshotSync = fs.readFileSync,
+  lstatSync = fs.lstatSync,
+  rmSync = fs.rmSync,
+  randomUUIDImpl = randomUUID,
+  snapshotDirectory = repoRoot,
+} = {}) {
   if (args.length) throw new Error('Production deploy does not accept Wrangler config or environment overrides; edit wrangler.jsonc and retry.');
-  const validation = run(process.execPath, [validatorPath], { cwd: repoRoot, stdio: 'inherit' });
-  const validationStatus = subprocessStatus(validation, 'Production auth validator');
-  if (validationStatus !== 0) return validationStatus;
+  const approvedBytes = Buffer.from(readFileSync(configPath));
+  const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${randomUUIDImpl()}.jsonc`);
+  writeFileSync(snapshotPath, approvedBytes, { flag: 'wx', mode: 0o400 });
+  try {
+    const snapshotEntry = lstatSync(snapshotPath);
+    if (snapshotEntry.isSymbolicLink() || !snapshotEntry.isFile()) throw new Error('Production config snapshot is not a regular file.');
 
-  const deployment = run(process.execPath, [wranglerPath, 'deploy'], { cwd: repoRoot, stdio: 'inherit' });
-  return subprocessStatus(deployment, 'Wrangler deployment');
+    const validation = run(process.execPath, [validatorPath, `--config=${snapshotPath}`], { cwd: repoRoot, stdio: 'inherit' });
+    const validationStatus = subprocessStatus(validation, 'Production auth validator');
+    if (validationStatus !== 0) return validationStatus;
+
+    const beforeDeploy = Buffer.from(readSnapshotSync(snapshotPath));
+    if (!beforeDeploy.equals(approvedBytes)) throw new Error('Production config snapshot changed after validation.');
+    const deployment = run(process.execPath, [wranglerPath, 'deploy', '--config', snapshotPath], { cwd: repoRoot, stdio: 'inherit' });
+    return subprocessStatus(deployment, 'Wrangler deployment');
+  } finally {
+    rmSync(snapshotPath, { force: true });
+  }
 }
 
 export function main(args = process.argv.slice(2), { run = spawnSync, reportError = console.error } = {}) {

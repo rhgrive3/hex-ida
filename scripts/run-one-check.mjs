@@ -22,8 +22,8 @@ function usage() {
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 export function buildNpmRunArgs(first, rest = []) {
-  if (!rest || rest.length === 0) return ['run', first];
-  return ['run', first, '--', ...rest];
+  if (!rest || rest.length === 0) return ['run', '--', first];
+  return ['run', '--', first, '--', ...rest];
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

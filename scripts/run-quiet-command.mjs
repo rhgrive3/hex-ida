@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -31,8 +32,11 @@ export function parseQuietCommandArgs(argv) {
   return Object.freeze({ label, command: argv[separator + 1], args: argv.slice(separator + 2) });
 }
 
-function safeLabel(value) {
-  return String(value).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'command';
+export function safeLabel(value) {
+  const sanitized = String(value).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'command';
+  if (sanitized.length <= 96) return sanitized;
+  const digest = createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+  return `${sanitized.slice(0, 96)}-${digest}`;
 }
 
 function appendTail(current, chunk) {

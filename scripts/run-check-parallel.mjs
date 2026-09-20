@@ -33,6 +33,7 @@ export function parseCheckSteps(checkScript) {
   let inBacktick = false;
   let escaped = false;
   const commandSubstitutions = [];
+  let groupDepth = 0;
   const str = String(checkScript);
 
   for (let i = 0; i < str.length; i++) {
@@ -86,7 +87,20 @@ export function parseCheckSteps(checkScript) {
         continue;
       }
     }
-    if (!inSingle && !inDouble && !inBacktick && commandSubstitutions.length === 0 && ch === '&' && str[i + 1] === '&') {
+    if (!inSingle && !inDouble && !inBacktick && commandSubstitutions.length === 0) {
+      if (ch === '(') {
+        groupDepth++;
+        current += ch;
+        continue;
+      }
+      if (ch === ')') {
+        if (groupDepth === 0) throw new Error('run-check-parallel: malformed shell syntax in check script (unmatched closing parenthesis)');
+        groupDepth--;
+        current += ch;
+        continue;
+      }
+    }
+    if (!inSingle && !inDouble && !inBacktick && commandSubstitutions.length === 0 && groupDepth === 0 && ch === '&' && str[i + 1] === '&') {
       const step = current.trim();
       if (step) steps.push(step);
       current = '';
@@ -100,6 +114,9 @@ export function parseCheckSteps(checkScript) {
   }
   if (commandSubstitutions.length > 0) {
     throw new Error('run-check-parallel: malformed shell syntax in check script (unclosed command substitution)');
+  }
+  if (groupDepth > 0) {
+    throw new Error('run-check-parallel: malformed shell syntax in check script (unclosed parenthesized group)');
   }
   const last = current.trim();
   if (last) steps.push(last);
@@ -173,20 +190,22 @@ export function splitCommand(command) {
 // shell expansion. Handing the original step text to that same shell preserves
 // command substitution and every other shell construct the serial gate sees;
 // tokenizing to argv would silently pass `$(...)` as a literal argument.
-function shellInvocation(command) {
-  if (process.platform === 'win32') {
-    return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', command] };
+export function shellInvocation(command, { env = process.env, platform = process.platform } = {}) {
+  const configured = String(env.npm_config_script_shell ?? '').trim();
+  const shell = configured || (platform === 'win32' ? (env.ComSpec || 'cmd.exe') : '/bin/sh');
+  if (platform === 'win32' && /(?:^|[\\/])cmd(?:\.exe)?$/i.test(shell)) {
+    return { command: shell, args: ['/d', '/s', '/c', command] };
   }
-  return { command: '/bin/sh', args: ['-c', command] };
+  return { command: shell, args: ['-c', command] };
 }
 
 // npm prepends node_modules/.bin to PATH for scripts. Mirror that here so a
 // shell-invoked step resolves local binaries exactly like the serial gate.
-function shellEnvironment() {
-  if (process.platform === 'win32') return process.env;
+function shellEnvironment({ env = process.env, platform = process.platform } = {}) {
+  if (platform === 'win32') return env;
   const binDirectory = path.join(root, 'node_modules', '.bin');
-  const pathValue = process.env.PATH ?? '';
-  return { ...process.env, PATH: pathValue ? `${binDirectory}${path.delimiter}${pathValue}` : binDirectory };
+  const pathValue = env.PATH ?? '';
+  return { ...env, PATH: pathValue ? `${binDirectory}${path.delimiter}${pathValue}` : binDirectory };
 }
 
 function poolSize(stepCount) {
@@ -215,6 +234,8 @@ export async function runCheckParallel({
   stdout = process.stdout,
   stderr = process.stderr,
   checkScript,
+  env = process.env,
+  platform = process.platform,
 } = {}) {
   const pkg = checkScript !== undefined
     ? null
@@ -226,8 +247,8 @@ export async function runCheckParallel({
   const jobs = steps.map((command) => ({
     label: stepLabel(command),
     rawCommand: command,
-    env: shellEnvironment(),
-    ...shellInvocation(command),
+    env: shellEnvironment({ env, platform }),
+    ...shellInvocation(command, { env, platform }),
   }));
   const tailIndexes = [];
   const poolJobs = [];
