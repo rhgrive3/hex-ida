@@ -35,8 +35,8 @@ function render(kind = 'diamond', options = {}) {
     f.block(1); f.store(f.constant(1n, 32)); f.branch(4);
     f.block(2); f.conditionalBranch(condition, 5, 3);
     f.block(3); f.store(f.constant(3n, 32)); f.branch(4);
-    f.block(5); f.ret();
     f.block(4); f.store(f.constant(4n, 32)); f.ret();
+    f.block(5); f.ret();
   } else {
     f.conditionalBranch(condition, 1, 2);
     f.block(1); const yes = f.constant(1n, 32); f.store(yes); f.branch(3);
