@@ -219,6 +219,31 @@ export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
   }
 }
 
+export function moveDirectoryIfMissing(src, dst, { containmentRoot = DATA_ROOT, fsImpl = fs } = {}) {
+  let dstEntry = null;
+  try {
+    dstEntry = fsImpl.lstatSync(dst);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (dstEntry) return false;
+
+  let srcEntry;
+  try {
+    srcEntry = fsImpl.lstatSync(src);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  if (srcEntry.isSymbolicLink() || !srcEntry.isDirectory()) {
+    throw new Error(`freebuff setup: migration source is not a real directory: ${src}`);
+  }
+
+  ensureSafeDirectory(containmentRoot, path.dirname(dst));
+  fsImpl.renameSync(src, dst);
+  return true;
+}
+
 function moveIfMissing(src, dst) {
   if (fs.existsSync(dst) || !fs.existsSync(src)) return false;
   fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -468,7 +493,7 @@ function ensureHome(n, shared) {
     if (error?.code !== 'ENOENT') throw error;
   }
 
-  if (!homeExists && moveIfMissing(repoHome, home)) {
+  if (!homeExists && moveDirectoryIfMissing(repoHome, home)) {
     migrated++;
   }
   ensureSafeDirectory(DATA_ROOT, home);
