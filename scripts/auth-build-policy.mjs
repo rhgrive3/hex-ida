@@ -45,7 +45,7 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
   const repoRoot = options?.repoRoot != null
     ? (() => {
         const normalized = String(options.repoRoot).replaceAll('\\', '/');
-        return /^\/+$/u.test(policyPath) ? '/' : normalized.replace(/\/+$/, '');
+        return /^\/+$/u.test(normalized) ? '/' : normalized.replace(/\/+$/, '');
       })()
     : DEFAULT_REPO_ROOT;
   const rawInputs = Object.keys(metafile?.inputs || {});
