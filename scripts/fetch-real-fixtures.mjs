@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(await (await import('node:fs/promises')).readFile(join(root, 'tests/fixtures/real-binaries.json'), 'utf8'));
-const outputDir = join(root, 'tests/.real-fixtures');
+const testsRoot = join(root, 'tests');
+const outputDir = join(testsRoot, '.real-fixtures');
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const requested = args.filter((arg) => arg !== '--check');
@@ -56,6 +57,52 @@ function raceWithAbort(value, signal) {
       },
     );
   });
+}
+
+function pathIsWithin(rootPath, targetPath) {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+export async function ensureFixtureCacheDirectory(cacheDir = outputDir, {
+  containmentRoot = testsRoot,
+  create = false,
+  lstatImpl = lstat,
+  mkdirImpl = mkdir,
+} = {}) {
+  const base = path.resolve(containmentRoot);
+  const target = path.resolve(cacheDir);
+  if (!pathIsWithin(base, target) || target === base) {
+    throw new Error('fixture cache must be a child directory of the repository tests tree');
+  }
+
+  const baseEntry = await lstatImpl(base);
+  if (baseEntry.isSymbolicLink() || !baseEntry.isDirectory()) {
+    throw new Error('fixture cache containment root must be a real directory');
+  }
+
+  const parts = path.relative(base, target).split(path.sep).filter(Boolean);
+  let current = base;
+  for (const part of parts) {
+    current = path.join(current, part);
+    let entry;
+    try {
+      entry = await lstatImpl(current);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      if (!create) return false;
+      try {
+        await mkdirImpl(current, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (mkdirError?.code !== 'EEXIST') throw mkdirError;
+      }
+      entry = await lstatImpl(current);
+    }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`fixture cache path component is not a real directory: ${current}`);
+    }
+  }
+  return true;
 }
 
 export function fixture(name) {
@@ -174,8 +221,12 @@ export async function fetchFixture(name, spec, {
   verifyImpl = verify,
   fetchImpl = fetchWithHttpsRedirects,
   timeoutMs = DEFAULT_FIXTURE_DOWNLOAD_TIMEOUT_MS,
+  outputDirPath = outputDir,
+  cacheContainmentRoot = testsRoot,
+  ensureCacheDirImpl = ensureFixtureCacheDirectory,
 } = {}) {
-  const target = join(outputDir, spec.file);
+  const target = join(outputDirPath, spec.file);
+  await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
   try {
     await verifyImpl(name, target, spec);
     console.log(`${name}: verified existing fixture`);
@@ -188,7 +239,7 @@ export async function fetchFixture(name, spec, {
   if (!url) throw new Error(`${name}: set ${spec.urlEnv} to the fixture download URL`);
   if (!/^https:\/\//i.test(url)) throw new Error(`${name}: fixture URL must use HTTPS`);
 
-  await mkdir(dirname(target), { recursive:true });
+  await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: true });
   const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
   const deadline = createDownloadDeadline(name, timeoutMs);
   const { signal } = deadline.controller;
@@ -209,6 +260,7 @@ export async function fetchFixture(name, spec, {
     }
 
     const hash = createHash('sha256');
+    await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
     output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
     output.on('error', (err) => { streamError = streamError || err; });
     let size = 0;
@@ -231,6 +283,7 @@ export async function fetchFixture(name, spec, {
       console.log(`${name}: downloaded and verified`);
       return;
     } catch {}
+    await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
     try {
       await rename(temp, target);
     } catch (renameErr) {

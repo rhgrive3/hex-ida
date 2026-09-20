@@ -218,10 +218,10 @@ function appendDestinationWrite(operations, dst, semanticValue, idPrefix) {
       const physical = temp(`${idPrefix}:w-write`, bitType(64));
       operations.push(createMachineOperation({
         kind: 'value',
-        opcode: 'arm64.zero-extend-w-write',
+        opcode: 'zero-extend',
         inputs: [semanticValue],
         outputs: [physical],
-        metadata: { sourceWidthBits: 32, destinationWidthBits: 64 },
+        metadata: { fromBits: 32, toBits: 64, sourceWidthBits: 32, destinationWidthBits: 64, writePolicy: 'zero-extend-w-write' },
       }));
       operations.push(createMachineOperation({
         kind: 'register-write',

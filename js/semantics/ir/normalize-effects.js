@@ -87,19 +87,21 @@ function canonicalMachineValueOperation(operation, bundle) {
     .filter(Boolean)
     .sort((left, right) => right.length - left.length);
   for (const namespace of namespaces) {
-    const prefix = `${namespace}-`;
-    if (!normalized.startsWith(prefix)) continue;
-    const canonicalOpcode = normalized.slice(prefix.length);
-    if (!canonicalOpcode || classifyMachineValueOpcode(canonicalOpcode).kind === 'intrinsic') continue;
-    return deepFreeze({
-      ...operation,
-      opcode: canonicalOpcode,
-      metadata: {
-        ...(operation.metadata || {}),
-        qualifiedMachineOpcode: originalOpcode,
-        semanticOpcodeNormalization: 'declared-bundle-namespace',
-      },
-    });
+    for (const separator of ['-', '.', ':', '/']) {
+      const prefix = `${namespace}${separator}`;
+      if (!normalized.startsWith(prefix)) continue;
+      const canonicalOpcode = normalized.slice(prefix.length);
+      if (!canonicalOpcode || classifyMachineValueOpcode(canonicalOpcode).kind === 'intrinsic') continue;
+      return deepFreeze({
+        ...operation,
+        opcode: canonicalOpcode,
+        metadata: {
+          ...(operation.metadata || {}),
+          qualifiedMachineOpcode: originalOpcode,
+          semanticOpcodeNormalization: 'declared-bundle-namespace',
+        },
+      });
+    }
   }
   return operation;
 }
