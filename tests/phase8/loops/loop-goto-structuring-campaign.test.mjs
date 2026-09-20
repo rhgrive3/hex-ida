@@ -85,10 +85,12 @@ function selfLatchAfterTerminalReturn({ malformedPhi = false, sideEntry = false 
   f.conditionalBranch(condition(f, 'x1'), 3, 4);
   f.block(4).ret();
   if (sideEntry) {
-    // A reachable path entering the loop body would be a hidden loop entry.
-    f.block(5, { succ:[3] }).branch(3);
+    // Keep the original entry reachable and add a distinct reachable side entry.
+    f.block(5);
+    f.conditionalBranch(condition(f, 'x2'), 1, 3);
     f.blocks[0].succ = [2, 5];
     f.blocks[0].successorEdges = [{ to:2, kind:'conditional-true' }, { to:5, kind:'conditional-false' }];
+    phi.def.incoming.push({ from:5, value:seed });
   }
   return f;
 }
@@ -248,7 +250,12 @@ test('irreducible, side-entry, malformed-PHI, unknown-control, and multi-exit ca
   irreducible.block(3).ret();
   assert.ok(decompile(irreducible).result.pseudocode.includes('goto'), 'two-entry SCC must remain explicit');
 
-  assert.ok(decompile(selfLatchAfterTerminalReturn({ sideEntry:true })).result.pseudocode.includes('goto'),
+  const sideEntryIr = materialize(selfLatchAfterTerminalReturn({ sideEntry:true }));
+  const sideEntryPreds = sideEntryIr.blocks.flatMap((block, index) => block.succ.includes(3) ? [index] : []);
+  const sideEntryPhiPreds = sideEntryIr.blocks[3].phis[0].def.incoming.map(({ from }) => from).sort((a, b) => a - b);
+  assert.deepEqual(sideEntryPreds, [1, 3, 5], 'side-entry fixture must keep both external predecessors reachable');
+  assert.deepEqual(sideEntryPhiPreds, sideEntryPreds, 'side-entry PHI must exactly match loop-header predecessors');
+  assert.ok(decompileIr(sideEntryIr).result.pseudocode.includes('goto'),
     'external side entry must not become a loop continuation');
   assert.ok(decompile(selfLatchAfterTerminalReturn({ malformedPhi:true })).result.pseudocode.includes('goto'),
     'PHI-sensitive malformed incoming edges must reject the early-return continuation');
