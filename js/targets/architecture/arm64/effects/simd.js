@@ -410,7 +410,7 @@ function appendGpWrite(operations, dst, semanticValue, idPrefix) {
   if (dst.cls === 'zr') return true;
   if (bits === 32) {
     const physical = temp(`${idPrefix}:w-write`, createBitVectorValue(64));
-    operations.push(createMachineOperation({ kind:'value', opcode:'arm64.zero-extend-w-write', inputs:[semanticValue], outputs:[physical] }));
+    operations.push(createMachineOperation({ kind:'value', opcode:'zero-extend', inputs:[semanticValue], outputs:[physical], metadata:{ fromBits:32, toBits:64, writePolicy:'zero-extend-w-write' } }));
     operations.push(createMachineOperation({
       kind:'register-write', register:createRegisterValue(`x${dst.num}`, 64, { view:`x${dst.num}` }), value:physical,
       metadata:{ architecturalViewWritten:String(dst.text || `w${dst.num}`).toLowerCase(), physicalWidthBits:64 },
