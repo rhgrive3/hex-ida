@@ -120,13 +120,9 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     } else primaryError = error;
   } finally {
     const cleanupErrors = [];
-    const cleanup = async (operation, { ignoreMissing = false } = {}) => {
+    const cleanup = async (operation) => {
       try { await operation(); return true; }
-      catch (error) {
-        if (ignoreMissing && error?.code === 'ENOENT') return true;
-        cleanupErrors.push(error);
-        return false;
-      }
+      catch (error) { cleanupErrors.push(error); return false; }
     };
 
     const lockClosed = await cleanup(() => lock.close());
@@ -134,11 +130,11 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     if (!retainRecovery) {
       let artifactsClean = true;
       for (const record of records) {
-        if (record.temporary && !(await cleanup(() => io.unlink(record.temporary), { ignoreMissing:true }))) artifactsClean = false;
-        if (record.backedUp && !(await cleanup(() => io.unlink(record.backup), { ignoreMissing:true }))) artifactsClean = false;
+        if (record.temporary && !(await cleanup(() => io.unlink(record.temporary)))) artifactsClean = false;
+        if (record.backedUp && !(await cleanup(() => io.unlink(record.backup)))) artifactsClean = false;
       }
       if (!artifactsClean) retainRecovery = true;
-      if (!retainRecovery) await cleanup(() => io.unlink(lockPath), { ignoreMissing:true });
+      if (!retainRecovery) await cleanup(() => io.unlink(lockPath));
     }
 
     if (primaryError && cleanupErrors.length) {
