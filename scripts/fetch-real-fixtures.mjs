@@ -217,6 +217,51 @@ export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10, {
   }
 }
 
+export async function publishFixtureFile(temp, target, {
+  renameImpl = rename,
+  lstatImpl = lstat,
+  rmImpl = rm,
+  platform = process.platform,
+  randomUUIDImpl = randomUUID,
+} = {}) {
+  try {
+    await renameImpl(temp, target);
+    return;
+  } catch (error) {
+    const code = error?.code;
+    const mayBeDestinationConflict = code === 'EEXIST' || (platform === 'win32' && code === 'EPERM');
+    if (!mayBeDestinationConflict) throw error;
+
+    let targetEntry;
+    try {
+      targetEntry = await lstatImpl(target);
+    } catch (statError) {
+      if (statError?.code === 'ENOENT') throw error;
+      throw statError;
+    }
+    if (targetEntry.isSymbolicLink() || !targetEntry.isFile()) throw error;
+
+    const backup = `${target}.replace-backup-${process.pid}-${randomUUIDImpl()}`;
+    await renameImpl(target, backup);
+    let published = false;
+    try {
+      await renameImpl(temp, target);
+      published = true;
+      await rmImpl(backup, { force: true });
+    } catch (replacementError) {
+      try {
+        await rmImpl(target, { force: true });
+        await renameImpl(backup, target);
+      } catch (restoreError) {
+        throw new AggregateError([replacementError, restoreError], `fixture replacement recovery required: ${target}`);
+      }
+      throw replacementError;
+    } finally {
+      if (published) await rmImpl(backup, { force: true }).catch(() => {});
+    }
+  }
+}
+
 export async function fetchFixture(name, spec, {
   verifyImpl = verify,
   fetchImpl = fetchWithHttpsRedirects,
@@ -284,16 +329,7 @@ export async function fetchFixture(name, spec, {
       return;
     } catch {}
     await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
-    try {
-      await rename(temp, target);
-    } catch (renameErr) {
-      if (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM' || process.platform === 'win32') {
-        await rm(target, { force: true });
-        await rename(temp, target);
-      } else {
-        throw renameErr;
-      }
-    }
+    await publishFixtureFile(temp, target);
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
     if (output && !output.closed) {
