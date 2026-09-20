@@ -59,43 +59,108 @@ function waitForChild(child) {
   });
 }
 
+function ownsPosixProcessGroup(child) {
+  return process.platform !== 'win32' && Number.isInteger(child?.pid) && child.pid > 0;
+}
+
+function signalOwnedProcessTree(child, signal) {
+  if (ownsPosixProcessGroup(child)) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      if (error?.code === 'ESRCH') return false;
+      throw error;
+    }
+  }
+  try { return child.kill(signal) !== false; } catch { return false; }
+}
+
+function posixProcessGroupAlive(child) {
+  if (!ownsPosixProcessGroup(child)) return null;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    if (error?.code === 'EPERM') return true;
+    throw error;
+  }
+}
+
 function createTerminationController(child, { graceMs, forceSettleMs }) {
   let requested = false;
   let stopped = false;
+  let childClosed = false;
+  let closeStatus = null;
   let graceTimer = null;
   let forceSettleTimer = null;
-  let resolveForced;
-  const forcedStatus = new Promise((resolve) => { resolveForced = resolve; });
+  let resolveRequested;
+  let resolveSettled;
+  const requestedPromise = new Promise((resolve) => { resolveRequested = resolve; });
+  const settledStatus = new Promise((resolve) => { resolveSettled = resolve; });
 
-  const childAppearsRunning = () => child.exitCode == null && child.signalCode == null;
+  const finish = (status) => {
+    if (stopped) return;
+    stopped = true;
+    if (graceTimer) clearTimeout(graceTimer);
+    if (forceSettleTimer) clearTimeout(forceSettleTimer);
+    resolveSettled(status);
+  };
+  const treeAlive = () => {
+    const groupAlive = posixProcessGroupAlive(child);
+    if (groupAlive != null) return groupAlive;
+    return !childClosed && child.exitCode == null && child.signalCode == null;
+  };
   const stop = () => {
     stopped = true;
     if (graceTimer) clearTimeout(graceTimer);
     if (forceSettleTimer) clearTimeout(forceSettleTimer);
   };
 
+  child.once('close', (code, signal) => {
+    childClosed = true;
+    closeStatus = { code, signal, error: null };
+    if (!requested || stopped) return;
+    queueMicrotask(() => {
+      if (!stopped && !treeAlive()) finish(closeStatus);
+    });
+  });
+
   const request = () => {
-    if (requested || stopped || !childAppearsRunning()) return;
+    if (requested || stopped) return;
     requested = true;
-    try { child.kill('SIGTERM'); } catch {}
+    resolveRequested();
+    try { signalOwnedProcessTree(child, 'SIGTERM'); } catch {}
     graceTimer = setTimeout(() => {
-      if (stopped || !childAppearsRunning()) return;
-      try { child.kill('SIGKILL'); } catch {}
-      forceSettleTimer = setTimeout(() => {
+      if (stopped) return;
+      if (!treeAlive()) {
+        finish(closeStatus ?? { code: null, signal: 'SIGTERM', error: null });
+        return;
+      }
+      try { signalOwnedProcessTree(child, 'SIGKILL'); } catch {}
+      const forceStarted = Date.now();
+      const poll = () => {
         if (stopped) return;
-        // SIGKILL is the strongest termination available through ChildProcess.
-        // Do not let a missing/hostile close event keep the quiet runner alive
-        // after we have issued it. Detach owned pipes so a pathological child
-        // cannot retain this process while the original sink failure is surfaced.
-        try { child.stdout?.destroy?.(); } catch {}
-        try { child.stderr?.destroy?.(); } catch {}
-        try { child.unref?.(); } catch {}
-        resolveForced({ code: null, signal: 'SIGKILL', error: null });
-      }, forceSettleMs);
+        if (!treeAlive()) {
+          finish(closeStatus ?? { code: null, signal: 'SIGKILL', error: null });
+          return;
+        }
+        const elapsed = Date.now() - forceStarted;
+        if (elapsed >= forceSettleMs) {
+          try { child.stdout?.destroy?.(); } catch {}
+          try { child.stderr?.destroy?.(); } catch {}
+          try { child.unref?.(); } catch {}
+          finish(closeStatus ?? { code: null, signal: 'SIGKILL', error: null });
+          return;
+        }
+        forceSettleTimer = setTimeout(poll, Math.min(25, forceSettleMs - elapsed));
+      };
+      poll();
     }, graceMs);
   };
 
-  return Object.freeze({ forcedStatus, request, stop });
+  return Object.freeze({ requestedPromise, settledStatus, request, stop });
 }
 
 export async function runQuietCommand({
@@ -187,6 +252,7 @@ export async function runQuietCommand({
       cwd,
       env: { ...env, HEX_TEST_OUTPUT: env.HEX_TEST_OUTPUT ?? 'quiet' },
       stdio: ['inherit', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
   } catch (error) {
     try { log.end(); } catch {}
@@ -222,7 +288,13 @@ export async function runQuietCommand({
   capture(child.stdout, '');
   capture(child.stderr, '[stderr] ');
 
-  const status = await Promise.race([childStatus, terminationController.forcedStatus]);
+  const firstOutcome = await Promise.race([
+    childStatus.then((status) => ({ kind: 'child', status })),
+    terminationController.requestedPromise.then(() => ({ kind: 'termination' })),
+  ]);
+  const status = firstOutcome.kind === 'termination'
+    ? await terminationController.settledStatus
+    : firstOutcome.status;
   terminationController.stop();
   if (status.error) {
     const diagnostic = Buffer.from(`${status.error.stack || status.error}\n`);
