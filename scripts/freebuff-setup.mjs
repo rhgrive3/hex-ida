@@ -160,7 +160,45 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
 
 // Legacy homes use absolute symlinks into the legacy shared dir; recreate
 // them as repo-relative links into the repo-local shared dir.
-export function ensureHomeLinks(homeDir) {
+export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs } = {}) {
+  const dir = path.dirname(linkPath);
+  const base = path.basename(linkPath);
+  const token = `${process.pid}-${randomUUID()}`;
+  const staged = path.join(dir, `.${base}.link-${token}`);
+  const backup = path.join(dir, `.${base}.backup-${token}`);
+  let backedUp = false;
+  let published = false;
+  try {
+    fsImpl.symlinkSync(target, staged);
+    try {
+      fsImpl.lstatSync(linkPath);
+      fsImpl.renameSync(linkPath, backup);
+      backedUp = true;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    try {
+      fsImpl.renameSync(staged, linkPath);
+      published = true;
+    } catch (error) {
+      if (backedUp) {
+        try { fsImpl.renameSync(backup, linkPath); } catch (restoreError) { error.cause = restoreError; }
+      }
+      throw error;
+    }
+    if (backedUp) fsImpl.rmSync(backup, { recursive: true, force: true });
+    return true;
+  } finally {
+    if (!published) {
+      try { fsImpl.rmSync(staged, { force: true }); } catch {}
+    }
+    if (published && backedUp) {
+      try { fsImpl.rmSync(backup, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
   const manicode = path.join(homeDir, '.config', 'manicode');
   ensureSafeDirectory(homeDir, manicode);
   const links = {
@@ -169,16 +207,15 @@ export function ensureHomeLinks(homeDir) {
     rg: '../../../../shared/manicode/rg',
   };
   for (const [name, target] of Object.entries(links)) {
-    const p = path.join(manicode, name);
+    const linkPath = path.join(manicode, name);
+    let entry = null;
     try {
-      if (fs.existsSync(p) || fs.lstatSync(p).isSymbolicLink()) {
-        if (fs.lstatSync(p).isSymbolicLink() && fs.readlinkSync(p) === target) continue;
-        fs.rmSync(p, { recursive: true, force: true });
-      }
-    } catch {}
-    try {
-      fs.symlinkSync(target, p);
-    } catch {}
+      entry = fsImpl.lstatSync(linkPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (entry?.isSymbolicLink() && fsImpl.readlinkSync(linkPath) === target) continue;
+    replaceWithSymlinkAtomically(linkPath, target, { fsImpl });
   }
 }
 
@@ -192,13 +229,17 @@ function moveIfMissing(src, dst) {
   return false;
 }
 
-function cmpVersions(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
+export function cmpVersions(a, b) {
+  const pa = a.split('.').map((part) => BigInt(part));
+  const pb = b.split('.').map((part) => BigInt(part));
   for (let i = 0; i < 3; i++) {
     if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
   }
   return 0;
+}
+
+export function newerVersionCandidate(current, candidate) {
+  return !current || cmpVersions(current.version, candidate.version) < 0 ? candidate : current;
 }
 
 function isSafeExistingPath(root, target) {
@@ -294,7 +335,7 @@ function ensureSharedBinary() {
       if (!realBinary(p, base)) continue;
       const v = binaryVersion(p);
       if (!v) continue;
-      if (!best || cmpVersions(best.version, v) < 0) best = { path: p, version: v };
+      best = newerVersionCandidate(best, { path: p, version: v });
     }
   }
   if (!best) return null;
