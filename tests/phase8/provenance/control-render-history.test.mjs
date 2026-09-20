@@ -52,7 +52,10 @@ function fixture(kind, options = {}) {
   } else if (kind === 'switch') {
     f.branch(1);f.block(1);f.branch(2);f.block(2);f.conditionalBranch(condition,0,1);
   } else if (kind === 'cfg-conditional') {
-    f.conditionalBranch(condition,1,2);f.block(1);f.ret();f.block(2);f.ret();
+    // Keep this fixture genuinely unstructurable: one arm returns while the
+    // other is a closed non-terminating SCC.  A pair of return arms is now a
+    // proven terminal if/else and intentionally no longer reaches faithfulCfg.
+    f.conditionalBranch(condition,1,2);f.block(1);f.ret();f.block(2);f.branch(2);
   } else if (kind === 'faithful') {
     f.conditionalBranch(condition, 1, 2); f.block(1); f.branch(3); f.block(2); f.ret();f.block(3);f.ret();
   } else if (kind === 'unsupported') {

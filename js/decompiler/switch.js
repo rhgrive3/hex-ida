@@ -195,6 +195,61 @@ function targetIndex(result, model) {
   return { labels, rows, addressByRow };
 }
 
+
+function terminalSwitchCasePlan(result, cases, defaultAddress, at) {
+  // A verified descriptor proves selector -> target mapping, but it does not by
+  // itself prove that an arbitrary target region can be moved into the switch.
+  // Only adopt already-rendered, terminal case bodies when every target has a
+  // unique label, no pre-existing textual goto entry, and the body is a closed
+  // label-delimited region ending in an explicit return.  Anything less stays
+  // in the existing label/goto form.
+  if (defaultAddress == null || !Array.isArray(result?.lines)) return null;
+  const targets = [...cases.map(c => c.address), defaultAddress];
+  const keys = targets.map(address => labelForAddress(address).toUpperCase());
+  if (new Set(keys).size !== keys.length) return null;
+
+  const labelAt = new Map();
+  for (let i = 0; i < result.lines.length; i++) {
+    const m = String(result.lines[i]?.text || '').match(/^\s*(loc_[0-9A-Fa-f]+):\s*$/);
+    if (!m) continue;
+    const key = m[1].toUpperCase();
+    if (labelAt.has(key)) return null;
+    labelAt.set(key, i);
+  }
+  if (keys.some(key => !labelAt.has(key))) return null;
+
+  // A textual predecessor is enough to disqualify relocation.  This is
+  // deliberately conservative: descriptor-owned dispatch is the only entry we
+  // are willing to replace in this pass.
+  for (const key of keys) {
+    const needle = `GOTO ${key};`;
+    if (result.lines.some(line => String(line?.text || '').toUpperCase().includes(needle))) return null;
+  }
+
+  const ranges = [];
+  for (const key of keys) {
+    const start = labelAt.get(key);
+    if (start <= at.start) return null;
+    let end = start + 1;
+    while (end < result.lines.length) {
+      const line = result.lines[end];
+      if (line?.kind === 'label') break;
+      if (line?.kind === 'ctrl' && String(line.text || '').trim() === '}' && (line.indent || 0) <= (result.lines[start]?.indent || 0)) break;
+      end++;
+    }
+    const body = result.lines.slice(start + 1, end);
+    if (!body.length) return null;
+    const texts = body.map(line => String(line?.text || '').trim()).filter(Boolean);
+    if (!texts.length || !/^return(?:\s+[^;]+)?;$/.test(texts.at(-1))) return null;
+    if (texts.some(text => /\b(?:goto|break|continue)\b/.test(text) || /^(?:case\b|default\s*:|switch\s*\()/.test(text))) return null;
+    ranges.push({ key, start, end, body });
+  }
+
+  const ordered = [...ranges].sort((a, b) => a.start - b.start);
+  for (let i = 1; i < ordered.length; i++) if (ordered[i].start < ordered[i - 1].end) return null;
+  return { byKey:new Map(ranges.map(range => [range.key, range])), ranges };
+}
+
 function materializeVerifiedLabels(result, index, addresses) {
   const missing = [];
   const pendingLabels = new Set();
@@ -303,12 +358,46 @@ export function structureKnownSwitches(result, model, opts = {}) {
       continue;
     }
     const expr = String(sw.expr || sw.reg || 'switch_value');
-    const repl = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
-    for (let i = 0; i < cases.length; i++) repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `case ${values[i]}: goto ${cases[i].label};`, row: sw.row, addr: cases[i].address, note: null });
-    if (defaultAddress != null) repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `default: goto ${labelForAddress(defaultAddress)};`, row: sw.row, addr: defaultAddress, note: null });
-    repl.push({ kind: 'ctrl', indent: at.indent, text: '}', row: sw.row, addr: null, note: null });
+    const terminal = terminalSwitchCasePlan(result, cases, defaultAddress, at);
+    if (terminal) {
+      // Remove the original label-delimited bodies from the bottom up.  Reuse
+      // the exact body line objects in the switch so existing statement/control
+      // provenance remains attached; indentation is cosmetic and is therefore
+      // intentionally left untouched.
+      for (const range of [...terminal.ranges].sort((a, b) => b.start - a.start)) {
+        result.lines.splice(range.start, range.end - range.start);
+      }
+    }
+    const generated = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
+    const repl = [generated[0]];
+    for (let i = 0; i < cases.length; i++) {
+      const key = cases[i].label.toUpperCase();
+      const caseLine = { kind: 'ctrl', indent: at.indent + 1,
+        text: terminal ? `case ${values[i]}:` : `case ${values[i]}: goto ${cases[i].label};`,
+        row: sw.row, addr: cases[i].address, note: null };
+      generated.push(caseLine); repl.push(caseLine);
+      if (terminal) {
+        const body = terminal.byKey.get(key).body;
+        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        repl.push(...body);
+      }
+    }
+    if (defaultAddress != null) {
+      const label = labelForAddress(defaultAddress), key = label.toUpperCase();
+      const defaultLine = { kind: 'ctrl', indent: at.indent + 1,
+        text: terminal ? 'default:' : `default: goto ${label};`,
+        row: sw.row, addr: defaultAddress, note: null };
+      generated.push(defaultLine); repl.push(defaultLine);
+      if (terminal) {
+        const body = terminal.byKey.get(key).body;
+        for (const line of body) line.indent = Math.max(line.indent || 0, at.indent + 2);
+        repl.push(...body);
+      }
+    }
+    const close = { kind: 'ctrl', indent: at.indent, text: '}', row: sw.row, addr: null, note: null };
+    generated.push(close); repl.push(close);
     const removed = result.lines.splice(at.start, at.end - at.start, ...repl);
-    try { retainSwitchHistory(result, model, sw, repl, removed, at.start, opts, history, index); }
+    try { retainSwitchHistory(result, model, sw, generated, removed, at.start, opts, history, index); }
     catch { history.reasons.add('switch-history-unavailable'); }
     result.evidence = [...(result.evidence || []), { row: sw.row, address: sw.address ?? null, op: 'switch', reason: 'verified jump-table/switch descriptor', cases: cases.map((c, i) => ({ value: values[i], target: c.address })) }];
     result.pseudocode = textOf(result.lines);

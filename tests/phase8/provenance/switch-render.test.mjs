@@ -36,6 +36,44 @@ function fixture({ options = {}, publicPath = false, mutate = null, name = 'kind
 
 const records = result => result.renderProvenance.ledger.filter(record => record.rule === 'render-switch');
 
+test('verified terminal switch bodies inline only when they have no external goto entry', () => {
+  const descriptor = { row:0, expr:'kind', cases:[
+    { value:0, address:0x1004n }, { value:1, address:0x100cn },
+  ], defaultAddress:0x1014n };
+  const model = { instructions:[
+    { row:0, address:0x1000n }, { row:1, address:0x1004n },
+    { row:3, address:0x100cn }, { row:5, address:0x1014n },
+  ] };
+  const rendered = (extraLines = []) => ({
+    lines:[
+      { kind:'stmt', row:0, indent:1, text:'__asm("br x8");' },
+      ...extraLines,
+      { kind:'label', row:1, indent:1, text:'loc_1004:' },
+      { kind:'stmt', row:2, indent:1, text:'return 1;' },
+      { kind:'label', row:3, indent:1, text:'loc_100C:' },
+      { kind:'stmt', row:4, indent:1, text:'return 2;' },
+      { kind:'label', row:5, indent:1, text:'loc_1014:' },
+      { kind:'stmt', row:6, indent:1, text:'return 3;' },
+      { kind:'ctrl', row:null, indent:0, text:'}' },
+    ],
+    ir:{ blocks:[{ startRow:0 }, { startRow:1 }, { startRow:3 }, { startRow:5 }], instructions:[] },
+    evidence:[], warnings:[], ctx:{},
+  });
+
+  const terminal = rendered();
+  structureKnownSwitches(terminal, model, { switches:[descriptor] });
+  assert.match(terminal.pseudocode, /case 0:\s*\n\s*return 1;/);
+  assert.match(terminal.pseudocode, /case 1:\s*\n\s*return 2;/i);
+  assert.match(terminal.pseudocode, /default:\s*\n\s*return 3;/);
+  assert.doesNotMatch(terminal.pseudocode, /\bgoto\b/);
+  assert.doesNotMatch(terminal.pseudocode, /loc_1004:|loc_100C:|loc_1014:/);
+
+  const externallyEntered = rendered([{ kind:'stmt', row:0, indent:1, text:'if (flag) goto loc_1004;' }]);
+  structureKnownSwitches(externallyEntered, model, { switches:[descriptor] });
+  assert.match(externallyEntered.pseudocode, /case 0: goto loc_1004;/);
+  assert.match(externallyEntered.pseudocode, /loc_1004:/);
+});
+
 test('C4-03 actual switch output spans retain branch origins and individual case targets', () => {
   const f = fixture(), result = applyPhase8Projection(f.result, analysis()), map = result.renderProvenance;
   assert.equal(records(result).length, 5);
