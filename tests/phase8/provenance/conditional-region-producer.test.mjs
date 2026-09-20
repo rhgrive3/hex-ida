@@ -24,6 +24,19 @@ function render(kind = 'diamond', options = {}) {
     f.block(4); f.store(f.constant(4n, 32)); f.branch(5); f.block(5); f.ret();
   } else if (kind === 'fallback') {
     f.conditionalBranch(condition, 1, 2); f.block(1); f.branch(3); f.block(2); f.ret(); f.block(3); f.ret();
+  } else if (kind === 'early-exit-cleanup') {
+    f.conditionalBranch(condition, 4, 1);
+    f.block(1); f.conditionalBranch(condition, 3, 2);
+    f.block(2); f.store(f.constant(2n, 32)); f.branch(4);
+    f.block(3); f.ret();
+    f.block(4); f.store(f.constant(4n, 32)); f.ret();
+  } else if (kind === 'deep-early-exit-cleanup') {
+    f.conditionalBranch(condition, 1, 2);
+    f.block(1); f.store(f.constant(1n, 32)); f.branch(4);
+    f.block(2); f.conditionalBranch(condition, 5, 3);
+    f.block(3); f.store(f.constant(3n, 32)); f.branch(4);
+    f.block(5); f.ret();
+    f.block(4); f.store(f.constant(4n, 32)); f.ret();
   } else {
     f.conditionalBranch(condition, 1, 2);
     f.block(1); const yes = f.constant(1n, 32); f.store(yes); f.branch(3);
@@ -43,7 +56,7 @@ function render(kind = 'diamond', options = {}) {
 }
 
 test('capturing region identity preserves the emitted program and coverage', () => {
-  for (const kind of ['plain', 'diamond', 'one-sided', 'nested', 'fallback']) {
+  for (const kind of ['plain', 'diamond', 'one-sided', 'nested', 'fallback', 'early-exit-cleanup', 'deep-early-exit-cleanup']) {
     const { seed, model, opts } = render(kind);
     const ordinary = decompileSemantic(model, { ...opts, phase8PrepareRegionProof:false });
     assert.equal(ordinary.pseudocode, seed.pseudocode, kind);
@@ -73,6 +86,19 @@ test('conditional emitter issues both exact arm spans, boundary nodes and join P
   assert.equal(readSemanticConditionalRegion({ ...region.record }, ir), null);
   assert.equal(readSemanticConditionalRegion(region.record, { ...ir }), null);
   assert.equal(readSemanticConditionalRegions({ ...seed }), null);
+});
+
+test('early-exit cleanup rendering does not mint a canonical post-dominator region proof', () => {
+  for (const kind of ['early-exit-cleanup', 'deep-early-exit-cleanup']) {
+    const { seed } = render(kind);
+    const history = readSemanticConditionalRegions(seed);
+    assert.equal(seed.coverage.mode, 'structured', kind);
+    assert.equal(seed.coverage.structuredMissing, 0, kind);
+    assert.equal(history.completeness, 'complete', kind);
+    assert.equal(history.regions.length, 0, kind);
+    assert.ok(seed.pseudocode.includes('if ('), kind);
+    assert.ok(!seed.pseudocode.includes('goto loc_'), kind);
+  }
 });
 
 test('one-sided and nested regions preserve producer polarity and explicit empty arms', () => {

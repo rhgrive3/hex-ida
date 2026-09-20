@@ -26,6 +26,7 @@ import {
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
+const MAX_TERMINAL_PROOF_STEPS = MAX_BLOCKS * 4;
 
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
 const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
@@ -1304,6 +1305,240 @@ function blockTerm(block) {
   return null;
 }
 
+// Some reducible conditionals do not have a concrete post-dominator because
+// one nested path returns before a shared continuation/cleanup is reached.  If
+// one direct successor can be used as that continuation, prove that the other
+// arm is a closed acyclic region whose only exits are either the continuation
+// or explicit returns.  This recovers source-level early-exit shapes without
+// pretending the continuation post-dominates the header.
+function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = null, allowed = null) {
+  if (yes == null || no == null || yes === no) return null;
+  const reachable = ctx.graph.reachable || new Set();
+  const predecessors = ctx.graph.predecessors || [];
+  const proofBudget = state.terminalProofBudget;
+  if (!proofBudget || proofBudget.remaining <= 0) return null;
+
+  const candidates = [
+    { bodyStart:yes, continuation:no, invert:false },
+    { bodyStart:no, continuation:yes, invert:true },
+  ];
+  for (const candidate of candidates) {
+    const { bodyStart, continuation } = candidate;
+    if (continuation === header || state.visited.has(continuation)) continue;
+    if (allowed && (!allowed.has(bodyStart) || !allowed.has(continuation))) continue;
+
+    const done = new Set(), active = new Set();
+    let work = 0, reachedContinuation = false, sawReturn = false, failed = false;
+    function visit(bi) {
+      if (bi === continuation) { reachedContinuation = true; return true; }
+      if (++work > MAX_BLOCKS || proofBudget.remaining-- <= 0 || bi === header || state.visited.has(bi)) return false;
+      if (allowed && !allowed.has(bi)) return false;
+      if (active.has(bi)) return false;
+      if (done.has(bi)) return true;
+      const block = ctx.ir.blocks[bi];
+      if (!block) return false;
+      active.add(bi);
+      const term = blockTerm(block), succ = block.succ || [];
+      if (term?.op === OP.RET) {
+        if (succ.length !== 0) failed = true;
+        else sawReturn = true;
+      } else {
+        if (term?.op === OP.BR && succ.length !== 1) failed = true;
+        else if (term?.op === OP.CBR && succ.length !== 2) failed = true;
+        else if (!term && succ.length !== 1) failed = true;
+        else if (term && ![OP.BR, OP.CBR].includes(term.op)) failed = true;
+        else if (!succ.length) failed = true;
+        if (!failed) for (const next of succ) if (!visit(next)) { failed = true; break; }
+      }
+      active.delete(bi);
+      if (failed) return false;
+      done.add(bi); return true;
+    }
+    if (!visit(bodyStart) || !sawReturn) continue;
+    // Mixed exit-to-continuation + return is the shared-cleanup case.  When
+    // structuring inside an already bounded region, a purely terminal arm is
+    // also safe if the sibling successor is itself proven to reach that bound.
+    const continuationReachesStop = stop != null && (continuation === stop
+      || ctx.graph.postDominators?.[continuation]?.has?.(stop) === true);
+    if (!reachedContinuation && !continuationReachesStop) continue;
+
+    let closed = true;
+    for (const bi of done) {
+      for (const pred of predecessors[bi] || []) {
+        if (!reachable.has(pred) || done.has(pred)) continue;
+        if (bi === bodyStart && pred === header) continue;
+        closed = false; break;
+      }
+      if (!closed) break;
+    }
+    if (!closed) continue;
+    return { ...candidate, bodyBlocks:done };
+  }
+  return null;
+}
+
+// A conditional can have a real shared continuation without that continuation
+// post-dominating the header: an early-return path may bypass it.  Find the
+// nearest common reachable continuation and prove each pre-continuation arm is
+// closed and acyclic, with every path ending either at that continuation or an
+// explicit return.  This is deliberately narrower than general region
+// structuring and rejects side entries, cycles, and ambiguous shared prefixes.
+function sharedEarlyExitContinuation(header, yes, no, ctx, state, allowed = null) {
+  if (yes == null || no == null || yes === no) return null;
+  const reachable = ctx.graph.reachable || new Set();
+  const predecessors = ctx.graph.predecessors || [];
+  const dominators = ctx.graph.dominators || [];
+  const proofBudget = state.terminalProofBudget;
+  if (!proofBudget || proofBudget.remaining <= 0) return null;
+
+  function distances(start) {
+    const dist = new Map([[start, 0]]), queue = [start];
+    for (let qi = 0; qi < queue.length; qi++) {
+      const bi = queue[qi];
+      if (proofBudget.remaining-- <= 0) return null;
+      if (bi === header || state.visited.has(bi) || (allowed && !allowed.has(bi))) continue;
+      const block = ctx.ir.blocks[bi];
+      if (!block || blockTerm(block)?.op === OP.RET) continue;
+      for (const next of block.succ || []) {
+        if (next === header || state.visited.has(next) || (allowed && !allowed.has(next))) continue;
+        if (!dist.has(next)) { dist.set(next, dist.get(bi) + 1); queue.push(next); }
+      }
+    }
+    return dist;
+  }
+
+  const yesDist = distances(yes), noDist = distances(no);
+  if (!yesDist || !noDist) return null;
+  const candidates = [...yesDist.keys()].filter((bi) => noDist.has(bi)
+    && bi !== header && !state.visited.has(bi)
+    && (!allowed || allowed.has(bi))
+    && dominators[bi]?.has?.(header) === true)
+    .sort((a, b) => Math.max(yesDist.get(a), noDist.get(a)) - Math.max(yesDist.get(b), noDist.get(b))
+      || yesDist.get(a) + noDist.get(a) - yesDist.get(b) - noDist.get(b)
+      || (ctx.ir.blocks[a]?.startRow ?? a) - (ctx.ir.blocks[b]?.startRow ?? b));
+
+  function proveArm(start, continuation) {
+    const done = new Set(), active = new Set();
+    let reachedContinuation = false, sawReturn = false;
+    function visit(bi) {
+      if (bi === continuation) { reachedContinuation = true; return true; }
+      if (proofBudget.remaining-- <= 0 || bi === header || state.visited.has(bi)) return false;
+      if (allowed && !allowed.has(bi)) return false;
+      if (active.has(bi)) return false;
+      if (done.has(bi)) return true;
+      if (dominators[bi]?.has?.(header) !== true) return false;
+      const block = ctx.ir.blocks[bi];
+      if (!block) return false;
+      active.add(bi);
+      const term = blockTerm(block), succ = block.succ || [];
+      if (term?.op === OP.RET) {
+        if (succ.length !== 0) return false;
+        sawReturn = true;
+      } else {
+        if (term?.op === OP.BR && succ.length !== 1) return false;
+        if (term?.op === OP.CBR && succ.length !== 2) return false;
+        if (!term && succ.length !== 1) return false;
+        if (term && ![OP.BR, OP.CBR].includes(term.op)) return false;
+        if (!succ.length) return false;
+        for (const next of succ) if (!visit(next)) return false;
+      }
+      active.delete(bi); done.add(bi); return true;
+    }
+    return visit(start) && reachedContinuation ? { blocks:done, sawReturn } : null;
+  }
+
+  for (const continuation of candidates.slice(0, 32)) {
+    const yesArm = proveArm(yes, continuation), noArm = proveArm(no, continuation);
+    if (!yesArm || !noArm || (!yesArm.sawReturn && !noArm.sawReturn)) continue;
+    let overlap = false;
+    for (const bi of yesArm.blocks) if (noArm.blocks.has(bi)) { overlap = true; break; }
+    if (overlap) continue;
+
+    const body = new Set([...yesArm.blocks, ...noArm.blocks]);
+    let closed = true;
+    for (const [entry, nodes] of [[yes, yesArm.blocks], [no, noArm.blocks]]) {
+      for (const bi of nodes) {
+        for (const pred of predecessors[bi] || []) {
+          if (!reachable.has(pred) || nodes.has(pred)) continue;
+          if (bi === entry && pred === header) continue;
+          closed = false; break;
+        }
+        if (!closed) break;
+      }
+      if (!closed) break;
+    }
+    if (!closed) continue;
+    // The continuation itself must not have a reachable side entry outside
+    // the two proven arms; otherwise moving it after the if/else hides a real
+    // control-flow entry.
+    for (const pred of predecessors[continuation] || []) {
+      if (!reachable.has(pred) || body.has(pred)) continue;
+      if (pred === header && (continuation === yes || continuation === no)) continue;
+      closed = false; break;
+    }
+    if (!closed) continue;
+    return { continuation, yesBlocks:yesArm.blocks, noBlocks:noArm.blocks };
+  }
+  return null;
+}
+
+// A conditional whose arms never reconverge has no concrete post-dominator,
+// but it can still be represented as a source-level if/else when both arms are
+// closed, acyclic regions whose every path ends in an explicit return.  Keep
+// this proof deliberately narrower than general SESE structuring: it must not
+// absorb shared tails, loop paths, or another reachable entry into either arm.
+function terminalConditionalPartition(header, yes, no, ctx, state, allowed = null) {
+  if (yes == null || no == null || yes === no) return null;
+  const reachable = ctx.graph.reachable || new Set();
+  const predecessors = ctx.graph.predecessors || [];
+  const proofBudget = state.terminalProofBudget;
+  if (!proofBudget || proofBudget.remaining <= 0) return null;
+
+  function collect(start) {
+    const done = new Set(), active = new Set();
+    let work = 0;
+    function visit(bi) {
+      if (++work > MAX_BLOCKS || proofBudget.remaining-- <= 0 || bi === header || state.visited.has(bi)) return false;
+      if (allowed && !allowed.has(bi)) return false;
+      if (active.has(bi)) return false;
+      if (done.has(bi)) return true;
+      const block = ctx.ir.blocks[bi];
+      if (!block) return false;
+      active.add(bi);
+      const term = blockTerm(block), succ = block.succ || [];
+      if (term?.op === OP.RET) {
+        if (succ.length !== 0) return false;
+      } else {
+        if (term?.op === OP.BR && succ.length !== 1) return false;
+        if (term?.op === OP.CBR && succ.length !== 2) return false;
+        if (!term && succ.length !== 1) return false;
+        if (term && ![OP.BR, OP.CBR].includes(term.op)) return false;
+        if (!succ.length) return false;
+        for (const next of succ) if (!visit(next)) return false;
+      }
+      active.delete(bi); done.add(bi); return true;
+    }
+    return visit(start) ? done : null;
+  }
+
+  const yesBlocks = collect(yes), noBlocks = collect(no);
+  if (!yesBlocks || !noBlocks) return null;
+  for (const bi of yesBlocks) if (noBlocks.has(bi)) return null;
+
+  const closedEntry = (nodes, entry) => {
+    for (const bi of nodes) {
+      for (const pred of predecessors[bi] || []) {
+        if (!reachable.has(pred) || nodes.has(pred)) continue;
+        if (bi === entry && pred === header) continue;
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!closedEntry(yesBlocks, yes) || !closedEntry(noBlocks, no)) return null;
+  return { yesBlocks, noBlocks };
+}
+
 function materialization(ctx) {
   const names = new Map();
   for (const v of ctx.ir.values || []) {
@@ -1524,7 +1759,8 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
-      const { yes, no } = branchSucc(ctx.ir, block, term2, ctx);
+      const branch = branchSucc(ctx.ir, block, term2, ctx);
+      const { yes, no } = branch;
       const join = ctx.graph.immediatePostDominators?.[bi];
       const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
       if (structural) {
@@ -1558,6 +1794,41 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         finishConditionalRegion(region, out, ctx, term2,
           { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
         bi = join; continue;
+      }
+      const earlyExit = join == null && branch.exact
+        ? earlyExitConditionalContinuation(bi, yes, no, ctx, state, stop, allowed) : null;
+      if (earlyExit) {
+        const cond = renderBranchCondition(term2, ctx, earlyExit.invert);
+        out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+          term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
+            bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
+        emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        out.push(line('ctrl', indent, '}'));
+        bi = earlyExit.continuation; continue;
+      }
+      const sharedEarlyExit = join == null && branch.exact
+        ? sharedEarlyExitContinuation(bi, yes, no, ctx, state, allowed) : null;
+      if (sharedEarlyExit) {
+        const cond = renderBranchCondition(term2, ctx);
+        out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+          term2, 'if-else', { yes, no, join:sharedEarlyExit.continuation, earlyExitShared:true }, ctx));
+        emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        out.push(line('ctrl', indent, '} else {'));
+        emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        out.push(line('ctrl', indent, '}'));
+        bi = sharedEarlyExit.continuation; continue;
+      }
+      const terminal = join == null && branch.exact
+        ? terminalConditionalPartition(bi, yes, no, ctx, state, allowed) : null;
+      if (terminal) {
+        const cond = renderBranchCondition(term2, ctx);
+        out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+          term2, 'if-else', { yes, no, join:null, terminal:true }, ctx));
+        emitRegion(yes, null, out, ctx, state, indent + 1, allowed);
+        out.push(line('ctrl', indent, '} else {'));
+        emitRegion(no, null, out, ctx, state, indent + 1, allowed);
+        out.push(line('ctrl', indent, '}'));
+        return;
       }
       const cond = renderBranchCondition(term2, ctx);
       if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
@@ -1675,7 +1946,8 @@ export function decompileSemantic(model, opts = {}) {
   const name = safeIdent(opts.notes?.nameOf?.(opts.addr) || opts.name || model.name || `sub_${hex(opts.addr ?? firstAddr)}`, 'sub');
   const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr);
   const body = [];
-  const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null };
+  const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
+    terminalProofBudget: { remaining: MAX_TERMINAL_PROOF_STEPS } };
   emitRegion(ir.entry || 0, null, body, ctx, state, 1);
 
   const reachable = graph.reachable || new Set();
