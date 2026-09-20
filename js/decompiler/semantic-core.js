@@ -1315,6 +1315,8 @@ function opaqueTerminalControlBlock(block, ctx) {
   const insts = block.insts || [];
   const last = insts.at(-1);
   if (!last || last.op !== OP.UNKNOWN) return false;
+  const reason = last.extra?.reason ?? last.reason ?? null;
+  if (reason !== 'unresolved-indirect-control-flow') return false;
   const categories = last.extra?.unknownCategories ?? last.unknownCategories ?? [];
   if (!Array.isArray(categories) || !categories.includes('control')) return false;
 

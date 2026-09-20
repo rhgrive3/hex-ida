@@ -32,13 +32,14 @@ function render(kind = 'diamond', options = {}) {
     f.conditionalBranch(condition, 1, 2);
     f.block(1); f.ret();
     f.block(2); f.branch(2);
-  } else if (kind === 'opaque-terminal-cleanup' || kind === 'noncontrol-terminal-cleanup') {
+  } else if (['opaque-terminal-cleanup', 'noncontrol-terminal-cleanup', 'othercontrol-terminal-cleanup'].includes(kind)) {
     f.conditionalBranch(condition, 3, 1);
     f.block(1); f.conditionalBranch(condition, 3, 2);
     f.block(2); const opaque = f.unknown(64).def;
-    opaque.extra = { unknownCategories:[kind === 'opaque-terminal-cleanup' ? 'control' : 'memory'],
-      reason:kind === 'opaque-terminal-cleanup' ? 'unresolved-indirect-control-flow' : 'unknown-memory-effect' };
-    opaque.text = kind === 'opaque-terminal-cleanup' ? 'br x16' : 'opaque memory';
+    opaque.extra = { unknownCategories:[kind === 'noncontrol-terminal-cleanup' ? 'memory' : 'control'],
+      reason:kind === 'opaque-terminal-cleanup' ? 'unresolved-indirect-control-flow'
+        : kind === 'othercontrol-terminal-cleanup' ? 'different-control-effect' : 'unknown-memory-effect' };
+    opaque.text = kind === 'opaque-terminal-cleanup' ? 'br x16' : 'opaque effect';
     f.block(3); f.ret();
   } else if (kind === 'early-exit-cleanup') {
     f.conditionalBranch(condition, 4, 1);
@@ -68,7 +69,7 @@ function render(kind = 'diamond', options = {}) {
     f.block(3); merged = f.phi([[1, yes], [2, no]], 32); f.ret();
   }
   const ir = f.build();
-  if (kind === 'opaque-terminal-cleanup' || kind === 'noncontrol-terminal-cleanup') {
+  if (['opaque-terminal-cleanup', 'noncontrol-terminal-cleanup', 'othercontrol-terminal-cleanup'].includes(kind)) {
     const source = ir.blocks[2];
     source.succ = [4];
     ir.blocks.push({ index:4, phis:[], insts:[], succ:[], pred:[2], idom:-1,
@@ -149,9 +150,11 @@ test('opaque canonical control sinks permit structured early exits without guess
   assert.equal(readSemanticConditionalRegions(control).regions.length, 0,
     'opaque early-exit recovery must not mint a canonical post-dominator region proof');
 
-  const nonControl = render('noncontrol-terminal-cleanup').seed;
-  assert.equal(nonControl.coverage.mode, 'linear');
-  assert.ok(nonControl.pseudocode.includes('goto loc_'));
+  for (const kind of ['noncontrol-terminal-cleanup', 'othercontrol-terminal-cleanup']) {
+    const rejected = render(kind).seed;
+    assert.equal(rejected.coverage.mode, 'linear', kind);
+    assert.ok(rejected.pseudocode.includes('goto loc_'), kind);
+  }
 });
 
 test('early-exit cleanup rendering does not mint a canonical post-dominator region proof', () => {
