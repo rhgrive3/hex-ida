@@ -34,10 +34,10 @@ test('#9301 sink failure terminates the owned POSIX process group, including a T
   try {
     const grandchildCode = `
       const fs = require('node:fs');
-      fs.writeFileSync("${PID_FILE_PLACEHOLDER}", String(process.pid));
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
       process.on('SIGTERM', () => {});
       setInterval(() => {}, 1000);
-    `.replace("${PID_FILE_PLACEHOLDER}", JSON.stringify(pidFile));
+    `;
     const leaderCode = `
       require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchildCode)}], { stdio:'ignore' });
       setInterval(() => {}, 1000);
