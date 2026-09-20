@@ -140,118 +140,140 @@ function resolvedImportScriptsArguments(args, from) {
 }
 function scanImportScriptsCalls(source) {
   const matches = [];
-  let i = 0;
-  let lastSignificantCodeChar = '';
   const len = source.length;
-  while (i < len) {
-    const ch = source[i];
-    if (ch === '/' && source[i + 1] === '/') {
-      i += 2;
-      while (i < len && source[i] !== '\n') i++;
-      continue;
-    }
-    if (ch === '/' && source[i + 1] === '*') {
-      i += 2;
-      while (i < len && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    if (ch === '\'' || ch === '"') {
-      const quote = ch;
-      i++;
-      while (i < len && source[i] !== quote) {
-        if (source[i] === '\\') i++;
-        i++;
+
+  function scanCode(start, stopAtTemplateBrace = false) {
+    let i = start;
+    let braceDepth = 0;
+    let lastSignificantCodeChar = '';
+    while (i < len) {
+      const ch = source[i];
+      if (ch === '/' && source[i + 1] === '/') {
+        i += 2;
+        while (i < len && source[i] !== '\n') i++;
+        continue;
       }
-      i++;
-      continue;
-    }
-    if (ch === '`') {
-      i++;
-      while (i < len && source[i] !== '`') {
-        if (source[i] === '\\') {
-          i += 2;
-        } else if (source[i] === '$' && source[i + 1] === '{') {
-          i += 2;
-          let braceDepth = 1;
-          while (i < len && braceDepth > 0) {
-            if (source[i] === '{') braceDepth++;
-            else if (source[i] === '}') braceDepth--;
-            else if (source[i] === '\\') i++;
-            i++;
-          }
-        } else {
+      if (ch === '/' && source[i + 1] === '*') {
+        i += 2;
+        while (i < len && !(source[i] === '*' && source[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+      if (ch === '\'' || ch === '"') {
+        const quote = ch;
+        i++;
+        while (i < len && source[i] !== quote) {
+          if (source[i] === '\\') i++;
           i++;
         }
+        i++;
+        lastSignificantCodeChar = quote;
+        continue;
       }
-      i++;
-      continue;
-    }
-    if (source.startsWith('importScripts', i)) {
-      const prevChar = i > 0 ? source[i - 1] : '';
-      // Bare worker-global importScripts() is supported. A property named
-      // importScripts on any receiver (including optional chaining and spacing
-      // or comments around the dot) is ordinary JavaScript and must be preserved.
-      if (!/[a-zA-Z0-9_$]/.test(prevChar) && lastSignificantCodeChar !== '.') {
-        let after = i + 'importScripts'.length;
-        const nextChar = source[after] || '';
-        if (!/[a-zA-Z0-9_$]/.test(nextChar)) {
-          while (after < len && /\s/.test(source[after])) after++;
-          if (source[after] === '(') {
-            const callStart = i;
-            after++;
-            let depth = 1;
-            const argsStart = after;
-            while (after < len && depth > 0) {
-              const c = source[after];
-              if (c === '/' && source[after + 1] === '/') {
-                after += 2;
-                while (after < len && source[after] !== '\n') after++;
-                continue;
-              }
-              if (c === '/' && source[after + 1] === '*') {
-                after += 2;
-                while (after < len && !(source[after] === '*' && source[after + 1] === '/')) after++;
-                after += 2;
-                continue;
-              }
-              if (c === '\'' || c === '"') {
-                const q = c;
-                after++;
-                while (after < len && source[after] !== q) {
-                  if (source[after] === '\\') after++;
-                  after++;
-                }
-                after++;
-                continue;
-              }
-              if (c === '(') depth++;
-              else if (c === ')') depth--;
-              if (depth > 0) after++;
-            }
-            const argsEnd = after;
-            after++;
-            let callEnd = after;
-            // Consume only horizontal spacing before an optional semicolon.
-            // A semicolonless importScripts() call owns no following newline;
-            // preserving that record boundary keeps inlined source separated
-            // from the next statement.
-            while (callEnd < len && /[ \t\r\f\v]/.test(source[callEnd])) callEnd++;
-            if (source[callEnd] === ';') callEnd++;
-            matches.push({
-              start: callStart,
-              end: callEnd,
-              args: source.slice(argsStart, argsEnd),
-            });
-            i = callEnd;
+      if (ch === '`') {
+        i++;
+        while (i < len) {
+          if (source[i] === '\\') {
+            i += 2;
             continue;
+          }
+          if (source[i] === '`') {
+            i++;
+            break;
+          }
+          if (source[i] === '$' && source[i + 1] === '{') {
+            const expressionStart = i + 2;
+            const result = scanCode(expressionStart, true);
+            i = result.index + 1;
+            continue;
+          }
+          i++;
+        }
+        lastSignificantCodeChar = '`';
+        continue;
+      }
+      if (stopAtTemplateBrace) {
+        if (ch === '{') {
+          braceDepth++;
+          lastSignificantCodeChar = ch;
+          i++;
+          continue;
+        }
+        if (ch === '}') {
+          if (braceDepth === 0) return { index: i };
+          braceDepth--;
+          lastSignificantCodeChar = ch;
+          i++;
+          continue;
+        }
+      }
+      if (source.startsWith('importScripts', i)) {
+        const prevChar = i > start ? source[i - 1] : '';
+        if (!/[a-zA-Z0-9_$]/.test(prevChar) && lastSignificantCodeChar !== '.') {
+          let after = i + 'importScripts'.length;
+          const nextChar = source[after] || '';
+          if (!/[a-zA-Z0-9_$]/.test(nextChar)) {
+            while (after < len && /\s/.test(source[after])) after++;
+            if (source[after] === '(') {
+              const callStart = i;
+              after++;
+              let depth = 1;
+              const argsStart = after;
+              while (after < len && depth > 0) {
+                const c = source[after];
+                if (c === '/' && source[after + 1] === '/') {
+                  after += 2;
+                  while (after < len && source[after] !== '\n') after++;
+                  continue;
+                }
+                if (c === '/' && source[after + 1] === '*') {
+                  after += 2;
+                  while (after < len && !(source[after] === '*' && source[after + 1] === '/')) after++;
+                  after += 2;
+                  continue;
+                }
+                if (c === '\'' || c === '"') {
+                  const q = c;
+                  after++;
+                  while (after < len && source[after] !== q) {
+                    if (source[after] === '\\') after++;
+                    after++;
+                  }
+                  after++;
+                  continue;
+                }
+                if (c === '(') depth++;
+                else if (c === ')') depth--;
+                if (depth > 0) after++;
+              }
+              if (depth !== 0) throw new Error('Unterminated importScripts() call.');
+              const argsEnd = after;
+              after++;
+              let callEnd = after;
+              while (callEnd < len && /[ \t\r\f\v]/.test(source[callEnd])) callEnd++;
+              if (source[callEnd] === ';') callEnd++;
+              matches.push({
+                start: callStart,
+                end: callEnd,
+                args: source.slice(argsStart, argsEnd),
+                expressionContext: stopAtTemplateBrace,
+              });
+              i = callEnd;
+              lastSignificantCodeChar = ')';
+              continue;
+            }
           }
         }
       }
+      if (!/\s/.test(ch)) lastSignificantCodeChar = ch;
+      i++;
     }
-    if (!/\s/.test(ch)) lastSignificantCodeChar = ch;
-    i++;
+    if (stopAtTemplateBrace) throw new Error('Unterminated template interpolation.');
+    return { index: i };
   }
+
+  scanCode(0, false);
+  matches.sort((a, b) => a.start - b.start);
   return matches;
 }
 export function parseImports(source, from) {
@@ -273,7 +295,7 @@ export function inlineImports(path, sources, stack = []) {
     const inlined = resolvedImportScriptsArguments(call.args, path)
       .map((dependency) => inlineImports(dependency, sources, [...stack, path]))
       .join('\n');
-    result += inlined;
+    result += call.expressionContext ? `(()=>{\n${inlined}\n})()` : inlined;
     lastIndex = call.end;
   }
   result += source.slice(lastIndex);
@@ -382,7 +404,7 @@ export async function buildUserscript() {
   await publishUserscriptFiles([
     { path:committedTemplate, expected:previousTemplateBytes, content:template },
     { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
-  ]);
+  ], { containmentRoot: root });
 
   console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
   console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);
