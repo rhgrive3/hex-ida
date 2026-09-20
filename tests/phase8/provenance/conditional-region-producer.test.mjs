@@ -32,6 +32,14 @@ function render(kind = 'diamond', options = {}) {
     f.conditionalBranch(condition, 1, 2);
     f.block(1); f.ret();
     f.block(2); f.branch(2);
+  } else if (kind === 'opaque-terminal-cleanup' || kind === 'noncontrol-terminal-cleanup') {
+    f.conditionalBranch(condition, 3, 1);
+    f.block(1); f.conditionalBranch(condition, 3, 2);
+    f.block(2); const opaque = f.unknown(64).def;
+    opaque.extra = { unknownCategories:[kind === 'opaque-terminal-cleanup' ? 'control' : 'memory'],
+      reason:kind === 'opaque-terminal-cleanup' ? 'unresolved-indirect-control-flow' : 'unknown-memory-effect' };
+    opaque.text = kind === 'opaque-terminal-cleanup' ? 'br x16' : 'opaque memory';
+    f.block(3); f.ret();
   } else if (kind === 'early-exit-cleanup') {
     f.conditionalBranch(condition, 4, 1);
     f.block(1); f.conditionalBranch(condition, 3, 2);
@@ -59,12 +67,22 @@ function render(kind = 'diamond', options = {}) {
     f.block(2); const no = f.constant(2n, 32); f.store(no); f.branch(3);
     f.block(3); merged = f.phi([[1, yes], [2, no]], 32); f.ret();
   }
-  const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => [...block.phis, ...block.insts]);
+  const ir = f.build();
+  if (kind === 'opaque-terminal-cleanup' || kind === 'noncontrol-terminal-cleanup') {
+    const source = ir.blocks[2];
+    source.succ = [4];
+    ir.blocks.push({ index:4, phis:[], insts:[], succ:[], pred:[2], idom:-1,
+      startRow:-1, endRow:-1, isEntry:false, isExit:true, isLoopHeader:false });
+  }
+  ir.instructions = ir.blocks.flatMap(block => [...block.phis, ...block.insts]);
   ir.instructions.forEach((inst, index) => {
     inst.id = `region_${index}`; inst.row = index; inst.address = 0x1000n + BigInt(index * 4);
     if (inst.op === 'cbr' && kind !== 'fallback') inst.extra = { ...inst.extra, targetBlock:ir.blocks[inst.block].succ[0] };
   });
-  for (const block of ir.blocks) { block.startRow = block.insts[0].row; block.endRow = block.insts.at(-1).row; }
+  for (const block of ir.blocks) {
+    if (block.insts.length) { block.startRow = block.insts[0].row; block.endRow = block.insts.at(-1).row; }
+    else { block.startRow = ir.instructions.length; block.endRow = ir.instructions.length; }
+  }
   if (merged) ir.instructions.at(-1).args = [{ value:merged }];
   const model = { name:'region', instructions:ir.instructions, calls:[] };
   const opts = { ir, deterministicTransforms:true, phase8PrepareRegionProof:true, ...options };
@@ -119,6 +137,21 @@ test('terminal and early-exit goto reduction stays proof-gated', () => {
   const cyclic = render('cyclic-shared-cleanup').seed;
   assert.equal(cyclic.coverage.mode, 'linear');
   assert.match(cyclic.pseudocode, /goto loc_/);
+});
+
+test('opaque canonical control sinks permit structured early exits without guessing a target', () => {
+  const control = render('opaque-terminal-cleanup').seed;
+  assert.equal(control.coverage.mode, 'structured');
+  assert.equal(control.coverage.structuredMissing, 0);
+  assert.ok(control.pseudocode.includes('__asm(\"br x16\")'));
+  assert.ok(control.pseudocode.includes('return;'));
+  assert.ok(!control.pseudocode.includes('goto loc_'));
+  assert.equal(readSemanticConditionalRegions(control).regions.length, 0,
+    'opaque early-exit recovery must not mint a canonical post-dominator region proof');
+
+  const nonControl = render('noncontrol-terminal-cleanup').seed;
+  assert.equal(nonControl.coverage.mode, 'linear');
+  assert.ok(nonControl.pseudocode.includes('goto loc_'));
 });
 
 test('early-exit cleanup rendering does not mint a canonical post-dominator region proof', () => {
