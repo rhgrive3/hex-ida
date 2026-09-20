@@ -29,7 +29,9 @@ export function runProductionDeploy({
   args = [],
   configPath = productionConfigPath,
   readFileSync = fs.readFileSync,
+  openSync = fs.openSync,
   writeFileSync = fs.writeFileSync,
+  closeSync = fs.closeSync,
   readSnapshotSync = fs.readFileSync,
   lstatSync = fs.lstatSync,
   rmSync = fs.rmSync,
@@ -39,8 +41,16 @@ export function runProductionDeploy({
   if (args.length) throw new Error('Production deploy does not accept Wrangler config or environment overrides; edit wrangler.jsonc and retry.');
   const approvedBytes = Buffer.from(readFileSync(configPath));
   const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${randomUUIDImpl()}.jsonc`);
-  writeFileSync(snapshotPath, approvedBytes, { flag: 'wx', mode: 0o400 });
+  let ownsSnapshot = false;
   try {
+    const snapshotFd = openSync(snapshotPath, 'wx', 0o400);
+    ownsSnapshot = true;
+    try {
+      writeFileSync(snapshotFd, approvedBytes);
+    } finally {
+      closeSync(snapshotFd);
+    }
+
     const snapshotEntry = lstatSync(snapshotPath);
     if (snapshotEntry.isSymbolicLink() || !snapshotEntry.isFile()) throw new Error('Production config snapshot is not a regular file.');
 
@@ -53,7 +63,7 @@ export function runProductionDeploy({
     const deployment = run(process.execPath, [wranglerPath, 'deploy', '--config', snapshotPath], { cwd: repoRoot, stdio: 'inherit' });
     return subprocessStatus(deployment, 'Wrangler deployment');
   } finally {
-    rmSync(snapshotPath, { force: true });
+    if (ownsSnapshot) rmSync(snapshotPath, { force: true });
   }
 }
 
