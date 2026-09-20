@@ -6,15 +6,29 @@ const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const validatorPath = resolve(repoRoot, 'scripts/validate-auth-config.mjs');
 const wranglerPath = resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js');
 
+export class SubprocessSignalError extends Error {
+  constructor(label, signal) {
+    super(`${label} terminated by signal ${signal}`);
+    this.name = 'SubprocessSignalError';
+    this.signal = signal;
+  }
+}
+
+export function subprocessStatus(result, label) {
+  if (result?.error) throw result.error;
+  if (result?.signal) throw new SubprocessSignalError(label, result.signal);
+  if (!Number.isInteger(result?.status)) throw new Error(`${label} returned no exit status`);
+  return result.status;
+}
+
 export function runProductionDeploy({ run = spawnSync, args = [] } = {}) {
   if (args.length) throw new Error('Production deploy does not accept Wrangler config or environment overrides; edit wrangler.jsonc and retry.');
   const validation = run(process.execPath, [validatorPath], { cwd: repoRoot, stdio: 'inherit' });
-  if (validation.error) throw validation.error;
-  if (validation.status !== 0) return validation.status ?? 1;
+  const validationStatus = subprocessStatus(validation, 'Production auth validator');
+  if (validationStatus !== 0) return validationStatus;
 
   const deployment = run(process.execPath, [wranglerPath, 'deploy'], { cwd: repoRoot, stdio: 'inherit' });
-  if (deployment.error) throw deployment.error;
-  return deployment.status ?? 1;
+  return subprocessStatus(deployment, 'Wrangler deployment');
 }
 
 export function main(args = process.argv.slice(2), { run = spawnSync, reportError = console.error } = {}) {
