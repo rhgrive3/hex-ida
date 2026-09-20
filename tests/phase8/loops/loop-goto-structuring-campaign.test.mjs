@@ -283,12 +283,17 @@ test('multiple-latch, fake-header, and nonterminating-SCC shapes remain outside 
 test('external entries, malformed branch evidence, and exhausted proof budget do not synthesize loop control', () => {
   const external = decompile(externalEntryBreakLoop()).result.pseudocode;
   assert.doesNotMatch(external, /break;/, external);
+  assert.ok(external.includes('goto') || !external.includes('while ('), external);
 
-  const malformedIr = materialize(singleExitBreakLoop());
-  const malformedTerm = malformedIr.blocks[2].insts.at(-1);
-  malformedTerm.extra = { targetBlock:null, target:null };
-  const malformed = decompileIr(malformedIr).result.pseudocode;
-  assert.doesNotMatch(malformed, /break;/, malformed);
+  const malformedBodyIr = materialize(singleExitBreakLoop());
+  malformedBodyIr.blocks[2].insts.at(-1).extra = { targetBlock:null, target:null };
+  const malformedBody = decompileIr(malformedBodyIr).result.pseudocode;
+  assert.doesNotMatch(malformedBody, /break;/, malformedBody);
+
+  const malformedHeaderIr = materialize(singleExitBreakLoop());
+  malformedHeaderIr.blocks[1].insts.at(-1).extra = { targetBlock:null, target:null };
+  const malformedHeader = decompileIr(malformedHeaderIr).result.pseudocode;
+  assert.ok(malformedHeader.includes('goto') || !malformedHeader.includes('while ('), malformedHeader);
 
   const exhausted = decompile(selfLatchAfterTerminalReturn(), {
     controlFlowProofBudget:{ maxTerminalProofSteps:0 },
