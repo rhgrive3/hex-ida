@@ -227,6 +227,20 @@ export function createPruningProxy(options = {}) {
   }
 
   async function handle(req, res) {
+    let target;
+    try {
+      const requestTarget = typeof req.url === "string" ? req.url : "";
+      if (!requestTarget.startsWith("/") || requestTarget.startsWith("//")) {
+        throw new Error("unsupported request target");
+      }
+      target = new URL(requestTarget, upstreamUrl);
+      if (target.origin !== upstreamUrl.origin) throw new Error("cross-origin request target");
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "jev-prune proxy rejected unsupported request target" } }));
+      return;
+    }
+
     let rawBody = "";
     try {
       for await (const chunk of req) rawBody += chunk;
@@ -250,7 +264,6 @@ export function createPruningProxy(options = {}) {
       }
     }
 
-    const target = new URL(req.url, upstreamUrl);
     const transport = target.protocol === "http:" ? http : https;
 
     const upstreamRequest = transport.request(
