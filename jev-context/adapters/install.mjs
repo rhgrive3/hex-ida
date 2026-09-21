@@ -17,13 +17,25 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const JEV_ROOT = path.resolve(MODULE_DIR, "..");
 const MARKER = "jev-context";
 
-function readJsonIfPresent(filePath) {
+function readJsonForInstall(filePath) {
+  let raw;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return {};
+    throw new Error(`jev-prune install: cannot read host hook config: ${filePath}`, { cause: error });
   }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`jev-prune install: malformed host hook config: ${filePath}`, { cause: error });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`jev-prune install: host hook config must be a JSON object: ${filePath}`);
+  }
+  return parsed;
 }
 
 function readJsonForUninstall(filePath) {
@@ -225,7 +237,7 @@ export function defaultCodexHome(env = process.env) {
 
 export function installCodex({ codexHome = defaultCodexHome() } = {}) {
   const filePath = path.join(codexHome, "hooks.json");
-  const existing = readJsonIfPresent(filePath);
+  const existing = readJsonForInstall(filePath);
   const { next, added, already } = mergeHooks(existing, "codex", CODEX_EVENTS);
   const backupPath = backup(filePath);
   writeJson(filePath, next);
@@ -249,7 +261,7 @@ export function defaultGeminiHome(env = process.env) {
 
 export function installAgy({ geminiHome = defaultGeminiHome() } = {}) {
   const filePath = path.join(geminiHome, "config", "hooks.json");
-  const existing = readJsonIfPresent(filePath);
+  const existing = readJsonForInstall(filePath);
   const { next, added, already } = mergeHooks(existing, "agy", AGY_EVENTS);
   const backupPath = backup(filePath);
   writeJson(filePath, next);
