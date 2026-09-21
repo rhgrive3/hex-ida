@@ -373,6 +373,13 @@ function validateNormalizedFunction(out, options) {
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }
 
+const canonicalSemanticIrProducerArtifacts = new WeakSet();
+
+/** Exact in-process identity for validated Semantic IR emitted by this producer. */
+export function isCanonicalSemanticIrProducerArtifact(value) {
+  return value !== null && typeof value === 'object' && canonicalSemanticIrProducerArtifacts.has(value);
+}
+
 export function createSemanticIrFunction(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ir-invalid-function');
@@ -409,7 +416,9 @@ export function createSemanticIrFunction(input, options = {}) {
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');
   validateNormalizedFunction(out, options);
-  return deepFreeze(out);
+  const canonical = deepFreeze(out);
+  canonicalSemanticIrProducerArtifacts.add(canonical);
+  return canonical;
 }
 
 export function validateSemanticIrFunction(input, options = {}) {
