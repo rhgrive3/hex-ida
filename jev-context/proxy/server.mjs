@@ -39,6 +39,21 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
+const HEADER_NAME_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+function hopByHopHeaders(headers) {
+  const excluded = new Set(HOP_BY_HOP);
+  const connection = headers?.connection;
+  const values = Array.isArray(connection) ? connection : connection == null ? [] : [connection];
+  for (const value of values) {
+    for (const rawToken of String(value).split(",")) {
+      const token = rawToken.trim();
+      if (token && HEADER_NAME_TOKEN.test(token)) excluded.add(token.toLowerCase());
+    }
+  }
+  return excluded;
+}
+
 const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 function resolveMaxBodyBytes(options = {}) {
@@ -341,8 +356,9 @@ export function createPruningProxy(options = {}) {
     const rawBody = bodyResult.body;
 
     const forwardedHeaders = {};
+    const requestHopByHop = hopByHopHeaders(req.headers);
     for (const [key, value] of Object.entries(req.headers)) {
-      if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+      if (requestHopByHop.has(key.toLowerCase())) continue;
       forwardedHeaders[key] = value;
     }
 
@@ -368,8 +384,9 @@ export function createPruningProxy(options = {}) {
       },
       (upstreamResponse) => {
         const responseHeaders = {};
+        const responseHopByHop = hopByHopHeaders(upstreamResponse.headers);
         for (const [key, value] of Object.entries(upstreamResponse.headers)) {
-          if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+          if (responseHopByHop.has(key.toLowerCase())) continue;
           responseHeaders[key] = value;
         }
         res.writeHead(upstreamResponse.statusCode || 502, responseHeaders);
@@ -438,4 +455,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 }
 
-export { DEFAULT_MAX_BODY_BYTES, HOP_BY_HOP, Readable };
+export { DEFAULT_MAX_BODY_BYTES, HOP_BY_HOP, Readable, hopByHopHeaders };
