@@ -12,6 +12,7 @@ import {
   createCppClassIdentity,
   createCppVirtualSlotEvidence,
 } from '../../js/analysis/cxx/object-evidence.js';
+import { isCppReceiverAlias } from '../../js/decompiler/cxx-evidence.js';
 
 function createFixture({
   lines = ['ldr w0, [x0, #0x38]', 'ret'],
@@ -37,6 +38,7 @@ function createFixture({
     returnType: 'uint64',
     defaultCallArgs: 1,
     name,
+    addr: rows[0]?.address ?? null,
     ...options,
   };
   return { ir, model, opts };
@@ -54,6 +56,7 @@ test('positive receiver: argument 0 renders as this and signature has ClassName 
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_player_read',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -98,6 +101,7 @@ test('anonymous class receiver: renders uint64 this without inventing fake class
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_anon_read',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -146,6 +150,7 @@ test('receiver copy: tracing MOV x19, x0 renders this->field_20', () => {
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_actor_mov',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -184,6 +189,7 @@ test('store to receiver field: this->field_10 = 42', () => {
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_store',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -230,8 +236,8 @@ test('negative gate: partial completeness fails closed and preserves a1', () => 
     lines: ['ldr w0, [x0, #0x38]', 'ret'],
   });
 
-  const partialReceiver = {
-    schema: 'cpp-receiver-evidence/v1',
+  const partialReceiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_partial',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -240,7 +246,7 @@ test('negative gate: partial completeness fails closed and preserves a1', () => 
     completeness: 'partial',
     snapshotId: 'snap-5',
     uncertainty: null,
-  };
+  });
 
   opts.cxxEvidence = { receiver: partialReceiver };
 
@@ -257,8 +263,8 @@ test('negative gate: uncertainty flag fails closed and preserves a1', () => {
     lines: ['ldr w0, [x0, #0x38]', 'ret'],
   });
 
-  const uncertainReceiver = {
-    schema: 'cpp-receiver-evidence/v1',
+  const uncertainReceiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_uncertain',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -267,7 +273,7 @@ test('negative gate: uncertainty flag fails closed and preserves a1', () => {
     completeness: 'complete',
     snapshotId: 'snap-6',
     uncertainty: 'ambiguous-alias-set',
-  };
+  });
 
   opts.cxxEvidence = { receiver: uncertainReceiver };
 
@@ -293,6 +299,7 @@ test('virtual slot dispatch: unclosed candidate count = 1 retains indirect call 
   assert.ok(callInst);
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_vcall',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -345,6 +352,7 @@ test('virtual slot dispatch: closureProven with single candidate devirtualizes t
   assert.ok(callInst);
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_vcall_closed',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -396,6 +404,7 @@ test('virtual slot dispatch: closureProven with multiple candidates fails closed
   assert.ok(callInst);
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_vcall_multi',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -443,6 +452,7 @@ test('authoritative field name metadata: this->field_38 becomes this->m_health',
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_fields',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -472,6 +482,7 @@ test('high variable naming: recoverHighVariables names argument 0 as this with c
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_high_var',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -499,6 +510,7 @@ test('pipeline-core projection: enhanceSemanticDecompilation projects this->fiel
   });
 
   const receiverEvidence = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_pipeline',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -545,6 +557,7 @@ test('adversarial: producer-issued receiver for a different canonical value fail
     lines: ['mov x1, x0', 'ldr w0, [x0, #0x38]', 'ret'],
   });
   const stale = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'other_function',
     canonicalValueId: 999999,
     receiverRole: 'this',
@@ -560,12 +573,97 @@ test('adversarial: producer-issued receiver for a different canonical value fail
   assert.doesNotMatch(result.pseudocode, /this->field_38/);
 });
 
+test('adversarial: canonical receiver from a different function address fails closed', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr + 4n,
+    functionId: 'different_function',
+    canonicalValueId: ir.values[0].id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'wrong-function-address',
+  });
+  opts.cxxEvidence = { receiver };
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /a1->field_38/);
+  assert.doesNotMatch(result.pseudocode, /this->field_38/);
+});
+
+test('adversarial: same-call-site slot for a different receiver cannot devirtualize', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr x8, [x0]', 'ldr x8, [x8, #0x10]', 'blr x8', 'ret'],
+  });
+  const callInst = ir.instructions.find((i) => i.op === 'call');
+  assert.ok(callInst);
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_receiver_bound_slot',
+    canonicalValueId: ir.values[0].id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'receiver-bound-slot',
+  });
+  const other = ir.values.find(value => value?.id !== ir.values[0].id && !isCppReceiverAlias(value, receiver));
+  assert.ok(other, 'fixture must expose a non-receiver SSA value');
+  const mismatched = createCppVirtualSlotEvidence({
+    callSiteId: callInst.id,
+    callSiteAddress: callInst.address,
+    receiverValueId: other.id,
+    vptrValueId: 'other-vptr',
+    slotIndex: 2,
+    slotByteOffset: 16,
+    virtualSlotKnown: true,
+    closureProven: true,
+    candidateTargetIds: ['WrongTarget'],
+    exactTargetAddress: 0x1234n,
+  });
+  opts.symbolFor = addr => addr === 0x1234n ? 'WrongTarget' : null;
+  opts.cxxEvidence = { receiver, virtualSlots:[mismatched] };
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.doesNotMatch(result.pseudocode, /WrongTarget/);
+});
+
+test('adversarial: widening integer cast is not a receiver alias', () => {
+  const source = { id:'source32', bits:32, def:null };
+  const widened = {
+    id:'widened64',
+    bits:64,
+    def:{ op:'unary', sub:'zext', args:[{ value:source }] },
+  };
+  const receiver = createCppReceiverEvidence({
+    functionId: 'cast_alias_boundary',
+    canonicalValueId: source.id,
+    receiverRole: 'this',
+    nonStaticProof: { rule:'proven-vtable-slot' },
+    abiBinding: { architecture:'arm64', register:'x0', argumentIndex:0 },
+    completeness:'complete',
+    snapshotId:'cast-alias-boundary',
+  });
+  assert.equal(isCppReceiverAlias(widened, receiver), false);
+  const sameWidth = {
+    id:'bitcast64',
+    bits:64,
+    def:{ op:'unary', sub:'bitcast', args:[{ value:{ id:source.id, bits:64, def:null } }] },
+  };
+  assert.equal(isCppReceiverAlias(sameWidth, receiver), true,
+    'known width-preserving casts remain transparent');
+});
+
 test('adversarial: forged virtual-slot evidence cannot devirtualize a call', () => {
   const { ir, model, opts } = createFixture({
     lines: ['ldr x8, [x0]', 'ldr x8, [x8, #0x10]', 'blr x8', 'ret'],
   });
   const callInst = ir.instructions.find((i) => i.op === 'call');
   const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_forged_slot',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
@@ -602,6 +700,7 @@ test('virtual slot without authoritative argument count preserves unknown additi
   });
   const callInst = ir.instructions.find((i) => i.op === 'call');
   const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
     functionId: 'func_unknown_arity',
     canonicalValueId: ir.values[0].id,
     receiverRole: 'this',
