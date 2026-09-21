@@ -38,7 +38,8 @@ function hasTopLevelOrOperator(checkScript) {
 
   const isCommentBoundary = (index) => {
     if (index === 0) return true;
-    return /[\\s;&|(){}<>]/.test(str[index - 1]);
+    const prev = str[index - 1];
+    return prev.trim() === '' || ';&|(){}<>'.includes(prev);
   };
 
   for (let i = 0; i < str.length; i++) {
