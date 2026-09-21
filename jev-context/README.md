@@ -309,6 +309,7 @@ Codex, Agy or OpenCode unusable. There is a test for each of those cases.
 | `JEV_PRUNING_KEEP_RECENT_ITEMS` | `6` | recency window that is never pruned |
 | `JEV_PRUNING_WRITE_TIME_MIN_TOKENS` | `200` | Agy only: below this, no round trip is paid |
 | `JEV_PRUNING_BACKGROUND` | `true` | detach classification from the critical path |
+| `JEV_PROXY_MAX_BODY_BYTES` | `33554432` | maximum inbound proxy request body size; larger requests get HTTP 413 |
 | `JEV_PRUNING_REDACT_FAIL_CLOSED` | `true` | withhold anything still credential-shaped |
 | `JEV_PRUNING_SEND_TASK` | `true` | send the (redacted) task statement; relevance needs it |
 | `JEV_PRUNING_ELISION_STASH` | `true` | keep verbatim originals of elided items |

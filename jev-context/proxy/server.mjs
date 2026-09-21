@@ -39,6 +39,80 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
+const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+function resolveMaxBodyBytes(options = {}) {
+  const raw = options.maxBodyBytes ?? process.env.JEV_PROXY_MAX_BODY_BYTES ?? DEFAULT_MAX_BODY_BYTES;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("jev-prune proxy max body size must be a positive integer");
+  }
+  return value;
+}
+
+function declaredContentLength(req) {
+  const value = req.headers["content-length"];
+  if (value == null) return null;
+  if (Array.isArray(value) || !/^\d+$/.test(String(value))) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function readBodyBounded(req, maxBodyBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+    };
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > maxBodyBytes) {
+        finish({ tooLarge: true, body: null });
+        return;
+      }
+      chunks.push(bytes);
+    };
+    const onEnd = () => finish({ tooLarge: false, body: Buffer.concat(chunks, total).toString("utf8") });
+    const onError = (error) => fail(error);
+    const onAborted = () => fail(new Error("request aborted"));
+
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
+  });
+}
+
+function rejectOversizedRequest(req, res) {
+  res.writeHead(413, { "content-type": "text/plain; charset=utf-8", connection: "close" });
+  res.end("request body too large");
+  // Discard any bytes already in flight without retaining them, then close the
+  // connection after the 413 is flushed so a slow sender cannot pin resources.
+  req.resume();
+  res.once("finish", () => {
+    if (!req.complete) req.destroy();
+  });
+}
+
 function groupForToolName(name) {
   const tool = String(name || "").toLowerCase();
   if (tool.includes("read") || tool === "cat") return { group: "file" };
@@ -181,6 +255,7 @@ export function createPruningProxy(options = {}) {
   const config = pipeline.config;
   const upstream = options.upstream || process.env.JEV_PROXY_UPSTREAM || "https://api.openai.com";
   const upstreamUrl = new URL(upstream);
+  const maxBodyBytes = resolveMaxBodyBytes(options);
 
   async function pruneRequestBody(rawBody) {
     // Returns the body to forward. Any failure returns the original bytes.
@@ -245,13 +320,25 @@ export function createPruningProxy(options = {}) {
       return;
     }
 
-    let rawBody = "";
-    try {
-      for await (const chunk of req) rawBody += chunk;
-    } catch {
-      res.writeHead(400).end("bad request");
+    const contentLength = declaredContentLength(req);
+    if (contentLength !== null && contentLength > maxBodyBytes) {
+      rejectOversizedRequest(req, res);
       return;
     }
+
+    let bodyResult;
+    try {
+      bodyResult = await readBodyBounded(req, maxBodyBytes);
+    } catch {
+      if (!res.headersSent) res.writeHead(400);
+      res.end("bad request");
+      return;
+    }
+    if (bodyResult.tooLarge) {
+      rejectOversizedRequest(req, res);
+      return;
+    }
+    const rawBody = bodyResult.body;
 
     const forwardedHeaders = {};
     for (const [key, value] of Object.entries(req.headers)) {
@@ -351,4 +438,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 }
 
-export { HOP_BY_HOP, Readable };
+export { DEFAULT_MAX_BODY_BYTES, HOP_BY_HOP, Readable };
