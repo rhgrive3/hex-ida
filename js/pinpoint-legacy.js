@@ -38,6 +38,12 @@ import { plainFieldName } from './fields.js';
 import { vendorsOf, vendorOf, vendorConflicts } from './vendors.js';
 import { evidenceFor as shapeEvidenceFor, byGoal as shapesByGoal } from './shapes.js';
 import { describePurpose, changeAt } from './purpose.js';
+import {
+  admitSemanticBoundaryChallenger,
+  buildSemanticBoundaryRequest,
+  normalizeSemanticBoundaryResponse,
+  semanticBoundaryEligibility,
+} from './semantic-boundary-referee.js';
 
 /* 目的 → 地図の部品。クラスの担当が目的と合っているかを見るために使う。 */
 const GOAL_TO_CATEGORY = {
@@ -651,7 +657,19 @@ function isRelated(fields, a, b) {
  *   ranked  rank.js の候補（この中の関数を読みにいく）
  */
 export async function pinpointLocation(opts) {
-  const o = opts || {};
+  let o = opts || {};
+  // Holdout instrumentation counts every location-stage analysis invocation,
+  // including the pre-existing ranked-function reads.  It is opt-in and leaves
+  // the ordinary callback identity/path untouched when no recorder is present.
+  if (typeof o.semanticBoundaryInstrumentation === 'function' && typeof o.analyze === 'function') {
+    const analyze = o.analyze;
+    const analysisStats = { calls: 0 };
+    o = {
+      ...o,
+      analyze: (...args) => { analysisStats.calls++; return analyze(...args); },
+      semanticBoundaryAnalysisStats: analysisStats,
+    };
+  }
   const goal = o.goal;
   const ranked = o.ranked || [];
   const program = o.program;
@@ -767,7 +785,23 @@ export async function pinpointLocation(opts) {
    * 「0x1002f4aa0 の 5 命令がそれだ」というところまで持っていく。
    * 確かめられなかった候補は、確かめられなかったぶん点を下げる。
    */
-  await verifyShapes(list, o, progress, cancelled);
+  /*
+   * The shape order is deterministic and remains the authority.  An optional
+   * semantic referee can observe only the narrow D4/D5 boundary; it cannot
+   * change D1..D3, inject a score, or enter normal verification before one
+   * bounded binary-grounded probe succeeds.
+   */
+  let shapeVerification = null;
+  if (typeof o.semanticBoundaryInstrumentation === 'function' || typeof o.semanticBoundaryReferee === 'function') {
+    shapeVerification = await planShapeBoundaryVerification(
+      list.filter((e) => e.fromShape && (e.shapeSites || []).length), o, progress, cancelled);
+    await verifyShapes(list, o, progress, cancelled, shapeVerification.targets,
+      shapeVerification.trace, shapeVerification.candidateIds);
+  } else {
+    // Preserve the established call sequence exactly when the optional
+    // boundary facility is absent.
+    await verifyShapes(list, o, progress, cancelled);
+  }
 
   /*
    * 2'''. 同じ場所を指している候補を 1 つにまとめる。
@@ -927,7 +961,7 @@ export async function pinpointLocation(opts) {
     e.why = explain(e.fusion);
   }
 
-  return {
+  const output = {
     goal, kind: 'location',
     verdict: result.verdict,
     top: result.top || null,
@@ -940,6 +974,11 @@ export async function pinpointLocation(opts) {
     checked,
     changeSites: result.top ? (result.top.sites || []) : [],
   };
+  if (shapeVerification) {
+    emitSemanticBoundaryInstrumentation(o, shapeVerification.trace, output, list,
+      shapeVerification.candidateIds);
+  }
+  return output;
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -1035,31 +1074,262 @@ export async function pinpointFunction(opts) {
 /* 裏取りに開く関数の数と、開く候補の数。ここを増やすと確実に遅くなる。 */
 const VERIFY_CANDIDATES = 4;
 const VERIFY_FUNCTIONS = 3;
+const SEMANTIC_BOUNDARY_PROBE_RESERVE = VERIFY_CANDIDATES * VERIFY_FUNCTIONS + 1;
+
+function shapeTraceId(index) { return `d${index + 1}`; }
+
+function shapeScoreForTrace(candidate) {
+  const score = Number(candidate?.shape?.score);
+  return Number.isFinite(score) ? score : null;
+}
+
+function makeSemanticBoundaryTrace(candidates, eligibility) {
+  return {
+    schema: 'hex-semantic-boundary-instrumentation/v1',
+    candidateCount: candidates.length,
+    d4Score: eligibility?.metrics?.d4Score ?? shapeScoreForTrace(candidates[3]),
+    d5Score: eligibility?.metrics?.d5Score ?? shapeScoreForTrace(candidates[4]),
+    gap: eligibility?.metrics?.gap ?? null,
+    eligibility: eligibility?.eligible === true ? 'eligible' : (eligibility?.reason || null),
+    mode: null,
+    referee: { called: false, status: 'not-requested', method: null, model: null, challengerId: null, margin: null },
+    probe: { attempted: false, success: false, status: 'not-attempted', candidateId: null, analyzeCalls: 0 },
+    verificationTargets: [],
+    firstVerifiedCandidate: null,
+  };
+}
+
+function planResult(targets, trace, candidateIds) {
+  trace.verificationTargets = targets.map((candidate) => candidateIds.get(candidate) || null).filter(Boolean);
+  return { targets, trace, candidateIds };
+}
+
+/**
+ * A successful probe is binary evidence, but it is deliberately kept out of
+ * the referee contract.  This priority is used only to decide which of D4 and
+ * the probed challenger receives the final ordinary verification slot.
+ */
+function binaryGroundedPriority(candidate) {
+  const shape = candidate?.shape || {};
+  let score = 0;
+  score += Math.min(8, Number(shape.decreases) || 0);
+  score += Math.min(5, Number(shape.increases) || 0);
+  score += Math.min(4, Number(shape.clamped) || 0);
+  score += Math.min(4, Number(shape.crossObject) || 0);
+  score += Math.min(3, Number(shape.scaled) || 0);
+  score += Math.min(6, Number(shape.usedAsAmount) || 0);
+  score += shape.identityKnown === true ? 2 : 0;
+  for (const proof of candidate?.probeProof || []) {
+    const change = proof?.change;
+    if (!change) continue;
+    // A re-confirmed write is strong binary evidence, but not an automatic
+    // override: a materially stronger D4 may still keep the ordinary slot.
+    score += 16;
+    if (change.work === 'drain' || change.work === 'feed') score += 8;
+    if (change.clamped) score += 4;
+    if (change.cappedBy) score += 4;
+    if (change.amount?.kind === 'field' || change.amount?.kind === 'call' || change.amount?.kind === 'arg') score += 3;
+  }
+  for (const update of candidate?.updates || []) {
+    if (update?.location || update?.store) score += 10;
+  }
+  return score;
+}
+
+async function probeShapeCandidate(candidate, o, progress, cancelled, trace, candidateId) {
+  trace.probe.attempted = true;
+  trace.probe.candidateId = candidateId || null;
+  if (cancelled() || spent(o)) { trace.probe.status = cancelled() ? 'cancelled' : 'budget-spent'; return false; }
+  const program = o.program || null;
+  const seen = new Set();
+  for (const site of candidate.shapeSites || []) {
+    let range = null;
+    try { range = program ? program.functionRange(site) : null; } catch { range = null; }
+    const start = range?.start;
+    if (start == null) continue;
+    const key = start.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    progress({ phase: 'probe-shape', done: 0, all: 1 });
+    charge(o);
+    trace.probe.analyzeCalls = 1;
+    let model = null;
+    try { model = await o.analyze(start, range.end != null ? range.end : null); } catch { model = null; }
+    if (!model) { trace.probe.status = 'analyze-failed'; return false; }
+    const purpose = describePurpose({ model, addr: start, fields: o.fields, textAt: o.textAt || null });
+    const change = changeAt(purpose, candidate.offset);
+    if (!change) { trace.probe.status = 'change-not-reconfirmed'; return false; }
+    // Do not mutate the candidate until the whole probe has succeeded.  A
+    // failed probe must leave the ordinary D1..D4 result path byte-for-byte
+    // equivalent except for the intentionally bounded attempted analysis.
+    candidate.probeProof = [{ fn: start, change, purpose, site }];
+    candidate.probeFunctionKeys = new Set([key]);
+    trace.probe.success = true;
+    trace.probe.status = 'reconfirmed';
+    return true;
+  }
+  trace.probe.status = 'function-unavailable';
+  return false;
+}
+
+/**
+ * Plan the existing normal shape verification without letting a referee touch
+ * evidence, scores, ordering, verdicts, or authority.  Shadow mode always
+ * returns D1..D4.  Probe mode is internal-only and requires an explicit
+ * holdout-derived admission policy plus enough budget to preserve the baseline
+ * verification envelope after an unsuccessful probe.
+ */
+async function planShapeBoundaryVerification(candidates, o, progress, cancelled) {
+  const candidateIds = new Map(candidates.map((candidate, index) => [candidate, shapeTraceId(index)]));
+  const eligibility = semanticBoundaryEligibility({
+    goal: o.goal,
+    candidates,
+    shapes: o.shapes,
+    interactive: o.semanticBoundaryInteractive === true,
+    analyze: o.analyze,
+    cancelled: cancelled(),
+    budget: o.budget,
+    ambiguityPolicy: o.semanticBoundaryAmbiguityPolicy,
+  });
+  const trace = makeSemanticBoundaryTrace(candidates, eligibility);
+  const baseline = candidates.slice(0, VERIFY_CANDIDATES);
+  if (!eligibility.eligible) return planResult(baseline, trace, candidateIds);
+  if (typeof o.semanticBoundaryReferee !== 'function') {
+    trace.referee.status = 'no-referee';
+    return planResult(baseline, trace, candidateIds);
+  }
+  const boundaryCandidates = candidates.slice(VERIFY_CANDIDATES - 1);
+  const request = buildSemanticBoundaryRequest({ goal: o.goal, candidates: boundaryCandidates, complete: o.shapes?.complete === true });
+  if (!request) {
+    trace.referee.status = 'request-invalid';
+    return planResult(baseline, trace, candidateIds);
+  }
+  const cancelledBeforeRequest = cancelled();
+  if (cancelledBeforeRequest || spent(o)) {
+    trace.referee.status = cancelledBeforeRequest ? 'cancelled-before-request' : 'budget-spent-before-request';
+    return planResult(baseline, trace, candidateIds);
+  }
+  trace.referee.called = true;
+  const mode = o.semanticBoundaryMode === 'probe' ? 'probe' : 'shadow';
+  trace.mode = mode;
+  let raw;
+  try { raw = await o.semanticBoundaryReferee({ goal: request.goal, candidates: request.candidates }); }
+  catch { trace.referee.status = 'provider-failure'; return planResult(baseline, trace, candidateIds); }
+  const response = normalizeSemanticBoundaryResponse(raw, { candidateIds: request.candidates.map((candidate) => candidate.id) });
+  if (!response) { trace.referee.status = 'invalid-response'; return planResult(baseline, trace, candidateIds); }
+  trace.referee = {
+    called: true,
+    status: response.abstain ? 'abstain' : 'received',
+    method: response.method,
+    model: response.model,
+    challengerId: response.challengerId,
+    margin: response.margin,
+  };
+  if (mode !== 'probe') return planResult(baseline, trace, candidateIds);
+  if (o.budget.left < SEMANTIC_BOUNDARY_PROBE_RESERVE) {
+    trace.referee.status = 'probe-budget-reserve';
+    return planResult(baseline, trace, candidateIds);
+  }
+  const admission = admitSemanticBoundaryChallenger(response, o.semanticBoundaryAdmissionPolicy);
+  if (!admission.admitted) {
+    trace.referee.status = `not-admitted:${admission.reason}`;
+    return planResult(baseline, trace, candidateIds);
+  }
+  const boundaryIndex = request.candidates.findIndex((candidate) => candidate.id === admission.challengerId);
+  // c0 represents D4.  The referee may never spend a probe on D1..D4.
+  if (boundaryIndex < 1 || boundaryIndex >= boundaryCandidates.length) {
+    trace.referee.status = 'challenger-not-tail';
+    return planResult(baseline, trace, candidateIds);
+  }
+  const challenger = boundaryCandidates[boundaryIndex];
+  if (!await probeShapeCandidate(challenger, o, progress, cancelled, trace, candidateIds.get(challenger))) {
+    return planResult(baseline, trace, candidateIds);
+  }
+  const d4 = candidates[VERIFY_CANDIDATES - 1];
+  const finalTarget = binaryGroundedPriority(challenger) > binaryGroundedPriority(d4) ? challenger : d4;
+  trace.referee.status = finalTarget === challenger ? 'probe-promoted-by-binary-evidence' : 'probe-not-promoted-by-binary-evidence';
+  return planResult([...candidates.slice(0, VERIFY_CANDIDATES - 1), finalTarget], trace, candidateIds);
+}
+
+function traceCandidateFromOffset(candidateIds, offset) {
+  if (offset == null) return null;
+  let wanted;
+  try { wanted = BigInt(offset).toString(); } catch { return null; }
+  for (const [candidate, id] of candidateIds || []) {
+    try { if (BigInt(candidate.offset).toString() === wanted) return id; } catch { /* malformed local candidate */ }
+  }
+  return null;
+}
+
+function emitSemanticBoundaryInstrumentation(o, trace, output, list, candidateIds) {
+  if (typeof o.semanticBoundaryInstrumentation !== 'function' || !trace) return;
+  const finalTopId = traceCandidateFromOffset(candidateIds, output?.top?.offset);
+  const event = {
+    schema: trace.schema,
+    candidateCount: trace.candidateCount,
+    d4Score: trace.d4Score,
+    d5Score: trace.d5Score,
+    gap: trace.gap,
+    eligibility: trace.eligibility,
+    mode: trace.mode,
+    referee: { ...trace.referee },
+    probe: { ...trace.probe },
+    verificationTargets: trace.verificationTargets.slice(),
+    firstVerifiedCandidate: trace.firstVerifiedCandidate,
+    analyzeCalls: finiteAnalyzeCalls(o.semanticBoundaryAnalysisStats),
+    finalTopCandidate: finalTopId,
+    finalVerdict: output?.verdict || null,
+    finalCandidateCount: Array.isArray(list) ? list.length : 0,
+  };
+  try { o.semanticBoundaryInstrumentation(event); } catch { /* instrumentation cannot affect analysis */ }
+}
+
+function finiteAnalyzeCalls(stats) {
+  return typeof stats?.calls === 'number' && Number.isFinite(stats.calls) && stats.calls >= 0
+    ? Math.floor(stats.calls)
+    : 0;
+}
 
 /**
  * 候補の中の「形から出たもの」について、その位置を書き換えている関数を実際に開き、
  * 何をしているのかを命令から取り出して e.proof に積む。
  */
-async function verifyShapes(list, o, progress, cancelled) {
+async function verifyShapes(list, o, progress, cancelled, selectedTargets = null, trace = null, candidateIds = null) {
   if (!o.analyze) return;
-  const targets = list.filter((e) => e.fromShape && (e.shapeSites || []).length)
-    .slice(0, VERIFY_CANDIDATES);
+  const ordinary = list.filter((e) => e.fromShape && (e.shapeSites || []).length);
+  const allowed = new Set(ordinary);
+  const targetInput = Array.isArray(selectedTargets) ? selectedTargets : ordinary.slice(0, VERIFY_CANDIDATES);
+  const targetSeen = new Set();
+  const targets = targetInput.filter((candidate) => allowed.has(candidate) && !targetSeen.has(candidate) && targetSeen.add(candidate));
   if (!targets.length) return;
   const program = o.program || null;
   let done = 0;
   for (const e of targets) {
-    e.proof = [];
-    e.verifyTried = 0;
+    const probeProof = Array.isArray(e.probeProof) ? e.probeProof.slice() : [];
+    e.proof = probeProof;
+    e.verifyTried = probeProof.length;
     const seen = new Set();
+    for (const key of e.probeFunctionKeys || []) seen.add(String(key));
+    for (const proof of probeProof) if (proof?.fn != null) seen.add(proof.fn.toString());
+    if (probeProof.length && trace && !trace.firstVerifiedCandidate) {
+      trace.firstVerifiedCandidate = candidateIds?.get(e) || null;
+    }
+    // Keep the historical verifier untouched for ordinary candidates: its
+    // stopping condition is proof-count based.  Only a challenger that has
+    // already consumed the separate probe gets an explicit normal-open cap,
+    // so the new path cannot turn a failed site sequence into extra work.
+    const maxNormalOpens = probeProof.length ? VERIFY_FUNCTIONS : Infinity;
+    let opened = 0;
     for (const site of e.shapeSites) {
       if (cancelled() || spent(o)) return;
-      if (e.proof.length >= VERIFY_FUNCTIONS) break;
+      if (e.proof.length >= VERIFY_FUNCTIONS || opened >= maxNormalOpens) break;
       const range = program ? program.functionRange(site) : null;
       const start = range ? range.start : null;
       if (start == null || seen.has(start.toString())) continue;
       seen.add(start.toString());
       progress({ phase: 'verify-shape', done: done++, all: targets.length * VERIFY_FUNCTIONS });
       charge(o);
+      opened++;
       e.verifyTried++;
       let model = null;
       try { model = await o.analyze(start, range.end != null ? range.end : null); }
@@ -1073,9 +1343,10 @@ async function verifyShapes(list, o, progress, cancelled) {
       /*
        * その場所を触っていなければ、証拠にはしない。
        * 走査の側の取り違え（分岐をまたいだ追跡）はここで落ちる。
-       */
+      */
       if (!change) continue;
       e.proof.push({ fn: start, change, purpose, site });
+      if (trace && !trace.firstVerifiedCandidate) trace.firstVerifiedCandidate = candidateIds?.get(e) || null;
       if (!e.functions.some((f) => f.addr === start)) {
         e.functions.push({ addr: start, name: null, strings: 0 });
       }

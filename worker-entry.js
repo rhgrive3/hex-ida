@@ -313,7 +313,7 @@ function runtimeAICapabilitySigningKey() {
     return key.byteLength >= 32 ? key : null;
   } catch { return null; }
 }
-function isProviderSpendPath(path) { return path === '/api/ai/turn' || path === '/api/gemini'; }
+function isProviderSpendPath(path) { return path === '/api/ai/turn' || path === '/api/gemini' || path === '/api/semantic-rank'; }
 
 function runtimePreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });

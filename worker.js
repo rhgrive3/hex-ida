@@ -1,6 +1,7 @@
 import { resolveInferenceAdapter } from './js/ai/provider/worker-adapters.js';
 import { handleAICapabilities, handleAITurn } from './js/ai/provider/worker-turn.js';
 import { handleGemini } from './js/ai/provider/worker-legacy.js';
+import { handleSemanticRank } from './js/ai/provider/worker-semantic-rank.js';
 import { normalizeAITurnRequest, normalizeAIInteraction, normalizeRequest } from './js/ai/provider/worker-protocol.js';
 import {
   acquireDistributedQuota, isRetryableUpstreamFailure, jsonError, parseRetryAfterMs,
@@ -13,6 +14,7 @@ export default {
     if (url.pathname === '/api/ai/capabilities') return handleAICapabilities(request, env);
     if (url.pathname === '/api/ai/turn') return handleAITurn(request, env);
     if (url.pathname === '/api/gemini') return handleGemini(request, env, executionCtx);
+    if (url.pathname === '/api/semantic-rank') return handleSemanticRank(request, env);
     if (!env.ASSETS || typeof env.ASSETS.fetch !== 'function') {
       return jsonError(500, 'static_assets_unavailable', 'Static assets binding is unavailable.');
     }
