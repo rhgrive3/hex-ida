@@ -10,7 +10,7 @@ import {
 import { appendTransform, createTransformRecord, createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { abiResultInvalidState, canonicalAbiEvidence } from '../../targets/abi/evidence.js';
 import { createPhysicalStateVariable } from '../ir/normalize-effects.js';
-import { classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
+import { classifySemanticMemoryRegion, canonicalMemoryPointerRegionEvidence } from '../../analysis/alias/regions-v2.js';
 import { createPhase7AliasSolver } from '../../analysis/alias/solver.js';
 import { createSemanticCfg } from '../cfg/index.js';
 import {
@@ -1011,8 +1011,43 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   // region classification. The published artifact is rebuilt from the same
   // Semantic IR with pointer-through-stack regions refined by that witness;
   // no projected legacy path participates in either pass.
-  const initialMemorySsa = buildMemorySsa(ir, cfg, memorySsaOptionsFor());
-  const memorySsa = buildMemorySsa(ir, cfg, memorySsaOptionsFor(initialMemorySsa));
+  const candidateNodes = [];
+  const initialMemorySsaOptions = memorySsaOptionsFor();
+  const origResolve = initialMemorySsaOptions.resolveRegion;
+  initialMemorySsaOptions.resolveRegion = (mem, ctx) => {
+    const reg = origResolve(mem, ctx);
+    if (reg?.kind === 'unknown' && ctx?.node) {
+      candidateNodes.push(ctx.node);
+    }
+    return reg;
+  };
+  const initialMemorySsa = buildMemorySsa(ir, cfg, initialMemorySsaOptions);
+
+  // If no candidate node acquires pointer-through-stack reload evidence from
+  // the initial pass witness, region classification for every node is identical
+  // to the first pass. The initial artifact is therefore bit-for-bit identical
+  // to a second build; reuse it directly instead of rebuilding from scratch.
+  let hasRefinement = false;
+  if (candidateNodes.length > 0) {
+    const checkOptions = {
+      binaryId,
+      ssa,
+      ...(rootDescriptors == null ? {} : { rootDescriptors }),
+      ...(rootDescriptorProvider == null ? {} : { rootDescriptorProvider }),
+      canonicalMemorySsa: initialMemorySsa,
+    };
+    for (const node of candidateNodes) {
+      const evidence = canonicalMemoryPointerRegionEvidence(ir, node, checkOptions);
+      if (evidence != null) {
+        hasRefinement = true;
+        break;
+      }
+    }
+  }
+
+  const memorySsa = hasRefinement
+    ? buildMemorySsa(ir, cfg, memorySsaOptionsFor(initialMemorySsa))
+    : initialMemorySsa;
   validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });
 
   const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {
