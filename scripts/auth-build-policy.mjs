@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,18 +29,53 @@ export function releaseIdentityFor(inputs) {
   // No privileged bundle embeds the final identity.
   return hash(inputs.map((value) => hash(value)).join(':'));
 }
+function isForbiddenStandardInput(inputPath, { caseInsensitive = false } = {}) {
+  const normalized = String(inputPath ?? '').replaceAll('\\', '/');
+  const policyPath = caseInsensitive ? normalized.toLowerCase() : normalized;
+  return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(policyPath)
+    || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(policyPath)
+    || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
+}
+
 export function assertStandardGraph(metafile, label, options = {}) {
   if (!metafile?.inputs || Array.isArray(metafile.inputs) || Object.keys(metafile.inputs).length === 0) throw new Error(`${label} has no verifiable input graph.`);
-  const caseInsensitive = (options?.platform ?? process.platform) === 'win32';
-  const forbidden = Object.keys(metafile.inputs || {}).filter((inputPath) => {
-    const normalized = inputPath.replaceAll('\\', '/');
-    const policyPath = caseInsensitive ? normalized.toLowerCase() : normalized;
-    return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(policyPath)
-      || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(policyPath)
-      || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
-  });
-  if (forbidden.length) throw new Error(`${label} leaks privileged implementation: ${forbidden.join(', ')}`);
+  const platform = options?.platform ?? process.platform;
+  const caseInsensitive = platform === 'win32';
+  const repoRoot = options?.repoRoot != null ? String(options.repoRoot) : DEFAULT_REPO_ROOT;
+  const rawInputs = Object.keys(metafile.inputs || {});
+  const forbidden = new Set(rawInputs.filter((inputPath) => isForbiddenStandardInput(inputPath, { caseInsensitive })));
+
+  const realpathImpl = options?.realpathImpl
+    ?? (platform === process.platform ? (fs.realpathSync.native ?? fs.realpathSync) : null);
+  if (realpathImpl) {
+    let canonicalRoot = repoRoot;
+    try { canonicalRoot = realpathImpl(repoRoot); } catch {}
+    for (const inputPath of rawInputs) {
+      const normalized = String(inputPath).replaceAll('\\', '/');
+      const lexicalAbsolute = path.isAbsolute(normalized)
+        ? normalized
+        : path.resolve(repoRoot, normalized);
+      let canonical;
+      try {
+        canonical = realpathImpl(lexicalAbsolute);
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+        throw error;
+      }
+      const policyPath = normalizeInputPath(
+        canonical,
+        String(canonicalRoot).replaceAll('\\', '/'),
+        { caseInsensitive },
+      );
+      if (isForbiddenStandardInput(policyPath, { caseInsensitive })) {
+        forbidden.add(`${inputPath} -> ${policyPath}`);
+      }
+    }
+  }
+
+  if (forbidden.size) throw new Error(`${label} leaks privileged implementation: ${[...forbidden].join(', ')}`);
 }
+
 export function assertPrivilegedGraph(metafile, kind, options = {}) {
   if (kind !== 'parent' && kind !== 'child') throw new Error(`Unsupported privileged bundle kind: ${String(kind)}`);
   const repoRoot = options?.repoRoot != null
