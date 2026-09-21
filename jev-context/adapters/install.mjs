@@ -15,7 +15,6 @@ import { fileURLToPath } from "node:url";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const JEV_ROOT = path.resolve(MODULE_DIR, "..");
-const MARKER = "jev-context";
 
 function readJsonForInstall(filePath) {
   let raw;
@@ -59,16 +58,21 @@ function readJsonForUninstall(filePath) {
   return parsed;
 }
 
-function isOurs(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const candidates = [];
-  if (typeof entry.command === "string") candidates.push(entry.command);
-  if (Array.isArray(entry.hooks)) {
-    for (const handler of entry.hooks) {
-      if (handler && typeof handler.command === "string") candidates.push(handler.command);
-    }
-  }
-  return candidates.some((command) => command.includes(MARKER));
+function sameOwnKeys(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isOurs(entry, host, event) {
+  if (!sameOwnKeys(entry, ["hooks"]) || !Array.isArray(entry.hooks) || entry.hooks.length !== 1) return false;
+  const specConfig = (HOST_HOOKS[host] || []).find((candidate) => candidate.event === event);
+  if (!specConfig) return false;
+  const expected = hookHandlerSpec(host, specConfig);
+  const handler = entry.hooks[0];
+  if (!sameOwnKeys(handler, Object.keys(expected))) return false;
+  return Object.entries(expected).every(([key, value]) => handler[key] === value);
 }
 
 function backup(filePath) {
@@ -110,7 +114,14 @@ export function installOpenCode({ root = process.cwd() } = {}) {
     `export { default, id, JevPrunePlugin } from "./${relative.split(path.sep).join("/")}";`,
     ``,
   ].join("\n");
-  backup(shimPath);
+  const backupPath = `${shimPath}.before-jev-prune`;
+  if (fs.existsSync(shimPath)) {
+    const current = fs.readFileSync(shimPath, "utf8");
+    if (!isManagedOpenCodeShim(current) && fs.existsSync(backupPath)) {
+      throw new Error(`jev-prune install: OpenCode shim was replaced by non-managed content: ${shimPath}`);
+    }
+    if (!isManagedOpenCodeShim(current)) backup(shimPath);
+  }
   fs.mkdirSync(path.dirname(shimPath), { recursive: true });
   fs.writeFileSync(shimPath, contents, { mode: 0o600 });
   return { host: "opencode", file: shimPath, wrote: contents };
@@ -201,7 +212,7 @@ function mergeHooks(existing, host, events) {
 
   for (const event of events) {
     const list = Array.isArray(hooks[event]) ? [...hooks[event]] : [];
-    const present = list.some(isOurs);
+    const present = list.some((entry) => isOurs(entry, host, event));
     if (present) {
       already.push(event);
     } else {
@@ -215,14 +226,14 @@ function mergeHooks(existing, host, events) {
   return { next, added, already };
 }
 
-function stripHooks(existing, events) {
+function stripHooks(existing, host, events) {
   const next = { ...existing };
   if (!next.hooks || typeof next.hooks !== "object") return { next, removed: [] };
   const hooks = { ...next.hooks };
   const removed = [];
   for (const event of events) {
     if (!Array.isArray(hooks[event])) continue;
-    const filtered = hooks[event].filter((entry) => !isOurs(entry));
+    const filtered = hooks[event].filter((entry) => !isOurs(entry, host, event));
     if (filtered.length !== hooks[event].length) removed.push(event);
     if (filtered.length === 0) delete hooks[event];
     else hooks[event] = filtered;
@@ -248,7 +259,7 @@ export function uninstallCodex({ codexHome = defaultCodexHome() } = {}) {
   const filePath = path.join(codexHome, "hooks.json");
   const existing = readJsonForUninstall(filePath);
   if (existing === null) return { host: "codex", file: filePath, removed: [] };
-  const { next, removed } = stripHooks(existing, CODEX_EVENTS);
+  const { next, removed } = stripHooks(existing, "codex", CODEX_EVENTS);
   if (removed.length === 0) return { host: "codex", file: filePath, removed };
   const backupPath = backup(filePath);
   writeJson(filePath, next);
@@ -272,7 +283,7 @@ export function uninstallAgy({ geminiHome = defaultGeminiHome() } = {}) {
   const filePath = path.join(geminiHome, "config", "hooks.json");
   const existing = readJsonForUninstall(filePath);
   if (existing === null) return { host: "agy", file: filePath, removed: [] };
-  const { next, removed } = stripHooks(existing, AGY_EVENTS);
+  const { next, removed } = stripHooks(existing, "agy", AGY_EVENTS);
   if (removed.length === 0) return { host: "agy", file: filePath, removed };
   const backupPath = backup(filePath);
   writeJson(filePath, next);
