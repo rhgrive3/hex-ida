@@ -161,6 +161,49 @@ function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)
     .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
 }
+function regexLiteralEnd(source, start) {
+  let i = start + 1;
+  let escaped = false;
+  let inClass = false;
+  while (i < source.length) {
+    const ch = source[i];
+    if (escaped) {
+      escaped = false;
+      i++;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      i++;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r') return null;
+    if (ch === '[') {
+      inClass = true;
+      i++;
+      continue;
+    }
+    if (ch === ']' && inClass) {
+      inClass = false;
+      i++;
+      continue;
+    }
+    if (ch === '/' && !inClass) {
+      i++;
+      while (i < source.length && /[a-z]/i.test(source[i])) i++;
+      return i;
+    }
+    i++;
+  }
+  return null;
+}
+
+function regexMayStartAfter(lastSignificantCodeChar, lastWord) {
+  if (!lastSignificantCodeChar) return true;
+  if (new Set(['return', 'throw', 'case', 'delete', 'void', 'typeof', 'new', 'in', 'instanceof', 'yield', 'await', 'else', 'do']).has(lastWord)) return true;
+  return /[({[=:;,!?&|^~<>%*+\-]/.test(lastSignificantCodeChar);
+}
+
 function scanImportScriptsCalls(source) {
   const matches = [];
   const len = source.length;
@@ -169,6 +212,7 @@ function scanImportScriptsCalls(source) {
     let i = start;
     let braceDepth = 0;
     let lastSignificantCodeChar = '';
+    let lastWord = '';
     while (i < len) {
       const ch = source[i];
       if (ch === '/' && source[i + 1] === '/') {
@@ -190,7 +234,8 @@ function scanImportScriptsCalls(source) {
           i++;
         }
         i++;
-        lastSignificantCodeChar = quote;
+        lastSignificantCodeChar = 'value';
+        lastWord = '';
         continue;
       }
       if (ch === '`') {
@@ -212,8 +257,19 @@ function scanImportScriptsCalls(source) {
           }
           i++;
         }
-        lastSignificantCodeChar = '`';
+        lastSignificantCodeChar = 'value';
+        lastWord = '';
         continue;
+      }
+      if (ch === '/' && source[i + 1] !== '/' && source[i + 1] !== '*'
+          && regexMayStartAfter(lastSignificantCodeChar, lastWord)) {
+        const regexEnd = regexLiteralEnd(source, i);
+        if (regexEnd != null) {
+          i = regexEnd;
+          lastSignificantCodeChar = 'value';
+          lastWord = '';
+          continue;
+        }
       }
       if (stopAtTemplateBrace) {
         if (ch === '{') {
@@ -283,12 +339,24 @@ function scanImportScriptsCalls(source) {
               });
               i = callEnd;
               lastSignificantCodeChar = ')';
+              lastWord = '';
               continue;
             }
           }
         }
       }
-      if (!/\s/.test(ch)) lastSignificantCodeChar = ch;
+      if (/[A-Za-z_$]/.test(ch)) {
+        let end = i + 1;
+        while (end < len && /[A-Za-z0-9_$]/.test(source[end])) end++;
+        lastWord = source.slice(i, end);
+        lastSignificantCodeChar = 'word';
+        i = end;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        lastSignificantCodeChar = ch;
+        lastWord = '';
+      }
       i++;
     }
     if (stopAtTemplateBrace) throw new Error('Unterminated template interpolation.');
