@@ -16,29 +16,23 @@ test('#9313 Wrangler receives the immutable approved snapshot, not a later origi
     const configPath = path.join(root, 'wrangler.jsonc');
     fs.writeFileSync(configPath, validA);
     let calls = 0;
-    let snapshotPath = null;
     const code = runProductionDeploy({
       configPath,
       snapshotDirectory:root,
       randomUUIDImpl:() => 'fixed',
-      run(_file, args) {
+      run(_file, args, options) {
         calls++;
-        if (calls === 1) {
-          snapshotPath = args.find((arg) => String(arg).startsWith('--config='))?.slice('--config='.length);
-          assert.ok(snapshotPath);
-          assert.deepEqual(fs.readFileSync(snapshotPath), validA);
-          fs.writeFileSync(configPath, invalidB);
-          return ok;
-        }
-        assert.deepEqual(args.slice(-2), ['--config', snapshotPath]);
-        assert.deepEqual(fs.readFileSync(snapshotPath), validA);
-        assert.deepEqual(fs.readFileSync(configPath), invalidB);
+        const inheritedFd = options.stdio[3];
+        assert.equal(args.some((arg) => String(arg).includes('/proc/self/fd/3/wrangler.jsonc')), true);
+        assert.deepEqual(fs.readFileSync(`/proc/self/fd/${inheritedFd}/wrangler.jsonc`), validA);
+        if (calls === 1) fs.writeFileSync(configPath, invalidB);
+        else assert.deepEqual(fs.readFileSync(configPath), invalidB);
         return ok;
       },
     });
     assert.equal(code, 0);
     assert.equal(calls, 2);
-    assert.equal(fs.existsSync(snapshotPath), false);
+    assert.deepEqual(fs.readdirSync(root), ['wrangler.jsonc']);
   } finally {
     fs.rmSync(root, { recursive:true, force:true });
   }
@@ -57,7 +51,7 @@ test('#9313 changed snapshot after validation fails closed before Wrangler invoc
       randomUUIDImpl:() => 'fixed',
       readSnapshotSync(file) {
         reads++;
-        return reads === 1 ? invalidB : fs.readFileSync(file);
+        return reads === 2 ? invalidB : fs.readFileSync(file);
       },
       run() { calls++; return ok; },
     }), /snapshot changed after validation/);
