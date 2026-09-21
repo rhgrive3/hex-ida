@@ -1,6 +1,6 @@
 import { stableStringify } from '../../core/identity/index.js';
 import { createSemanticCfg } from '../cfg/index.js';
-import { createSemanticIrFunction } from '../ir/function.js';
+import { createSemanticIrFunction, isCanonicalSemanticIrProducerArtifact } from '../ir/function.js';
 import {
   analyzeSemanticSsaDominance,
   createSemanticSsaContract,
@@ -188,7 +188,9 @@ function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
 export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   assertNotAborted(options);
   const tick = workCounter(options);
-  const ir = createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
+  const ir = isCanonicalSemanticIrProducerArtifact(irInput) && options.irOptions == null
+    ? irInput
+    : createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
   const cfg = createSemanticCfg(cfgInput, { signal: options.signal, ...(options.cfgOptions ?? {}) });
   if (ir.functionId !== cfg.functionId) fail('semantic-ssa-function-mismatch');
   if (ir.entryBlockId !== cfg.entryBlockId) fail('semantic-ssa-entry-block-mismatch');

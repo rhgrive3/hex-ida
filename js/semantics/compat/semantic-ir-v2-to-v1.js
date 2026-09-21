@@ -1,4 +1,4 @@
-import { validateSemanticIrFunction } from '../ir/index.js';
+import { isCanonicalSemanticIrProducerArtifact, validateSemanticIrFunction } from '../ir/index.js';
 import { createSemanticSsaContract } from '../ssa/contract.js';
 import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
@@ -536,7 +536,9 @@ function addComparisonCarriers(ir, values, valuesById) {
  * architecture lifter. The v1 vocabulary is only the compatibility target.
  */
 export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
-  const ir = validateSemanticIrFunction(input, options.validationOptions || {});
+  const ir = isCanonicalSemanticIrProducerArtifact(input) && options.validationOptions == null
+    ? input
+    : validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
   const ssa = ssaInput == null ? null : createSemanticSsaContract(
     semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},

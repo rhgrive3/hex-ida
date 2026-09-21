@@ -25,6 +25,7 @@ export {
 export { createSemanticValue, createSemanticNode } from './nodes.js';
 export {
   createSemanticIrFunction,
+  isCanonicalSemanticIrProducerArtifact,
   validateSemanticIrFunction,
   canonicalSerializeSemanticIr,
 } from './function.js';

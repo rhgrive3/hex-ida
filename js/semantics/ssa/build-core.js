@@ -1,7 +1,7 @@
 import { createValueId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { appendTransform, createOriginSet, createTransformRecord, mergeOriginSets } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';
-import { createSemanticIrFunction } from '../ir/function.js';
+import { createSemanticIrFunction, isCanonicalSemanticIrProducerArtifact } from '../ir/function.js';
 import {
   analyzeSemanticSsaDominance,
   createSemanticSsaContract,
@@ -680,7 +680,9 @@ function finalizePhi(phi, resolvedOrigin) {
 export function buildSemanticSsa(irInput, cfgInput, options = {}) {
   assertNotAborted(options);
   const tick = makeWorkCounter(options);
-  const ir = createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
+  const ir = isCanonicalSemanticIrProducerArtifact(irInput) && options.irOptions == null
+    ? irInput
+    : createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
   const cfg = createSemanticCfg(cfgInput, { signal: options.signal, ...(options.cfgOptions ?? {}) });
   if (ir.functionId !== cfg.functionId) fail('semantic-ssa-function-mismatch');
   if (ir.entryBlockId !== cfg.entryBlockId) fail('semantic-ssa-entry-block-mismatch');
