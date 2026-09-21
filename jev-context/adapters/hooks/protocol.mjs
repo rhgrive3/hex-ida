@@ -103,7 +103,7 @@ export function createSessionStore(options = {}) {
     if (!filePath) return { saved: false };
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const tmp = `${filePath}.${process.pid}.tmp`;
+      const tmp = `${filePath}.${process.pid}.${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
       fs.renameSync(tmp, filePath);
       return { saved: true };
@@ -119,19 +119,19 @@ export function createSessionStore(options = {}) {
 
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    } catch {
-      const current = recent(sessionId);
-      return [...current, appended].slice(-maxItems);
+    } catch (cause) {
+      const error = new Error(`jev session store directory unavailable: ${path.dirname(filePath)}`);
+      error.code = "JEV_SESSION_STORE_DIRECTORY_UNAVAILABLE";
+      error.cause = cause;
+      throw error;
     }
 
     const lockPath = `${filePath}.lock`;
-    const lock = acquireSessionLock(lockPath);
+    const lock = acquireSessionLock(lockPath, { timeoutMs: options.lockTimeoutMs || 1000 });
     if (lock == null) {
-      // Contention must fail closed: return a truthful in-process view so this
-      // decision does not misclassify the current item as a duplicate, but do
-      // not overwrite another writer's state.
-      const current = recent(sessionId);
-      return [...current, appended].slice(-maxItems);
+      const error = new Error(`jev session store lock unavailable: ${lockPath}`);
+      error.code = "JEV_SESSION_STORE_LOCK_UNAVAILABLE";
+      throw error;
     }
 
     try {
@@ -142,7 +142,12 @@ export function createSessionStore(options = {}) {
       items.push(appended);
       if (items.length > maxItems) items.splice(0, items.length - maxItems);
       state[key] = items;
-      save(state);
+      const saved = save(state);
+      if (!saved.saved) {
+        const error = new Error(`jev session store save failed: ${filePath}`);
+        error.code = "JEV_SESSION_STORE_SAVE_FAILED";
+        throw error;
+      }
       return items;
     } finally {
       releaseSessionLock(lockPath, lock);
