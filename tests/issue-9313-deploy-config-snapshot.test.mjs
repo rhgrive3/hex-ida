@@ -10,35 +10,39 @@ const validA = Buffer.from('{"main":"worker-entry.js","assets":{"run_worker_firs
 const invalidB = Buffer.from('{"main":"worker.js","assets":{"run_worker_first":false},"d1_databases":[]}');
 const ok = { status:0, signal:null, error:undefined };
 
-test('#9313 Wrangler receives the immutable approved snapshot, not a later original-path replacement', () => {
+test('#9313 Wrangler receives the same inherited approved snapshot fd, not a later original-path replacement', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9313-'));
   try {
     const configPath = path.join(root, 'wrangler.jsonc');
     fs.writeFileSync(configPath, validA);
     let calls = 0;
-    let snapshotPath = null;
+    let inheritedFd = null;
     const code = runProductionDeploy({
       configPath,
       snapshotDirectory:root,
       randomUUIDImpl:() => 'fixed',
-      run(_file, args) {
+      descriptorPathImpl:() => '<stable-config-fd>',
+      run(_file, args, _options, handoff) {
         calls++;
+        assert.ok(Number.isInteger(handoff.inheritFd));
+        if (inheritedFd == null) inheritedFd = handoff.inheritFd;
+        assert.equal(handoff.inheritFd, inheritedFd);
+        const observed = Buffer.alloc(validA.length);
+        assert.equal(fs.readSync(inheritedFd, observed, 0, observed.length, 0), observed.length);
+        assert.deepEqual(observed, validA);
         if (calls === 1) {
-          snapshotPath = args.find((arg) => String(arg).startsWith('--config='))?.slice('--config='.length);
-          assert.ok(snapshotPath);
-          assert.deepEqual(fs.readFileSync(snapshotPath), validA);
+          assert.equal(args.at(-1), '--config=<stable-config-fd>');
           fs.writeFileSync(configPath, invalidB);
-          return ok;
+        } else {
+          assert.deepEqual(args.slice(-2), ['--config', '<stable-config-fd>']);
+          assert.deepEqual(fs.readFileSync(configPath), invalidB);
         }
-        assert.deepEqual(args.slice(-2), ['--config', snapshotPath]);
-        assert.deepEqual(fs.readFileSync(snapshotPath), validA);
-        assert.deepEqual(fs.readFileSync(configPath), invalidB);
         return ok;
       },
     });
     assert.equal(code, 0);
     assert.equal(calls, 2);
-    assert.equal(fs.existsSync(snapshotPath), false);
+    assert.deepEqual(fs.readdirSync(root), ['wrangler.jsonc']);
   } finally {
     fs.rmSync(root, { recursive:true, force:true });
   }
@@ -55,9 +59,9 @@ test('#9313 changed snapshot after validation fails closed before Wrangler invoc
       configPath,
       snapshotDirectory:root,
       randomUUIDImpl:() => 'fixed',
-      readSnapshotSync(file) {
+      readSnapshotSync() {
         reads++;
-        return reads === 1 ? invalidB : fs.readFileSync(file);
+        return reads === 1 ? validA : invalidB;
       },
       run() { calls++; return ok; },
     }), /snapshot changed after validation/);
