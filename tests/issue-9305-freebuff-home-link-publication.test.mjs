@@ -10,7 +10,7 @@ function injectedRenameFailure(linkPath, code = 'ENOSPC') {
   return {
     ...fs,
     renameSync(src, dst) {
-      if (dst === linkPath && path.basename(src).includes('.link-')) {
+      if (path.basename(dst) === path.basename(linkPath) && path.basename(src).includes('.link-')) {
         const error = new Error(`${code}: injected publication failure`);
         error.code = code;
         throw error;
@@ -86,7 +86,7 @@ test('#9305 non-ENOENT inspection errors are not swallowed as successful reconci
     const fsImpl = {
       ...fs,
       lstatSync(p, ...args) {
-        if (p === path.join(manicode, 'message-history.json')) {
+        if (path.basename(p) === 'message-history.json') {
           const error = new Error('EIO: injected inspection failure');
           error.code = 'EIO';
           throw error;
