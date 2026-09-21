@@ -378,6 +378,9 @@ test('loop C. nested natural loops project innermost first without breaking owne
   assert.ok(texts.indexOf('s = 5;') > inner, 'inner body is inside the inner construct');
   const indentOf = (text) => projected.cAst.body.find((node) => node.text === text)?.indent;
   assert.ok(indentOf('s = 5;') > indentOf('s = 2;'), 'inner body is indented deeper');
+  const innerHeader = projected.cAst.body.find((node) => node.text === 'while (c1) {');
+  assert.ok(readSemanticControlLineHistory(innerHeader, result.ir),
+    'outer re-indentation preserves the inner projected control line history');
   assert.equal(count(texts, /^goto loc_/), 0, 'no loop jumps remain in either construct');
 });
 
