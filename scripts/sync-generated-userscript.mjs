@@ -34,9 +34,20 @@ const initialRemoteRef = `refs/remotes/origin/${branch}`;
 const initialRemoteTip = gitRead(['rev-parse', initialRemoteRef]);
 const initialLocalTip = gitRead(['rev-parse', 'HEAD']);
 if (initialLocalTip !== initialRemoteTip) {
-  // Do not erase unexpected local source edits just because the remote moved.
-  // Canonical generated outputs are rebuild-owned and may be discarded safely;
-  // off-list/deleted state retains the same fail-closed diagnostics as below.
+  const commitState = collectLocalOnlyCommitState(initialLocalTip, initialRemoteTip);
+  const commitDecision = resolveCanonicalGeneratedOutputCommit({
+    eventName,
+    refName: branch,
+    changedPaths: commitState.changed,
+    deletedPaths: commitState.deleted,
+  });
+  if (commitDecision.offList.length > 0) {
+    fail(`refusing to discard local-only source commits before reset: ${commitDecision.offList.join(', ')}`);
+  }
+  if (commitDecision.deletions.length > 0) {
+    fail(`refusing to discard local-only commit deleting canonical output: ${commitDecision.deletions.join(', ')}`);
+  }
+
   const initialState = collectState();
   const initialDecision = resolveCanonicalGeneratedOutputCommit({
     eventName,
@@ -122,6 +133,21 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 }
 
 fail(`could not publish generated userscript sync to ${branch} after ${maxAttempts} attempts.`);
+
+function collectLocalOnlyCommitState(localTip, remoteTip) {
+  const commits = gitRead(['rev-list', `${remoteTip}..${localTip}`]).split(/\s+/).filter(Boolean);
+  const changed = new Set();
+  const deleted = new Set();
+  for (const commit of commits) {
+    for (const name of names(gitReadRaw([
+      'diff-tree', '--root', '-m', '--no-commit-id', '--name-only', '-r', '-z', commit,
+    ]))) changed.add(name);
+    for (const name of names(gitReadRaw([
+      'diff-tree', '--root', '-m', '--no-commit-id', '--diff-filter=D', '--name-only', '-r', '-z', commit,
+    ]))) deleted.add(name);
+  }
+  return { changed:[...changed], deleted:[...deleted] };
+}
 
 function collectState() {
   for (const file of CANONICAL_GENERATED_OUTPUT_PATHS) {

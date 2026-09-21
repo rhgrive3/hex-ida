@@ -186,7 +186,9 @@ export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs } =
       }
       throw error;
     }
-    if (backedUp) fsImpl.rmSync(backup, { recursive: true, force: true });
+    if (backedUp) {
+      try { fsImpl.rmSync(backup, { recursive: true, force: true }); } catch {}
+    }
     return true;
   } finally {
     if (!published) {
@@ -196,6 +198,20 @@ export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs } =
       try { fsImpl.rmSync(backup, { recursive: true, force: true }); } catch {}
     }
   }
+}
+
+export function cleanupSymlinkBackups(linkPath, { fsImpl = fs } = {}) {
+  const dir = path.dirname(linkPath);
+  const prefix = `.${path.basename(linkPath)}.backup-`;
+  let names = [];
+  try { names = fsImpl.readdirSync(dir); } catch { return false; }
+  let clean = true;
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    try { fsImpl.rmSync(path.join(dir, name), { recursive: true, force: true }); }
+    catch { clean = false; }
+  }
+  return clean;
 }
 
 export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
@@ -208,6 +224,7 @@ export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
   };
   for (const [name, target] of Object.entries(links)) {
     const linkPath = path.join(manicode, name);
+    cleanupSymlinkBackups(linkPath, { fsImpl });
     let entry = null;
     try {
       entry = fsImpl.lstatSync(linkPath);

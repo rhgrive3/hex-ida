@@ -28,6 +28,12 @@ const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
 const MAX_TERMINAL_PROOF_STEPS = MAX_BLOCKS * 4;
 
+function terminalProofSteps(opts) {
+  const requested = opts?.controlFlowProofBudget?.maxTerminalProofSteps;
+  if (!Number.isSafeInteger(requested) || requested < 0) return MAX_TERMINAL_PROOF_STEPS;
+  return Math.min(requested, MAX_TERMINAL_PROOF_STEPS);
+}
+
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
 const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
 const controlRenderLines = new WeakMap(), controlRenderHistories = new WeakMap();
@@ -1343,6 +1349,122 @@ function terminalProofExit(block, ctx) {
   return null;
 }
 
+function provenBranchPredicate(inst) {
+  if (inst?.op !== OP.CBR) return false;
+  const kind = inst.extra?.kind || inst.sub || '';
+  if (kind === 'cbz' || kind === 'cbnz' || kind === 'tbz' || kind === 'tbnz') {
+    return valueOf(inst.args?.[0]) != null;
+  }
+  const cond = inst.cond || inst.extra?.cond || null;
+  return isNZCVCondition(cond) && cmpFromFlags(valueOf(inst.args?.[inst.args.length - 1])) != null;
+}
+
+// This does not discover a loop.  It only checks whether the canonical
+// natural-loop record already attached to ctx.graph can safely be reached as
+// the continuation of a terminal conditional arm.  In particular, a source
+// `if (c) return; <loop>` is allowed to expose the already-proven loop, while
+// a side entry, an early exit, or a nested owner remains faithful CFG output.
+//
+// The initial renderer owns loop construction, so keep this proof local to the
+// one new control-flow composition rather than deriving a second loop view.
+function provenNaturalLoopContinuation(outerHeader, continuation, ctx, state, allowed = null) {
+  if (state.activeLoop != null || continuation == null) return null;
+  const graph = ctx.graph;
+  const blocks = ctx.ir.blocks || [];
+  const continuationBlock = blocks[continuation];
+  if (graph.loopAnalysis?.complete !== true || !continuationBlock
+      || !provenBranchPredicate(blockTerm(blocks[outerHeader]))) return null;
+
+  let loop = graph.loopByHeader?.get(continuation) ?? null;
+  let loopHeader = continuation;
+  let preheader = null;
+  if (!loop) {
+    const targets = continuationBlock.succ || [];
+    if (targets.length !== 1) return null;
+    loopHeader = targets[0];
+    loop = graph.loopByHeader?.get(loopHeader) ?? null;
+    preheader = continuation;
+  }
+  if (!loop || loop.header !== loopHeader || !loop.nodes?.has?.(loopHeader) || !loop.latches?.has?.(loopHeader)) return null;
+
+  const nodes = loop.nodes;
+  const latches = [...loop.latches];
+  const exits = [...(loop.exits || [])];
+  const loopHeaderBlock = blocks[loopHeader];
+  const term = blockTerm(loopHeaderBlock);
+  if (!loopHeaderBlock || latches.length !== 1 || latches[0] !== loopHeader
+      || exits.length !== 1 || term?.op !== OP.CBR || !provenBranchPredicate(term)
+      || (loopHeaderBlock.succ || []).length !== 2) return null;
+
+  // This lane handles the canonical self-latch form only.  Normal and nested
+  // natural loops continue through the established loop renderer; accepting a
+  // second owner here would risk moving a child exit onto the parent loop.
+  if (nodes.size !== 1 || nodes.has(continuation) && continuation !== loopHeader) return null;
+  if (preheader != null) {
+    const predecessors = graph.predecessors?.[preheader] || [];
+    if (predecessors.length !== 1 || predecessors[0] !== outerHeader) return null;
+  }
+
+  const exit = exits[0];
+  const internalSuccessors = (loopHeaderBlock.succ || []).filter((target) => nodes.has(target));
+  const outsideSuccessors = (loopHeaderBlock.succ || []).filter((target) => !nodes.has(target));
+  if (internalSuccessors.length !== 1 || internalSuccessors[0] !== loopHeader
+      || outsideSuccessors.length !== 1 || outsideSuccessors[0] !== exit) return null;
+
+  // Header dominance/back-edge membership are already canonical graph facts,
+  // but bind this transformation to those exact facts instead of treating a
+  // self branch as sufficient proof by itself.
+  if (graph.dominators?.[loopHeader]?.has?.(loopHeader) !== true
+      || !graph.backEdges?.some?.((edge) => edge.from === loopHeader && edge.to === loopHeader)) return null;
+
+  // A loop has one source entry here: the direct continuation path.  A branch
+  // to any non-header member, or an extra header predecessor, would make the
+  // source placement below hide an independent entry.
+  const headerPredecessors = graph.predecessors?.[loopHeader] || [];
+  const outsidePredecessors = headerPredecessors.filter((predecessor) => !nodes.has(predecessor));
+  const expectedEntry = preheader ?? outerHeader;
+  if (outsidePredecessors.length !== 1 || outsidePredecessors[0] !== expectedEntry) return null;
+  for (const node of nodes) {
+    for (const predecessor of graph.predecessors?.[node] || []) {
+      if (!nodes.has(predecessor) && node !== loopHeader) return null;
+    }
+  }
+
+  // Do not compose through a child/parent ownership boundary.  This is an
+  // ownership check over the existing loop set, not a new loop detector.
+  for (const candidate of graph.loops || []) {
+    if (candidate === loop || !candidate?.nodes || candidate.nodes.size <= nodes.size) continue;
+    if ([...nodes].every((node) => candidate.nodes.has(node))) return null;
+  }
+
+  // A header store/call/unknown would be emitted outside the while by the
+  // established renderer.  Refuse it here rather than moving or duplicating a
+  // side effect.  Loads are also rejected because this proof does not establish
+  // their fault/volatile behaviour independently of the source header.
+  if ((loopHeaderBlock.insts || []).some((inst) => [OP.STORE, OP.CALL, OP.LOAD, OP.UNKNOWN].includes(inst.op))) return null;
+
+  // The renderer expresses a self-latch by re-evaluating the header condition.
+  // Every phi must therefore have exactly the proven external entry and the
+  // canonical self back-edge; an unaccounted incoming edge is rejected.
+  for (const phi of loopHeaderBlock.phis || []) {
+    const incoming = phi?.incoming || [];
+    if (incoming.length !== 2) return null;
+    const outside = incoming.filter((edge) => !nodes.has(edge.from));
+    const inside = incoming.filter((edge) => nodes.has(edge.from));
+    if (outside.length !== 1 || outside[0].from !== expectedEntry
+        || inside.length !== 1 || inside[0].from !== loopHeader) return null;
+  }
+
+  if ([...nodes].some((node) => state.visited.has(node))) return null;
+  if (allowed && (![...nodes, exit].every((node) => allowed.has(node)))) return null;
+
+  const budget = state.terminalProofBudget;
+  const proofCost = 8 + (loopHeaderBlock.phis || []).length * 2;
+  if (!budget || budget.remaining < proofCost) return null;
+  budget.remaining -= proofCost;
+  return { loop, header:loopHeader, exit, preheader };
+}
+
 // Some reducible conditionals do not have a concrete post-dominator because
 // one nested path returns before a shared continuation/cleanup is reached.  If
 // one direct successor can be used as that continuation, prove that the other
@@ -1397,7 +1519,9 @@ function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = nu
     // also safe if the sibling successor is itself proven to reach that bound.
     const continuationReachesStop = stop != null && (continuation === stop
       || ctx.graph.postDominators?.[continuation]?.has?.(stop) === true);
-    if (!reachedContinuation && !continuationReachesStop) continue;
+    const loopContinuation = !reachedContinuation && !continuationReachesStop
+      ? provenNaturalLoopContinuation(header, continuation, ctx, state, allowed) : null;
+    if (!reachedContinuation && !continuationReachesStop && !loopContinuation) continue;
 
     let closed = true;
     for (const bi of done) {
@@ -1409,7 +1533,7 @@ function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = nu
       if (!closed) break;
     }
     if (!closed) continue;
-    return { ...candidate, bodyBlocks:done };
+    return { ...candidate, bodyBlocks:done, loopContinuation };
   }
   return null;
 }
@@ -1697,12 +1821,14 @@ export function recoverInductionVariables(ir, ctx = null) {
 }
 
 function loopRender(loop, block, term, ctx, state, indent, stop) {
-  if (!term || term.op !== OP.CBR || loop.exits.size !== 1 || block.succ.length !== 2) return null;
+  if (!term || term.op !== OP.CBR || block.succ.length !== 2) return null;
   const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
   const yesInside = loop.nodes.has(yes), noInside = loop.nodes.has(no);
   if (yesInside === noInside) return null;
   const bodyStart = yesInside ? yes : no;
   const exit = yesInside ? no : yes;
+  const earlyReturnProof = loop.exits.size === 1 ? null : provenTerminalLoopExits(loop, exit, ctx, state);
+  if (loop.exits.size !== 1 && !earlyReturnProof) return null;
   const invert = !yesInside;
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
   let head, form = 'while-loop';
@@ -1716,10 +1842,118 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
   const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
     term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
-  const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
+  const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
+    loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
   lines.push(line('ctrl', indent, '}'));
   return { lines, next: exit === stop ? stop : exit };
+}
+
+// Bind a conditional `break` to the existing loop record.  This is deliberately
+// a proof over the canonical loop data, not another loop detector: the header,
+// membership, latches, and exit set were all materialized by analyzeGraph.
+function provenSingleExitLoop(loop, exit, ctx, state) {
+  if (!loop || exit == null || state.activeLoop === loop) return null;
+  const nodes = loop.nodes;
+  const graph = ctx.graph;
+  if (graph.loopAnalysis?.complete !== true || !nodes?.has?.(loop.header)
+      || !loop.exits?.has?.(exit) || loop.exits.size !== 1
+      || !provenBranchPredicate(blockTerm(ctx.ir.blocks[loop.header]))) return null;
+  const latches = [...(loop.latches || [])];
+  if (!latches.length) return null;
+  const entry = Number.isInteger(ctx.ir.entry) ? ctx.ir.entry : 0;
+  const externalHeaderPredecessors = (graph.predecessors?.[loop.header] || [])
+    .filter((predecessor) => !nodes.has(predecessor));
+  if (loop.header === entry ? externalHeaderPredecessors.length !== 0 : externalHeaderPredecessors.length !== 1) return null;
+  for (const node of nodes) {
+    const term = blockTerm(ctx.ir.blocks[node]);
+    if (graph.dominators?.[node]?.has?.(loop.header) !== true || (node !== loop.header && state.visited.has(node))
+        || (term?.op === OP.CBR && !provenBranchPredicate(term))
+        || (ctx.ir.blocks[node]?.insts || []).some((inst) => inst.op === OP.UNKNOWN)) return null;
+    for (const predecessor of graph.predecessors?.[node] || []) {
+      if (!nodes.has(predecessor) && node !== loop.header) return null;
+    }
+  }
+  for (const latch of latches) {
+    const latchBlock = ctx.ir.blocks[latch];
+    if (!latchBlock || !(latchBlock.succ || []).includes(loop.header)
+        || !graph.backEdges?.some?.((edge) => edge.from === latch && edge.to === loop.header)) return null;
+  }
+  // A child loop receives its own activeLoop record in loopRender.  A target
+  // outside that record is never treated as this loop's break.
+  return Object.freeze({ loop, header:loop.header, exit });
+}
+
+function phiTransitionFrom(block, predecessor) {
+  for (const phi of block?.phis || []) {
+    const incoming = phi?.incoming;
+    if (!Array.isArray(incoming) || !incoming.some((edge) => edge?.from === predecessor)) return false;
+  }
+  return true;
+}
+
+// A loop may have a normal guard exit plus a direct terminal return from its
+// body.  Those are not interchangeable `break` destinations: the return arm
+// carries its own stores/calls and bypasses the normal continuation.  Admit the
+// shape only when every non-guard exit is a direct, single-owner return block.
+function provenTerminalLoopExits(loop, normalExit, ctx, state) {
+  if (!loop || normalExit == null || state.activeLoop != null) return null;
+  const graph = ctx.graph;
+  const blocks = ctx.ir.blocks || [];
+  const nodes = loop.nodes;
+  const header = loop.header;
+  const headerBlock = blocks[header];
+  if (graph.loopAnalysis?.complete !== true || !nodes?.has?.(header) || !headerBlock || !provenBranchPredicate(blockTerm(headerBlock))
+      || !loop.exits?.has?.(normalExit) || loop.exits.size < 2) return null;
+  const latches = [...(loop.latches || [])];
+  if (latches.length !== 1) return null;
+  const latch = latches[0];
+  if (!(blocks[latch]?.succ || []).includes(header)
+      || !graph.backEdges?.some?.((edge) => edge.from === latch && edge.to === header)) return null;
+
+  for (const node of nodes) {
+    const term = blockTerm(blocks[node]);
+    if (graph.dominators?.[node]?.has?.(header) !== true || (node !== header && state.visited.has(node))
+        || (term?.op === OP.CBR && !provenBranchPredicate(term))
+        || ![OP.BR, OP.CBR].includes(term?.op)) return null;
+    if ((blocks[node]?.insts || []).some((inst) => inst.op === OP.UNKNOWN)) return null;
+    for (const predecessor of graph.predecessors?.[node] || []) {
+      if (!nodes.has(predecessor) && node !== header) return null;
+    }
+  }
+  const externalHeaderPredecessors = (graph.predecessors?.[header] || []).filter((predecessor) => !nodes.has(predecessor));
+  const entry = Number.isInteger(ctx.ir.entry) ? ctx.ir.entry : 0;
+  if (header === entry ? externalHeaderPredecessors.length !== 0 : externalHeaderPredecessors.length !== 1) return null;
+  if (!phiTransitionFrom(blocks[normalExit], header)) return null;
+
+  // Nested ownership is intentionally excluded from this root fix.  A child
+  // return is safe only after a separate proof that it does not bypass parent
+  // cleanup, so it remains faithful rather than becoming a parent-loop exit.
+  for (const candidate of graph.loops || []) {
+    if (candidate === loop || !candidate?.nodes || candidate.nodes.size <= nodes.size) continue;
+    if ([...nodes].every((node) => candidate.nodes.has(node))) return null;
+  }
+
+  const earlyTargets = new Set();
+  for (const node of nodes) {
+    for (const target of blocks[node]?.succ || []) {
+      if (nodes.has(target)) continue;
+      if (node === header && target === normalExit) continue;
+      const targetBlock = blocks[target];
+      if (!targetBlock || blockTerm(targetBlock)?.op !== OP.RET || (targetBlock.succ || []).length !== 0) return null;
+      const targetPredecessors = graph.predecessors?.[target] || [];
+      if (targetPredecessors.length !== 1 || targetPredecessors[0] !== node) return null;
+      if (!phiTransitionFrom(targetBlock, node)) return null;
+      earlyTargets.add(target);
+    }
+  }
+  if (!earlyTargets.size) return null;
+
+  const budget = state.terminalProofBudget;
+  const proofCost = 12 + nodes.size * 3 + earlyTargets.size * 2;
+  if (!budget || budget.remaining < proofCost) return null;
+  budget.remaining -= proofCost;
+  return Object.freeze({ loop, header, normalExit, targets:Object.freeze([...earlyTargets].sort((a, b) => a - b)) });
 }
 
 function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
@@ -1798,6 +2032,50 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       }
       const branch = branchSucc(ctx.ir, block, term2, ctx);
       const { yes, no } = branch;
+      // A body edge to a direct return block is structurally an early return,
+      // not a break.  The proof was attached by loopRender only after checking
+      // exact loop ownership, normal guard exit, target predecessor ownership,
+      // PHI inputs, side entries, and the bounded canonical loop facts.
+      const earlyReturnProof = state.loopEarlyReturnProof;
+      const earlyTarget = earlyReturnProof?.targets?.includes(yes) ? yes
+        : earlyReturnProof?.targets?.includes(no) ? no : null;
+      if (branch.exact && provenBranchPredicate(term2) && earlyReturnProof?.loop === state.activeLoop && earlyTarget != null
+          && ((yes === earlyTarget && no === earlyReturnProof.header)
+            || (no === earlyTarget && yes === earlyReturnProof.header))
+          && earlyReturnProof.loop.nodes.has(bi)
+          && phiTransitionFrom(ctx.ir.blocks[earlyTarget], bi)) {
+        const invert = no === earlyTarget;
+        const cond = renderBranchCondition(term2, ctx, invert);
+        out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
+          term2, 'one-sided-if', { yes, no, earlyReturn:true, target:earlyTarget, header:earlyReturnProof.header, invert }, ctx));
+        emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null);
+        out.push(line('ctrl', indent, '}'));
+        return;
+      }
+      // A conditional whose two proven targets are this loop's own header and
+      // its one canonical exit is a source `break`.  This does not infer a
+      // break from an arbitrary outward branch: the loop renderer attached an
+      // exact ownership/exit proof above, the edge source remains a member, and
+      // every PHI at the destination explicitly accepts this predecessor.
+      const breakProof = state.loopBreakProof;
+      const breakTarget = breakProof?.exit;
+      const continueTarget = breakProof?.header;
+      if (branch.exact && provenBranchPredicate(term2) && breakProof?.loop === state.activeLoop
+          && breakTarget != null && continueTarget != null
+          && ((yes === breakTarget && no === continueTarget) || (no === breakTarget && yes === continueTarget))
+          && breakProof.loop.nodes.has(bi)
+          && !breakProof.loop.nodes.has(breakTarget)
+          && phiTransitionFrom(ctx.ir.blocks[breakTarget], bi)) {
+        const invert = no === breakTarget;
+        const cond = renderBranchCondition(term2, ctx, invert);
+        const breakNode = retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
+          term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx);
+        out.push(breakNode);
+        out.push(retainControlRenderLine(line('ctrl', indent + 1, 'break;', term2.row, term2.address, { source:mergeSource(controlSource(term2, ctx), jumpTargetSource(breakTarget, ctx)) }),
+          term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx));
+        out.push(line('ctrl', indent, '}'));
+        return;
+      }
       const join = ctx.graph.immediatePostDominators?.[bi];
       const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
       if (structural) {
@@ -1984,7 +2262,7 @@ export function decompileSemantic(model, opts = {}) {
   const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr);
   const body = [];
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
-    terminalProofBudget: { remaining: MAX_TERMINAL_PROOF_STEPS } };
+    terminalProofBudget: { remaining: terminalProofSteps(opts) } };
   emitRegion(ir.entry || 0, null, body, ctx, state, 1);
 
   const reachable = graph.reachable || new Set();

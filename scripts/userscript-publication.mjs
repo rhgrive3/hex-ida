@@ -102,7 +102,7 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
     for (const [index, record] of records.entries()) {
       await assertRegularPublicationInput(record.file, entries[index].expected, io);
-      await io.rename(record.temporary, record.file); record.published = true;
+      await io.rename(record.temporary, record.file); record.temporary = null; record.published = true;
     }
     await syncDirectory(directory, io);
   } catch (error) {
@@ -120,22 +120,21 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     } else primaryError = error;
   } finally {
     const cleanupErrors = [];
-    const cleanup = async (operation, { ignoreMissing = false } = {}) => {
+    const cleanup = async (operation) => {
       try { await operation(); return true; }
-      catch (error) {
-        if (!(ignoreMissing && error?.code === 'ENOENT')) cleanupErrors.push(error);
-        return false;
-      }
+      catch (error) { cleanupErrors.push(error); return false; }
     };
 
     const lockClosed = await cleanup(() => lock.close());
     if (!lockClosed) retainRecovery = true;
     if (!retainRecovery) {
+      let artifactsClean = true;
       for (const record of records) {
-        if (record.temporary) await cleanup(() => io.unlink(record.temporary), { ignoreMissing:true });
-        if (record.backedUp) await cleanup(() => io.unlink(record.backup), { ignoreMissing:true });
+        if (record.temporary && !(await cleanup(() => io.unlink(record.temporary)))) artifactsClean = false;
+        if (record.backedUp && !(await cleanup(() => io.unlink(record.backup)))) artifactsClean = false;
       }
-      await cleanup(() => io.unlink(lockPath), { ignoreMissing:true });
+      if (!artifactsClean) retainRecovery = true;
+      if (!retainRecovery) await cleanup(() => io.unlink(lockPath));
     }
 
     if (primaryError && cleanupErrors.length) {

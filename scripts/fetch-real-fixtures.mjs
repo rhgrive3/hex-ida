@@ -223,6 +223,7 @@ export async function publishFixtureFile(temp, target, {
   rmImpl = rm,
   platform = process.platform,
   randomUUIDImpl = randomUUID,
+  onCleanupError = (error, details) => console.warn(`${details.target}: published replacement but could not remove backup: ${error?.message || error}`),
 } = {}) {
   try {
     await renameImpl(temp, target);
@@ -243,21 +244,21 @@ export async function publishFixtureFile(temp, target, {
 
     const backup = `${target}.replace-backup-${process.pid}-${randomUUIDImpl()}`;
     await renameImpl(target, backup);
-    let published = false;
     try {
       await renameImpl(temp, target);
-      published = true;
-      await rmImpl(backup, { force: true });
     } catch (replacementError) {
       try {
-        await rmImpl(target, { force: true });
         await renameImpl(backup, target);
       } catch (restoreError) {
         throw new AggregateError([replacementError, restoreError], `fixture replacement recovery required: ${target}`);
       }
       throw replacementError;
-    } finally {
-      if (published) await rmImpl(backup, { force: true }).catch(() => {});
+    }
+
+    try {
+      await rmImpl(backup, { force: true });
+    } catch (cleanupError) {
+      onCleanupError?.(cleanupError, { backup, target });
     }
   }
 }
@@ -269,6 +270,7 @@ export async function fetchFixture(name, spec, {
   outputDirPath = outputDir,
   cacheContainmentRoot = testsRoot,
   ensureCacheDirImpl = ensureFixtureCacheDirectory,
+  publishImpl = publishFixtureFile,
 } = {}) {
   const target = join(outputDirPath, spec.file);
   await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
@@ -327,9 +329,11 @@ export async function fetchFixture(name, spec, {
       await rm(temp, { force: true });
       console.log(`${name}: downloaded and verified`);
       return;
-    } catch {}
+    } catch (error) {
+      if (error?.repairable !== true) throw error;
+    }
     await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
-    await publishFixtureFile(temp, target);
+    await publishImpl(temp, target);
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
     if (output && !output.closed) {

@@ -2,8 +2,8 @@ import { build, transform } from 'esbuild';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm } from 'node:fs/promises';
-import { dirname, posix, relative, resolve } from 'node:path';
+import { access, readFile, mkdir, rm, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
@@ -129,15 +129,81 @@ async function buildWorkerAssets() {
   const wasm = await readFile(resolve(root, 'capstone.wasm'));
   return { classic, modules, wasm: wasm.toString('base64') };
 }
-async function collectClassic(path, sources) {
-  path = normalizePath(path); if (sources.has(path)) return;
-  const source = await readFile(resolve(root, path), 'utf8'); sources.set(path, source);
-  for (const dependency of parseImports(source, path)) await collectClassic(dependency, sources);
+function pathIsWithin(rootPath, targetPath) {
+  const rel = relative(rootPath, targetPath);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+export async function resolveClassicSource(path, {
+  rootDir = root,
+  realpathImpl = realpath,
+  statImpl = stat,
+} = {}) {
+  const normalized = normalizePath(path);
+  const lexical = resolve(rootDir, normalized);
+  const [realRoot, realSource] = await Promise.all([realpathImpl(rootDir), realpathImpl(lexical)]);
+  if (!pathIsWithin(realRoot, realSource)) {
+    throw new Error(`Classic worker source escapes repository: ${normalized}`);
+  }
+  const sourceStat = await statImpl(realSource);
+  if (!sourceStat.isFile()) throw new Error(`Classic worker source is not a regular file: ${normalized}`);
+  return { normalized, realSource };
+}
+
+export async function collectClassic(path, sources, options = {}) {
+  const { normalized, realSource } = await resolveClassicSource(path, options);
+  if (sources.has(normalized)) return;
+  const source = await (options.readFileImpl ?? readFile)(realSource, 'utf8');
+  sources.set(normalized, source);
+  for (const dependency of parseImports(source, normalized)) await collectClassic(dependency, sources, options);
 }
 function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)
     .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
 }
+function regexLiteralEnd(source, start) {
+  let i = start + 1;
+  let escaped = false;
+  let inClass = false;
+  while (i < source.length) {
+    const ch = source[i];
+    if (escaped) {
+      escaped = false;
+      i++;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      i++;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r') return null;
+    if (ch === '[') {
+      inClass = true;
+      i++;
+      continue;
+    }
+    if (ch === ']' && inClass) {
+      inClass = false;
+      i++;
+      continue;
+    }
+    if (ch === '/' && !inClass) {
+      i++;
+      while (i < source.length && /[a-z]/i.test(source[i])) i++;
+      return i;
+    }
+    i++;
+  }
+  return null;
+}
+
+function regexMayStartAfter(lastSignificantCodeChar, lastWord) {
+  if (!lastSignificantCodeChar) return true;
+  if (new Set(['return', 'throw', 'case', 'delete', 'void', 'typeof', 'new', 'in', 'instanceof', 'yield', 'await', 'else', 'do']).has(lastWord)) return true;
+  return /[({[=:;,!?&|^~<>%*+\-]/.test(lastSignificantCodeChar);
+}
+
 function scanImportScriptsCalls(source) {
   const matches = [];
   const len = source.length;
@@ -146,6 +212,7 @@ function scanImportScriptsCalls(source) {
     let i = start;
     let braceDepth = 0;
     let lastSignificantCodeChar = '';
+    let lastWord = '';
     while (i < len) {
       const ch = source[i];
       if (ch === '/' && source[i + 1] === '/') {
@@ -167,7 +234,8 @@ function scanImportScriptsCalls(source) {
           i++;
         }
         i++;
-        lastSignificantCodeChar = quote;
+        lastSignificantCodeChar = 'value';
+        lastWord = '';
         continue;
       }
       if (ch === '`') {
@@ -189,8 +257,19 @@ function scanImportScriptsCalls(source) {
           }
           i++;
         }
-        lastSignificantCodeChar = '`';
+        lastSignificantCodeChar = 'value';
+        lastWord = '';
         continue;
+      }
+      if (ch === '/' && source[i + 1] !== '/' && source[i + 1] !== '*'
+          && regexMayStartAfter(lastSignificantCodeChar, lastWord)) {
+        const regexEnd = regexLiteralEnd(source, i);
+        if (regexEnd != null) {
+          i = regexEnd;
+          lastSignificantCodeChar = 'value';
+          lastWord = '';
+          continue;
+        }
       }
       if (stopAtTemplateBrace) {
         if (ch === '{') {
@@ -260,12 +339,24 @@ function scanImportScriptsCalls(source) {
               });
               i = callEnd;
               lastSignificantCodeChar = ')';
+              lastWord = '';
               continue;
             }
           }
         }
       }
-      if (!/\s/.test(ch)) lastSignificantCodeChar = ch;
+      if (/[A-Za-z_$]/.test(ch)) {
+        let end = i + 1;
+        while (end < len && /[A-Za-z0-9_$]/.test(source[end])) end++;
+        lastWord = source.slice(i, end);
+        lastSignificantCodeChar = 'word';
+        i = end;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        lastSignificantCodeChar = ch;
+        lastWord = '';
+      }
       i++;
     }
     if (stopAtTemplateBrace) throw new Error('Unterminated template interpolation.');
