@@ -15,6 +15,12 @@ When an agent needs a broad test or release-gate run, suppress successful chatte
 - For diagnosis, rerun the smallest failing command with `HEX_TEST_OUTPUT=verbose` to restore full output.
 - Do not replace the canonical `npm run check`, verifier, denominator, exact-head, or release semantics. Quiet execution changes presentation only, never what is tested.
 
+## Task management and reactive wakeup
+
+- Do **not** poll or repeatedly call `manage_task` (such as looping on `status` or checking progress frequently) to wait for background commands or test completion.
+- Rely strictly on reactive wakeup notifications from the messaging system. When a background task finishes, the system automatically sends a message to wake you up.
+- Only invoke `manage_task` when explicit operational action is strictly necessary (e.g., cancelling an obsolete command with `kill` or sending required interactive stdin with `send_input`), never for polling or frequent status checking.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
