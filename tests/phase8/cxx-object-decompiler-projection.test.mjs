@@ -44,6 +44,14 @@ function createFixture({
   return { ir, model, opts };
 }
 
+function receiverValue(ir) {
+  const value = ir?.args?.get?.('x0')
+    ?? ir?.values?.find?.(candidate => candidate?.kind === 'arg' && (candidate?.reg === 'x0' || candidate?.index === 0))
+    ?? null;
+  assert.ok(value, 'fixture must expose canonical ABI argument 0');
+  return value;
+}
+
 test('positive receiver: argument 0 renders as this and signature has ClassName * this', () => {
   const { ir, model, opts } = createFixture({
     lines: ['ldr w0, [x0, #0x38]', 'ret'],
@@ -58,7 +66,7 @@ test('positive receiver: argument 0 renders as this and signature has ClassName 
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_player_read',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     classIdentity,
     nonStaticProof: {
@@ -103,7 +111,7 @@ test('anonymous class receiver: renders uint64 this without inventing fake class
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_anon_read',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     classIdentity,
     nonStaticProof: {
@@ -152,7 +160,7 @@ test('receiver copy: tracing MOV x19, x0 renders this->field_20', () => {
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_actor_mov',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     classIdentity,
     nonStaticProof: {
@@ -191,7 +199,7 @@ test('store to receiver field: this->field_10 = 42', () => {
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_store',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: {
       source: 'cxx-member',
@@ -239,7 +247,7 @@ test('negative gate: partial completeness fails closed and preserves a1', () => 
   const partialReceiver = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_partial',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'speculative' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -266,7 +274,7 @@ test('negative gate: uncertainty flag fails closed and preserves a1', () => {
   const uncertainReceiver = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_uncertain',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'guessed' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -301,7 +309,7 @@ test('virtual slot dispatch: unclosed candidate count = 1 retains indirect call 
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_vcall',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -313,7 +321,7 @@ test('virtual slot dispatch: unclosed candidate count = 1 retains indirect call 
   const virtualSlotEvidence = createCppVirtualSlotEvidence({
     callSiteId: callInst.id,
     callSiteAddress: callInst.address,
-    receiverValueId: ir.values[0].id,
+    receiverValueId: receiverValue(ir).id,
     vptrValueId: 'vptr_val',
     slotIndex: 2,
     slotByteOffset: 16,
@@ -354,7 +362,7 @@ test('virtual slot dispatch: closureProven with single candidate devirtualizes t
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_vcall_closed',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -366,7 +374,7 @@ test('virtual slot dispatch: closureProven with single candidate devirtualizes t
   const virtualSlotEvidence = createCppVirtualSlotEvidence({
     callSiteId: callInst.id,
     callSiteAddress: callInst.address,
-    receiverValueId: ir.values[0].id,
+    receiverValueId: receiverValue(ir).id,
     vptrValueId: 'vptr_val',
     slotIndex: 2,
     slotByteOffset: 16,
@@ -406,7 +414,7 @@ test('virtual slot dispatch: closureProven with multiple candidates fails closed
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_vcall_multi',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -418,7 +426,7 @@ test('virtual slot dispatch: closureProven with multiple candidates fails closed
   const virtualSlotEvidence = createCppVirtualSlotEvidence({
     callSiteId: callInst.id,
     callSiteAddress: callInst.address,
-    receiverValueId: ir.values[0].id,
+    receiverValueId: receiverValue(ir).id,
     vptrValueId: 'vptr_val',
     slotIndex: 2,
     slotByteOffset: 16,
@@ -454,7 +462,7 @@ test('authoritative field name metadata: this->field_38 becomes this->m_health',
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_fields',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -484,7 +492,7 @@ test('high variable naming: recoverHighVariables names argument 0 as this with c
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_high_var',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -512,7 +520,7 @@ test('pipeline-core projection: enhanceSemanticDecompilation projects this->fiel
   const receiverEvidence = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_pipeline',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -538,7 +546,7 @@ test('adversarial: plain forged receiver evidence cannot rename argument 0 to th
     receiver: {
       schema: 'cpp-receiver-evidence/v1',
       functionId: 'forged',
-      canonicalValueId: ir.values[0].id,
+      canonicalValueId: receiverValue(ir).id,
       receiverRole: 'this',
       abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
       completeness: 'complete',
@@ -580,7 +588,7 @@ test('adversarial: canonical receiver from a different function address fails cl
   const receiver = createCppReceiverEvidence({
     functionAddress: opts.addr + 4n,
     functionId: 'different_function',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -603,14 +611,14 @@ test('adversarial: same-call-site slot for a different receiver cannot devirtual
   const receiver = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_receiver_bound_slot',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
     completeness: 'complete',
     snapshotId: 'receiver-bound-slot',
   });
-  const other = ir.values.find(value => value?.id !== ir.values[0].id && !isCppReceiverAlias(value, receiver));
+  const other = ir.values.find(value => value?.id !== receiverValue(ir).id && !isCppReceiverAlias(value, receiver));
   assert.ok(other, 'fixture must expose a non-receiver SSA value');
   const mismatched = createCppVirtualSlotEvidence({
     callSiteId: callInst.id,
@@ -665,7 +673,7 @@ test('adversarial: forged virtual-slot evidence cannot devirtualize a call', () 
   const receiver = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_forged_slot',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -678,7 +686,7 @@ test('adversarial: forged virtual-slot evidence cannot devirtualize a call', () 
     virtualSlots: [{
       schema: 'cpp-virtual-slot-evidence/v1',
       callSiteId: callInst.id,
-      receiverValueId: ir.values[0].id,
+      receiverValueId: receiverValue(ir).id,
       vptrValueId: 'fake',
       slotIndex: 2,
       slotByteOffset: 16,
@@ -702,7 +710,7 @@ test('virtual slot without authoritative argument count preserves unknown additi
   const receiver = createCppReceiverEvidence({
     functionAddress: opts.addr,
     functionId: 'func_unknown_arity',
-    canonicalValueId: ir.values[0].id,
+    canonicalValueId: receiverValue(ir).id,
     receiverRole: 'this',
     nonStaticProof: { rule: 'proven-vtable-slot' },
     abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
@@ -712,7 +720,7 @@ test('virtual slot without authoritative argument count preserves unknown additi
   const slot = createCppVirtualSlotEvidence({
     callSiteId: callInst.id,
     callSiteAddress: callInst.address,
-    receiverValueId: ir.values[0].id,
+    receiverValueId: receiverValue(ir).id,
     vptrValueId: 'vptr',
     slotIndex: 2,
     slotByteOffset: 16,
