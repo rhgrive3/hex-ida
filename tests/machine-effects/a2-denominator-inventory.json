@@ -108,7 +108,7 @@
             "coverage": "exact-with-intrinsic",
             "preexisting": false,
             "oracle": "arm-a-profile-a64-load-store-encoding-tables + deployed-capstone-5-arm64 + llvm-aarch64-integrated-assembler-disassembler",
-            "reason": "All 123 registry-owned load/store, exclusive, LSE-atomic, barrier, and prefetch mnemonics are bound to 267 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, including every one of the 32 PRFM/PRFUM prfop encodings and all DSB/ISB CRm imm4 encodings. Constrained-unpredictable and malformed forms remain explicit fail-closed negatives outside the denominator.",
+            "reason": "All 135 registry-owned load/store, exclusive, LSE-atomic, barrier, RCpc-ordering, and prefetch mnemonics are bound to 279 encoding cases assembled by LLVM MC and decoded by the deployed Capstone build, including every one of the 32 PRFM/PRFUM prfop encodings and all DSB/ISB CRm imm4 encodings. Ownership and enumeration stay exact: the 9 FEAT_LRCPC/LRCPC2 acquire forms are declared contract-limited partials because the shared memory-ordering domain has no RCpc token, so their read, access width, address provenance, destination write, and fault model are still proven exactly while the ordering strength stays unpublished and SEQ-CST is never fabricated. Constrained-unpredictable and malformed forms remain explicit fail-closed negatives outside the denominator.",
             "proof": {
               "schemaVersion": "machine-effects-effect-unit-proof/v1",
               "source": "js/targets/architecture/arm64/effects/memory.js",
@@ -119,12 +119,27 @@
                 "denominatorId": "arm64:a64:memory-encoding-discriminators:v1",
                 "profileId": "arm64:a64",
                 "source": "tools/validation/machine-effects/arm64-a64-memory-denominator.mjs",
-                "encodingFamilyCount": 9,
-                "encodingCaseCount": 267,
-                "mnemonicCount": 123,
-                "exactMnemonicCount": 123,
-                "partialMnemonicCount": 0,
-                "corpusSha256": "3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9",
+      "encodingFamilyCount": 10,
+      "encodingCaseCount": 279,
+      "mnemonicCount": 135,
+      "exactMnemonicCount": 126,
+      "partialMnemonicCount": 9,
+      "contractLimitedPartialMnemonicCount": 9,
+      "contractLimitedPartialMnemonics": [
+        "ldapr",
+        "ldaprb",
+        "ldaprh",
+        "ldapur",
+        "ldapurb",
+        "ldapurh",
+        "ldapursb",
+        "ldapursh",
+        "ldapursw"
+      ],
+      "missingGenericContracts": [
+        "machine-effects-memory-ordering:acquire-rcpc"
+      ],
+      "corpusSha256": "2bda5162ca7344471fca42e8dad5233caf37a35ad7d9e7506d39c5831652e283",
                 "oracleIds": [
                   "arm-a-profile-a64-load-store-encoding-tables",
                   "deployed-capstone-5-arm64",
@@ -283,12 +298,12 @@
             "arm64e:a64+pac:effect-family:fallback-unmatched-decoder-family"
           ],
           "pacEncodingCaseCount": 45521,
-          "pacMnemonicCount": 44,
+          "pacMnemonicCount": 50,
           "knownBaselineEncodingCaseCount": 376186,
           "strictBaselineDisjointEncodingCaseCount": 376173,
           "baselineFeatureAliasOverlapCount": 13,
           "positiveDelegationSampleCount": 5,
-          "pacDispatchOwnerCount": 44,
+          "pacDispatchOwnerCount": 50,
           "fallbackDisposition": "null-after-single-canonical-arm64-attempt"
         },
         "pacDenominator": {
@@ -298,7 +313,7 @@
           "test": "tests/machine-effects/arm64e-pac-denominator.test.mjs",
           "encodingFamilyCount": 44,
           "encodingCaseCount": 45521,
-          "mnemonicCount": 44,
+          "mnemonicCount": 50,
           "oracleIds": [
             "arm-architecture-reference-manual-pauth-encodings",
             "deployed-capstone-5-arm64",
@@ -369,7 +384,13 @@
         "retaa",
         "retab",
         "eretaa",
-        "eretab"
+        "eretab",
+        "paciasppc",
+        "pacibsppc",
+        "retaasppc",
+        "retabsppc",
+        "retaasppcr",
+        "retabsppcr"
       ],
       "effectRegistry": {
         "source": "js/targets/architecture/arm64e/effects.js",

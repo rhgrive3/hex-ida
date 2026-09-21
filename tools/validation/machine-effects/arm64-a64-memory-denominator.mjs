@@ -14,8 +14,8 @@ export const ARM64_A64_MEMORY_LOCKED_SCOPE_ID = 'arm64:a64:load-store-registry-s
 // Locked corpus identity. The enumerated case list is the denominator, so its
 // digest is pinned: a case removed, renamed, or reordered fails the dependency
 // proof instead of quietly proving a smaller claim.
-export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 267;
-export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '3313f81cbe51108c43102d226222fedbd13251c45a7cfbb9552285992559e4c9';
+export const ARM64_A64_MEMORY_LOCKED_CASE_COUNT = 279;
+export const ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256 = '2bda5162ca7344471fca42e8dad5233caf37a35ad7d9e7506d39c5831652e283';
 
 const family = (id, discriminators) => Object.freeze({ id, discriminators:Object.freeze(discriminators) });
 export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
@@ -24,6 +24,7 @@ export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
   family('pair-load-store', ['mnemonic','width','signed-scaled-imm7','pre-index','post-index','writeback','fault']),
   family('literal-load', ['mnemonic','width','signedness','pc-relative','fault']),
   family('acquire-release', ['mnemonic','width','ordering','atomic','fault']),
+  family('rcpc-ordering', ['mnemonic','width','ordering-strength','representability','missing-contract','preserved-access','fault']),
   family('exclusive', ['mnemonic','width','ordering','monitor-state','fault']),
   family('lse-atomic', ['mnemonic','width','ordering','conditional-write','fault']),
   family('barrier-exclusive-clear', ['mnemonic','ordering','scope','hidden-state']),
@@ -33,6 +34,7 @@ export const ARM64_A64_MEMORY_ENCODING_FAMILIES = Object.freeze([
 const NON_ATOMIC_EXACT = Object.freeze([
   'ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldtr',
   'str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh','sttr',
+  'stlur','stlurb','stlurh',
   'prfm','prfum',
 ]);
 const ORDER_SUFFIXES = Object.freeze([
@@ -62,7 +64,44 @@ const ATOMIC_EXACT = Object.freeze([
 ]);
 
 export const ARM64_A64_MEMORY_EXACT_MNEMONICS = Object.freeze([...NON_ATOMIC_EXACT, ...ATOMIC_EXACT]);
-export const ARM64_A64_MEMORY_PARTIAL_MNEMONICS = Object.freeze([]);
+
+// One effect family carries two independent claims, and they must not be
+// collapsed into a single status:
+//
+//   ownership / enumeration — every owned encoding is decoded with structured
+//                             operands and lowered by the registry; the family's
+//                             mnemonic set is exactly the production registry's.
+//   lowering fidelity       — how much of each form's architecture semantics the
+//                             *shared* MachineEffects contract can carry.
+//
+// FEAT_LRCPC / FEAT_LRCPC2 (#8607) is the first family member that splits them.
+// An RCpc acquire load cannot be published as strong RCsc `acquire` without
+// fabricating an ordering edge, and the deployed generic memory-ordering domain
+// (`relaxed|acquire|release|acq-rel|seq-cst`) has no RCpc token to name its real
+// strength. Production therefore fails closed to `partial` while still emitting
+// the exact read: address provenance, access width, destination write, and the
+// fault model are unaffected by the missing ordering token.
+//
+// That is a *contract-limited* partial — not an unowned form and not malformed
+// input — so it is declared here explicitly, per mnemonic, with the name of the
+// missing generic contract instead of being hidden behind a zero count.
+export const ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS = Object.freeze([
+  'ldapr','ldaprb','ldaprh','ldapur','ldapurb','ldapurh','ldapursb','ldapursh','ldapursw',
+].map((mnemonic) => Object.freeze({
+  mnemonic,
+  partialKind:'contract-limited-ordering-strength',
+  reason:'arm64-rcpc-ordering-strength',
+  missingGenericContract:'machine-effects-memory-ordering:acquire-rcpc',
+  // The architecture authority and the real strength are still published in
+  // metadata; only the *shared access ordering* stays unset.
+  publishedOrderingAuthority:'rcpc',
+  publishedOrderingStrength:'acquire-rcpc',
+  preservesAccess:true,
+})));
+
+export const ARM64_A64_MEMORY_PARTIAL_MNEMONICS = Object.freeze(
+  ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map(({ mnemonic }) => mnemonic),
+);
 
 const item = (id, familyId, asm, mnemonic, expected = {}) => Object.freeze({
   id, familyId, asm, mnemonic, completeness:expected.completeness || 'exact', ...expected,
@@ -101,6 +140,86 @@ const CANONICAL_NON_ATOMIC = Object.freeze([
   ['stlrh','stlrh w0, [x1]','acquire-release',16,'release'],
   ['sttr','sttr x0, [x1, #-1]','single-unscaled-unprivileged',64],
 ]);
+
+// FEAT_LRCPC (LDAPR/STLUR) and FEAT_LRCPC2 (LDAPUR/STLUR unscaled) encode the RCpc
+// ordering strength in the form itself, so the family's discriminating axis is
+// representability: the release forms map onto the shared `release` token
+// exactly, while the acquire forms are the declared contract-limited partials.
+const RCPC_CASES = Object.freeze([
+  Object.freeze({ mnemonic:'ldapr', asm:'ldapr x0, [x1]', widthBits:64 }),
+  Object.freeze({ mnemonic:'ldaprb', asm:'ldaprb w0, [x1]', widthBits:8 }),
+  Object.freeze({ mnemonic:'ldaprh', asm:'ldaprh w0, [x1]', widthBits:16 }),
+  Object.freeze({ mnemonic:'ldapur', asm:'ldapur x0, [x1, #-1]', widthBits:64 }),
+  Object.freeze({ mnemonic:'ldapurb', asm:'ldapurb w0, [x1, #-1]', widthBits:8 }),
+  Object.freeze({ mnemonic:'ldapurh', asm:'ldapurh w0, [x1, #-1]', widthBits:16 }),
+  Object.freeze({ mnemonic:'ldapursb', asm:'ldapursb x0, [x1, #-1]', widthBits:8 }),
+  Object.freeze({ mnemonic:'ldapursh', asm:'ldapursh x0, [x1, #-1]', widthBits:16 }),
+  Object.freeze({ mnemonic:'ldapursw', asm:'ldapursw x0, [x1, #-1]', widthBits:32 }),
+  Object.freeze({ mnemonic:'stlur', asm:'stlur x0, [x1, #-1]', widthBits:64, ordering:'release', writeOrdering:'release' }),
+  Object.freeze({ mnemonic:'stlurb', asm:'stlurb w0, [x1, #-1]', widthBits:8, ordering:'release', writeOrdering:'release' }),
+  Object.freeze({ mnemonic:'stlurh', asm:'stlurh w0, [x1, #-1]', widthBits:16, ordering:'release', writeOrdering:'release' }),
+]);
+const CONTRACT_LIMITED_BY_MNEMONIC = new Map(
+  ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map((form) => [form.mnemonic, form]),
+);
+
+function* rcpcCases() {
+  for (const current of RCPC_CASES) {
+    const declared = CONTRACT_LIMITED_BY_MNEMONIC.get(current.mnemonic);
+    const widthFaults = current.widthBits > 8 ? ['data-abort','alignment-fault'] : ['data-abort'];
+    if (!declared) {
+      // Release half of the family: the shared `release` token carries RCpc
+      // store-release semantics unchanged, so this stays exact.
+      yield item(`rcpc:${current.mnemonic}:${current.widthBits}`, 'rcpc-ordering', current.asm, current.mnemonic, {
+        widthBits:current.widthBits, ordering:current.ordering, writeOrdering:current.writeOrdering,
+        orderingAuthority:'rcpc', atomic:true, faultKinds:widthFaults,
+      });
+      continue;
+    }
+    yield item(`rcpc:${current.mnemonic}:${current.widthBits}`, 'rcpc-ordering', current.asm, current.mnemonic, {
+      completeness:'partial', widthBits:current.widthBits,
+      partialKind:declared.partialKind, partialReason:declared.reason,
+      partialCategories:Object.freeze(['memory']),
+      missingGenericContract:declared.missingGenericContract,
+      ordering:declared.publishedOrderingStrength, orderingAuthority:declared.publishedOrderingAuthority,
+      preservesAccess:declared.preservesAccess, atomic:true, faultKinds:widthFaults,
+    });
+  }
+}
+
+// Fail-closed predicate shared by the denominator validation and the regression
+// test: a partial case is explained only while it stays bound to a declared
+// shared-contract limitation. Any other partial form is an unexplained gap, so a
+// new unrepresentable form cannot be added without declaring its missing
+// contract here.
+export function arm64A64MemoryUnexplainedPartialMnemonics({
+  cases = [...arm64A64MemoryEncodingCases()],
+  declaredForms = ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS,
+} = {}) {
+  const declared = new Map(declaredForms.map((form) => [form.mnemonic, form]));
+  const unexplained = new Set();
+  const caseByMnemonic = new Map();
+  for (const current of cases) {
+    caseByMnemonic.set(current.mnemonic, current);
+    if (current.completeness !== 'partial') continue;
+    const form = declared.get(current.mnemonic);
+    if (!form
+      || current.partialKind !== form.partialKind
+      || current.partialReason !== form.reason
+      || current.missingGenericContract !== form.missingGenericContract
+      || current.preservesAccess !== true) {
+      unexplained.add(current.mnemonic);
+    }
+  }
+  // Promoting a declared form to `exact` is the mirror image of hiding an
+  // undeclared one: the corpus would then claim a lowering fidelity the shared
+  // contract cannot carry. Both directions fail closed here.
+  for (const form of declaredForms) {
+    const current = caseByMnemonic.get(form.mnemonic);
+    if (!current || current.completeness !== 'partial') unexplained.add(form.mnemonic);
+  }
+  return Object.freeze([...unexplained].sort());
+}
 
 function* atomicCases() {
   for (const acquire of [false,true]) {
@@ -164,6 +283,7 @@ export function* arm64A64MemoryEncodingCases() {
     ['w','ldr w0, .','ldr',32],['x','ldr x0, .','ldr',64],['s','ldr s0, .','ldr',32],['d','ldr d0, .','ldr',64],['q','ldr q0, .','ldr',128],['sw','ldrsw x0, .','ldrsw',32],
   ]) yield item(`literal:${id}`, 'literal-load', asm, mnemonic, { widthBits, literal:true, faultKinds:['data-abort'] });
 
+  yield* rcpcCases();
   yield* atomicCases();
 
   for (const mnemonic of ['dmb','dsb']) for (const option of ['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']) {
@@ -221,6 +341,22 @@ export function validateArm64A64MemoryDenominator() {
   if (exact.size !== ARM64_A64_MEMORY_EXACT_MNEMONICS.length) throw new Error('arm64-memory-denominator-exact-mnemonic-duplicate');
   for (const mnemonic of partial) if (exact.has(mnemonic)) throw new Error(`arm64-memory-denominator-status-overlap:${mnemonic}`);
 
+  const contractLimited = new Map(ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map((form) => [form.mnemonic, form]));
+  if (contractLimited.size !== ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.length) {
+    throw new Error('arm64-memory-denominator-contract-limited-mnemonic-duplicate');
+  }
+  // Every declared partial form has to name the shared contract it exceeds.
+  // Without that name the gap is indistinguishable from an unowned encoding.
+  for (const form of ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS) {
+    if (typeof form.missingGenericContract !== 'string' || form.missingGenericContract.length === 0
+      || typeof form.reason !== 'string' || form.reason.length === 0
+      || typeof form.partialKind !== 'string' || form.partialKind.length === 0
+      || form.preservesAccess !== true) {
+      throw new Error(`arm64-memory-denominator-contract-limited-unattributed:${form.mnemonic}`);
+    }
+    if (!partial.has(form.mnemonic)) throw new Error(`arm64-memory-denominator-contract-limited-not-partial:${form.mnemonic}`);
+  }
+
   const ids = new Set();
   const observedFamilies = new Set();
   const observedExact = new Set();
@@ -238,6 +374,10 @@ export function validateArm64A64MemoryDenominator() {
   if (observedFamilies.size !== ARM64_A64_MEMORY_ENCODING_FAMILIES.length) throw new Error('arm64-memory-denominator-family-unobserved');
   for (const mnemonic of exact) if (!observedExact.has(mnemonic)) throw new Error(`arm64-memory-denominator-exact-mnemonic-unobserved:${mnemonic}`);
   for (const mnemonic of partial) if (!observedPartial.has(mnemonic)) throw new Error(`arm64-memory-denominator-partial-mnemonic-unobserved:${mnemonic}`);
+  // Only declared contract-limited limitations may be partial. Any other partial
+  // form is an unexplained gap and fails closed here, before the dependency
+  // proof can be minted.
+  for (const mnemonic of arm64A64MemoryUnexplainedPartialMnemonics()) throw new Error(`arm64-memory-denominator-unexplained-partial-mnemonic:${mnemonic}`);
 
   return Object.freeze({
     valid:true,
@@ -249,6 +389,11 @@ export function validateArm64A64MemoryDenominator() {
     mnemonicCount:exact.size + partial.size,
     exactMnemonicCount:exact.size,
     partialMnemonicCount:partial.size,
+    // Lowering fidelity is the only axis that may be partial, and only for the
+    // declared contract-limited forms.
+    contractLimitedPartialMnemonicCount:ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.length,
+    contractLimitedPartialMnemonics:Object.freeze([...contractLimited.keys()].sort()),
+    missingGenericContracts:Object.freeze([...new Set(ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map(({ missingGenericContract }) => missingGenericContract))].sort()),
     corpusSha256:arm64A64MemoryCorpusSha256(),
     oracleIds:ARM64_A64_MEMORY_ORACLE_IDS,
   });
@@ -271,7 +416,17 @@ export function arm64A64MemoryDecoderDependencyProof() {
     schemaVersion:'arm64-a64-decoder-family-proof/v2',
     canonicalFamily:'memory',
     profileId:'arm64:a64',
+    // `coverageState` is the decoder's claim: every owned encoding is decoded
+    // and routed to the registry, and the fallback stays unreachable. That claim
+    // is untouched by the RCpc ordering gap, so it stays `exact`. Lowering
+    // fidelity is reported separately instead of being folded into it, so a
+    // consumer cannot read an exact enumeration as an exact lowering.
     coverageState:'exact',
+    ownershipCoverage:'exact',
+    loweringCoverage:'exact-with-declared-contract-limited-partial',
+    contractLimitedPartialMnemonicCount:denominator.contractLimitedPartialMnemonicCount,
+    contractLimitedPartialMnemonics:denominator.contractLimitedPartialMnemonics,
+    missingGenericContracts:denominator.missingGenericContracts,
     decoderProvider:'capstone/backend',
     decoderIdentityId:ARM64_A64_DECODER_IDENTITY_LOCK.identityId,
     denominatorId:ARM64_A64_MEMORY_DENOMINATOR_ID,

@@ -749,13 +749,37 @@ export function validateA2DenominatorInventory(inventory = loadA2DenominatorInve
         || memoryDenominator.mnemonicCount !== liveMemory.mnemonicCount
         || memoryDenominator.exactMnemonicCount !== liveMemory.exactMnemonicCount
         || memoryDenominator.partialMnemonicCount !== liveMemory.partialMnemonicCount
+        || memoryDenominator.contractLimitedPartialMnemonicCount !== liveMemory.contractLimitedPartialMnemonicCount
+        || !sameSet(memoryDenominator.contractLimitedPartialMnemonics || [], liveMemory.contractLimitedPartialMnemonics)
+        || !sameSet(memoryDenominator.missingGenericContracts || [], liveMemory.missingGenericContracts)
         || memoryDenominator.corpusSha256 !== liveMemory.corpusSha256
         || !sameSet(memoryDenominator.oracleIds || [], liveMemory.oracleIds)) {
         fail('a2-denominator-arm64-memory-live-proof-drift', pathName);
       }
-      // An exact memory family that still declares partial mnemonics would be a
-      // false exact, whatever the inventory says.
-      if (liveMemory.partialMnemonicCount !== 0) fail('a2-denominator-arm64-memory-partial-mnemonics-remain', pathName);
+      // An exact memory family must not hide an unexplained partial mnemonic, and
+      // it must not hide one by relabelling it either. Ownership and enumeration
+      // stay exact; lowering fidelity is the only axis that may be partial, and
+      // only for forms that are separately declared, individually attributed to a
+      // named missing shared contract, and independently proven by an encoding
+      // case in the family denominator. The live denominator is the authority here
+      // and the inventory only has to agree with it, so a partial form cannot be
+      // added by editing the inventory and an undeclared one cannot disappear into
+      // a count. Every branch below is a fail-closed, not a relaxation: any
+      // partial mnemonic that is not covered by the contract-limited declaration
+      // still fails the family.
+      if (liveMemory.partialMnemonicCount !== liveMemory.contractLimitedPartialMnemonicCount) {
+        fail('a2-denominator-arm64-memory-undeclared-partial-mnemonics-remain', pathName);
+      }
+      if (!Array.isArray(liveMemory.contractLimitedPartialMnemonics)
+        || liveMemory.contractLimitedPartialMnemonics.length !== liveMemory.contractLimitedPartialMnemonicCount
+        || liveMemory.contractLimitedPartialMnemonics.some((mnemonic) => typeof mnemonic !== 'string' || mnemonic.length === 0)) {
+        fail('a2-denominator-arm64-memory-contract-limited-set-incomplete', pathName);
+      }
+      if (!Array.isArray(liveMemory.missingGenericContracts)
+        || liveMemory.missingGenericContracts.length === 0
+        || liveMemory.missingGenericContracts.some((contract) => typeof contract !== 'string' || !/^machine-effects-[a-z-]+:/.test(contract))) {
+        fail('a2-denominator-arm64-memory-contract-limited-unattributed', pathName);
+      }
 
       validateArm64FamilyProof(families.find((family) => family.id === 'control'), {
         id:'control', source:'js/targets/architecture/arm64/effects/control.js',
