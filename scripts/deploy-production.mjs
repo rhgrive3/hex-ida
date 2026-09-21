@@ -34,6 +34,8 @@ export function runProductionDeploy({
   closeSync = fs.closeSync,
   readSnapshotSync = fs.readFileSync,
   lstatSync = fs.lstatSync,
+  fstatSync = fs.fstatSync,
+  unlinkSync = fs.unlinkSync,
   rmSync = fs.rmSync,
   randomUUIDImpl = randomUUID,
   snapshotDirectory = repoRoot,
@@ -47,6 +49,8 @@ export function runProductionDeploy({
   const approvedBytes = Buffer.from(readFileSync(configPath));
   const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${randomUUIDImpl()}.jsonc`);
   let ownsSnapshot = false;
+  let snapshotIdentity = null;
+  let handoffFd = null;
   let primaryError = null;
   let status = null;
   let deploymentAttempted = false;
@@ -61,6 +65,7 @@ export function runProductionDeploy({
 
     const snapshotEntry = lstatSync(snapshotPath);
     if (snapshotEntry.isSymbolicLink() || !snapshotEntry.isFile()) throw new Error('Production config snapshot is not a regular file.');
+    snapshotIdentity = { dev:snapshotEntry.dev, ino:snapshotEntry.ino };
 
     const validation = run(process.execPath, [validatorPath, `--config=${snapshotPath}`], { cwd: repoRoot, stdio: 'inherit' });
     const validationStatus = subprocessStatus(validation, 'Production auth validator');
@@ -69,8 +74,42 @@ export function runProductionDeploy({
     } else {
       const beforeDeploy = Buffer.from(readSnapshotSync(snapshotPath));
       if (!beforeDeploy.equals(approvedBytes)) throw new Error('Production config snapshot changed after validation.');
+
+      // Bind the deployment handoff to the exact file object that was approved.
+      // A pathname check followed by spawning Wrangler is still racy because a
+      // concurrent writer can atomically replace the directory entry between
+      // those two operations. Open the verified object, prove its identity,
+      // unlink the pathname, then inherit that descriptor into the child.
+      handoffFd = openSync(snapshotPath, 'r');
+      const openedEntry = fstatSync(handoffFd);
+      if (!openedEntry.isFile() || openedEntry.dev !== snapshotIdentity.dev || openedEntry.ino !== snapshotIdentity.ino) {
+        throw new Error('Production config snapshot identity changed before deployment handoff.');
+      }
+      const currentEntry = lstatSync(snapshotPath);
+      if (currentEntry.isSymbolicLink() || !currentEntry.isFile()
+        || currentEntry.dev !== snapshotIdentity.dev || currentEntry.ino !== snapshotIdentity.ino) {
+        throw new Error('Production config snapshot identity changed before deployment handoff.');
+      }
+
+      const childConfigPath = process.platform === 'linux'
+        ? '/proc/self/fd/3'
+        : process.platform === 'darwin'
+          ? '/dev/fd/3'
+          : null;
+      if (!childConfigPath) throw new Error('Production deploy requires descriptor-backed config handoff on this platform.');
+
+      unlinkSync(snapshotPath);
+      const detachedBytes = Buffer.from(readSnapshotSync(
+        process.platform === 'linux' ? `/proc/self/fd/${handoffFd}` : `/dev/fd/${handoffFd}`,
+      ));
+      if (!detachedBytes.equals(approvedBytes)) throw new Error('Production config snapshot changed before deployment handoff.');
+
       deploymentAttempted = true;
-      const deployment = run(process.execPath, [wranglerPath, 'deploy', '--config', snapshotPath], { cwd: repoRoot, stdio: 'inherit' });
+      const deployment = run(
+        process.execPath,
+        [wranglerPath, 'deploy', '--config', childConfigPath],
+        { cwd: repoRoot, stdio:['inherit', 'inherit', 'inherit', handoffFd] },
+      );
       status = subprocessStatus(deployment, 'Wrangler deployment');
     }
   } catch (error) {
@@ -78,11 +117,20 @@ export function runProductionDeploy({
   }
 
   let cleanupError = null;
+  if (handoffFd != null) {
+    try {
+      closeSync(handoffFd);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
   if (ownsSnapshot) {
     try {
       rmSync(snapshotPath, { force: true });
     } catch (error) {
-      cleanupError = error;
+      cleanupError = cleanupError
+        ? new AggregateError([cleanupError, error], 'Production deploy snapshot descriptor and path cleanup both failed.')
+        : error;
     }
   }
 
