@@ -536,7 +536,7 @@ function addComparisonCarriers(ir, values, valuesById) {
  * architecture lifter. The v1 vocabulary is only the compatibility target.
  */
 export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
-  const ir = isCanonicalSemanticIrProducerArtifact(input)
+  const ir = isCanonicalSemanticIrProducerArtifact(input) && options.validationOptions == null
     ? input
     : validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
