@@ -98,6 +98,22 @@ function stateFor(request) {
   ].join('\n');
 }
 
+/*
+ * Holdout-calibrated semantic guidance.
+ *
+ * On the source-grounded OpenMW hp holdout the generic wording selected the
+ * wrong D4 candidate 5/5 times; naming the goal and the net-depleting/clamped
+ * shape of a vital pool selected the true D5 candidate 6/6 with choice (p=0.99)
+ * and 5/5 with parallel noul (p=0.88..0.91).  Goals that are not depletable
+ * pools keep the generic wording, so money/score/level are unaffected.
+ */
+const DEPLETABLE_VITAL_GOALS = new Set(['hp', 'stamina']);
+
+function depletableGuidance(goal) {
+  if (!DEPLETABLE_VITAL_GOALS.has(goal.id)) return '';
+  return ' A vital depletable resource is clamped so it cannot fall below zero and is driven by loss more often than by recovery: prefer the candidate whose decrease count strictly exceeds its increase count. A candidate with as many increases as decreases is an auxiliary or effect-driven pool, not the answer.';
+}
+
 function choiceQuestion(request) {
   const criteria = Object.fromEntries(request.candidates.map((candidate) => [
     candidate.id,
@@ -107,7 +123,7 @@ function choiceQuestion(request) {
   return {
     boundary: {
       type: 'choice',
-      instructions: 'Using only the observed facts, select at most one opaque candidate that semantically fits the requested gameplay value, or select none. Do not infer facts not present in the state.',
+      instructions: `The requested gameplay value is "${request.goal.label}" (id: ${request.goal.id}). Using only the observed facts, select at most one opaque candidate that semantically fits this value, or select none.${depletableGuidance(request.goal)} Do not infer facts not present in the state.`,
       criteria,
     },
   };
@@ -118,7 +134,7 @@ function noulQuestions(request) {
     candidate.id,
     {
       type: 'noul',
-      instructions: `Using only the observed facts, does opaque candidate ${candidate.id} semantically fit the requested gameplay value? Do not infer facts not present in the state.`,
+      instructions: `Does opaque candidate ${candidate.id} semantically fit the requested gameplay value "${request.goal.label}" (id: ${request.goal.id})?${depletableGuidance(request.goal)} Using only the observed facts; do not infer facts not present in the state.`,
       // Verified live: the noul schema requires `true`/`false` criteria and
       // answers with a scalar `noul` = P(true). `yes`/`no` is rejected with 400.
       criteria: {
