@@ -159,14 +159,14 @@ const RCPC_CASES = Object.freeze([
   Object.freeze({ mnemonic:'stlurb', asm:'stlurb w0, [x1, #-1]', widthBits:8, ordering:'release', writeOrdering:'release' }),
   Object.freeze({ mnemonic:'stlurh', asm:'stlurh w0, [x1, #-1]', widthBits:16, ordering:'release', writeOrdering:'release' }),
 ]);
-const CONTRACT_LIMITED_BY_MNEMONIC = new Map(
-  ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map((form) => [form.mnemonic, form]),
-);
-
-function* rcpcCases() {
+function* rcpcCases({ declaredForms = ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS } = {}) {
+  const declaredByMnemonic = new Map(declaredForms.map((form) => [form.mnemonic, form]));
   for (const current of RCPC_CASES) {
-    const declared = CONTRACT_LIMITED_BY_MNEMONIC.get(current.mnemonic);
+    const declared = declaredByMnemonic.get(current.mnemonic);
     const widthFaults = current.widthBits > 8 ? ['data-abort','alignment-fault'] : ['data-abort'];
+    if (!declared && current.ordering !== 'release') {
+      throw new Error(`arm64-memory-denominator-rcpc-acquire-undeclared:${current.mnemonic}`);
+    }
     if (!declared) {
       // Release half of the family: the shared `release` token carries RCpc
       // store-release semantics unchanged, so this stays exact.
@@ -252,7 +252,9 @@ function* atomicCases() {
   }
 }
 
-export function* arm64A64MemoryEncodingCases() {
+export function* arm64A64MemoryEncodingCases({
+  rcpcDeclaredForms = ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS,
+} = {}) {
   for (const [mnemonic, asm, familyId, widthBits, ordering] of CANONICAL_NON_ATOMIC) {
     yield item(`canonical:${mnemonic}`, familyId, asm, mnemonic, {
       widthBits, ...(ordering ? { ordering } : {}), faultKinds:familyId === 'acquire-release' && widthBits > 8 ? ['data-abort','alignment-fault'] : ['data-abort'],
@@ -283,7 +285,7 @@ export function* arm64A64MemoryEncodingCases() {
     ['w','ldr w0, .','ldr',32],['x','ldr x0, .','ldr',64],['s','ldr s0, .','ldr',32],['d','ldr d0, .','ldr',64],['q','ldr q0, .','ldr',128],['sw','ldrsw x0, .','ldrsw',32],
   ]) yield item(`literal:${id}`, 'literal-load', asm, mnemonic, { widthBits, literal:true, faultKinds:['data-abort'] });
 
-  yield* rcpcCases();
+  yield* rcpcCases({ declaredForms:rcpcDeclaredForms });
   yield* atomicCases();
 
   for (const mnemonic of ['dmb','dsb']) for (const option of ['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']) {
