@@ -136,8 +136,15 @@ fail(`could not publish generated userscript sync to ${branch} after ${maxAttemp
 
 function collectLocalOnlyCommitState(localTip, remoteTip) {
   const commits = gitRead(['rev-list', `${remoteTip}..${localTip}`]).split(/\s+/).filter(Boolean);
-  const changed = new Set();
-  const deleted = new Set();
+  // Commit-by-commit history catches source edits that were later reverted.
+  // The direct tree delta proves what reset --hard would actually discard even
+  // when merge topology hides a source-side ancestor from remote..local.
+  const changed = new Set(names(gitReadRaw([
+    'diff', '--no-renames', '--name-only', '-z', remoteTip, localTip,
+  ])));
+  const deleted = new Set(names(gitReadRaw([
+    'diff', '--no-renames', '--diff-filter=D', '--name-only', '-z', remoteTip, localTip,
+  ])));
   for (const commit of commits) {
     for (const name of names(gitReadRaw([
       'diff-tree', '--root', '-m', '--no-commit-id', '--name-only', '-r', '-z', commit,
