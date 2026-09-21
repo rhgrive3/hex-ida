@@ -37,11 +37,19 @@ export function runProductionDeploy({
   rmSync = fs.rmSync,
   randomUUIDImpl = randomUUID,
   snapshotDirectory = repoRoot,
+  onCleanupError = (error, details) => console.warn(
+    details.deploymentCommitted
+      ? `Production deployment succeeded, but snapshot cleanup failed: ${error?.message || error}`
+      : `Production deploy snapshot cleanup failed after status ${details.status}: ${error?.message || error}`,
+  ),
 } = {}) {
   if (args.length) throw new Error('Production deploy does not accept Wrangler config or environment overrides; edit wrangler.jsonc and retry.');
   const approvedBytes = Buffer.from(readFileSync(configPath));
   const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${randomUUIDImpl()}.jsonc`);
   let ownsSnapshot = false;
+  let primaryError = null;
+  let status = null;
+  let deploymentAttempted = false;
   try {
     const snapshotFd = openSync(snapshotPath, 'wx', 0o400);
     ownsSnapshot = true;
@@ -56,15 +64,43 @@ export function runProductionDeploy({
 
     const validation = run(process.execPath, [validatorPath, `--config=${snapshotPath}`], { cwd: repoRoot, stdio: 'inherit' });
     const validationStatus = subprocessStatus(validation, 'Production auth validator');
-    if (validationStatus !== 0) return validationStatus;
-
-    const beforeDeploy = Buffer.from(readSnapshotSync(snapshotPath));
-    if (!beforeDeploy.equals(approvedBytes)) throw new Error('Production config snapshot changed after validation.');
-    const deployment = run(process.execPath, [wranglerPath, 'deploy', '--config', snapshotPath], { cwd: repoRoot, stdio: 'inherit' });
-    return subprocessStatus(deployment, 'Wrangler deployment');
-  } finally {
-    if (ownsSnapshot) rmSync(snapshotPath, { force: true });
+    if (validationStatus !== 0) {
+      status = validationStatus;
+    } else {
+      const beforeDeploy = Buffer.from(readSnapshotSync(snapshotPath));
+      if (!beforeDeploy.equals(approvedBytes)) throw new Error('Production config snapshot changed after validation.');
+      deploymentAttempted = true;
+      const deployment = run(process.execPath, [wranglerPath, 'deploy', '--config', snapshotPath], { cwd: repoRoot, stdio: 'inherit' });
+      status = subprocessStatus(deployment, 'Wrangler deployment');
+    }
+  } catch (error) {
+    primaryError = error;
   }
+
+  let cleanupError = null;
+  if (ownsSnapshot) {
+    try {
+      rmSync(snapshotPath, { force: true });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+
+  if (primaryError) {
+    if (cleanupError) {
+      throw new AggregateError([primaryError, cleanupError], 'Production deploy failed and snapshot cleanup also failed.');
+    }
+    throw primaryError;
+  }
+  if (cleanupError) {
+    onCleanupError?.(cleanupError, {
+      snapshotPath,
+      status,
+      deploymentAttempted,
+      deploymentCommitted: deploymentAttempted && status === 0,
+    });
+  }
+  return status;
 }
 
 export function main(args = process.argv.slice(2), { run = spawnSync, reportError = console.error } = {}) {
