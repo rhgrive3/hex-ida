@@ -256,6 +256,45 @@ test('PR A: Virtual slot recognized without assuming exact target', () => {
   assert.equal(slot.exactTargetAddress, null);
 });
 
+test('PR A: function-scoped target closure metadata cannot devirtualize a call site', () => {
+  const ir = makeTestIr({ hasVirtualCall: true, slotOffset: 0x10n });
+  const report = extractCppObjectEvidence({
+    functionId: 'sub_virtual_call_unscoped_target',
+    functionName: '_ZN6PlayerC1Ev',
+    ir,
+    snapshotId: 'snap-unscoped-target',
+    metadata: {
+      targetClosure: true,
+      candidateTargetIds: ['Player::WrongTarget'],
+      exactTargetAddress: 0xDEADBEEFn,
+    },
+  });
+
+  assert.equal(report.virtualSlots.length, 1);
+  assert.equal(report.virtualSlots[0].virtualSlotKnown, true);
+  assert.equal(report.virtualSlots[0].closureProven, false,
+    'function-scoped closure cannot prove this specific virtual call target set');
+  assert.deepEqual(report.virtualSlots[0].candidateTargetIds, []);
+  assert.equal(report.virtualSlots[0].exactTargetKnown, false);
+  assert.equal(report.virtualSlots[0].exactTargetAddress, null);
+});
+
+test('PR A: direct call-site-scoped slot evidence can still carry an exact target', () => {
+  const slot = createCppVirtualSlotEvidence({
+    callSiteId: 77,
+    receiverValueId: 1,
+    vptrValueId: 2,
+    slotIndex: 2,
+    slotByteOffset: 0x10,
+    virtualSlotKnown: true,
+    closureProven: true,
+    candidateTargetIds: ['Player::Update'],
+    exactTargetAddress: 0x1234n,
+  });
+  assert.equal(slot.exactTargetKnown, true);
+  assert.equal(slot.exactTargetAddress, 0x1234n);
+});
+
 test('PR A: Non-vtable table is not treated as virtual slot (negative)', () => {
   // Indirect call that doesn't follow vtable dereference pattern
   const ir = {
