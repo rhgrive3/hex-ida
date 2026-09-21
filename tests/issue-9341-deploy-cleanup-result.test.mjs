@@ -32,7 +32,7 @@ for (const scenario of [
         snapshotDirectory:root,
         randomUUIDImpl:() => 'cleanup-failure',
         run() { return result(scenario.statuses[calls++]); },
-        rmSync() { throw cleanupError; },
+        closeSync(fd) { fs.closeSync(fd); throw cleanupError; },
         onCleanupError(error, details) { warnings.push({ error, details }); },
       });
       assert.equal(status, scenario.expected);
@@ -57,7 +57,7 @@ test('#9341 primary execution error remains identifiable when cleanup also fails
       snapshotDirectory:root,
       randomUUIDImpl:() => 'primary-plus-cleanup',
       run() { return result(null, spawnError); },
-      rmSync() { throw cleanupError; },
+      closeSync(fd) { fs.closeSync(fd); throw cleanupError; },
     }), (error) => error instanceof AggregateError
       && error.errors.includes(spawnError)
       && error.errors.includes(cleanupError));
