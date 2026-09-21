@@ -21,7 +21,7 @@ test('#9313 Wrangler receives the immutable approved snapshot, not a later origi
       configPath,
       snapshotDirectory:root,
       randomUUIDImpl:() => 'fixed',
-      run(_file, args) {
+      run(_file, args, options) {
         calls++;
         if (calls === 1) {
           snapshotPath = args.find((arg) => String(arg).startsWith('--config='))?.slice('--config='.length);
@@ -30,8 +30,10 @@ test('#9313 Wrangler receives the immutable approved snapshot, not a later origi
           fs.writeFileSync(configPath, invalidB);
           return ok;
         }
-        assert.deepEqual(args.slice(-2), ['--config', snapshotPath]);
-        assert.deepEqual(fs.readFileSync(snapshotPath), validA);
+        assert.deepEqual(args.slice(-2), ['--config', '/proc/self/fd/3']);
+        assert.ok(Array.isArray(options.stdio));
+        assert.deepEqual(fs.readFileSync(`/proc/self/fd/${options.stdio[3]}`), validA);
+        assert.equal(fs.existsSync(snapshotPath), false, 'validated snapshot pathname must be detached before Wrangler');
         assert.deepEqual(fs.readFileSync(configPath), invalidB);
         return ok;
       },
