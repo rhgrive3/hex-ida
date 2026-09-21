@@ -75,7 +75,7 @@ const KEEP_CRITERIA = {
  * something the model has already moved past).
  */
 function priority(candidate, index, total) {
-  const recency = total <= 1 ? 1 : 1 - index / total; // 1 = newest
+  const recency = total <= 1 ? 1 : (index + 1) / total; // 1 = newest
   return candidate.tokens * (0.35 + 0.65 * recency);
 }
 
@@ -100,13 +100,14 @@ export function buildBatches(candidates, options) {
     .map((entry) => entry.candidate);
 
   const batches = [];
-  let current = { items: [], stateTokens: 0 };
 
   const header = taskText
     ? `CURRENT TASK (authoritative, do not question it):\n${excerpt(taskText, headerBudget)}`
     : "CURRENT TASK: (not supplied)";
   const itemsHeading = "ITEMS UNDER JUDGEMENT (one question per item id):";
   const baseStateTokens = estimateTokens(`${header}\n\n${itemsHeading}\n\n`);
+  if (baseStateTokens >= maxStateTokens) return [];
+  const separatorTokens = estimateTokens("\n\n");
   const fairShareCount = Math.max(1, Math.min(candidates.length, Math.floor(config.maxQuestionsPerCall) || 1));
   const fairShareBudget = Math.max(1, Math.floor(Math.max(1, maxStateTokens - baseStateTokens) / fairShareCount));
 
@@ -118,9 +119,10 @@ export function buildBatches(candidates, options) {
       candidate.item.meta && candidate.item.meta.group ? `, group=${candidate.item.meta.group}` : ""
     }, ~${candidate.tokens} tokens] ${candidate.note || ""}`;
     const headerLineTokens = estimateTokens(`${headerLine}\n`);
-    let excerptBudget = Math.max(1, Math.min(
+    let separator = current.items.length > 0 ? separatorTokens : 0;
+    let excerptBudget = Math.max(0, Math.min(
       fairShareBudget,
-      maxStateTokens - current.stateTokens - headerLineTokens,
+      maxStateTokens - current.stateTokens - separator - headerLineTokens,
     ));
     let excerptText = excerpt(candidate.redactedText, excerptBudget);
     let block = `${headerLine}\n${excerptText}`;
@@ -132,7 +134,8 @@ export function buildBatches(candidates, options) {
     if ((wouldExceedQuestions || wouldExceedState) && current.items.length > 0) {
       batches.push(current);
       current = freshBatch();
-      excerptBudget = Math.max(1, Math.min(
+      separator = 0;
+      excerptBudget = Math.max(0, Math.min(
         fairShareBudget,
         maxStateTokens - current.stateTokens - headerLineTokens,
       ));
@@ -144,15 +147,20 @@ export function buildBatches(candidates, options) {
     // A pathological configuration can make the metadata itself larger than the
     // requested state budget. Never respond by sending an unbounded body: the
     // content portion is reduced to the remaining budget (possibly empty).
-    if (current.stateTokens + blockTokens > maxStateTokens) {
-      excerptBudget = Math.max(0, maxStateTokens - current.stateTokens - headerLineTokens);
+    if (current.stateTokens + separator + blockTokens > maxStateTokens) {
+      excerptBudget = Math.max(0, maxStateTokens - current.stateTokens - separator - headerLineTokens);
       excerptText = excerpt(candidate.redactedText, excerptBudget);
       block = `${headerLine}\n${excerptText}`;
       blockTokens = estimateTokens(block);
     }
 
+    // If even the item metadata cannot fit, leave this candidate unasked. The
+    // pipeline treats missing judgements as KEEP, which is safer than violating
+    // the network state budget.
+    if (current.stateTokens + separator + blockTokens > maxStateTokens) continue;
+
     current.items.push({ ...candidate, block });
-    current.stateTokens += blockTokens;
+    current.stateTokens += separator + blockTokens;
   }
   if (current.items.length > 0) batches.push(current);
 
