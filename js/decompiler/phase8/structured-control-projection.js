@@ -14,6 +14,7 @@
  */
 
 import { edgeAccountingFailures } from './structuring.js';
+import { projectNaturalLoops } from './loop-control-projection.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
 import { printProgram } from '../pretty/c.js';
 import { sourceOf, mergeSource } from '../ast/nodes.js';
@@ -27,7 +28,11 @@ import {
 } from '../semantic-core.js';
 import { buildRenderProvenance } from './render-provenance.js';
 
-export const STRUCTURED_CONTROL_PROJECTION_VERSION = 1;
+// Version 2 adds the canonical natural-loop projection. The counter is a
+// consumer contract, not decoration: a consumer that understood version 1
+// cannot assume that a version 2 body only contains conditional adoption
+// records.
+export const STRUCTURED_CONTROL_PROJECTION_VERSION = 2;
 
 const structuredControlProjections = new WeakMap();
 
@@ -404,7 +409,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const partition = conditionalRegionPartition(region, facts, cfg, dominators);
     if (partition) candidateRegions.push({ region, partition });
   }
-  if (candidateRegions.length === 0) return result;
+  // Loop regions are a second adoption path over the same body, so a function
+  // whose only structurally adoptable regions are loops must not be dismissed
+  // as "nothing adoptable".
+  const hasLoopRegions = (facts.regions ?? []).some((region) => region?.kind === 'loop');
+  if (candidateRegions.length === 0 && !hasLoopRegions) return result;
 
   // Sort candidate regions innermost first (descending dominator depth, then descending entry index)
   candidateRegions.sort((left, right) => {
@@ -685,6 +694,39 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     adoptedRegions.push(region);
   }
 
+  // Canonical natural loops. Same proof boundary as the conditional adoption
+  // above: the loop regions published by structuring are the only candidates,
+  // and a loop whose region, guard, latch, exit or edge accounting disagrees with
+  // the induction proof is refused with the legacy representation left exactly
+  // as it was.
+  const loopOutcome = projectNaturalLoops(workingBody, {
+    ir: result.ir,
+    facts,
+    cfg,
+    dominators,
+    induction: analysis.get('induction'),
+    shouldAbort: () => opts.shouldAbort?.() === true,
+    blockOfNode: (node) => blockOfNode(node, result.ir, opts),
+    blockAddress: (index) => {
+      const blocks = cfg?.blocks ?? result.ir.blocks ?? [];
+      const block = blocks.find((candidate) => candidate?.index === index) ?? null;
+      return block ? blockAddress(block, result.ir, opts) : null;
+    },
+    textJumpsToAddress,
+    renderCondition: (term, invert) => renderBranchCondition(term, { ir: result.ir, types: result.types, opts }, invert),
+    controlSource: (term, blockIndex) => controlSource(
+      term,
+      (cfg?.blocks ?? result.ir.blocks ?? []).find((candidate) => candidate?.index === blockIndex) ?? null,
+      result.ir,
+      opts,
+    ),
+  });
+  if (loopOutcome && loopOutcome.records.length > 0) {
+    workingBody = loopOutcome.body;
+    adoptedRecords.push(...loopOutcome.records);
+    adoptedRegions.push(...loopOutcome.adopted);
+  }
+
   if (adoptedRecords.length === 0) {
     return result; // No changes made; preserve referential equality
   }
@@ -719,6 +761,14 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       sourceMappedNodes: printed.mapping.length,
     },
   };
+  // The label set has to describe the body that was actually emitted: a
+  // consumer that reads it must not be handed handles the projection removed
+  // (the adopted loop's guard and back-edge labels, for instance).
+  if (result.labels instanceof Set) {
+    updatedResult.labels = new Set(newProgram.body
+      .filter((node) => node?.kind === 'label' && typeof node.text === 'string')
+      .map((node) => node.text.replace(/:$/, '')));
+  }
 
   if (result.phase8Projection) {
     updatedResult.phase8Projection = {
