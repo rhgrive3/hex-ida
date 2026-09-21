@@ -38,20 +38,20 @@ function hasTopLevelOrOperator(checkScript) {
 
   const isCommentBoundary = (index) => {
     if (index === 0) return true;
-    return /[\s;&|(){}<>]/.test(str[index - 1]);
+    return /[\\s;&|(){}<>]/.test(str[index - 1]);
   };
 
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
     if (inComment) {
-      if (ch === '\n') inComment = false;
+      if (ch === '\\n') inComment = false;
       continue;
     }
     if (escaped) {
       escaped = false;
       continue;
     }
-    if (ch === '\\' && !inSingle) {
+    if (ch === '\\\\' && !inSingle) {
       escaped = true;
       continue;
     }
@@ -486,7 +486,6 @@ if (isMain) {
   }
   return false;
 }
-
 export function requiresSerialShellFallback(checkScript) {
   const str = String(checkScript);
   if (hasTopLevelOrOperator(str)) return true;
