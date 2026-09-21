@@ -19,6 +19,17 @@ export const CPP_CLASS_IDENTITY_SCHEMA = 'cpp-class-identity/v1';
 export const CPP_VTABLE_SCHEMA = 'cpp-vtable-evidence/v1';
 export const CPP_VIRTUAL_SLOT_SCHEMA = 'cpp-virtual-slot-evidence/v1';
 
+const canonicalCppReceiverEvidence = new WeakSet();
+const canonicalCppVirtualSlotEvidence = new WeakSet();
+
+export function isCanonicalCppReceiverEvidence(value) {
+  return value !== null && typeof value === 'object' && canonicalCppReceiverEvidence.has(value);
+}
+
+export function isCanonicalCppVirtualSlotEvidence(value) {
+  return value !== null && typeof value === 'object' && canonicalCppVirtualSlotEvidence.has(value);
+}
+
 function fail(code, detail = '') {
   throw new TypeError(detail ? `${code}: ${detail}` : code);
 }
@@ -85,8 +96,12 @@ export function createCppVtableEvidence(input = {}) {
 
   const rawSlots = Array.isArray(input.slots) ? input.slots : [];
   const slots = rawSlots.map((s, idx) => {
-    const index = Number.isSafeInteger(s.index) ? s.index : idx;
-    const offset = Number.isSafeInteger(s.offset) ? s.offset : (2 + index) * pointerBytes;
+    const index = s.index == null
+      ? idx
+      : (Number.isSafeInteger(s.index) && s.index >= 0 ? s.index : fail('cpp-vtable-slot-index-invalid'));
+    const offset = s.offset == null
+      ? (2 + index) * pointerBytes
+      : (Number.isSafeInteger(s.offset) && s.offset >= 0 ? s.offset : fail('cpp-vtable-slot-offset-invalid'));
     const unresolved = Boolean(s.unresolved);
     const addr = !unresolved && s.address != null ? nonNegativeBigInt(s.address, 'cpp-vtable-slot-address') : null;
     return Object.freeze({
@@ -201,7 +216,9 @@ export function createCppReceiverEvidence(input = {}) {
     uncertainty,
   };
   record.digest = stableDigest(record);
-  return deepFreeze(record);
+  const canonical = deepFreeze(record);
+  canonicalCppReceiverEvidence.add(canonical);
+  return canonical;
 }
 
 /**
@@ -243,10 +260,11 @@ export function createCppVirtualSlotEvidence(input = {}) {
     ? Object.freeze([...new Set(input.candidateTargetIds.map(String))].sort())
     : Object.freeze([]);
 
-  // Exact target promotion rule: closure must be proven AND exactly one target candidate
+  // Exact target promotion requires the dispatch itself to be proven virtual,
+  // target-set closure authority, and exactly one candidate.
   let exactTargetKnown = false;
   let exactTargetAddress = null;
-  if (closureProven && candidateTargetIds.length === 1 && input.exactTargetAddress != null) {
+  if (virtualSlotKnown && closureProven && candidateTargetIds.length === 1 && input.exactTargetAddress != null) {
     exactTargetKnown = true;
     exactTargetAddress = nonNegativeBigInt(input.exactTargetAddress, 'cpp-virtual-slot-target-address');
   }
@@ -269,7 +287,9 @@ export function createCppVirtualSlotEvidence(input = {}) {
     reason,
   };
   record.digest = stableDigest(record);
-  return deepFreeze(record);
+  const canonical = deepFreeze(record);
+  canonicalCppVirtualSlotEvidence.add(canonical);
+  return canonical;
 }
 
 /**
@@ -531,8 +551,14 @@ export function extractCppObjectEvidence(context = {}) {
       const callArg0 = inst.args?.[1]?.value || inst.args?.[1];
       if (callArg0 && !receiverAliases.has(callArg0.id)) continue;
 
-      const slotByteOffset = Number(slotOffset);
-      const slotIndex = Math.floor(slotByteOffset / pointerBytes);
+      let slotOffsetBigInt;
+      try { slotOffsetBigInt = BigInt(slotOffset); } catch { continue; }
+      if (slotOffsetBigInt < 0n || slotOffsetBigInt % BigInt(pointerBytes) !== 0n) continue;
+      const slotIndexBigInt = slotOffsetBigInt / BigInt(pointerBytes);
+      if (slotIndexBigInt > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+      const slotIndex = Number(slotIndexBigInt);
+      const slotByteOffset = Number(slotOffsetBigInt);
+      if (!Number.isSafeInteger(slotByteOffset)) continue;
 
       try {
         const slotEvidence = createCppVirtualSlotEvidence({
