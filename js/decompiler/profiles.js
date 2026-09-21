@@ -12,7 +12,8 @@ export const DECOMPILER_PROFILES = Object.freeze({
     decompilerTimeBudgetMs: 30,
     phase8TimeBudgetMs: 30,
     phase8WorkBudget: 10000,
-    renderProvenanceBudget: Object.freeze({ maxTransformRecords: 128, maxConsumers: 256 }),
+    renderProvenanceBudget: Object.freeze({ maxTransformRecords: 128 }),
+    renderProvenanceBindingBudget: Object.freeze({ maxConsumers: 256 }),
   }),
   deep: Object.freeze({
     name: 'deep',
@@ -20,6 +21,7 @@ export const DECOMPILER_PROFILES = Object.freeze({
     phase8TimeBudgetMs: null,
     phase8WorkBudget: null,
     renderProvenanceBudget: null,
+    renderProvenanceBindingBudget: null,
   }),
 });
 
@@ -44,5 +46,6 @@ export function applyDecompilerProfile(opts = {}) {
     phase8TimeBudgetMs: opts.phase8TimeBudgetMs ?? profile.phase8TimeBudgetMs,
     phase8WorkBudget: opts.phase8WorkBudget ?? profile.phase8WorkBudget,
     renderProvenanceBudget: opts.renderProvenanceBudget ?? profile.renderProvenanceBudget,
+    renderProvenanceBindingBudget: opts.renderProvenanceBindingBudget ?? profile.renderProvenanceBindingBudget,
   };
 }
