@@ -35,11 +35,12 @@ const initialRemoteTip = gitRead(['rev-parse', initialRemoteRef]);
 const initialLocalTip = gitRead(['rev-parse', 'HEAD']);
 if (initialLocalTip !== initialRemoteTip) {
   const commitState = collectLocalOnlyCommitState(initialLocalTip, initialRemoteTip);
+  const resetState = collectResetState(initialLocalTip, initialRemoteTip);
   const commitDecision = resolveCanonicalGeneratedOutputCommit({
     eventName,
     refName: branch,
-    changedPaths: commitState.changed,
-    deletedPaths: commitState.deleted,
+    changedPaths: [...new Set([...commitState.changed, ...resetState.changed])],
+    deletedPaths: [...new Set([...commitState.deleted, ...resetState.deleted])],
   });
   if (commitDecision.offList.length > 0) {
     fail(`refusing to discard local-only source commits before reset: ${commitDecision.offList.join(', ')}`);
@@ -133,6 +134,16 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 }
 
 fail(`could not publish generated userscript sync to ${branch} after ${maxAttempts} attempts.`);
+
+function collectResetState(localTip, remoteTip) {
+  const changed = names(gitReadRaw([
+    'diff', '--name-only', '-z', remoteTip, localTip, '--', '.',
+  ]));
+  const deleted = names(gitReadRaw([
+    'diff', '--diff-filter=D', '--name-only', '-z', remoteTip, localTip, '--', '.',
+  ]));
+  return { changed, deleted };
+}
 
 function collectLocalOnlyCommitState(localTip, remoteTip) {
   const commits = gitRead(['rev-list', `${remoteTip}..${localTip}`]).split(/\s+/).filter(Boolean);
