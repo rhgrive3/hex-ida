@@ -225,6 +225,36 @@ export function semanticIrDigestFor(ir) {
   return digest;
 }
 
+const irIndexMemo = new WeakMap();
+
+/**
+ * Retrieves or builds a cached index of values, nodes, and block mappings for an immutable Semantic IR.
+ *
+ * @param {object|*} ir - The semantic IR function
+ * @returns {{ valuesById: Map<string, object>, nodesById: Map<string, object>, blockIdByNode: Map<string, string> }}
+ */
+function irIndexFor(ir) {
+  if (!ir || typeof ir !== 'object') {
+    return {
+      valuesById: new Map(),
+      nodesById: new Map(),
+      blockIdByNode: new Map(),
+    };
+  }
+  let index = irIndexMemo.get(ir);
+  if (index === undefined) {
+    const valuesById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
+    const nodesById = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
+    const blockIdByNode = new Map();
+    for (const block of ir.blocks ?? []) {
+      for (const nodeId of block?.nodeIds ?? []) blockIdByNode.set(String(nodeId), String(block.id));
+    }
+    index = { valuesById, nodesById, blockIdByNode };
+    irIndexMemo.set(ir, index);
+  }
+  return index;
+}
+
 function sameVariableIdentity(left, right) {
   return stableDigest(left) === stableDigest(right);
 }
@@ -365,12 +395,7 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   }
   const addressValueId = node?.memory?.addressExpr?.valueId;
   if (addressValueId == null) return null;
-  const valuesById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
-  const nodesById = new Map((ir.nodes ?? []).map((value) => [String(value.id), value]));
-  const blockIdByNode = new Map();
-  for (const block of ir.blocks ?? []) {
-    for (const nodeId of block?.nodeIds ?? []) blockIdByNode.set(String(nodeId), String(block.id));
-  }
+  const { valuesById, nodesById, blockIdByNode } = irIndexFor(ir);
   const addressValue = valuesById.get(String(addressValueId));
   const addressDefinition = addressValue?.definitionNodeId == null
     ? null : nodesById.get(String(addressValue.definitionNodeId));
@@ -746,9 +771,8 @@ function addressProofIrFor(ir) {
 }
 
 export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
-  const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
-  const values = Array.isArray(ir?.values) ? ir.values : [];
-  const node = typeof nodeOrId === 'string' ? nodes.find((item) => item.id === nodeOrId) : nodeOrId;
+  const { nodesById, valuesById } = irIndexFor(ir);
+  const node = typeof nodeOrId === 'string' ? nodesById.get(nodeOrId) : nodeOrId;
   if (!node || (node.kind !== 'load' && node.kind !== 'store') || !object(node.memory)) {
     return unknownRegion({
       functionId: optionalIdentityString(ir?.functionId, 'function-id'),
@@ -760,8 +784,8 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   }
 
   const addressValueId = optionalIdentityString(node.memory.addressExpr?.valueId, 'address-value-id');
-  const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
-  const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
+  const value = addressValueId ? valuesById.get(addressValueId) : null;
+  const definingNode = value?.definitionNodeId ? nodesById.get(String(value.definitionNodeId)) : null;
   const accessOrigin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
   const explicitDescriptors = descriptorCandidates(node, value, definingNode, options.regionEvidence)
     .map(normalizeDescriptor)
