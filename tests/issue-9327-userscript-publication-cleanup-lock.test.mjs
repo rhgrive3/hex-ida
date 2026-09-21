@@ -39,3 +39,24 @@ test('#9327 artifact cleanup failure retains recovery lock and blocks the next p
     await realFs.rm(dir, { recursive:true, force:true });
   }
 });
+
+
+test('#9327 successful publication does not treat consumed stage files as cleanup failures', async () => {
+  const dir = await realFs.mkdtemp(path.join(os.tmpdir(), 'hex-9327-success-'));
+  try {
+    const files = [path.join(dir, 'hex.user.js'), path.join(dir, 'hex-release.user.js')];
+    await realFs.writeFile(files[0], 'OLD1');
+    await realFs.writeFile(files[1], 'OLD2');
+    const entries = [
+      { path:files[0], expected:Buffer.from('OLD1'), content:Buffer.from('NEW1') },
+      { path:files[1], expected:Buffer.from('OLD2'), content:Buffer.from('NEW2') },
+    ];
+    await publishUserscriptFiles(entries, { containmentRoot:dir });
+    assert.equal(await realFs.readFile(files[0], 'utf8'), 'NEW1');
+    assert.equal(await realFs.readFile(files[1], 'utf8'), 'NEW2');
+    assert.equal(await exists(path.join(dir, '.userscript-publication.lock')), false);
+    assert.deepEqual((await realFs.readdir(dir)).sort(), ['hex-release.user.js', 'hex.user.js']);
+  } finally {
+    await realFs.rm(dir, { recursive:true, force:true });
+  }
+});
