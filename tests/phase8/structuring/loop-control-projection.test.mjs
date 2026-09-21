@@ -12,6 +12,7 @@ import {
   applyStructuredControlProjection,
   readStructuredControlProjection,
   LOOP_CONTROL_PROJECTION_VERSION,
+  LOOP_PROJECTION_CANCELLED,
   LOOP_PROJECTION_RULE,
   isAdoptableLoopRegion,
   projectNaturalLoops,
@@ -850,6 +851,98 @@ test('loop U. an adopted projection binds the canonical snapshot id into render 
   });
   assert.ok(!validation.reasons.includes('missing-snapshot'), 'an unbound map would read as a provenance loss');
   assert.ok(!validation.reasons.includes('stale-snapshot'));
+});
+
+/* ── O-bis. cancellation is not "no changes" ─────────────────────────── */
+
+/**
+ * A loop that ends in a diamond, so the conditional stage adopts a region and
+ * the loop stage aims at another. An abort that lands between the two stages is
+ * the case where "stop" and "nothing provable" must not share a representation.
+ */
+function loopThenDiamondIr() {
+  const f = fixture('loop-then-diamond');
+  const guard = f.block(0, { succ: [1, 3] }).opaque(1);
+  f.conditionalBranch(guard, 1, 3);
+  f.block(1, { succ: [0] }).store(f.constant(1, 32));
+  f.branch(0);
+  const cond = f.block(3, { succ: [4, 5] }).opaque(1);
+  f.conditionalBranch(cond, 4, 5);
+  f.block(4, { succ: [6] }).store(f.constant(42, 32));
+  f.branch(6);
+  f.block(5, { succ: [6] }).store(f.constant(99, 32));
+  f.branch(6);
+  f.block(6).ret();
+  return withProducerLayout(f.build());
+}
+
+const LOOP_THEN_DIAMOND_BODY = [
+  ['ctrl', 1, `if (c0) goto loc_${hex(1)};`, 0],
+  ['stmt', 1, `goto loc_${hex(3)};`, 0],
+  ['label', 0, `loc_${hex(1)}:`, 1],
+  ['stmt', 1, 'x = 1;', 1],
+  ['stmt', 1, `goto loc_${hex(0)};`, 1],
+  ['label', 0, `loc_${hex(3)}:`, 3],
+  ['ctrl', 1, `if (c1) goto loc_${hex(4)};`, 3],
+  ['stmt', 1, `goto loc_${hex(5)};`, 3],
+  ['label', 0, `loc_${hex(4)}:`, 4],
+  ['stmt', 1, 'x = 42;', 4],
+  ['stmt', 1, `goto loc_${hex(6)};`, 4],
+  ['label', 0, `loc_${hex(5)}:`, 5],
+  ['stmt', 1, 'x = 99;', 5],
+  ['stmt', 1, `goto loc_${hex(6)};`, 5],
+  ['label', 0, `loc_${hex(6)}:`, 6],
+  ['stmt', 1, 'return x;', 6],
+];
+
+test('loop O-bis. cancellation and "nothing provable" do not share a representation', () => {
+  const ir = whileIr();
+  const bare = { ir, facts: null, cfg: null, dominators: null, induction: null };
+  // Nothing provable at all is `null`: the caller keeps its body referentially.
+  assert.equal(projectNaturalLoops(bodyOf(WHILE_BODY), bare), null, 'no facts means nothing was provable');
+  assert.equal(projectNaturalLoops([], { ...bare, shouldAbort: () => true }), null,
+    'an empty body has nothing to adopt');
+  assert.equal(projectNaturalLoops(null, { ...bare, shouldAbort: () => true }), null,
+    'a missing body has nothing to adopt');
+  // Cancellation is its own thing, exported under a name a caller can branch on.
+  assert.notEqual(LOOP_PROJECTION_CANCELLED, null);
+  assert.deepEqual(Object.keys(LOOP_PROJECTION_CANCELLED), ['cancelled'],
+    'the cancellation marker is a distinct, named sentinel');
+});
+
+test('loop O-ter. an abort inside the loop stage stops the projection there', () => {
+  // The fixture adopts both stages when nothing aborts, so a cancelled run has
+  // to differ from it and the assertions below cannot pass by the fixture simply
+  // not being projectable.
+  const allowed = project(loopThenDiamondIr(), LOOP_THEN_DIAMOND_BODY);
+  assert.notEqual(allowed.projected, allowed.result, 'the fixture projects when nothing aborts');
+  const texts = textsOf(allowed.projected);
+  assert.ok(texts.includes('while (c0) {'), 'the loop is adopted when allowed');
+  assert.ok(texts.includes('if (c1) {'), 'the conditional region is adopted when allowed');
+
+  // How often the predicate is consulted when it never fires, measured on the
+  // real code path rather than assumed, so the abort below lands on the loop
+  // stage — after the conditional stage already adopted its region.
+  let consults = 0;
+  project(loopThenDiamondIr(), LOOP_THEN_DIAMOND_BODY, {
+    opts: { shouldAbort: () => { consults += 1; return false; } },
+  });
+  assert.ok(consults >= 3, 'both stages consult the abort predicate');
+
+  let calls = 0;
+  const inLoopStage = project(loopThenDiamondIr(), LOOP_THEN_DIAMOND_BODY, {
+    opts: { shouldAbort: () => { calls += 1; return calls === consults - 1; } },
+  });
+  assert.equal(inLoopStage.projected, inLoopStage.result,
+    'an abort inside the loop stage publishes nothing');
+  assert.equal(inLoopStage.projected.pseudocode, inLoopStage.result.pseudocode);
+
+  let last = 0;
+  const afterStages = project(loopThenDiamondIr(), LOOP_THEN_DIAMOND_BODY, {
+    opts: { shouldAbort: () => { last += 1; return last === consults; } },
+  });
+  assert.equal(afterStages.projected, afterStages.result,
+    'an abort that lands after the conditional stage still publishes nothing');
 });
 
 /* ── mutation / false-green proofs ────────────────────────────────────── */

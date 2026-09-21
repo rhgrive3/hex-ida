@@ -46,6 +46,17 @@ import { expressionOriginHistory } from '../rewrite/engine.js';
 export const LOOP_CONTROL_PROJECTION_VERSION = 1;
 
 /**
+ * Returned instead of `null` when the caller's abort predicate reports
+ * cancellation mid-projection. The two are not the same thing and must not share
+ * a representation: `null` means "nothing was provable, keep the legacy render",
+ * while this means "stop, publish nothing" — including adoption work an earlier
+ * stage already finished. A caller that re-polls the predicate instead of reading
+ * this marker only catches an abort that happens to still be reported at the
+ * moment it asks again.
+ */
+export const LOOP_PROJECTION_CANCELLED = Object.freeze({ cancelled: true });
+
+/**
  * The rewrite-proof rule name for an adopted canonical loop. A consumer that
  * sees this rule knows the record came from the loop projection and not from the
  * conditional one.
@@ -780,8 +791,10 @@ function isDanglingLabel(node, referenced) {
 /**
  * Projects every proven natural loop in a rendered body.
  *
- * Returns `{ body, records, adopted }`, or null when nothing was adopted — in
- * which case the caller keeps the body it already had, referentially.
+ * Returns `{ body, records, adopted }` when something was adopted, `null` when
+ * nothing was provable — the caller then keeps the body it already had,
+ * referentially — or `LOOP_PROJECTION_CANCELLED` when the abort predicate fired,
+ * which the caller must treat as "publish nothing", not as "no changes".
  */
 export function projectNaturalLoops(body, ctx = {}) {
   if (!Array.isArray(body) || body.length === 0) return null;
@@ -816,7 +829,7 @@ export function projectNaturalLoops(body, ctx = {}) {
   const records = [];
   const adopted = [];
   for (const candidate of candidates) {
-    if (typeof ctx.shouldAbort === 'function' && ctx.shouldAbort() === true) return null;
+    if (typeof ctx.shouldAbort === 'function' && ctx.shouldAbort() === true) return LOOP_PROJECTION_CANCELLED;
     const outcome = projectOneLoop(workingBody, candidate.proof, ctx);
     if (!outcome) continue;
     workingBody = outcome.body;
