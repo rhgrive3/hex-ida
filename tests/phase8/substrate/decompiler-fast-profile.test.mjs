@@ -33,7 +33,8 @@ test('resolveDecompilerProfile: resolves presets and falls back gracefully', () 
   assert.equal(fast.decompilerTimeBudgetMs, 30);
   assert.equal(fast.phase8TimeBudgetMs, 30);
   assert.equal(fast.phase8WorkBudget, 10000);
-  assert.deepEqual(fast.renderProvenanceBudget, { maxTransformRecords: 128, maxConsumers: 256 });
+  assert.deepEqual(fast.renderProvenanceBudget, { maxTransformRecords: 128 });
+  assert.deepEqual(fast.renderProvenanceBindingBudget, { maxConsumers: 256 });
 
   const deep = resolveDecompilerProfile('deep');
   assert.equal(deep.name, 'deep');
@@ -57,7 +58,8 @@ test('applyDecompilerProfile: applies defaults while respecting caller explicit 
   assert.equal(fastOpts.decompilerTimeBudgetMs, 30);
   assert.equal(fastOpts.phase8TimeBudgetMs, 30);
   assert.equal(fastOpts.phase8WorkBudget, 10000);
-  assert.deepEqual(fastOpts.renderProvenanceBudget, { maxTransformRecords: 128, maxConsumers: 256 });
+  assert.deepEqual(fastOpts.renderProvenanceBudget, { maxTransformRecords: 128 });
+  assert.deepEqual(fastOpts.renderProvenanceBindingBudget, { maxConsumers: 256 });
 
   // Explicit override takes precedence over fast preset
   const overridden = applyDecompilerProfile({
@@ -75,6 +77,7 @@ test('applyDecompilerProfile: applies defaults while respecting caller explicit 
   assert.equal(defaultOpts.phase8TimeBudgetMs, null);
   assert.equal(defaultOpts.phase8WorkBudget, null);
   assert.equal(defaultOpts.renderProvenanceBudget, null);
+  assert.equal(defaultOpts.renderProvenanceBindingBudget, null);
 });
 
 test('enhanceSemanticDecompilation: executes cleanly under profile: fast', () => {
@@ -155,5 +158,5 @@ test('renderProvenanceBudget: fast profile bounds history record limits', async 
   // Provenance limit applied
   const defaultOpts = applyDecompilerProfile({ profile: 'fast' });
   assert.equal(defaultOpts.renderProvenanceBudget.maxTransformRecords, 128);
-  assert.equal(defaultOpts.renderProvenanceBudget.maxConsumers, 256);
+  assert.equal(defaultOpts.renderProvenanceBindingBudget.maxConsumers, 256);
 });
