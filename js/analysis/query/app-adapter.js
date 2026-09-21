@@ -14,6 +14,24 @@ const QUERY_ROUTED_ANALYZE = Symbol('analysis-query-routed-analyze');
 const MAX_PAGE = 5_000;
 const MAX_FUNCTION_SCAN = 400_000;
 
+const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
+  'profile',
+  'decompilerTimeBudgetMs',
+  'phase8TimeBudgetMs',
+  'phase8WorkBudget',
+  'renderProvenanceBudget',
+  'renderProvenanceBindingBudget',
+]);
+
+export function decompilerOptionsFromQuery(options = {}) {
+  if (!options || typeof options !== 'object') return {};
+  const forwarded = {};
+  for (const key of DECOMPILER_QUERY_OPTION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(options, key)) forwarded[key] = options[key];
+  }
+  return forwarded;
+}
+
 function storeValue(app, key) {
   try { return typeof app?.store?.get === 'function' ? app.store.get(key) : (app?.store?.[key] ?? null); }
   catch { return null; }
@@ -1071,6 +1089,7 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
       const projection = decompile(result.value.model, {
+        ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
       });
