@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,16 +29,41 @@ export function releaseIdentityFor(inputs) {
   // No privileged bundle embeds the final identity.
   return hash(inputs.map((value) => hash(value)).join(':'));
 }
+function isForbiddenStandardInput(inputPath, { caseInsensitive = false } = {}) {
+  const normalized = String(inputPath ?? '').replaceAll('\\', '/');
+  const policyPath = caseInsensitive ? normalized.toLowerCase() : normalized;
+  return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(policyPath)
+    || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(policyPath)
+    || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
+}
+
+function effectiveInputPath(inputPath, repoRoot, { realpathSync = fs.realpathSync } = {}) {
+  const raw = String(inputPath ?? '');
+  if (!raw || raw.startsWith('<') || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return null;
+  const candidate = path.isAbsolute(raw) ? raw : path.resolve(repoRoot, raw);
+  try {
+    return realpathSync(candidate);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+    throw error;
+  }
+}
+
 export function assertStandardGraph(metafile, label, options = {}) {
   if (!metafile?.inputs || Array.isArray(metafile.inputs) || Object.keys(metafile.inputs).length === 0) throw new Error(`${label} has no verifiable input graph.`);
   const caseInsensitive = (options?.platform ?? process.platform) === 'win32';
-  const forbidden = Object.keys(metafile.inputs || {}).filter((inputPath) => {
-    const normalized = inputPath.replaceAll('\\', '/');
-    const policyPath = caseInsensitive ? normalized.toLowerCase() : normalized;
-    return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(policyPath)
-      || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(policyPath)
-      || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
-  });
+  const repoRoot = path.resolve(options?.repoRoot ?? DEFAULT_REPO_ROOT);
+  const forbidden = [];
+  for (const inputPath of Object.keys(metafile.inputs || {})) {
+    if (isForbiddenStandardInput(inputPath, { caseInsensitive })) {
+      forbidden.push(inputPath);
+      continue;
+    }
+    const effective = effectiveInputPath(inputPath, repoRoot, { realpathSync: options?.realpathSync ?? fs.realpathSync });
+    if (effective && isForbiddenStandardInput(effective, { caseInsensitive })) {
+      forbidden.push(`${inputPath} -> ${effective}`);
+    }
+  }
   if (forbidden.length) throw new Error(`${label} leaks privileged implementation: ${forbidden.join(', ')}`);
 }
 export function assertPrivilegedGraph(metafile, kind, options = {}) {
