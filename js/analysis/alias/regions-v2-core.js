@@ -204,6 +204,19 @@ function ssaVariableIdentity(variable) {
   };
 }
 
+// The canonical semantic IR digest is a pure function of the IR object. Recomputing
+// it for every memory access makes region classification quadratic; memoize per source IR.
+const semanticIrDigestMemo = new WeakMap();
+export function semanticIrDigestFor(ir) {
+  if (!ir || typeof ir !== 'object') return stableDigest(ir);
+  let digest = semanticIrDigestMemo.get(ir);
+  if (digest === undefined) {
+    digest = stableDigest(ir);
+    semanticIrDigestMemo.set(ir, digest);
+  }
+  return digest;
+}
+
 function sameVariableIdentity(left, right) {
   return stableDigest(left) === stableDigest(right);
 }
@@ -214,7 +227,7 @@ export function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, b
   if (!ssa || !binding) return false;
   if (binding.snapshotId == null) return false;
   if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
-  if (String(binding.semanticIrDigest) !== stableDigest(ir)) return false;
+  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir)) return false;
   if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
   if (!canonicalSemanticSsaRowMatches(use, ssa)) return false;
   const proof = use?.proof;
@@ -240,7 +253,7 @@ export function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRea
   if (!ssa || !binding) return false;
   if (binding.snapshotId == null) return false;
   if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
-  if (String(binding.semanticIrDigest) !== stableDigest(ir)) return false;
+  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir)) return false;
   if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
   if (!canonicalSemanticSsaRowMatches(definition, ssa)) return false;
   const proof = definition?.proof;
@@ -279,7 +292,7 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     && typeof process?.stderr?.write === 'function';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
-  const semanticIrDigest = stableDigest(ir);
+  const semanticIrDigest = semanticIrDigestFor(ir);
   if (debug) {
     process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${semanticIrDigest} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
   }

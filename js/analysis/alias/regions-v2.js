@@ -1,4 +1,3 @@
-import { stableDigest } from '../../core/identity/index.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 import { canonicalSemanticSsaProducerMatches } from '../../semantics/ssa/build.js';
 import {
@@ -11,6 +10,7 @@ import {
   genuineRenamedUseRow,
   isPreciseMemoryRegion,
   sameMemoryRegionIdentity,
+  semanticIrDigestFor,
 } from './regions-v2-core.js';
 
 export {
@@ -22,6 +22,7 @@ export {
   genuineRenamedUseRow,
   isPreciseMemoryRegion,
   sameMemoryRegionIdentity,
+  semanticIrDigestFor,
 };
 
 // #2924 core contract preserved in regions-v2-core.js:
@@ -31,7 +32,7 @@ function reloadAuthorityOptions(ir, options) {
   const memorySsa = options?.canonicalMemorySsa;
   if (memorySsa == null) return options;
   const ssa = options?.ssa;
-  const semanticIrDigest = stableDigest(ir);
+  const semanticIrDigest = semanticIrDigestFor(ir);
   const identity = memorySsa?.identity;
   const scalarSsaDigest = typeof identity?.scalarSsaDigest === 'string' && identity.scalarSsaDigest.trim()
     ? identity.scalarSsaDigest.trim() : null;
