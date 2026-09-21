@@ -28,6 +28,13 @@ export {
 // #2924 core contract preserved in regions-v2-core.js:
 // categories.every((category) => category === 'flags')
 
+/**
+ * Filters and validates MemorySSA options to ensure identity, snapshot, and semantic digest match the IR.
+ *
+ * @param {object} ir - The semantic IR function
+ * @param {object} options - Options containing candidate canonical MemorySSA
+ * @returns {object} Safe options with canonicalMemorySsa retained if trusted, or stripped if untrusted
+ */
 function reloadAuthorityOptions(ir, options) {
   const memorySsa = options?.canonicalMemorySsa;
   if (memorySsa == null) return options;
@@ -57,6 +64,14 @@ function reloadAuthorityOptions(ir, options) {
   return trusted ? options : { ...options, canonicalMemorySsa: null };
 }
 
+/**
+ * Classifies the semantic memory region for a node or node ID within a semantic IR function.
+ *
+ * @param {object} ir - The semantic IR function
+ * @param {object|string} nodeOrId - The memory access node or its ID
+ * @param {object} [options={}] - Analysis options including candidate MemorySSA and SSA context
+ * @returns {object} The classified memory region object
+ */
 export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   return classifySemanticMemoryRegionCore(ir, nodeOrId, reloadAuthorityOptions(ir, options));
 }

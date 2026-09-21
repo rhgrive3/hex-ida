@@ -207,6 +207,14 @@ function ssaVariableIdentity(variable) {
 // The canonical semantic IR digest is a pure function of the IR object. Recomputing
 // it for every memory access makes region classification quadratic; memoize per source IR.
 const semanticIrDigestMemo = new WeakMap();
+
+/**
+ * Computes or retrieves a memoized stable digest for a semantic IR object.
+ * Uses a module-scoped WeakMap to avoid repeated quadratic digest computation across memory accesses.
+ *
+ * @param {object|*} ir - The semantic IR object (or primitive value)
+ * @returns {string} The canonical stable digest string
+ */
 export function semanticIrDigestFor(ir) {
   if (!ir || typeof ir !== 'object') return stableDigest(ir);
   let digest = semanticIrDigestMemo.get(ir);
@@ -221,6 +229,17 @@ function sameVariableIdentity(left, right) {
   return stableDigest(left) === stableDigest(right);
 }
 
+/**
+ * Verifies that a candidate renamed-use scalar SSA row matches the semantic IR and access node.
+ *
+ * @param {object} ir - The semantic IR function
+ * @param {object} use - The candidate scalar SSA use row
+ * @param {object} addressRead - The semantic address read node
+ * @param {string|number} addressReadValueId - The value ID of the address read
+ * @param {Map<string, string>} blockIdByNode - Mapping from node ID to containing block ID
+ * @param {object} [options={}] - Additional options containing SSA and binding context
+ * @returns {boolean} True if the renamed use row is genuine and matches the IR
+ */
 export function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode, options = {}) {
   const ssa = options?.ssa;
   const binding = options?.binding;
@@ -247,6 +266,18 @@ export function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, b
     && String(use.blockId ?? '') === String(blockIdByNode.get(String(addressRead.id)));
 }
 
+/**
+ * Verifies that a candidate renamed-definition scalar SSA row matches the semantic IR and reaching state use.
+ *
+ * @param {object} ir - The semantic IR function
+ * @param {object} definition - The candidate scalar SSA definition row
+ * @param {object} stateUse - The reaching state use row
+ * @param {object} addressRead - The semantic address read node
+ * @param {string|number|null} loadedSemanticValueId - The semantic value ID loaded by the memory operation
+ * @param {Map<string, object>} nodesById - Map of nodes by ID
+ * @param {object} [options={}] - Additional options containing SSA and binding context
+ * @returns {boolean} True if the renamed definition row is genuine and matches the IR
+ */
 export function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, loadedSemanticValueId, nodesById, options = {}) {
   const ssa = options?.ssa;
   const binding = options?.binding;
@@ -286,6 +317,14 @@ export function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRea
     === `ssa_def_${stableDigest({ functionId: ir.functionId, valueId: definition.valueId })}`;
 }
 
+/**
+ * Derives canonical memory pointer region evidence for a node from trusted MemorySSA artifacts.
+ *
+ * @param {object} ir - The semantic IR function
+ * @param {object} node - The memory access node
+ * @param {object} [options={}] - Options containing canonical MemorySSA and scalar SSA artifacts
+ * @returns {object|null} The canonical region evidence, or null if unverified
+ */
 export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   const debug = typeof process !== 'undefined'
     && process?.env?.HEX_DEBUG_C2_POINTER === '1'
