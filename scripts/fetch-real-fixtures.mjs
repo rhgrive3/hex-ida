@@ -270,6 +270,7 @@ export async function fetchFixture(name, spec, {
   outputDirPath = outputDir,
   cacheContainmentRoot = testsRoot,
   ensureCacheDirImpl = ensureFixtureCacheDirectory,
+  publishImpl = publishFixtureFile,
 } = {}) {
   const target = join(outputDirPath, spec.file);
   await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
@@ -328,9 +329,11 @@ export async function fetchFixture(name, spec, {
       await rm(temp, { force: true });
       console.log(`${name}: downloaded and verified`);
       return;
-    } catch {}
+    } catch (error) {
+      if (error?.repairable !== true) throw error;
+    }
     await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
-    await publishFixtureFile(temp, target);
+    await publishImpl(temp, target);
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
     if (output && !output.closed) {
