@@ -13,6 +13,7 @@ const complexCases = [
   ['#9333 while loop', 'while false && true; do printf nope; done && printf done'],
   ['#9334 heredoc', 'cat <<EOF && printf done\npayload && literal\nEOF'],
   ['#9337 shell comment', 'printf a && # comment && definitely-not-a-command\nprintf b'],
+  ['review standalone ! reserved word', '! true && printf unexpected'],
 ];
 
 for (const [label, script] of complexCases) {
