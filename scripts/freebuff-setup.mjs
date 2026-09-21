@@ -177,7 +177,7 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
       fsImpl.lstatSync(actualDst);
       return false;
     } catch (error) {
-      if (error?.code !== 'ENOENT') return false;
+      if (error?.code !== 'ENOENT') throw error;
     }
     if (!fsImpl.existsSync(src)) return false;
     try {
