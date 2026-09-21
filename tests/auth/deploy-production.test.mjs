@@ -31,12 +31,21 @@ test('canonical production deploy validates the default config before invoking W
   const deployment = calls[1];
   assert.equal(validator.command, process.execPath);
   assert.equal(validator.args[0], resolve(repoRoot, 'scripts/validate-auth-config.mjs'));
-  assert.match(validator.args[1], /^--config=.*\.wrangler\.production-snapshot-/);
-  const snapshotPath = validator.args[1].slice('--config='.length);
-  assert.deepEqual(validator.options, { cwd:repoRoot, stdio:'inherit' });
+  assert.equal(validator.args[1], '--config=/proc/self/fd/3/wrangler.jsonc');
+  assert.equal(validator.options.cwd, repoRoot);
+  assert.deepEqual(validator.options.stdio.slice(0, 3), ['inherit', 'inherit', 'inherit']);
+  assert.equal(Number.isInteger(validator.options.stdio[3]), true);
   assert.equal(deployment.command, process.execPath);
-  assert.deepEqual(deployment.args, [resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js'), 'deploy', '--config', snapshotPath]);
-  assert.deepEqual(deployment.options, { cwd:repoRoot, stdio:'inherit' });
+  assert.deepEqual(deployment.args, [
+    resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js'),
+    'deploy',
+    resolve(repoRoot, 'worker-entry.js'),
+    '--config',
+    '/proc/self/fd/3/wrangler.jsonc',
+    '--assets',
+    resolve(repoRoot, 'dist'),
+  ]);
+  assert.deepEqual(deployment.options, validator.options);
 });
 
 test('production deploy stops before Wrangler when auth config validation fails', () => {
