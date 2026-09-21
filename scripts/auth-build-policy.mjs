@@ -83,9 +83,36 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
     : DEFAULT_REPO_ROOT;
   const rawInputs = Object.keys(metafile?.inputs || {});
   const caseInsensitive = (options?.platform ?? process.platform) === 'win32';
-  const inputSet = new Set(rawInputs.map((val) => normalizeInputPath(val, repoRoot, { caseInsensitive })));
+  const normalizedInputs = rawInputs.map((rawPath) => ({
+    rawPath,
+    normalized: normalizeInputPath(rawPath, repoRoot, { caseInsensitive }),
+  }));
+  const inputSet = new Set(normalizedInputs.map(({ normalized }) => normalized));
   const required = kind === 'parent'
     ? ['js/userscript/dev/parent-worker-runtime.js', 'js/userscript/dev/parent-rpc.js', 'js/userscript/dev/bootstrap-host.js']
     : ['js/ai/dev/supervisor/dev-supervisor-v0.js', 'js/ai/dev/ui/settings.js', 'js/ai/dev/ui/engine-router.js', 'js/ai/dev/ui/controls.js'];
-  for (const path of required) if (!inputSet.has(path)) throw new Error(`${kind} bundle omits ${path}`);
+  const realpathSync = options?.realpathSync ?? fs.realpathSync;
+  let realRoot;
+  try {
+    realRoot = realpathSync(repoRoot);
+  } catch (error) {
+    throw new Error(`${kind} bundle cannot establish repository identity`, { cause: error });
+  }
+  for (const requiredPath of required) {
+    if (!inputSet.has(requiredPath)) throw new Error(`${kind} bundle omits ${requiredPath}`);
+    const matches = normalizedInputs.filter(({ normalized }) => normalized === requiredPath);
+    for (const { rawPath } of matches) {
+      const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
+      let realInput;
+      try {
+        realInput = realpathSync(candidate);
+      } catch (error) {
+        throw new Error(`${kind} bundle cannot establish source identity for ${requiredPath}`, { cause: error });
+      }
+      const relative = path.relative(realRoot, realInput);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error(`${kind} bundle required input escapes repository: ${requiredPath}`);
+      }
+    }
+  }
 }
