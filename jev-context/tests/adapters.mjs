@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { extractItems, deriveMeta } from "../adapters/opencode/plugin.mjs";
 import { createPruningProxy, extractChatMessages } from "../proxy/server.mjs";
@@ -693,6 +693,49 @@ export async function adapterTests(test) {
     fake.close();
   });
 
+  await test("session store: a concurrent writer extends state committed while it waits", async () => {
+    const home = tempHome();
+    const storePath = path.join(home, "sessions.json");
+    const lockPath = `${storePath}.lock`;
+    const readyPath = path.join(home, "child-ready");
+    fs.writeFileSync(lockPath, `${process.pid} ${Date.now()}\n`, { mode: 0o600 });
+
+    const protocolUrl = pathToFileURL(path.join(JEV_ROOT, "adapters", "hooks", "protocol.mjs")).href;
+    const script = [
+      `import fs from "node:fs";`,
+      `import { createSessionStore } from ${JSON.stringify(protocolUrl)};`,
+      `fs.writeFileSync(process.env.READY_PATH, "ready");`,
+      `createSessionStore({ path: process.env.STORE_PATH }).remember("shared", { digest: "child" });`,
+    ].join("\n");
+
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, STORE_PATH: storePath, READY_PATH: readyPath },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+
+    const deadline = Date.now() + 2000;
+    while (!fs.existsSync(readyPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(fs.existsSync(readyPath), "child writer did not reach the lock in time");
+
+    fs.writeFileSync(storePath, JSON.stringify({
+      shared: [{ digest: "parent", at: Date.now() }],
+    }), { mode: 0o600 });
+    fs.unlinkSync(lockPath);
+
+    const code = await new Promise((resolve) => child.on("close", resolve));
+    assert.equal(code, 0, `concurrent writer failed: ${stderr}`);
+    const state = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    assert.deepEqual(
+      state.shared.map((entry) => entry.digest).sort(),
+      ["child", "parent"],
+      "the waiting writer must reload and preserve the state committed before it acquired the lock",
+    );
+  });
+
   /* ------------------------------------------------------------- installers */
 
   await test("install: codex hooks.json is merged, not overwritten", () => {
@@ -780,6 +823,26 @@ export async function adapterTests(test) {
     const removed = uninstallOpenCode({ root });
     assert.equal(removed.removed, true);
     assert.ok(!fs.existsSync(result.file));
+  });
+
+  await test("uninstall: foreign OpenCode shim is never deleted, and an overwritten one is restored", () => {
+    const root = tempHome();
+    const shim = path.join(root, ".opencode", "plugin", "jev-prune.mjs");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    const foreign = "// foreign plugin owned by the user\nexport default {};\n";
+    fs.writeFileSync(shim, foreign);
+
+    const untouched = uninstallOpenCode({ root });
+    assert.equal(untouched.removed, false, "uninstall must refuse a shim it did not generate");
+    assert.equal(fs.readFileSync(shim, "utf8"), foreign);
+
+    installOpenCode({ root });
+    assert.ok(fs.existsSync(`${shim}.before-jev-prune`), "install must preserve the foreign shim");
+    const removed = uninstallOpenCode({ root });
+    assert.equal(removed.removed, true);
+    assert.equal(removed.restored, true, "uninstall must restore the pre-install foreign shim");
+    assert.equal(fs.readFileSync(shim, "utf8"), foreign);
+    assert.ok(!fs.existsSync(`${shim}.before-jev-prune`));
   });
 
   await test("install: the codex provider sample never contains a credential", async () => {
