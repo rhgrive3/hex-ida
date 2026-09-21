@@ -4,6 +4,7 @@
  */
 
 import { OP, MK, COND } from '../ir.js';
+import { currentCppReceiver } from './cxx-evidence.js';
 
 const INTEGER_NAMES = new Map([
   ['8:s', 'int8'], ['8:u', 'uint8'], ['16:s', 'int16'], ['16:u', 'uint16'],
@@ -287,7 +288,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     const t = values.get(v.id) || { name:'unknown', confidence:0.2 };
     const used = (v.uses || []).length > 0 || ((model && model.argRegs) || []).includes(i);
     if (!used) return;
-    args.push({ reg, index:i, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
+    args.push({ reg, index:i, valueId:v.id, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
   });
 
   const locals = [];
@@ -323,12 +324,30 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   return { args, locals, ret, values, locations, warnings };
 }
 
-export function semanticSignature(name, recovered, notes = null, funcAddr = null) {
+export function semanticSignature(name, recovered, notes = null, funcAddr = null, opts = null, ir = null) {
   const rt = (notes && notes.typeOf && notes.typeOf(funcAddr, 'ret')) || (recovered.ret && recovered.ret.type) || 'void';
-  const args = (recovered.args || []).map((a) => {
-    const t = (notes && notes.typeOf && notes.typeOf(funcAddr, 'a' + a.index)) || (a.type === 'unknown' ? 'uint64' : a.type);
-    const n = (notes && notes.varName && notes.varName(funcAddr, 'a' + a.index)) || `a${a.index + 1}`;
+  const cxxRec = currentCppReceiver(opts || {}, ir);
+  const recoveredArgs = recovered.args || [];
+  const args = recoveredArgs.map((a) => {
+    const authoritativeType = notes?.typeOf?.(funcAddr, 'a' + a.index) || null;
+    let t = authoritativeType || (a.type === 'unknown' ? 'uint64' : a.type);
+    let n = (notes && notes.varName && notes.varName(funcAddr, 'a' + a.index)) || `a${a.index + 1}`;
+    const isThis = a.index === 0 && cxxRec;
+    if (isThis) {
+      n = 'this';
+      if (!authoritativeType) {
+        const className = cxxRec.classIdentity?.className;
+        if (className) t = `${className} *`;
+      }
+    }
     return `${t} ${n}`;
   });
+  if (cxxRec && !recoveredArgs.some((a) => a.index === 0)) {
+    const authoritativeType = notes?.typeOf?.(funcAddr, 'a0') || null;
+    const className = cxxRec.classIdentity?.className;
+    const type = authoritativeType || (className ? `${className} *` : 'uint64');
+    args.unshift(`${type} this`);
+  }
   return `${rt === 'unknown' ? 'uint64' : rt} ${name || 'sub'}(${args.length ? args.join(', ') : 'void'})`;
 }
+

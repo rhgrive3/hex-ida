@@ -12,6 +12,7 @@ import { createProjectionIrObserver, createValidationBatch } from '../core/ident
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
+import { currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
@@ -351,6 +352,8 @@ function abiArgumentLocationForRegister(state, reg) {
 }
 
 function argumentName(v, state) {
+  const cxxRec = currentCppReceiver(state.opts, state.ir);
+  if (cxxRec && isCppReceiverAlias(v, cxxRec)) return 'this';
   const groupId = state.highVariables?.valueToGroup?.get(v?.id);
   const group = state.highVariables?.groups?.find((g) => g.id === groupId);
   if (group?.name) return group.name;
@@ -403,7 +406,12 @@ function memoryLocation(inst, state) {
     const off = BigInt(loc.disp ?? addr.disp ?? 0);
     let known = null;
     try { known = state.opts?.fieldFor?.(addr.baseReg || loc.base?.reg || null, off, inst?.row) || null; } catch { known = null; }
-    const base = buildValue(loc.base || addr.base, state, { forAddress: true });
+    let base = buildValue(loc.base || addr.base, state, { forAddress: true });
+    const cxxRec = currentCppReceiver(state.opts, state.ir);
+    const baseVal = loc.base || addr.base;
+    if (cxxRec && isCppReceiverAlias(baseVal, cxxRec)) {
+      base = expr.variable('this', 64, false, origin(inst));
+    }
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };

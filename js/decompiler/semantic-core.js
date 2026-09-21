@@ -9,6 +9,7 @@
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
+import { currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
@@ -943,6 +944,11 @@ function semanticLocalDeclarations(types, body, ctx) {
   return out;
 }
 
+function isReceiverAlias(val, _rec, ctx) {
+  const rec = currentCppReceiver(ctx?.opts || {}, ctx?.ir || null);
+  return rec ? isCppReceiverAlias(val, rec) : false;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) return stackName(ctx, loc);
@@ -961,12 +967,25 @@ export function renderMemoryLocation(loc, inst, ctx) {
         size: Number(addr.size || 0),
       });
     }
+    if (addr.base && addr.disp != null) {
+      const cxxRec = ctx.opts?.cxxEvidence?.receiver;
+      if (isReceiverAlias(addr.base, cxxRec, ctx)) {
+        const off = addr.disp;
+        let known = null;
+        try { known = ctx.opts.fieldFor?.(addr.baseReg || addr.base?.reg || null, off, inst?.row); } catch { known = null; }
+        if (!known) known = objcIvar(ctx, addr.base, off);
+        const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
+        return `this->${field}`;
+      }
+    }
     return 'memory_unknown';
   }
   if (loc.kind === MK.FIELD) {
     const base = loc.base || addr.base;
     const off = loc.disp ?? 0n;
-    const baseText = renderValue(base, ctx, { asBase: true });
+    const cxxRec = ctx.opts?.cxxEvidence?.receiver;
+    const isReceiver = isReceiverAlias(base, cxxRec, ctx);
+    const baseText = isReceiver ? 'this' : renderValue(base, ctx, { asBase: true });
     let known = null;
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
@@ -977,6 +996,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
 }
 
 function argName(v, ctx) {
+  const cxxRec = ctx.opts?.cxxEvidence?.receiver;
+  if (isReceiverAlias(v, cxxRec, ctx)) return 'this';
   if (!v?.reg) return `v${v?.id ?? 0}`;
   const m = /^x([0-7])$/.exec(v.reg);
   if (!m) return safeIdent(v.label || v.reg);
@@ -1090,9 +1111,18 @@ function callRecord(inst, ctx) {
   }
   const target = inst.extra?.target ?? null;
   const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
-  const name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
+  let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
+
   const values = [];
   for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
+  const slotEv = currentCppVirtualSlot(ctx.opts, ctx.ir, inst, values[0]);
+
+  if (slotEv && slotEv.exactTargetKnown && slotEv.exactTargetAddress != null) {
+    const resolved = ctx.opts.symbolFor?.(slotEv.exactTargetAddress) || slotEv.exactTargetName || null;
+    if (resolved) {
+      name = resolved;
+    }
+  }
   const cursor = initialValueCursor(ctx), argumentTickets = [];
   const argText = values.map((v) => {
     const input = initialValueCursor(ctx);
@@ -1131,8 +1161,24 @@ function callRecord(inst, ctx) {
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
     const indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
     if (indexes == null) {
-      arityKnown = false;
-      ctx.unknownCallArities++;
+      if (slotEv) {
+        if (slotEv.argumentCount != null) {
+          logicalArgs = Array.from({ length: slotEv.argumentCount }, (_, i) => argText[i] ?? 'unknown');
+          sourceArgIndices = Array.from({ length: slotEv.argumentCount }, (_, i) => i).filter((i) => values[i]);
+          arityKnown = true;
+        } else {
+          // The virtual-dispatch proof establishes the receiver, not the full
+          // callee prototype. Preserve receiver readability as a lower bound
+          // but keep arity unknown so additional arguments are never erased.
+          logicalArgs = values[0] ? [argText[0] || 'this'] : [];
+          sourceArgIndices = values[0] ? [0] : [];
+          arityKnown = false;
+          ctx.unknownCallArities++;
+        }
+      } else {
+        arityKnown = false;
+        ctx.unknownCallArities++;
+      }
     } else {
       logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
       sourceArgIndices = indexes.filter((i) => values[i]);
@@ -1145,6 +1191,7 @@ function callRecord(inst, ctx) {
     receiver: argText[0] || 'receiver', receiverType, selector,
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
+    virtualSlot: slotEv,
     ...(ctx.opts.swiftDispatchFor?.(inst) || {}),
   };
   const resolved = resolveAppleCall(ctx.runtime, info);
@@ -1165,11 +1212,19 @@ function renderCall(inst, ctx) {
   if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
-    const args = !c.arityKnown ? '/* arguments unknown */'
+    const args = !c.arityKnown
+      ? (c.virtualSlot && c.receiver ? `${c.receiver}, /* additional arguments unknown */` : '/* arguments unknown */')
       : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
     return `${name}(${args})`;
   }
   const targetValue = valueOf(inst.args?.[0]);
+  if (c.virtualSlot && c.virtualSlot.virtualSlotKnown) {
+    const receiver = c.receiver || 'this';
+    const args = c.arityKnown
+      ? (c.args.length ? c.args.join(', ') : receiver)
+      : `${receiver}, /* additional arguments unknown */`;
+    return `(*(code **)(...))(${args})`;
+  }
   return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
 }
 
@@ -1212,7 +1267,11 @@ export function renderValue(value, ctx, flags = {}) {
 
 function renderValueText(value, ctx, flags) {
   if (!value) return initialValueForm(ctx, 'unknown', 'unknown');
-  if (ctx.materialNames?.has(value.id) && !flags.ignoreMaterial) return initialValueForm(ctx, 'materialized-reference', ctx.materialNames.get(value.id));
+  const cxxRec = ctx.opts?.cxxEvidence?.receiver;
+  if (ctx.materialNames?.has(value.id) && !flags.ignoreMaterial) {
+    if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) return initialValueForm(ctx, 'cxx-this-receiver', 'this');
+    return initialValueForm(ctx, 'materialized-reference', ctx.materialNames.get(value.id));
+  }
   const key = `${value.id}:${flags.asBase ? 'b' : 'v'}`;
   if (ctx.exprCache.has(key)) {
     const trace = initialValueTraces.get(ctx), cached = trace?.memo.get(key);
@@ -1225,7 +1284,8 @@ function renderValueText(value, ctx, flags) {
   if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
   ctx.exprActive.add(value.id);
   let out = null;
-  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
+  if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
+  if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
   if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
   if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
@@ -2262,7 +2322,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   ctx.inductions = recoverInductionVariables(ir, ctx);
 
   const name = safeIdent(opts.notes?.nameOf?.(opts.addr) || opts.name || model.name || `sub_${hex(opts.addr ?? firstAddr)}`, 'sub');
-  const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr);
+  const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr, opts, ir);
   const body = [];
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
     terminalProofBudget: { remaining: terminalProofSteps(opts) } };
