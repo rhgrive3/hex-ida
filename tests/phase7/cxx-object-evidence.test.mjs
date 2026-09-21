@@ -12,6 +12,8 @@ import {
   CPP_CLASS_IDENTITY_SCHEMA,
   CPP_VTABLE_SCHEMA,
   CPP_VIRTUAL_SLOT_SCHEMA,
+  isCanonicalCppReceiverEvidence,
+  isCanonicalCppVirtualSlotEvidence,
 } from '../../js/analysis/cxx/object-evidence.js';
 
 // Helper to construct a synthetic IR with instructions and values
@@ -424,6 +426,73 @@ test('PR A MUTATION 6: Relocation unresolved in vtable slot marks slot unresolve
 
   assert.equal(vtable.slots[0].unresolved, true);
   assert.equal(vtable.slots[0].address, null);
+});
+
+
+test('PR A: exact target cannot be promoted when the virtual dispatch itself is unproven', () => {
+  const slot = createCppVirtualSlotEvidence({
+    callSiteId: 101,
+    receiverValueId: 1,
+    vptrValueId: 2,
+    slotIndex: 2,
+    slotByteOffset: 0x10,
+    virtualSlotKnown: false,
+    closureProven: true,
+    candidateTargetIds: ['Player::Update'],
+    exactTargetAddress: 0x1234n,
+  });
+  assert.equal(slot.virtualSlotKnown, false);
+  assert.equal(slot.exactTargetKnown, false);
+  assert.equal(slot.exactTargetAddress, null);
+});
+
+test('PR A: unaligned vtable load offset is not promoted to a virtual slot', () => {
+  const ir = makeTestIr({ hasVirtualCall: true, slotOffset: 0x11n });
+  const report = extractCppObjectEvidence({
+    functionId: 'sub_unaligned_slot',
+    functionName: '_ZN6PlayerC1Ev',
+    ir,
+    snapshotId: 'snap-unaligned',
+  });
+  assert.equal(report.virtualSlots.length, 0);
+});
+
+test('PR A: canonical receiver/slot identity is producer-bound and not copyable', () => {
+  const receiver = createCppReceiverEvidence({
+    functionId: 'sub_brand',
+    canonicalValueId: 1,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'constructor-has-this' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-brand',
+  });
+  const slot = createCppVirtualSlotEvidence({
+    callSiteId: 1,
+    receiverValueId: 1,
+    vptrValueId: 2,
+    slotIndex: 0,
+    slotByteOffset: 0,
+    virtualSlotKnown: true,
+    closureProven: false,
+  });
+  assert.equal(isCanonicalCppReceiverEvidence(receiver), true);
+  assert.equal(isCanonicalCppReceiverEvidence(structuredClone(receiver)), false);
+  assert.equal(isCanonicalCppVirtualSlotEvidence(slot), true);
+  assert.equal(isCanonicalCppVirtualSlotEvidence(structuredClone(slot)), false);
+});
+
+test('PR A: negative vtable slot index/offset are rejected', () => {
+  assert.throws(() => createCppVtableEvidence({
+    vtableAddress: 0x5000n,
+    pointerBytes: 8,
+    slots: [{ index: -1, address: 0x1000n }],
+  }), /cpp-vtable-slot-index-invalid/);
+  assert.throws(() => createCppVtableEvidence({
+    vtableAddress: 0x5000n,
+    pointerBytes: 8,
+    slots: [{ index: 0, offset: -8, address: 0x1000n }],
+  }), /cpp-vtable-slot-offset-invalid/);
 });
 
 test('PR A MUTATION 7: Unproven member kind without vtable membership fails closed to partial', () => {
