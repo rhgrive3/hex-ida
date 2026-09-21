@@ -1,0 +1,18 @@
+{
+  "name": "jev-context",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenJEV-backed context pruning for Codex, Agy and OpenCode. Keeps verbatim content, drops only what is provably stale.",
+  "bin": {
+    "jev-prune": "bin/jev-prune.mjs"
+  },
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "benchmark": "node benchmark/run.mjs",
+    "status": "node bin/jev-prune.mjs status"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

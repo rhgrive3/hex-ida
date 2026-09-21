@@ -1,0 +1,9 @@
+# Append to $CODEX_HOME/config.toml, then set:  model_provider = "jev-prune"
+#
+# `env_key` names the environment variable holding the UPSTREAM provider key;
+# the proxy forwards it unchanged. It is never stored by jev-prune.
+[model_providers.jev-prune]
+name = "jev-prune"
+base_url = "http://127.0.0.1:8787/v1"
+wire_api = "responses"
+env_key = "JEV_UPSTREAM_API_KEY"
