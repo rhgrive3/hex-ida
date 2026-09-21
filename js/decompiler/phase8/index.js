@@ -40,12 +40,24 @@ import {
   STRUCTURED_CONTROL_PROJECTION_VERSION,
   isAdoptableConditionalRegion,
 } from './structured-control-projection.js';
+import {
+  LOOP_CONTROL_PROJECTION_VERSION,
+  LOOP_PROJECTION_RULE,
+  isAdoptableLoopRegion,
+  projectNaturalLoops,
+  proveNaturalLoopRegion,
+} from './loop-control-projection.js';
 
 export {
   applyStructuredControlProjection,
   readStructuredControlProjection,
   STRUCTURED_CONTROL_PROJECTION_VERSION,
   isAdoptableConditionalRegion,
+  LOOP_CONTROL_PROJECTION_VERSION,
+  LOOP_PROJECTION_RULE,
+  isAdoptableLoopRegion,
+  projectNaturalLoops,
+  proveNaturalLoopRegion,
 };
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
