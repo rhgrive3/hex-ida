@@ -131,8 +131,10 @@ function nestedWhileIr() {
   f.branch(4);
   const inner = f.block(4, { succ: [5, 3] }).opaque(1);
   f.conditionalBranch(inner, 5, 3);
-  f.block(5, { succ: [4] }).store(f.constant(5, 32));
-  f.branch(4);
+  const innerBody = f.block(5, { succ: [3, 4] });
+  innerBody.store(f.constant(5, 32));
+  const innerBreaker = innerBody.opaque(1);
+  f.conditionalBranch(innerBreaker, 3, 4);
   f.block(3, { succ: [1] }).branch(1);
   f.block(6).ret();
   return withProducerLayout(f.build());
@@ -660,7 +662,12 @@ test('loop Q. an inner break never becomes an outer break', () => {
   const outerLoop = facts.regions.find((region) => region.kind === 'loop' && region.entry === 1);
   assert.ok(innerLoop && outerLoop);
 
-  const body = bodyOf(NESTED_WHILE_BODY);
+  const nestedBreakBody = NESTED_WHILE_BODY.flatMap((row) => (
+    row[3] === 5 && row[2] === `goto loc_${hex(4)};`
+      ? [['ctrl', 1, `if (c2) goto loc_${hex(3)};`, 5], row]
+      : [row]
+  ));
+  const body = bodyOf(nestedBreakBody);
   const result = {
     ir,
     types: {},
@@ -675,16 +682,15 @@ test('loop Q. an inner break never becomes an outer break', () => {
   const innerIndex = texts.indexOf('while (c1) {');
   assert.ok(innerIndex > texts.indexOf('while (c0) {'), 'inner loop stays inside the outer construct');
 
-  // Rewrite the inner loop's exit edge into a canonical break and re-run: the
-  // break must belong to the inner loop only.
-  const innerExit = facts.edges.find((edge) => edge.from === 4 && edge.to === 3);
-  assert.ok(innerExit, 'the inner loop leaves to the outer latch');
-  assert.notEqual(innerExit.construct, 'loop-knee');
-  assert.ok(['loop-break', 'residual-goto', 'if-branch', 'loop-guard-exit'].includes(innerExit.construct));
-  for (const node of projected.cAst.body) {
-    if (node.text === 'break;') {
-      assert.ok(texts.indexOf('break;') > innerIndex, 'a break must sit inside the inner loop');
-    }
+  const innerBreak = facts.edges.find((edge) => edge.from === 5 && edge.to === 3);
+  assert.ok(innerBreak, 'the inner loop body has a break edge to the outer latch');
+  assert.equal(innerBreak.construct, 'loop-break');
+  const breakIndexes = texts
+    .map((text, position) => (/\bbreak;$/.test(text) ? position : -1))
+    .filter((position) => position >= 0);
+  assert.ok(breakIndexes.length > 0, 'the projection emits a break to check');
+  for (const position of breakIndexes) {
+    assert.ok(position > innerIndex, 'a break must sit inside the inner loop');
   }
 });
 
