@@ -75,6 +75,37 @@ test('#9352 HOME-link publication cannot follow a manicode ancestor swap', () =>
   } finally { cleanup(fixture); }
 });
 
+test('#9352 HOME-link reads stay on the opened directory after pathname replacement', () => {
+  const fixture = tempFixture('link-read');
+  try {
+    const home = path.join(fixture.root, 'home');
+    const manicode = path.join(home, '.config', 'manicode');
+    fs.mkdirSync(manicode, { recursive: true });
+    fs.symlinkSync('../../../../shared/history/message-history.json', path.join(fixture.outside, 'message-history.json'));
+
+    let swapped = false;
+    const fsImpl = {
+      ...fs,
+      readdirSync(candidate, options) {
+        const result = fs.readdirSync(candidate, options);
+        if (!swapped && String(candidate).startsWith('/proc/self/fd/')) {
+          swapped = true;
+          fs.renameSync(manicode, `${manicode}.validated`);
+          fs.symlinkSync(fixture.outside, manicode, 'dir');
+        }
+        return result;
+      },
+    };
+
+    ensureHomeLinks(home, { fsImpl });
+    const validated = `${manicode}.validated`;
+    assert.equal(fs.readlinkSync(path.join(validated, 'message-history.json')), '../../../../shared/history/message-history.json');
+    assert.equal(fs.readlinkSync(path.join(validated, 'projects')), '../../../../shared/history/projects');
+    assert.equal(fs.readlinkSync(path.join(validated, 'rg')), '../../../../shared/manicode/rg');
+    assert.equal(fs.readlinkSync(path.join(fixture.outside, 'message-history.json')), '../../../../shared/history/message-history.json');
+  } finally { cleanup(fixture); }
+});
+
 test('#9352 metadata publication cannot follow a validated parent swap', () => {
   const fixture = tempFixture('metadata');
   try {
