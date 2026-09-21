@@ -22,6 +22,8 @@ import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
+import { applyDecompilerProfile } from './profiles.js';
+export { resolveDecompilerProfile, applyDecompilerProfile } from './profiles.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -2213,7 +2215,8 @@ function runtimeFromOpts(opts) {
 }
 
 /** Main IR-first entry point. */
-export function decompileSemantic(model, opts = {}) {
+export function decompileSemantic(model, rawOpts = {}) {
+  const opts = applyDecompilerProfile(rawOpts);
   const ir = opts.ir || irFor(model, { rowOfAddress: opts.rowOfAddress });
   if (!ir || !ir.instructions?.length) return null;
   const runtime = runtimeFromOpts(opts);
