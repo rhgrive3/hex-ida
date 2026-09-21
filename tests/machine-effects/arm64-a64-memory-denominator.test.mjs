@@ -8,6 +8,7 @@ import { parseOperands } from '../../js/arm64.js';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
 import { ARM64_MEMORY_EFFECT_MNEMONICS } from '../../js/targets/architecture/arm64/effects/memory.js';
 import {
+  ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS,
   ARM64_A64_MEMORY_DENOMINATOR_ID,
   ARM64_A64_MEMORY_ENCODING_FAMILIES,
   ARM64_A64_MEMORY_EXACT_MNEMONICS,
@@ -16,6 +17,7 @@ import {
   ARM64_A64_MEMORY_PARTIAL_MNEMONICS,
   arm64A64MemoryDecoderDependencyProof,
   arm64A64MemoryEncodingCases,
+  arm64A64MemoryUnexplainedPartialMnemonics,
   validateArm64A64MemoryDenominator,
 } from '../../tools/validation/machine-effects/arm64-a64-memory-denominator.mjs';
 import { validateArm64A64DecoderDependencyProof } from '../../tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs';
@@ -36,7 +38,11 @@ function assembleCases(cases) {
   const object = path.join(directory, 'memory.o');
   try {
     fs.writeFileSync(source, `.text\n${cases.map((current) => current.asm).join('\n')}\n`);
-    const assembled = spawnSync(clang, ['-target','aarch64-none-elf','-march=armv8.1-a+lse','-c',source,'-o',object], { encoding:'utf8' });
+    // FEAT_LRCPC2's unscaled LDAPUR/STLUR forms (armv8.4-a) are part of the
+    // registry, so the oracle has to speak the architecture version that owns
+    // them. Raising the version does not change any A64 encoding, which the
+    // per-case Capstone cross-check below proves word by word.
+    const assembled = spawnSync(clang, ['-target','aarch64-none-elf','-march=armv8.4-a+lse','-c',source,'-o',object], { encoding:'utf8' });
     assert.equal(assembled.status, 0, assembled.stderr);
     const disassembled = spawnSync(objdump, ['-d',object], { encoding:'utf8' });
     assert.equal(disassembled.status, 0, disassembled.stderr);
@@ -83,16 +89,35 @@ const DECODER_MNEMONIC_ALIASES = Object.freeze({ dfb:'dsb' });
 
 const denominator = validateArm64A64MemoryDenominator();
 assert.equal(denominator.denominatorId, ARM64_A64_MEMORY_DENOMINATOR_ID);
-assert.equal(denominator.encodingFamilyCount, 9);
-assert.equal(denominator.encodingCaseCount, 267);
-assert.equal(denominator.mnemonicCount, 123);
-assert.equal(denominator.partialMnemonicCount, 0);
-assert.equal(denominator.exactMnemonicCount, 123);
+assert.equal(denominator.encodingFamilyCount, 10);
+assert.equal(denominator.encodingCaseCount, 279);
+assert.equal(denominator.mnemonicCount, 135);
+assert.equal(denominator.exactMnemonicCount, 126);
+// The RCpc acquire loads are the first family members whose *lowering fidelity*
+// is partial while their ownership stays exact. They are counted, named, and
+// bound to a missing generic contract instead of being folded into the exact
+// count or hidden behind a zero.
+assert.equal(denominator.partialMnemonicCount, 9);
+assert.equal(denominator.contractLimitedPartialMnemonicCount, 9);
+assert.equal(denominator.partialMnemonicCount, denominator.contractLimitedPartialMnemonicCount);
+assert.deepEqual(denominator.missingGenericContracts, ['machine-effects-memory-ordering:acquire-rcpc']);
+assert.deepEqual(denominator.contractLimitedPartialMnemonics, [...ARM64_A64_MEMORY_PARTIAL_MNEMONICS].sort());
 assert.equal(denominator.encodingCaseCount, ARM64_A64_MEMORY_LOCKED_CASE_COUNT);
 assert.equal(denominator.corpusSha256, ARM64_A64_MEMORY_LOCKED_CORPUS_SHA256);
 assert.match(denominator.corpusSha256, /^[0-9a-f]{64}$/);
 
+// Ownership/enumeration exactness and lowering fidelity are separate published
+// claims. A consumer that reads the decoder's `coverageState` cannot silently
+// inherit an exact-lowering claim for the RCpc acquire forms.
+const declaredContractLimited = new Map(
+  ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.map((form) => [form.mnemonic, form]),
+);
 const memoryDependencyProof = arm64A64MemoryDecoderDependencyProof();
+assert.equal(memoryDependencyProof.coverageState, 'exact');
+assert.equal(memoryDependencyProof.ownershipCoverage, 'exact');
+assert.equal(memoryDependencyProof.loweringCoverage, 'exact-with-declared-contract-limited-partial');
+assert.deepEqual(memoryDependencyProof.contractLimitedPartialMnemonics, [...ARM64_A64_MEMORY_PARTIAL_MNEMONICS].sort());
+assert.deepEqual(memoryDependencyProof.missingGenericContracts, ['machine-effects-memory-ordering:acquire-rcpc']);
 assert.equal(validateArm64A64DecoderDependencyProof('memory', memoryDependencyProof), true);
 assert.equal(validateArm64A64DecoderDependencyProof('simd', memoryDependencyProof), false, 'a memory proof must never satisfy the SIMD dependency');
 for (const damaged of [
@@ -102,7 +127,7 @@ for (const damaged of [
   { ...memoryDependencyProof, independentAuthority:false },
   { ...memoryDependencyProof, oracleIds:['production-effect-registry-memory','deployed-capstone-5-arm64'] },
 ]) assert.equal(validateArm64A64DecoderDependencyProof('memory', damaged), false);
-assert.equal(new Set(ARM64_A64_MEMORY_ENCODING_FAMILIES.map(({ id }) => id)).size, 9);
+assert.equal(new Set(ARM64_A64_MEMORY_ENCODING_FAMILIES.map(({ id }) => id)).size, 10);
 assert.deepEqual(
   [...ARM64_MEMORY_EFFECT_MNEMONICS].filter((mnemonic) => !(mnemonic in DECODER_MNEMONIC_ALIASES)).sort(),
   [...ARM64_A64_MEMORY_EXACT_MNEMONICS, ...ARM64_A64_MEMORY_PARTIAL_MNEMONICS].sort(),
@@ -110,6 +135,49 @@ assert.deepEqual(
 );
 for (const alias of Object.keys(DECODER_MNEMONIC_ALIASES)) {
   assert.ok(ARM64_MEMORY_EFFECT_MNEMONICS.includes(alias), `decoder alias ${alias} escaped production memory ownership`);
+}
+
+// Every declared contract-limited form must be a real registry mnemonic, must
+// name the shared contract it exceeds, and must not also be claimed exact.
+assert.equal(ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.length, 9);
+for (const form of ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS) {
+  assert.ok(ARM64_MEMORY_EFFECT_MNEMONICS.includes(form.mnemonic), `contract-limited ${form.mnemonic} is not a registry mnemonic`);
+  assert.equal(ARM64_A64_MEMORY_EXACT_MNEMONICS.includes(form.mnemonic), false, `${form.mnemonic} must not be claimed exact`);
+  assert.match(form.missingGenericContract, /^machine-effects-[a-z-]+:/, `${form.mnemonic}:missing generic contract`);
+  assert.equal(form.preservesAccess, true, `${form.mnemonic}:contract-limited partial must preserve its access`);
+}
+
+assert.throws(
+  () => [...arm64A64MemoryEncodingCases({
+    rcpcDeclaredForms:ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.filter(({ mnemonic }) => mnemonic !== 'ldapr'),
+  })],
+  /arm64-memory-denominator-rcpc-acquire-undeclared:ldapr/,
+  'an observed RCpc acquire form removed from the partial declaration must fail closed instead of becoming exact',
+);
+
+// False-green proofs: the fail-closed predicate must reject a partial case whose
+// declaration is gone, relabelled, or reattributed to another contract. Without
+// these a future unrepresentable form could join the corpus unattributed.
+const allCases = [...arm64A64MemoryEncodingCases()];
+assert.deepEqual(arm64A64MemoryUnexplainedPartialMnemonics({ cases:allCases }), []);
+assert.deepEqual(
+  arm64A64MemoryUnexplainedPartialMnemonics({ cases:allCases, declaredForms:[] }),
+  [...ARM64_A64_MEMORY_PARTIAL_MNEMONICS].sort(),
+  'an undeclared partial form must not be explainable',
+);
+for (const mutate of [
+  (current) => ({ ...current, missingGenericContract:'machine-effects-memory-ordering:seq-cst' }),
+  (current) => ({ ...current, partialReason:'arm64-something-else' }),
+  (current) => ({ ...current, partialKind:'unexplained' }),
+  (current) => ({ ...current, preservesAccess:false }),
+  (current) => ({ ...current, completeness:'exact' }),
+]) {
+  const tampered = allCases.map((current) => (current.mnemonic === 'ldapr' ? mutate(current) : current));
+  assert.deepEqual(
+    arm64A64MemoryUnexplainedPartialMnemonics({ cases:tampered }),
+    ['ldapr'],
+    'a reattributed or silently promoted RCpc acquire form must fail closed',
+  );
 }
 
 const cases = [...arm64A64MemoryEncodingCases()];
@@ -128,8 +196,32 @@ try {
     assert.equal(effects.completeness, current.completeness, `${current.id}:${raw[0].mnemonic}:${raw[0].opStr}:${effects.unknownEffects?.reason}`);
 
     if (current.completeness === 'partial') {
-      assert.deepEqual([...effects.unknownEffects.categories].sort(), ['memory','other']);
-      assert.equal(accesses(effects).length, 0, `${current.id}:partial hint must not fabricate a memory access`);
+      // A partial case is only acceptable when it is declared: it has to be the
+      // contract-limited ordering-strength limitation, bound to its named missing
+      // generic contract, and it must still carry the exact read it is partial
+      // about. Anything else would be an unexplained gap.
+      const declared = declaredContractLimited.get(current.mnemonic);
+      assert.ok(declared, `${current.id}:undeclared partial form escaped the contract-limited declaration`);
+      assert.equal(current.partialKind, declared.partialKind, `${current.id}:partial kind`);
+      assert.equal(current.missingGenericContract, declared.missingGenericContract, `${current.id}:missing generic contract`);
+      assert.equal(effects.unknownEffects?.reason, declared.reason, `${current.id}:partial reason`);
+      assert.deepEqual([...effects.unknownEffects.categories], ['memory'], `${current.id}:partial categories`);
+      assert.equal(effects.unknownEffects.preservation, 'not-assumed', `${current.id}:partial preservation`);
+      // The architecture's real ordering authority is published in metadata...
+      assert.equal(effects.metadata.orderingAuthority, declared.publishedOrderingAuthority, `${current.id}:ordering authority`);
+      assert.equal(effects.metadata.ordering, declared.publishedOrderingStrength, `${current.id}:published ordering strength`);
+      // ...while the shared access ordering must stay unset. Publishing strong
+      // RCsc `acquire` here would fabricate an ordering edge that RCpc does not
+      // provide, which is exactly the failure this denominator guards.
+      const preserved = accesses(effects);
+      assert.ok(preserved.length > 0, `${current.id}:a contract-limited partial must still emit its exact access`);
+      for (const observed of preserved) {
+        assert.equal(observed.direction, 'read', `${current.id}:RCpc acquire direction`);
+        assert.equal(observed.access.widthBits, current.widthBits, `${current.id}:preserved access width`);
+        assert.equal(observed.access.ordering ?? null, null, `${current.id}:an RCpc acquire must never be published as strong RCsc ordering`);
+      }
+      // The destination register write is unaffected by the missing token.
+      assert.ok(effects.operations.some((operation) => operation.kind === 'register-write'), `${current.id}:destination write`);
       continue;
     }
 

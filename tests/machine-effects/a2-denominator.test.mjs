@@ -201,6 +201,53 @@ for (const field of ['mnemonicCount','fpImmediateCount']) {
     'a stale or caller-minted integer denominator count must fail closed');
 }
 
+// The A64 memory family is exact for ownership and enumeration, but the 9
+// FEAT_LRCPC/LRCPC2 acquire forms cannot carry their ordering strength through the
+// shared memory-ordering domain (#8607). That partial lowering is admissible only
+// while it stays declared per mnemonic, attributed to a named missing shared
+// contract, and digest-bound to the independently proven encoding corpus. These
+// mutations must all fail closed: erasing the declaration, trimming it, silently
+// adding a partial mnemonic, or reattributing the contract would each turn the
+// family back into the false exact the guard exists to prevent.
+for (const mutate of [
+  (denominator) => { denominator.contractLimitedPartialMnemonics = []; },
+  (denominator) => { denominator.contractLimitedPartialMnemonics.pop(); },
+  (denominator) => { denominator.contractLimitedPartialMnemonicCount -= 1; },
+  (denominator) => { denominator.missingGenericContracts = []; },
+  (denominator) => { denominator.missingGenericContracts = ['machine-effects-memory-ordering:seq-cst']; },
+  (denominator) => { denominator.missingGenericContracts = ['not-a-generic-contract']; },
+  (denominator) => { denominator.partialMnemonicCount += 1; },
+  (denominator) => { denominator.partialMnemonicCount = 0; },
+  (denominator) => { denominator.corpusSha256 = 'b'.repeat(64); },
+]) {
+  const mutated = clone();
+  const memory = mutated.architectures.find((architecture) => architecture.id === 'arm64')
+    .effectRegistry.families.find((family) => family.id === 'memory');
+  mutate(memory.proof.denominator);
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-memory-/,
+    'a partial memory lowering claim must stay declared, attributed, and digest-bound');
+}
+
+{
+  // Relabelling the exact family's coverage is not a way out either: an exact
+  // memory family still has to prove its identity, its oracle, and its own
+  // denominator test.
+  const mutated = clone();
+  const memory = mutated.architectures.find((architecture) => architecture.id === 'arm64')
+    .effectRegistry.families.find((family) => family.id === 'memory');
+  memory.coverage = 'exact';
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-memory-proof-identity-drift/);
+}
+
+{
+  const mutated = clone();
+  const memory = mutated.architectures.find((architecture) => architecture.id === 'arm64')
+    .effectRegistry.families.find((family) => family.id === 'memory');
+  memory.proof.denominator.oracleIds = ['production-effect-registry-memory'];
+  assert.throws(() => validateA2DenominatorInventory(mutated), /a2-denominator-arm64-memory-live-proof-drift/,
+    'the memory denominator must never cite its own production registry as an oracle');
+}
+
 {
   const mutated = clone();
   mutated.architectures.find((architecture) => architecture.id === 'riscv64').decoder.denominator.denominatorId = 'riscv64:rv64imc:unproven-denominator';
