@@ -96,6 +96,13 @@ export function requiresSerialShellFallback(checkScript) {
       i++;
       continue;
     }
+    if (ch === '!'
+        && (i === 0 || /[\s;&|(){}<>]/.test(str[i - 1]))
+        && (i + 1 >= str.length || /[\s;&|(){}<>]/.test(str[i + 1]))) {
+      flushToken();
+      complex = true;
+      continue;
+    }
     if ((ch === '{' || ch === '}') && (i === 0 || /[\s;|&()]/.test(str[i - 1] ?? ''))
         && (i + 1 >= str.length || /[\s;|&()]/.test(str[i + 1] ?? ''))) {
       flushToken();
