@@ -1,6 +1,37 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+function acquireSessionLock(lockPath, { timeoutMs = 1000, staleMs = 10000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(fd, `${process.pid} ${Date.now()}\n`);
+      return fd;
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") return null;
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) return null;
+      Atomics.wait(LOCK_SLEEP, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
+function releaseSessionLock(lockPath, fd) {
+  try { fs.closeSync(fd); } catch { /* ignore */ }
+  try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+}
+
 /**
  * Shared hook protocol for hosts whose extension point is an external command
  * that receives JSON on stdin and writes JSON on stdout.
@@ -87,14 +118,40 @@ export function createSessionStore(options = {}) {
   }
 
   function remember(sessionId, entry) {
-    const state = load();
     const key = sessionId || "default";
-    const items = Array.isArray(state[key]) ? state[key] : [];
-    items.push({ ...entry, at: Date.now() });
-    if (items.length > maxItems) items.splice(0, items.length - maxItems);
-    state[key] = items;
-    save(state);
-    return items;
+    const appended = { ...entry, at: Date.now() };
+    if (!filePath) return [appended];
+
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    } catch {
+      const current = recent(sessionId);
+      return [...current, appended].slice(-maxItems);
+    }
+
+    const lockPath = `${filePath}.lock`;
+    const lock = acquireSessionLock(lockPath);
+    if (lock == null) {
+      // Contention must fail closed: return a truthful in-process view so this
+      // decision does not misclassify the current item as a duplicate, but do
+      // not overwrite another writer's state.
+      const current = recent(sessionId);
+      return [...current, appended].slice(-maxItems);
+    }
+
+    try {
+      // Reload only after the lock is held. Every writer therefore extends the
+      // latest committed state instead of racing from the same stale snapshot.
+      const state = load();
+      const items = Array.isArray(state[key]) ? [...state[key]] : [];
+      items.push(appended);
+      if (items.length > maxItems) items.splice(0, items.length - maxItems);
+      state[key] = items;
+      save(state);
+      return items;
+    } finally {
+      releaseSessionLock(lockPath, lock);
+    }
   }
 
   function recent(sessionId) {
