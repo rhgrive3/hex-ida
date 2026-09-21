@@ -325,22 +325,31 @@ export async function runQuietCommand({
   }
 
   const spawnFailure = Boolean(status.error);
-  if (spawnFailure) cleanupDirectory();
+  let spawnCleanupError = null;
+  if (spawnFailure) {
+    try { cleanupDirectory(); } catch (error) { spawnCleanupError = error; }
+  }
   const statusText = status.error
     ? `spawn error: ${status.error.code || status.error.message}`
     : (status.signal ? `signal ${status.signal}` : `exit ${status.code}`);
   stderr.write(`${label}: FAIL (${statusText}, ${(durationMs / 1000).toFixed(1)}s)\n`);
   const text = tail.toString('utf8').trim();
   if (text) stderr.write(`--- failure tail (max 64 KiB) ---\n${text}\n--- end failure tail ---\n`);
-  if (spawnFailure) stderr.write('Spawn failure log cleaned after diagnostic capture.\n');
-  else stderr.write(`Full log: ${logPath}\n`);
+  if (spawnFailure) {
+    if (spawnCleanupError) {
+      stderr.write(`${label}: WARN diagnostic temp cleanup failed (${spawnCleanupError.code || spawnCleanupError.message}); retained ${logPath}\n`);
+    } else {
+      stderr.write('Spawn failure log cleaned after diagnostic capture.\n');
+    }
+  } else stderr.write(`Full log: ${logPath}\n`);
   stderr.write('Rerun with HEX_TEST_OUTPUT=verbose for live full output.\n');
   return Object.freeze({
     ok: false,
     status: status.code,
     signal: status.signal,
     error: status.error ?? null,
-    logPath: spawnFailure ? null : logPath,
+    logPath: spawnFailure ? (spawnCleanupError ? logPath : null) : logPath,
+    cleanupError: spawnCleanupError,
     durationMs,
   });
 }
