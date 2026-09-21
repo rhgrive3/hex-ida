@@ -62,6 +62,14 @@ arm64 Mach-O をローカルビルドし、既存 shape scan に通した。GPL 
 - candidate 数 5、D4=0.1771、D5=0.1615、gap≈0.0156（曖昧境界を再現）。
 - 現行 D1〜D4 の top-1 は offset 48（D1、誤り）。
 
+### Jev が真値 c1 を選ぶ質問契約（本引き継ぎで改善）
+
+generic 文言では live choice が誤って c0 (D4) を 5/5 で選んでいた。goal 名と vital pool の
+「正味減少・0でクランプ」を与える文言に変えた結果、choice は真値 c1 (D5) を 6/6 (p=0.99)、
+parallel noul は 5/5 (p=0.88..0.91) で選択。文言は goal 依存（`hp`/`stamina` のみ）で
+`money`/`score`/`level` は従来どおり。実装は `js/ai/provider/worker-semantic-rank.js`。
+回帰は `tests/semantic-boundary-worker.mjs` で固定。
+
 `HEX_OPENMW_HOLDOUT_LIVE=1` で live OpenJev を使った結果（証跡:
 `/mnt/workspace/.dev-state/agent-work/evidence/openjev-boundary-referee/openmw-holdout-live.json`）:
 
@@ -69,20 +77,18 @@ arm64 Mach-O をローカルビルドし、既存 shape scan に通した。GPL 
 |---|---|---:|---:|---:|---:|---|
 | 現行 D1〜D4 | offset 48 | 0 | 0 | 12 | 0 | no-referee |
 | oracle（上限） | offset 48 | 0 | 1 | 12 | 1 | probe-promoted |
-| shadow choice | offset 48 | 0 | 0 | 12 | 1 | received c0 (D4) |
-| shadow parallel noul | offset 48 | 0 | 0 | 12 | 1 | abstain |
-| gated 1-probe | offset 48 | 0 | 0 | 12 | 1 | not-admitted:probability |
+| shadow choice | offset 48 | 0 | 0 | 12 | 1 | **received c1 (D5)** |
+| shadow parallel noul | offset 48 | 0 | 0 | 12 | 1 | **received c1 (D5)** |
+| gated 1-probe | offset 48 | 0 | **1** | 12 | 1 | **admitted → probe reconfirmed** |
 
-- live choice は真値 D5(c1) ではなく **D4(c0)** を選び、確率 < 0.8 で admission 棄却。
-- live parallel noul は abstain。
-- そのため gated 1-probe は probe を撃たず、analyze 12 のまま従来 D1〜D4 と完全一致。
-- **oracle（OpenJev が完璧に真値を指した場合の上限）でも top-1 は変わらない**（hit@4=1 まで届くが rescue=0）。
-- 上流 latency（live, n=数回）: choice p50≈482ms / p95≈581ms、noul p50≈504ms。
+- Jev は choice/noul とも真値 c1 を選択し、probe も成功（hit@4=1）。
+- しかし **final top-1 は offset 48 のまま**。5候補はすべて `DynamicStat<int>::mCurrent` で、
+  決定的 fusion では検証済み候補が 0.9822 で同点、同点は順序で決まる。真値は probe 後 0.9739 で届かない。
+- 上流 latency（live, n=数回）: choice p50≈480ms / p95≈580ms、noul p50≈500ms。
 
-結論: **この実 holdout では OpenJev の choice/noul いずれも top-1 を改善しない**。
-oracle 上限でも改善しないため、1-probe 方式はこのケースでは無効。設計の DoD に従い
-**Phase 2 default-on は無効のまま**（`promotionEligible: false`）。誤昇格を避けるため
-admission 閾値は緩めない。
+結論: **Jev は真値を選択できるようになった**。一方でこの holdout では決定的スコアが真値を
+top-1 にできない（5候補が構造的に同一で同点）。OpenJev は順位に影響させない設計のため、
+Phase 2 default-on は無効のまま（`promotionEligible: false`）。admission 閾値は緩めない。
 
 ## 実行済みテスト
 

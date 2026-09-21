@@ -233,6 +233,22 @@ for (const outcome of [
   }
 }
 
+// The question contract is goal-aware. A depletable vital pool gets the
+// net-depleting guidance that the OpenMW hp holdout calibrated; other goals
+// keep the generic wording, so money/score classification is unchanged.
+{
+  const hpChoice = __semanticRankTest.openJevRequestBody({ goal: { id: 'hp', label: 'HP' }, candidates: body().candidates, method: 'choice' });
+  assert.match(hpChoice.questions.boundary.instructions, /decrease count strictly exceeds its increase count/);
+  assert.match(hpChoice.questions.boundary.instructions, /id: hp/);
+  const moneyChoice = __semanticRankTest.openJevRequestBody({ goal: { id: 'money', label: 'Money' }, candidates: body().candidates, method: 'choice' });
+  assert.equal(/strictly exceeds/.test(moneyChoice.questions.boundary.instructions), false);
+  const hpNoul = __semanticRankTest.openJevRequestBody({ goal: { id: 'hp', label: 'HP' }, candidates: body().candidates, method: 'noul' });
+  for (const question of Object.values(hpNoul.questions)) {
+    assert.deepEqual(Object.keys(question.criteria).sort(), ['false', 'true']);
+    assert.match(question.instructions, /strictly exceeds/);
+  }
+}
+
 assert.equal(__semanticRankTest.UPSTREAM_TIMEOUT_MS <= 2500, true);
 assert.equal(__semanticRankTest.REQUEST_BYTES <= 24 * 1024, true);
 process.stdout.write('  ok  semantic-rank worker is fixed-contract, keyed server-side, and fail-open\n');

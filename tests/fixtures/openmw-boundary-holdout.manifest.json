@@ -45,11 +45,12 @@
   "observed": {
     "evaluatedAt": "2026-09-22",
     "currentTopOffset": 48,
-    "liveChoiceChallenger": "c0 (D4)",
-    "liveChoiceNote": "The live choice picks c0 (D4), not the true c1 (D5); the probability is below the 0.8 admission floor.",
-    "liveParallelNoul": "abstain (c0/c1 near-tie)",
-    "gatedOneProbeStatus": "not-admitted:probability (fallback to D1-D4, analyze unchanged)",
-    "oracleCeiling": "A forced oracle challenger reaches verification-hit@4 = 1, but the final top-1 is unchanged.",
+    "refereeSelection": "c1 (D5, the true candidate) with the goal-aware net-depleting wording",
+    "liveChoiceChallenger": "c1 (D5)",
+    "liveChoiceNote": "The generic wording selected the wrong c0 (D4) 5/5 times; the goal-aware net-depleting wording selects the true c1 (D5) 6/6 at p=0.99.",
+    "liveParallelNoul": "c1 (D5) at p=0.88..0.91 (5/5)",
+    "gatedOneProbeStatus": "admitted -> probe reconfirmed; verification-hit@4 = 1",
+    "oracleCeiling": "Even a forced oracle challenger leaves the final top-1 unchanged: the five candidates are all DynamicStat<int>::mCurrent and tie at p=0.9822 in the deterministic fusion, so ordering wins.",
     "boundaryRescue": 0,
     "promotionEligible": false
   },
