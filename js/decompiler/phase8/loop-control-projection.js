@@ -39,7 +39,7 @@
  */
 
 import { successorEdgesOf } from './structuring.js';
-import { registerSemanticControlLineHistory } from '../semantic-core.js';
+import { readSemanticControlLineHistory, registerSemanticControlLineHistory } from '../semantic-core.js';
 import { mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 
@@ -617,7 +617,10 @@ function projectOneLoop(body, proof, ctx) {
     const node = body[index];
     const rewrite = rewriteByIndex.get(index);
     if (!rewrite) {
-      bodyNodes.push({ ...node, indent: (node.indent ?? entryIndent) + 1 });
+      const retained = { ...node, indent: (node.indent ?? entryIndent) + 1 };
+      const retainedHistory = readSemanticControlLineHistory(node, ctx.ir);
+      if (retainedHistory) registerSemanticControlLineHistory(retained, retainedHistory);
+      bodyNodes.push(retained);
       continue;
     }
     if (typeof node.text !== 'string' || !TRAILING_JUMP_TEXT.test(node.text)) return null;
