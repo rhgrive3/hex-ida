@@ -88,7 +88,7 @@ function pathIsWithin(root, target) {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
 }
 
-export function ensureSafeDirectory(root, target) {
+export function ensureSafeDirectory(root, target, { fsImpl = fs } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = path.resolve(target);
   if (!pathIsWithin(resolvedRoot, resolvedTarget)) {
@@ -97,11 +97,11 @@ export function ensureSafeDirectory(root, target) {
 
   let rootEntry = null;
   try {
-    rootEntry = fs.lstatSync(resolvedRoot);
+    rootEntry = fsImpl.lstatSync(resolvedRoot);
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
-    fs.mkdirSync(resolvedRoot, { recursive: true });
-    rootEntry = fs.lstatSync(resolvedRoot);
+    fsImpl.mkdirSync(resolvedRoot, { recursive: true });
+    rootEntry = fsImpl.lstatSync(resolvedRoot);
   }
   if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
     throw new Error(`freebuff setup: unsafe containment root is not a real directory: ${resolvedRoot}`);
@@ -113,14 +113,14 @@ export function ensureSafeDirectory(root, target) {
   for (const part of relative.split(path.sep)) {
     current = path.join(current, part);
     try {
-      const entry = fs.lstatSync(current);
+      const entry = fsImpl.lstatSync(current);
       if (entry.isSymbolicLink() || !entry.isDirectory()) {
         throw new Error(`freebuff setup: unsafe directory ancestor: ${current}`);
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
-      fs.mkdirSync(current);
-      const entry = fs.lstatSync(current);
+      fsImpl.mkdirSync(current);
+      const entry = fsImpl.lstatSync(current);
       if (entry.isSymbolicLink() || !entry.isDirectory()) {
         throw new Error(`freebuff setup: unsafe directory ancestor: ${current}`);
       }
@@ -129,33 +129,95 @@ export function ensureSafeDirectory(root, target) {
   return resolvedTarget;
 }
 
-export function copyIfMissing(src, dst, executable = false, containmentRoot = null) {
-  // Validate every parent before even inspecting the leaf: lstat(dst) follows
-  // intermediate symlinks and must not be allowed to escape the HOME boundary.
-  if (containmentRoot) ensureSafeDirectory(containmentRoot, path.dirname(dst));
-  else fs.mkdirSync(path.dirname(dst), { recursive: true });
-  // Destination occupancy must be checked without following the final symlink.
-  // COPYFILE_EXCL closes the race between the lstat and the actual copy.
-  try {
-    fs.lstatSync(dst);
-    return false;
-  } catch (error) {
-    if (error?.code !== 'ENOENT') return false;
+function stableDirectoryAlias(fd) {
+  if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
+  if (process.platform === 'darwin') return `/dev/fd/${fd}`;
+  throw new Error('freebuff setup: stable directory handles are unsupported on this platform');
+}
+
+function sameDirectoryIdentity(left, right) {
+  return left?.dev === right?.dev && left?.ino === right?.ino;
+}
+
+export function openStableDirectory(root, target, { fsImpl = fs } = {}) {
+  const resolvedTarget = ensureSafeDirectory(root, target, { fsImpl });
+  const expected = fsImpl.lstatSync(resolvedTarget);
+  if (expected.isSymbolicLink() || !expected.isDirectory()) {
+    throw new Error(`freebuff setup: unsafe directory ancestor: ${resolvedTarget}`);
   }
-  if (!fs.existsSync(src)) return false;
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0) | (fs.constants.O_NOFOLLOW || 0);
+  let fd = null;
   try {
-    fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL);
+    fd = fsImpl.openSync(resolvedTarget, flags);
+    const opened = fsImpl.fstatSync(fd);
+    if (!opened.isDirectory() || !sameDirectoryIdentity(expected, opened)) {
+      throw new Error(`freebuff setup: directory identity changed during validation: ${resolvedTarget}`);
+    }
+    return { fd, path:resolvedTarget, alias:stableDirectoryAlias(fd), identity:{ dev:opened.dev, ino:opened.ino } };
   } catch (error) {
-    if (error?.code === 'EEXIST') return false;
+    if (fd != null) { try { fsImpl.closeSync(fd); } catch {} }
     throw error;
   }
-  if (executable) fs.chmodSync(dst, 0o755);
-  else if (dst.endsWith('.json')) {
-    try {
-      fs.chmodSync(dst, 0o600);
-    } catch {}
+}
+
+export function assertStableDirectory(handle, { fsImpl = fs } = {}) {
+  let current;
+  try {
+    current = fsImpl.lstatSync(handle.path);
+  } catch (error) {
+    throw new Error(`freebuff setup: directory identity changed before mutation: ${handle.path}`, { cause:error });
+  }
+  if (current.isSymbolicLink() || !current.isDirectory()
+    || current.dev !== handle.identity.dev || current.ino !== handle.identity.ino) {
+    throw new Error(`freebuff setup: directory identity changed before mutation: ${handle.path}`);
   }
   return true;
+}
+
+function closeStableDirectory(handle, fsImpl = fs) {
+  if (!handle) return;
+  try { fsImpl.closeSync(handle.fd); } catch {}
+}
+
+export function copyIfMissing(src, dst, executable = false, containmentRoot = null, { fsImpl = fs } = {}) {
+  const dir = path.dirname(dst);
+  let guard = null;
+  try {
+    if (containmentRoot) guard = openStableDirectory(containmentRoot, dir, { fsImpl });
+    else {
+      fsImpl.mkdirSync(dir, { recursive: true });
+      guard = openStableDirectory(dir, dir, { fsImpl });
+    }
+    const guardedDst = path.join(guard.alias, path.basename(dst));
+    try {
+      fsImpl.lstatSync(guardedDst);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+    }
+    if (!fsImpl.existsSync(src)) return false;
+    try {
+      assertStableDirectory(guard, { fsImpl });
+      fsImpl.copyFileSync(src, guardedDst, fs.constants.COPYFILE_EXCL);
+    } catch (error) {
+      if (error?.code === 'EEXIST') return false;
+      throw error;
+    }
+    try {
+      assertStableDirectory(guard, { fsImpl });
+    } catch (error) {
+      try { fsImpl.rmSync(guardedDst, { force:true }); } catch {}
+      throw error;
+    }
+    if (executable) fsImpl.chmodSync(guardedDst, 0o755);
+    else if (dst.endsWith('.json')) {
+      try { fsImpl.chmodSync(guardedDst, 0o600); } catch {}
+    }
+    assertStableDirectory(guard, { fsImpl });
+    return true;
+  } finally {
+    closeStableDirectory(guard, fsImpl);
+  }
 }
 
 // Legacy homes use absolute symlinks into the legacy shared dir; recreate
@@ -163,29 +225,35 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
 export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs } = {}) {
   const dir = path.dirname(linkPath);
   const base = path.basename(linkPath);
+  const guard = openStableDirectory(dir, dir, { fsImpl });
+  const guardedLink = path.join(guard.alias, base);
   const token = `${process.pid}-${randomUUID()}`;
-  const staged = path.join(dir, `.${base}.link-${token}`);
-  const backup = path.join(dir, `.${base}.backup-${token}`);
+  const staged = path.join(guard.alias, `.${base}.link-${token}`);
+  const backup = path.join(guard.alias, `.${base}.backup-${token}`);
   let backedUp = false;
   let published = false;
   try {
+    assertStableDirectory(guard, { fsImpl });
     fsImpl.symlinkSync(target, staged);
     try {
-      fsImpl.lstatSync(linkPath);
-      fsImpl.renameSync(linkPath, backup);
+      fsImpl.lstatSync(guardedLink);
+      assertStableDirectory(guard, { fsImpl });
+      fsImpl.renameSync(guardedLink, backup);
       backedUp = true;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
     try {
-      fsImpl.renameSync(staged, linkPath);
+      assertStableDirectory(guard, { fsImpl });
+      fsImpl.renameSync(staged, guardedLink);
       published = true;
     } catch (error) {
       if (backedUp) {
-        try { fsImpl.renameSync(backup, linkPath); } catch (restoreError) { error.cause = restoreError; }
+        try { fsImpl.renameSync(backup, guardedLink); } catch (restoreError) { error.cause = restoreError; }
       }
       throw error;
     }
+    assertStableDirectory(guard, { fsImpl });
     if (backedUp) {
       try { fsImpl.rmSync(backup, { recursive: true, force: true }); } catch {}
     }
@@ -197,26 +265,36 @@ export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs } =
     if (published && backedUp) {
       try { fsImpl.rmSync(backup, { recursive: true, force: true }); } catch {}
     }
+    closeStableDirectory(guard, fsImpl);
   }
 }
 
 export function cleanupSymlinkBackups(linkPath, { fsImpl = fs } = {}) {
   const dir = path.dirname(linkPath);
   const prefix = `.${path.basename(linkPath)}.backup-`;
-  let names = [];
-  try { names = fsImpl.readdirSync(dir); } catch { return false; }
-  let clean = true;
-  for (const name of names) {
-    if (!name.startsWith(prefix)) continue;
-    try { fsImpl.rmSync(path.join(dir, name), { recursive: true, force: true }); }
-    catch { clean = false; }
+  let guard = null;
+  try {
+    guard = openStableDirectory(dir, dir, { fsImpl });
+    const names = fsImpl.readdirSync(guard.alias);
+    let clean = true;
+    for (const name of names) {
+      if (!name.startsWith(prefix)) continue;
+      try {
+        assertStableDirectory(guard, { fsImpl });
+        fsImpl.rmSync(path.join(guard.alias, name), { recursive: true, force: true });
+      } catch { clean = false; }
+    }
+    return clean;
+  } catch {
+    return false;
+  } finally {
+    closeStableDirectory(guard, fsImpl);
   }
-  return clean;
 }
 
 export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
   const manicode = path.join(homeDir, '.config', 'manicode');
-  ensureSafeDirectory(homeDir, manicode);
+  ensureSafeDirectory(homeDir, manicode, { fsImpl });
   const links = {
     'message-history.json': '../../../../shared/history/message-history.json',
     projects: '../../../../shared/history/projects',
@@ -256,19 +334,56 @@ export function moveDirectoryIfMissing(src, dst, { containmentRoot = DATA_ROOT, 
     throw new Error(`freebuff setup: migration source is not a real directory: ${src}`);
   }
 
-  ensureSafeDirectory(containmentRoot, path.dirname(dst));
-  fsImpl.renameSync(src, dst);
-  return true;
+  const guard = openStableDirectory(containmentRoot, path.dirname(dst), { fsImpl });
+  const guardedDst = path.join(guard.alias, path.basename(dst));
+  try {
+    try {
+      fsImpl.lstatSync(guardedDst);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.renameSync(src, guardedDst);
+    try {
+      assertStableDirectory(guard, { fsImpl });
+    } catch (error) {
+      try { fsImpl.renameSync(guardedDst, src); } catch (restoreError) { error.cause = restoreError; }
+      throw error;
+    }
+    return true;
+  } finally {
+    closeStableDirectory(guard, fsImpl);
+  }
 }
 
-function moveIfMissing(src, dst) {
-  if (fs.existsSync(dst) || !fs.existsSync(src)) return false;
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
+function moveIfMissing(src, dst, containmentRoot = path.dirname(dst)) {
+  if (!fs.existsSync(src)) return false;
+  const guard = openStableDirectory(containmentRoot, path.dirname(dst));
+  const guardedDst = path.join(guard.alias, path.basename(dst));
   try {
-    fs.renameSync(src, dst);
+    try {
+      fs.lstatSync(guardedDst);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+    }
+    assertStableDirectory(guard);
+    try {
+      fs.renameSync(src, guardedDst);
+    } catch {
+      return false;
+    }
+    try {
+      assertStableDirectory(guard);
+    } catch (error) {
+      try { fs.renameSync(guardedDst, src); } catch (restoreError) { error.cause = restoreError; }
+      throw error;
+    }
     return true;
-  } catch {}
-  return false;
+  } finally {
+    closeStableDirectory(guard);
+  }
 }
 
 export function cmpVersions(a, b) {
@@ -325,34 +440,45 @@ function binaryVersion(bin) {
   }
 }
 
-export function publishExecutableAtomically(src, dst, expectedVersion, { versionProbe = binaryVersion } = {}) {
+export function publishExecutableAtomically(src, dst, expectedVersion, { versionProbe = binaryVersion, fsImpl = fs } = {}) {
   const dir = path.dirname(dst);
-  ensureSafeDirectory(dir, dir);
-  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  const guard = openStableDirectory(dir, dir, { fsImpl });
+  const guardedDst = path.join(guard.alias, path.basename(dst));
+  const tmp = path.join(guard.alias, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
   try {
-    fs.copyFileSync(src, tmp, fs.constants.COPYFILE_EXCL);
-    fs.chmodSync(tmp, 0o755);
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.copyFileSync(src, tmp, fs.constants.COPYFILE_EXCL);
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.chmodSync(tmp, 0o755);
     const stagedVersion = versionProbe(tmp);
     if (expectedVersion && stagedVersion !== expectedVersion) {
       throw new Error(`freebuff setup: staged shared binary version mismatch (${stagedVersion || 'unknown'} != ${expectedVersion})`);
     }
-    fs.renameSync(tmp, dst);
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.renameSync(tmp, guardedDst);
+    assertStableDirectory(guard, { fsImpl });
     return stagedVersion;
   } finally {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
+    try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+    closeStableDirectory(guard, fsImpl);
   }
 }
 
-function publishTextAtomically(dst, content, mode = 0o600) {
+function publishTextAtomically(dst, content, mode = 0o600, { fsImpl = fs } = {}) {
   const dir = path.dirname(dst);
-  ensureSafeDirectory(dir, dir);
-  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  const guard = openStableDirectory(dir, dir, { fsImpl });
+  const guardedDst = path.join(guard.alias, path.basename(dst));
+  const tmp = path.join(guard.alias, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
   try {
-    fs.writeFileSync(tmp, content, { flag: 'wx', mode });
-    fs.renameSync(tmp, dst);
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.writeFileSync(tmp, content, { flag: 'wx', mode });
+    assertStableDirectory(guard, { fsImpl });
+    fsImpl.renameSync(tmp, guardedDst);
+    assertStableDirectory(guard, { fsImpl });
     return true;
   } finally {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
+    try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+    closeStableDirectory(guard, fsImpl);
   }
 }
 
@@ -403,42 +529,41 @@ function ensureSharedBinary() {
   return sharedBest;
 }
 
-export function ensureMetadata(dir, shared, containmentRoot = dir) {
-  ensureSafeDirectory(containmentRoot, dir);
-  const metaPath = path.join(dir, 'freebuff-metadata.json');
+export function ensureMetadata(dir, shared, containmentRoot = dir, { fsImpl = fs } = {}) {
+  const guard = openStableDirectory(containmentRoot, dir, { fsImpl });
+  const metaPath = path.join(guard.alias, 'freebuff-metadata.json');
   const expectedTarget = `${process.platform}-${process.arch}`;
-  let currentEntry = null;
   try {
-    currentEntry = fs.lstatSync(metaPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') return false;
-  }
-
-  // Only read an existing regular metadata file. In particular, never follow
-  // a symlink leaf while deciding whether reconciliation is needed.
-  if (currentEntry?.isFile()) {
+    let currentEntry = null;
     try {
-      const cur = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      if (cur.version === shared.version && cur.target === expectedTarget) return false;
-    } catch {}
-  }
+      currentEntry = fsImpl.lstatSync(metaPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+    }
 
-  const content = `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`;
-  fs.mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.freebuff-metadata.json.tmp-${process.pid}-${randomUUID()}`);
-  try {
-    // Publish through a new regular file in the same directory, then rename
-    // over the leaf. rename replaces a symlink directory entry; it does not
-    // follow the symlink target.
-    fs.writeFileSync(tmp, content, { flag: 'wx', mode: 0o600 });
-    fs.renameSync(tmp, metaPath);
-    return true;
-  } catch {
-    return false;
+    if (currentEntry?.isFile()) {
+      try {
+        const cur = JSON.parse(fsImpl.readFileSync(metaPath, 'utf8'));
+        if (cur.version === shared.version && cur.target === expectedTarget) return false;
+      } catch {}
+    }
+
+    const content = `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`;
+    const tmp = path.join(guard.alias, `.freebuff-metadata.json.tmp-${process.pid}-${randomUUID()}`);
+    try {
+      assertStableDirectory(guard, { fsImpl });
+      fsImpl.writeFileSync(tmp, content, { flag: 'wx', mode: 0o600 });
+      assertStableDirectory(guard, { fsImpl });
+      fsImpl.renameSync(tmp, metaPath);
+      assertStableDirectory(guard, { fsImpl });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      try { fsImpl.rmSync(tmp, { force: true }); } catch {}
+    }
   } finally {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
+    closeStableDirectory(guard, fsImpl);
   }
 }
 
@@ -447,25 +572,29 @@ export function ensureMetadata(dir, shared, containmentRoot = dir) {
 // and their future background updates are left alone.
 function linkSharedBinary(home, shared) {
   const dir = path.join(home, '.config', 'manicode');
-  ensureSafeDirectory(home, dir);
-  const bin = path.join(dir, 'freebuff');
+  const guard = openStableDirectory(home, dir);
+  const bin = path.join(guard.alias, 'freebuff');
   let linked = false;
   try {
-    const st = fs.lstatSync(bin);
-    if (!st.isSymbolicLink()) return false;
-    if (fs.readlinkSync(bin) !== shared.path) {
-      fs.rmSync(bin, { force: true });
-      fs.symlinkSync(shared.path, bin);
-      linked = true;
-    }
-  } catch {
+    let st = null;
     try {
-      fs.mkdirSync(dir, { recursive: true });
-      fs.symlinkSync(shared.path, bin);
-      linked = true;
-    } catch {
-      return false;
+      st = fs.lstatSync(bin);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
     }
+    if (st && !st.isSymbolicLink()) return false;
+    if (st?.isSymbolicLink() && fs.readlinkSync(bin) === shared.path) {
+      assertStableDirectory(guard);
+    } else {
+      assertStableDirectory(guard);
+      if (st) fs.rmSync(bin, { force:true });
+      assertStableDirectory(guard);
+      fs.symlinkSync(shared.path, bin);
+      assertStableDirectory(guard);
+      linked = true;
+    }
+  } finally {
+    closeStableDirectory(guard);
   }
   const metaUpdated = ensureMetadata(dir, shared, home);
   return linked || metaUpdated;
@@ -479,7 +608,7 @@ function ensureShared() {
     const dst = path.join(SHARED_ROOT, rel);
     ensureSafeDirectory(SHARED_ROOT, path.dirname(dst));
     if (fs.existsSync(dst)) continue;
-    if (moveIfMissing(path.join(repoShared, rel), dst)) {
+    if (moveIfMissing(path.join(repoShared, rel), dst, SHARED_ROOT)) {
       migrated++;
       continue;
     }
