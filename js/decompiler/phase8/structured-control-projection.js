@@ -14,7 +14,7 @@
  */
 
 import { edgeAccountingFailures } from './structuring.js';
-import { projectNaturalLoops } from './loop-control-projection.js';
+import { LOOP_PROJECTION_CANCELLED, projectNaturalLoops } from './loop-control-projection.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
 import { printProgram } from '../pretty/c.js';
 import { sourceOf, mergeSource } from '../ast/nodes.js';
@@ -722,10 +722,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     ),
   });
   // Cancellation is a transaction boundary for the whole projection. The loop
-  // projector returns null both for "nothing adoptable" and for abort; if a
-  // conditional region was already adopted, publishing that partial result
-  // would violate the referential fail-closed contract.
-  if (opts.shouldAbort?.() === true) return result;
+  // projector says so in the outcome it returns; if a conditional region was
+  // already adopted, publishing that partial result would violate the
+  // referential fail-closed contract. The predicate is checked again as well, for
+  // an abort that lands after the loop stage returned.
+  if (loopOutcome === LOOP_PROJECTION_CANCELLED || opts.shouldAbort?.() === true) return result;
   if (loopOutcome && loopOutcome.records.length > 0) {
     workingBody = loopOutcome.body;
     adoptedRecords.push(...loopOutcome.records);

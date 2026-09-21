@@ -42,6 +42,7 @@ import {
 } from './structured-control-projection.js';
 import {
   LOOP_CONTROL_PROJECTION_VERSION,
+  LOOP_PROJECTION_CANCELLED,
   LOOP_PROJECTION_RULE,
   isAdoptableLoopRegion,
   projectNaturalLoops,
@@ -54,6 +55,7 @@ export {
   STRUCTURED_CONTROL_PROJECTION_VERSION,
   isAdoptableConditionalRegion,
   LOOP_CONTROL_PROJECTION_VERSION,
+  LOOP_PROJECTION_CANCELLED,
   LOOP_PROJECTION_RULE,
   isAdoptableLoopRegion,
   projectNaturalLoops,
