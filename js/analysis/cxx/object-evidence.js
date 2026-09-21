@@ -570,9 +570,14 @@ export function extractCppObjectEvidence(context = {}) {
           slotByteOffset,
           pointerBytes,
           virtualSlotKnown: true,
-          closureProven: metadata.targetClosure === true,
-          candidateTargetIds: metadata.candidateTargetIds || [],
-          exactTargetAddress: metadata.exactTargetAddress || null,
+          // Target-set closure is a call-site property. Function-scoped metadata
+          // cannot prove that this particular virtual dispatch has one exhaustive
+          // target, especially when a function contains multiple virtual calls.
+          // Keep extraction fail-closed until a call-site-scoped authority is
+          // supplied by a dedicated producer through createCppVirtualSlotEvidence().
+          closureProven: false,
+          candidateTargetIds: [],
+          exactTargetAddress: null,
           reason: 'canonical-vtable-slot-load',
         });
         virtualSlots.push(slotEvidence);
