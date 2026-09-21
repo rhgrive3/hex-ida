@@ -267,6 +267,28 @@ export function readExpressionHistoryConsumer(semantic, ir) {
   return binding;
 }
 
+// The printed source map asks for the consumer of every output line. Several
+// printed entries share one C-AST node, so the same consumer currentness walk
+// was repeated for each entry. This map is a pure synchronous section: nothing
+// in it mutates the observed graph. A single caller-owned validation section
+// lets it reuse one answer per consumer, and `settle` re-derives every reused
+// answer before the map is returned; if any answer changed, the section is
+// discarded and the map is rebuilt without reuse, so a mutation can never be
+// shipped as a stale consumer source.
+function consumerSourceMap(advanced) {
+  const mapping = advanced.printed.mapping, body = advanced.cAst.body, ir = advanced.ir;
+  const collect = () => mapping.map((entry, index) => readExpressionHistoryConsumer(body[index]?.semantic, ir));
+  const build = consumers => mapping.map((entry, index) => {
+    const consumer = consumers[index];
+    return consumer ? { ...entry, source:mergeSource(entry.source,
+      ...consumer.records.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
+  });
+  const batch = createValidationBatch();
+  let consumers = null;
+  batch.run(() => { consumers = collect(); });
+  return batch.settle() === 0 ? build(consumers) : build(collect());
+}
+
 // A spelling transition needs the actual C AST node as well as the semantic
 // expression consumer. Equal text, copied nodes or a public descriptor cannot
 // establish which spelling this producer emitted.
@@ -1971,11 +1993,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     // A selected-away operation may have no surviving AST source. Retain its
     // observed origins on the actual consumer's output span, not on every line
     // sharing an input. Keep the expression/load identity and sources intact.
-    sourceMap: advanced.printed.mapping.map((entry, index) => {
-      const consumer = readExpressionHistoryConsumer(advanced.cAst.body[index]?.semantic, advanced.ir);
-      return consumer ? { ...entry, source:mergeSource(entry.source,
-        ...consumer.records.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
-    }),
+    sourceMap: consumerSourceMap(advanced),
     highVariables: advanced.highVariables,
     prototype: advanced.prototype,
     aggregateLayouts: advanced.aggregateLayouts,
