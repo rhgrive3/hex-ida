@@ -69,8 +69,20 @@ export function partitionFiles(root = ROOT, partition) {
   if (!Object.hasOwn(PARTITIONS, partition)) throw new Error(`unknown accuracy partition: ${partition}`);
   const files=[];
   const jsRoot = path.join(root, 'js');
-  let allowedRealRoot = null;
-  try { allowedRealRoot = fs.realpathSync(root); } catch {}
+  const allowedRealRoot = fs.realpathSync(root);
+  let jsEntry;
+  try {
+    jsEntry = fs.lstatSync(jsRoot);
+  } catch (error) {
+    throw new Error(`accuracy cache key: required js root is unavailable: ${jsRoot}`, { cause: error });
+  }
+  if (jsEntry.isSymbolicLink() || !jsEntry.isDirectory()) {
+    throw new Error(`accuracy cache key: required js root must be a real directory: ${jsRoot}`);
+  }
+  const realJsRoot = fs.realpathSync(jsRoot);
+  if (!pathIsWithin(allowedRealRoot, realJsRoot)) {
+    throw new Error(`accuracy cache key: required js root escapes repository: ${jsRoot}`);
+  }
   walk(jsRoot, root, files, new Set(), allowedRealRoot);
   const semanticFamily = partition.startsWith('pseudoc-') ? 'pseudoc' : partition;
   const selected=files.filter((relative)=>{
