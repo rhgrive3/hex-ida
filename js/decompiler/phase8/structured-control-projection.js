@@ -721,6 +721,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       opts,
     ),
   });
+  // Cancellation is a transaction boundary for the whole projection. The loop
+  // projector returns null both for "nothing adoptable" and for abort; if a
+  // conditional region was already adopted, publishing that partial result
+  // would violate the referential fail-closed contract.
+  if (opts.shouldAbort?.() === true) return result;
   if (loopOutcome && loopOutcome.records.length > 0) {
     workingBody = loopOutcome.body;
     adoptedRecords.push(...loopOutcome.records);
