@@ -39,7 +39,8 @@
  */
 
 import { successorEdgesOf } from './structuring.js';
-import { registerSemanticControlLineHistory } from '../semantic-core.js';
+import { readSemanticControlLineHistory, registerSemanticControlLineHistory } from '../semantic-core.js';
+import { mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 
 export const LOOP_CONTROL_PROJECTION_VERSION = 1;
@@ -114,6 +115,13 @@ function jumpTargetsOf(text) {
     if (address != null) targets.push(address);
   }
   return targets;
+}
+
+function copyNodePreservingControlHistory(node, patch, ir) {
+  const copy = { ...node, ...patch };
+  const history = readSemanticControlLineHistory(node, ir);
+  if (history) registerSemanticControlLineHistory(copy, history);
+  return copy;
 }
 
 /**
@@ -419,6 +427,11 @@ function projectOneLoop(body, proof, ctx) {
   const rewrites = [];
   const guardNodes = [];
   let conditionalGuardIndex = -1;
+  // Provenance of the nodes the construct replaces. A `while` line stands in for
+  // the guard's condition and its exit jump, so it has to carry the addresses
+  // those two lines carried: dropping them would silently shrink the emitted
+  // source map, which the frozen corpus reads as a provenance loss.
+  let closingSource = null;
 
   for (let index = spanStart; index <= spanEnd; index += 1) {
     const node = body[index];
@@ -464,7 +477,7 @@ function projectOneLoop(body, proof, ctx) {
         // Only a bare jump closes the construct: a conditional arm to the header
         // is a `continue`-shaped edge, and deleting it would delete a test.
         const bareJump = /^goto\s+loc_[0-9a-fA-F]+\s*;$/.test(node.text.trim());
-        if (index === spanEnd && bareJump) { removeIndices.add(index); continue; }
+        if (index === spanEnd && bareJump) { closingSource = node.source ?? null; removeIndices.add(index); continue; }
         if (proof.form !== 'while' || index === spanEnd) continue;
         rewrites.push({ index, text: 'continue', edge, targetBlock });
       }
@@ -472,6 +485,7 @@ function projectOneLoop(body, proof, ctx) {
   }
 
   if (guardNodes.length === 0 || guardNodes.length > 2) return null;
+  const guardSource = mergeSource(...guardNodes.map((index) => body[index]?.source ?? null));
   for (const index of guardNodes) removeIndices.add(index);
 
   const headerLabelIndex = (() => {
@@ -536,7 +550,7 @@ function projectOneLoop(body, proof, ctx) {
     return Number.isInteger(first?.indent) ? first.indent : 1;
   })();
 
-  const headerSource = ctx.controlSource(proof.guardTerminator, proof.guardBlock);
+  const headerSource = mergeSource(ctx.controlSource(proof.guardTerminator, proof.guardBlock), guardSource);
   const record = Object.freeze({
     rule: LOOP_PROJECTION_RULE,
     phase: 'phase8-control-projection',
@@ -577,7 +591,7 @@ function projectOneLoop(body, proof, ctx) {
     block: proof.loop.latches[0] ?? proof.guardBlock,
     row: null,
     addr: null,
-    source: headerSource,
+    source: mergeSource(headerSource, closingSource),
     semantic: { op: 'control-render', ir: proof.guardTerminator?.id ?? null, expression: null },
   };
 
@@ -610,7 +624,11 @@ function projectOneLoop(body, proof, ctx) {
     const node = body[index];
     const rewrite = rewriteByIndex.get(index);
     if (!rewrite) {
-      bodyNodes.push({ ...node, indent: (node.indent ?? entryIndent) + 1 });
+      bodyNodes.push(copyNodePreservingControlHistory(
+        node,
+        { indent: (node.indent ?? entryIndent) + 1 },
+        ctx.ir,
+      ));
       continue;
     }
     if (typeof node.text !== 'string' || !TRAILING_JUMP_TEXT.test(node.text)) return null;
@@ -654,6 +672,14 @@ function projectOneLoop(body, proof, ctx) {
     else removeIndices.add(headerLabelIndex);
   }
 
+  // A dropped label's addresses have to survive too, and the label is not
+  // replaced by anything in particular: its provenance belongs to the construct
+  // that took over its block.
+  if (headerLabelIndex >= 0 && !labelStillReferenced) {
+    headerNode.source = mergeSource(headerNode.source, body[headerLabelIndex]?.source ?? null);
+    closeNode.source = mergeSource(closeNode.source, body[headerLabelIndex]?.source ?? null);
+  }
+
   const next = [];
   for (let index = 0; index < body.length; index += 1) {
     if (index === spanStart) next.push(...prefix, ...constructed);
@@ -675,7 +701,7 @@ function projectOneLoop(body, proof, ctx) {
  * that is about to be emitted is the whole proof, and the label itself is left
  * in place for whatever still jumps to it.
  */
-function absorbFallthroughJumps(body) {
+function absorbFallthroughJumps(body, ir) {
   const out = [];
   for (let index = 0; index < body.length; index += 1) {
     const node = body[index];
@@ -683,7 +709,17 @@ function absorbFallthroughJumps(body) {
     if (node?.kind === 'stmt' && typeof node.text === 'string' && next?.kind === 'label') {
       const jump = /^goto\s+loc_([0-9a-fA-F]+)\s*;$/.exec(node.text.trim());
       const label = /^loc_([0-9a-fA-F]+):$/.exec(String(next.text).trim());
-      if (jump && label && jump[1].toLowerCase() === label[1].toLowerCase()) continue;
+      if (jump && label && jump[1].toLowerCase() === label[1].toLowerCase()) {
+        // The label that took the jump over keeps the jump's provenance: the
+        // block is still entered, just without the branch.
+        out.push(copyNodePreservingControlHistory(
+          next,
+          { source: mergeSource(next.source, node.source) },
+          ir,
+        ));
+        index += 1;
+        continue;
+      }
     }
     out.push(node);
   }
@@ -700,19 +736,45 @@ function absorbFallthroughJumps(body) {
  * on the exact body that is about to be emitted, so a label survives iff some
  * emitted line still references it.
  */
-function pruneDanglingLabels(body) {
+function pruneDanglingLabels(body, ir) {
   const referenced = new Set();
   for (const node of body) {
     for (const target of jumpTargetsOf(node?.text)) referenced.add(String(target));
   }
-  return body.filter((node) => {
-    if (node?.kind !== 'label' || typeof node.text !== 'string') return true;
-    const match = /^loc_([0-9a-fA-F]+):$/.exec(node.text.trim());
-    if (!match) return true;
-    const address = asAddress(`0x${match[1]}`);
-    if (address == null) return true;
-    return referenced.has(String(address));
-  });
+  const out = [];
+  let carried = null;
+  for (const node of body) {
+    if (!isDanglingLabel(node, referenced)) {
+      out.push(carried == null ? node : copyNodePreservingControlHistory(
+        node,
+        { source: mergeSource(node.source, carried) },
+        ir,
+      ));
+      carried = null;
+      continue;
+    }
+    // Nothing jumps here any more, but the block still exists: hand the label's
+    // addresses to the line that took its place so the source map does not lose
+    // the address the label was the last carrier of.
+    carried = mergeSource(carried, node.source);
+  }
+  if (carried != null && out.length > 0) {
+    out[out.length - 1] = copyNodePreservingControlHistory(
+      out[out.length - 1],
+      { source: mergeSource(out[out.length - 1].source, carried) },
+      ir,
+    );
+  }
+  return out;
+}
+
+function isDanglingLabel(node, referenced) {
+  if (node?.kind !== 'label' || typeof node.text !== 'string') return false;
+  const match = /^loc_([0-9a-fA-F]+):$/.exec(node.text.trim());
+  if (!match) return false;
+  const address = asAddress(`0x${match[1]}`);
+  if (address == null) return false;
+  return !referenced.has(String(address));
 }
 
 /**
@@ -762,5 +824,5 @@ export function projectNaturalLoops(body, ctx = {}) {
     adopted.push(candidate.region);
   }
   if (records.length === 0) return null;
-  return { body: pruneDanglingLabels(absorbFallthroughJumps(workingBody)), records, adopted };
+  return { body: pruneDanglingLabels(absorbFallthroughJumps(workingBody, ctx.ir), ctx.ir), records, adopted };
 }

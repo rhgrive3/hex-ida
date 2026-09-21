@@ -19,6 +19,8 @@ import {
   runPhase8Stage,
 } from '../../../js/decompiler/phase8/index.js';
 import { readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
+import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
+import { validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 
 const BASE = 0x1000n;
@@ -376,6 +378,9 @@ test('loop C. nested natural loops project innermost first without breaking owne
   assert.ok(texts.indexOf('s = 5;') > inner, 'inner body is inside the inner construct');
   const indentOf = (text) => projected.cAst.body.find((node) => node.text === text)?.indent;
   assert.ok(indentOf('s = 5;') > indentOf('s = 2;'), 'inner body is indented deeper');
+  const innerHeader = projected.cAst.body.find((node) => node.text === 'while (c1) {');
+  assert.ok(readSemanticControlLineHistory(innerHeader, result.ir),
+    'outer re-indentation preserves the inner projected control line history');
   assert.equal(count(texts, /^goto loc_/), 0, 'no loop jumps remain in either construct');
 });
 
@@ -648,8 +653,10 @@ test('loop Q. an inner break never becomes an outer break', () => {
   f.branch(4);
   const inner = f.block(4, { succ: [5, 3] }).opaque(1);
   f.conditionalBranch(inner, 5, 3);
-  f.block(5, { succ: [4] }).store(f.constant(5, 32));
-  f.branch(4);
+  const innerBody = f.block(5, { succ: [3, 4] });
+  innerBody.store(f.constant(5, 32));
+  const innerBreaker = innerBody.opaque(1);
+  f.conditionalBranch(innerBreaker, 3, 4);
   f.block(3, { succ: [1] }).branch(1);
   f.block(6).ret();
   const ir = withProducerLayout(f.build());
@@ -658,7 +665,12 @@ test('loop Q. an inner break never becomes an outer break', () => {
   const outerLoop = facts.regions.find((region) => region.kind === 'loop' && region.entry === 1);
   assert.ok(innerLoop && outerLoop);
 
-  const body = bodyOf(NESTED_WHILE_BODY);
+  const nestedBreakBody = NESTED_WHILE_BODY.flatMap((row) => (
+    row[3] === 5 && row[2] === `goto loc_${hex(4)};`
+      ? [['ctrl', 1, `if (c2) goto loc_${hex(3)};`, 5], row]
+      : [row]
+  ));
+  const body = bodyOf(nestedBreakBody);
   const result = {
     ir,
     types: {},
@@ -673,16 +685,15 @@ test('loop Q. an inner break never becomes an outer break', () => {
   const innerIndex = texts.indexOf('while (c1) {');
   assert.ok(innerIndex > texts.indexOf('while (c0) {'), 'inner loop stays inside the outer construct');
 
-  // Rewrite the inner loop's exit edge into a canonical break and re-run: the
-  // break must belong to the inner loop only.
-  const innerExit = facts.edges.find((edge) => edge.from === 4 && edge.to === 3);
-  assert.ok(innerExit, 'the inner loop leaves to the outer latch');
-  assert.notEqual(innerExit.construct, 'loop-knee');
-  assert.ok(['loop-break', 'residual-goto', 'if-branch', 'loop-guard-exit'].includes(innerExit.construct));
-  for (const node of projected.cAst.body) {
-    if (node.text === 'break;') {
-      assert.ok(texts.indexOf('break;') > innerIndex, 'a break must sit inside the inner loop');
-    }
+  const innerBreak = facts.edges.find((edge) => edge.from === 5 && edge.to === 3);
+  assert.ok(innerBreak, 'the inner loop body has a break edge to the outer latch');
+  assert.equal(innerBreak.construct, 'loop-break');
+  const breakIndexes = texts
+    .map((text, position) => (/\bbreak;$/.test(text) ? position : -1))
+    .filter((position) => position >= 0);
+  assert.ok(breakIndexes.length > 0, 'the projection emits a break to check');
+  for (const position of breakIndexes) {
+    assert.ok(position > innerIndex, 'a break must sit inside the inner loop');
   }
 });
 
@@ -767,6 +778,78 @@ test('loop S. a pre-header guard keeps its own jump while the loop behind it is 
     assert.ok(texts.some((candidate) => candidate.startsWith(`loc_${jump[1]}:`)),
       `the remaining jump loc_${jump[1]} still names an emitted label`);
   }
+});
+
+/* ── T. the construct keeps every address it replaced ─────────────────── */
+
+/**
+ * The real producer gives every instruction its own address, so the nodes a loop
+ * construct replaces — the guard's exit jump, the closing back edge, the header
+ * label — each carry an address of their own. Dropping any of them shrinks the
+ * published source map, which the frozen corpus reads as a provenance loss.
+ *
+ * The shared fixtures reuse one address per block, which is exactly why a
+ * missing node address could slip past them; here every row is addressed.
+ */
+function addressedWhileBody() {
+  return WHILE_BODY.map(([kind, indent, text, block], index) => ({
+    kind,
+    indent,
+    text,
+    row: index,
+    block,
+    addr: A(block),
+    source: sourceOf({ row: index, address: BASE + BigInt(index), ir: [`inst_${index}`] }),
+    semantic: { op: kind === 'ctrl' ? 'control-render' : 'statement', block, ir: `inst_${index}` },
+  }));
+}
+
+test('loop T. every source address of the nodes a construct replaces survives', () => {
+  const ir = whileIr();
+  const body = addressedWhileBody();
+  const result = {
+    ir,
+    types: {},
+    cAst: { kind: 'CProgram', body, source: sourceOf() },
+    lines: body,
+    pseudocode: body.map((node) => node.text).join('\n'),
+    rewriteProof: [],
+    metrics: {},
+  };
+  const { analysis } = analyze(ir);
+  const projected = applyStructuredControlProjection(result, analysis);
+  assert.notEqual(projected, result, 'the fixture has to actually project for this to prove anything');
+
+  const before = new Set(body.flatMap((node) => node.source.addresses.map(String)));
+  assert.equal(before.size, body.length, 'the fixture addresses every row distinctly');
+  const after = new Set(projected.cAst.body.flatMap((node) => (node.source?.addresses ?? []).map(String)));
+  const missing = [...before].filter((address) => !after.has(address));
+  assert.deepEqual(missing, [], 'the projected program keeps every address the input carried');
+});
+
+/* ── U. the map is bound to the analysis it was built from ────────────── */
+
+/**
+ * Publishing render provenance without the canonical snapshot id makes every
+ * adopted construct look like an unverifiable edit: the corpus validation reads
+ * a null snapshot id as `missing-snapshot` and the whole map as incomplete.
+ */
+test('loop U. an adopted projection binds the canonical snapshot id into render provenance', () => {
+  const { result, projected, analysis } = project(whileIr(), WHILE_BODY, { opts: { renderProvenance: true } });
+  assert.notEqual(projected, result);
+  const identity = canonicalAnalysisIdentity({ ir: result.ir, analysis });
+  assert.equal(identity.valid, true, 'acceptance requires a valid canonical analysis identity');
+  assert.equal(typeof identity.identity.snapshotId, 'string');
+  assert.ok(identity.identity.snapshotId.length > 0);
+
+  assert.ok(projected.renderProvenance, 'render provenance is built when requested');
+  assert.equal(projected.renderProvenance.snapshotId, identity.identity.snapshotId,
+    'the map carries the analysis it was built from, not a null snapshot');
+  const validation = validateRenderProvenance(projected.renderProvenance, {
+    snapshotId: identity.identity.snapshotId,
+  });
+  assert.ok(!validation.reasons.includes('missing-snapshot'), 'an unbound map would read as a provenance loss');
+  assert.ok(!validation.reasons.includes('stale-snapshot'));
 });
 
 /* ── mutation / false-green proofs ────────────────────────────────────── */
