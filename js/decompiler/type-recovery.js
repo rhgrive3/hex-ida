@@ -327,22 +327,27 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 export function semanticSignature(name, recovered, notes = null, funcAddr = null, opts = null, ir = null) {
   const rt = (notes && notes.typeOf && notes.typeOf(funcAddr, 'ret')) || (recovered.ret && recovered.ret.type) || 'void';
   const cxxRec = currentCppReceiver(opts || {}, ir);
-  const args = (recovered.args || []).map((a) => {
-    let t = (notes && notes.typeOf && notes.typeOf(funcAddr, 'a' + a.index)) || (a.type === 'unknown' ? 'uint64' : a.type);
+  const recoveredArgs = recovered.args || [];
+  const args = recoveredArgs.map((a) => {
+    const authoritativeType = notes?.typeOf?.(funcAddr, 'a' + a.index) || null;
+    let t = authoritativeType || (a.type === 'unknown' ? 'uint64' : a.type);
     let n = (notes && notes.varName && notes.varName(funcAddr, 'a' + a.index)) || `a${a.index + 1}`;
-    const isThis = a.index === 0 && cxxRec
-      && (a.valueId === cxxRec.canonicalValueId || String(a.valueId) === String(cxxRec.canonicalValueId));
+    const isThis = a.index === 0 && cxxRec;
     if (isThis) {
       n = 'this';
-      if (t === 'uint64' || t === 'void *' || t === 'unknown' || !notes?.typeOf?.(funcAddr, 'a0')) {
+      if (!authoritativeType) {
         const className = cxxRec.classIdentity?.className;
-        if (className) {
-          t = `${className} *`;
-        }
+        if (className) t = `${className} *`;
       }
     }
     return `${t} ${n}`;
   });
+  if (cxxRec && !recoveredArgs.some((a) => a.index === 0)) {
+    const authoritativeType = notes?.typeOf?.(funcAddr, 'a0') || null;
+    const className = cxxRec.classIdentity?.className;
+    const type = authoritativeType || (className ? `${className} *` : 'uint64');
+    args.unshift(`${type} this`);
+  }
   return `${rt === 'unknown' ? 'uint64' : rt} ${name || 'sub'}(${args.length ? args.join(', ') : 'void'})`;
 }
 
