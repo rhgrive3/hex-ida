@@ -10,7 +10,7 @@ function injectedRenameFailure(linkPath, code = 'ENOSPC') {
   return {
     ...fs,
     renameSync(src, dst) {
-      if (dst === linkPath && path.basename(src).includes('.link-')) {
+      if (path.basename(dst) === path.basename(linkPath) && path.basename(src).includes('.link-')) {
         const error = new Error(`${code}: injected publication failure`);
         error.code = code;
         throw error;
