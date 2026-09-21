@@ -48,12 +48,14 @@ try {
   await repo.loginUser({ id: owner, username: 'Owner' }); const token = await repo.issueSession(owner, 'userscript');
   let quotaLookups = 0;
   env.GEMINI_API_KEY = 'server-only-fixture';
+  env.OPENJEV_API_KEY = 'server-only-openjev-fixture';
   env.AI_QUOTA = { getByName() { quotaLookups++; throw new Error('quota must not be reached by rejected authorization'); } };
   const aiRequest = (path, headers = {}, body = '{}') => worker.fetch(new Request('https://hex.test' + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body }), env, {});
   assert.equal((await aiRequest('/api/ai/turn')).status, 401, 'missing AI capability must fail before worker dispatch');
   assert.equal((await aiRequest('/api/ai/turn', { origin: 'https://chatgpt.com' })).status, 401, 'allowed CORS origin is not authorization');
   assert.equal((await aiRequest('/api/ai/turn', { 'x-hex-session': 'attacker-session' })).status, 401, 'client session id is not authorization');
   assert.equal((await aiRequest('/api/gemini')).status, 401, 'legacy provider-spend route uses the same gate');
+  assert.equal((await aiRequest('/api/semantic-rank')).status, 401, 'semantic-rank uses the same provider-spend gate');
   assert.equal(quotaLookups, 0, 'rejected requests must not acquire distributed quota');
   const capResponse = await worker.fetch(new Request('https://hex.test/api/auth/ai-capability', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }), env, {});
   assert.equal(capResponse.status, 200);
@@ -63,6 +65,8 @@ try {
   // field the normalizer reports first.
   const admitted = await aiRequest('/api/ai/turn', { 'x-hex-ai-capability': cap.capability }, 'null');
   assert.equal(admitted.status, 400, 'valid capability passes admission and reaches request validation');
+  const semanticAdmitted = await aiRequest('/api/semantic-rank', { 'x-hex-ai-capability': cap.capability }, 'null');
+  assert.equal(semanticAdmitted.status, 400, 'semantic-rank reaches request validation only after capability admission');
   assert.equal(quotaLookups, 0, 'invalid AI payload still fails before quota after successful auth');
   const preflight = await worker.fetch(new Request('https://hex.test/api/ai/turn', { method: 'OPTIONS', headers: { origin: 'https://chatgpt.com', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-hex-ai-capability' } }), env, {});
   assert.equal(preflight.status, 204);
