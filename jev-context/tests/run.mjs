@@ -621,7 +621,7 @@ await test("batching truncates one huge result to the configured state budget", 
   const env = testEnv({
     JEV_PRUNING_MAX_QUESTIONS_PER_CALL: "1",
     JEV_PRUNING_MAX_STATE_TOKENS: "220",
-    JEV_PRUNING_KEEP_RECENT_ITEMS: "0",
+    JEV_PRUNING_KEEP_RECENT_ITEMS: "1",
   });
   const huge = "x".repeat(40000);
   const items = [
