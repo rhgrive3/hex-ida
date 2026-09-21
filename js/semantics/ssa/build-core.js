@@ -680,7 +680,7 @@ function finalizePhi(phi, resolvedOrigin) {
 export function buildSemanticSsa(irInput, cfgInput, options = {}) {
   assertNotAborted(options);
   const tick = makeWorkCounter(options);
-  const ir = isCanonicalSemanticIrProducerArtifact(irInput)
+  const ir = isCanonicalSemanticIrProducerArtifact(irInput) && options.irOptions == null
     ? irInput
     : createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
   const cfg = createSemanticCfg(cfgInput, { signal: options.signal, ...(options.cfgOptions ?? {}) });
