@@ -26,8 +26,79 @@ import { runQuietCommand } from './run-quiet-command.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUSIVE_PATTERN = /^(npm run benchmark:baseline|npm run phase7:test)$/;
 
+function hasTopLevelOrOperator(checkScript) {
+  const str = String(checkScript);
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let escaped = false;
+  let inComment = false;
+  let commandSubstitutionDepth = 0;
+  let groupDepth = 0;
+
+  const isCommentBoundary = (index) => {
+    if (index === 0) return true;
+    const prev = str[index - 1];
+    return prev.trim() === '' || ';&|(){}<>'.includes(prev);
+  };
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const code = ch.charCodeAt(0);
+    if (inComment) {
+      if (code === 10) inComment = false;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (code === 92 && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (code === 39 && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (code === 34 && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (code === 96 && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      continue;
+    }
+    if (inSingle || inDouble || inBacktick) continue;
+    if (code === 35 && isCommentBoundary(i)) {
+      inComment = true;
+      continue;
+    }
+    if (code === 36 && str[i + 1] === '(') {
+      commandSubstitutionDepth++;
+      i++;
+      continue;
+    }
+    if (commandSubstitutionDepth > 0) {
+      if (ch === '(') commandSubstitutionDepth++;
+      else if (ch === ')') commandSubstitutionDepth--;
+      continue;
+    }
+    if (ch === '(') {
+      groupDepth++;
+      continue;
+    }
+    if (ch === ')') {
+      if (groupDepth > 0) groupDepth--;
+      continue;
+    }
+    if (groupDepth === 0 && ch === '|' && str[i + 1] === '|') return true;
+  }
+  return false;
+}
 export function requiresSerialShellFallback(checkScript) {
   const str = String(checkScript);
+  if (hasTopLevelOrOperator(str)) return true;
   let inSingle = false;
   let inDouble = false;
   let inBacktick = false;
