@@ -792,8 +792,13 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
   structuredControlProjections.set(newProgram, projectionMetadata);
 
   if (opts.renderProvenance === true) {
+    // The map has to be bound to the analysis it was built from, exactly like the
+    // expression projection binds its own (phase8/projection.js). Publishing an
+    // unbound map makes every adopted construct look like an unverifiable edit:
+    // the frozen corpus treats a missing snapshot id as a provenance loss.
     updatedResult.renderProvenance = buildRenderProvenance({
       result: updatedResult,
+      snapshotId: currentId.identity?.snapshotId ?? null,
       budget: opts.renderProvenanceBudget,
       shouldAbort: opts.shouldAbort,
     });
