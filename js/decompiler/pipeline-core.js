@@ -17,6 +17,8 @@ import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
 import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
+import { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
+export { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
@@ -1431,6 +1433,7 @@ function expressionFor(v, state) {
   const records = Object.freeze([...built, ...history].map(record => valueHistoryRecord(record, v?.id ?? null)));
   (state.rewriteProof ??= []).push(...records);
   (state.expressionProofs ??= new Map()).set(v?.id, { expression:root, records });
+  if (v?.id != null) (state.expressions ??= new Map()).set(v.id, root);
   return root;
 }
 // A read-modify-write claim is only sound when the selected operator operand is
@@ -1918,8 +1921,9 @@ export function readRepresentationStage(result) {
   return entry?.ir === result?.ir ? entry.stage : null;
 }
 
-export function enhanceSemanticDecompilation(result, model, opts = {}) {
+export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   if (!result?.semantic || !result.ir) return result;
+  const opts = applyDecompilerProfile(rawOpts);
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
     localDeclarations: new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))

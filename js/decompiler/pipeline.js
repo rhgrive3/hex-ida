@@ -1,4 +1,6 @@
 import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage, readCopiedConditionalRegions } from './pipeline-core.js';
+import { applyDecompilerProfile } from './profiles.js';
+export { resolveDecompilerProfile, applyDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { recoverLegacySameBlockStackSpills } from './passes/legacy-stack-recovery.js';
@@ -430,7 +432,8 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   return updated;
 }
 
-export function enhanceSemanticDecompilation(result, model, opts = {}) {
+export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
+  const opts = applyDecompilerProfile(rawOpts);
   const proofOnlyRewrites = opts.phase8ProofOnlyRewrites === true;
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core, interactiveStage;
