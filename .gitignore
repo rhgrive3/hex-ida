@@ -49,3 +49,7 @@ tests/.accuracy-active-*.mjs
 # freebuff isolated HOME data (credentials live here). The ./freebuff-N
 # wrappers are tracked; the data dir is regenerable via npm run freebuff:setup.
 /.freebuff-homes/
+
+# OpenCode agent state
+/.opencode/
+
