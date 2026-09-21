@@ -613,7 +613,31 @@ await test("batching honours the question and state budgets", async () => {
   assert.ok(capture.length >= 2, "a large candidate set must be split into several calls");
   for (const entry of capture) {
     assert.ok(Object.keys(entry.questions).length <= 4, "questions per call exceeded the budget");
-    assert.ok(estimateTokens(entry.state) <= 900, "state exceeded the configured budget by a wide margin");
+    assert.ok(estimateTokens(entry.state) <= 300, "state exceeded the configured maxStateTokens budget");
+  }
+});
+
+await test("batching truncates one huge result to the configured state budget", async () => {
+  const env = testEnv({
+    JEV_PRUNING_MAX_QUESTIONS_PER_CALL: "1",
+    JEV_PRUNING_MAX_STATE_TOKENS: "220",
+    JEV_PRUNING_KEEP_RECENT_ITEMS: "0",
+  });
+  const huge = "x".repeat(40000);
+  const items = [
+    userItem("u1", "Inspect the old command output."),
+    toolItem("huge", huge, { tool: "bash", meta: { group: "command", resourceKey: "cmd:huge" } }),
+    toolItem("tail", "done", { tool: "bash", meta: { group: "command", resourceKey: "cmd:tail" } }),
+  ];
+
+  const capture = [];
+  const pipeline = makePipeline(env, stubClient({ capture }));
+  await pipeline.run(items, { scope: "batch-single" });
+
+  assert.ok(capture.length >= 1, "the huge ambiguous result should be classified");
+  for (const entry of capture) {
+    assert.ok(estimateTokens(entry.state) <= 220, "single-item state exceeded maxStateTokens");
+    assert.ok(entry.state.length < huge.length / 4, "huge result was not meaningfully excerpted");
   }
 });
 
