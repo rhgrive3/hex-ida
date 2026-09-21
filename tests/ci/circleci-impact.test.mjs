@@ -63,7 +63,7 @@ try {
 
   write(join(repo, 'docs', 'feature-note.md'), 'feature docs only\n');
   git(repo, 'add', '.');
-  git(repo, 'commit', '-m', 'D: feature docs only');
+  git(repo, 'commit', '-m', 'D: feature docs only [ci skip]');
   const commitD = git(repo, 'rev-parse', 'HEAD');
 
   git(repo, 'checkout', 'main');
@@ -107,9 +107,9 @@ try {
   // PR-only lanes remain disabled on main regardless of the changed path.
   assert.equal(route(commitA, 'main', 'pr-only', '^js/ai/'), 'false');
 
-  // Non-main stale suppression is safe because the newest branch head validates
-  // the cumulative merge-base diff. C can skip once D exists; D still sees C.
-  assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'false');
+  // A descendant remote head is not proof that a replacement pipeline exists.
+  // D is explicitly CI-skipped, so C must still route its own gated change.
+  assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'true');
   assert.equal(route(commitD, 'feature', 'main-and-branch', '^js/ai/'), 'true');
 
   // #9160: a force-pushed replacement is not proof that the old pipeline's
@@ -134,8 +134,8 @@ try {
   assert.equal(route(rewrittenLatest, 'rewritten-feature', 'main-and-branch', '^js/ai/'), 'false',
     'replacement docs-only head correctly skips the gated lane on its own diff');
 
-  // A stale-head refresh failure must never turn into a false skip. With an
-  // unresolvable branch name, routing falls through to the merge-base diff.
+  // Branch-name lookup is not needed for ownership proof; any non-empty branch
+  // still routes its exact HEAD against the merge base.
   assert.equal(route(commitC, 'missing-feature', 'main-and-branch', '^js/ai/'), 'true');
 
   // Missing provider branch metadata is uncertain, so the router must fail open.

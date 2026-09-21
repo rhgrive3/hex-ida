@@ -56,46 +56,11 @@ if [[ -z "$branch" ]]; then
   exit 0
 fi
 
-# CircleCI may still start an older pipeline after a newer commit has landed on
-# the same non-main branch. Saving work there is safe because the newest branch
-# pipeline validates the cumulative branch diff against main.
-#
-# Never stale-suppress main: each main commit owns its own first-parent delta.
-# If A changes a gated path and docs-only B lands before A starts, dropping A
-# would leave A's delta unvalidated because B correctly inspects only B^..B.
-if [[ "$branch" != 'main' ]]; then
-  if git fetch --no-tags origin "$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
-    latest="$(git rev-parse --verify "refs/remotes/origin/$branch" 2>/dev/null || true)"
-    if [[ -n "$latest" && "$latest" != "$head" ]]; then
-      # A newer remote SHA is only safe to stale-suppress when it actually
-      # contains this pipeline HEAD. Force-push/rebase/reset can replace the
-      # branch with a sibling commit whose cumulative diff does not validate
-      # changes that existed only on the superseded HEAD (#9160).
-      set +e
-      git merge-base --is-ancestor "$head" "$latest" >/dev/null 2>&1
-      ancestor_status=$?
-      set -e
-      case "$ancestor_status" in
-        0)
-          echo "stale CircleCI head $head; latest $branch is descendant $latest" >&2
-          printf 'false\n'
-          exit 0
-          ;;
-        1)
-          echo "remote head $latest does not contain pipeline head $head; not stale-suppressing" >&2
-          ;;
-        *)
-          echo "could not prove latest $branch contains pipeline head; running lane conservatively" >&2
-          printf 'true\n'
-          exit 0
-          ;;
-      esac
-    fi
-  else
-    echo "could not refresh remote head for $branch; not stale-suppressing" >&2
-  fi
-fi
-
+# Do not stale-suppress branch pipelines from git ancestry alone. A descendant
+# remote commit proves source ancestry, not that CircleCI created or ran a
+# replacement pipeline for it. Each branch pipeline therefore routes its own
+# HEAD against origin/main; this can duplicate work, but cannot silently drop
+# validation when a later push is CI-skipped or pipeline creation fails.
 if [[ "$branch" == 'main' ]]; then
   if [[ "$mode" != 'main-and-branch' ]]; then
     printf 'false\n'
