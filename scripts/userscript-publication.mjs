@@ -102,7 +102,7 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
     for (const [index, record] of records.entries()) {
       await assertRegularPublicationInput(record.file, entries[index].expected, io);
-      await io.rename(record.temporary, record.file); record.published = true;
+      await io.rename(record.temporary, record.file); record.temporary = null; record.published = true;
     }
     await syncDirectory(directory, io);
   } catch (error) {
