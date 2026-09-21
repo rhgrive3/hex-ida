@@ -105,6 +105,61 @@ export async function ensureFixtureCacheDirectory(cacheDir = outputDir, {
   return true;
 }
 
+function directoryIdentity(entry) {
+  return Object.freeze({ dev:String(entry.dev), ino:String(entry.ino) });
+}
+
+function sameDirectoryIdentity(entry, expected) {
+  return !entry.isSymbolicLink() && entry.isDirectory()
+    && String(entry.dev) === expected.dev && String(entry.ino) === expected.ino;
+}
+
+export async function captureFixtureCacheDirectoryIdentity(cacheDir = outputDir, {
+  containmentRoot = testsRoot,
+  lstatImpl = lstat,
+} = {}) {
+  const base = path.resolve(containmentRoot);
+  const target = path.resolve(cacheDir);
+  if (!pathIsWithin(base, target) || target === base) {
+    throw new Error('fixture cache must be a child directory of the repository tests tree');
+  }
+  const componentPaths = [base];
+  let current = base;
+  for (const part of path.relative(base, target).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    componentPaths.push(current);
+  }
+  const components = [];
+  for (const componentPath of componentPaths) {
+    const entry = await lstatImpl(componentPath);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`fixture cache path component is not a real directory: ${componentPath}`);
+    }
+    components.push(Object.freeze({ path:componentPath, ...directoryIdentity(entry) }));
+  }
+  return Object.freeze({ base, target, components:Object.freeze(components) });
+}
+
+export async function assertFixtureCacheDirectoryIdentity(snapshot, { lstatImpl = lstat } = {}) {
+  for (const expected of snapshot.components) {
+    let entry;
+    try {
+      entry = await lstatImpl(expected.path);
+    } catch (error) {
+      const changed = new Error(`fixture cache directory identity changed: ${expected.path}`);
+      changed.code = 'FIXTURE_CACHE_IDENTITY_CHANGED';
+      changed.cause = error;
+      throw changed;
+    }
+    if (!sameDirectoryIdentity(entry, expected)) {
+      const changed = new Error(`fixture cache directory identity changed: ${expected.path}`);
+      changed.code = 'FIXTURE_CACHE_IDENTITY_CHANGED';
+      throw changed;
+    }
+  }
+  return true;
+}
+
 export function fixture(name) {
   const spec = manifest.fixtures[name];
   if (!spec) throw new Error(`unknown fixture: ${name}`);
@@ -224,8 +279,14 @@ export async function publishFixtureFile(temp, target, {
   platform = process.platform,
   randomUUIDImpl = randomUUID,
   onCleanupError = (error, details) => console.warn(`${details.target}: published replacement but could not remove backup: ${error?.message || error}`),
+  directoryIdentitySnapshot = null,
+  assertDirectoryIdentityImpl = assertFixtureCacheDirectoryIdentity,
 } = {}) {
+  const guard = async () => {
+    if (directoryIdentitySnapshot) await assertDirectoryIdentityImpl(directoryIdentitySnapshot);
+  };
   try {
+    await guard();
     await renameImpl(temp, target);
     return;
   } catch (error) {
@@ -235,6 +296,7 @@ export async function publishFixtureFile(temp, target, {
 
     let targetEntry;
     try {
+      await guard();
       targetEntry = await lstatImpl(target);
     } catch (statError) {
       if (statError?.code === 'ENOENT') throw error;
@@ -243,11 +305,14 @@ export async function publishFixtureFile(temp, target, {
     if (targetEntry.isSymbolicLink() || !targetEntry.isFile()) throw error;
 
     const backup = `${target}.replace-backup-${process.pid}-${randomUUIDImpl()}`;
+    await guard();
     await renameImpl(target, backup);
     try {
+      await guard();
       await renameImpl(temp, target);
     } catch (replacementError) {
       try {
+        await guard();
         await renameImpl(backup, target);
       } catch (restoreError) {
         throw new AggregateError([replacementError, restoreError], `fixture replacement recovery required: ${target}`);
@@ -256,6 +321,7 @@ export async function publishFixtureFile(temp, target, {
     }
 
     try {
+      await guard();
       await rmImpl(backup, { force: true });
     } catch (cleanupError) {
       onCleanupError?.(cleanupError, { backup, target });
@@ -271,6 +337,8 @@ export async function fetchFixture(name, spec, {
   cacheContainmentRoot = testsRoot,
   ensureCacheDirImpl = ensureFixtureCacheDirectory,
   publishImpl = publishFixtureFile,
+  captureCacheIdentityImpl = captureFixtureCacheDirectoryIdentity,
+  assertCacheIdentityImpl = assertFixtureCacheDirectoryIdentity,
 } = {}) {
   const target = join(outputDirPath, spec.file);
   await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
@@ -287,6 +355,7 @@ export async function fetchFixture(name, spec, {
   if (!/^https:\/\//i.test(url)) throw new Error(`${name}: fixture URL must use HTTPS`);
 
   await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: true });
+  const cacheIdentity = await captureCacheIdentityImpl(outputDirPath, { containmentRoot: cacheContainmentRoot });
   const temp = `${target}.partial-${process.pid}-${randomUUID()}`;
   const deadline = createDownloadDeadline(name, timeoutMs);
   const { signal } = deadline.controller;
@@ -308,6 +377,7 @@ export async function fetchFixture(name, spec, {
 
     const hash = createHash('sha256');
     await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
+    await assertCacheIdentityImpl(cacheIdentity);
     output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
     output.on('error', (err) => { streamError = streamError || err; });
     let size = 0;
@@ -326,6 +396,7 @@ export async function fetchFixture(name, spec, {
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
     try {
       await verifyImpl(name, target, spec);
+      await assertCacheIdentityImpl(cacheIdentity);
       await rm(temp, { force: true });
       console.log(`${name}: downloaded and verified`);
       return;
@@ -333,7 +404,11 @@ export async function fetchFixture(name, spec, {
       if (error?.repairable !== true) throw error;
     }
     await ensureCacheDirImpl(outputDirPath, { containmentRoot: cacheContainmentRoot, create: false });
-    await publishImpl(temp, target);
+    await assertCacheIdentityImpl(cacheIdentity);
+    await publishImpl(temp, target, {
+      directoryIdentitySnapshot:cacheIdentity,
+      assertDirectoryIdentityImpl:assertCacheIdentityImpl,
+    });
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
     if (output && !output.closed) {
@@ -349,7 +424,12 @@ export async function fetchFixture(name, spec, {
       try { response.body.destroy?.(); } catch {}
       try { void response.body.cancel?.(); } catch {}
     }
-    await rm(temp, { force:true });
+    try {
+      await assertCacheIdentityImpl(cacheIdentity);
+      await rm(temp, { force:true });
+    } catch (identityError) {
+      if (identityError?.code !== 'FIXTURE_CACHE_IDENTITY_CHANGED') throw identityError;
+    }
     throw abortReason(signal, streamError || error);
   } finally {
     deadline.clear();

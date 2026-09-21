@@ -7,65 +7,129 @@ function pathIsWithin(root, target) {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
+function entryIdentity(entry) {
+  return Object.freeze({ dev:String(entry.dev), ino:String(entry.ino) });
+}
+
+function sameEntryIdentity(entry, expected, { directory = false } = {}) {
+  if (entry.isSymbolicLink()) return false;
+  if (directory ? !entry.isDirectory() : !entry.isFile()) return false;
+  return String(entry.dev) === expected.dev && String(entry.ino) === expected.ino;
+}
+
+async function pathEntryIdentity(file, io) {
+  const entry = await io.lstat(file);
+  if (entry.isSymbolicLink() || !entry.isFile()) return null;
+  return entryIdentity(entry);
+}
+
+async function unlinkIfSame(file, expected, io) {
+  if (!expected) return false;
+  try {
+    const entry = await io.lstat(file);
+    if (!sameEntryIdentity(entry, expected)) return false;
+    await io.unlink(file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
 export async function assertSafePublicationDirectory(directory, { io = fs, containmentRoot = directory } = {}) {
   const base = resolve(containmentRoot);
   const target = resolve(directory);
   if (!pathIsWithin(base, target)) throw new Error(`userscript-publication-outside-root:${target}`);
 
-  const rootEntry = await io.lstat(base);
-  if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
-    throw new Error(`userscript-publication-unsafe-directory:${base}`);
-  }
-
+  const componentPaths = [base];
   const rel = relative(base, target);
   let current = base;
   for (const part of rel ? rel.split(sep) : []) {
     current = resolve(current, part);
-    const entry = await io.lstat(current);
+    componentPaths.push(current);
+  }
+
+  const components = [];
+  for (const componentPath of componentPaths) {
+    const entry = await io.lstat(componentPath);
     if (entry.isSymbolicLink() || !entry.isDirectory()) {
-      throw new Error(`userscript-publication-unsafe-directory:${current}`);
+      throw new Error(`userscript-publication-unsafe-directory:${componentPath}`);
+    }
+    components.push(Object.freeze({ path:componentPath, ...entryIdentity(entry) }));
+  }
+  return Object.freeze({ base, target, components:Object.freeze(components) });
+}
+
+export async function assertPublicationDirectoryIdentity(snapshot, { io = fs } = {}) {
+  for (const expected of snapshot.components) {
+    let entry;
+    try {
+      entry = await io.lstat(expected.path);
+    } catch (error) {
+      const changed = new Error(`userscript-publication-directory-changed:${expected.path}`);
+      changed.code = 'USERSCRIPT_PUBLICATION_DIRECTORY_CHANGED';
+      changed.cause = error;
+      throw changed;
+    }
+    if (!sameEntryIdentity(entry, expected, { directory:true })) {
+      const changed = new Error(`userscript-publication-directory-changed:${expected.path}`);
+      changed.code = 'USERSCRIPT_PUBLICATION_DIRECTORY_CHANGED';
+      throw changed;
     }
   }
   return true;
 }
 
-async function stageFile(file, content, io) {
+async function stageFile(file, content, io, guard = async () => {}) {
   const temporary = `${file}.${randomUUID()}.stage`;
   const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
   let handle;
+  let temporaryIdentity = null;
   try {
+    await guard();
     handle = await io.open(temporary, 'wx');
+    temporaryIdentity = handle.stat ? entryIdentity(await handle.stat()) : await pathEntryIdentity(temporary, io);
+    await guard();
     await handle.writeFile(bytes);
     await handle.sync();
     await handle.close(); handle = null;
+    await guard();
     if (!(await io.readFile(temporary)).equals(bytes)) throw new Error(`userscript-publication-readback:${file}`);
-    return temporary;
+    await guard();
+    return { path:temporary, identity:temporaryIdentity };
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
-    await io.unlink(temporary).catch(() => {});
+    if (temporaryIdentity) await unlinkIfSame(temporary, temporaryIdentity, io).catch(() => {});
     throw error;
   }
 }
 
-async function syncDirectory(directory, io) {
+async function syncDirectory(directory, io, guard = async () => {}) {
+  await guard();
   const handle = await io.open(directory, 'r');
-  try { await handle.sync(); } finally { await handle.close(); }
+  try {
+    await guard();
+    await handle.sync();
+  } finally { await handle.close(); }
 }
 
-async function assertRegularPublicationInput(file, expected, io) {
+async function assertRegularPublicationInput(file, expected, io, guard = async () => {}) {
+  await guard();
   const stat = await io.lstat(file);
-  if (!stat.isFile()) throw new Error(`userscript-publication-non-regular-input:${file}`);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`userscript-publication-non-regular-input:${file}`);
+  await guard();
   if (!(await io.readFile(file)).equals(expected)) throw new Error(`userscript-publication-stale-input:${file}`);
+  await guard();
 }
 
 // Never truncate an existing generated file before the replacement has been
 // written, synced and read back. A directory-sync failure still fails the build.
 export async function writeFileVerified(file, content, { io = fs } = {}) {
-  const temporary = await stageFile(file, content, io);
+  const staged = await stageFile(file, content, io);
   try {
-    await io.rename(temporary, file);
+    await io.rename(staged.path, file);
     await syncDirectory(dirname(file), io);
-  } finally { await io.unlink(temporary).catch(() => {}); }
+  } finally { await unlinkIfSame(staged.path, staged.identity, io).catch(() => {}); }
 }
 
 // Error-rollback publication for the committed loader/release pair. This is
@@ -77,42 +141,71 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
   const directory = dirname(paths[0]);
   if (new Set(paths).size !== 2 || paths.some(file => dirname(file) !== directory)
       || entries.some(entry => !Buffer.isBuffer(entry.expected))) throw new Error('userscript-publication-identity-required');
-  await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
+
+  const directoryIdentity = await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
+  const guard = () => assertPublicationDirectoryIdentity(directoryIdentity, { io });
   const lockPath = resolve(directory, '.userscript-publication.lock');
-  const lock = await io.open(lockPath, 'wx');
+  let lock = null;
+  let lockIdentity = null;
   const records = [];
   let retainRecovery = false;
   let primaryError = null;
   try {
-    // Preflight both members before staging or creating backups. readFile()
-    // follows symlinks while rename() replaces the directory entry, so a
-    // symlink would validate one filesystem object and publish over another.
+    await guard();
+    lock = await io.open(lockPath, 'wx');
+    lockIdentity = lock.stat ? entryIdentity(await lock.stat()) : await pathEntryIdentity(lockPath, io);
+    await guard();
+
     for (const [index, entry] of entries.entries()) {
-      await assertRegularPublicationInput(paths[index], entry.expected, io);
+      await assertRegularPublicationInput(paths[index], entry.expected, io, guard);
     }
-    await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
+
     for (const [index, entry] of entries.entries()) {
       const file = paths[index];
-      const record = { file, backup:`${file}.${randomUUID()}.backup`, temporary:null, backedUp:false, published:false };
+      const record = {
+        file,
+        backup:`${file}.${randomUUID()}.backup`,
+        backupIdentity:null,
+        temporary:null,
+        temporaryIdentity:null,
+        backedUp:false,
+        published:false,
+      };
       records.push(record);
-      record.temporary = await stageFile(file, entry.content, io);
-      await io.link(file, record.backup); record.backedUp = true;
+      const staged = await stageFile(file, entry.content, io, guard);
+      record.temporary = staged.path;
+      record.temporaryIdentity = staged.identity;
+      await guard();
+      await io.link(file, record.backup);
+      record.backupIdentity = await pathEntryIdentity(record.backup, io);
+      record.backedUp = true;
+      await guard();
     }
-    await syncDirectory(directory, io);
-    await assertSafePublicationDirectory(directory, { io, containmentRoot: containmentRoot ?? directory });
+    await syncDirectory(directory, io, guard);
+
     for (const [index, record] of records.entries()) {
-      await assertRegularPublicationInput(record.file, entries[index].expected, io);
-      await io.rename(record.temporary, record.file); record.temporary = null; record.published = true;
+      await assertRegularPublicationInput(record.file, entries[index].expected, io, guard);
+      await guard();
+      await io.rename(record.temporary, record.file);
+      record.temporary = null;
+      record.temporaryIdentity = null;
+      record.published = true;
+      await guard();
     }
-    await syncDirectory(directory, io);
+    await syncDirectory(directory, io, guard);
   } catch (error) {
     const rollbackErrors = [];
     for (const record of [...records].reverse()) if (record.published) {
-      try { await io.rename(record.backup, record.file); record.backedUp = false; }
-      catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      try {
+        await guard();
+        await io.rename(record.backup, record.file);
+        record.backedUp = false;
+        record.backupIdentity = null;
+        await guard();
+      } catch (rollbackError) { rollbackErrors.push(rollbackError); }
     }
     if (records.some(record => record.published)) {
-      try { await syncDirectory(directory, io); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      try { await syncDirectory(directory, io, guard); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
     }
     if (rollbackErrors.length) {
       retainRecovery = true;
@@ -125,16 +218,30 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
       catch (error) { cleanupErrors.push(error); return false; }
     };
 
-    const lockClosed = await cleanup(() => lock.close());
-    if (!lockClosed) retainRecovery = true;
+    if (lock) {
+      const lockClosed = await cleanup(() => lock.close());
+      if (!lockClosed) retainRecovery = true;
+    }
     if (!retainRecovery) {
       let artifactsClean = true;
       for (const record of records) {
-        if (record.temporary && !(await cleanup(() => io.unlink(record.temporary)))) artifactsClean = false;
-        if (record.backedUp && !(await cleanup(() => io.unlink(record.backup)))) artifactsClean = false;
+        if (record.temporary && !(await cleanup(async () => {
+          const removed = await unlinkIfSame(record.temporary, record.temporaryIdentity, io);
+          if (!removed) throw Object.assign(new Error(`userscript-publication-cleanup-identity-mismatch:${record.temporary}`), { code:'USERSCRIPT_PUBLICATION_DIRECTORY_CHANGED' });
+        }))) artifactsClean = false;
+        if (record.backedUp && !(await cleanup(async () => {
+          const removed = await unlinkIfSame(record.backup, record.backupIdentity, io);
+          if (!removed) throw Object.assign(new Error(`userscript-publication-cleanup-identity-mismatch:${record.backup}`), { code:'USERSCRIPT_PUBLICATION_DIRECTORY_CHANGED' });
+        }))) artifactsClean = false;
       }
       if (!artifactsClean) retainRecovery = true;
-      if (!retainRecovery) await cleanup(() => io.unlink(lockPath));
+      if (!retainRecovery && lockIdentity) {
+        const removed = await cleanup(async () => {
+          const didRemove = await unlinkIfSame(lockPath, lockIdentity, io);
+          if (!didRemove) throw Object.assign(new Error(`userscript-publication-cleanup-identity-mismatch:${lockPath}`), { code:'USERSCRIPT_PUBLICATION_DIRECTORY_CHANGED' });
+        });
+        if (!removed) retainRecovery = true;
+      }
     }
 
     if (primaryError && cleanupErrors.length) {

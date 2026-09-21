@@ -76,13 +76,14 @@ async function bundleInlinedClassic(entry, source) {
   return Buffer.from(output);
 }
 
-function protectedImportMetaPlugin() {
+export function protectedImportMetaPlugin({ rootDir = root, readFileImpl = readFile } = {}) {
   return { name: 'hex-protected-import-meta', setup(api) {
     api.onLoad({ filter: /\.js$/ }, async (args) => {
-      if (!args.path.startsWith(root)) return null;
-      let source = await readFile(args.path, 'utf8');
+      if (!pathIsWithin(resolve(rootDir), resolve(args.path))) return null;
+      let source = await readFileImpl(args.path, 'utf8');
       if (!source.includes('import.meta.url')) return null;
-      const logical = relative(root, args.path).split('\\').join('/');
+      const logical = relative(resolve(rootDir), resolve(args.path)).split('\\').join('/');
+      if (!logical || logical === '..' || logical.startsWith('../')) return null;
       source = source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(`https://hex.invalid/${logical}`));
       return { contents: source, loader: 'js' };
     });
@@ -157,9 +158,16 @@ export async function collectClassic(path, sources, options = {}) {
   sources.set(normalized, source);
   for (const dependency of parseImports(source, normalized)) await collectClassic(dependency, sources, options);
 }
+export function resolveImportScriptsSpecifier(specifier, from) {
+  const value = String(specifier);
+  if (value.startsWith('/') || value.startsWith('//') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
+    throw new Error(`Unsupported non-relative importScripts specifier in ${from}: ${value}`);
+  }
+  return normalizePath(posix.join(posix.dirname(from), value));
+}
 function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)
-    .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
+    .map((specifier) => resolveImportScriptsSpecifier(specifier, from));
 }
 function regexLiteralEnd(source, start) {
   let i = start + 1;
