@@ -1113,7 +1113,9 @@ function callRecord(inst, ctx) {
   const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
   let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
 
-  const slotEv = currentCppVirtualSlot(ctx.opts, inst);
+  const values = [];
+  for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
+  const slotEv = currentCppVirtualSlot(ctx.opts, ctx.ir, inst, values[0]);
 
   if (slotEv && slotEv.exactTargetKnown && slotEv.exactTargetAddress != null) {
     const resolved = ctx.opts.symbolFor?.(slotEv.exactTargetAddress) || slotEv.exactTargetName || null;
@@ -1121,9 +1123,6 @@ function callRecord(inst, ctx) {
       name = resolved;
     }
   }
-
-  const values = [];
-  for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
   const cursor = initialValueCursor(ctx), argumentTickets = [];
   const argText = values.map((v) => {
     const input = initialValueCursor(ctx);
