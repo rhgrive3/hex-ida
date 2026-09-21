@@ -13,20 +13,51 @@ import { estimateTokens } from "./tokens.mjs";
  *     question plus a short task header.
  */
 
+function prefixWithinBudget(text, budgetTokens) {
+  if (budgetTokens <= 0 || !text) return "";
+  if (estimateTokens(text) <= budgetTokens) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(0, mid)) <= budgetTokens) low = mid;
+    else high = mid - 1;
+  }
+  return text.slice(0, low);
+}
+
+function suffixWithinBudget(text, budgetTokens) {
+  if (budgetTokens <= 0 || !text) return "";
+  if (estimateTokens(text) <= budgetTokens) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(text.length - mid)) <= budgetTokens) low = mid;
+    else high = mid - 1;
+  }
+  return text.slice(text.length - low);
+}
+
 /** Head/tail excerpt so a single huge tool result cannot blow the state budget. */
 export function excerpt(text, budgetTokens) {
   const body = String(text ?? "");
-  if (estimateTokens(body) <= budgetTokens) return body;
+  const budget = Math.max(0, Math.floor(Number(budgetTokens) || 0));
+  if (budget === 0) return "";
+  if (estimateTokens(body) <= budget) return body;
 
-  const chars = body.length;
-  // Rough char split proportional to the token budget (head-heavy: the head
-  // carries the command and the failure, the tail carries the summary line).
-  const headChars = Math.floor(chars * 0.7);
-  const tailChars = Math.floor(chars * 0.2);
-  const omitted = chars - headChars - tailChars;
-  const head = body.slice(0, headChars);
-  const tail = body.slice(chars - tailChars);
-  return `${head}\n\n...[${omitted} characters omitted from the middle of this tool result]...\n\n${tail}`;
+  const marker = "\n\n...[content omitted to fit OpenJEV state budget]...\n\n";
+  const markerTokens = estimateTokens(marker);
+  if (markerTokens >= budget) return prefixWithinBudget(body, budget);
+
+  const available = budget - markerTokens;
+  const headBudget = Math.floor(available * 0.7);
+  const tailBudget = available - headBudget;
+  const head = prefixWithinBudget(body, headBudget);
+  const tail = suffixWithinBudget(body, tailBudget);
+  const result = `${head}${marker}${tail}`;
+
+  // The estimator is the authority for the configured budget. Keep this final
+  // guard even though the pieces were budgeted independently.
+  return estimateTokens(result) <= budget ? result : prefixWithinBudget(result, budget);
 }
 
 const KEEP_INSTRUCTIONS =
@@ -57,12 +88,11 @@ export function buildBatches(candidates, options) {
   const { taskText = "", config } = options;
   const tasksTokens = estimateTokens(taskText);
 
-  // Per-item excerpt budget: leave room for the task header and the item headers.
-  const headerBudget = Math.min(tasksTokens, Math.floor(config.maxStateTokens * 0.3));
-  const perItemBudget = Math.max(
-    200,
-    Math.floor((config.maxStateTokens - headerBudget) / Math.max(1, Math.min(candidates.length, config.maxQuestionsPerCall))),
-  );
+  // Per-item excerpt budget: leave room for the task header, the fixed items
+  // heading, and per-item metadata. The final assembly below rechecks the exact
+  // estimated state size, so this is only a fair-share target.
+  const maxStateTokens = Math.max(1, Math.floor(config.maxStateTokens));
+  const headerBudget = Math.min(tasksTokens, Math.max(1, Math.floor(maxStateTokens * 0.3)));
 
   const ranked = candidates
     .map((candidate, index) => ({ candidate, score: priority(candidate, index, candidates.length) }))
@@ -75,21 +105,50 @@ export function buildBatches(candidates, options) {
   const header = taskText
     ? `CURRENT TASK (authoritative, do not question it):\n${excerpt(taskText, headerBudget)}`
     : "CURRENT TASK: (not supplied)";
+  const itemsHeading = "ITEMS UNDER JUDGEMENT (one question per item id):";
+  const baseStateTokens = estimateTokens(`${header}\n\n${itemsHeading}\n\n`);
+  const fairShareCount = Math.max(1, Math.min(candidates.length, Math.floor(config.maxQuestionsPerCall) || 1));
+  const fairShareBudget = Math.max(1, Math.floor(Math.max(1, maxStateTokens - baseStateTokens) / fairShareCount));
+
+  const freshBatch = () => ({ items: [], stateTokens: baseStateTokens });
+  current = freshBatch();
 
   for (const candidate of ranked) {
-    const excerptText = excerpt(candidate.redactedText, perItemBudget);
     const headerLine = `--- ${candidate.questionId} [tool=${candidate.item.tool || "unknown"}${
       candidate.item.meta && candidate.item.meta.group ? `, group=${candidate.item.meta.group}` : ""
     }, ~${candidate.tokens} tokens] ${candidate.note || ""}`;
-    const block = `${headerLine}\n${excerptText}`;
-    const blockTokens = estimateTokens(block);
+    const headerLineTokens = estimateTokens(`${headerLine}\n`);
+    let excerptBudget = Math.max(1, Math.min(
+      fairShareBudget,
+      maxStateTokens - current.stateTokens - headerLineTokens,
+    ));
+    let excerptText = excerpt(candidate.redactedText, excerptBudget);
+    let block = `${headerLine}\n${excerptText}`;
+    let blockTokens = estimateTokens(block);
 
     const wouldExceedQuestions = current.items.length >= config.maxQuestionsPerCall;
-    const wouldExceedState = current.stateTokens + blockTokens > config.maxStateTokens;
+    const wouldExceedState = current.stateTokens + blockTokens > maxStateTokens;
 
     if ((wouldExceedQuestions || wouldExceedState) && current.items.length > 0) {
       batches.push(current);
-      current = { items: [], stateTokens: 0 };
+      current = freshBatch();
+      excerptBudget = Math.max(1, Math.min(
+        fairShareBudget,
+        maxStateTokens - current.stateTokens - headerLineTokens,
+      ));
+      excerptText = excerpt(candidate.redactedText, excerptBudget);
+      block = `${headerLine}\n${excerptText}`;
+      blockTokens = estimateTokens(block);
+    }
+
+    // A pathological configuration can make the metadata itself larger than the
+    // requested state budget. Never respond by sending an unbounded body: the
+    // content portion is reduced to the remaining budget (possibly empty).
+    if (current.stateTokens + blockTokens > maxStateTokens) {
+      excerptBudget = Math.max(0, maxStateTokens - current.stateTokens - headerLineTokens);
+      excerptText = excerpt(candidate.redactedText, excerptBudget);
+      block = `${headerLine}\n${excerptText}`;
+      blockTokens = estimateTokens(block);
     }
 
     current.items.push({ ...candidate, block });
@@ -106,7 +165,7 @@ export function buildBatches(candidates, options) {
         criteria: KEEP_CRITERIA,
       };
     }
-    const state = `${header}\n\nITEMS UNDER JUDGEMENT (one question per item id):\n\n${batch.items
+    const state = `${header}\n\n${itemsHeading}\n\n${batch.items
       .map((entry) => entry.block)
       .join("\n\n")}`;
     return { state, questions, items: batch.items };
