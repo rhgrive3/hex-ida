@@ -11,7 +11,9 @@ import {
   readLimitedText, releaseDistributedQuota,
 } from './worker-transport.js';
 
-const OPENJEV_SYSTEMONE_URL = 'https://api.codiv.ai/v1/systemone';
+/* Verified live contract (jev-context/README.md §7 and a direct probe): the
+ * key authenticates against api.openjev.sh; api.codiv.ai rejects it with 401. */
+const OPENJEV_SYSTEMONE_URL = 'https://api.openjev.sh/v1/systemone';
 const REQUEST_BYTES = 24 * 1024;
 const RESPONSE_BYTES = 24 * 1024;
 const UPSTREAM_TIMEOUT_MS = 2500;
@@ -117,9 +119,11 @@ function noulQuestions(request) {
     {
       type: 'noul',
       instructions: `Using only the observed facts, does opaque candidate ${candidate.id} semantically fit the requested gameplay value? Do not infer facts not present in the state.`,
+      // Verified live: the noul schema requires `true`/`false` criteria and
+      // answers with a scalar `noul` = P(true). `yes`/`no` is rejected with 400.
       criteria: {
-        yes: `Candidate ${candidate.id} fits the requested gameplay value.`,
-        no: `Candidate ${candidate.id} does not fit, or the supplied facts are insufficient.`,
+        true: `Candidate ${candidate.id} fits the requested gameplay value.`,
+        false: `Candidate ${candidate.id} does not fit, or the supplied facts are insufficient.`,
       },
     },
   ]));
@@ -170,14 +174,14 @@ function normalizedNoul(payload, request) {
   let none = 1;
   for (const candidate of request.candidates) {
     const answer = payload.answers[candidate.id];
-    if (!isPlainObject(answer) || answer.type !== 'noul' || !isPlainObject(answer.probabilities)) return null;
-    const yes = answer.probabilities.yes;
-    const no = answer.probabilities.no;
-    if (!probability(yes) || !probability(no)) return null;
-    probabilities[candidate.id] = yes;
-    none = Math.min(none, no);
-    if (yes > best) { best = yes; challengerId = candidate.id; tied = false; }
-    else if (yes === best) tied = true;
+    if (!isPlainObject(answer) || answer.type !== 'noul') return null;
+    // Live response shape: { type: "noul", noul: <P(true/fit)> }.
+    const fit = answer.noul;
+    if (!probability(fit)) return null;
+    probabilities[candidate.id] = fit;
+    none = Math.min(none, 1 - fit);
+    if (fit > best) { best = fit; challengerId = candidate.id; tied = false; }
+    else if (fit === best) tied = true;
   }
   probabilities.none = none;
   if (tied || best <= none) {

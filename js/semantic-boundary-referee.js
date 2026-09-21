@@ -8,7 +8,10 @@
  * evidence and must never be fused into a Hex result.
  */
 
-export const OPENJEV_BOUNDARY_MODEL = 'openjev-0.1';
+/* Verified against the live service: the only offered System One model is
+ * `openjev` (GET https://api.openjev.sh/v1/models).  Pinning the exact id keeps
+ * an alias change from silently altering a Hex verdict. */
+export const OPENJEV_BOUNDARY_MODEL = 'openjev';
 export const SEMANTIC_BOUNDARY_MAX_CANDIDATES = 8;
 export const SEMANTIC_BOUNDARY_MIN_CANDIDATES = 5;
 export const SEMANTIC_BOUNDARY_AMBIGUITY_SCHEMA = 'hex-semantic-boundary-ambiguity/v1';

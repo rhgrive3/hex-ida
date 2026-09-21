@@ -96,7 +96,7 @@ for (const options of [{ complete: false }, { capped: true }]) {
 {
   const run = await runSyntheticBoundaryCase({
     referee: async () => ({
-      model: 'openjev-0.1', method: 'choice', challengerId: null,
+      model: 'openjev', method: 'choice', challengerId: null,
       probabilities: { c0: 0.05, c1: 0.05, none: 0.9 }, abstain: true,
     }),
   });
@@ -157,9 +157,9 @@ assert.equal(gated.result.top?.offset, TRUE_OFFSET, 'binary-grounded probe may r
 for (const referee of [
   async () => { throw new Error('timeout'); },
   async () => ({ model: 'wrong-model', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.1, c1: 0.9, none: 0 }, abstain: false }),
-  async () => ({ model: 'openjev-0.1', method: 'choice', challengerId: 'c7', probabilities: { c0: 0.1, c1: 0.9, none: 0 }, abstain: false }),
-  async () => ({ model: 'openjev-0.1', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.1, none: 0 }, abstain: false }),
-  async () => ({ model: 'openjev-0.1', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.9, c1: 0.9, none: 0 }, abstain: false }),
+  async () => ({ model: 'openjev', method: 'choice', challengerId: 'c7', probabilities: { c0: 0.1, c1: 0.9, none: 0 }, abstain: false }),
+  async () => ({ model: 'openjev', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.1, none: 0 }, abstain: false }),
+  async () => ({ model: 'openjev', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.9, c1: 0.9, none: 0 }, abstain: false }),
 ]) {
   const failed = await runSyntheticBoundaryCase({ mode: 'probe', referee });
   assert.deepEqual(resultSignature(failed), baselineSignature);

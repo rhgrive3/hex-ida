@@ -134,7 +134,7 @@ export function syntheticShapeFixture({ count = 5, clearBoundary = false, comple
 
 export function acceptedChoice(challengerId = 'c1') {
   return {
-    model: 'openjev-0.1',
+    model: 'openjev',
     method: 'choice',
     challengerId,
     probabilities: { c0: challengerId === 'c0' ? 0.92 : 0.04, c1: challengerId === 'c1' ? 0.92 : 0.04, none: 0.02 },
@@ -144,7 +144,7 @@ export function acceptedChoice(challengerId = 'c1') {
 
 export function acceptedNoul(challengerId = 'c1') {
   return {
-    model: 'openjev-0.1',
+    model: 'openjev',
     method: 'noul',
     challengerId,
     probabilities: { c0: challengerId === 'c0' ? 0.92 : 0.04, c1: challengerId === 'c1' ? 0.92 : 0.04, none: 0.02 },

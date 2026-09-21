@@ -111,7 +111,7 @@ semanticBoundaryReferee?: async ({ goal, candidates }) => ({
   challengerId: "c2" | null,
   method: "choice" | "noul",
   probabilities: {},
-  model: "openjev-0.1",
+  model: "openjev",
   abstain: false
 })
 ```
@@ -135,7 +135,7 @@ worker.js
   -> existing AI_QUOTA
   -> fixed OpenJev request
   -> finite timeout, no retry
-api.codiv.ai/v1/systemone
+api.openjev.sh/v1/systemone
   Authorization: Bearer env.OPENJEV_API_KEY
 ```
 
@@ -153,7 +153,7 @@ The shared key exists only as Cloudflare Secret `OPENJEV_API_KEY`. Never commit 
 
 ## OpenJev contract
 
-Use `POST https://api.codiv.ai/v1/systemone` with Bearer authentication. Production must pin the exact model validated by the holdout: `openjev-0.1`. Do not use `openjev-latest` in production. Validate the returned model and abstain/fallback on mismatch.
+Use `POST https://api.openjev.sh/v1/systemone` with Bearer authentication. This is the contract verified against the live service (the same endpoint/base as `jev-context`) and confirmed by a direct probe: the shared key authenticates there, `api.codiv.ai` rejects it with 401, and `GET https://api.openjev.sh/v1/models` offers only `openjev` (an `openjev-0.1` request returns 422). Production must pin that exact id: `openjev`. Do not use `openjev-latest` in production. Validate the returned `model` field and abstain/fallback on mismatch.
 
 Phase 1 intentionally does not use advanced/deep reads:
 - no `think`;
