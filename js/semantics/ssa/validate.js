@@ -188,7 +188,7 @@ function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
 export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   assertNotAborted(options);
   const tick = workCounter(options);
-  const ir = isCanonicalSemanticIrProducerArtifact(irInput)
+  const ir = isCanonicalSemanticIrProducerArtifact(irInput) && options.irOptions == null
     ? irInput
     : createSemanticIrFunction(irInput, { signal: options.signal, ...(options.irOptions ?? {}) });
   const cfg = createSemanticCfg(cfgInput, { signal: options.signal, ...(options.cfgOptions ?? {}) });
