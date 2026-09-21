@@ -13,8 +13,9 @@
 //   node_modules/.bin PATH entry) instead of being reinterpreted as literal
 //   argv. Command substitution, quoting, pipelines, and redirection therefore
 //   behave exactly as they do under `npm run check`.
-// - `benchmark:baseline` is CPU-time-sensitive, so it runs alone after the
-//   pool drains (exclusive tail), in canonical position.
+// - CPU-time-sensitive / explicitly exclusive steps run as canonical-position
+//   barriers: prior pool work drains, the step runs alone, then later work starts.
+//   `benchmark:baseline` remains an exclusive tail because it is canonically last.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +24,100 @@ import { fileURLToPath } from 'node:url';
 import { runQuietCommand } from './run-quiet-command.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const EXCLUSIVE_TAIL_PATTERN = /^(npm run benchmark:baseline|npm run phase7:test)$/;
+const EXCLUSIVE_PATTERN = /^(npm run benchmark:baseline|npm run phase7:test)$/;
+
+export function requiresSerialShellFallback(checkScript) {
+  const str = String(checkScript);
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let escaped = false;
+  let inComment = false;
+  let token = '';
+  let complex = false;
+  const reserved = new Set(['if', 'then', 'elif', 'else', 'fi', 'case', 'in', 'esac', 'for', 'while', 'until', 'do', 'done']);
+  const flushToken = () => {
+    if (reserved.has(token)) complex = true;
+    token = '';
+  };
+  const isCommentBoundary = (index) => {
+    if (index === 0) return true;
+    const prev = str[index - 1];
+    return /[\s;&|(){}<>]/.test(prev);
+  };
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inComment) {
+      if (ch === '\n') {
+        inComment = false;
+        flushToken();
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      if (!inSingle && !inDouble && !inBacktick && /[A-Za-z0-9_:-]/.test(ch)) token += ch;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (ch === '`' && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      continue;
+    }
+    if (inSingle || inDouble || inBacktick) continue;
+
+    if (ch === '#' && isCommentBoundary(i)) {
+      flushToken();
+      complex = true;
+      inComment = true;
+      continue;
+    }
+    if (ch === '$' && str[i + 1] === '{') {
+      flushToken();
+      complex = true;
+      i++;
+      continue;
+    }
+    if (ch === '<' && str[i + 1] === '<') {
+      flushToken();
+      complex = true;
+      i++;
+      continue;
+    }
+    if (ch === '!'
+        && (i === 0 || /[\s;&|(){}<>]/.test(str[i - 1]))
+        && (i + 1 >= str.length || /[\s;&|(){}<>]/.test(str[i + 1]))) {
+      flushToken();
+      complex = true;
+      continue;
+    }
+    if ((ch === '{' || ch === '}') && (i === 0 || /[\s;|&()]/.test(str[i - 1] ?? ''))
+        && (i + 1 >= str.length || /[\s;|&()]/.test(str[i + 1] ?? ''))) {
+      flushToken();
+      complex = true;
+      continue;
+    }
+    if (/[A-Za-z0-9_:-]/.test(ch)) {
+      token += ch;
+      continue;
+    }
+    flushToken();
+  }
+  flushToken();
+  return complex;
+}
 
 export function parseCheckSteps(checkScript) {
   const steps = [];
@@ -35,6 +129,10 @@ export function parseCheckSteps(checkScript) {
   const commandSubstitutions = [];
   let groupDepth = 0;
   const str = String(checkScript);
+  if (requiresSerialShellFallback(str)) {
+    const serial = str.trim();
+    return serial ? [serial] : [];
+  }
 
   for (let i = 0; i < str.length; i++) {
     const ch = str[i];
@@ -214,7 +312,7 @@ function poolSize(stepCount) {
   return Math.max(1, Math.min(requested, stepCount));
 }
 
-async function runPool(jobs, concurrency, onSettled) {
+async function runPool(jobs, concurrency, onSettled, runCommand = runQuietCommand) {
   const results = new Array(jobs.length);
   let nextIndex = 0;
   async function worker() {
@@ -222,7 +320,7 @@ async function runPool(jobs, concurrency, onSettled) {
       const index = nextIndex++;
       if (index >= jobs.length) return;
       const job = jobs[index];
-      results[index] = await runQuietCommand({ ...job, cwd: root });
+      results[index] = await runCommand({ ...job, cwd: root });
       onSettled?.(index, results[index]);
     }
   }
@@ -236,6 +334,7 @@ export async function runCheckParallel({
   checkScript,
   env = process.env,
   platform = process.platform,
+  runCommand = runQuietCommand,
 } = {}) {
   const pkg = checkScript !== undefined
     ? null
@@ -250,42 +349,45 @@ export async function runCheckParallel({
     env: shellEnvironment({ env, platform }),
     ...shellInvocation(command, { env, platform }),
   }));
-  const tailIndexes = [];
-  const poolJobs = [];
-  const poolJobIndex = [];
-  jobs.forEach((job, index) => {
-    if (EXCLUSIVE_TAIL_PATTERN.test(commandFor(job))) tailIndexes.push(index);
-    else { poolJobs.push(job); poolJobIndex.push(index); }
-  });
-
   function commandFor(job) {
     return job.rawCommand || [job.command, ...job.args].join(' ');
   }
 
   const results = new Array(jobs.length);
   const started = process.hrtime.bigint();
-  stdout.write(`check:parallel: ${jobs.length} steps, pool=${poolSize(poolJobs.length)}, exclusive tail=${tailIndexes.length}\n`);
+  const exclusiveCount = jobs.filter((job) => EXCLUSIVE_PATTERN.test(commandFor(job))).length;
+  stdout.write(`check:parallel: ${jobs.length} steps, pool=${poolSize(jobs.length)}, exclusive barriers=${exclusiveCount}\n`);
 
-  if (poolJobs.length > 0) {
-    const settled = await runPool(poolJobs, poolSize(poolJobs.length), (poolIndex, result) => {
-      const job = poolJobs[poolIndex];
-      const line = result.ok
-        ? `${job.label}: PASS (${(result.durationMs / 1000).toFixed(1)}s)\n`
-        : `${job.label}: FAIL (${(result.durationMs / 1000).toFixed(1)}s)\n`;
-      (result.ok ? stdout : stderr).write(line);
-    });
-    poolJobIndex.forEach((jobIndex, poolIndex) => { results[jobIndex] = settled[poolIndex]; });
-  }
+  const reportResult = (job, result) => {
+    const line = result.ok
+      ? `${job.label}: PASS (${(result.durationMs / 1000).toFixed(1)}s)\n`
+      : `${job.label}: FAIL (${(result.durationMs / 1000).toFixed(1)}s)\n`;
+    (result.ok ? stdout : stderr).write(line);
+  };
 
-  for (const jobIndex of tailIndexes) {
-    const job = jobs[jobIndex];
-    stdout.write(`check:parallel: exclusive tail ${job.label}\n`);
-    results[jobIndex] = await runQuietCommand({ ...job, cwd: root });
-    const line = results[jobIndex].ok
-      ? `${job.label}: PASS (${(results[jobIndex].durationMs / 1000).toFixed(1)}s)\n`
-      : `${job.label}: FAIL (${(results[jobIndex].durationMs / 1000).toFixed(1)}s)\n`;
-    (results[jobIndex].ok ? stdout : stderr).write(line);
+  const runPoolIndexes = async (indexes) => {
+    if (indexes.length === 0) return;
+    const segmentJobs = indexes.map((index) => jobs[index]);
+    const settled = await runPool(segmentJobs, poolSize(segmentJobs.length), (segmentIndex, result) => {
+      reportResult(segmentJobs[segmentIndex], result);
+    }, runCommand);
+    indexes.forEach((jobIndex, segmentIndex) => { results[jobIndex] = settled[segmentIndex]; });
+  };
+
+  let poolIndexes = [];
+  for (let index = 0; index < jobs.length; index++) {
+    const job = jobs[index];
+    if (!EXCLUSIVE_PATTERN.test(commandFor(job))) {
+      poolIndexes.push(index);
+      continue;
+    }
+    await runPoolIndexes(poolIndexes);
+    poolIndexes = [];
+    stdout.write(`check:parallel: exclusive barrier ${job.label}\n`);
+    results[index] = await runCommand({ ...job, cwd: root });
+    reportResult(job, results[index]);
   }
+  await runPoolIndexes(poolIndexes);
 
   const wallSeconds = (Number(process.hrtime.bigint() - started) / 1e9).toFixed(1);
   const failures = [];

@@ -2,8 +2,8 @@ import { build, transform } from 'esbuild';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm } from 'node:fs/promises';
-import { dirname, posix, relative, resolve } from 'node:path';
+import { access, readFile, mkdir, rm, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
@@ -129,10 +129,33 @@ async function buildWorkerAssets() {
   const wasm = await readFile(resolve(root, 'capstone.wasm'));
   return { classic, modules, wasm: wasm.toString('base64') };
 }
-async function collectClassic(path, sources) {
-  path = normalizePath(path); if (sources.has(path)) return;
-  const source = await readFile(resolve(root, path), 'utf8'); sources.set(path, source);
-  for (const dependency of parseImports(source, path)) await collectClassic(dependency, sources);
+function pathIsWithin(rootPath, targetPath) {
+  const rel = relative(rootPath, targetPath);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+export async function resolveClassicSource(path, {
+  rootDir = root,
+  realpathImpl = realpath,
+  statImpl = stat,
+} = {}) {
+  const normalized = normalizePath(path);
+  const lexical = resolve(rootDir, normalized);
+  const [realRoot, realSource] = await Promise.all([realpathImpl(rootDir), realpathImpl(lexical)]);
+  if (!pathIsWithin(realRoot, realSource)) {
+    throw new Error(`Classic worker source escapes repository: ${normalized}`);
+  }
+  const sourceStat = await statImpl(realSource);
+  if (!sourceStat.isFile()) throw new Error(`Classic worker source is not a regular file: ${normalized}`);
+  return { normalized, realSource };
+}
+
+export async function collectClassic(path, sources, options = {}) {
+  const { normalized, realSource } = await resolveClassicSource(path, options);
+  if (sources.has(normalized)) return;
+  const source = await (options.readFileImpl ?? readFile)(realSource, 'utf8');
+  sources.set(normalized, source);
+  for (const dependency of parseImports(source, normalized)) await collectClassic(dependency, sources, options);
 }
 function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)

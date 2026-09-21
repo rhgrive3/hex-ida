@@ -178,6 +178,7 @@ export async function runQuietCommand({
   spawnImpl = spawn,
   tempRoot = os.tmpdir(),
   createLogStream = (filePath) => fs.createWriteStream(filePath, { flags: 'wx', mode: 0o600 }),
+  removeDirectory = (directory) => fs.rmSync(directory, { recursive: true, force: true }),
   terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   forceSettleMs = DEFAULT_FORCE_SETTLE_MS,
 } = {}) {
@@ -200,7 +201,7 @@ export async function runQuietCommand({
   }
 
   const directory = fs.mkdtempSync(path.join(tempRoot, `hex-${safeLabel(label)}-`));
-  const cleanupDirectory = () => fs.rmSync(directory, { recursive: true, force: true });
+  const cleanupDirectory = () => removeDirectory(directory);
   const logPath = path.join(directory, 'full.log');
   // A stream factory may throw before returning a stream (EMFILE/ENFILE/open
   // validation). That happens before the async 'error' path owns cleanup, so
@@ -314,9 +315,13 @@ export async function runQuietCommand({
   }
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (!status.error && status.code === 0) {
-    cleanupDirectory();
+    let cleanupError = null;
+    try { cleanupDirectory(); } catch (error) { cleanupError = error; }
     stdout.write(`${label}: PASS (${(durationMs / 1000).toFixed(1)}s)\n`);
-    return Object.freeze({ ok: true, status: 0, signal: null, logPath: null, durationMs });
+    if (cleanupError) {
+      stderr.write(`${label}: WARN diagnostic temp cleanup failed (${cleanupError.code || cleanupError.message}); retained ${logPath}\n`);
+    }
+    return Object.freeze({ ok: true, status: 0, signal: null, logPath: cleanupError ? logPath : null, cleanupError, durationMs });
   }
 
   const spawnFailure = Boolean(status.error);

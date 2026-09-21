@@ -21,11 +21,17 @@ const PSEUDOC_FILES = [
   'tests/accuracy-pseudoc-shard-merge.mjs',
 ];
 const slash = (value) => value.split(path.sep).join('/');
+const pathIsWithin = (root, target) => {
+  const relative = path.relative(root, target);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+};
 
-function walk(dir, root, out, visitedDirs = new Set()) {
+function walk(dir, root, out, visitedDirs = new Set(), allowedRealRoot = null) {
   if (!fs.existsSync(dir)) return;
+  let realDir;
   try {
-    const realDir = fs.realpathSync(dir);
+    realDir = fs.realpathSync(dir);
+    if (allowedRealRoot && !pathIsWithin(allowedRealRoot, realDir)) return;
     if (visitedDirs.has(realDir)) return;
     visitedDirs.add(realDir);
   } catch {
@@ -40,7 +46,10 @@ function walk(dir, root, out, visitedDirs = new Set()) {
       try {
         const stat = fs.statSync(absolute);
         if (stat.isDirectory()) {
-          walk(absolute, root, out, visitedDirs);
+          const realTarget = fs.realpathSync(absolute);
+          if (!allowedRealRoot || pathIsWithin(allowedRealRoot, realTarget)) {
+            walk(absolute, root, out, visitedDirs, allowedRealRoot);
+          }
         }
       } catch {
         // Broken symlink target cannot be resolved; entry was recorded above
@@ -49,7 +58,7 @@ function walk(dir, root, out, visitedDirs = new Set()) {
     }
 
     if (entry.isDirectory()) {
-      walk(absolute, root, out, visitedDirs);
+      walk(absolute, root, out, visitedDirs, allowedRealRoot);
     } else if (entry.isFile()) {
       out.push(slash(path.relative(root, absolute)));
     }
@@ -59,7 +68,10 @@ function walk(dir, root, out, visitedDirs = new Set()) {
 export function partitionFiles(root = ROOT, partition) {
   if (!Object.hasOwn(PARTITIONS, partition)) throw new Error(`unknown accuracy partition: ${partition}`);
   const files=[];
-  walk(path.join(root, 'js'), root, files);
+  const jsRoot = path.join(root, 'js');
+  let allowedRealRoot = null;
+  try { allowedRealRoot = fs.realpathSync(root); } catch {}
+  walk(jsRoot, root, files, new Set(), allowedRealRoot);
   const semanticFamily = partition.startsWith('pseudoc-') ? 'pseudoc' : partition;
   const selected=files.filter((relative)=>{
     if (GLOBAL_EXCLUDED_PREFIXES.some((prefix)=>relative.startsWith(prefix))) return false;

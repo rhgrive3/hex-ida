@@ -28,13 +28,15 @@ export function releaseIdentityFor(inputs) {
   // No privileged bundle embeds the final identity.
   return hash(inputs.map((value) => hash(value)).join(':'));
 }
-export function assertStandardGraph(metafile, label) {
+export function assertStandardGraph(metafile, label, options = {}) {
   if (!metafile?.inputs || Array.isArray(metafile.inputs) || Object.keys(metafile.inputs).length === 0) throw new Error(`${label} has no verifiable input graph.`);
-  const forbidden = Object.keys(metafile.inputs || {}).filter((path) => {
-    const normalized = path.replaceAll('\\', '/');
-    return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(normalized)
-      || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(normalized)
-      || /(?:^|\/)js\/auth\/admin-app\.js$/.test(normalized);
+  const caseInsensitive = (options?.platform ?? process.platform) === 'win32';
+  const forbidden = Object.keys(metafile.inputs || {}).filter((inputPath) => {
+    const normalized = inputPath.replaceAll('\\', '/');
+    const policyPath = caseInsensitive ? normalized.toLowerCase() : normalized;
+    return /(?:^|\/)js\/(?:ai|userscript)\/dev\//.test(policyPath)
+      || /(?:^|\/)js\/auth\/(?:privileged|server)\//.test(policyPath)
+      || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
   });
   if (forbidden.length) throw new Error(`${label} leaks privileged implementation: ${forbidden.join(', ')}`);
 }
