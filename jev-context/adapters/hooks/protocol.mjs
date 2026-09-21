@@ -3,7 +3,7 @@ import path from "node:path";
 
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
-function acquireSessionLock(lockPath, { timeoutMs = 1000, staleMs = 10000 } = {}) {
+function acquireSessionLock(lockPath, { timeoutMs = 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
@@ -12,16 +12,11 @@ function acquireSessionLock(lockPath, { timeoutMs = 1000, staleMs = 10000 } = {}
       return fd;
     } catch (error) {
       if (!error || error.code !== "EEXIST") return null;
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > staleMs) {
-          fs.unlinkSync(lockPath);
-          continue;
-        }
-      } catch {
-        continue;
-      }
       if (Date.now() >= deadline) return null;
+      // Do not try to reap a "stale" lock here. An unlink-after-stat scheme has
+      // an ABA race where one waiter can delete a different process's newly
+      // acquired lock. A leftover lock therefore degrades to the safe path
+      // below (no persisted observation) until an operator clears it.
       Atomics.wait(LOCK_SLEEP, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
     }
   }
