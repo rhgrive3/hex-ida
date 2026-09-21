@@ -9,8 +9,32 @@ function sameId(left, right) {
 }
 
 function sameAddress(left, right) {
-  if (left == null || right == null) return true;
+  if (left == null || right == null) return false;
   try { return BigInt(left) === BigInt(right); } catch { return false; }
+}
+
+function currentFunctionAddress(opts, ir) {
+  return opts?.addr ?? ir?.startAddress ?? ir?.instructions?.[0]?.address ?? null;
+}
+
+function valueWidthBits(value) {
+  for (const candidate of [
+    value?.bits,
+    value?.widthBits,
+    value?.machineType?.widthBits,
+    value?.type?.bits,
+    value?.type?.widthBits,
+  ]) {
+    const width = Number(candidate);
+    if (Number.isSafeInteger(width) && width > 0) return width;
+  }
+  return null;
+}
+
+function isWidthPreservingAliasCast(current, source) {
+  const currentBits = valueWidthBits(current);
+  const sourceBits = valueWidthBits(source);
+  return currentBits != null && sourceBits != null && currentBits === sourceBits;
 }
 
 export function currentCppReceiver(opts = {}, ir = null) {
@@ -23,9 +47,10 @@ export function currentCppReceiver(opts = {}, ir = null) {
       || typeof rec.abiBinding?.register !== 'string'
       || !ir || !Array.isArray(ir.values)) return null;
 
-  if (!sameAddress(rec.functionAddress, opts?.addr)) return null;
-  if (ir.functionId != null && rec.functionId != null
-      && String(ir.functionId) !== String(rec.functionId)) return null;
+  const addressMatches = rec.functionAddress != null
+    && sameAddress(rec.functionAddress, currentFunctionAddress(opts, ir));
+  const functionIdMatches = sameId(rec.functionId, ir.functionId);
+  if (!addressMatches && !functionIdMatches) return null;
 
   const canonical = ir.values.find(value => sameId(value?.id, rec.canonicalValueId));
   if (!canonical) return null;
@@ -55,20 +80,25 @@ export function isCppReceiverAlias(value, rec) {
     if (definition.op === 'unary' || definition.op === 'un') {
       if (['sxt64', 'uxt64', 'bitcast', 'zext', 'sext'].includes(definition.sub)) {
         const source = definition.args?.[0]?.value ?? definition.args?.[0] ?? null;
-        if (source) pending.push(source);
+        if (source && isWidthPreservingAliasCast(current, source)) pending.push(source);
       }
     }
   }
   return false;
 }
 
-export function currentCppVirtualSlot(opts = {}, inst = null) {
-  if (!inst) return null;
+export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callReceiver = null) {
+  if (!ir || !inst || !callReceiver) return null;
+  const receiver = currentCppReceiver(opts, ir);
+  if (!receiver || !isCppReceiverAlias(callReceiver, receiver)) return null;
+
   const source = opts?.cxxEvidence?.virtualSlots;
   const slots = Array.isArray(source) ? source
     : source instanceof Map ? [...source.values()] : [];
   return slots.find(slot => {
     if (!isCanonicalCppVirtualSlotEvidence(slot) || slot.virtualSlotKnown !== true) return false;
+    const slotReceiver = ir.values?.find?.(value => sameId(value?.id, slot.receiverValueId)) ?? null;
+    if (!slotReceiver || !isCppReceiverAlias(slotReceiver, receiver)) return false;
     if (slot.callSiteId != null && sameId(slot.callSiteId, inst.id)) return true;
     return slot.callSiteAddress != null && inst.address != null
       && sameAddress(slot.callSiteAddress, inst.address);
