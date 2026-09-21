@@ -337,11 +337,19 @@ function shouldDemandStructuring(result, opts) {
   if (opts.phase8Structuring === true || opts.phase8ControlProjection === true) return true;
   const body = result?.cAst?.body;
   if (!Array.isArray(body)) return false;
+  // The projection consumes canonical CBR facts; a function with no conditional
+  // terminator has nothing either half of it can prove.
+  if (!Array.isArray(result.ir?.instructions) || !result.ir.instructions.some(i => i.op === 'cbr')) return false;
   const hasResidualConditionalGoto = body.some(n =>
     typeof n.text === 'string' && (n.text.includes('goto loc_') && n.text.startsWith('if '))
   );
-  if (!hasResidualConditionalGoto) return false;
-  return Array.isArray(result.ir?.instructions) && result.ir.instructions.some(i => i.op === 'cbr');
+  if (hasResidualConditionalGoto) return true;
+  // The canonical loop projection also consumes this stage. A residual jump is
+  // only the loop case when the canonical loop set is non-empty: recognizing it
+  // from the rendered text alone would run the structurer on functions with no
+  // loop to project, and would let a label name decide what a loop is.
+  if (!Array.isArray(result.ir?.loops) || result.ir.loops.length === 0) return false;
+  return body.some(n => typeof n.text === 'string' && /^goto\s+loc_/.test(n.text.trim()));
 }
 
 function structuredControlProjectionOptions(model, opts) {
