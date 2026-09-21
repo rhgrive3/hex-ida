@@ -227,6 +227,24 @@ export function createPruningProxy(options = {}) {
   }
 
   async function handle(req, res) {
+    const requestTarget = typeof req.url === "string" ? req.url : "";
+    if (!requestTarget.startsWith("/") || requestTarget.startsWith("//")) {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("unsupported request target");
+      return;
+    }
+
+    let target;
+    try {
+      target = new URL(requestTarget, upstreamUrl);
+    } catch {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("bad request target");
+      return;
+    }
+    if (target.origin !== upstreamUrl.origin) {
+      res.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("cross-origin request target rejected");
+      return;
+    }
+
     let rawBody = "";
     try {
       for await (const chunk of req) rawBody += chunk;
@@ -250,7 +268,6 @@ export function createPruningProxy(options = {}) {
       }
     }
 
-    const target = new URL(req.url, upstreamUrl);
     const transport = target.protocol === "http:" ? http : https;
 
     const upstreamRequest = transport.request(
