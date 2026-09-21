@@ -131,10 +131,8 @@ function nestedWhileIr() {
   f.branch(4);
   const inner = f.block(4, { succ: [5, 3] }).opaque(1);
   f.conditionalBranch(inner, 5, 3);
-  const innerBody = f.block(5, { succ: [3, 4] });
-  innerBody.store(f.constant(5, 32));
-  const innerBreaker = innerBody.opaque(1);
-  f.conditionalBranch(innerBreaker, 3, 4);
+  f.block(5, { succ: [4] }).store(f.constant(5, 32));
+  f.branch(4);
   f.block(3, { succ: [1] }).branch(1);
   f.block(6).ret();
   return withProducerLayout(f.build());
@@ -652,8 +650,10 @@ test('loop Q. an inner break never becomes an outer break', () => {
   f.branch(4);
   const inner = f.block(4, { succ: [5, 3] }).opaque(1);
   f.conditionalBranch(inner, 5, 3);
-  f.block(5, { succ: [4] }).store(f.constant(5, 32));
-  f.branch(4);
+  const innerBody = f.block(5, { succ: [3, 4] });
+  innerBody.store(f.constant(5, 32));
+  const innerBreaker = innerBody.opaque(1);
+  f.conditionalBranch(innerBreaker, 3, 4);
   f.block(3, { succ: [1] }).branch(1);
   f.block(6).ret();
   const ir = withProducerLayout(f.build());
