@@ -147,6 +147,14 @@ for (const form of ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS) {
   assert.equal(form.preservesAccess, true, `${form.mnemonic}:contract-limited partial must preserve its access`);
 }
 
+assert.throws(
+  () => [...arm64A64MemoryEncodingCases({
+    rcpcDeclaredForms:ARM64_A64_MEMORY_CONTRACT_LIMITED_PARTIAL_FORMS.filter(({ mnemonic }) => mnemonic !== 'ldapr'),
+  })],
+  /arm64-memory-denominator-rcpc-acquire-undeclared:ldapr/,
+  'an observed RCpc acquire form removed from the partial declaration must fail closed instead of becoming exact',
+);
+
 // False-green proofs: the fail-closed predicate must reject a partial case whose
 // declaration is gone, relabelled, or reattributed to another contract. Without
 // these a future unrepresentable form could join the corpus unattributed.
