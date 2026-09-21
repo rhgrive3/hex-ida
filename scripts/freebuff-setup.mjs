@@ -397,34 +397,49 @@ function binaryVersion(bin) {
   }
 }
 
-export function publishExecutableAtomically(src, dst, expectedVersion, { versionProbe = binaryVersion } = {}) {
+export function publishExecutableAtomically(src, dst, expectedVersion, {
+  versionProbe = binaryVersion,
+  fsImpl = fs,
+  containmentRoot = path.dirname(dst),
+} = {}) {
   const dir = path.dirname(dst);
-  ensureSafeDirectory(dir, dir);
-  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  const safeDir = openSafeDirectory(containmentRoot, dir, { fsImpl });
+  const base = path.basename(dst);
+  const stableDst = safeDir.child(base);
+  const tmp = safeDir.child(`.${base}.tmp-${process.pid}-${randomUUID()}`);
   try {
-    fs.copyFileSync(src, tmp, fs.constants.COPYFILE_EXCL);
-    fs.chmodSync(tmp, 0o755);
+    fsImpl.copyFileSync(src, tmp, fsImpl.constants.COPYFILE_EXCL);
+    fsImpl.chmodSync(tmp, 0o755);
     const stagedVersion = versionProbe(tmp);
     if (expectedVersion && stagedVersion !== expectedVersion) {
       throw new Error(`freebuff setup: staged shared binary version mismatch (${stagedVersion || 'unknown'} != ${expectedVersion})`);
     }
-    fs.renameSync(tmp, dst);
+    fsImpl.renameSync(tmp, stableDst);
+    assertSafeDirectoryIdentity(safeDir.snapshot, { fsImpl });
     return stagedVersion;
   } finally {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
+    try { fsImpl.rmSync(tmp, { force:true }); } catch {}
+    safeDir.close();
   }
 }
 
-function publishTextAtomically(dst, content, mode = 0o600) {
+export function publishTextAtomically(dst, content, mode = 0o600, {
+  fsImpl = fs,
+  containmentRoot = path.dirname(dst),
+} = {}) {
   const dir = path.dirname(dst);
-  ensureSafeDirectory(dir, dir);
-  const tmp = path.join(dir, `.${path.basename(dst)}.tmp-${process.pid}-${randomUUID()}`);
+  const safeDir = openSafeDirectory(containmentRoot, dir, { fsImpl });
+  const base = path.basename(dst);
+  const stableDst = safeDir.child(base);
+  const tmp = safeDir.child(`.${base}.tmp-${process.pid}-${randomUUID()}`);
   try {
-    fs.writeFileSync(tmp, content, { flag: 'wx', mode });
-    fs.renameSync(tmp, dst);
+    fsImpl.writeFileSync(tmp, content, { flag:'wx', mode });
+    fsImpl.renameSync(tmp, stableDst);
+    assertSafeDirectoryIdentity(safeDir.snapshot, { fsImpl });
     return true;
   } finally {
-    try { fs.rmSync(tmp, { force: true }); } catch {}
+    try { fsImpl.rmSync(tmp, { force:true }); } catch {}
+    safeDir.close();
   }
 }
 
@@ -459,13 +474,13 @@ function ensureSharedBinary() {
         // Stage in the shared directory, validate the complete executable, and
         // only then atomically rename over the live path. Existing HOME links
         // therefore observe complete old-or-new bytes, never an in-place copy.
-        publishExecutableAtomically(best.path, SHARED_BIN, best.version);
+        publishExecutableAtomically(best.path, SHARED_BIN, best.version, { containmentRoot:SHARED_ROOT });
       }
     } catch {
       return sharedBest;
     }
     try {
-      publishTextAtomically(SHARED_BIN_VERSION, `${best.version}\n`);
+      publishTextAtomically(SHARED_BIN_VERSION, `${best.version}\n`, 0o600, { containmentRoot:SHARED_ROOT });
     } catch {
       // The executable itself is authoritative. A later setup can repair the
       // advisory sidecar without downgrading a successfully published binary.
@@ -475,42 +490,34 @@ function ensureSharedBinary() {
   return sharedBest;
 }
 
-export function ensureMetadata(dir, shared, containmentRoot = dir) {
-  ensureSafeDirectory(containmentRoot, dir);
-  const metaPath = path.join(dir, 'freebuff-metadata.json');
+export function ensureMetadata(dir, shared, containmentRoot = dir, { fsImpl = fs } = {}) {
+  const safeDir = openSafeDirectory(containmentRoot, dir, { fsImpl });
+  const metaPath = safeDir.child('freebuff-metadata.json');
   const expectedTarget = `${process.platform}-${process.arch}`;
-  let currentEntry = null;
   try {
-    currentEntry = fs.lstatSync(metaPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') return false;
-  }
-
-  // Only read an existing regular metadata file. In particular, never follow
-  // a symlink leaf while deciding whether reconciliation is needed.
-  if (currentEntry?.isFile()) {
+    let currentEntry = null;
+    try { currentEntry = fsImpl.lstatSync(metaPath); }
+    catch (error) { if (error?.code !== 'ENOENT') return false; }
+    if (currentEntry?.isFile()) {
+      try {
+        const cur = JSON.parse(fsImpl.readFileSync(metaPath, 'utf8'));
+        if (cur.version === shared.version && cur.target === expectedTarget) return false;
+      } catch {}
+    }
+    const content = `${JSON.stringify({ version:shared.version, target:expectedTarget }, null, 2)}\n`;
+    const tmp = safeDir.child(`.freebuff-metadata.json.tmp-${process.pid}-${randomUUID()}`);
     try {
-      const cur = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      if (cur.version === shared.version && cur.target === expectedTarget) return false;
-    } catch {}
-  }
-
-  const content = `${JSON.stringify({ version: shared.version, target: expectedTarget }, null, 2)}\n`;
-  fs.mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.freebuff-metadata.json.tmp-${process.pid}-${randomUUID()}`);
-  try {
-    // Publish through a new regular file in the same directory, then rename
-    // over the leaf. rename replaces a symlink directory entry; it does not
-    // follow the symlink target.
-    fs.writeFileSync(tmp, content, { flag: 'wx', mode: 0o600 });
-    fs.renameSync(tmp, metaPath);
-    return true;
-  } catch {
-    return false;
+      fsImpl.writeFileSync(tmp, content, { flag:'wx', mode:0o600 });
+      fsImpl.renameSync(tmp, metaPath);
+      assertSafeDirectoryIdentity(safeDir.snapshot, { fsImpl });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      try { fsImpl.rmSync(tmp, { force:true }); } catch {}
+    }
   } finally {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
+    safeDir.close();
   }
 }
 
@@ -519,21 +526,27 @@ export function ensureMetadata(dir, shared, containmentRoot = dir) {
 // and their future background updates are left alone.
 function linkSharedBinary(home, shared) {
   const dir = path.join(home, '.config', 'manicode');
-  ensureSafeDirectory(home, dir);
+  const directoryIdentity = captureSafeDirectoryIdentity(home, dir);
+  const guard = () => assertSafeDirectoryIdentity(directoryIdentity);
   const bin = path.join(dir, 'freebuff');
   let linked = false;
   try {
+    guard();
     const st = fs.lstatSync(bin);
     if (!st.isSymbolicLink()) return false;
     if (fs.readlinkSync(bin) !== shared.path) {
-      fs.rmSync(bin, { force: true });
+      guard();
+      fs.rmSync(bin, { force:true });
+      guard();
       fs.symlinkSync(shared.path, bin);
+      guard();
       linked = true;
     }
   } catch {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      guard();
       fs.symlinkSync(shared.path, bin);
+      guard();
       linked = true;
     } catch {
       return false;
@@ -551,7 +564,7 @@ function ensureShared() {
     const dst = path.join(SHARED_ROOT, rel);
     ensureSafeDirectory(SHARED_ROOT, path.dirname(dst));
     if (fs.existsSync(dst)) continue;
-    if (moveIfMissing(path.join(repoShared, rel), dst)) {
+    if (moveIfMissing(path.join(repoShared, rel), dst, SHARED_ROOT)) {
       migrated++;
       continue;
     }
@@ -673,7 +686,7 @@ export function ensureWrappers(root = ROOT) {
     // Never write/chmod through the existing wrapper leaf. A same-directory
     // exclusive temp file followed by rename replaces a symlink entry itself,
     // leaving any external target untouched and publishing complete bytes.
-    publishTextAtomically(p, content, 0o755);
+    publishTextAtomically(p, content, 0o755, { containmentRoot:root });
     wrote++;
   }
   return wrote;
