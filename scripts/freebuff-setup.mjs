@@ -277,11 +277,11 @@ export function ensureHomeLinks(homeDir, { fsImpl = fs } = {}) {
       cleanupSymlinkBackups(linkPath, { fsImpl, containmentRoot: homeDir, stableParentPath: stable.path });
       let entry = null;
       try {
-        entry = fsImpl.lstatSync(linkPath);
+        entry = fsImpl.lstatSync(actualLinkPath);
       } catch (error) {
         if (error?.code !== 'ENOENT') throw error;
       }
-      if (entry?.isSymbolicLink() && fsImpl.readlinkSync(linkPath) === target) continue;
+      if (entry?.isSymbolicLink() && fsImpl.readlinkSync(actualLinkPath) === target) continue;
       replaceWithSymlinkAtomically(linkPath, target, { fsImpl, containmentRoot: homeDir, stableParentPath: stable.path });
     }
   } finally {
