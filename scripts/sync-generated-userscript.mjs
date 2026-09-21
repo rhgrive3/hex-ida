@@ -146,6 +146,19 @@ function collectLocalOnlyCommitState(localTip, remoteTip) {
       'diff-tree', '--root', '-m', '--no-commit-id', '--diff-filter=D', '--name-only', '-r', '-z', commit,
     ]))) deleted.add(name);
   }
+
+  // A reset destroys the local tip's tree state, not merely the deltas exposed
+  // by commits selected by rev-list. In merge topologies, a source-side commit
+  // can already be reachable from the remote tip while the local merge retains
+  // that source state and the remote later changed it. Compare the two endpoint
+  // trees directly as a second, topology-independent proof before reset.
+  for (const name of names(gitReadRaw([
+    'diff', '--no-renames', '--name-only', '-z', remoteTip, localTip,
+  ]))) changed.add(name);
+  for (const name of names(gitReadRaw([
+    'diff', '--no-renames', '--diff-filter=D', '--name-only', '-z', remoteTip, localTip,
+  ]))) deleted.add(name);
+
   return { changed:[...changed], deleted:[...deleted] };
 }
 
