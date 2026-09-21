@@ -45,14 +45,14 @@ assert.equal(createSemanticBoundaryReferee({ method: 'not-a-contract' }), null);
   const referee = createSemanticBoundaryReferee({
     fetchImpl: async (_url, options) => {
       seen = options.headers;
-      return new Response(JSON.stringify({ model: 'openjev-0.1', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.1, c1: 0.8, none: 0.1 }, abstain: false }), {
+      return new Response(JSON.stringify({ model: 'openjev', method: 'choice', challengerId: 'c1', probabilities: { c0: 0.1, c1: 0.8, none: 0.1 }, abstain: false }), {
         status: 200, headers: { 'content-type': 'application/json' },
       });
     },
   });
   try {
     const result = await referee(body());
-    assert.equal(result.model, 'openjev-0.1');
+    assert.equal(result.model, 'openjev');
     assert.equal(seen.get('x-hex-ai-capability'), 'existing-capability');
   } finally {
     clear();
@@ -67,7 +67,7 @@ assert.equal(createSemanticBoundaryReferee({ method: 'not-a-contract' }), null);
     upstream = { url, options, body: JSON.parse(options.body) };
     assert.equal(options.headers.authorization, `Bearer ${SECRET}`);
     return new Response(JSON.stringify({
-      model: 'openjev-0.1',
+      model: 'openjev',
       answers: { boundary: { type: 'choice', choice: 'c1', probabilities: { c0: 0.03, c1: 0.95, none: 0.02 } } },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -76,13 +76,13 @@ assert.equal(createSemanticBoundaryReferee({ method: 'not-a-contract' }), null);
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.deepEqual(result, {
-      model: 'openjev-0.1', method: 'choice', challengerId: 'c1',
+      model: 'openjev', method: 'choice', challengerId: 'c1',
       probabilities: { c0: 0.03, c1: 0.95, none: 0.02 }, abstain: false,
     });
     assert.equal(quotaStub.acquired, 1);
     assert.equal(quotaStub.released, 1);
-    assert.equal(upstream.url, 'https://api.codiv.ai/v1/systemone');
-    assert.equal(upstream.body.model, 'openjev-0.1');
+    assert.equal(upstream.url, 'https://api.openjev.sh/v1/systemone');
+    assert.equal(upstream.body.model, 'openjev');
     assert.equal(Object.hasOwn(upstream.body, 'think'), false);
     assert.equal(Object.hasOwn(upstream.body, 'samples'), false);
     assert.equal(Object.hasOwn(upstream.body, 'steps'), false);
@@ -107,10 +107,10 @@ assert.equal(createSemanticBoundaryReferee({ method: 'not-a-contract' }), null);
     assert.equal(Object.keys(upstream.questions).length, 2);
     assert.ok(Object.values(upstream.questions).every((question) => question.type === 'noul'));
     return new Response(JSON.stringify({
-      model: 'openjev-0.1',
+      model: 'openjev',
       answers: {
-        c0: { type: 'noul', probabilities: { yes: 0.1, no: 0.9 } },
-        c1: { type: 'noul', probabilities: { yes: 0.92, no: 0.08 } },
+        c0: { type: 'noul', noul: 0.1 },
+        c1: { type: 'noul', noul: 0.92 },
       },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -154,8 +154,8 @@ for (const mutation of [
 // can become a browser-side challenger.
 for (const payload of [
   { model: 'openjev-latest', answers: {} },
-  { model: 'openjev-0.1', answers: { boundary: { type: 'choice', choice: 'c1', probabilities: { c0: 0.2, none: 0.1 } } } },
-  { model: 'openjev-0.1', answers: { boundary: { type: 'choice', choice: 'c1', probabilities: { c0: 0.9, c1: 0.8, none: 0.01 } } } },
+  { model: 'openjev', answers: { boundary: { type: 'choice', choice: 'c1', probabilities: { c0: 0.2, none: 0.1 } } } },
+  { model: 'openjev', answers: { boundary: { type: 'choice', choice: 'c1', probabilities: { c0: 0.9, c1: 0.8, none: 0.01 } } } },
 ]) {
   const quotaStub = quota();
   const originalFetch = globalThis.fetch;

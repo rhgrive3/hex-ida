@@ -1,0 +1,57 @@
+{
+  "schema": "hex-openmw-boundary-holdout/v1",
+  "kind": "external-source-grounded-arm64-fixture",
+  "upstream": {
+    "repository": "https://github.com/OpenMW/openmw.git",
+    "commit": "ce8a52117c746331251c0ecc353af5a4e735daa2",
+    "license": "GPL-3.0-only",
+    "sourceFiles": [
+      "apps/openmw/mwmechanics/stat.hpp",
+      "apps/openmw/mwmechanics/stat.cpp"
+    ]
+  },
+  "artifactPolicy": {
+    "checkedIn": false,
+    "reason": "The locally compiled artifact incorporates GPL-licensed upstream source and must remain outside this proprietary repository."
+  },
+  "compiler": {
+    "target": "arm64-apple-macos11",
+    "optimization": "-O1",
+    "flags": "-std=c++20 -fno-exceptions -fno-rtti -fno-unwind-tables -fno-asynchronous-unwind-tables",
+    "linkMode": "freestanding Mach-O for the existing Node analysis harness"
+  },
+  "artifact": {
+    "file": "openmw-holdout-arm64-o1.macho",
+    "arch": "arm64",
+    "bytes": 24800,
+    "sha256": "7e2d25f7fd4c1cc7c93f04417665a22487ab5f7880a7ae9af7dc47b3e7c64bcc",
+    "buildEnvVar": "HEX_OPENMW_HOLDOUT_ARTIFACT"
+  },
+  "openJevContract": {
+    "endpoint": "https://api.openjev.sh/v1/systemone",
+    "model": "openjev",
+    "methods": ["choice", "noul"],
+    "auth": "Bearer env.OPENJEV_API_KEY",
+    "note": "Verified against the live service. The only offered model is `openjev` (GET https://api.openjev.sh/v1/models); an `openjev-0.1` request returns 422. `api.codiv.ai` rejects this key with 401. `noul` requires `true`/`false` criteria and answers with a scalar `noul` = P(true)."
+  },
+  "truth": {
+    "goal": "hp",
+    "field": "ActorStats.health.current",
+    "offset": 24,
+    "expectedDeterministicRank": 5,
+    "expectedCandidateCount": 5,
+    "expectedD4D5Gap": 0.015625
+  },
+  "observed": {
+    "evaluatedAt": "2026-09-22",
+    "currentTopOffset": 48,
+    "liveChoiceChallenger": "c0 (D4)",
+    "liveChoiceNote": "The live choice picks c0 (D4), not the true c1 (D5); the probability is below the 0.8 admission floor.",
+    "liveParallelNoul": "abstain (c0/c1 near-tie)",
+    "gatedOneProbeStatus": "not-admitted:probability (fallback to D1-D4, analyze unchanged)",
+    "oracleCeiling": "A forced oracle challenger reaches verification-hit@4 = 1, but the final top-1 is unchanged.",
+    "boundaryRescue": 0,
+    "promotionEligible": false
+  },
+  "scope": "Source-grounded compiler fixture only. It is not a full OpenMW release binary and cannot by itself authorize production promotion. On this holdout neither choice nor parallel noul changes the final top-1, so the referee stays shadow-only."
+}
