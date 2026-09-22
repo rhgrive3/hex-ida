@@ -10,18 +10,24 @@ policy? Both the benefit (prevented false strong verdicts) and the cost
 
 - Binaries: BattleCats (28 MB), TsumTsum (46 MB), YWP (63 MB) via
   `npm run fixtures:large` (public GitHub raw, size + git-blob-sha1 verified).
-- Queries: 426 total from `tests/fixtures/pinpoint-confidence-queries.json`,
-  derived with the same unique-name rule as #9413/`accuracy-base`:
-  exact-name 230 (BattleCats 120, TsumTsum 60, YWP 50),
-  remembered/partial-name 196 (86 + 60 + 50). Same query identity as #9413,
-  so results compare directly (there: exact 229/230 top-1, partial 53 top-1,
-  65 outside top-4, 54 not-found — reproduced here: exact 229/230,
-  partial top-1 53, not-found 54).
+- Field population: **426** rows from `tests/fixtures/pinpoint-confidence-queries.json`:
+  exact-name 230 (BattleCats 120, TsumTsum 60, YWP 50), remembered/partial-name
+  196 (86 + 60 + 50). These are the denominators for every OLD/NEW/B/C field
+  metric in this report. The 54 partial not-found rows remain in those field
+  denominators and are never dropped.
+- Separate DSDA holdout: **1** `kind: location` row, reported only in the DSDA
+  section and excluded from every field aggregate.
+- Total committed rows: **427 = 426 field + 1 DSDA holdout**. This total is a
+  provenance count only; it is not the denominator for field headline metrics.
 - Labels are independent ground truth (unique field names in the image).
   Hex's own top-1 is never used as a label.
 - DSDA-Doom ARM64 holdout measured separately (location path, `hp`):
   top offset 148, truth offset 196 rank 4/8, p 0.9157, margin 3.815 (45.4x),
   groups 2, analyze calls 18. OLD likely → NEW ambiguous, ranking unchanged.
+
+The machine-readable population contract is in
+`denominator-contract.md`; the focused validation test must fail if these
+counts or denominator scopes drift.
 
 ## OLD
 
@@ -143,5 +149,5 @@ are not implemented or tuned here (B/C as pre-specified show no advantage:
 both prevent 6 at the same 69 correct cost).
 Caveats: `dataflow+metadata` n=2; DSDA location pattern n=1; scores below
 are uncalibrated confidence scores, not frequency probabilities (the >=0.99
-bucket observes only 60.9% top-1 accuracy, non-monotone across buckets —
-see `scoreBuckets`).
+bucket observes only 60.9% accuracy, non-monotone across buckets — see
+`scoreBuckets`).
