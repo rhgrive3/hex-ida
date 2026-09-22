@@ -202,13 +202,26 @@ test('real ARM64 -fno-rtti binary reports RTTI absent and invents nothing', FIXT
 });
 
 test('a vtable with no usable symbol yields an anonymous class, never a guessed name', FIXTURE_OPTIONS, async () => {
-  const probe = openCxxFixture(RTTI);
+  const probe = openCxxFixture(NO_RTTI);
+  const index = probe.symbols.names.findIndex((name) => /^_?_ZTV/.test(name) && !name.includes('__cxxabiv1'));
+  assert.ok(index >= 0, 'fixture must expose a class vtable');
+  const address = probe.symbols.addrs[index];
+  const anonymousSymbols = {
+    addrs: [address],
+    names: ['_ZTVnot-a-valid-mangled-name'],
+    nameAt: (candidate) => candidate === address ? '_ZTVnot-a-valid-mangled-name' : null,
+    label: () => null,
+  };
   const report = await buildCxxClassEvidence({
-    symbols: { addrs: new BigUint64Array(0), names: [], nameAt: () => null, label: () => null },
+    symbols: anonymousSymbols,
     read: probe.read,
-    pointerBytes: 8,
+    pointerBytes: probe.pointerBytes,
+    symbolSizeOf: probe.symbolSizeOf,
+    sectionEndOf: probe.sectionEndOf,
   });
-  assert.equal(report.classes.length, 0);
+  assert.equal(report.classes.length, 1);
+  assert.equal(report.classes[0].classIdentity.kind, 'anonymous');
+  assert.equal(report.classes[0].className, null);
   assert.equal(report.rttiPresent, false);
 });
 
@@ -229,18 +242,23 @@ test('unreadable memory yields no class rather than a partial fabricated one', F
 
 test('a vtable without a provable extent reports no slots', FIXTURE_OPTIONS, async () => {
   const probe = openCxxFixture(RTTI);
+  const index = probe.symbols.names.findIndex((name) => /^_?_ZTV/.test(name) && !name.includes('__cxxabiv1'));
+  assert.ok(index >= 0, 'fixture must expose a class vtable');
+  const address = probe.symbols.addrs[index];
+  const singleVtable = {
+    addrs: [address],
+    names: [probe.symbols.names[index]],
+    nameAt: (candidate) => candidate === address ? probe.symbols.names[index] : null,
+    label: () => null,
+  };
   const report = await buildCxxClassEvidence({
-    symbols: probe.symbols,
+    symbols: singleVtable,
     read: probe.read,
-    pointerBytes: 8,
+    pointerBytes: probe.pointerBytes,
   });
-  // Without symbol sizes and with the ABI vtables excluded from the next-address
-  // set this fixture still has a following vtable, so extents stay provable and
-  // no slot list may ever exceed the table.
-  for (const record of report.classes) {
-    assert.ok(record.slotCount <= 16);
-    if (!record.extentProven) assert.equal(record.slots.length, record.slotCount);
-  }
+  assert.equal(report.classes.length, 0);
+  assert.ok(report.skipped.some((entry) =>
+    entry.address === address && entry.reason === 'vtable-extent-unknown'));
 });
 
 test('vtable evidence respects the class limit and reports truncation', FIXTURE_OPTIONS, async () => {
