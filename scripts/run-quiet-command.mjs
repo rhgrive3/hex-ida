@@ -219,7 +219,6 @@ export async function runQuietCommand({
   const logClosed = new Promise((resolve) => log.once('close', resolve));
   let tail = Buffer.alloc(0);
   let logError = null;
-  let pipeError = null;
   let firstInfrastructureError = null;
   let firstInfrastructureKind = null;
   let child;
@@ -254,7 +253,6 @@ export async function runQuietCommand({
       firstInfrastructureKind = kind;
     }
     if (kind === 'log' && !logError) logError = error;
-    if (kind === 'pipe' && !pipeError) pipeError = error;
     terminationController?.request();
   };
 
