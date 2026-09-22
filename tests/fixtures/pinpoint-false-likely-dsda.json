@@ -1,0 +1,50 @@
+{
+  "schema": "hex-pinpoint-false-likely-dsda/v1",
+  "note": "Pinned observed evidence from DSDA-Doom v0.29.4 mac-arm64 (PR #9410 holdout). Test-only; production never reads this file. Bytes are GPL upstream output and are not committed; only the observed evidence vector and expected verdict are pinned here.",
+  "artifact": {
+    "product": "DSDA-Doom 0.29.4 mac-arm64",
+    "binaryBytes": 2814096,
+    "binarySha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8"
+  },
+  "goal": "hp",
+  "fuseOpts": { "candidates": 8, "absent": 12 },
+  "candidates": [
+    {
+      "key": "top-148",
+      "offset": "148",
+      "evidence": [
+        { "code": "loc-drain-verified", "strength": 1, "lr": 30 },
+        { "code": "loc-shared", "strength": 1, "lr": 3.2 },
+        { "code": "loc-size", "strength": 0.8, "lr": 1.7 },
+        { "code": "loc-resource-drain", "strength": 0.20833333333333334, "lr": 5.13 }
+      ]
+    },
+    {
+      "key": "runner-56",
+      "offset": "56",
+      "evidence": [
+        { "code": "loc-rmw", "strength": 1, "lr": 9 },
+        { "code": "loc-shared", "strength": 1, "lr": 3.2 },
+        { "code": "loc-resource-drain", "strength": 0.2, "lr": 5.13 },
+        { "code": "loc-size", "strength": 0.8, "lr": 1.7 }
+      ]
+    },
+    {
+      "key": "truth-196",
+      "offset": "196",
+      "evidence": [
+        { "code": "loc-resource-drain", "strength": 0.1965909090909091, "lr": 5.13 },
+        { "code": "loc-size", "strength": 0.8, "lr": 1.7 }
+      ]
+    }
+  ],
+  "expected": {
+    "order": ["148", "56", "196"],
+    "verdict": "ambiguous",
+    "topLogOdds": 2.385058825480857,
+    "margin": 3.815467861756061,
+    "topIndependentGroups": 2,
+    "topStars": 3,
+    "missingIncludes": "need-independent-evidence"
+  }
+}

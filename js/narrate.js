@@ -1590,9 +1590,15 @@ export function verdictLead(v) {
       return pick('根拠はそろっていますが、命令での裏取りが 1 つ足りません。',
         'The evidence lines up, but one instruction-level check is missing.');
     case 'ambiguous':
-      return pick('上位の候補が拮抗しているため、1 つに決めていません。' +
-        '決めつけるより、両方を見てもらった方が確実です。',
-      'The top candidates are too close to call, so nothing is being declared.');
+      /*
+       * 決め手不足の汎用文言。拮抗 (need-separation) と独立性不足
+       * (need-independent-evidence) を区別しない。DSDA のように margin 45x でも
+       * groups=2 で ambiguous になる場合に「拮抗している」と言うのは嘘になる。
+       * どちらが足りないかは missingText の側で言う。ここは断言しないことだけ言う。
+       */
+      return pick('決め手が足りないため、1 つに決めていません。' +
+        '何が足りないかは下の理由を見てください。',
+      'Not enough decisive evidence, so nothing is being declared. See the missing reasons below.');
     default:
       return pick('この目的に当てはまる値は見つかりませんでした。',
         'No value matching this goal was found.');
