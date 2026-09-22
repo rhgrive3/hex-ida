@@ -98,21 +98,25 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
   } catch (error) {
     throw new Error(`${kind} bundle cannot establish repository identity`, { cause: error });
   }
+
+  // The metafile is the provenance boundary for the whole privileged bundle,
+  // not only for the required anchor files. Every bundled filesystem input must
+  // resolve to a source contained by the canonical repository root.
+  for (const { rawPath, normalized } of normalizedInputs) {
+    const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
+    let realInput;
+    try {
+      realInput = realpathSync(candidate);
+    } catch (error) {
+      throw new Error(`${kind} bundle cannot establish source identity for ${normalized || rawPath}`, { cause: error });
+    }
+    const relative = path.relative(realRoot, realInput);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
+    }
+  }
+
   for (const requiredPath of required) {
     if (!inputSet.has(requiredPath)) throw new Error(`${kind} bundle omits ${requiredPath}`);
-    const matches = normalizedInputs.filter(({ normalized }) => normalized === requiredPath);
-    for (const { rawPath } of matches) {
-      const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
-      let realInput;
-      try {
-        realInput = realpathSync(candidate);
-      } catch (error) {
-        throw new Error(`${kind} bundle cannot establish source identity for ${requiredPath}`, { cause: error });
-      }
-      const relative = path.relative(realRoot, realInput);
-      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-        throw new Error(`${kind} bundle required input escapes repository: ${requiredPath}`);
-      }
-    }
   }
 }
