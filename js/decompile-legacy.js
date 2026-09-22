@@ -360,60 +360,6 @@ function decideMaterial(model, vg) {
   const uses = new Map();          // ノード → 使われた回数
   const crossed = new Set();       // 別ブロックから使われたノード
   const firstUse = new Map();      // ノード → いちばん早く使われた行
-
-  /*
-   * メモリから読んだ値は、call / store をまたいで式へ埋め込まない。
-   *
-   *   ldr x19, [x0]
-   *   bl  mutate
-   *   str x19, [x1]
-   *
-   * を `mutate(); *x1 = *x0;` にすると、mutate が *x0 を変更した場合に
-   * 元のバイナリと意味が変わる。同じことは alias し得る store をまたぐ場合にも
-   * 起こる。値そのものは 1 回しか使わなくても、読み出した時点を保つために
-   * 変数として残す必要がある。
-   *
-   * pure arithmetic は従来どおり埋め込めるよう、barrier は memory-derived 値に
-   * だけ効かせる。
-   */
-  const rowIndex = new Map(insns.map((insn, i) => [insn.row, i]));
-  const barrierPrefix = new Array(insns.length + 1).fill(0);
-  const isOrderingBarrier = (insn) => {
-    const base = String(insn?.mnemonic || '').toLowerCase();
-    return !!insn?.isCall || insn?.memory?.kind === 'store' ||
-      /^(svc|hvc|smc|sys|sysl|msr|stxr|stlxr|stxp|stlxp)/.test(base);
-  };
-  for (let i = 0; i < insns.length; i++) {
-    barrierPrefix[i + 1] = barrierPrefix[i] + (isOrderingBarrier(insns[i]) ? 1 : 0);
-  }
-  const memoryDerivedCache = new Map();
-  const isMemoryDerived = (root) => {
-    if (!root) return false;
-    if (memoryDerivedCache.has(root)) return memoryDerivedCache.get(root);
-    const seen = new Set();
-    const stack = [root];
-    let yes = false;
-    while (stack.length) {
-      const cur = stack.pop();
-      if (!cur || seen.has(cur)) continue;
-      seen.add(cur);
-      if (cur.k === 'mem') { yes = true; break; }
-      const kids = cur.k === 'bin' ? [cur.a, cur.b]
-        : cur.k === 'un' ? [cur.a]
-          : cur.k === 'sel' ? [cur.a, cur.b]
-            : cur.k === 'call' ? (cur.args || []).map((a) => a.value) : [];
-      for (const kid of kids) if (kid) stack.push(kid);
-    }
-    memoryDerivedCache.set(root, yes);
-    return yes;
-  };
-  const crossesOrderingBarrier = (nodeValue, defRow) => {
-    if (!isMemoryDerived(nodeValue)) return false;
-    const useRow = firstUse.get(nodeValue);
-    const di = rowIndex.get(defRow), ui = rowIndex.get(useRow);
-    if (di == null || ui == null || ui <= di + 1) return false;
-    return barrierPrefix[ui] - barrierPrefix[di + 1] > 0;
-  };
   const bump = (nodeValue, atRow) => {
     if (!nodeValue) return;
     const def = vg.nodeDef.get(nodeValue);
@@ -525,7 +471,7 @@ function decideMaterial(model, vg) {
     if (nodeValue.k === 'call') { material.add(nodeValue); continue; }
     if (live) { material.add(nodeValue); continue; }
     if (n === 0) continue;                       // 誰も使わない値。行ごと消える。
-    if (n > 1 || crossed.has(nodeValue) || big || crossesOrderingBarrier(nodeValue, def.row)) material.add(nodeValue);
+    if (n > 1 || crossed.has(nodeValue) || big) material.add(nodeValue);
   }
   /*
    * 大きさの判定は、変数として残すと決めたところで止まる。
