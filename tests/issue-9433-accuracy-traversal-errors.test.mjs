@@ -35,6 +35,40 @@ for (const code of ['EIO', 'EACCES']) {
   });
 }
 
+
+test('accuracy traversal does not use existsSync as an authority gate', () => {
+  const root = makeRoot();
+  const target = path.resolve(root, 'js', 'sub');
+  const original = fs.existsSync;
+  try {
+    fs.existsSync = (value) => path.resolve(String(value)) === target ? false : original(value);
+    const files = partitionFiles(root, 'core');
+    assert.ok(files.includes('js/sub/selected.js'), 'nested subtree must not disappear behind existsSync=false');
+  } finally {
+    fs.existsSync = original;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('accuracy traversal treats a disappearing nested directory as ENOENT-safe', () => {
+  const root = makeRoot();
+  const target = path.resolve(root, 'js', 'sub');
+  const original = fs.realpathSync;
+  try {
+    fs.realpathSync = (value, ...args) => {
+      if (path.resolve(String(value)) === target) {
+        throw Object.assign(new Error('simulated ENOENT'), { code: 'ENOENT' });
+      }
+      return original(value, ...args);
+    };
+    assert.doesNotThrow(() => partitionFiles(root, 'core'));
+    assert.doesNotThrow(() => partitionDigest(root, 'core'));
+  } finally {
+    fs.realpathSync = original;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('ordinary nested directory remains part of partition digest', () => {
   const root = makeRoot();
   try {
