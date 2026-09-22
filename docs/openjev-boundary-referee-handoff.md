@@ -13,7 +13,9 @@
      — goal 文言の単一情報源化・probe の複数ウィンドウ化・holdout のケース表化
   6. `4e9846915` `docs(jev): refresh the boundary referee handoff`
   7. `044255706` `feat(jev): only ask the referee for a goal with calibrated guidance`
-  8. `docs(jev): reflect the calibrated-goal eligibility`（このファイル更新）
+  8. `eb54fbe59` `docs(jev): reflect the calibrated-goal eligibility`
+  9. `5e9f7067e` `test(jev): make the holdout check its own rank labels`
+  10. `docs(jev): record the holdout label self-check`（このファイル更新）
 - 引き継ぎ資料: このファイル（作業ツリーは clean で commit 済み）
 
 ## 何を実装したか
@@ -100,6 +102,21 @@
   ケースごとの `promotionEligible` と「truth が boundary set に到達可能か」を報告する。
 - 目的: 単一ケースの結果で production 昇格を判断しないこと（証跡の被覆を広げる）。
 
+### 5. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
+
+- `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
+  (`rankedShapeScores`) を追加（内部専用。referee には渡らない）。
+- `tests/semantic-boundary-openmw-holdout.mjs` は manifest を**信じない**。
+  - reachability はラベルされた rank から導出する（boundary set は rank 4〜 なので rank>=4 のみ到達可能）。
+  - `expectedCandidateCount` が実測候補数と一致すること。
+  - `deterministicTopOffset` / `deterministicTopIsTruth` が実測と一致すること。
+  - oracle を回すケースでは probe が `d<expectedDeterministicRank>` を狙ったこと。
+  - 1つでも食い違えば `labelsConsistent: false` になり、promotion がブロックされる。
+- 実測スコア: rank1 = 0.19375 / rank2〜4 = 0.1771（同点） / rank5 = 0.1615。D4/D5 差 0.015625。
+  → Hex の決定的スコアは既に rank1（`fatigue.current`）を好んでおり、`hp` の真値
+  `health.current` は rank5 に落ちる。
+- 目的: manifest のラベルが古くなったら「静かに誤った証跡」にならず、明示的な失敗になること。
+
 ## 実 OpenMW holdout
 
 固定 OpenMW `ce8a52117c746331251c0ecc353af5a4e735daa2` の `stat.hpp/stat.cpp`（GPL-3.0-only）から
@@ -158,8 +175,17 @@ Phase 2 default-on は無効のまま（`promotionEligible: false`）。admissio
 node tests/semantic-boundary-referee.mjs        # PASS
 node tests/semantic-boundary-worker.mjs         # PASS
 node tests/semantic-boundary-holdout-eval.mjs   # PASS
-node tests/check.mjs                            # PASS (4.7s)
+node tests/check.mjs                            # PASS (5.4s)
+node tests/ir-pinpoint-location.mjs             # PASS
+node tests/ir-pinpoint-path.mjs                 # PASS
+node tests/pinpoint-ui-runtime.mjs              # PASS
+node tests/issue-5109-pinpoint-cancel-unexamined.mjs  # PASS
+node tests/run.js                               # PASS
+# offline: labelsConsistent=true / promotionEligible=false
+HEX_OPENMW_HOLDOUT_ARTIFACT=... node tests/semantic-boundary-openmw-holdout.mjs
+# live: labelsConsistent=true / promotionEligible=false
 HEX_OPENMW_HOLDOUT_ARTIFACT=... HEX_OPENMW_HOLDOUT_LIVE=1 node tests/semantic-boundary-openmw-holdout.mjs
+# npm run check: machine-effects ゲートのみ env 要因で失敗（LLVM 18 不在）。他は失敗なし。
 ```
 
 ## 次にやること
