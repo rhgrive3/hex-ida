@@ -93,6 +93,9 @@ function hasTopLevelOrOperator(checkScript) {
       continue;
     }
     if (groupDepth === 0 && ch === '|') return true;
+    if (groupDepth === 0 && ch === '&'
+        && str[i - 1] !== '&' && str[i - 1] !== '>' && str[i - 1] !== '<'
+        && str[i + 1] !== '&' && str[i + 1] !== '>') return true;
   }
   return false;
 }
