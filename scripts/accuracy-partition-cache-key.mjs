@@ -34,8 +34,9 @@ function walk(dir, root, out, visitedDirs = new Set(), allowedRealRoot = null) {
     if (allowedRealRoot && !pathIsWithin(allowedRealRoot, realDir)) return;
     if (visitedDirs.has(realDir)) return;
     visitedDirs.add(realDir);
-  } catch {
-    return;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return;
+    throw new Error(`accuracy cache key: cannot establish directory identity: ${dir}`, { cause: error });
   }
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -51,8 +52,12 @@ function walk(dir, root, out, visitedDirs = new Set(), allowedRealRoot = null) {
             walk(absolute, root, out, visitedDirs, allowedRealRoot);
           }
         }
-      } catch {
-        // Broken symlink target cannot be resolved; entry was recorded above
+      } catch (error) {
+        // Broken symlink targets are an explicitly represented state. Other
+        // filesystem failures mean traversal became incomplete and must fail closed.
+        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
+          throw new Error(`accuracy cache key: cannot establish symlink target identity: ${absolute}`, { cause: error });
+        }
       }
       continue;
     }
