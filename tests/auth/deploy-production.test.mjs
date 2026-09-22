@@ -43,9 +43,12 @@ test('canonical production deploy validates the default config before invoking W
     '--config',
     '/proc/self/fd/3/wrangler.jsonc',
     '--assets',
-    resolve(repoRoot, 'dist'),
+    '/proc/self/fd/4',
   ]);
-  assert.deepEqual(deployment.options, validator.options);
+  assert.equal(deployment.options.cwd, validator.options.cwd);
+  assert.deepEqual(deployment.options.stdio.slice(0, 3), validator.options.stdio.slice(0, 3));
+  assert.equal(deployment.options.stdio[3], validator.options.stdio[3]);
+  assert.equal(Number.isInteger(deployment.options.stdio[4]), true);
 });
 
 test('production deploy stops before Wrangler when auth config validation fails', () => {

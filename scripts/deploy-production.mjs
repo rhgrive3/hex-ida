@@ -62,6 +62,10 @@ export function runProductionDeploy({
 
   const approvedBytes = Buffer.from(readFileSync(configPath));
   const approvedConfig = parseJsonc(approvedBytes.toString('utf8'));
+  const approvedAssetsDirectory = approvedConfig?.assets?.directory;
+  if (approvedAssetsDirectory !== './dist' && approvedAssetsDirectory !== 'dist') {
+    throw new Error('Production assets directory must be ./dist.');
+  }
   const configRoot = dirname(resolve(configPath));
   const token = randomUUIDImpl();
   const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${token}.jsonc`);
@@ -189,14 +193,48 @@ export function runProductionDeploy({
       // The worker entrypoint is handed to Wrangler through the locked directory
       // inode, not through the writable workspace pathname that was validated.
       const stableMainPath = `/proc/self/fd/${inheritedDirectoryFd}/${HANDOFF_ENTRY_NAME}`;
-      const deploymentArgs = [wranglerPath, 'deploy', stableMainPath, '--config', stableConfigPath];
-      if (typeof approvedConfig?.assets?.directory === 'string') {
-        deploymentArgs.push('--assets', resolve(configRoot, approvedConfig.assets.directory));
+
+      const assetsCandidate = resolve(configRoot, approvedAssetsDirectory);
+      let assetsEntry;
+      try {
+        assetsEntry = lstatSync(assetsCandidate);
+      } catch (error) {
+        throw new Error('Production assets directory provenance could not be established.', { cause: error });
+      }
+      if (assetsEntry.isSymbolicLink() || !assetsEntry.isDirectory()) {
+        throw new Error('Production assets path must be a real directory.');
       }
 
-      deploymentAttempted = true;
-      const deployment = run(process.execPath, deploymentArgs, childOptions);
-      status = subprocessStatus(deployment, 'Wrangler deployment');
+      const assetsFlags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+      const assetsFd = openSync(assetsCandidate, assetsFlags);
+      try {
+        const openedAssets = fstatSync(assetsFd);
+        if (!openedAssets.isDirectory() || !sameIdentity(openedAssets, assetsEntry)) {
+          throw new Error('Production assets directory identity changed before deployment.');
+        }
+
+        const inheritedAssetsFd = 4;
+        const stableAssetsPath = `/proc/self/fd/${inheritedAssetsFd}`;
+        const deploymentArgs = [
+          wranglerPath,
+          'deploy',
+          stableMainPath,
+          '--config',
+          stableConfigPath,
+          '--assets',
+          stableAssetsPath,
+        ];
+        const deploymentOptions = {
+          ...childOptions,
+          stdio: ['inherit', 'inherit', 'inherit', handoffDirectoryFd, assetsFd],
+        };
+
+        deploymentAttempted = true;
+        const deployment = run(process.execPath, deploymentArgs, deploymentOptions);
+        status = subprocessStatus(deployment, 'Wrangler deployment');
+      } finally {
+        closeSync(assetsFd);
+      }
     }
   } catch (error) {
     primaryError = error;
