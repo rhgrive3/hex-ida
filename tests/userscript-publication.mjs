@@ -172,7 +172,8 @@ try {
   }
 
   const build = await fs.readFile(new URL('../scripts/build-userscript.mjs', import.meta.url), 'utf8');
-  assert.match(build, /import \{ writeFileVerified, publishUserscriptFiles \}/);\n  assert.match(build, /writeFileVerified\(file, content, \{ containmentRoot: root \}\)/);
+  assert.match(build, /import \{ writeFileVerified, publishUserscriptFiles \}/);
+  assert.match(build, /writeFileVerified\(file, content, \{ containmentRoot: root \}\)/);
   assert.ok(build.indexOf('await publishUserscriptFiles(') > build.indexOf("await writeFile(resolve(dist, 'runtime-manifest.json')"));
   assert.doesNotMatch(build, /writeFile\((?:committedTemplate|releaseStatePath),/);
   console.log('Userscript publication: write/sync/close/readback/rename/rollback/stale-input regressions PASS');
