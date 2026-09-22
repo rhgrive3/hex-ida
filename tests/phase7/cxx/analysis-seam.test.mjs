@@ -17,6 +17,7 @@ import test from 'node:test';
 import { parseOperands } from '../../../js/arm64.js';
 import { analyzeSemanticFunction } from '../../../js/analysis/semantic-function.js';
 import { createCxxEvidenceProvider } from '../../../js/analysis/cxx/project.js';
+import { isCanonicalCppReceiverEvidence } from '../../../js/analysis/cxx/object-evidence.js';
 import { buildCxxFixtures } from './fixtures/build.mjs';
 import { openCxxFixture } from './fixtures/open.mjs';
 
@@ -25,10 +26,20 @@ const MEMBER = '_ZN6Player10takeDamageEi';
 const FREE_FUNCTION = '_Z10readHealthP6Entity';
 
 function objdumpTool() {
-  for (const candidate of [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'objdump']) {
+  // LLVM objdump only. GNU objdump rejects an AArch64 fixture
+  // (`can't disassemble for architecture UNKNOWN`) unless the host binutils was
+  // built with that target, and it does not accept the symbol selector this test
+  // uses, so accepting a GNU `objdump` would leave `skip` false and fail every
+  // assertion with no rows. The selector itself is `--disassemble-symbols=`:
+  // measured against LLVM 14.0.0 and LLVM 18.1.3, both reject the newer-looking
+  // `--disassemble=<symbol>` with `unknown argument`. Requiring the version
+  // banner keeps the skip honest instead of silently measuring nothing.
+  for (const candidate of [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'llvm-objdump-18']) {
     if (!candidate) continue;
     const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
-    if (probe.status === 0) return candidate;
+    if (probe.status !== 0) continue;
+    if (!/LLVM/i.test(probe.stdout || '')) continue;
+    return candidate;
   }
   return null;
 }
@@ -175,4 +186,57 @@ test('a structural look-alike of the evidence renders nothing', { skip }, async 
   assert.ok(result.decompiler?.pseudocode);
   assert.doesNotMatch(result.decompiler.pseudocode, /\bthis\b/,
     'a cloned receiver is not authority');
+});
+
+test('a caller cannot mint `this` by replaying canonical evidence', { skip }, async () => {
+  const memberRows = disassemble(built.artifacts[FIXTURE].path, MEMBER, tool);
+  const freeRows = disassemble(built.artifacts[FIXTURE].path, FREE_FUNCTION, tool);
+  assert.ok(memberRows && freeRows);
+
+  const probe = openProbe();
+  const provider = providerFor(probe);
+  await provider.build();
+  const projection = provider.projectForFunction({
+    functionId: 'fn:player-take-damage',
+    functionAddress: symbolAddressOf(probe, MEMBER),
+    functionName: MEMBER,
+    ir: { values: [{ id: 'arg0', kind: 'arg', reg: 'x0', bits: 64 }], instructions: [] },
+  });
+  assert.ok(projection, 'control: the evidence itself is canonical');
+  // The object is not a look-alike: it came from the canonical producer and
+  // passes the canonicality gate the seam applies to caller input.
+  assert.equal(isCanonicalCppReceiverEvidence(projection.receiver), true,
+    'control: the replayed receiver is genuinely canonical');
+
+  // Replayed against a function it was not issued for.
+  const replayed = analyzeSemanticFunction({
+    ...decodedInput(freeRows, FREE_FUNCTION),
+    cxxEvidence: { receiver: projection.receiver, virtualSlots: [] },
+  });
+  assert.ok(replayed.decompiler?.pseudocode);
+  assert.doesNotMatch(replayed.decompiler.pseudocode, /\bthis\b/,
+    'evidence must not be replayable against another function');
+
+  // Replayed against its OWN address. Canonicality plus a matching function
+  // address is still not authority: the receiver must additionally bind to a
+  // value the pipeline itself produced for this function, which is why a
+  // caller who holds the producer's output still cannot mint `this`.
+  assert.equal(BigInt(projection.receiver.functionAddress), memberRows[0].address,
+    'the address in the evidence already matches the replay target');
+  const sameAddress = analyzeSemanticFunction({
+    ...decodedInput(memberRows, MEMBER),
+    cxxEvidence: { receiver: projection.receiver, virtualSlots: [] },
+  });
+  assert.ok(sameAddress.decompiler?.pseudocode);
+  assert.doesNotMatch(sameAddress.decompiler.pseudocode, /\bthis\b/,
+    'canonicality and a matching address are still not authority');
+
+  // Positive control: the pipeline CAN establish that binding, but only by
+  // running the provider against the function's own canonical IR.
+  const issued = analyzeSemanticFunction({
+    ...decodedInput(memberRows, MEMBER),
+    cxxEvidenceProvider: provider,
+  });
+  assert.match(issued.decompiler.pseudocode, /\bthis\b/,
+    'the control must project when the pipeline issues the evidence itself');
 });

@@ -110,16 +110,25 @@ function buildChains(ir, maxInstructions) {
   const vectorTargets = new Set();
   const conditionValues = new Set();
   const addressUsed = new Set();
+  const instructions = [];
   let scanned = 0;
 
+  // Constants first: a comparison's other operand can only be recognised as the
+  // literal 0/1 once every `const` definition is known, and a `cmp` may be
+  // visited before the definition it reads.
   for (const inst of ir?.instructions || []) {
     if (scanned++ >= maxInstructions) break;
+    instructions.push(inst);
+    if (inst.op !== 'const') continue;
     const dstId = valueId(inst.dst);
-    if (inst.op === 'const' && dstId != null) {
-      const raw = inst.extra?.value ?? inst.extra?.constant?.value ?? null;
-      const parsed = raw == null ? null : toBigInt(raw);
-      if (parsed != null) constants.set(dstId, parsed);
-    }
+    if (dstId == null) continue;
+    const raw = inst.extra?.value ?? inst.extra?.constant?.value ?? null;
+    const parsed = raw == null ? null : toBigInt(raw);
+    if (parsed != null) constants.set(dstId, parsed);
+  }
+
+  for (const inst of instructions) {
+    const dstId = valueId(inst.dst);
     if (dstId != null && (inst.op === 'mov' || inst.op === 'un') && inst.args?.length) {
       const source = valueId(inst.args[0]?.value ?? inst.args[0]);
       if (source != null) {
@@ -131,19 +140,32 @@ function buildChains(ir, maxInstructions) {
       if (typeof reg === 'string' && FP_REGISTER.test(reg)) vectorTargets.add(dstId);
     }
     if (inst.op === 'cmp' || inst.op === 'cbr') {
-      for (const arg of inst.args || []) {
-        const id = valueId(arg?.value ?? arg);
-        if (id != null) conditionValues.add(id);
+      const kind = inst.extra?.kind ?? inst.cond ?? null;
+      const ids = (inst.args || [])
+        .map((arg) => valueId(arg?.value ?? arg))
+        .filter((id) => id != null);
+      if (inst.op === 'cbr' && (kind === 'cbz' || kind === 'cbnz')) {
+        // `cbz` / `cbnz` compare their operand against zero implicitly: the
+        // comparison is the instruction itself, so there is no separate
+        // literal operand to inspect. Only a test of bit 0 of a *single byte*
+        // is admitted as boolean; every other bit test stays out.
+        for (const id of ids) conditionValues.add(id);
+      } else {
+        // A `cmp` plus a conditional branch is only boolean evidence when the
+        // other operand is the literal 0 or 1. A byte member compared with 42
+        // is not bool-like, so the compared value is recorded only then.
+        const literal = ids.filter((id) => { const value = constants.get(id); return value === 0n || value === 1n; });
+        if (literal.length) {
+          for (const id of ids) if (!literal.includes(id)) conditionValues.add(id);
+        }
       }
     }
+    // Pointer evidence requires the value to actually be used as an address.
+    // Passing a loaded value as a call argument or returning it by value proves
+    // nothing about its type: a `uint64_t` member and a pointer member look
+    // identical there, so that use is deliberately not collected.
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
-    if (inst.op === 'call' || inst.op === 'ret') {
-      for (const arg of inst.args || []) {
-        const id = valueId(arg?.value ?? arg);
-        if (id != null) addressUsed.add(id);
-      }
-    }
   }
   return { sources, consumers, constants, vectorTargets, conditionValues, addressUsed };
 }
@@ -266,9 +288,12 @@ export function recoverMemberTypeEvidence({
       || entry.accesses.find((access) => access.boolLike)
       || entry.accesses[0];
     // An indexed access is only array-like when the addressing scale matches the
-    // element width the access proves; otherwise the shape is not one array.
-    const indexedConsistent = !representative.indexed
-      || (1 << (representative.scale ?? 0)) === representative.size;
+    // element width that access proves. Every indexed access must agree: one
+    // consistent access alongside a contradictory one is two different shapes at
+    // the same offset, not an array.
+    const indexedConsistent = entry.accesses
+      .filter((access) => access.indexed)
+      .every((access) => (1 << (access.scale ?? 0)) === access.size);
     const classification = mixedWidths
       ? { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'mixed-access-widths' }
       : !indexedConsistent

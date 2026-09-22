@@ -44,7 +44,7 @@ const UPDATE_SLOT = 3;
 
 test('inheritance edges come from RTTI, not naming similarity', FIXTURE_OPTIONS, async () => {
   const report = await evidence(RTTI);
-  assert.deepEqual(derivedClassesOf(report, 'Entity'), ['Actor', 'Player']);
+  assert.deepEqual(derivedClassesOf(report, 'Entity'), ['Actor', 'Enemy', 'Player']);
   assert.deepEqual(derivedClassesOf(report, 'Actor'), ['Player']);
   assert.deepEqual(derivedClassesOf(report, 'Player'), []);
   assert.deepEqual(derivedClassesOf(report, 'NotAClass'), []);
@@ -59,13 +59,15 @@ test('receiver of static type Entity: the target set keeps every legal override'
   });
 
   assert.equal(targetSet.scope, 'call-site');
-  assert.deepEqual(targetSet.derivedClasses, ['Actor', 'Player']);
-  assert.equal(targetSet.candidates.length, 3, 'Entity, Actor and Player implementations are all legal');
+  assert.deepEqual(targetSet.derivedClasses, ['Actor', 'Enemy', 'Player']);
+  assert.equal(targetSet.candidates.length, 4, 'Entity, Actor, Enemy and Player implementations are all legal');
+  // Enemy inherits Entity's override, so four contributing classes still leave
+  // three distinct code addresses.
   assert.equal(targetSet.candidateAddresses.length, 3);
   assert.equal(new Set(targetSet.candidateAddresses).size, 3);
   assert.deepEqual(
     [...new Set(targetSet.candidates.map((candidate) => candidate.viaClass))].sort(),
-    ['Actor', 'Entity', 'Player'],
+    ['Actor', 'Enemy', 'Entity', 'Player'],
   );
   assert.equal(targetSet.closureProven, false);
   assert.equal(targetSet.completeness, 'complete');
@@ -102,13 +104,13 @@ test('an inherited slot resolves to the base implementation for the derived clas
     receiverClass: 'Entity',
     slotIndex: UPDATE_SLOT,
   });
-  // Actor overrides update; Player inherits Actor's implementation, so the
-  // reachable implementation set is {Entity::update, Actor::update} even though
-  // three vtables contribute a slot value.
+  // Actor overrides update; Player and Enemy inherit it, so the reachable
+  // implementation set is {Entity::update, Actor::update} even though four
+  // vtables contribute a slot value.
   assert.equal(entityUpdate.candidateAddresses.length, 2);
   assert.deepEqual(
     [...entityUpdate.candidates.map((candidate) => candidate.aliases[0])].sort(),
-    ['_ZN5Actor6updateEf', '_ZN5Actor6updateEf', '_ZN6Entity6updateEf'],
+    ['_ZN5Actor6updateEf', '_ZN5Actor6updateEf', '_ZN6Entity6updateEf', '_ZN6Entity6updateEf'],
   );
 });
 

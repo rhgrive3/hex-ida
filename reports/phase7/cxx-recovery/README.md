@@ -7,12 +7,12 @@ second type system and without a heavy global pass.
 
 Status: **investigation complete for Phases 1–3 and the measured part of
 Phase 4.** This is not a master-phase cutover; see
-[Phase status](#phase-status) and
-[Process notes](#process-notes-and-what-is-not-done).
+[Phase status](#8-phase-status) and
+[Process notes](#9-process-notes-and-what-is-not-done).
 
 - Measurement artifact: [`measurement.json`](./measurement.json)
 - Machine-readable taxonomy: [`taxonomy.json`](./taxonomy.json)
-- Regressions: `tests/phase7/cxx/{rtti-evidence,virtual-dispatch,member-types}.test.mjs`
+- Regressions: `tests/phase7/cxx/{rtti-evidence,virtual-dispatch,member-types,projection,analysis-seam}.test.mjs`
 - Measurement script: `tools/validation/phase7/cxx/measure-cxx-recovery.mjs`
 
 ---
@@ -53,7 +53,7 @@ ARM64 ELF fixtures (see [§4](#4-fixtures-real-binaries-not-hand-written-bytes))
 | --- | --- | --- |
 | Object / `this` recognition | **partial** | Producer exists and fails closed, but has no production caller; receiver binding is never derived from a real binary |
 | Vtable discovery | **partial** | Symbol-driven only (`_ZTV*`). Stripped binaries and unsymbolised vtables are invisible |
-| Vtable slot enumeration | **unsafe to infer** | Fixed slot cap over-reads: 40 slot entries enumerated for 3 tables that hold 12. 8 of them resolve to `_ZTI`/`_ZTV`/`_ZTS` symbols, i.e. provably *not* methods |
+| Vtable slot enumeration | **unsafe to infer** | Fixed slot cap over-reads: 64 slot entries enumerated across 8 symbol-derived tables that hold 20. 12 of them resolve to `_ZTI`/`_ZTV`/`_ZTS` symbols, i.e. provably *not* methods |
 | RTTI discovery (`typeinfo` record parse) | **missing** | `_ZTI` addresses are used as labels only; never parsed |
 | Class-name association | **partial** | From `_ZTV`/`_ZTS` symbol demangling. No name is derived from a typeinfo string, so a stripped-but-RTTI binary yields nothing |
 | Inheritance (base / derived) | **missing** | `__si_class_type_info` / `__vmi_class_type_info` base arrays are unread |
@@ -170,14 +170,18 @@ producer plus resolver plus member types.
 
 ### 5.1 What became provable
 
-| Fixture | BEFORE classes / slots | AFTER classes / typeinfo / inheritance / slots | Fabricated slots removed |
+| Fixture | BEFORE classes / vtable slots | AFTER classes / typeinfo / inheritance / slots | Slot entries removed |
 | --- | --- | --- | --- |
-| `game-rtti-o2` | 5 / 40 (8 provably non-method) | 3 / 3 / 2 edges / 12 | 8 |
-| `game-rtti-o0` | 5 / 40 (8) | 3 / 3 / 2 / 12 | 8 |
-| `game-nortti-o2` | 5 / 40 (0) | 3 / 0 / 0 / 12 | 0 (no RTTI to fabricate from) |
+| `game-rtti-o2` | 8 / 64 (12 provably non-method, 3 unresolved) | 5 / 5 / 4 edges / 20 | 44 |
+| `game-rtti-o0` | 8 / 64 (12 provably non-method, 3 unresolved) | 5 / 5 / 4 edges / 20 | 44 |
+| `game-nortti-o2` | 8 / 64 (0 non-method, 6 unresolved) | 5 / 0 / 0 / 19 | 45 |
 
-The BEFORE class count includes the two `__cxxabiv1::*` ABI implementation
-classes, which are not game classes; AFTER excludes them.
+The BEFORE class and table counts include three `__cxxabiv1::*` ABI
+implementation vtables, which are not game classes; AFTER excludes them. The
+AFTER class set is `Entity`, `Actor`, `Player`, `Component` and the
+multiple-inheritance `Enemy`, so the four RTTI edges are `Actor→Entity`,
+`Player→Actor`, `Enemy→Entity` and `Enemy→Component`, the last two carrying the
+`offsetToTop` subobject offsets `0` and `24`.
 
 ### 5.2 Virtual calls made concrete
 
@@ -186,15 +190,17 @@ static type consumes:
 
 | Fixture | Target sets | Single-candidate | Multi-candidate | Resolved targets | Closure claims without call-site authority |
 | --- | --- | --- | --- | --- | --- |
-| `game-rtti-o2` | 12 | 7 | 5 | 19 | 0 |
-| `game-rtti-o0` | 12 | 5 | 7 | 22 | 0 |
-| `game-nortti-o2` | 12 | 12 | 0 | 12 | 0 |
+| `game-rtti-o2` | 20 | 11 | 9 | 32 | 0 |
+| `game-rtti-o0` | 20 | 10 | 10 | 35 | 0 |
+| `game-nortti-o2` | 19 | 19 | 0 | 19 | 0 |
 
 Example: `entityDamage(Entity* e, int amount) { return e->takeDamage(amount); }`
-becomes a call with the receiver's vtable slot 2 mapped to
-`{Entity::takeDamage, Actor::takeDamage, Player::takeDamage}` instead of an
+becomes a call with the receiver's vtable slot 2 mapped to 4 contributing
+implementations across `Entity`, `Actor`, `Enemy` and `Player` — 3 distinct code
+addresses, because `Enemy` inherits `Entity`'s override — instead of an
 unresolved `blr x8`. `playerDamage(Player* p, …)` maps to a single candidate and
-is deliberately **not** promoted to a devirtualised call.
+is deliberately **not** promoted to a devirtualised call: a class derived
+outside the image could still override slot 2.
 
 Every target set in `game-nortti-o2` is `partial` with
 `rtti-absent-derived-classes-unknown` — the honest answer, because derived
@@ -204,26 +210,41 @@ classes cannot be enumerated without RTTI.
 
 Measured on IR built from `llvm-objdump` disassembly of the linked fixtures
 (real instruction stream, repository's own model/IR builders, receiver alias
-tracking through `-O0` stack spills):
+tracking through `-O0` stack spills). `-O0` is the informative fixture because
+the member loads survive codegen:
 
 | Function | Field | Category | Label |
 | --- | --- | --- | --- |
 | `readHealth(Entity*)` | `+0x8`, `+0xc` | `int32` (width only) | `int32_t\|uint32_t` |
 | `readSpeed(Actor*)` | `+0x18` | `float` | `float` |
-| `readTarget(Entity*)` | `+0x10` | `pointer` | `pointer` |
-| `isAlive(Player*)` | `+0x3c` | `int8` | `uint8_t\|char` |
+| `readTarget(Entity*)` | `+0x10` | `int64` (width only) | `int64_t\|uint64_t\|pointer` |
+| `isAlive(Player*)` | `+0x3c` | `int8` (width only) | `uint8_t\|char` |
 | `readNameChar(Player*, int)` | — | (none) | indexed base is a computed `add`, no index in the IR |
 | `Player::takeDamage` | — | — | IR build refused the function (`semantic-ssa-control-flow-mismatch`) |
 
-Totals across the five analysable functions: **7 member fields, 3 typed with a
-proven category (float, pointer, and one more at `-O2`), 4 width-only, 0
-unknown**. `isAlive` returns the byte rather than branching on it, so bool-like
-is *not* claimed — the boundary is a compare or a literal 0/1 store.
+Totals: **7 member fields across the two RTTI fixtures (5 at `-O0`, 2 at `-O2`),
+2 typed with a proven category (both `float` at `+0x18`), 5 width-only, 0
+unknown**. At `-O2` only `readHealth` and `readSpeed` keep a receiver load that
+survives codegen.
+
+The narrow part is deliberate, and two review findings tightened it:
+
+- An 8-byte member that is merely *returned* or *passed as an argument* proves
+  nothing — a `uint64_t` member and a pointer look identical there — so
+  `readTarget` keeps its honest candidate list instead of claiming `pointer`.
+  A pointer claim requires the loaded value to be used as an **address base**.
+- `isAlive` returns the byte rather than branching on it, so bool-like is *not*
+  claimed. The boundary is a `cmp` against literal `0`/`1`, a `cbz`/`cbnz` on a
+  single byte, or a store of literal `0`/`1`; a byte compared against `42` stays
+  `int8`.
 
 ### 5.4 False positive / overclaim checks
 
-- **Fabricated slots:** 8 per RTTI fixture before, 0 after (extent is proven or
-  no slots are reported).
+- **Fabricated slots:** the BEFORE enumeration returned 64 entries across 8
+  symbol-derived tables (three of them ABI implementation classes), and 12 of
+  those entries point at `_ZTI`/`_ZTV`/`_ZTS`, i.e. are provably not methods.
+  AFTER reports 20 slots across 5 real classes and every one resolves to a
+  method symbol — 0 unresolved, 0 non-method entries.
 - **Fabricated class names:** 0. Names come from `_ZTS` or `_ZTV` symbols; the
   `-fno-rtti` fixture reports `rttiPresent: false`, no typeinfo, no
   inheritance edges.
@@ -241,22 +262,27 @@ is *not* claimed — the boundary is a compare or a literal 0/1 store.
 Recorded in `measurement.json` (`performance` / `noEvidenceCost`); 300
 iterations per shape on the three-fixture corpus, 75 for the 50k-symbol table:
 
-| Case | Mean |
-| --- | --- |
-| BEFORE (symbol-only discovery + fixed-cap vtable read) | 0.52 ms/call |
-| AFTER (canonical evidence, bounded extents) | 0.35 ms/call |
-| No C++ evidence, empty symbol table | 0.007 ms/call |
-| No C++ evidence, 50 000 ordinary C symbols | 0.56 ms/call |
+These are the exact `performance` / `noEvidenceCost` values in the artifact:
+
+| Case | Iterations | Mean |
+| --- | --- | --- |
+| BEFORE (symbol-only discovery + fixed-cap vtable read) | 300 | 0.6559 ms/call |
+| AFTER (canonical evidence, bounded extents) | 300 | 0.4892 ms/call |
+| No C++ evidence, empty symbol table | 300 | 0.0074 ms/call |
+| No C++ evidence, 50 000 ordinary C symbols | 75 | 0.5786 ms/call |
 
 Repeat runs move these means, so treat the ratio rather than the absolute
-numbers as the claim: the enabled path measures **0.67x** the path it replaces
-(`meanRatio: 0.67`), i.e. it is never slower. The reason is that it reads each
-table exactly as far as its proven extent (12 slots across 3 tables, and a
-`readBudget` of 8 pooled reads) instead of a fixed cap that over-read the table
-plus a fixed 8 slots per table. The no-evidence path is a single cheap character
-test per symbol plus **zero** memory reads; the first implementation instead
-built the address→aliases map for every symbol and cost **25.4 ms** on the
-50k-symbol table, which this scan avoids.
+numbers as the claim: in the recorded run the enabled path measured **0.75x**
+the path it replaces (`meanRatio: 0.75`). One run cannot establish that the new
+path is *always* faster; the mechanism it relies on (reading each table only to
+its proven extent, and no memory reads at all on a C-only slice) is the durable
+reason, the ratio is a single sample. The reason is that it reads each
+table exactly as far as its proven extent (20 slots across 5 tables, and a
+`readBudget` of 14 pooled reads on the RTTI fixtures) instead of a fixed cap that
+over-read the table plus a fixed 8 slots per table. The no-evidence path is a
+single cheap character test per symbol plus **zero** memory reads; the first
+implementation instead built the address→aliases map for every symbol and cost
+**25.4 ms** on the 50k-symbol table, which this scan avoids.
 
 ## 6. Before / after
 
@@ -266,9 +292,10 @@ built the address→aliases map for every symbol and cost **25.4 ms** on the
 // before — target unknown
 sub_1000A4 = (*(code **)(*(long *)e + 0x10))(e, 0xa);
 
-// after — call-site-scoped target set, from Entity/Actor/Player vtables
+// after — call-site-scoped target set, from Entity/Actor/Enemy/Player vtables
 // receiver class: Entity   slot: 2
-// candidates: Entity::takeDamage | Actor::takeDamage | Player::takeDamage
+// candidates: Entity::takeDamage | Actor::takeDamage | Enemy::takeDamage | Player::takeDamage
+//             (4 contributing classes, 3 distinct addresses)
 // closureProven: false (a class derived outside the image may override slot 2)
 sub_1000A4 = (*(code **)(*(long *)e + 0x10))(e, 0xa);
 ```
@@ -282,11 +309,14 @@ vtable slots: 8 (4 belong to the neighbouring typeinfo record)
 
 // after
 class Entity                                  // nameSource: rtti-zts-symbol
-  typeinfo 0x220608  kind __class_type_info
-  vtable   0x220670  extentBasis symbol-size  4 slots
-  derived: Actor
+  typeinfo 0x220d90  kind __class_type_info
+  vtable   0x220670  extentBasis next-vtable  4 slots
+  derived: Actor, Enemy
 class Actor : public Entity                   // __si_class_type_info
 class Player : public Actor
+class Component                               // __class_type_info
+class Enemy : public Entity, public Component // __vmi_class_type_info
+  subobjects: Entity @ +0, Component @ +24
 ```
 
 **Member type**
@@ -342,10 +372,10 @@ Unsupported on purpose (kept explicit, never guessed):
 | Phase | State |
 | --- | --- |
 | 1 — existing recovery audit + real-binary taxonomy | done (this document, `taxonomy.json`) |
-| 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 16 regressions) |
+| 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 21 regressions) |
 | 3 — call-site-scoped virtual dispatch | done (`virtual-dispatch.js`, 13 regressions) |
-| 4 — field / member type propagation | measured; module implemented and covered (14 regressions); **not** productionised into the decompiler projection because the measured improvement is a category label, not yet a rendered type |
-| 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 16 regressions); worker-side producer lifecycle still open |
+| 4 — field / member type propagation | measured; module implemented and covered (15 regressions); **not** productionised into the decompiler projection because the measured improvement is a category label, not yet a rendered type |
+| 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 17 regressions); worker-side producer lifecycle still open |
 
 Per the brief: a capability whose improvement cannot be measured is not
 productionised. Phase 4's *rendering* (extending `fieldFor` consumers to display
@@ -364,9 +394,9 @@ measurement are the deliverable.
   code change.
 ### Verification run
 
-- `node tests/check.mjs` (syntax lint, 5468 files) — PASS.
+- `node tests/check.mjs` (syntax lint, 5473 files) — PASS.
 - `node tests/module-boundaries.mjs` — PASS.
-- `node tests/phase7/run.mjs --group cxx` — PASS (5/480 discovered files, 59 tests).
+- `node tests/phase7/run.mjs --group cxx` — PASS (5/480 discovered files, 66 tests: 21 rtti-evidence, 13 virtual-dispatch, 15 member-types, 13 projection, 4 analysis-seam).
 - `tests/phase8/cxx-object-decompiler-projection.test.mjs` and
   `tests/phase7/cxx-object-evidence.test.mjs` — PASS (no regression in the
   existing C++ decompiler projection).
@@ -526,9 +556,9 @@ measurement are the deliverable.
   restored the toolchain the checkpoint docs already specify; they relaxed no
   gate requirement.
 
-  The 59 C++ regressions under `tests/phase7/cxx/` do not depend on LLVM 18 and
+  The 66 C++ regressions under `tests/phase7/cxx/` do not depend on LLVM 18 and
   pass against the LLVM 14 tools on the default `PATH`
-  (`node tests/phase7/run.mjs --group cxx` -> 59/59, 5 suites).
+  (`node tests/phase7/run.mjs --group cxx` -> 66/66, 5 suites).
 
 ### Wiring into the analysis entrypoint
 

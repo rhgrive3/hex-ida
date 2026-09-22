@@ -106,6 +106,16 @@ test('a bool-like member is proven from a byte compared against zero', () => {
   assert.equal(field.widthOnly, false);
 });
 
+test('a byte compared against a non-boolean literal is not bool-like', () => {
+  // `cmp`/`b.ne` is the general path: the compared literal must be 0 or 1 for
+  // the byte to read as boolean. 42 is an ordinary small integer.
+  const ir = createIr(['ldrb w1, [x0, #0x3c]', 'cmp w1, #0x2a', 'b.ne #0x100000030', 'ret']);
+  const report = recoverMemberTypeEvidence({ ir, isReceiverBase: allBases });
+  const field = fieldAt(report, 0x3c);
+  assert.equal(field.category, 'int8');
+  assert.notEqual(field.category, 'bool-like');
+});
+
 test('a bool-like member is proven from a store of a literal zero', () => {
   const ir = createIr(['mov w1, #0x0', 'strb w1, [x0, #0x3c]', 'ret']);
   const report = recoverMemberTypeEvidence({ ir, isReceiverBase: allBases });

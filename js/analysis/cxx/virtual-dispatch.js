@@ -112,12 +112,15 @@ export function resolveVirtualTargetSet({
 
   const records = classesOf(classEvidence).filter((record) => record.className === receiverClass);
   if (!records.length) {
-    return deepFreeze({
-      schema: CPP_VIRTUAL_TARGET_SET_SCHEMA,
+    // Same builder as the normal path: a consumer may key on any field
+    // (`candidateAddresses`, `digest`, ...), so an empty answer must not be a
+    // narrower record than a populated one.
+    return buildTargetSet({
       receiverClass,
       slotIndex,
-      scope: 'call-site',
       candidates: [],
+      possibleCandidates: [],
+      derivedClasses: [],
       closureProven: false,
       closureRule: null,
       completeness: 'unknown',
@@ -184,27 +187,58 @@ export function resolveVirtualTargetSet({
   // through one exact class's vtable cannot reach a derived override. Without
   // closure the full possible set is the answer.
   const candidates = closureProven ? exactCandidates : possibleCandidates;
-  const resolvedAddresses = [...new Set(candidates.filter((c) => !c.unresolved).map((c) => c.address))]
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const hasUnresolved = candidates.some((candidate) => candidate.unresolved);
-  const possibleAddresses = [...new Set(possibleCandidates.filter((c) => !c.unresolved).map((c) => c.address))]
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   let completeness = 'complete';
   if (!rttiPresent) { completeness = 'partial'; reason = reason || 'rtti-absent-derived-classes-unknown'; }
   if (hasUnresolved) { completeness = 'partial'; reason = reason || 'slot-target-unresolved'; }
   if (!candidates.length) { completeness = 'unknown'; reason = reason || 'no-slot-evidence'; }
 
+  return buildTargetSet({
+    receiverClass,
+    slotIndex,
+    candidates,
+    possibleCandidates,
+    derivedClasses: derived,
+    closureProven,
+    closureRule,
+    completeness,
+    rttiPresent,
+    reason,
+  });
+}
+
+/**
+ * The single record shape for a call-site target set.
+ *
+ * Address lists are always derived from the candidate lists here rather than
+ * passed in twice, so an empty set and a populated set cannot drift apart.
+ */
+function buildTargetSet({
+  receiverClass,
+  slotIndex,
+  candidates,
+  possibleCandidates,
+  derivedClasses,
+  closureProven,
+  closureRule,
+  completeness,
+  rttiPresent,
+  reason,
+}) {
+  const addresses = (list) => [...new Set(list.filter((candidate) => !candidate.unresolved).map((candidate) => candidate.address))]
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+
   const report = {
     schema: CPP_VIRTUAL_TARGET_SET_SCHEMA,
     receiverClass,
     slotIndex,
     scope: 'call-site',
-    candidates: Object.freeze(candidates),
-    candidateAddresses: Object.freeze(resolvedAddresses),
-    possibleCandidates: Object.freeze(possibleCandidates),
-    possibleAddresses: Object.freeze(possibleAddresses),
-    derivedClasses: Object.freeze(derived),
+    candidates: Object.freeze([...candidates]),
+    candidateAddresses: Object.freeze(addresses(candidates)),
+    possibleCandidates: Object.freeze([...possibleCandidates]),
+    possibleAddresses: Object.freeze(addresses(possibleCandidates)),
+    derivedClasses: Object.freeze([...derivedClasses]),
     closureProven,
     closureRule,
     completeness,
@@ -215,7 +249,7 @@ export function resolveVirtualTargetSet({
     schema: report.schema,
     receiverClass,
     slotIndex,
-    candidates: candidates.map((c) => ({ address: c.address, viaClass: c.viaClass, unresolved: c.unresolved })),
+    candidates: report.candidates.map((c) => ({ address: c.address, viaClass: c.viaClass, unresolved: c.unresolved })),
     closureProven,
     completeness,
   });

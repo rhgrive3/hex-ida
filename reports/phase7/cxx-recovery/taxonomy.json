@@ -14,12 +14,12 @@
     {
       "id": "vtable-discovery",
       "state": "partial",
-      "evidence": "findCxxClasses requires _ZTV/_ZTI/_ZTS symbols. Measured: 5 classes found per fixture, including 2 __cxxabiv1 implementation classes; nothing is discoverable without those symbols."
+      "evidence": "findCxxClasses requires _ZTV/_ZTI/_ZTS symbols. Measured: 8 named classes per fixture, including 3 __cxxabiv1 implementation classes; nothing is discoverable without those symbols."
     },
     {
       "id": "vtable-slot-enumeration",
       "state": "unsafe-to-infer",
-      "evidence": "readVtable with a fixed cap enumerated 40 slots across 3 tables that hold 12; 8 of the enumerated entries resolve to _ZTI/_ZTV/_ZTS symbols, i.e. provably not methods."
+      "evidence": "readVtable with a fixed cap enumerated 64 slots across 8 symbol-derived tables that hold 20; 12 of the enumerated entries resolve to _ZTI/_ZTV/_ZTS symbols, i.e. provably not methods."
     },
     {
       "id": "rtti-discovery",
@@ -34,7 +34,7 @@
     {
       "id": "inheritance-relationship",
       "state": "missing",
-      "evidence": "No __si_class_type_info / __vmi_class_type_info base array was read; AFTER: 2 edges per RTTI fixture, 0 for the -fno-rtti fixture."
+      "evidence": "No __si_class_type_info / __vmi_class_type_info base array was read; AFTER: 4 edges per RTTI fixture (including a __vmi class with two bases at subobject offsets 0 and 24), 0 for the -fno-rtti fixture."
     },
     {
       "id": "base-derived-relationship",
@@ -49,7 +49,7 @@
     {
       "id": "indirect-virtual-call-target-set",
       "state": "missing",
-      "evidence": "No call-site-scoped target set existed. AFTER: 12 target sets per fixture (5-7 multi-candidate on the RTTI fixtures, 0 on the -fno-rtti fixture), 0 closure claims without an explicit call-site authority."
+      "evidence": "No call-site-scoped target set existed. AFTER: 20 target sets on the RTTI fixtures (9-10 multi-candidate) and 19 on the -fno-rtti fixture (0 multi-candidate), with 0 closure claims without an explicit call-site authority."
     },
     {
       "id": "constructor-destructor-evidence",

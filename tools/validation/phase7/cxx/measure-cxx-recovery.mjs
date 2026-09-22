@@ -54,8 +54,19 @@ const MEMBER_FUNCTIONS = Object.freeze({
 function parseArgs(argv) {
   const options = { json: path.join(ROOT, 'reports/phase7/cxx-recovery/measurement.json'), iterations: 300 };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--json') options.json = argv[++i];
-    else if (argv[i] === '--iterations') options.iterations = Number(argv[++i]);
+    if (argv[i] === '--json') {
+      const value = argv[++i];
+      if (typeof value !== 'string' || !value) throw new TypeError('--json requires a path');
+      options.json = value;
+    } else if (argv[i] === '--iterations') {
+      const value = Number(argv[++i]);
+      // A missing, zero, negative or fractional count would produce no timed
+      // samples and serialize NaN metrics as null.
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new TypeError('--iterations must be a positive safe integer');
+      }
+      options.iterations = value;
+    }
   }
   return options;
 }
@@ -159,11 +170,21 @@ async function measureAfter(probe) {
 // ── member type evidence on real compiled functions ────────────────────────
 
 function objdumpPath() {
-  const candidates = [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'objdump'];
+  // LLVM objdump only. GNU objdump rejects an AArch64 fixture outright
+  // (`can't disassemble for architecture UNKNOWN`) unless the host binutils was
+  // built with that target, so accepting it would mean silently measuring
+  // nothing. The version banner is what distinguishes them.
+  //
+  // The selector is `--disassemble-symbols=`. Verified against LLVM 14.0.0 and
+  // LLVM 18.1.3: both reject `--disassemble=<symbol>` with
+  // `error: unknown argument`, so the alias is not a usable substitute here.
+  const candidates = [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'llvm-objdump-18'];
   for (const candidate of candidates) {
     if (!candidate) continue;
     const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
-    if (probe.status === 0) return candidate;
+    if (probe.status !== 0) continue;
+    if (!/LLVM/i.test(probe.stdout || '')) continue;
+    return candidate;
   }
   return null;
 }

@@ -92,7 +92,7 @@ test('real ARM64 RTTI binary: classes, typeinfo kind and inheritance chain', FIX
 
   assert.equal(entity.typeinfoKind, '__class_type_info');
   assert.equal(entity.resolvedBases.length, 0);
-  assert.deepEqual(entity.derivedFrom, ['Actor']);
+  assert.deepEqual(entity.derivedFrom, ['Actor', 'Enemy']);
 
   assert.equal(actor.typeinfoKind, '__si_class_type_info');
   assert.deepEqual(actor.resolvedBases.map((base) => base.className), ['Entity']);
@@ -171,7 +171,7 @@ test('real ARM64 RTTI binary at -O0 recovers the same class graph', FIXTURE_OPTI
   const probe = openCxxFixture(RTTI_O0);
   const report = await evidenceFor(probe);
   assert.equal(report.rttiPresent, true);
-  assert.deepEqual(classNamed(report, 'Entity').derivedFrom, ['Actor']);
+  assert.deepEqual(classNamed(report, 'Entity').derivedFrom, ['Actor', 'Enemy']);
   assert.deepEqual(classNamed(report, 'Actor').resolvedBases.map((base) => base.className), ['Entity']);
   // At -O0 the destructors are distinct functions, so no alias folding.
   const entity = classNamed(report, 'Entity');
@@ -301,4 +301,98 @@ test('the opt-in cache reuses evidence only under an explicit key', FIXTURE_OPTI
 
   cache.clear();
   assert.equal(cache.size(), 0);
+});
+
+// ── multiple inheritance ───────────────────────────────────────────────────
+//
+// `Enemy : public Entity, public Component` makes the ABI pack TWO tables into
+// one `_ZTV` symbol: the primary table followed by the `Component` sub-table,
+// which restarts with its own `[offset-to-top, typeinfo]` header. That header is
+// data. Treating it as slots publishes a negative offset-to-top as an unresolved
+// slot and a typeinfo pointer as a "method target".
+
+test('a secondary sub-table inside one _ZTV never becomes a slot', FIXTURE_OPTIONS, async () => {
+  const report = await evidenceFor(openCxxFixture(RTTI_O0));
+  const enemy = classNamed(report, 'Enemy');
+  assert.ok(enemy, 'the multiple-inheritance class must be discovered');
+  assert.equal(enemy.typeinfoKind, '__vmi_class_type_info');
+  assert.notEqual(enemy.secondarySubTableAt, null,
+    'the sub-table boundary must be located, not silently absorbed');
+
+  // Nothing in the primary run may be a typeinfo or a negative offset, and no
+  // slot may resolve to a `_ZTI`/`_ZTV`/`_ZTS` symbol.
+  for (const slot of enemy.slots) {
+    assert.equal(slot.index < enemy.secondarySubTableAt, true);
+    assert.doesNotMatch(slot.reason ?? '', /negative|sub-table/);
+    for (const alias of slot.aliases) {
+      assert.doesNotMatch(alias, /^_?_ZT[VIS]/, `${alias} is data, not a method`);
+    }
+  }
+  assert.equal(enemy.slots.every((slot) => !slot.unresolved), true,
+    'a data word must not be reported as an unresolved slot');
+});
+
+test('the sub-table boundary is found without RTTI symbols too', FIXTURE_OPTIONS, async () => {
+  const report = await evidenceFor(openCxxFixture(NO_RTTI));
+  assert.equal(report.rttiPresent, false);
+  const enemy = classNamed(report, 'Enemy');
+  assert.ok(enemy);
+  assert.notEqual(enemy.secondarySubTableAt, null,
+    '`-fno-rtti` still emits the header, so the boundary is still detectable');
+  assert.equal(enemy.slots.every((slot) => !slot.unresolved), true);
+
+  // Without the boundary the same symbol reported 5 extra fabricated words.
+  const rttiSlots = classNamed(await evidenceFor(openCxxFixture(RTTI_O0)), 'Enemy').slotCount;
+  assert.equal(Math.abs(enemy.slotCount - rttiSlots) <= 1, true,
+    'RTTI and -fno-rtti must agree on how many real slots the class has');
+});
+
+test('a class with two bases recovers both, including the subobject offset', FIXTURE_OPTIONS, async () => {
+  const report = await evidenceFor(openCxxFixture(RTTI_O0));
+  const enemy = classNamed(report, 'Enemy');
+  assert.equal(enemy.baseEvidence, 'vmi-base-array');
+  assert.deepEqual(enemy.bases.map((base) => base.className), ['Entity', 'Component']);
+
+  const [primary, secondary] = enemy.bases;
+  assert.equal(primary.offsetToTop, 0n);
+  assert.equal(primary.isPublic, true);
+  assert.equal(primary.isVirtual, false);
+  assert.notEqual(secondary.offsetToTop, 0n,
+    'the secondary base lives at a non-zero subobject offset');
+  assert.equal(secondary.isPublic, true);
+  assert.equal(secondary.isVirtual, false);
+
+  // The reverse edges must agree: a base knows its derived classes.
+  assert.deepEqual(classNamed(report, 'Entity').derivedFrom, ['Actor', 'Enemy']);
+  assert.deepEqual(classNamed(report, 'Component').derivedFrom, ['Enemy']);
+});
+
+test('every published typeinfo kind is a full ABI name', FIXTURE_OPTIONS, async () => {
+  const report = await evidenceFor(openCxxFixture(RTTI_O0));
+  for (const record of report.classes) {
+    if (record.typeinfoKind == null) continue;
+    assert.match(record.typeinfoKind, /^__(?:class|si_class|vmi_class)_type_info$/,
+      `${record.typeinfoKind} must be a complete ABI kind, never a sliced fragment`);
+    assert.doesNotMatch(record.typeinfoKind, /cxxabiv1/);
+  }
+});
+
+test('a typeinfo whose vptr is not an ABI vtable publishes kind null', async () => {
+  // The `kind` is a slice of the demangled ABI vtable name. When the vptr
+  // resolves to an ordinary class vtable instead, slicing at the namespace
+  // prefix length would publish a truncated fragment as the ABI kind.
+  const typeinfoAddress = 0x2000n;
+  const plainVptr = 0x3000n;
+  const words = [plainVptr, 0n, 0n, 0n].flatMap((word) => [...new Uint8Array(new BigUint64Array([word]).buffer)]);
+  const memory = new Map([[typeinfoAddress.toString(), Uint8Array.from(words)]]);
+  const symbols = { nameAt: (address) => (address === plainVptr ? '_ZTV3Foo' : null) };
+  const parsed = await parseItaniumTypeInfo({
+    read: (address) => memory.get(address.toString()) ?? null,
+    symbols,
+    typeinfoAddress,
+    pointerBytes: 8,
+  });
+  assert.equal(parsed.abiVtable, 'Foo', 'the raw demangled name is still reported');
+  assert.equal(parsed.kind, null, 'a non-ABI vtable must not yield a kind');
+  assert.equal(parsed.baseEvidence, 'abi-kind-unresolved');
 });

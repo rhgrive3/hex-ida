@@ -1,20 +1,20 @@
 {
   "schema": "cxx-recovery-measurement/v1",
-  "generatedAt": "2026-09-22T14:07:33.490Z",
+  "generatedAt": "2026-09-22T16:28:38.221Z",
   "toolchain": {
     "objdump": "llvm-objdump",
     "node": "v24.20.0"
   },
   "fixtures": {
     "game-rtti-o2": {
-      "bytes": 5792,
+      "bytes": 7616,
       "before": {
-        "classesWithName": 5,
-        "abiImplementationClasses": 2,
-        "vtablesRead": 5,
-        "slotsEnumerated": 40,
-        "slotsPointingAtTypeinfoOrVtable": 8,
-        "slotsUnresolved": 2,
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
+        "slotsPointingAtTypeinfoOrVtable": 12,
+        "slotsUnresolved": 3,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
         "virtualTargetSets": 0,
@@ -22,19 +22,19 @@
       },
       "after": {
         "rttiPresent": true,
-        "classesWithName": 3,
+        "classesWithName": 5,
         "classesNamedFromVtableSymbolOnly": 0,
-        "typeinfoParsed": 3,
-        "inheritanceEdges": 2,
-        "vtables": 3,
-        "slots": 12,
-        "slotsWithMergedAliases": 3,
+        "typeinfoParsed": 5,
+        "inheritanceEdges": 4,
+        "vtables": 5,
+        "slots": 20,
+        "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 12,
-        "singleTargetSets": 7,
-        "multiTargetSets": 5,
-        "totalResolvedTargets": 19,
-        "readBudget": 8
+        "virtualTargetSets": 20,
+        "singleTargetSets": 11,
+        "multiTargetSets": 9,
+        "totalResolvedTargets": 32,
+        "readBudget": 14
       },
       "memberTypes": {
         "functions": [
@@ -78,14 +78,14 @@
       }
     },
     "game-rtti-o0": {
-      "bytes": 6832,
+      "bytes": 9200,
       "before": {
-        "classesWithName": 5,
-        "abiImplementationClasses": 2,
-        "vtablesRead": 5,
-        "slotsEnumerated": 40,
-        "slotsPointingAtTypeinfoOrVtable": 8,
-        "slotsUnresolved": 2,
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
+        "slotsPointingAtTypeinfoOrVtable": 12,
+        "slotsUnresolved": 3,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
         "virtualTargetSets": 0,
@@ -93,19 +93,19 @@
       },
       "after": {
         "rttiPresent": true,
-        "classesWithName": 3,
+        "classesWithName": 5,
         "classesNamedFromVtableSymbolOnly": 0,
-        "typeinfoParsed": 3,
-        "inheritanceEdges": 2,
-        "vtables": 3,
-        "slots": 12,
-        "slotsWithMergedAliases": 3,
+        "typeinfoParsed": 5,
+        "inheritanceEdges": 4,
+        "vtables": 5,
+        "slots": 20,
+        "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 12,
-        "singleTargetSets": 5,
-        "multiTargetSets": 7,
-        "totalResolvedTargets": 22,
-        "readBudget": 8
+        "virtualTargetSets": 20,
+        "singleTargetSets": 10,
+        "multiTargetSets": 10,
+        "totalResolvedTargets": 35,
+        "readBudget": 14
       },
       "memberTypes": {
         "functions": [
@@ -156,15 +156,15 @@
             "symbol": "_Z10readTargetP6Entity",
             "status": "ok",
             "fields": 1,
-            "typed": 1,
-            "widthOnly": 0,
+            "typed": 0,
+            "widthOnly": 1,
             "details": [
               {
                 "offset": "0x10",
                 "size": 8,
-                "type": "pointer",
-                "category": "pointer",
-                "rule": "loaded-value-used-as-address-or-argument"
+                "type": "int64_t|uint64_t|pointer",
+                "category": "int64",
+                "rule": "doubleword-access"
               }
             ]
           },
@@ -194,20 +194,20 @@
           }
         ],
         "fields": 5,
-        "typedFieldCount": 2,
-        "widthOnlyFieldCount": 3,
+        "typedFieldCount": 1,
+        "widthOnlyFieldCount": 4,
         "unknownFieldCount": 0
       }
     },
     "game-nortti-o2": {
-      "bytes": 5064,
+      "bytes": 6456,
       "before": {
-        "classesWithName": 5,
-        "abiImplementationClasses": 2,
-        "vtablesRead": 5,
-        "slotsEnumerated": 40,
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
         "slotsPointingAtTypeinfoOrVtable": 0,
-        "slotsUnresolved": 5,
+        "slotsUnresolved": 6,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
         "virtualTargetSets": 0,
@@ -215,19 +215,19 @@
       },
       "after": {
         "rttiPresent": false,
-        "classesWithName": 3,
-        "classesNamedFromVtableSymbolOnly": 3,
+        "classesWithName": 5,
+        "classesNamedFromVtableSymbolOnly": 5,
         "typeinfoParsed": 0,
         "inheritanceEdges": 0,
-        "vtables": 3,
-        "slots": 12,
-        "slotsWithMergedAliases": 3,
+        "vtables": 5,
+        "slots": 19,
+        "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 12,
-        "singleTargetSets": 12,
+        "virtualTargetSets": 19,
+        "singleTargetSets": 19,
         "multiTargetSets": 0,
-        "totalResolvedTargets": 12,
-        "readBudget": 3
+        "totalResolvedTargets": 19,
+        "readBudget": 5
       },
       "memberTypes": {
         "functions": [],
@@ -241,22 +241,22 @@
   "performance": {
     "baselineSymbolOnly": {
       "iterations": 300,
-      "totalMs": 170.976,
-      "meanMs": 0.5699
+      "totalMs": 196.764,
+      "meanMs": 0.6559
     },
     "cxxRecoveryEnabled": {
       "iterations": 300,
-      "totalMs": 106.027,
-      "meanMs": 0.3534
+      "totalMs": 146.771,
+      "meanMs": 0.4892
     },
-    "meanRatio": 0.62
+    "meanRatio": 0.75
   },
   "noEvidenceCost": {
     "emptyTable": {
       "latency": {
         "iterations": 300,
-        "totalMs": 2.146,
-        "meanMs": 0.0072
+        "totalMs": 2.234,
+        "meanMs": 0.0074
       },
       "classesFound": 0,
       "reads": 0
@@ -265,8 +265,8 @@
       "symbolCount": 50000,
       "latency": {
         "iterations": 75,
-        "totalMs": 45.869,
-        "meanMs": 0.6116
+        "totalMs": 43.394,
+        "meanMs": 0.5786
       },
       "reads": 0
     }

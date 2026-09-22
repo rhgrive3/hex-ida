@@ -18,6 +18,14 @@ struct __si_class_type_info : __class_type_info {
 };
 __si_class_type_info::~__si_class_type_info() {}
 
+// A class with two bases uses the general form, whose record carries a base
+// array. Without this declaration the compiler cannot emit the `_ZTI` for the
+// multiple-inheritance fixture class below.
+struct __vmi_class_type_info : __class_type_info {
+  virtual ~__vmi_class_type_info();
+};
+__vmi_class_type_info::~__vmi_class_type_info() {}
+
 }  // namespace __cxxabiv1
 
 void operator delete(void*) noexcept {}

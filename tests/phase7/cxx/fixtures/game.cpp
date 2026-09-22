@@ -65,6 +65,37 @@ int Player::takeDamage(int amount) {
   return health;
 }
 
+// A second polymorphic base. `Enemy` therefore has two subobjects, and the
+// Itanium ABI packs both into ONE `_ZTV` symbol: the primary table followed by
+// the `Component` sub-table, which restarts with its own
+// `[offset-to-top, typeinfo]` header. That header is data, not a method, and the
+// producer must never publish it as a slot.
+class Component {
+public:
+  Component();
+  virtual ~Component();
+  virtual void tick();
+
+  int uid;         // +0x08 within the Component subobject
+};
+
+class Enemy : public Entity, public Component {
+public:
+  Enemy();
+  ~Enemy() override;
+  void tick() override;
+
+  int aggro;       // +0x28
+};
+
+Component::Component() : uid(0) {}
+Component::~Component() {}
+void Component::tick() { uid += 1; }
+
+Enemy::Enemy() : Entity(), Component(), aggro(0) {}
+Enemy::~Enemy() {}
+void Enemy::tick() { uid += 2; }
+
 // Indirect (virtual) dispatch through a parameter whose dynamic type is not
 // statically exact, so the call site really goes through the vtable.
 int entityDamage(Entity* e, int amount) { return e->takeDamage(amount); }
@@ -85,6 +116,7 @@ __attribute__((noinline)) int damageOwnedActor(Actor* a) { return a->takeDamage(
 
 static Player g_player;
 static Actor g_actor;
+static Enemy g_enemy;
 
 extern "C" int _start() {
   int result = 0;
@@ -97,5 +129,9 @@ extern "C" int _start() {
   result += isAlive(&g_player) ? 1 : 0;
   result += readNameChar(&g_player, 0);
   entityUpdate(&g_player, 0.5f);
+  // Touches the multiple-inheritance class so both its sub-tables are emitted.
+  g_enemy.tick();
+  Component* component = &g_enemy;
+  component->tick();
   return result;
 }

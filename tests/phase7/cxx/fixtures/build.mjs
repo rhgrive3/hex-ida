@@ -17,9 +17,12 @@ const TARGET = 'aarch64-unknown-linux-gnu';
 
 // Built binaries are never written into the repository. A build output inside
 // the tree would need a `.gitignore` entry, and `.gitignore` is outside this
-// lane's ownership, so the fixtures are rebuilt into the OS temp directory on
-// every run instead.
-export const CXX_FIXTURE_OUT_DIR = path.join(os.tmpdir(), 'hex-cxx-fixtures');
+// lane's ownership, so the fixtures are built into the OS temp directory.
+//
+// The directory is per-process because the test runner executes test files in
+// parallel processes, and two processes linking into the same path can observe
+// each other's partial output.
+export const CXX_FIXTURE_OUT_DIR = path.join(os.tmpdir(), `hex-cxx-fixtures-${process.pid}`);
 
 // name -> { optimize, rtti }
 export const CXX_FIXTURES = Object.freeze({
@@ -50,8 +53,22 @@ export function cxxToolchainAvailable() {
 
 /**
  * Builds every fixture into `outDir`. Returns a map of name -> { bytes, path }.
+ *
+ * The result is memoized per output directory: the fixture is a deterministic
+ * compile of committed source, and rebuilding it for every test in a file was
+ * both slow and the reason parallel processes could collide.
  */
+const BUILDS = new Map();
+
 export function buildCxxFixtures({ outDir = CXX_FIXTURE_OUT_DIR } = {}) {
+  const cached = BUILDS.get(outDir);
+  if (cached) return cached;
+  const built = buildCxxFixturesUncached({ outDir });
+  BUILDS.set(outDir, built);
+  return built;
+}
+
+function buildCxxFixturesUncached({ outDir }) {
   const toolchain = cxxToolchainAvailable();
   if (!toolchain.available) return { available: false, reason: toolchain.reason, artifacts: {} };
 

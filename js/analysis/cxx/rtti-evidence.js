@@ -226,7 +226,11 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
   const record = {
     address,
     readable: true,
-    kind: abiVtable ? abiVtable.slice(ABI_NAMESPACE_PREFIX.length) : null,
+    // Only a real `__cxxabiv1::*_type_info` vptr carries an ABI kind. Slicing a
+    // plain class name would publish a truncated fragment as `typeinfoKind`.
+    kind: abiVtable && abiVtable.startsWith(ABI_NAMESPACE_PREFIX)
+      ? abiVtable.slice(ABI_NAMESPACE_PREFIX.length)
+      : null,
     abiVtable,
     className: normalizeName(className),
     nameSource,
@@ -235,7 +239,10 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     baseEvidence: 'none',
   };
 
-  if (!abiVtable) {
+  // The vptr must resolve to a recognised `__cxxabiv1::*_type_info` vtable. A
+  // plain class vtable (or an unreadable one) leaves no base-array layout to
+  // follow, so no base may be claimed from it.
+  if (!record.kind) {
     record.baseEvidence = 'abi-kind-unresolved';
     return record;
   }
@@ -265,15 +272,26 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     return record;
   }
 
-  // __vmi_class_type_info: [vptr, name, flags, base_count, {typeinfo, offset_flags}...]
-  const head = await read(address, pointerBytes * 4);
-  const headWords = head ? readWords(head, pointerBytes) : [];
-  const baseCount = headWords.length >= 4 ? Number(headWords[3]) : 0;
+  // __vmi_class_type_info: [vptr, name, flags(u32), base_count(u32), {typeinfo, offset_flags}...]
+  //
+  // `flags` and `base_count` are 4-byte `unsigned int`s in the ABI, not
+  // pointer-sized words. Reading them at pointer granularity (as an earlier
+  // revision did) hides the real count inside the high half of one word, so a
+  // multiple-inheritance class reported no bases at all.
+  const metaOffset = BigInt(pointerBytes * 2);
+  const meta = await read(address + metaOffset, 8);
+  if (!meta || meta.length < 8) {
+    record.baseEvidence = 'vmi-header-unreadable';
+    return record;
+  }
+  const metaView = new DataView(meta.buffer, meta.byteOffset, meta.byteLength);
+  record.vmiFlags = metaView.getUint32(0, true);
+  const baseCount = metaView.getUint32(4, true);
   if (!Number.isSafeInteger(baseCount) || baseCount <= 0 || baseCount > 8) {
     record.baseEvidence = baseCount > 8 ? 'vmi-base-count-too-large' : 'vmi-base-count-unavailable';
     return record;
   }
-  const pairs = await read(address + BigInt(pointerBytes * 4), pointerBytes * 2 * baseCount);
+  const pairs = await read(address + metaOffset + 8n, pointerBytes * 2 * baseCount);
   const pairWords = pairs ? readWords(pairs, pointerBytes) : [];
   for (let index = 0; index < baseCount; index++) {
     const baseTypeinfo = pairWords[index * 2];
@@ -412,11 +430,38 @@ export async function buildCxxClassEvidence({
     const typeinfoAddress = words[1];
     const limit = pointerBytes === 4 ? 0xffffffffn : 0x0000ffffffffffffn;
 
+    // One `_ZTV` symbol covers the primary table **and** one sub-table per
+    // secondary base: `[offset, typeinfo, slots...][offset2, typeinfo2, slots...]`.
+    // A sub-table restarts with its own header, so the header words must end the
+    // primary slot run. Without this the secondary header is reported as slots:
+    // a negative offset-to-top as an unresolved slot, and the typeinfo pointer -
+    // a data address - as a "method target".
+    //
+    // Two signals, because RTTI may be stripped:
+    //   RTTI present - the word resolves to a `_ZTI` symbol.
+    //   RTTI absent  - the word is a negative offset-to-top immediately followed
+    //                  by the null typeinfo slot `-fno-rtti` emits.
+    // Both are conservative: a wrong positive only stops enumeration earlier,
+    // which under-reports. It can never invent a slot.
+    const signedLimit = 1n << BigInt(pointerBytes * 8 - 1);
     const slots = [];
+    let secondarySubTableAt = null;
     for (let index = 0; index < extent.slotCount; index++) {
       const word = words[index + 2];
       if (word == null) break;
       const resolvable = word !== 0n && word <= limit;
+      const aliases = resolvable ? (byAddress.get(word.toString()) || []) : [];
+      const hasRoomForSubTable = index > 0 && index + 1 < extent.slotCount;
+      const typeinfoSignal = aliases.some((name) => TYPEINFO_NAME.test(name));
+      const strippedHeaderSignal = word >= signedLimit
+        && words[index + 3] === 0n
+        && index + 2 < extent.slotCount;
+      if (hasRoomForSubTable && (typeinfoSignal || strippedHeaderSignal)) {
+        // `index - 1` held this sub-table's offset-to-top, which is data.
+        slots.pop();
+        secondarySubTableAt = index - 1;
+        break;
+      }
       slots.push(Object.freeze({
         index,
         offset: (index + 2) * pointerBytes,
@@ -424,7 +469,7 @@ export async function buildCxxClassEvidence({
         raw: word,
         unresolved: !resolvable,
         reason: resolvable ? null : 'encoded-pointer-without-fixup-context',
-        aliases: Object.freeze([...(resolvable ? (byAddress.get(word.toString()) || []) : [])]),
+        aliases: Object.freeze([...aliases]),
       }));
     }
 
@@ -473,6 +518,10 @@ export async function buildCxxClassEvidence({
       extentBasis: extent.extentBasis,
       extentBoundedBySection: Boolean(extent.extentBoundedBySection),
       extentCappedByLimit: Boolean(extent.cappedByLimit),
+      // Index of the word that starts a secondary sub-table's header, when the
+      // symbol covers more than the primary table. Reported so a consumer can
+      // tell "this class has one vtable" from "this symbol holds several".
+      secondarySubTableAt,
     });
   }
 
