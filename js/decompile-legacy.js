@@ -1559,7 +1559,12 @@ function statementFor(insn, ctx, node) {
   if (fromValues !== undefined) return fromValues;
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
     const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
-    return mk(ret ? 'return ' + varOf('x0', ctx) + ';' : 'return;', { kind: 'ctrl' });
+    let value = null;
+    if (ret && ctx.values && ctx.material) {
+      const returned = (ctx.values.returns || []).find((item) => item.row === row);
+      if (returned?.value) value = exprText(ctx, returned.value, null);
+    }
+    return mk(ret ? 'return ' + (value || varOf('x0', ctx)) + ';' : 'return;', { kind: 'ctrl' });
   }
 
   /* 呼び出し */
