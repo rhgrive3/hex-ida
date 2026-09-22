@@ -94,9 +94,13 @@
     "oracleCeiling": "Even a forced oracle challenger leaves the final top-1 unchanged: the five candidates are all DynamicStat<int>::mCurrent and tie at p=0.9822 in the deterministic fusion, so ordering wins.",
     "staminaCase": "The deterministic top is already ActorStats.fatigue.current (offset 48) and the labelled truth is ranked 1, so it sits outside the D4..D8 boundary set the referee is given. Live choice and live parallel noul both answer c1 (ActorStats.health.current), the gated probe therefore swaps rank 4 for rank 5, and the final top-1 stays the labelled truth: an admitted-but-wrong challenger did not move an already-correct result.",
     "probeWindows": "A probe may open up to VERIFY_FUNCTIONS = 3 distinct windows and stops at the first one that reconfirms the write. On both live cases it reconfirmed on the first window (1 analyze call).",
+    "rankedShapeScores": [0.19375, 0.17708333333333331, 0.17708333333333331, 0.17708333333333331, 0.16145833333333334],
+    "rankedShapeScoresNote": "Ranks 1..5 measured from the instrumentation trace. Only rank 1 (0.19375) is separated; ranks 2..4 tie at 0.1771 and rank 5 trails at 0.1615, which is the 0.015625 D4/D5 gap the ambiguity policy fires on.",
+    "labelSelfCheck": "The harness does not trust these labels: it derives reachability from the labelled rank, requires candidateCount to match, and requires the oracle probe to target `d<expectedDeterministicRank>`. A manifest claim that disagrees with the measurement is reported as a label failure and blocks promotion.",
     "upstreamLatencyMs": {
-      "choice": { "p50": 451.4, "p95": 630.1 },
-      "noul": { "p50": 458.7, "p95": 761.3 }
+      "choice": { "p50": 459.1, "p95": 583.4 },
+      "noul": { "p50": 615.3, "p95": 700.9 },
+      "note": "One live run of each case; treat as a sample, not a latency bound. Worker timeout remains 2500 ms."
     },
     "boundaryRescue": 0,
     "promotionEligible": false

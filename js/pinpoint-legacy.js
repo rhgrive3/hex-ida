@@ -1093,6 +1093,9 @@ function makeSemanticBoundaryTrace(candidates, eligibility) {
     d4Score: eligibility?.metrics?.d4Score ?? shapeScoreForTrace(candidates[3]),
     d5Score: eligibility?.metrics?.d5Score ?? shapeScoreForTrace(candidates[4]),
     gap: eligibility?.metrics?.gap ?? null,
+    // Shape score per rank.  Internal-only instrumentation: it lets a labelled
+    // holdout check its own rank claims instead of trusting the manifest.
+    rankedShapeScores: candidates.slice(0, 8).map(shapeScoreForTrace),
     eligibility: eligibility?.eligible === true ? 'eligible' : (eligibility?.reason || null),
     mode: null,
     referee: { called: false, status: 'not-requested', method: null, model: null, challengerId: null, margin: null },
@@ -1287,6 +1290,7 @@ function emitSemanticBoundaryInstrumentation(o, trace, output, list, candidateId
     d4Score: trace.d4Score,
     d5Score: trace.d5Score,
     gap: trace.gap,
+    rankedShapeScores: Array.isArray(trace.rankedShapeScores) ? trace.rankedShapeScores.slice() : [],
     eligibility: trace.eligibility,
     mode: trace.mode,
     referee: { ...trace.referee },

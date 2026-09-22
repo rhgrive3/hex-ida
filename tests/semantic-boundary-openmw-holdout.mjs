@@ -149,6 +149,7 @@ async function runVariant(caseDef, name, options = {}) {
     d4Score: trace?.d4Score ?? null,
     d5Score: trace?.d5Score ?? null,
     d4D5Gap: trace?.gap ?? null,
+    rankedShapeScores: trace?.rankedShapeScores ?? null,
     truthHitAtBoundary: Array.isArray(trace?.verificationTargets) && trace.verificationTargets.includes(truthId) ? 1 : 0,
     boundaryRescue: topOffset != null && topOffset === truthOffset ? 1 : 0,
     finalTopOffset: topOffset == null ? null : topOffset.toString(),
@@ -177,19 +178,41 @@ async function evaluateCase(caseDef) {
     variants.push(await runVariant(caseDef, 'gated-one-probe', { mode: 'probe', referee: liveReferee('choice') }));
   }
   const gated = variants.find((variant) => variant.name === 'gated-one-probe') || null;
+  const rank = Number(caseDef.expectedDeterministicRank);
+  // The boundary set is ranks 4..N, so only a truth ranked 4 or later can be
+  // reached by the referee at all.  This is derived, not trusted: a manifest
+  // claim that contradicts the rank is reported as a label failure below.
+  const truthReachableByRank = Number.isFinite(rank) && rank >= 4;
+  const rankedShapeScores = current.rankedShapeScores;
+  const labelChecks = {
+    candidateCountMatches: Array.isArray(rankedShapeScores) && rankedShapeScores.length === caseDef.expectedCandidateCount,
+    rankWithinCandidates: Array.isArray(rankedShapeScores) && rank >= 1 && rank <= rankedShapeScores.length,
+    reachabilityClaimMatchesRank: (caseDef.boundaryTruthReachable === true) === truthReachableByRank,
+    deterministicTopClaimMatchesMeasurement: (caseDef.deterministicTopIsTruth === true)
+      === (current.finalTopOffset === String(caseDef.offset)),
+    deterministicTopReproduced: current.finalTopOffset === String(caseDef.deterministicTopOffset),
+    // When the oracle runs it names the boundary id it forced; that id must be
+    // the rank the manifest labelled, which proves the rank label is real.
+    oracleProbeTargetsLabelledRank: oracle ? oracle.probe?.candidateId === `d${rank}` : true,
+  };
+  const labelsConsistent = Object.values(labelChecks).every(Boolean);
   // A case is promotional only when the deterministic baseline misses the
   // truth and the gated probe rescues it. When the truth is not reachable from
   // the boundary set, the case reports that limitation instead of a rescue.
-  const promotionEligible = Boolean(gated && current.boundaryRescue === 0 && gated.boundaryRescue === 1);
+  const promotionEligible = Boolean(
+    labelsConsistent && truthReachableByRank
+    && gated && current.boundaryRescue === 0 && gated.boundaryRescue === 1,
+  );
   return {
     goal: caseDef.goal,
     field: caseDef.field,
     truthOffset: String(caseDef.offset),
     expectedDeterministicRank: caseDef.expectedDeterministicRank,
     boundaryTruthReachable: caseDef.boundaryTruthReachable === true,
-    // The fixture must reproduce the labelled deterministic top; otherwise the
-    // labels are stale and the case is not usable as evidence.
-    fixtureReproduced: current.finalTopOffset === String(caseDef.deterministicTopOffset),
+    truthReachableByRank,
+    rankedShapeScores,
+    labelChecks,
+    labelsConsistent,
     oracleCeilingRescues: oracle ? oracle.boundaryRescue === 1 : null,
     promotionEligible,
     variants,
@@ -205,11 +228,15 @@ const report = {
   artifact: { path: artifact, bytes: fs.statSync(artifact).size },
   live,
   // Promotion needs a case that both misses deterministically and is rescued by
-  // the gated probe. A single labelled case is not enough to enable it.
+  // the gated probe, and every case's manifest labels must agree with the
+  // measurement. A single labelled case is not enough to enable it.
+  labelsConsistent: cases.every((entry) => entry.labelsConsistent),
   promotionEligible: cases.some((entry) => entry.promotionEligible),
-  promotionBlocker: cases.some((entry) => entry.promotionEligible)
-    ? null
-    : 'No labelled OpenMW case shows a boundary rescue by the gated probe, so production stays gated.',
+  promotionBlocker: !cases.every((entry) => entry.labelsConsistent)
+    ? 'At least one labelled OpenMW case disagrees with the measured fixture, so no case can be used as evidence.'
+    : (cases.some((entry) => entry.promotionEligible)
+      ? null
+      : 'No labelled OpenMW case shows a boundary rescue by the gated probe, so production stays gated.'),
   upstreamLatencyMs: {
     choice: { p50: percentile(upstreamLatency.choice, 0.5), p95: percentile(upstreamLatency.choice, 0.95) },
     noul: { p50: percentile(upstreamLatency.noul, 0.5), p95: percentile(upstreamLatency.noul, 0.95) },
