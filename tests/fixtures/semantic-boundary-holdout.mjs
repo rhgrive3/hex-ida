@@ -173,7 +173,7 @@ export async function runSyntheticBoundaryCase(options = {}) {
     return unrelatedModel(start);
   };
   const pinpointOptions = {
-    goal: goalFromPreset('hp'),
+    goal: goalFromPreset(options.goalId || 'hp'),
     ranked: [],
     shapes: fixture.shapes,
     program: { functionRange: (addr) => ({ start: addr, end: addr + 0x20n }) },

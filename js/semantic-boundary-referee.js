@@ -193,7 +193,16 @@ export function semanticBoundaryEligibility({
   const metrics = deterministicBoundaryMetrics(candidates);
   if (interactive !== true) return { eligible: false, reason: 'not-interactive', metrics };
   if (typeof analyze !== 'function') return { eligible: false, reason: 'no-analyze', metrics };
-  if (!semanticBoundaryGoal(goal)) return { eligible: false, reason: 'unsupported-goal', metrics };
+  const safeGoal = semanticBoundaryGoal(goal);
+  if (!safeGoal) return { eligible: false, reason: 'unsupported-goal', metrics };
+  /*
+   * A goal without calibrated guidance is never asked.  The question would be
+   * ill-posed — measured on the OpenMW fixture, `level` and `item` expose the
+   * same candidate list as `hp` — so only a goal whose wording was justified by
+   * a labelled holdout may spend a request.  Adding a holdout case is therefore
+   * also what makes a goal eligible.
+   */
+  if (!semanticBoundaryGoalGuidance(safeGoal.id)) return { eligible: false, reason: 'uncalibrated-goal', metrics };
   if (!Array.isArray(candidates) || candidates.length < SEMANTIC_BOUNDARY_MIN_CANDIDATES
     || candidates.length > SEMANTIC_BOUNDARY_MAX_CANDIDATES) {
     return { eligible: false, reason: 'candidate-count', metrics };
