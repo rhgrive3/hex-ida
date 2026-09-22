@@ -7,6 +7,9 @@
       "YWP"
     ],
     "queryFixture": "tests/fixtures/pinpoint-confidence-queries.json",
+    "fieldRows": 426,
+    "dsdaHoldoutRows": 1,
+    "totalRows": 427,
     "fieldQueries": 426,
     "byBinaryMode": {
       "battlecats": {

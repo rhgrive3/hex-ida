@@ -230,6 +230,9 @@ const summary = {
   dataset: {
     binaries: ['battlecats', 'TsumTsum', 'YWP'],
     queryFixture: 'tests/fixtures/pinpoint-confidence-queries.json',
+    fieldRows: field.length,
+    dsdaHoldoutRows: dsdaRows.length,
+    totalRows: rows.length,
     fieldQueries: field.length,
     byBinaryMode: {
       battlecats: { exact: byId('battlecats').filter((r) => r.mode === 'exact').length, partial: byId('battlecats').filter((r) => r.mode === 'partial').length },

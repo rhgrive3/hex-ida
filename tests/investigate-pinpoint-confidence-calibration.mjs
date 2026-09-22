@@ -95,6 +95,17 @@ test('offline replay audit: stored verdicts recompute exactly', () => {
   }
 });
 
+test('denominator contract: fieldRows=426, dsdaHoldoutRows=1, totalRows=427 (fail-closed, same as focused validator)', () => {
+  eq(field.length, 426, 'field rows');
+  eq(dsda.length, 1, 'DSDA holdout rows');
+  eq(rows.length, 427, 'total rows');
+  eq(summary.dataset.fieldRows, 426, 'summary.dataset.fieldRows');
+  eq(summary.dataset.dsdaHoldoutRows, 1, 'summary.dataset.dsdaHoldoutRows');
+  eq(summary.dataset.totalRows, 427, 'summary.dataset.totalRows');
+  eq(summary.dataset.fieldQueries, 426, 'summary.dataset.fieldQueries');
+  eq(summary.dataset.dsdaHoldout, 'included-separately', 'summary.dataset.dsdaHoldout');
+});
+
 test('summary arithmetic is internally consistent', () => {
   const c = summary.contingency;
   eq(c.OLD.falseStrong, c.OLD.wrongConfirmed + c.OLD.wrongLikely, 'OLD falseStrong');
