@@ -279,6 +279,11 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
         fsImpl.chmodSync(actualDst, 0o755);
         return true;
       }
+      if (!executable && dst.endsWith('.json') && existing.isFile() && !existing.isSymbolicLink()
+          && (existing.mode & 0o777) !== 0o600) {
+        fsImpl.chmodSync(actualDst, 0o600);
+        return true;
+      }
       return false;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -307,9 +312,7 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
       throw error;
     }
     if (executable) fsImpl.chmodSync(actualDst, 0o755);
-    else if (dst.endsWith('.json')) {
-      try { fsImpl.chmodSync(actualDst, 0o600); } catch {}
-    }
+    else if (dst.endsWith('.json')) fsImpl.chmodSync(actualDst, 0o600);
     return true;
   } finally {
     try { stableSource?.close(); } catch {}
