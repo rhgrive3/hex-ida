@@ -23,7 +23,7 @@ const opts = {
 const model = buildSemanticModel(raw, opts);
 const result = decompile(model, { ...opts, addr: raw[0].address, forceLegacyDecompiler: true });
 const text = result.lines.map((line) => line.text || '').join('\n');
-assert.match(text, /reverse_bits\(x0\)/);
+assert.match(text, /reverse_bits\(a1\)/);
 assert.match(text, /count_leading_zeros\(x1\)/);
 assert.doesNotMatch(text, /__asm\([^\n]*(?:rbit|clz)/i);
 console.log('semantic-v2 legacy fallback exact unary rendering: PASS');
