@@ -174,7 +174,7 @@ producer plus resolver plus member types.
 | --- | --- | --- | --- |
 | `game-rtti-o2` | 8 / 64 (12 provably non-method, 3 unresolved) | 5 / 5 / 4 edges / 20 | 44 |
 | `game-rtti-o0` | 8 / 64 (12 provably non-method, 3 unresolved) | 5 / 5 / 4 edges / 20 | 44 |
-| `game-nortti-o2` | 8 / 64 (0 non-method, 6 unresolved) | 5 / 0 / 0 / 19 | 45 |
+| `game-nortti-o2` | 8 / 64 (0 non-method, 6 unresolved) | 5 / 0 / 0 / 20 | 44 |
 
 The BEFORE class and table counts include three `__cxxabiv1::*` ABI
 implementation vtables, which are not game classes; AFTER excludes them. The
@@ -185,14 +185,21 @@ multiple-inheritance `Enemy`, so the four RTTI edges are `Actor→Entity`,
 
 ### 5.2 Virtual calls made concrete
 
-One target set per `(class, slot)` pair, which is what a call site on that
-static type consumes:
+One **enumerated class-slot** target set per `(class, slot)` pair, which is what
+a call site on that static class would consume:
 
-| Fixture | Target sets | Single-candidate | Multi-candidate | Resolved targets | Closure claims without call-site authority |
+| Fixture | Class-slot target sets | Single-candidate | Multi-candidate | Resolved targets | Closure claims without call-site authority |
 | --- | --- | --- | --- | --- | --- |
 | `game-rtti-o2` | 20 | 11 | 9 | 32 | 0 |
 | `game-rtti-o0` | 20 | 10 | 10 | 35 | 0 |
-| `game-nortti-o2` | 19 | 19 | 0 | 19 | 0 |
+| `game-nortti-o2` | 20 | 20 | 0 | 20 | 0 |
+
+These are counted over the recovered vtables, not over observed call sites: no
+call-site identifier exists for an enumerated slot, so the metric is named
+`classSlotTargetSets` and every set here stays `closureProven: false`. The
+call-site scope is the resolver's contract — it applies only when a caller
+supplies both `dynamicClassProven` and an allow-listed closure authority, which
+this measurement does not (and must not) invent.
 
 Example: `entityDamage(Entity* e, int amount) { return e->takeDamage(amount); }`
 becomes a call with the receiver's vtable slot 2 mapped to 4 contributing
@@ -245,6 +252,12 @@ The narrow part is deliberate, and two review findings tightened it:
   those entries point at `_ZTI`/`_ZTV`/`_ZTS`, i.e. are provably not methods.
   AFTER reports 20 slots across 5 real classes and every one resolves to a
   method symbol — 0 unresolved, 0 non-method entries.
+- **No real slot lost at the sub-table boundary:** the first boundary rule fired
+  on the offset word and then discarded the word before it, so the `-fno-rtti`
+  build reported one slot fewer than the RTTI build and silently dropped
+  `Enemy::tick`. The rule is now purely structural (a slot is a code address, so
+  a negative word starts the next sub-table), and the regression asserts the two
+  builds agree on slot count, boundary index and the specific slot aliases
 - **Fabricated class names:** 0. Names come from `_ZTS` or `_ZTV` symbols; the
   `-fno-rtti` fixture reports `rttiPresent: false`, no typeinfo, no
   inheritance edges.
@@ -266,14 +279,14 @@ These are the exact `performance` / `noEvidenceCost` values in the artifact:
 
 | Case | Iterations | Mean |
 | --- | --- | --- |
-| BEFORE (symbol-only discovery + fixed-cap vtable read) | 300 | 0.6559 ms/call |
-| AFTER (canonical evidence, bounded extents) | 300 | 0.4892 ms/call |
-| No C++ evidence, empty symbol table | 300 | 0.0074 ms/call |
-| No C++ evidence, 50 000 ordinary C symbols | 75 | 0.5786 ms/call |
+| BEFORE (symbol-only discovery + fixed-cap vtable read) | 300 | 0.659 ms/call |
+| AFTER (canonical evidence, bounded extents) | 300 | 0.543 ms/call |
+| No C++ evidence, empty symbol table | 300 | 0.008 ms/call |
+| No C++ evidence, 50 000 ordinary C symbols | 75 | 0.566 ms/call |
 
 Repeat runs move these means, so treat the ratio rather than the absolute
-numbers as the claim: in the recorded run the enabled path measured **0.75x**
-the path it replaces (`meanRatio: 0.75`). One run cannot establish that the new
+numbers as the claim: in the recorded run the enabled path measured **0.82x**
+the path it replaces (`meanRatio: 0.82`). One run cannot establish that the new
 path is *always* faster; the mechanism it relies on (reading each table only to
 its proven extent, and no memory reads at all on a C-only slice) is the durable
 reason, the ratio is a single sample. The reason is that it reads each
@@ -339,6 +352,13 @@ Supported, with real-binary regression coverage:
 - Inheritance edges and transitive derived classes, RTTI-present only.
 - Proven vtable extents (symbol size → next vtable → section end) and
   alias-preserving slots.
+- Secondary `_ZTV` sub-tables are located **structurally**: a slot holds a code
+  address, so the negative offset-to-top that opens the next sub-table is never
+  published as one, with neither an RTTI record nor a symbol required. A `_ZTI`
+  alias remains a second, independent fail-closed check.
+- `__base_class_type_info::__offset_flags` is decoded as the signed `long` the
+  ABI declares, so a producer that stores the negated subobject offset cannot
+  turn it into a very large positive one.
 - Call-site-scoped target sets; closure only under an explicit authority.
 - Member categories: float, double, pointer, bool-like, array-like,
   signed byte/halfword/word/doubleword, and width-proven integers.
@@ -372,9 +392,9 @@ Unsupported on purpose (kept explicit, never guessed):
 | Phase | State |
 | --- | --- |
 | 1 — existing recovery audit + real-binary taxonomy | done (this document, `taxonomy.json`) |
-| 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 21 regressions) |
+| 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 23 regressions) |
 | 3 — call-site-scoped virtual dispatch | done (`virtual-dispatch.js`, 13 regressions) |
-| 4 — field / member type propagation | measured; module implemented and covered (15 regressions); **not** productionised into the decompiler projection because the measured improvement is a category label, not yet a rendered type |
+| 4 — field / member type propagation | measured; module implemented and covered (16 regressions); **not** productionised into the decompiler projection because the measured improvement is a category label, not yet a rendered type |
 | 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 17 regressions); worker-side producer lifecycle still open |
 
 Per the brief: a capability whose improvement cannot be measured is not
@@ -396,7 +416,7 @@ measurement are the deliverable.
 
 - `node tests/check.mjs` (syntax lint, 5473 files) — PASS.
 - `node tests/module-boundaries.mjs` — PASS.
-- `node tests/phase7/run.mjs --group cxx` — PASS (5/480 discovered files, 66 tests: 21 rtti-evidence, 13 virtual-dispatch, 15 member-types, 13 projection, 4 analysis-seam).
+- `node tests/phase7/run.mjs --group cxx` — PASS (5/480 discovered files, 69 tests: 23 rtti-evidence, 13 virtual-dispatch, 16 member-types, 13 projection, 4 analysis-seam).
 - `tests/phase8/cxx-object-decompiler-projection.test.mjs` and
   `tests/phase7/cxx-object-evidence.test.mjs` — PASS (no regression in the
   existing C++ decompiler projection).
@@ -556,9 +576,9 @@ measurement are the deliverable.
   restored the toolchain the checkpoint docs already specify; they relaxed no
   gate requirement.
 
-  The 66 C++ regressions under `tests/phase7/cxx/` do not depend on LLVM 18 and
+  The 69 C++ regressions under `tests/phase7/cxx/` do not depend on LLVM 18 and
   pass against the LLVM 14 tools on the default `PATH`
-  (`node tests/phase7/run.mjs --group cxx` -> 66/66, 5 suites).
+  (`node tests/phase7/run.mjs --group cxx` -> 69/69, 5 suites).
 
 ### Wiring into the analysis entrypoint
 

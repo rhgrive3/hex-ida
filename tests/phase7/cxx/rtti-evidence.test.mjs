@@ -316,8 +316,16 @@ test('a secondary sub-table inside one _ZTV never becomes a slot', FIXTURE_OPTIO
   const enemy = classNamed(report, 'Enemy');
   assert.ok(enemy, 'the multiple-inheritance class must be discovered');
   assert.equal(enemy.typeinfoKind, '__vmi_class_type_info');
-  assert.notEqual(enemy.secondarySubTableAt, null,
+
+  // Measured `_ZTV5Enemy` layout: w[0..1] = [0, _ZTI5Enemy], w[2..6] = five
+  // primary slots, w[7] = -0x18 opens the `Component` sub-table, w[8] = its
+  // typeinfo, w[9..11] = the `_ZThn24_` thunks. The boundary is exactly at slot
+  // index 5 and the primary run keeps all five slots, `Enemy::tick` included.
+  assert.equal(enemy.secondarySubTableAt, 5,
     'the sub-table boundary must be located, not silently absorbed');
+  assert.equal(enemy.slotCount, 5);
+  assert.equal(enemy.slots[4].aliases.includes('_ZN5Enemy4tickEv'), true,
+    'the last real primary slot must survive the boundary');
 
   // Nothing in the primary run may be a typeinfo or a negative offset, and no
   // slot may resolve to a `_ZTI`/`_ZTV`/`_ZTS` symbol.
@@ -332,6 +340,40 @@ test('a secondary sub-table inside one _ZTV never becomes a slot', FIXTURE_OPTIO
     'a data word must not be reported as an unresolved slot');
 });
 
+test('a typeinfo pointer with no symbol still ends the slot run', FIXTURE_OPTIONS, async () => {
+  // A stripped-but-RTTI binary: the typeinfo pointers are real, but no `_ZTI`
+  // symbol name survives. The boundary must still be found; relying on a symbol
+  // here published the offset-to-top as an unresolved slot and the typeinfo
+  // pointer as a method target.
+  const probe = openCxxFixture(RTTI_O0);
+  const keep = [];
+  for (let index = 0; index < probe.symbols.addrs.length; index++) {
+    if (/^_?_ZTI/.test(probe.symbols.names[index])) continue;
+    keep.push(index);
+  }
+  const stripped = {
+    addrs: keep.map((index) => probe.symbols.addrs[index]),
+    names: keep.map((index) => probe.symbols.names[index]),
+    nameAt: (address) => {
+      for (const index of keep) {
+        if (probe.symbols.addrs[index] === address) return probe.symbols.names[index];
+      }
+      return null;
+    },
+  };
+
+  const withSymbols = classNamed(await evidenceFor(probe), 'Enemy');
+  const without = classNamed(await evidenceFor(probe, { symbols: stripped }), 'Enemy');
+  assert.ok(without, 'the class is still discoverable from its `_ZTS` name');
+  assert.equal(without.secondarySubTableAt, withSymbols.secondarySubTableAt);
+  assert.deepEqual(
+    without.slots.map((slot) => slot.address),
+    withSymbols.slots.map((slot) => slot.address),
+    'stripping `_ZTI` names must not change the slot run',
+  );
+  assert.equal(without.slots.some((slot) => slot.unresolved), false);
+});
+
 test('the sub-table boundary is found without RTTI symbols too', FIXTURE_OPTIONS, async () => {
   const report = await evidenceFor(openCxxFixture(NO_RTTI));
   assert.equal(report.rttiPresent, false);
@@ -341,10 +383,60 @@ test('the sub-table boundary is found without RTTI symbols too', FIXTURE_OPTIONS
     '`-fno-rtti` still emits the header, so the boundary is still detectable');
   assert.equal(enemy.slots.every((slot) => !slot.unresolved), true);
 
-  // Without the boundary the same symbol reported 5 extra fabricated words.
-  const rttiSlots = classNamed(await evidenceFor(openCxxFixture(RTTI_O0)), 'Enemy').slotCount;
-  assert.equal(Math.abs(enemy.slotCount - rttiSlots) <= 1, true,
-    'RTTI and -fno-rtti must agree on how many real slots the class has');
+  // The RTTI and `-fno-rtti` builds must agree exactly, not approximately: an
+  // earlier rule fired on the offset word and then discarded the word before
+  // it, which dropped `Enemy::tick` here while leaving the boundary non-null,
+  // so a weaker assertion passed while a real slot was lost.
+  const rtti = classNamed(await evidenceFor(openCxxFixture(RTTI_O0)), 'Enemy');
+  assert.equal(enemy.slotCount, rtti.slotCount);
+  assert.equal(enemy.secondarySubTableAt, rtti.secondarySubTableAt);
+  assert.equal(enemy.slots[4].aliases.includes('_ZN5Enemy4tickEv'), true,
+    '`-fno-rtti` must not lose the last real primary slot');
+});
+
+test('a negative __offset_flags decodes as a negative subobject offset', async () => {
+  // `__base_class_type_info::__offset_flags` is a signed `long`. Clang stores the
+  // positive subobject offset for a non-virtual base (the fixture measures
+  // `Component` at +0x18 as raw 6146 -> 24), so this drives the signed decode
+  // directly: an unsigned shift would report `0x00FFFF...FFE8` as the offset.
+  const ABI_VTABLE = 0x2000n;
+  const TYPEINFO = 0x1000n;
+  const buffer = new Uint8Array(0x40);
+  const view = new DataView(buffer.buffer);
+  view.setBigUint64(0x00, ABI_VTABLE, true);
+  view.setBigUint64(0x08, 0n, true);
+  view.setUint32(0x10, 0, true);
+  view.setUint32(0x14, 2, true);
+  view.setBigUint64(0x18, 0x4000n, true);
+  view.setBigUint64(0x20, BigInt.asUintN(64, (24n << 8n) | 2n), true);
+  view.setBigUint64(0x28, 0x5000n, true);
+  view.setBigUint64(0x30, BigInt.asUintN(64, (-24n << 8n) | 2n), true);
+
+  const result = await parseItaniumTypeInfo({
+    read: (address, length) => {
+      if (address < TYPEINFO || address + BigInt(length) > TYPEINFO + 0x40n) return null;
+      const start = Number(address - TYPEINFO);
+      return buffer.slice(start, start + length);
+    },
+    symbols: {
+      addrs: [ABI_VTABLE],
+      names: ['_ZTVN10__cxxabiv121__vmi_class_type_infoE'],
+      nameAt: (address) => (address === ABI_VTABLE ? '_ZTVN10__cxxabiv121__vmi_class_type_infoE' : null),
+    },
+    typeinfoAddress: TYPEINFO,
+    pointerBytes: 8,
+  });
+
+  assert.equal(result.kind, '__vmi_class_type_info');
+  assert.equal(result.baseEvidence, 'vmi-base-array');
+  assert.equal(result.bases.length, 2);
+  assert.equal(result.bases[0].offsetToTop, 24n);
+  assert.equal(result.bases[0].isPublic, true);
+  assert.equal(result.bases[0].isVirtual, false);
+  assert.equal(result.bases[1].offsetToTop, -24n,
+    'a negative stored offset must not come back as a huge positive');
+  assert.equal(result.bases[1].isPublic, true);
+  assert.equal(result.bases[1].isVirtual, false);
 });
 
 test('a class with two bases recovers both, including the subobject offset', FIXTURE_OPTIONS, async () => {

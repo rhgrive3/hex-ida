@@ -297,7 +297,14 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     const baseTypeinfo = pairWords[index * 2];
     const offsetFlags = pairWords[index * 2 + 1];
     if (baseTypeinfo == null || baseTypeinfo === 0n) continue;
-    const flags = offsetFlags ?? 0n;
+    // `__base_class_type_info::__offset_flags` is a signed `long`, so decode it
+    // as such before shifting. BigInt `>>` is arithmetic on a negative value,
+    // which is what turns a stored `-0x18` into `offsetToTop: -24n` rather than a
+    // very large positive. Clang currently stores the positive subobject offset
+    // for a non-virtual base (measured: `offsetFlags: 6146` -> `offsetToTop: 24`
+    // for `Component` at +0x18), so this is a correctness guard against a
+    // producer that stores the negated offset, not a fix for observed output.
+    const flags = BigInt.asIntN(pointerBytes * 8, offsetFlags ?? 0n);
     record.bases.push({
       typeinfoAddress: baseTypeinfo,
       className: null,
@@ -437,13 +444,23 @@ export async function buildCxxClassEvidence({
     // a negative offset-to-top as an unresolved slot, and the typeinfo pointer -
     // a data address - as a "method target".
     //
-    // Two signals, because RTTI may be stripped:
-    //   RTTI present - the word resolves to a `_ZTI` symbol.
-    //   RTTI absent  - the word is a negative offset-to-top immediately followed
-    //                  by the null typeinfo slot `-fno-rtti` emits.
-    // Both are conservative: a wrong positive only stops enumeration earlier,
-    // which under-reports. It can never invent a slot.
-    const signedLimit = 1n << BigInt(pointerBytes * 8 - 1);
+    // The boundary is found **structurally**: neither an RTTI record nor a
+    // symbol is required. A slot holds a code address, so it is never negative;
+    // a sub-table's first word is the negated subobject offset, so it always is.
+    // Measured on `_ZTV5Enemy` (`Enemy : Entity, Component`, `Component` at
+    // +0x18): `w[7] = -0x18` opens the `Component` sub-table and `w[8]` is its
+    // typeinfo, in both the RTTI and the `-fno-rtti` fixture.
+    //
+    // Two earlier signals were removed because each mis-fires:
+    //   - requiring the *next* word to be the null `-fno-rtti` typeinfo made the
+    //     test trigger on the offset word and then discard the word before it,
+    //     which silently dropped the last real primary-table slot
+    //     (`Enemy::tick`) from the `-fno-rtti` fixture;
+    //   - requiring a `_ZTI` symbol misses the header entirely whenever the
+    //     typeinfo pointer carries no symbol, and then publishes the offset word
+    //     as an unresolved slot and the typeinfo pointer as a method target.
+    // A `_ZTI` alias is kept only as an independent fail-closed check for a word
+    // that resolves to a typeinfo record mid-run.
     const slots = [];
     let secondarySubTableAt = null;
     for (let index = 0; index < extent.slotCount; index++) {
@@ -451,13 +468,14 @@ export async function buildCxxClassEvidence({
       if (word == null) break;
       const resolvable = word !== 0n && word <= limit;
       const aliases = resolvable ? (byAddress.get(word.toString()) || []) : [];
-      const hasRoomForSubTable = index > 0 && index + 1 < extent.slotCount;
-      const typeinfoSignal = aliases.some((name) => TYPEINFO_NAME.test(name));
-      const strippedHeaderSignal = word >= signedLimit
-        && words[index + 3] === 0n
-        && index + 2 < extent.slotCount;
-      if (hasRoomForSubTable && (typeinfoSignal || strippedHeaderSignal)) {
-        // `index - 1` held this sub-table's offset-to-top, which is data.
+      if (BigInt.asIntN(pointerBytes * 8, word) < 0n) {
+        // The offset-to-top of a secondary sub-table: data, not a slot.
+        secondarySubTableAt = index;
+        break;
+      }
+      if (index > 0 && aliases.some((name) => TYPEINFO_NAME.test(name))) {
+        // A typeinfo record reached from the slot run. This sub-table's
+        // offset-to-top is the word before it, which is data as well.
         slots.pop();
         secondarySubTableAt = index - 1;
         break;

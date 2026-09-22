@@ -56,7 +56,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--json') {
       const value = argv[++i];
-      if (typeof value !== 'string' || !value) throw new TypeError('--json requires a path');
+      // A flag is not a path: `--json --iterations 5` would otherwise write to a
+      // file named `--iterations` and silently drop the iteration count.
+      if (typeof value !== 'string' || !value || value.startsWith('-')) {
+        throw new TypeError('--json requires a path');
+      }
       options.json = value;
     } else if (argv[i] === '--iterations') {
       const value = Number(argv[++i]);
@@ -111,7 +115,7 @@ async function measureBefore(probe) {
     slotsUnresolved,
     inheritanceEdges: 0,
     typeinfoParsed: 0,
-    virtualTargetSets: 0,
+    classSlotTargetSets: 0,
     memberTypes: 0,
   };
 }
@@ -132,20 +136,26 @@ async function measureAfter(probe) {
   const slotsWithAliases = classes.reduce((sum, record) => sum + (record.slots?.filter((slot) => slot.aliases.length > 1).length ?? 0), 0);
   const unresolvedSlots = classes.reduce((sum, record) => sum + (record.slots?.filter((slot) => slot.unresolved).length ?? 0), 0);
 
-  // Call-site-scoped target sets: one per (class, slot) pair, which is what a
-  // call site on that static class would consume.
-  let targetSets = 0;
-  let multiTargetSets = 0;
-  let singleTargetSets = 0;
+  // Enumerated **class-slot** target sets: one per `(class, slot)` pair, which
+  // is what a call site on that static class would consume. This loop reads the
+  // vtable evidence, not a call site, so the metric is deliberately not named
+  // "call-site" anything: the resolver scopes a set to a call site only when a
+  // caller supplies `dynamicClassProven` plus an allow-listed closure authority,
+  // and no such authority exists for an enumerated slot. These are the possible
+  // targets for the pair; the call-site-scoped claim is the resolver's, and it
+  // stays `closureProven: false` throughout this measurement.
+  let classSlotTargetSets = 0;
+  let multiCandidateTargetSets = 0;
+  let singleCandidateTargetSets = 0;
   let totalTargets = 0;
   for (const record of classes) {
     for (let slotIndex = 0; slotIndex < record.slots.length; slotIndex++) {
       const set = resolveVirtualTargetSet({ classEvidence: report, receiverClass: record.className, slotIndex });
       if (!set.candidates.length) continue;
-      targetSets++;
+      classSlotTargetSets++;
       totalTargets += set.candidateAddresses.length;
-      if (set.candidateAddresses.length > 1) multiTargetSets++;
-      else singleTargetSets++;
+      if (set.candidateAddresses.length > 1) multiCandidateTargetSets++;
+      else singleCandidateTargetSets++;
     }
   }
 
@@ -159,9 +169,9 @@ async function measureAfter(probe) {
     slots,
     slotsWithMergedAliases: slotsWithAliases,
     unresolvedSlots,
-    virtualTargetSets: targetSets,
-    singleTargetSets,
-    multiTargetSets,
+    classSlotTargetSets,
+    singleCandidateTargetSets,
+    multiCandidateTargetSets,
     totalResolvedTargets: totalTargets,
     readBudget: report.reads,
   };
@@ -439,7 +449,7 @@ async function main() {
       'BEFORE reflects main capability: findCxxClasses (symbol-only) plus readVtable with a fixed slot cap.',
       'AFTER is buildCxxClassEvidence + resolveVirtualTargetSet + recoverMemberTypeEvidence.',
       'Member types are measured on IR built from llvm-objdump disassembly of the linked fixture.',
-      'virtualTargetSets counts one call-site-scoped target set per (class, slot) pair with at least one candidate.',
+      'classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false.',
     ],
   };
 
@@ -449,7 +459,7 @@ async function main() {
   for (const [name, data] of Object.entries(fixtures)) {
     console.log(`\n=== ${name} (${data.bytes} bytes)`);
     console.log(`  BEFORE classes=${data.before.classesWithName} vtables=${data.before.vtablesRead} slots=${data.before.slotsEnumerated} nonMethodSlots=${data.before.slotsPointingAtTypeinfoOrVtable} typeinfo=0 inheritance=0 targetSets=0`);
-    console.log(`  AFTER  rtti=${data.after.rttiPresent} classes=${data.after.classesWithName} typeinfo=${data.after.typeinfoParsed} inheritance=${data.after.inheritanceEdges} slots=${data.after.slots} aliasedSlots=${data.after.slotsWithMergedAliases} targetSets=${data.after.virtualTargetSets} (single=${data.after.singleTargetSets} multi=${data.after.multiTargetSets}) targets=${data.after.totalResolvedTargets}`);
+    console.log(`  AFTER  rtti=${data.after.rttiPresent} classes=${data.after.classesWithName} typeinfo=${data.after.typeinfoParsed} inheritance=${data.after.inheritanceEdges} slots=${data.after.slots} aliasedSlots=${data.after.slotsWithMergedAliases} classSlotTargetSets=${data.after.classSlotTargetSets} (singleCandidate=${data.after.singleCandidateTargetSets} multiCandidate=${data.after.multiCandidateTargetSets}) targets=${data.after.totalResolvedTargets}`);
     if (data.memberTypes.functions.length) {
       console.log(`  MEMBER fields=${data.memberTypes.fields} typed=${data.memberTypes.typedFieldCount} widthOnly=${data.memberTypes.widthOnlyFieldCount} unknown=${data.memberTypes.unknownFieldCount}`);
     }

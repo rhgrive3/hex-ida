@@ -48,6 +48,11 @@ function valueId(value) {
   return id == null ? null : id;
 }
 
+/** The one fail-closed shape: no category, no label, and an explicit reason. */
+function unclassified(reason) {
+  return { category: null, label: null, signedness: null, candidates: [], rule: null, reason };
+}
+
 /**
  * Classifies one member access from its binary evidence.
  *
@@ -56,9 +61,7 @@ function valueId(value) {
  * the access itself proves it, otherwise null.
  */
 export function classifyMemberAccess({ size = 0, signed = null, fp = false, pointerUse = false, indexed = false, boolLike = false } = {}) {
-  if (!Number.isSafeInteger(size) || size <= 0) {
-    return { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'unknown-access-width' };
-  }
+  if (!Number.isSafeInteger(size) || size <= 0) return unclassified('unknown-access-width');
   if (indexed) {
     const element = classifyMemberAccess({ size, signed, fp, pointerUse: false });
     return {
@@ -73,7 +76,7 @@ export function classifyMemberAccess({ size = 0, signed = null, fp = false, poin
   if (fp) {
     if (size === 4) return { category: 'float', label: 'float', signedness: null, candidates: ['float'], rule: 'vector-register-flow' };
     if (size === 8) return { category: 'double', label: 'double', signedness: null, candidates: ['double'], rule: 'vector-register-flow' };
-    return { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'vector-register-width-unmatched' };
+    return unclassified('vector-register-width-unmatched');
   }
   if (pointerUse && size === 8) {
     return { category: 'pointer', label: 'pointer', signedness: null, candidates: ['object-pointer', 'pointer'], rule: 'loaded-value-used-as-address-or-argument' };
@@ -97,7 +100,7 @@ export function classifyMemberAccess({ size = 0, signed = null, fp = false, poin
     if (signed === true) return { category: 'int64', label: 'int64_t', signedness: true, candidates: ['int64_t'], rule: 'sign-extended-doubleword-load' };
     return { category: 'int64', label: 'int64_t|uint64_t|pointer', signedness: null, candidates: ['int64_t', 'uint64_t', 'pointer'], rule: 'doubleword-access' };
   }
-  return { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'unclassified-access-width' };
+  return unclassified('unclassified-access-width');
 }
 
 /** Width-only categories: the access proves the width but not the meaning. */
@@ -287,25 +290,31 @@ export function recoverMemberTypeEvidence({
       || entry.accesses.find((access) => access.pointerUse)
       || entry.accesses.find((access) => access.boolLike)
       || entry.accesses[0];
-    // An indexed access is only array-like when the addressing scale matches the
-    // element width that access proves. Every indexed access must agree: one
-    // consistent access alongside a contradictory one is two different shapes at
-    // the same offset, not an array.
-    const indexedConsistent = entry.accesses
-      .filter((access) => access.indexed)
+    // An offset is only array-like when *every* access there is indexed with a
+    // scale that matches the element width it proves. Two ways this fails:
+    //   - one indexed access alongside a direct access is two different shapes at
+    //     the same offset, and picking `representative.indexed` would make the
+    //     category depend on instruction order;
+    //   - a contradictory scale is a different element type, not the same array.
+    const indexedAccesses = entry.accesses.filter((access) => access.indexed);
+    const mixedIndexedShape = indexedAccesses.length > 0
+      && indexedAccesses.length !== entry.accesses.length;
+    const indexedConsistent = indexedAccesses
       .every((access) => (1 << (access.scale ?? 0)) === access.size);
     const classification = mixedWidths
-      ? { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'mixed-access-widths' }
-      : !indexedConsistent
-        ? { category: null, label: null, signedness: null, candidates: [], rule: null, reason: 'indexed-access-scale-mismatch' }
-        : classifyMemberAccess({
-          size: representative.size,
-          signed: representative.signed,
-          fp: representative.fp,
-          pointerUse: representative.pointerUse,
-          indexed: representative.indexed,
-          boolLike: representative.boolLike,
-        });
+      ? unclassified('mixed-access-widths')
+      : mixedIndexedShape
+        ? unclassified('mixed-indexed-and-direct-access')
+        : !indexedConsistent
+          ? unclassified('indexed-access-scale-mismatch')
+          : classifyMemberAccess({
+            size: representative.size,
+            signed: representative.signed,
+            fp: representative.fp,
+            pointerUse: representative.pointerUse,
+            indexed: representative.indexed,
+            boolLike: representative.boolLike,
+          });
     const kind = classification.category;
     fields.push(Object.freeze({
       offset: entry.offset,

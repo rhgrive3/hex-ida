@@ -152,6 +152,34 @@ test('an indexed access whose scale contradicts the element width fails closed',
   assert.equal(field.reason, 'indexed-access-scale-mismatch');
 });
 
+test('an indexed access alongside a direct one at the same offset fails closed', () => {
+  // `this->field` and `this->array[i]` at the same offset are two different
+  // shapes. Letting the representative decide would make the category depend on
+  // instruction order, so only all-indexed or all-direct is allowed to classify.
+  const ir = {
+    values: [],
+    instructions: [
+      {
+        op: 'load',
+        dst: { id: 1, bits: 32 },
+        loc: { kind: 'field', base: { id: 2, reg: 'x0' }, disp: 0x10n, size: 4 },
+        addr: null,
+      },
+      {
+        op: 'load',
+        dst: { id: 4, bits: 32 },
+        loc: { kind: 'unknown', base: null, disp: undefined, index: null },
+        addr: { disp: 0x10n, base: { id: 2, reg: 'x0' }, index: { id: 3, reg: 'x1' }, scale: 2 },
+      },
+    ],
+  };
+  const report = recoverMemberTypeEvidence({ ir, isReceiverBase: allBases });
+  const field = fieldAt(report, 0x10);
+  assert.ok(field, 'both accesses are on the receiver base');
+  assert.equal(field.category, null);
+  assert.equal(field.reason, 'mixed-indexed-and-direct-access');
+});
+
 test('mixed access widths on one offset refuse to claim a category', () => {
   const ir = createIr(['ldr w1, [x0, #0x38]', 'ldr x2, [x0, #0x38]', 'ret']);
   const report = recoverMemberTypeEvidence({ ir, isReceiverBase: allBases });

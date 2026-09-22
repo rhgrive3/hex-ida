@@ -1,6 +1,6 @@
 {
   "schema": "cxx-recovery-measurement/v1",
-  "generatedAt": "2026-09-22T16:28:38.221Z",
+  "generatedAt": "2026-09-22T16:57:09.330Z",
   "toolchain": {
     "objdump": "llvm-objdump",
     "node": "v24.20.0"
@@ -17,7 +17,7 @@
         "slotsUnresolved": 3,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
-        "virtualTargetSets": 0,
+        "classSlotTargetSets": 0,
         "memberTypes": 0
       },
       "after": {
@@ -30,9 +30,9 @@
         "slots": 20,
         "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 20,
-        "singleTargetSets": 11,
-        "multiTargetSets": 9,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 11,
+        "multiCandidateTargetSets": 9,
         "totalResolvedTargets": 32,
         "readBudget": 14
       },
@@ -88,7 +88,7 @@
         "slotsUnresolved": 3,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
-        "virtualTargetSets": 0,
+        "classSlotTargetSets": 0,
         "memberTypes": 0
       },
       "after": {
@@ -101,9 +101,9 @@
         "slots": 20,
         "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 20,
-        "singleTargetSets": 10,
-        "multiTargetSets": 10,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 10,
+        "multiCandidateTargetSets": 10,
         "totalResolvedTargets": 35,
         "readBudget": 14
       },
@@ -210,7 +210,7 @@
         "slotsUnresolved": 6,
         "inheritanceEdges": 0,
         "typeinfoParsed": 0,
-        "virtualTargetSets": 0,
+        "classSlotTargetSets": 0,
         "memberTypes": 0
       },
       "after": {
@@ -220,13 +220,13 @@
         "typeinfoParsed": 0,
         "inheritanceEdges": 0,
         "vtables": 5,
-        "slots": 19,
+        "slots": 20,
         "slotsWithMergedAliases": 5,
         "unresolvedSlots": 0,
-        "virtualTargetSets": 19,
-        "singleTargetSets": 19,
-        "multiTargetSets": 0,
-        "totalResolvedTargets": 19,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 20,
+        "multiCandidateTargetSets": 0,
+        "totalResolvedTargets": 20,
         "readBudget": 5
       },
       "memberTypes": {
@@ -241,22 +241,22 @@
   "performance": {
     "baselineSymbolOnly": {
       "iterations": 300,
-      "totalMs": 196.764,
-      "meanMs": 0.6559
+      "totalMs": 197.7,
+      "meanMs": 0.659
     },
     "cxxRecoveryEnabled": {
       "iterations": 300,
-      "totalMs": 146.771,
-      "meanMs": 0.4892
+      "totalMs": 162.787,
+      "meanMs": 0.5426
     },
-    "meanRatio": 0.75
+    "meanRatio": 0.82
   },
   "noEvidenceCost": {
     "emptyTable": {
       "latency": {
         "iterations": 300,
-        "totalMs": 2.234,
-        "meanMs": 0.0074
+        "totalMs": 2.325,
+        "meanMs": 0.0078
       },
       "classesFound": 0,
       "reads": 0
@@ -265,8 +265,8 @@
       "symbolCount": 50000,
       "latency": {
         "iterations": 75,
-        "totalMs": 43.394,
-        "meanMs": 0.5786
+        "totalMs": 42.443,
+        "meanMs": 0.5659
       },
       "reads": 0
     }
@@ -275,6 +275,6 @@
     "BEFORE reflects main capability: findCxxClasses (symbol-only) plus readVtable with a fixed slot cap.",
     "AFTER is buildCxxClassEvidence + resolveVirtualTargetSet + recoverMemberTypeEvidence.",
     "Member types are measured on IR built from llvm-objdump disassembly of the linked fixture.",
-    "virtualTargetSets counts one call-site-scoped target set per (class, slot) pair with at least one candidate."
+    "classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false."
   ]
 }
