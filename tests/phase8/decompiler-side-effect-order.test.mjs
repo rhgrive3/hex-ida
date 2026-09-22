@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { buildSemanticModel } from '../js/blocks.js';
-import { decompile } from '../js/decompile.js';
+import { buildSemanticModel } from '../../js/blocks.js';
+import { decompile } from '../../js/decompile.js';
 
 function render(rows, opts = {}) {
   const raw = rows.map((x, row) => ({ row, address: 0x1000n + BigInt(row * 4), ...x }));
