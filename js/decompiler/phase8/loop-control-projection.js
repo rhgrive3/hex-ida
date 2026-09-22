@@ -442,6 +442,11 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
   // goto bypassed it.
   const emittedHeader = String(body[span.start]?.text ?? '').trim();
   const emittedWhileHeader = EMITTED_WHILE_TEXT.test(emittedHeader);
+  // A source-level break lands on the first rendered statement after the loop.
+  // Only rewrite when that rendered destination is the exact CFG exit proven
+  // by this loop; an intervening rendered block would change control flow.
+  const afterLoop = span.end + 1 < body.length ? body[span.end + 1] : null;
+  const breakLandsAtExit = afterLoop != null && blockOf(afterLoop) === proof.exitTarget;
 
   const rewrites = [];
   for (let index = span.start + 1; index < span.end; index += 1) {
@@ -461,7 +466,8 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
       if (!edge) return null;
       if (targets.length > 1) continue;
       if (edge.construct === 'loop-break') {
-        if (!proof.breakUsable || !proof.breakEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
+        if (!breakLandsAtExit || !proof.breakUsable
+          || !proof.breakEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
         rewrites.push({ index, text: 'break', edge, targetBlock });
         continue;
       }
@@ -523,11 +529,12 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
     if (typeof node.text !== 'string' || !TRAILING_JUMP_TEXT.test(node.text)) return null;
     const text = node.text.replace(TRAILING_JUMP_TEXT, `${rewrite.text};`);
     const rewritten = { ...node, text };
+    const previous = readSemanticControlLineHistory(node, ctx.ir);
     registerSemanticControlLineHistory(rewritten, Object.freeze({
       ir: ctx.ir ?? null,
       instruction: null,
       canonical: { isCurrent: () => true },
-      records: Object.freeze([record]),
+      records: Object.freeze([...(previous?.records ?? []), record]),
       selection: Object.freeze({
         ...selection,
         form: rewrite.text === 'break' ? 'loop-break' : 'loop-continue',
