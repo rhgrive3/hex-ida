@@ -114,6 +114,28 @@
 - 回帰: `tests/semantic-boundary-referee.mjs` が「合成 holdout と実 OpenMW holdout が
   同一のポリシーを使う」ことを固定。似て見える2つのポリシーが別物にならないようにする。
 
+### 7. なぜ救済が成立しないのか（実測・重要）
+
+oracle referee で真値（offset 24）を probe → 検証成功させたときの fusion item 比較
+（`js/evidence.js` の LR 表と `js/pinpoint-legacy.js` の producer から確認）:
+
+| 候補 | loc-drain-verified | loc-clamp-verified | loc-shared | loc-size | logOdds | p |
+|---|---|---|---|---|---|---|
+| offset 48（leader） | 3.4012 (n=3) | 1.7918 (n=3) | **1.1632 (n=3, lr 3.2)** | 0.4245 | 4.0080 | 0.982155 |
+| offset 24（真値） | 3.4012 (n=3) | 1.7918 (n=3) | **0.7754 (n=2, lr 2.1715)** | 0.4245 | 3.6203 | 0.973924 |
+
+- `loc-drain-verified`（lr 30）と `loc-clamp-verified`（lr 6）の LR は **定数**。
+  producer は strength `Math.min(1, drains.length / 2)` を渡すが、drains>=2 で **飽和**する。
+  よって「検証済み drain」は実質**二値の事実**であり、候補間に差を作らない。
+- **検証後に残る唯一の graded な差は `loc-shared`（その offset を触る関数数 = breadth）**。
+- この fixture は health を触る関数を decoy より少なく配置しているため、真値は検証後も
+  leader に **0.0082 差で負ける**（p 0.9739 vs 0.9822）。oracle 上限でも動かない理由はこれ。
+- したがって抑制要因は**製品欠陥ではなく**、「検証後の識別子が使用頻度（breadth）だけ」という
+  モデルの性質である。実アプリの HP はダメージ/回復/UI/セーブ/死亡判定など多数の関数から
+  触られるため breadth で勝てる可能性がある。
+- 次に作るべき holdout の正しい条件: **真値が rank 4〜5 に落ち、かつ breadth で decoy に負けない**ケース。
+  公平性のため、各 pool は**上流の実関数を全件**含める（恣意的な部分集合を選ばない）。
+
 ### 6. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
 
 - `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
@@ -204,9 +226,13 @@ HEX_OPENMW_HOLDOUT_ARTIFACT=... HEX_OPENMW_HOLDOUT_LIVE=1 node tests/semantic-bo
 
 ## 次にやること
 
-1. **救済が成立するケースを増やす。** ラベル付きの実ゲーム/実リリースバイナリで、
-   truth が rank 4〜5 に落ちるケースを集める。rank 1〜3 のケースでは referee の問いが
-   ill-posed（真値が boundary set に無い）ため、救済の判定材料にならない。
+1. **救済が成立するケースを増やす。** ただし条件は「設定済み実バイナリ」ではなく上記 §7 に従う:
+   - 真値が rank 4〜5 に落ちること、**かつ breadth（`loc-shared` の関数数）で decoy に負けない**こと。
+   - `tests/.real-fixtures/` の実アプリ3種（battlecats / TsumTsum / YWP）は `HEX_FIXTURE_*_URL`
+     が未設定のためこの環境では取得できない（`scripts/fetch-real-fixtures.mjs` は URL 必須）。
+   - 現実的な代替は「別の上流 OSS プロジェクトを固定 commit でビルドし、pool ごとの実関数を
+     全件含める」source-grounded fixture。OpenMW の arm64 ビルド手順は再現可能（clang 14 + 固定 commit）。
+   - rank 1〜3 のケースは referee の問いが ill-posed（真値が boundary set に無い）ため判定材料にならない。
 2. 救済が確認できた場合のみ interactive single-goal の production caller から callback を注入する。
 3. `money`/`score`/`level`/`item`/`attack`/`damage` を有効化する場合は、先に goal 別の
    ラベル付き holdout ケースを作る。本引き継ぎで eligibility を「較正済み goal のみ」に
