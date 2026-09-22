@@ -96,6 +96,7 @@ function hasTopLevelOrOperator(checkScript) {
     if (groupDepth === 0 && ch === '&'
         && str[i - 1] !== '&' && str[i - 1] !== '>' && str[i - 1] !== '<'
         && str[i + 1] !== '&' && str[i + 1] !== '>') return true;
+    if (groupDepth === 0 && ch === ';') return true;
   }
   return false;
 }
