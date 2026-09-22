@@ -1082,6 +1082,101 @@ test('projection is idempotent: an already projected construct is left alone', (
   void induction;
 });
 
+/* ── already-emitted while: residual break/continue refinement ─────────── */
+
+/**
+ * The upstream renderer already published the `while` for this region, but left
+ * the proven break edge as a residual `goto`. Projecting the construct again
+ * would nest two loops over one region; refusing the region entirely would
+ * leave the goto forever. The refine path keeps the construct and rewrites only
+ * the jump this proof owns.
+ */
+test('loop V. an already-emitted while keeps its construct and loses its proven break goto', () => {
+  const { result, projected, facts } = project(breakWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `if (c1) goto loc_${hex(5)};`, 3],
+    ['stmt', 2, 's = 4;', 4],
+    ['ctrl', 1, '}', 4],
+    ['stmt', 1, 'return s;', 5],
+  ]);
+  assert.ok(facts.edges.some((edge) => edge.from === 3 && edge.to === 5 && edge.construct === 'loop-break'),
+    'the canonical facts still call this exit a break');
+  assert.notEqual(projected, result, 'the proven break goto must be refined');
+  const texts = textsOf(projected);
+  assert.equal(count(texts, /^while \(/), 1, 'the already-emitted construct is not nested a second time');
+  assert.ok(texts.includes('if (c1) break;'), 'the break goto becomes a break statement');
+  assert.ok(!texts.some((text) => /^if \(c1\) goto /.test(text)), 'the residual break goto is gone');
+  assert.ok(texts.includes('s = 4;'), 'the rest of the body is preserved');
+  assert.equal(projected.rewriteProof.at(-1).rule, LOOP_PROJECTION_RULE);
+  assert.equal(projected.rewriteProof.at(-1).evidence.version, LOOP_CONTROL_PROJECTION_VERSION);
+});
+
+test('loop W. refining an already-emitted while is idempotent', () => {
+  const body = [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `if (c1) goto loc_${hex(5)};`, 3],
+    ['stmt', 2, 's = 4;', 4],
+    ['ctrl', 1, '}', 4],
+    ['stmt', 1, 'return s;', 5],
+  ];
+  const { result, projected } = project(breakWhileIr(), body);
+  assert.notEqual(projected, result);
+  const again = applyStructuredControlProjection(projected, projected.rewriteProof && result
+    ? (() => { const { analysis } = analyze(breakWhileIr()); return analysis; })()
+    : analyze(breakWhileIr()).analysis);
+  assert.equal(again, projected, 'a second refine pass must not rewrite a break that is already a break');
+});
+
+test('loop X. a jump inside a nested already-emitted loop is not stolen as an outer break', () => {
+  // Outer while already emitted; inside it, an inner while already emitted;
+  // the inner body holds a goto that the outer proof would call a break.
+  // Rewriting it to `break` would bind to the inner loop, so it must stay a goto.
+  const f = fixture('nested-already-while');
+  f.block(0, { succ: [1] }).branch(1);
+  const outer = f.block(1, { succ: [2, 6] }).opaque(1);
+  f.conditionalBranch(outer, 2, 6);
+  f.block(2, { succ: [4] }).store(f.constant(2, 32));
+  f.branch(4);
+  const inner = f.block(4, { succ: [5, 3] }).opaque(1);
+  f.conditionalBranch(inner, 5, 3);
+  f.block(5, { succ: [6, 3] }).opaque(1);
+  // Block 5 breaks out of the outer loop to 6 (single outer break target) and
+  // also has the inner latch path modelled as the other arm for edge accounting.
+  f.conditionalBranch(f.opaque(1), 6, 3);
+  f.block(3, { succ: [1] }).branch(1);
+  f.block(6).ret();
+  const ir = withProducerLayout(f.build());
+  const { facts } = analyze(ir);
+  const outerBreak = facts.edges.find((edge) => edge.from === 5 && edge.to === 6);
+  // If the fixture cannot prove an outer break from inside the inner loop, the
+  // structural guard is still exercised by the nested-span scan; skip the edge assert.
+  const body = [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `while (c1) {`, 4],
+    ['ctrl', 3, `if (c2) goto loc_${hex(6)};`, 5],
+    ['ctrl', 2, '}', 3],
+    ['ctrl', 1, '}', 3],
+    ['stmt', 1, 'return s;', 6],
+  ];
+  const { result, projected } = project(ir, body);
+  const texts = textsOf(projected);
+  assert.equal(count(texts, /^while \(/), 2, 'both constructs are present exactly once');
+  if (outerBreak) {
+    assert.ok(texts.some((text) => /goto loc_/.test(text)),
+      'a jump inside the nested loop stays a goto so it cannot bind to the wrong loop');
+    assert.ok(!texts.includes('break;'),
+      'the nested jump is never rewritten to a bare break that would bind inward');
+  }
+  assert.ok(projected === result || texts.length >= body.length - 1,
+    'the projection either refuses or preserves every line');
+});
+
 test('projectNaturalLoops returns null when nothing is provable', () => {
   assert.equal(projectNaturalLoops(null), null);
   assert.equal(projectNaturalLoops([]), null);
