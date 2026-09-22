@@ -45,13 +45,18 @@ Do not let OpenJev determine function boundaries, CFG, ABI facts, field offsets,
 Call the referee only when all applicable gates pass:
 - interactive single-goal path;
 - `o.analyze` exists;
-- supported existing shape goal;
+- supported existing shape goal **that also has calibrated goal guidance**
+  (`reason: 'uncalibrated-goal'` otherwise);
 - 5–8 candidates;
 - scan is complete and not capped;
 - not cancelled and analysis budget remains;
 - D4/D5 ambiguity satisfies a policy derived from labelled holdout data.
 
 Candidate count alone is never sufficient. If D4 clearly beats D5, external traffic is zero. Background auto traffic is zero in this rollout.
+
+### Calibrated-goal rule
+
+The model-facing wording lives in `SEMANTIC_BOUNDARY_GOAL_GUIDANCE` in `js/semantic-boundary-referee.js`, and a goal is eligible only when it has an entry there. A regression asserts that every entry cites a real holdout case that labels that goal, so the cheap way to enable a goal is to add labelled evidence — not to widen a set. This matters because some goals have no distinguishing shape hypothesis at all: on the OpenMW fixture, `level` and `item` expose exactly the same five resources as `hp`, so the boundary question would be ill-posed and a confident answer would be unfounded. Those goals therefore fail closed with zero egress.
 
 ## Candidate summary
 

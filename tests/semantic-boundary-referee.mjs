@@ -94,6 +94,31 @@ for (const options of [{ complete: false }, { capped: true }]) {
   assert.equal(run.trace.eligibility, 'scan-incomplete');
 }
 
+// 4b. A goal without calibrated guidance never reaches the network, even when
+// the deterministic boundary looks ambiguous: the question would be ill-posed
+// and its answer would have no measured basis.  Adding a labelled holdout case
+// is what makes a goal eligible again.
+for (const goalId of ['money', 'score', 'level', 'item', 'attack', 'damage']) {
+  let calls = 0;
+  const run = await runSyntheticBoundaryCase({ goalId, referee: async () => { calls++; return acceptedChoice('c1'); } });
+  assert.equal(calls, 0, `${goalId} must not contact a referee`);
+  if (run.trace) assert.equal(run.trace.eligibility, 'uncalibrated-goal', `${goalId} rejection reason`);
+}
+// `level`/`item` are the sharp case: their candidate list is byte-for-byte the
+// same five resources as `hp`, so the boundary question would be ill-posed.
+for (const goalId of ['level', 'item']) {
+  const run = await runSyntheticBoundaryCase({ goalId, referee: async () => acceptedChoice('c1') });
+  assert.ok(run.trace, `${goalId} must reach the boundary planning stage`);
+  assert.equal(run.trace.candidateCount, 5);
+  assert.equal(run.trace.eligibility, 'uncalibrated-goal');
+}
+for (const goalId of ['hp', 'stamina']) {
+  let calls = 0;
+  const run = await runSyntheticBoundaryCase({ goalId, referee: async () => { calls++; return acceptedChoice('c1'); } });
+  assert.equal(calls, 1, `${goalId} is calibrated and may ask`);
+  assert.equal(run.trace.eligibility, 'eligible');
+}
+
 // Cancellation is also a hard no-egress condition.
 {
   let calls = 0;
