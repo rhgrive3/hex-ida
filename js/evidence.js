@@ -959,7 +959,17 @@ export function decide(ranked, opts) {
 
   let verdict = VERDICT.NONE;
   if (!missing.length) verdict = VERDICT.CONFIRMED;
-  else if (probability >= LIKELY.p && margin >= LIKELY.margin) verdict = VERDICT.LIKELY;
+  /*
+   * 有力 (likely) も確定と同じく独立した出どころを 3 つ以上要する。
+   * 確からしさと 2 位との差だけでは、検証済み truth が存在するのに別候補を
+   * "likely" と断言する false-likely が起きる (DSDA-Doom real ARM64 holdout:
+   * top-1 offset 148 momz が p0.91 margin 3.8 で likely、truth offset 196 health は
+   * rank 4 で verify 済み/未検証を問わず groups=2 のまま)。強い binary-grounded
+   * evidence が実質 tie したとき最後に残る loc-shared / breadth / weak / correlated /
+   * saturated の差だけでは strong verdict を名乗らせない。足りないときは
+   * ambiguous に落とし、missing の need-independent-evidence が理由として残る。
+   */
+  else if (probability >= LIKELY.p && margin >= LIKELY.margin && independent >= CONFIRM.groups) verdict = VERDICT.LIKELY;
   else if (probability >= 0.35 ||
     (runnerUp && margin < LIKELY.margin && probability >= AMBIGUOUS_FLOOR)) {
     /*
@@ -998,6 +1008,17 @@ export function decide(ranked, opts) {
 /** 確率 → ★ の数。決着の言葉と食い違わないように、ここで一本化する。 */
 export function starsOf(probability, verdict) {
   if (verdict === VERDICT.CONFIRMED) return 5;
+  /*
+   * ambiguous に落とした top が raw 確率だけで 4★ になると、決着 (ambiguous) と
+   * 表示 (likely 相当の 4★) が食い違う。DSDA は p0.91 margin 45x でも groups=2 で
+   * ambiguous であり、4★ は嘘になる。ambiguous の表示は 3★ を上限にする。
+   * runner-up 用の verdict=null (決定なし、raw 強度) はそのままにする。
+   */
+  if (verdict === VERDICT.AMBIGUOUS) {
+    if (probability >= 0.5) return 3;
+    if (probability >= 0.15) return 2;
+    return 1;
+  }
   if (probability >= 0.85) return 4;
   if (probability >= 0.5) return 3;
   if (probability >= 0.15) return 2;

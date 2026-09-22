@@ -43,7 +43,12 @@ import { readSemanticControlLineHistory, registerSemanticControlLineHistory } fr
 import { mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 
-export const LOOP_CONTROL_PROJECTION_VERSION = 1;
+// Version 2 adds refinement of an already-emitted loop construct: break and
+// continue rewrites still run when the upstream renderer already published the
+// while/do-while/for header for this region, instead of refusing the whole
+// projection. A consumer that understood version 1 as "the body was refused
+// whenever a loop header already existed" must not assume that of version 2.
+export const LOOP_CONTROL_PROJECTION_VERSION = 2;
 
 /**
  * Returned instead of `null` when the caller's abort predicate reports
@@ -96,6 +101,8 @@ const SAFE_LOOP_EDGE_CONSTRUCTS = new Set([
 const UNSAFE_EDGE_KINDS = new Set(['unwind', 'exception']);
 
 const LOOP_NODE_TEXT = /^(?:while|for|do)\b/;
+const SWITCH_NODE_TEXT = /^switch\b/;
+const EMITTED_WHILE_TEXT = /^while\b/;
 const CONDITIONAL_TEXT = /^if\s*\(/;
 const JUMP_TEXT = /\bgoto\s+loc_[0-9a-fA-F]+\s*;/g;
 const TRAILING_JUMP_TEXT = /\bgoto\s+loc_[0-9a-fA-F]+\s*;\s*$/;
@@ -374,6 +381,173 @@ function closeTextOf(form, conditionText) {
 }
 
 /**
+ * Locates the brace-matched span of an already-emitted loop construct.
+ *
+ * Returns `{ start, end }` where `start` is the header index and `end` is the
+ * index of the `}` (or `} while (...);`) that closes it, or null when the
+ * construct is not a braced loop header or never closes.
+ */
+function findAlreadyProjectedSpan(body, headerIndex) {
+  const header = body[headerIndex];
+  if (header?.kind !== 'ctrl' || typeof header.text !== 'string') return null;
+  if (!/\{\s*$/.test(header.text.trim())) return null;
+  let depth = 0;
+  for (let index = headerIndex; index < body.length; index += 1) {
+    const node = body[index];
+    if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
+    const opens = (node.text.match(/\{/g) ?? []).length;
+    const closes = (node.text.match(/\}/g) ?? []).length;
+    depth += opens - closes;
+    if (depth === 0 && index > headerIndex) return { start: headerIndex, end: index };
+    if (depth < 0) return null;
+  }
+  return null;
+}
+
+/**
+ * Refines break/continue gotos inside a loop the upstream renderer already
+ * emitted for this region.
+ *
+ * The construct itself is left exactly as found — only residual jumps whose
+ * canonical edges this very proof owns are rewritten. Returns `{ body, record,
+ * form }` when at least one jump was proven and rewritten, null when nothing
+ * was provable (including a malformed or unclosed construct), which always
+ * means "leave the body alone".
+ */
+function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, blockIndexAt) {
+  const span = findAlreadyProjectedSpan(body, headerIndex);
+  if (!span) return null;
+
+  // A jump whose target sits inside a nested already-emitted loop or switch
+  // must not become a bare `break`/`continue` here: those statements bind to
+  // the innermost construct. Leaving the goto is the fail-closed answer.
+  const nestedRanges = [];
+  for (let index = span.start + 1; index < span.end; index += 1) {
+    const node = body[index];
+    if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
+    const text = node.text.trim();
+    if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
+    if (blockOf(node) === proof.header) continue;
+    const nested = findAlreadyProjectedSpan(body, index);
+    if (!nested) continue;
+    nestedRanges.push(nested);
+    index = nested.end;
+  }
+  const insideNestedConstruct = (index) =>
+    nestedRanges.some((range) => index >= range.start && index <= range.end);
+
+  // The emitted header text — not the CFG proof form — decides whether a
+  // latch goto may become `continue`. A proof-while paired with an emitted
+  // `for (...)` would run the for-increment on continue while the original
+  // goto bypassed it.
+  const emittedHeader = String(body[span.start]?.text ?? '').trim();
+  const emittedWhileHeader = EMITTED_WHILE_TEXT.test(emittedHeader);
+  // A source-level break lands on the first rendered statement after the loop.
+  // Only rewrite when that rendered destination is the exact CFG exit proven
+  // by this loop; an intervening rendered block would change control flow.
+  const afterLoop = span.end + 1 < body.length ? body[span.end + 1] : null;
+  const breakLandsAtExit = afterLoop != null && blockOf(afterLoop) === proof.exitTarget;
+
+  const rewrites = [];
+  for (let index = span.start + 1; index < span.end; index += 1) {
+    if (insideNestedConstruct(index)) continue;
+    const node = body[index];
+    const owner = blockOf(node);
+    // Ownership is breakEdgeKeys/latchEdgeKeys from this proof: a jump whose
+    // block is not a member cannot be refined under this construct.
+    if (owner == null || !proof.members.has(owner)) continue;
+    const targets = jumpTargetsOf(node.text);
+    if (targets.length === 0) continue;
+    for (const target of targets) {
+      const targetBlock = blockIndexAt(target);
+      if (targetBlock == null) return null;
+      const edge = (ctx.facts?.edges ?? []).find((record) =>
+        record.from === owner && record.to === targetBlock) ?? null;
+      if (!edge) return null;
+      if (targets.length > 1) continue;
+      if (edge.construct === 'loop-break') {
+        if (!breakLandsAtExit || !proof.breakUsable
+          || !proof.breakEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
+        rewrites.push({ index, text: 'break', edge, targetBlock });
+        continue;
+      }
+      if (edge.construct === 'loop-back-edge') {
+        if (!proof.latchEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
+        // The construct is already closed with `}`, so there is no closing bare
+        // jump to absorb. An interior back edge may become `continue` only when
+        // both the CFG form is a pre-test loop and the emitted C header is a
+        // `while` — for/do headers rebind continue to a different target.
+        if (proof.form !== 'while' || !emittedWhileHeader) continue;
+        rewrites.push({ index, text: 'continue', edge, targetBlock });
+      }
+    }
+  }
+  if (rewrites.length === 0) return null;
+
+  const selection = Object.freeze({
+    header: proof.header,
+    bodyStart: proof.bodyStart,
+    exit: proof.exitTarget,
+    form: proof.form === 'do-while' ? 'do-while' : 'while-loop',
+    invert: proof.invert,
+    breakTarget: proof.breakUsable ? proof.breakTarget : null,
+  });
+  const headerNode = body[span.start];
+  const record = Object.freeze({
+    rule: LOOP_PROJECTION_RULE,
+    phase: 'phase8-control-projection',
+    before: 'control:natural-loop-goto',
+    after: 'control:loop-break-continue-refine',
+    evidence: Object.freeze({
+      kind: 'canonical-loop-facts-adoption',
+      version: LOOP_CONTROL_PROJECTION_VERSION,
+      regionEntry: proof.header,
+      regionExits: Object.freeze([...(proof.loop.exitEdges ?? [])].map((edge) => `${edge.from}->${edge.to}`)),
+      regionForm: proof.form,
+      guardBlock: proof.guardBlock,
+      latches: Object.freeze([...(proof.loop.latches ?? [])]),
+      bodyStart: proof.bodyStart,
+      exitTarget: proof.exitTarget,
+      breakTarget: proof.breakTarget,
+      detail: 'refined proven break/continue edges inside an already-emitted loop construct; the construct and every canonical edge are preserved',
+    }),
+    originHistory: expressionOriginHistory(
+      { source: headerNode?.source ?? null },
+      { source: headerNode?.source ?? null },
+    ),
+  });
+
+  const rewriteByIndex = new Map(rewrites.map((rewrite) => [rewrite.index, rewrite]));
+  const next = [];
+  for (let index = 0; index < body.length; index += 1) {
+    const node = body[index];
+    const rewrite = rewriteByIndex.get(index);
+    if (!rewrite) {
+      next.push(node);
+      continue;
+    }
+    if (typeof node.text !== 'string' || !TRAILING_JUMP_TEXT.test(node.text)) return null;
+    const text = node.text.replace(TRAILING_JUMP_TEXT, `${rewrite.text};`);
+    const rewritten = { ...node, text };
+    const previous = readSemanticControlLineHistory(node, ctx.ir);
+    registerSemanticControlLineHistory(rewritten, Object.freeze({
+      ir: ctx.ir ?? null,
+      instruction: null,
+      canonical: { isCurrent: () => true },
+      records: Object.freeze([...(previous?.records ?? []), record]),
+      selection: Object.freeze({
+        ...selection,
+        form: rewrite.text === 'break' ? 'loop-break' : 'loop-continue',
+        target: rewrite.targetBlock,
+      }),
+      isCurrent: () => true,
+    }));
+    next.push(rewritten);
+  }
+  return { body: next, record, form: proof.form };
+}
+
+/**
  * Projects one already-proven loop into the rendered body.
  *
  * Returns `{ body, record, form }` or null. Null is the fallback answer and it
@@ -403,17 +577,21 @@ function projectOneLoop(body, proof, ctx) {
     return resolved;
   };
 
+  // The upstream renderer may already have emitted this loop. Projecting it a
+  // second time would nest two constructs over one region, so the construct is
+  // left alone — but proven break/continue gotos inside it are still refined.
+  // The refine path does not need header/exit addresses, so it runs first.
+  for (let index = 0; index < body.length; index += 1) {
+    const node = body[index];
+    if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
+    if (!LOOP_NODE_TEXT.test(node.text.trim())) continue;
+    if (blockOf(node) !== proof.header) continue;
+    return refineAlreadyProjectedLoop(body, proof, ctx, index, blockOf, blockIndexAt);
+  }
+
   const headerAddress = asAddress(ctx.blockAddress(proof.header));
   const exitAddress = asAddress(ctx.blockAddress(proof.exitTarget));
   if (headerAddress == null || exitAddress == null) return null;
-
-  // The upstream renderer may already have emitted this loop. Projecting it a
-  // second time would nest two constructs over one region.
-  for (const node of body) {
-    if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
-    if (!LOOP_NODE_TEXT.test(node.text.trim())) continue;
-    if (blockOf(node) === proof.header) return null;
-  }
 
   // Ownership. Every rendered node whose block belongs to the loop must form one
   // contiguous run: a loop whose nodes are interleaved with nodes nobody owns
