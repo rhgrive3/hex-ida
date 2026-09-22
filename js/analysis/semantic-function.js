@@ -4,6 +4,10 @@ import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import {
+  isCxxEvidenceProvider,
+  normalizeCxxEvidenceInput,
+} from './cxx/project.js';
+import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   decompilerSnapshot,
@@ -361,6 +365,65 @@ export function assertScopedCanonicalOwner(owner) {
   if (!SCOPED_DECOMPILER_OWNERS.has(owner)) throw new TypeError('scoped-canonical-issued-owner-required');
   return owner;
 }
+/**
+ * Resolves the C++ object evidence this function's projection may render.
+ *
+ * This entrypoint does not derive evidence and does not scan the binary. It
+ * accepts either a provider issued in this process (which projects from the
+ * slice's already-built class index) or an already-projected canonical value,
+ * and drops everything else. A serialized or hand-built look-alike therefore
+ * renders exactly like no evidence at all, which is what keeps `this` from
+ * being minted by anything but the canonical producer.
+ */
+function cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions) {
+  const functionId = pipeline.functionId ?? null;
+  const functionAddress = addressOf(orderedInstructions[0]);
+  const bound = (value) => {
+    const normalized = normalizeCxxEvidenceInput(value);
+    return normalized && receiverBindsToFunction(normalized.receiver, { functionId, functionAddress })
+      ? normalized
+      : null;
+  };
+
+  const explicit = bound(input?.cxxEvidence);
+  if (explicit) return explicit;
+
+  const provider = input?.cxxEvidenceProvider;
+  if (isCxxEvidenceProvider(provider)) {
+    const projected = bound(provider.projectForFunction({
+      functionId,
+      functionAddress,
+      functionName: input.name ?? null,
+      rawSymbol: input.rawSymbol ?? input.symbol ?? null,
+      ir: pipeline.legacyV1,
+      metadata: input.cxxMemberMetadata ?? {},
+    }));
+    if (projected) return projected;
+  }
+  return bound(projectionOptions?.cxxEvidence);
+}
+
+/**
+ * Canonical evidence is issued per function. Being canonical is therefore not
+ * enough to be usable here: evidence issued for function A must not be replayed
+ * against function B, or a caller could turn an arbitrary argument into `this`.
+ * Both identities must agree when both are known, and at least one must be
+ * present at all.
+ */
+function receiverBindsToFunction(receiver, { functionId, functionAddress }) {
+  if (!receiver) return true;
+  const receiverId = typeof receiver.functionId === 'string' && receiver.functionId ? receiver.functionId : null;
+  if (receiverId && functionId != null && String(functionId) !== receiverId) return false;
+  if (receiver.functionAddress != null && functionAddress != null) {
+    try {
+      if (BigInt(receiver.functionAddress) !== BigInt(functionAddress)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return receiverId != null || receiver.functionAddress != null;
+}
+
 function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, projectionOptions = {}) {
   const { decoderSemanticVersion, binaryId, sliceId } = input;
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
@@ -391,8 +454,10 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
+  const cxxEvidence = cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions);
   const decompiler = decompileSemanticProjection(model, {
     ...projectionOptions,
+    ...(cxxEvidence ? { cxxEvidence } : {}),
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,

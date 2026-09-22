@@ -1,0 +1,83 @@
+{
+  "schema": "cxx-recovery-taxonomy/v1",
+  "auditBaseline": "branch investigate/pinpoint-confidence-real-binary-calibration",
+  "corpus": [
+    "tests/phase7/cxx/fixtures/game.cpp + abi-stubs.cpp compiled with clang --target=aarch64-unknown-linux-gnu",
+    "fixtures: game-rtti-o2, game-rtti-o0, game-nortti-o2 (real linked ARM64 ELF, RTTI present / RTTI absent)"
+  ],
+  "capabilities": [
+    {
+      "id": "object-this-recognition",
+      "state": "partial",
+      "evidence": "createCppReceiverEvidence enforces a non-static-member proof and fails closed, but extractCppObjectEvidence has no production caller; no receiver is derived from a real binary in the pipeline."
+    },
+    {
+      "id": "vtable-discovery",
+      "state": "partial",
+      "evidence": "findCxxClasses requires _ZTV/_ZTI/_ZTS symbols. Measured: 8 named classes per fixture, including 3 __cxxabiv1 implementation classes; nothing is discoverable without those symbols."
+    },
+    {
+      "id": "vtable-slot-enumeration",
+      "state": "unsafe-to-infer",
+      "evidence": "readVtable with a fixed cap enumerated 64 slots across 8 symbol-derived tables that hold 20; 12 of the enumerated entries resolve to _ZTI/_ZTV/_ZTS symbols, i.e. provably not methods."
+    },
+    {
+      "id": "rtti-discovery",
+      "state": "missing",
+      "evidence": "_ZTI addresses were used as labels only; no typeinfo record was parsed, so the ABI kind and base arrays were unread."
+    },
+    {
+      "id": "typeinfo-class-name-association",
+      "state": "partial",
+      "evidence": "Names came from demangling _ZTV/_ZTS symbols. A stripped-but-RTTI binary yielded no names even though the type-name string was present."
+    },
+    {
+      "id": "inheritance-relationship",
+      "state": "missing",
+      "evidence": "No __si_class_type_info / __vmi_class_type_info base array was read; AFTER: 4 edges per RTTI fixture (including a __vmi class with two bases at subobject offsets 0 and 24), 0 for the -fno-rtti fixture."
+    },
+    {
+      "id": "base-derived-relationship",
+      "state": "missing",
+      "evidence": "No derived-class enumeration existed; AFTER: derivedClassesOf returns transitive RTTI-proven derived classes only."
+    },
+    {
+      "id": "virtual-method-slot-target",
+      "state": "partial",
+      "evidence": "Slot addresses resolved, but identical-code folding merged three destructors onto one address and the single-name projection attributed the slot to one arbitrary class."
+    },
+    {
+      "id": "indirect-virtual-call-target-set",
+      "state": "missing",
+      "evidence": "No call-site-scoped target set existed. AFTER: 20 target sets on the RTTI fixtures (9-10 multi-candidate) and 19 on the -fno-rtti fixture (0 multi-candidate), with 0 closure claims without an explicit call-site authority."
+    },
+    {
+      "id": "constructor-destructor-evidence",
+      "state": "partial",
+      "evidence": "Recognised only from symbol syntax (C1/C2/D0/D1/D2); not used as a receiver or dynamic-type proof."
+    },
+    {
+      "id": "member-offset-recovery",
+      "state": "supported",
+      "evidence": "fieldFor hooks plus js/decompiler/types/layout.js already recover offsets, widths and array shape."
+    },
+    {
+      "id": "member-type-inference",
+      "state": "partial",
+      "evidence": "Width only (layout.js size). AFTER: float/double/pointer/bool-like/array-like plus signed byte/halfword/word/doubleword categories, with width-only integers left explicitly unclaimed."
+    },
+    {
+      "id": "pointer-reference-type-propagation",
+      "state": "partial",
+      "evidence": "js/analysis/types/constraints.js exists but was not connected to member categories; AFTER: an 8-byte member used as an address or argument is reported as a pointer with a rule string."
+    }
+  ],
+  "unsafeToInfer": [
+    "class names without RTTI symbols or a type-name string",
+    "inheritance edges without a readable typeinfo base array",
+    "slot targets beyond a proven vtable extent",
+    "a single virtual target from a single discovered candidate",
+    "signedness of a plain (non sign-extending) word/byte access",
+    "encoded pointer words reinterpreted as addresses without fixup context"
+  ]
+}

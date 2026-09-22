@@ -1,0 +1,280 @@
+{
+  "schema": "cxx-recovery-measurement/v1",
+  "generatedAt": "2026-09-22T16:57:09.330Z",
+  "toolchain": {
+    "objdump": "llvm-objdump",
+    "node": "v24.20.0"
+  },
+  "fixtures": {
+    "game-rtti-o2": {
+      "bytes": 7616,
+      "before": {
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
+        "slotsPointingAtTypeinfoOrVtable": 12,
+        "slotsUnresolved": 3,
+        "inheritanceEdges": 0,
+        "typeinfoParsed": 0,
+        "classSlotTargetSets": 0,
+        "memberTypes": 0
+      },
+      "after": {
+        "rttiPresent": true,
+        "classesWithName": 5,
+        "classesNamedFromVtableSymbolOnly": 0,
+        "typeinfoParsed": 5,
+        "inheritanceEdges": 4,
+        "vtables": 5,
+        "slots": 20,
+        "slotsWithMergedAliases": 5,
+        "unresolvedSlots": 0,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 11,
+        "multiCandidateTargetSets": 9,
+        "totalResolvedTargets": 32,
+        "readBudget": 14
+      },
+      "memberTypes": {
+        "functions": [
+          {
+            "symbol": "_Z10readHealthP6Entity",
+            "status": "ok",
+            "fields": 1,
+            "typed": 0,
+            "widthOnly": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "rule": "word-access"
+              }
+            ]
+          },
+          {
+            "symbol": "_Z9readSpeedP5Actor",
+            "status": "ok",
+            "fields": 1,
+            "typed": 1,
+            "widthOnly": 0,
+            "details": [
+              {
+                "offset": "0x18",
+                "size": 4,
+                "type": "float",
+                "category": "float",
+                "rule": "vector-register-flow"
+              }
+            ]
+          }
+        ],
+        "fields": 2,
+        "typedFieldCount": 1,
+        "widthOnlyFieldCount": 1,
+        "unknownFieldCount": 0
+      }
+    },
+    "game-rtti-o0": {
+      "bytes": 9200,
+      "before": {
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
+        "slotsPointingAtTypeinfoOrVtable": 12,
+        "slotsUnresolved": 3,
+        "inheritanceEdges": 0,
+        "typeinfoParsed": 0,
+        "classSlotTargetSets": 0,
+        "memberTypes": 0
+      },
+      "after": {
+        "rttiPresent": true,
+        "classesWithName": 5,
+        "classesNamedFromVtableSymbolOnly": 0,
+        "typeinfoParsed": 5,
+        "inheritanceEdges": 4,
+        "vtables": 5,
+        "slots": 20,
+        "slotsWithMergedAliases": 5,
+        "unresolvedSlots": 0,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 10,
+        "multiCandidateTargetSets": 10,
+        "totalResolvedTargets": 35,
+        "readBudget": 14
+      },
+      "memberTypes": {
+        "functions": [
+          {
+            "symbol": "_ZN6Player10takeDamageEi",
+            "status": "ir-failed:semantic-ssa-control-flow-mismatch"
+          },
+          {
+            "symbol": "_Z10readHealthP6Entity",
+            "status": "ok",
+            "fields": 2,
+            "typed": 0,
+            "widthOnly": 2,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "rule": "word-access"
+              },
+              {
+                "offset": "0xc",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "rule": "word-access"
+              }
+            ]
+          },
+          {
+            "symbol": "_Z9readSpeedP5Actor",
+            "status": "ok",
+            "fields": 1,
+            "typed": 1,
+            "widthOnly": 0,
+            "details": [
+              {
+                "offset": "0x18",
+                "size": 4,
+                "type": "float",
+                "category": "float",
+                "rule": "vector-register-flow"
+              }
+            ]
+          },
+          {
+            "symbol": "_Z10readTargetP6Entity",
+            "status": "ok",
+            "fields": 1,
+            "typed": 0,
+            "widthOnly": 1,
+            "details": [
+              {
+                "offset": "0x10",
+                "size": 8,
+                "type": "int64_t|uint64_t|pointer",
+                "category": "int64",
+                "rule": "doubleword-access"
+              }
+            ]
+          },
+          {
+            "symbol": "_Z7isAliveP6Player",
+            "status": "ok",
+            "fields": 1,
+            "typed": 0,
+            "widthOnly": 1,
+            "details": [
+              {
+                "offset": "0x3c",
+                "size": 1,
+                "type": "uint8_t|char",
+                "category": "int8",
+                "rule": "byte-access"
+              }
+            ]
+          },
+          {
+            "symbol": "_Z12readNameCharP6Playeri",
+            "status": "ok",
+            "fields": 0,
+            "typed": 0,
+            "widthOnly": 0,
+            "details": []
+          }
+        ],
+        "fields": 5,
+        "typedFieldCount": 1,
+        "widthOnlyFieldCount": 4,
+        "unknownFieldCount": 0
+      }
+    },
+    "game-nortti-o2": {
+      "bytes": 6456,
+      "before": {
+        "classesWithName": 8,
+        "abiImplementationClasses": 3,
+        "vtablesRead": 8,
+        "slotsEnumerated": 64,
+        "slotsPointingAtTypeinfoOrVtable": 0,
+        "slotsUnresolved": 6,
+        "inheritanceEdges": 0,
+        "typeinfoParsed": 0,
+        "classSlotTargetSets": 0,
+        "memberTypes": 0
+      },
+      "after": {
+        "rttiPresent": false,
+        "classesWithName": 5,
+        "classesNamedFromVtableSymbolOnly": 5,
+        "typeinfoParsed": 0,
+        "inheritanceEdges": 0,
+        "vtables": 5,
+        "slots": 20,
+        "slotsWithMergedAliases": 5,
+        "unresolvedSlots": 0,
+        "classSlotTargetSets": 20,
+        "singleCandidateTargetSets": 20,
+        "multiCandidateTargetSets": 0,
+        "totalResolvedTargets": 20,
+        "readBudget": 5
+      },
+      "memberTypes": {
+        "functions": [],
+        "fields": 0,
+        "typedFieldCount": 0,
+        "widthOnlyFieldCount": 0,
+        "unknownFieldCount": 0
+      }
+    }
+  },
+  "performance": {
+    "baselineSymbolOnly": {
+      "iterations": 300,
+      "totalMs": 197.7,
+      "meanMs": 0.659
+    },
+    "cxxRecoveryEnabled": {
+      "iterations": 300,
+      "totalMs": 162.787,
+      "meanMs": 0.5426
+    },
+    "meanRatio": 0.82
+  },
+  "noEvidenceCost": {
+    "emptyTable": {
+      "latency": {
+        "iterations": 300,
+        "totalMs": 2.325,
+        "meanMs": 0.0078
+      },
+      "classesFound": 0,
+      "reads": 0
+    },
+    "largeCOrdinarySymbols": {
+      "symbolCount": 50000,
+      "latency": {
+        "iterations": 75,
+        "totalMs": 42.443,
+        "meanMs": 0.5659
+      },
+      "reads": 0
+    }
+  },
+  "notes": [
+    "BEFORE reflects main capability: findCxxClasses (symbol-only) plus readVtable with a fixed slot cap.",
+    "AFTER is buildCxxClassEvidence + resolveVirtualTargetSet + recoverMemberTypeEvidence.",
+    "Member types are measured on IR built from llvm-objdump disassembly of the linked fixture.",
+    "classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false."
+  ]
+}
