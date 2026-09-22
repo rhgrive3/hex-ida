@@ -81,6 +81,12 @@ This keeps the Jev signal meaningfully independent instead of teaching it to rep
 
 ## Shadow evaluation before promotion
 
+The labelled holdout is a real upstream ARM64 game release, pinned by
+repository/tag/commit plus asset and member sha256 (`scripts/fetch-real-game-holdout.mjs`,
+`tests/fixtures/real-game-boundary-holdout.manifest.json`). Its labels are derived twice — from the
+pinned upstream headers under the arm64 ABI and from the shipped instructions of the pinned
+artifact — and the harness refuses to measure an artifact whose sha256 is not the pinned one.
+
 Before production influence, add instrumentation that records for labelled game-analysis holdouts:
 - true candidate deterministic rank;
 - D4/D5 score and gap;

@@ -1,11 +1,17 @@
 /*
- * Opt-in Phase-0/1 harness for the real, source-grounded OpenMW holdout.
+ * Opt-in Phase-0/1 harness for the pinned real-game holdout.
  *
- * The artifact is compiled from pinned OpenMW source (GPL-3.0-only) and is
- * therefore never committed to this repository. Point HEX_OPENMW_HOLDOUT_ARTIFACT
- * at the locally built arm64 Mach-O. The deterministic D1..D4 baseline always
- * runs; the referee variants need HEX_OPENMW_HOLDOUT_LIVE=1 and a real
- * OPENJEV_API_KEY, so a run without the key cannot fabricate a shadow result.
+ * The labelled fixture is a real upstream ARM64 game release binary (see
+ * `scripts/fetch-real-game-holdout.mjs` and the manifest it reads). The bytes
+ * are GPL-licensed upstream build output and are therefore never committed;
+ * point HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT at the fetched artifact. The
+ * manifest path can be overridden with
+ * HEX_SEMANTIC_BOUNDARY_HOLDOUT_MANIFEST, which is how the historical,
+ * locally-built OpenMW compiler fixture is still measured.
+ *
+ * The deterministic D1..D4 baseline always runs; the referee variants need
+ * HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1 and a real OPENJEV_API_KEY, so a run
+ * without the key cannot fabricate a shadow result.
  *
  * Every labelled case in the manifest is evaluated, not just the first one, so
  * a promotion decision can never rest on a single goal. The four variants are
@@ -15,6 +21,7 @@
  * from the boundary set.
  */
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { openBinary } from './harness.mjs';
 import { foldShapes } from '../js/shapes.js';
 import { goalFromPreset } from '../js/goals.js';
@@ -28,8 +35,9 @@ import {
   openJevRequestBody,
 } from '../js/ai/provider/worker-semantic-rank.js';
 
+const DEFAULT_MANIFEST = new URL('./fixtures/real-game-boundary-holdout.manifest.json', import.meta.url);
 const MANIFEST = JSON.parse(fs.readFileSync(
-  new URL('./fixtures/openmw-boundary-holdout.manifest.json', import.meta.url),
+  process.env.HEX_SEMANTIC_BOUNDARY_HOLDOUT_MANIFEST || DEFAULT_MANIFEST,
   'utf8',
 ));
 const LIVE_URL = 'https://api.openjev.sh/v1/systemone';
@@ -41,24 +49,41 @@ const UPSTREAM_TIMEOUT_MS = 2500;
 const AMBIGUITY = normalizeSemanticBoundaryAmbiguityPolicy(MANIFEST.policies?.ambiguity);
 const ADMISSION = normalizeSemanticBoundaryAdmissionPolicy(MANIFEST.policies?.admission);
 if (!AMBIGUITY || !ADMISSION) {
-  throw new Error('openmw-holdout: the labelled fixture must freeze a valid ambiguity and admission policy');
+  throw new Error('real-game-holdout: the labelled fixture must freeze a valid ambiguity and admission policy');
 }
 const CASES = Array.isArray(MANIFEST.cases) ? MANIFEST.cases : [];
-if (!CASES.length) throw new Error('openmw-holdout: the labelled fixture has no cases');
+if (!CASES.length) throw new Error('real-game-holdout: the labelled fixture has no cases');
 
-const artifact = process.env.HEX_OPENMW_HOLDOUT_ARTIFACT;
+const artifact = process.env.HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT || process.env.HEX_OPENMW_HOLDOUT_ARTIFACT;
 if (!artifact || !fs.existsSync(artifact)) {
   process.stdout.write(`${JSON.stringify({
-    schema: 'hex-openmw-boundary-holdout-evaluation/v1',
+    schema: 'hex-semantic-boundary-real-game-holdout-evaluation/v1',
     skipped: true,
-    reason: 'HEX_OPENMW_HOLDOUT_ARTIFACT is not set to a locally built arm64 artifact.',
+    reason: 'HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT is not set to a fetched arm64 game artifact.',
+    fixture: { schema: MANIFEST.schema, kind: MANIFEST.kind, upstream: MANIFEST.upstream ?? null },
     artifactPolicy: MANIFEST.artifactPolicy,
   }, null, 2)}\n`);
   process.exit(0);
 }
 
+// The labelled fixture is only evidence when the measured artifact is the pinned
+// one.  A different (or patched) binary is a different product, so the identity
+// is checked against the manifest instead of trusting the path it was given.
+const artifactBytes = fs.readFileSync(artifact);
+const artifactIdentity = {
+  bytes: artifactBytes.length,
+  sha256: createHash('sha256').update(artifactBytes).digest('hex'),
+};
+const pinned = (MANIFEST.artifacts || []).find((entry) => entry.binary?.sha256 === artifactIdentity.sha256)?.binary || null;
+if (MANIFEST.artifacts && !pinned) {
+  throw new Error(`real-game-holdout: the artifact does not match any pinned identity in the fixture (bytes=${artifactIdentity.bytes} sha256=${artifactIdentity.sha256})`);
+}
+if (pinned && pinned.bytes !== artifactIdentity.bytes) {
+  throw new Error(`real-game-holdout: pinned size ${pinned.bytes} != measured ${artifactIdentity.bytes}`);
+}
+
 const key = typeof process.env.OPENJEV_API_KEY === 'string' ? process.env.OPENJEV_API_KEY : '';
-const live = process.env.HEX_OPENMW_HOLDOUT_LIVE === '1' && key.length > 0;
+const live = process.env.HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE === '1' && key.length > 0;
 const upstreamLatency = { choice: [], noul: [] };
 
 function percentile(values, q) {
@@ -229,9 +254,13 @@ const cases = [];
 for (const caseDef of CASES) cases.push(await evaluateCase(caseDef));
 
 const report = {
-  schema: 'hex-openmw-boundary-holdout-evaluation/v1',
-  fixture: MANIFEST.kind,
-  artifact: { path: artifact, bytes: fs.statSync(artifact).size },
+  schema: 'hex-semantic-boundary-real-game-holdout-evaluation/v1',
+  fixture: {
+    schema: MANIFEST.schema ?? null,
+    kind: MANIFEST.kind ?? null,
+    upstream: MANIFEST.upstream ?? null,
+  },
+  artifact: { path: artifact, bytes: artifactIdentity.bytes, sha256: artifactIdentity.sha256, pinned: Boolean(pinned) },
   frozenPolicies: { ambiguity: AMBIGUITY, admission: ADMISSION },
   live,
   // Promotion needs a case that both misses deterministically and is rescued by
@@ -240,10 +269,10 @@ const report = {
   labelsConsistent: cases.every((entry) => entry.labelsConsistent),
   promotionEligible: cases.some((entry) => entry.promotionEligible),
   promotionBlocker: !cases.every((entry) => entry.labelsConsistent)
-    ? 'At least one labelled OpenMW case disagrees with the measured fixture, so no case can be used as evidence.'
+    ? 'At least one labelled holdout case disagrees with the measured fixture, so no case can be used as evidence.'
     : (cases.some((entry) => entry.promotionEligible)
       ? null
-      : 'No labelled OpenMW case shows a boundary rescue by the gated probe, so production stays gated.'),
+      : 'No labelled real-game holdout case shows a boundary rescue by the gated probe, so production stays gated.'),
   upstreamLatencyMs: {
     choice: { p50: percentile(upstreamLatency.choice, 0.5), p95: percentile(upstreamLatency.choice, 0.95) },
     noul: { p50: percentile(upstreamLatency.noul, 0.5), p95: percentile(upstreamLatency.noul, 0.95) },

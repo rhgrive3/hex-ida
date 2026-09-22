@@ -17,10 +17,16 @@ import {
   syntheticShapeFixture,
 } from './fixtures/semantic-boundary-holdout.mjs';
 
-const HOLDOUT_MANIFEST = JSON.parse(fs.readFileSync(
-  new URL('./fixtures/openmw-boundary-holdout.manifest.json', import.meta.url),
-  'utf8',
-));
+function readManifest(name) {
+  return JSON.parse(fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+}
+
+const HOLDOUT_MANIFEST = readManifest('openmw-boundary-holdout.manifest.json');
+// The real-game holdout is the pinned upstream ARM64 release that replaced the
+// locally built two-file compiler fixture.  It is labelled from the pinned
+// upstream headers *and* from the shipped instructions of the pinned artifact.
+const REAL_GAME_MANIFEST = readManifest('real-game-boundary-holdout.manifest.json');
+const HOLDOUT_CALIBRATION_IDS = new Set(['openmw-boundary-holdout', 'real-game-boundary-holdout']);
 
 function resultSignature(run) {
   return {
@@ -268,17 +274,55 @@ for (const referee of [
   assert.equal(semanticBoundaryGoalGuidance('constructor'), '');
   assert.equal(semanticBoundaryGoalGuidance('toString'), '');
   assert.equal(semanticBoundaryGoalGuidance(null), '');
-  const labelled = new Set(HOLDOUT_MANIFEST.cases.map((entry) => entry.goal));
+  const labelled = new Set([].concat(HOLDOUT_MANIFEST.cases, REAL_GAME_MANIFEST.cases).map((entry) => entry.goal));
   for (const [goalId, entry] of Object.entries(SEMANTIC_BOUNDARY_GOAL_GUIDANCE)) {
     assert.equal(typeof entry.text, 'string');
     assert.ok(entry.text.length > 0, `${goalId} guidance must not be empty`);
-    assert.equal(entry.calibratedBy, 'openmw-boundary-holdout', `${goalId} guidance must cite the source-grounded holdout`);
+    assert.ok(HOLDOUT_CALIBRATION_IDS.has(entry.calibratedBy), `${goalId} guidance must cite a known labelled holdout`);
     assert.equal(HOLDOUT_MANIFEST.kind, 'external-source-grounded-arm64-fixture');
     assert.ok(labelled.has(goalId), `${goalId} guidance has no labelled holdout case`);
   }
   const labelledRanks = new Map(HOLDOUT_MANIFEST.cases.map((entry) => [entry.goal, entry.expectedDeterministicRank]));
   assert.equal(labelledRanks.get('hp'), 5);
   assert.equal(labelledRanks.get('stamina'), 1);
+}
+
+// Every real-game label must be identity-pinned and doubly derived: a fixture
+// whose artifact moves, or whose offset came from one derivation only, cannot
+// be used to judge the referee.
+{
+  assert.equal(REAL_GAME_MANIFEST.schema, 'hex-real-game-boundary-holdout/v1');
+  assert.equal(REAL_GAME_MANIFEST.kind, 'external-upstream-arm64-game-release');
+  assert.equal(REAL_GAME_MANIFEST.artifactPolicy.checkedIn, false);
+  assert.match(REAL_GAME_MANIFEST.upstream.commit, /^[0-9a-f]{40}$/);
+  assert.equal(REAL_GAME_MANIFEST.upstream.tag, 'v0.29.4');
+  assert.ok(REAL_GAME_MANIFEST.artifacts.length > 0);
+  for (const artifact of REAL_GAME_MANIFEST.artifacts) {
+    assert.match(artifact.archive.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(Number.isSafeInteger(artifact.archive.bytes) && artifact.archive.bytes > 0);
+    assert.match(artifact.binary.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(Number.isSafeInteger(artifact.binary.bytes) && artifact.binary.bytes > 0);
+    assert.equal(artifact.binary.arch, 'arm64');
+    assert.match(artifact.binary.path, /^[^/]+\/dsda-doom$/);
+    assert.equal(artifact.archive.url.includes(`/${REAL_GAME_MANIFEST.upstream.tag}/`), true);
+  }
+  assert.ok(REAL_GAME_MANIFEST.labelProvenance.layoutProbe.command.includes('arm64-apple-macos'));
+  assert.ok(REAL_GAME_MANIFEST.labelProvenance.instructionProbe.result.includes('196'),
+    'the instruction-level derivation must name the labelled offset');
+  for (const entry of REAL_GAME_MANIFEST.cases) {
+    assert.ok(Number.isSafeInteger(entry.offset) && entry.offset > 0);
+    assert.match(entry.field, /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/);
+    assert.equal((entry.expectedDeterministicRank >= 4), entry.boundaryTruthReachable === true,
+      'reachability must be derived from the labelled rank, never asserted independently');
+    assert.ok(Number.isInteger(entry.expectedCandidateCount) && entry.expectedCandidateCount > 0);
+    // A D4 truth is already inside the normal verification set, so it must not
+    // be advertised as an oracle challenger the referee is allowed to inspect.
+    if (entry.expectedDeterministicRank < 5) assert.equal(entry.oracleChallengerId, null);
+  }
+  const hp = REAL_GAME_MANIFEST.cases.find((entry) => entry.goal === 'hp');
+  assert.equal(hp.offset, 196);
+  assert.equal(hp.deterministicTopOffset, 148);
+  assert.equal(hp.deterministicTopIsTruth, false);
 }
 
 // The frozen ambiguity/admission policies live in the labelled fixture, and the
@@ -291,6 +335,14 @@ for (const referee of [
   assert.ok(admission, 'the OpenMW fixture must freeze a valid admission policy');
   assert.deepEqual(ambiguity, HOLDOUT_AMBIGUITY_POLICY);
   assert.deepEqual(admission, HOLDOUT_ADMISSION_POLICY);
+  // Three fixtures, one policy identity: a promotion decision must be bound to
+  // the exact pair it was measured with, not to a look-alike.
+  const realAmbiguity = normalizeSemanticBoundaryAmbiguityPolicy(REAL_GAME_MANIFEST.policies?.ambiguity);
+  const realAdmission = normalizeSemanticBoundaryAdmissionPolicy(REAL_GAME_MANIFEST.policies?.admission);
+  assert.ok(realAmbiguity, 'the real-game fixture must freeze a valid ambiguity policy');
+  assert.ok(realAdmission, 'the real-game fixture must freeze a valid admission policy');
+  assert.deepEqual(realAmbiguity, HOLDOUT_AMBIGUITY_POLICY);
+  assert.deepEqual(realAdmission, HOLDOUT_ADMISSION_POLICY);
   assert.equal(normalizeSemanticBoundaryAmbiguityPolicy({ schema: 'hex-semantic-boundary-ambiguity/v1' }), null);
   assert.equal(normalizeSemanticBoundaryAdmissionPolicy({ schema: 'hex-semantic-boundary-admission/v1', minProbability: 2 }), null);
 }

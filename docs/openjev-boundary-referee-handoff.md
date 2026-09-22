@@ -1,5 +1,80 @@
 # OpenJev Boundary Referee 引き継ぎ
 
+## 2026-09-22: 実ゲーム holdout を固定して再計測（現 main）
+
+base は現 main `adadf37ac0a7877d201cbc8faf711b1b5b95c4af`（#9407）。
+
+### 何を固定したか
+
+実ゲーム holdout を「ローカルビルドした 2 ファイル fixture」から
+**上流 OSS ゲームの実 ARM64 リリースを GitHub から取得して固定する方式**へ置き換えた。
+
+- 採用: **DSDA-Doom v0.29.4 macOS arm64**（`kraflab/dsda-doom`, commit `e443ff7a3e6090a1ff92ad7a426916c4fd35ecc5`, GPL-2.0）
+  - 1 つの GitHub Release 資産 `dsda-doom-0.29.4-mac-arm64.zip`（11,359,462 bytes, sha256 `cc46a12f…3540`）
+  - 中身の `dsda-doom-0.29.4-mac-arm64/dsda-doom`（Mach-O arm64, 2,814,096 bytes, sha256 `76d5427c…73b8`）
+- 取得: `node scripts/fetch-real-game-holdout.mjs`（archive/member の両方を sha256 で照合、tmp+rename で atomic、`--check` は再取得なしで照合）
+- fixture: `tests/fixtures/real-game-boundary-holdout.manifest.json`（identity, license, label provenance, frozen policies, labelled cases）
+- 成果物は GPL のため **checked in しない**（`tests/.real-game-holdout/` は gitignore、既存 `tests/.real-fixtures/` と同じ扱い）
+
+### label をどう正当化したか
+
+2 つの独立導出が一致することを要求する。
+
+1. 固定 commit の上流ヘッダを arm64 ABI でレイアウトダンプ:
+   `clang -target arm64-apple-macos11 -I prboom2/src -I prboom2/src/dsda -Xclang -fdump-record-layouts-complete -fsyntax-only`
+   → `mobj_t` は 464 bytes、`uint64_t flags` 184 / `int intflags` 192 / **`int health` 196**。
+2. 固定 artifact の実命令（local symbol table が残っているので関数名で引ける）:
+   `_P_DamageMobj` の死亡ガードは `ldr w9, [x0, #196]; cmp w9, #0; b.le`、ダメージ書き込みは `str w22, [x19, #196]`、
+   `_P_KillMobj` は `[x8, #196]`、`_P_GiveBody` は `str w8, [x9, #196]`。近傍の `flags` 184 / `player` 224 / `type` 156 / `momx` 140 もヘッダと一致。
+
+### 候補になった artifact（数個試した記録）
+
+| 候補 | 結果 |
+|---|---|
+| OpenMW `OpenMW-0.51.0-macOS-arm64.dmg` | dmg のみ。この環境に dmg 展開器が無く、CI でも再現手順が増えるため不採用 |
+| SuperTuxKart `-linux-arm64.tar.gz` (734 MB) | 大きすぎ、arm64 ELF は得られるが label 導出に使える関数シンボルが無い |
+| OpenRCT2 `windows-portable-arm64.zip` | PE arm64。型/シンボルは別 PDB で、label 導出が成果物内で閉じない |
+| Luanti `luanti_…_macos12.3_arm64.zip` | arm64 Mach-O として shape scan は動くが、local symbol が落ちていて label を実命令で正当化できない |
+| **DSDA-Doom v0.29.4 mac-arm64** | **採用**。小さい / Mach-O arm64 / zip / local function symbol が残る / 実 gameplay 資源フィールドがある |
+
+### 再計測（offline）
+
+`HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT=tests/.real-game-holdout/dsda-doom node tests/semantic-boundary-real-game-holdout.mjs`
+
+| variant | final top-1 | rescue | wrong-top-1 | false-likely | analyze | semantic |
+|---|---|---:|---:|---:|---:|---:|
+| 現行 D1〜D4 | 148 (`mobj_t.momz`) | 0 | 1 | 1 | 18 | 0 |
+
+- 候補順: 148, 56, 240, **196**, 404, 256, 212, 80（8 件）。labelled truth は **rank 4（D4、通常検証の内側）**。
+- D4/D5 gap = 0.001534 < `maxD4D5Gap` 0.02 → ゲートは発火する。
+- `labelsConsistent: true` / `promotionEligible: false`。artifact の sha256 は fixture の pin と一致（`artifact.pinned: true`）。
+
+### 再計測（live OpenJev、`HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1`）
+
+| variant | final top-1 | rescue | analyze | semantic | referee |
+|---|---|---:|---:|---:|---|
+| 現行 D1〜D4 | 148 | 0 | 18 | 0 | no-referee |
+| shadow choice | 148 | 0 | 18 | 1 | received c0, margin 0.88 |
+| shadow parallel noul | 148 | 0 | 18 | 1 | received c0, margin 0.07 |
+| gated 1-probe | 148 | 0 | 18 | 1 | `challenger-not-tail`（c0 は D4 なので probe しない） |
+
+latency: choice p50 ≈ 467 ms / p95 ≈ 855 ms、noul p50 = 707 ms。
+
+**実ゲームでの結論:** OpenJev は labelled truth（`mobj_t.health` = 境界集合の先頭 c0 = D4）を実際に選ぶ。
+しかし契約上 challenger は D5〜D8 からしか出せないため probe には進まず（`challenger-not-tail`）、
+どの variant でも top-1 は 148（`mobj_t.momz` = 垂直方向の運動量）のままである。
+つまりこの実ゲーム・この goal では、**referee の守備範囲に真値が無い**ため救済は原理的に起きない。
+同時に、決定的経路が「資源ではない運動量フィールド」を `likely` で top-1 に出すことが実測で確認された（`wrongTop1:1` / `falseLikely:1`）。
+これは fixture を緩める話ではなく製品側の findings であり、`promotionEligible:false` を維持する。
+
+### 追加した機械強制
+
+- `tests/semantic-boundary-holdout-fetch.mjs`: archive/member の hash 照合、manifest の schema/size/arch/digest 検証、
+  `--check` の identity drift（bytes 改変・pin 改変・欠落）で必ず失敗することを固定。
+- harness は artifact の sha256 を manifest の pin と照合し、一致しなければ**測定を拒否**する（別バイナリの証跡で promotion できない）。
+- `tests/semantic-boundary-referee.mjs`: 3 fixture（synthetic / openmw / 実ゲーム）が同一の frozen policy を使うこと、
+  実ゲーム label が pin 済み identity と二重導出 provenance を持つことを固定。
+
 ## 現在地
 
 - 実装ブランチ: `codex/openjev-boundary-referee`
@@ -151,7 +226,11 @@ oracle referee で真値（offset 24）を probe → 検証成功させたとき
   `health.current` は rank5 に落ちる。
 - 目的: manifest のラベルが古くなったら「静かに誤った証跡」にならず、明示的な失敗になること。
 
-## 実 OpenMW holdout
+## 実 OpenMW holdout（歴史的 fixture。現行の正本は上の実ゲーム holdout）
+
+> 2026-09-22 以降、正本は `tests/fixtures/real-game-boundary-holdout.manifest.json`（上流リリースを固定）。
+> この節の fixture は小さい compiler fixture として残し、`HEX_SEMANTIC_BOUNDARY_HOLDOUT_MANIFEST` で
+> 今でも再計測できる（policy identity の一致はテストで固定）。
 
 固定 OpenMW `ce8a52117c746331251c0ecc353af5a4e735daa2` の `stat.hpp/stat.cpp`（GPL-3.0-only）から
 arm64 Mach-O をローカルビルドし、既存 shape scan に通した。GPL 由来のため成果物は

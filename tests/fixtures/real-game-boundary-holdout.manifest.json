@@ -1,0 +1,107 @@
+{
+  "schema": "hex-real-game-boundary-holdout/v1",
+  "kind": "external-upstream-arm64-game-release",
+  "upstream": {
+    "product": "DSDA-Doom 0.29.4 (Doom source port)",
+    "repository": "https://github.com/kraflab/dsda-doom.git",
+    "tag": "v0.29.4",
+    "commit": "e443ff7a3e6090a1ff92ad7a426916c4fd35ecc5",
+    "license": "GPL-2.0",
+    "licenseEvidence": "prboom2/COPYING in the pinned tag is the GNU General Public License version 2 (June 1991)."
+  },
+  "artifactPolicy": {
+    "checkedIn": false,
+    "reason": "The upstream release is GPL-licensed build output, so only its pinned identity is committed. The bytes stay in tests/.real-game-holdout/, which is gitignored, exactly like the existing tests/.real-fixtures lane.",
+    "fetchCommand": "node scripts/fetch-real-game-holdout.mjs",
+    "checkCommand": "node scripts/fetch-real-game-holdout.mjs --check",
+    "artifactEnvVar": "HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT",
+    "manifestEnvVar": "HEX_SEMANTIC_BOUNDARY_HOLDOUT_MANIFEST"
+  },
+  "artifacts": [
+    {
+      "id": "dsda-doom-0.29.4-mac-arm64",
+      "archive": {
+        "url": "https://github.com/kraflab/dsda-doom/releases/download/v0.29.4/dsda-doom-0.29.4-mac-arm64.zip",
+        "name": "dsda-doom-0.29.4-mac-arm64.zip",
+        "bytes": 11359462,
+        "sha256": "cc46a12f114305b5c340a903ecac3fe03ef384626a93edd54e12fc0f1d713540"
+      },
+      "binary": {
+        "path": "dsda-doom-0.29.4-mac-arm64/dsda-doom",
+        "file": "dsda-doom",
+        "format": "Mach-O",
+        "arch": "arm64",
+        "bytes": 2814096,
+        "sha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8"
+      },
+      "build": {
+        "target": "arm64-apple-macos (upstream release build)",
+        "debugInfo": "No DWARF type information is shipped.",
+        "symbols": "The upstream release retains its local Mach-O function symbol table (3787 function symbols, e.g. _P_DamageMobj, _P_KillMobj, _P_GiveBody), so every label below can be checked against the shipped instructions as well as against the pinned headers."
+      }
+    }
+  ],
+  "labelProvenance": {
+    "note": "Labels are derived twice and the two derivations must agree: once from the pinned upstream headers under the arm64 ABI, and once from the shipped instructions of the pinned artifact.",
+    "layoutProbe": {
+      "command": "clang -target arm64-apple-macos11 -I prboom2/src -I prboom2/src/dsda -Xclang -fdump-record-layouts-complete -fsyntax-only probe.c",
+      "result": "mobj_t is 464 bytes with `uint64_t flags` at 184, `int intflags` at 192, `int health` at 196; player_t is 792 bytes with `int health` at 44."
+    },
+    "instructionProbe": {
+      "command": "llvm-objdump --macho -d <pinned artifact>",
+      "result": "In _P_DamageMobj the shipped `target->health <= 0` guard is `ldr w9, [x0, #196]; cmp w9, #0; b.le`, the damage write is `str w22, [x19, #196]`, _P_KillMobj reads `[x8, #196]`, and _P_GiveBody writes `str w8, [x9, #196]`. The neighbouring fields match the pinned layout too (`flags` 184, `player` 224, `type` 156, `momx` 140)."
+    }
+  },
+  "objectLayout": {
+    "note": "Byte offsets of the labelled gameplay fields in the pinned artifact.",
+    "candidateOffsets": {
+      "196": "mobj_t.health",
+      "224": "mobj_t.player",
+      "44": "player_t.health",
+      "240": "player_t.ammo[0] (also mobj_t.spawnpoint.x)",
+      "404": "player_t.momx (also mobj_t.floorclip)"
+    },
+    "notInCandidateSet": {
+      "44": "player_t.health is not in the `hp` candidate set for this artifact; only the mobj_t view of hit points is."
+    }
+  },
+  "policies": {
+    "note": "Frozen in the labelled fixture, not in the harness code: a promotion decision must be bound to the exact policy identity it was measured with. The synthetic fixture and every real holdout share this one pair.",
+    "ambiguity": {
+      "schema": "hex-semantic-boundary-ambiguity/v1",
+      "maxD4D5Gap": 0.02,
+      "minD4Score": 0
+    },
+    "admission": {
+      "schema": "hex-semantic-boundary-admission/v1",
+      "minProbability": 0.8,
+      "minMargin": 0.2
+    }
+  },
+  "cases": [
+    {
+      "goal": "hp",
+      "goalLabel": "Hit points",
+      "field": "mobj_t.health",
+      "offset": 196,
+      "expectedCandidateCount": 8,
+      "expectedDeterministicRank": 4,
+      "expectedD4D5Gap": 0.0015340909090909016,
+      "deterministicTopOffset": 148,
+      "deterministicTopIsTruth": false,
+      "boundaryTruthReachable": true,
+      "oracleChallengerId": null,
+      "labelNote": "The labelled truth is verified inside the normal D1..D4 set, so the referee is not allowed to inspect it as a challenger; the case measures whether the real game is rescued by the deterministic path alone, not by a D5..D8 challenger."
+    }
+  ],
+  "observed": {
+    "evaluatedAt": "2026-09-22",
+    "deterministicTopOffset": 148,
+    "deterministicTopField": "mobj_t.momz",
+    "rankedCandidateOffsets": [148, 56, 240, 196, 404, 256, 212, 80],
+    "rankedShapeScores": [0.2142857142857143, 0.20833333333333334, 0.2, 0.198125, 0.1965909090909091, 0.18333333333333332, 0.14895833333333333, 0.146875],
+    "d4D5Gap": 0.0015340909090909016,
+    "finding": "On the real game the true hit-point field (mobj_t.health, offset 196) is verified but still loses the final ordering to mobj_t.momz (offset 148), which is a vertical-momentum field, not a resource. The referee cannot change this: the labelled truth is at rank 4, and the referee may only inspect ranks 5..8."
+  },
+  "scope": "Real upstream ARM64 game release, hash-pinned. It replaces the earlier locally-built two-file compiler fixture for this lane, which could not exhibit a boundary rescue because every pool was an arbitrary subset of one upstream translation unit. This fixture cannot by itself authorize production promotion."
+}
