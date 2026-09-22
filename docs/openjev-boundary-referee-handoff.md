@@ -2,23 +2,23 @@
 
 ## 現在地
 
-- 実装ブランチ: `codex/openjev-boundary-referee`（最新 main `d91f8fa67` 上に rebase 済み）
+- 実装ブランチ: `codex/openjev-boundary-referee`
+- base: 最新 main `8d508636d287a4fd95b2550b25f20ae8a3723f2a` に rebase 済み（12 commits, 作業ツリー clean）
 - 作業ツリー: `/mnt/workspace/.dev-state/agent-work/checkouts/openjev-boundary-referee`
-- コミット列:
+- 正確な SHA は `git log --oneline` を参照。rebase でハッシュが変わるため、以下は subject で記録する（古い順）:
   1. `feat: add OpenJev boundary referee shadow harness`
   2. `docs: add OpenJev boundary referee handoff`
   3. `fix(jev): pin OpenJev boundary referee to the live transport contract`
   4. `feat(jev): select the true boundary candidate on the OpenMW holdout`
-  5. `b66f6e23e` `feat(jev): retry unhelpful probe windows and pin goal wording to the holdout`
-     — goal 文言の単一情報源化・probe の複数ウィンドウ化・holdout のケース表化
-  6. `4e9846915` `docs(jev): refresh the boundary referee handoff`
-  7. `044255706` `feat(jev): only ask the referee for a goal with calibrated guidance`
-  8. `eb54fbe59` `docs(jev): reflect the calibrated-goal eligibility`
-  9. `5e9f7067e` `test(jev): make the holdout check its own rank labels`
-  10. `15087f4a5` `docs(jev): record the holdout label self-check`
-  11. `36f4a4842` `test(jev): freeze the holdout policies in the fixture, not the harness`
+  5. `feat(jev): retry unhelpful probe windows and pin goal wording to the holdout`
+  6. `docs(jev): refresh the boundary referee handoff`
+  7. `feat(jev): only ask the referee for a goal with calibrated guidance`
+  8. `docs(jev): reflect the calibrated-goal eligibility`
+  9. `test(jev): make the holdout check its own rank labels`
+  10. `docs(jev): record the holdout label self-check`
+  11. `test(jev): freeze the holdout policies in the fixture, not the harness`
   12. `docs(jev): pin the commit list`（このファイル更新）
-- 引き継ぎ資料: このファイル（作業ツリーは clean で commit 済み）
+- 引き継ぎ資料: このファイル
 
 ## 何を実装したか
 
@@ -182,6 +182,8 @@ Phase 2 default-on は無効のまま（`promotionEligible: false`）。admissio
 - `tests/fixtures/openmw-boundary-holdout.manifest.json`: holdout の labelled cases と実契約
 
 ## 実行済みテスト
+
+rebased head（base `8d508636d`）で実行済み。
 
 ```text
 node tests/semantic-boundary-referee.mjs        # PASS
