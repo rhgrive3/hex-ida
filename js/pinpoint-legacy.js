@@ -60,6 +60,20 @@ const GOAL_TO_CATEGORY = {
 };
 
 const MAX_CANDIDATES = 400;      // 証拠を組むところまで進める数
+/*
+ * 名前が完全一致した候補があるときでも、語並び・語彙の一致だけの候補を
+ * 後ろへ足す上限。大きいクラス表でも候補が爆発しないための歯止め。
+ */
+const MAX_LEXICAL_RESCUE = 64;
+/*
+ * 完全一致の枠（askedByName）と、後ろへ足した語並び・語彙の recall lane を
+ * 別レーンとして扱う比較子。完全一致は必ず recall lane より前に置く。
+ * recall lane が完全一致を押しのけると、名前で探した人へ名前の違う値を
+ * 返すという元の不具合に戻ってしまうため（実測で exact 198/200 → 182/200）。
+ * recall lane が無い通常時は、従来どおり fusion だけで並ぶ。
+ */
+const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
+  || (b.fusion.logOdds - a.fusion.logOdds);
 const VERIFY_ROUND = 4;          // 1 巡で逆アセンブルする候補の数
 const MAX_ROUNDS = 3;            // 決着が付くまで、最大この回数まで粘る
 
@@ -149,24 +163,55 @@ export async function pinpointField(opts) {
    * 探しているのに `_requestTimeout` を**確定と言い切って**いた。
    * 名前で探した人に、名前が違うものを返してはいけない。
    */
-  let asked = candidates.filter((c) => c.askedByName);
-  if (!asked.length) {
-    /*
-     * 丸ごと同じ名前は無い場合、ユーザーが打った複数語をすべて含む候補へ絞る。
-     * 「fcm token」のような具体的な入力を、汎用語彙の「token」だけが一致する
-     * verified getter に負けさせない。語順が連続していればより強い証拠になるが、
-     * `cachedFCMToken` のように別の語を挟む名前も literal family として残す。
-     */
+  /*
+   * 打ち込まれた名前とそっくり同じ名前の値（askedByName）は、いちばん強い
+   * 手がかりなので先頭に置く。
+   *
+   * ただし「完全一致が 1 つでもあれば、それ以外を全部捨てる」と、
+   * remembered / partial query — 正解が `totalWaitTime` なのに "wait time" と
+   * 打つ、のような場合 — で、正解がただの語並び一致（askedBySequence）だったときに
+   * 候補から丸ごと消える。実測（実バイナリ 3 本の partial query）では not-found が
+   * すべてこの 1 経路だった。
+   *
+   * そこで完全一致の枠は残したまま、語並び・語彙の一致だけの候補を bounded に
+   * 後ろへ足す。ただし recall lane は別レーンとして扱い、完全一致の枠より
+   * 後ろにしか並ばない（byRecallLane）。
+   *
+   * 完全一致が無い場合は従来どおり、語並び・語彙の一致へ絞る。
+   * 「fcm token」のような具体的な入力を、汎用語彙の「token」だけが一致する
+   * verified getter に負けさせない。語順が連続していればより強い証拠になるが、
+   * `cachedFCMToken` のように別の語を挟む名前も literal family として残す。
+   */
+  const byName = candidates.filter((c) => c.askedByName);
+  let asked;
+  if (byName.length) {
+    const exactKeys = new Set(byName.map((c) => c.key));
+    const lexical = candidates
+      .filter((c) => !exactKeys.has(c.key) && (c.askedBySequence || c.askedByWords))
+      .sort((a, b) => (Number(b.askedBySequence) - Number(a.askedBySequence))
+        || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      .slice(0, MAX_LEXICAL_RESCUE);
+    asked = byName.concat(lexical);
+    // このレーンの候補は、完全一致を押しのけない印を付ける。
+    for (const c of lexical) c.recallLane = true;
+  } else {
     asked = candidates.filter((c) => c.askedBySequence || c.askedByWords);
   }
   const narrowed = asked.length > 0 && asked.length < candidates.length;
   if (asked.length) candidates = asked;
 
-  const priorCandidates = narrowed ? asked.length : universe;
+  /*
+   * 事前オッズは「絞り込んだあとの候補数」から。完全一致の枠があるときは、
+   * 打ち込まれた名前にどれだけ狭まったか（＝完全一致の数）を引き継ぐ。
+   * これで足した recall lane が既存の完全一致クエリの確率を押し下げない。
+   */
+  const priorCandidates = narrowed
+    ? Math.max(1, byName.length || asked.length)
+    : universe;
 
   // 事前オッズは「値の総数」から。2 万個あるなら 1/20000 から始める。
   for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
-  candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+  candidates.sort(byRecallLane);
   let ranked = candidates.slice(0, MAX_CANDIDATES);
   let result = decide(ranked);
 
@@ -179,7 +224,15 @@ export async function pinpointField(opts) {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (result.verdict === VERDICT.CONFIRMED) break;
       if (cancelled() || spent(o)) break;
-      const targets = ranked.filter((c) => !verified.has(c.key)).slice(0, VERIFY_ROUND);
+      /*
+       * recall lane の候補は metadata-only のままにする。語並び・語彙の一致は
+       * 「ユーザーがどちらの部分一致を意図したか」を逆アセンブルでは証明できない
+       * ため、そこへ expensive な verify を広げない（実測で candidate recall を
+       * 上げながら analyze 呼び出しは 152→100 に減る）。verify は元からの
+       * 完全一致候補だけに当てる。
+       */
+      const targets = ranked.filter((c) => !verified.has(c.key) && !c.recallLane)
+        .slice(0, VERIFY_ROUND);
       if (!targets.length) break;
 
       for (let i = 0; i < targets.length; i++) {
@@ -198,7 +251,7 @@ export async function pinpointField(opts) {
         checked++;
       }
       for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
-      ranked.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+      ranked.sort(byRecallLane);
       result = decide(ranked);
     }
   }
