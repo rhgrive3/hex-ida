@@ -1,0 +1,3470 @@
+{
+  "schema": "hex-pinpoint-ranking-oracle-classification/v1",
+  "denominator": 426,
+  "definition": {
+    "noCapturedDifferential": "top and truth have the same positive evidence-code/group/kind/id signature in the recorded lattice",
+    "truthHasRobustDeterministicDifferential": "truth has a positive verified or non-metadata identifying evidence token absent from the wrong top; this is diagnostic potential, not a claim that a safe generic reranker already exists",
+    "metadataOrWeakDifferential": "the feature signature differs only by metadata/weak signals, so the recorded lattice does not establish a safe direction for a generic reranker"
+  },
+  "counts": {
+    "rankingCorrect": 282,
+    "candidateAbsent": 0,
+    "snapshotMissing": 0,
+    "noCapturedDifferential": 22,
+    "truthHasRobustDeterministicDifferential": 0,
+    "metadataOrWeakDifferential": 122
+  },
+  "observedTop1Correct": 282,
+  "candidateOracleCeiling": 426,
+  "diagnosticFeatureCeiling": 282,
+  "rows": [
+    {
+      "key": "battlecats|exact|f callbacks",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|default tracker",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|background timer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|attribution timer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|response callback",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|migration invoked callback",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|button state",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|conversion",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|date provider",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|was created from background session",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|test block accumulate data chunk count",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|should initiate offset query",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|connector errors",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|dest url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|app lovin max empty delegate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|registered callbacks",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ad mob empty delegate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|super component",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|in memory cache size limit",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|main html asset alias",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|sum logged events",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|upload bandwidth moving average",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|last impression times",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|should fill with color",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|bypass validation",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|rating enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|current ad index",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|encrypted cpm",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is intro card enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ad candidates",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|in memory cache write failure logged",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|viewable seconds",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|asset url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|disc write serial queue",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|told delegate to log impression",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|fillup",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|minimum size",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|child views",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|image loaded",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|video currently shown to user",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|right meter",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|cached sequence evaluation timestamps",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|lifetime count",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|cancellation date ia 5 string",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|odc group client",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|global scope",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|freeride engagement start uptime",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|touch event gesture recognizer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|has playback ended",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|click confirming view",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|overlay view observers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|presentation error url strings",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|orientation landscape",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|native ad validator url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is jailbroken",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|analytics logging enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|images",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|nonclickable asset names",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|update scroll status scheduler",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|rendering serially",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|asset loading player item refresh interval",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|presenter source",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|visited render i ds",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|cached content type",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|done button handler",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|sdk core observers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|mediation app open ad",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|for main frame only",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|interstitial zone id to smash delegate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|dynamic source id",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|reflection name",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|l urls",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|start duration",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|current consent",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|got response",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|publisher",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is controller initializing",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|creative types list",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ad media view",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is load candidate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|skan settings",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ad network",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|rewarded",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|init counter",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is banner capped",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is auto refresh enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|interstitial demand sources",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|demand sources collection",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|versioned flow",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|provider settings",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|omid session",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|transparency data",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|plugin code",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|companion creatives",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|is video completed",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|rendered bids",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|mimes",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|instl view",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|mraid state",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|load time orientation",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ar session",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|next session",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|should send non behavioural",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|state factory",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|info reader",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|presenting animated",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|references",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|focus change count listener",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ad loader factory",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|logger level reader",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|block queue",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|ads context storage",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|should trigger init completed eventp",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|china iso alpha 2 code",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|user defaults keys",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|session depth counter",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|did enter background callback",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|screen orientation lock",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|$ lazy storage $ image view",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|exact|pan starting location",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|deduplication ids",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "deduplication ids",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|info block",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|wait time",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "wait time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 8,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|store url",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "store url",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|expiration date",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "expiration date",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 7,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|token operation",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "token operation",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|refresh handler",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|background session",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "background session",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|retry interval",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "retry interval",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 12,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|will disappear",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|force view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "force view",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|browser clicked",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|did appear",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|html asset",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|event time",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "event time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|companion view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "companion view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "class-name|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|action button",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "action button",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 7,
+      "truthOnly": [],
+      "topOnly": [
+        "sibling-fields|metadata|inference|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|options view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "options view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|text color",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "text color",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 8,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|has audio",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "has audio",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|and browse",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "and browse",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|store manager",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|playable zip",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "playable zip",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "class-string|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|pause button",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|info button",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "info button",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|current time",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "current time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 8,
+      "candidateCount": 14,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|conversion info",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|end timestamp",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "end timestamp",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|stitching token",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|collection enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|view event",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "view event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|view frame",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "view frame",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|gesture direction",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "gesture direction",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|user initiated",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "user initiated",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|network info",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "network info",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 10,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|confirming view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "confirming view",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|since boot",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "since boot",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|choices view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "choices view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|media content",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "media content",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 16,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|url parameters",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "url parameters",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|output volume",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|current route",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|custom close",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "custom close",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 6,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|interface orientations",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "interface orientations",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|view updates",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|interface orientation",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "interface orientation",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "selector-match|metadata|fact|id",
+        "sibling-fields|metadata|inference|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|source name",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "source name",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|ping triggers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|preferences configuration",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|asset viewability",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "asset viewability",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|session service",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "session service",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 11,
+      "candidateCount": 35,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|monitored view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "monitored view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|resource buffer",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "resource buffer",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 10,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|buffer update",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "buffer update",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|store page",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|auction results",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|from cache",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|server data",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "server data",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 9,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|reported availability",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "reported availability",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|data writer",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "data writer",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 14,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|network service",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "network service",
+      "category": "noCapturedDifferential",
+      "truthRank": 3,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|config service",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|close button",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "close button",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 15,
+      "candidateCount": 25,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "access-verified|dataflow|verified|",
+        "size-fits|structural|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|directory path",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "directory path",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|status bar",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "status bar",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 9,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|root view",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "root view",
+      "category": "noCapturedDifferential",
+      "truthRank": 14,
+      "candidateCount": 27,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|when done",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "when done",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|user paying",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "user paying",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|video events",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|view received",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|unit delegate",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "unit delegate",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 27,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|for event",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "for event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|",
+        "class-name|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|server url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|learn more",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "learn more",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|info dictionary",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|known location",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "known location",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|gateway enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|show service",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "show service",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|sheet storage",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|state subject",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "state subject",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|message sender",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "message sender",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 12,
+      "candidateCount": 13,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|info update",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|type detail",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|action url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "battlecats|partial|body text",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "body text",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "battlecats|partial|did change",
+      "binary": "battlecats",
+      "mode": "partial",
+      "label": "did change",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "selector-match|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|exact|indicator",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|expandable presenter",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|custom one point five click implemented by publisher",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|app store url patterns",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|close button image",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|has ended render timing",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|result identifier",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|loaded ad network response info",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|ad exposure began",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|source url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|sdk core observers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|injection time",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|root trailing space constraint",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|m auto retry after wakeup",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|ad timing logger",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|aliases",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|product vc",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|app store dictionary",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|is auction enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|demand source id to bn delegate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|force close timeout",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|current session depth",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|ad network",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|server base url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|is running",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|js interface handler",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|fullscreen ad delegate",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|sound enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|next index",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|idfa string",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|viewability calculator",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|timeout callback",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|web player",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|is ads gateway enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|internal status",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|unique int id generator",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|normalizer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|load tasks state storage",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|request impression configuration",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|total ram memory",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|interests",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|wait acquired",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|default flags by sdk name",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|tcf client",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|user engagement timer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|time to live millis",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|waiting for att status",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|cost currency",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|file extension",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|content padding",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|cache debug map",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|ended",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|viewable impression block",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|saved dynamic height",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|playing before seeked",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|should clip",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|dsl controller did appear",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|dispatch timer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|display unix timestamp",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|exact|is get from server",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|error code",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "error code",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 13,
+      "candidateCount": 13,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "sibling-fields|metadata|inference|",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|status bar",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "status bar",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 8,
+      "candidateCount": 10,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|view frame",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "view frame",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|user initiated",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "user initiated",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|network info",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "network info",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 8,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|since boot",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "since boot",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|choices view",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "choices view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|media content",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "media content",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 16,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|output volume",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|current route",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|interface orientations",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "interface orientations",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|view updates",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|source name",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "source name",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|ping triggers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|orientation change",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "orientation change",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|preferences configuration",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|asset viewability",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "asset viewability",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|monitored view",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "monitored view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|resource buffer",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "resource buffer",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 10,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|playback state",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "playback state",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|link url",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "link url",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|tracking tokens",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|background task",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "background task",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|info update",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|action url",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|body text",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "body text",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|did change",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "did change",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "selector-match|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|auction results",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "auction results",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|from cache",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|reported availability",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "reported availability",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|data writer",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "data writer",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 15,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|network service",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "network service",
+      "category": "noCapturedDifferential",
+      "truthRank": 3,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|root view",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "root view",
+      "category": "noCapturedDifferential",
+      "truthRank": 14,
+      "candidateCount": 26,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|when done",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "when done",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|view received",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|info block",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "info block",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 14,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|for event",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "for event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|",
+        "class-name|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|unit strategy",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|clock event",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "clock event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|full cache",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "full cache",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|session state",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|screen state",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "screen state",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|gateway enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|show service",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "show service",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|state subject",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "state subject",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|message sender",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "message sender",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 12,
+      "candidateCount": 13,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|options view",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "options view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|end timestamp",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "end timestamp",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|collection enabled",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|view event",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "view event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|retry interval",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "retry interval",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|logged impression",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "logged impression",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 9,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|pause button",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|playable zip",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "playable zip",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|info button",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "info button",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|current time",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "current time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 15,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "size-fits|structural|fact|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|and browse",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "and browse",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|did appear",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "TsumTsum|partial|event time",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "event time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "TsumTsum|partial|new count",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "label": "new count",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|exact|text field",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|start location",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|update link block",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|interstitial ad did click callback",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|trackers by type",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|blocks",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|is javascript ad control initialized",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|gameplay icon view",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|custom layout",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|user specified sound state",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|omsdk factory",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|call to action title",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|search ad reporter",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|default ad frame",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|last touch begin timestamp",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|forced ad orientation",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|settings update observers",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|signals need update",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|server request",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|event logger ready",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|ad sequence",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|location access allowed",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|symbol name",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|upload progress",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|pending count",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|control pan gesture",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|playable url",
+      "binary": "YWP",
+      "mode": "exact",
+      "label": "playable url",
+      "category": "noCapturedDifferential",
+      "truthRank": 3,
+      "candidateCount": 8,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|exact|pagx 2 val yes",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|paga 0 ptr void",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|interact slide threshold",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|video type",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|after delay",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|auto reverse animation",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|start interpolator",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|if send click",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|image timer",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|playable backup enable",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|loaded cancel block",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|origin dic",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|user context",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|old center",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|result info",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|pag fail nil name",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|parse completion dic",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|has notify for anchor",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|total length",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|storage block list provider",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|web app failure code",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|transaction history reader",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|exact|current statep",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|server url",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "server url",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|browser clicked",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|event time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "event time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|options view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "options view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|and browse",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "and browse",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|button delay",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "button delay",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|view array",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "view array",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 13,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|current time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "current time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 13,
+      "candidateCount": 15,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|network items",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|session state",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|user agent",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "user agent",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 8,
+      "candidateCount": 16,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|conversion info",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|view event",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "view event",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|gesture direction",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "gesture direction",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|network info",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "network info",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|since boot",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "since boot",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|media content",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "media content",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 16,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|output volume",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|custom close",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "custom close",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 12,
+      "truthOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|interface orientations",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "interface orientations",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|player view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "player view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 7,
+      "candidateCount": 8,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|wait time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "wait time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|asset viewability",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "asset viewability",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|monitored view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "monitored view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|buffer update",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "buffer update",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|state change",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|learn more",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "learn more",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|reachability status",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|body part",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "body part",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|mask view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "mask view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 6,
+      "candidateCount": 10,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|open url",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "open url",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 5,
+      "truthOnly": [],
+      "topOnly": [
+        "written-in-class|dataflow|fact|",
+        "sibling-fields|metadata|inference|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|request time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "request time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 7,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|logo image",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "logo image",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 9,
+      "candidateCount": 19,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|endcard direct",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "endcard direct",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|state timer",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "state timer",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|default view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "default view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "sibling-fields|metadata|inference|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|load finish",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "load finish",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 8,
+      "truthOnly": [],
+      "topOnly": [
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|duration time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "duration time",
+      "category": "noCapturedDifferential",
+      "truthRank": 4,
+      "candidateCount": 6,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|delay time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "delay time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 6,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|",
+        "access-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|preload cache",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "preload cache",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id",
+        "access-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|render start",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "render start",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-words|metadata|fact|id",
+        "class-name|metadata|fact|id",
+        "property-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|bar info",
+      "category": "rankingCorrect"
+    },
+    {
+      "key": "YWP|partial|star view",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "star view",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 11,
+      "candidateCount": 20,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|first page",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "first page",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 4,
+      "truthOnly": [
+        "sibling-fields|metadata|inference|"
+      ],
+      "topOnly": [
+        "getter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|event timer",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "event timer",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 2,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "setter-verified|dataflow|verified|",
+        "written-in-class|dataflow|fact|",
+        "access-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|animation time",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "animation time",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "class-name|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|back button",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "back button",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 10,
+      "candidateCount": 11,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|report click",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "report click",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 4,
+      "candidateCount": 4,
+      "truthOnly": [],
+      "topOnly": [
+        "getter-verified|dataflow|verified|",
+        "setter-verified|dataflow|verified|"
+      ],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|show service",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "show service",
+      "category": "noCapturedDifferential",
+      "truthRank": 2,
+      "candidateCount": 2,
+      "truthOnly": [],
+      "topOnly": [],
+      "robustTruthOnly": []
+    },
+    {
+      "key": "YWP|partial|state subject",
+      "binary": "YWP",
+      "mode": "partial",
+      "label": "state subject",
+      "category": "metadataOrWeakDifferential",
+      "truthRank": 5,
+      "candidateCount": 5,
+      "truthOnly": [
+        "field-name-contains|metadata|fact|id",
+        "class-name|metadata|fact|id"
+      ],
+      "topOnly": [
+        "field-name-asked|metadata|fact|id"
+      ],
+      "robustTruthOnly": []
+    }
+  ]
+}

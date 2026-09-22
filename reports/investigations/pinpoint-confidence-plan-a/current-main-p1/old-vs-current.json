@@ -1,0 +1,2613 @@
+{
+  "schema": "hex-pinpoint-confidence-old-vs-current/v1",
+  "historical": {
+    "commit": "55a2dfc79a7d4a1028219d565518ff2996037f5b",
+    "subject": "investigate(pinpoint): calibrate confidence policy on real binaries",
+    "artifactPath": "reports/investigations/pinpoint-confidence-calibration/rows.jsonl",
+    "rowsSha256": "9dfa4addad32be587d6f6bfd11feb42deae699d1175d6b6dba03f5156bc33d53",
+    "policyColumn": "newVerdict"
+  },
+  "current": {
+    "manifestPath": "reports/investigations/pinpoint-confidence-plan-a/current-main-p1/measurement.json",
+    "productCommit": "de1bfbb8a58b475b2794386788d2da5c68e218ae",
+    "productTree": "d4a9dbbd4f2001bcaea25a9cfb2b45d960a67fce",
+    "policyColumn": "policyAVerdict"
+  },
+  "comparison": {
+    "historicRows": 426,
+    "currentRows": 426,
+    "subsets": {
+      "all": {
+        "before": {
+          "denominator": 426,
+          "candidatePresent": 372,
+          "candidateNotFound": 54,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 0.8732394366197183,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 151,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 5,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 151,
+          "correctLikely": 5,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.36619718309859156,
+          "strongPrecision": 0.6995515695067265
+        },
+        "after": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.36619718309859156,
+          "strongPrecision": 0.6995515695067265
+        },
+        "change": {
+          "candidatePresent": 54,
+          "top1Correct": 0,
+          "correctStrong": 0,
+          "falseStrong": 0
+        }
+      },
+      "exact": {
+        "before": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 131,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 2,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 96,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 131,
+          "correctLikely": 2,
+          "correctStrong": 133,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 133,
+          "strongCoverage": 0.5782608695652174,
+          "strongPrecision": 1
+        },
+        "after": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 96,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 3,
+          "correctStrong": 133,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 133,
+          "strongCoverage": 0.5782608695652174,
+          "strongPrecision": 1
+        },
+        "change": {
+          "candidatePresent": 0,
+          "top1Correct": 0,
+          "correctStrong": 0,
+          "falseStrong": 0
+        }
+      },
+      "partial": {
+        "before": {
+          "denominator": 196,
+          "candidatePresent": 142,
+          "candidateNotFound": 54,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 0.7244897959183674,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 30,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 3,
+          "correctStrong": 23,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 90,
+          "strongCoverage": 0.11734693877551021,
+          "strongPrecision": 0.25555555555555554
+        },
+        "after": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 30,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 3,
+          "correctStrong": 23,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 90,
+          "strongCoverage": 0.11734693877551021,
+          "strongPrecision": 0.25555555555555554
+        },
+        "change": {
+          "candidatePresent": 54,
+          "top1Correct": 0,
+          "correctStrong": 0,
+          "falseStrong": 0
+        }
+      },
+      "candidatePresent": {
+        "before": {
+          "denominator": 372,
+          "candidatePresent": 372,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 90,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7580645161290323,
+          "verdicts": {
+            "confirmed": {
+              "correct": 151,
+              "incorrect": 29
+            },
+            "likely": {
+              "correct": 5,
+              "incorrect": 14
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 47
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 151,
+          "correctLikely": 5,
+          "correctStrong": 156,
+          "falseConfirmed": 29,
+          "falseLikely": 14,
+          "falseStrong": 43,
+          "strong": 199,
+          "strongCoverage": 0.41935483870967744,
+          "strongPrecision": 0.7839195979899497
+        },
+        "after": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.36619718309859156,
+          "strongPrecision": 0.6995515695067265
+        },
+        "change": {
+          "candidatePresent": 54,
+          "top1Correct": 0,
+          "correctStrong": 0,
+          "falseStrong": 24
+        }
+      },
+      "candidateNotFound": {
+        "before": {
+          "denominator": 54,
+          "candidatePresent": 0,
+          "candidateNotFound": 54,
+          "top1Correct": 0,
+          "top1Incorrect": 54,
+          "candidateRecall": 0,
+          "rankingAccuracy": 0,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 20
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 4
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 30
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 20,
+          "falseLikely": 4,
+          "falseStrong": 24,
+          "strong": 24,
+          "strongCoverage": 0,
+          "strongPrecision": 0
+        },
+        "after": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "change": {
+          "candidatePresent": 0,
+          "top1Correct": 0,
+          "correctStrong": 0,
+          "falseStrong": -24
+        }
+      }
+    },
+    "rowTransitions": {
+      "presenceChanged": 54,
+      "rankChanged": 54,
+      "topChanged": 0,
+      "verdictChanged": 1,
+      "changedRows": 55
+    },
+    "recoveredPartialRows": [
+      {
+        "key": "battlecats|partial|wait time",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "wait time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "USRVWebViewAsyncOperation",
+          "topField": "_waitTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "USRVWebViewAsyncOperation",
+          "topField": "_waitTime",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|expiration date",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "expiration date",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GACAppCheckToken",
+          "topField": "_expirationDate",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GACAppCheckToken",
+          "topField": "_expirationDate",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|companion view",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "companion view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdCompanionViewController",
+          "topField": "_companionView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "FBAdCompanionViewController",
+          "topField": "_companionView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|text color",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "text color",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdColorInfo",
+          "topField": "_textColor",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "FBAdColorInfo",
+          "topField": "_textColor",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|current time",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 8,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|end timestamp",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "end timestamp",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|view frame",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "view frame",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|network info",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|media content",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|url parameters",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "url parameters",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADAdRequest",
+          "topField": "_URLParameters",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "GADAdRequest",
+          "topField": "_URLParameters",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|interface orientation",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "interface orientation",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADDeviceOrientationSignals",
+          "topField": "_interfaceOrientation",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADDeviceOrientationSignals",
+          "topField": "_interfaceOrientation",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|monitored view",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|resource buffer",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "resource buffer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|server data",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "server data",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAdData",
+          "topField": "_serverData",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "ISAdData",
+          "topField": "_serverData",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "battlecats|partial|close button",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "close button",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADCloseButtonMonitor",
+          "topField": "_closeButton",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 15,
+          "topClass": "GADCloseButtonMonitor",
+          "topField": "_closeButton",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|state subject",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|message sender",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "message sender",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 12,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|body text",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "body text",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|error code",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "error code",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "UADSInternalError",
+          "topField": "_errorCode",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 13,
+          "topClass": "UADSInternalError",
+          "topField": "_errorCode",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|view frame",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "view frame",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|network info",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISNetworkInfoService",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "ISNetworkInfoService",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|media content",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|monitored view",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|resource buffer",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "resource buffer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|playback state",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "playback state",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FADLayoutConditions",
+          "topField": "_playbackState",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "FADLayoutConditions",
+          "topField": "_playbackState",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|body text",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "body text",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|state subject",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|message sender",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "message sender",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 12,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|end timestamp",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "end timestamp",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|current time",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|current time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGCloseButton",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 13,
+          "topClass": "PAGCloseButton",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|user agent",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "user agent",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdUtilityUserAgentProvider",
+          "topField": "_userAgent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 8,
+          "topClass": "FBAdUtilityUserAgentProvider",
+          "topField": "_userAgent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|network info",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|media content",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|player view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "player view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGLPlayer",
+          "topField": "_playerView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "PAGLPlayer",
+          "topField": "_playerView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|wait time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "wait time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGAdEvModel",
+          "topField": "_wait_time",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "PAGAdEvModel",
+          "topField": "_wait_time",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "YWP|partial|monitored view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|mask view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "mask view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGWebViewControllerViewModel",
+          "topField": "_maskView",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "PAGWebViewControllerViewModel",
+          "topField": "_maskView",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|request time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "request time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBDisplayAdController",
+          "topField": "_requestTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "FBDisplayAdController",
+          "topField": "_requestTime",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|logo image",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "logo image",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdReportingCoordinator",
+          "topField": "_logoImage",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 9,
+          "topClass": "FBAdReportingCoordinator",
+          "topField": "_logoImage",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|preload cache",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "preload cache",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADRewardedAdPreloader",
+          "topField": "_preloadCache",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADRewardedAdPreloader",
+          "topField": "_preloadCache",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|star view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "star view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGAppOpenAdView",
+          "topField": "_starView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 11,
+          "topClass": "PAGAppOpenAdView",
+          "topField": "_starView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|back button",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "back button",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdReportingOptionsContentView",
+          "topField": "_backButton",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 10,
+          "topClass": "FBAdReportingOptionsContentView",
+          "topField": "_backButton",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|state subject",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|store url",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "store url",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBApplicationInfo",
+          "topField": "_storeURL",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "POBApplicationInfo",
+          "topField": "_storeURL",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|retry interval",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "retry interval",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|source name",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "source name",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|data writer",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "data writer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|source name",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "source name",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|background task",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "background task",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISSessionCalculationManager",
+          "topField": "_backgroundTask",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "ISSessionCalculationManager",
+          "topField": "_backgroundTask",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|data writer",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "data writer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|retry interval",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "retry interval",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|logged impression",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "logged impression",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdWebKitContentContainer",
+          "topField": "_loggedImpression",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBAdWebKitContentContainer",
+          "topField": "_loggedImpression",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|delay time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "delay time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGDynamicRenderTimeOutControlServer",
+          "topField": "_delayTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "PAGDynamicRenderTimeOutControlServer",
+          "topField": "_delayTime",
+          "verdict": "confirmed"
+        }
+      }
+    ],
+    "changedRows": [
+      {
+        "key": "battlecats|partial|wait time",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "wait time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "USRVWebViewAsyncOperation",
+          "topField": "_waitTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "USRVWebViewAsyncOperation",
+          "topField": "_waitTime",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|expiration date",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "expiration date",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GACAppCheckToken",
+          "topField": "_expirationDate",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GACAppCheckToken",
+          "topField": "_expirationDate",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|companion view",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "companion view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdCompanionViewController",
+          "topField": "_companionView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "FBAdCompanionViewController",
+          "topField": "_companionView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|text color",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "text color",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdColorInfo",
+          "topField": "_textColor",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "FBAdColorInfo",
+          "topField": "_textColor",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|current time",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 8,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|end timestamp",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "end timestamp",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|view frame",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "view frame",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|network info",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|media content",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|url parameters",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "url parameters",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADAdRequest",
+          "topField": "_URLParameters",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "GADAdRequest",
+          "topField": "_URLParameters",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|interface orientation",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "interface orientation",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADDeviceOrientationSignals",
+          "topField": "_interfaceOrientation",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADDeviceOrientationSignals",
+          "topField": "_interfaceOrientation",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|monitored view",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|resource buffer",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "resource buffer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|server data",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "server data",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAdData",
+          "topField": "_serverData",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "ISAdData",
+          "topField": "_serverData",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "battlecats|partial|close button",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "close button",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADCloseButtonMonitor",
+          "topField": "_closeButton",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 15,
+          "topClass": "GADCloseButtonMonitor",
+          "topField": "_closeButton",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|state subject",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|message sender",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "message sender",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 12,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|body text",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "body text",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|error code",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "error code",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "UADSInternalError",
+          "topField": "_errorCode",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 13,
+          "topClass": "UADSInternalError",
+          "topField": "_errorCode",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|view frame",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "view frame",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBViewpointContext",
+          "topField": "_viewFrame",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|network info",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISNetworkInfoService",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "ISNetworkInfoService",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|media content",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|monitored view",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|resource buffer",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "resource buffer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "GADPrecacheResourceMonitor",
+          "topField": "_resourceBuffer",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|playback state",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "playback state",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FADLayoutConditions",
+          "topField": "_playbackState",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "FADLayoutConditions",
+          "topField": "_playbackState",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|body text",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "body text",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "_TtC12VungleAdsSDK12VungleNative",
+          "topField": "bodyText",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|state subject",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|message sender",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "message sender",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 12,
+          "topClass": "_TtC8UnityAds24WebViewScriptHandlerBase",
+          "topField": "messageSender",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|end timestamp",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "end timestamp",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "GADTwoFingersLongPressGestureRecognizer",
+          "topField": "_endTimestamp",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|current time",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "FBAdToolbarView",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|current time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "current time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGCloseButton",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 13,
+          "topClass": "PAGCloseButton",
+          "topField": "_currentTime",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|user agent",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "user agent",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdUtilityUserAgentProvider",
+          "topField": "_userAgent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 8,
+          "topClass": "FBAdUtilityUserAgentProvider",
+          "topField": "_userAgent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|network info",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "network info",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "POBInstanceProvider",
+          "topField": "_networkInfo",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|media content",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "media content",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "GADNativeAd",
+          "topField": "_mediaContent",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|player view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "player view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGLPlayer",
+          "topField": "_playerView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 7,
+          "topClass": "PAGLPlayer",
+          "topField": "_playerView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|wait time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "wait time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGAdEvModel",
+          "topField": "_wait_time",
+          "verdict": "likely"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "PAGAdEvModel",
+          "topField": "_wait_time",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "YWP|partial|monitored view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "monitored view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADViewVisibilityMonitor",
+          "topField": "_monitoredView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|mask view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "mask view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGWebViewControllerViewModel",
+          "topField": "_maskView",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "PAGWebViewControllerViewModel",
+          "topField": "_maskView",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|request time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "request time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBDisplayAdController",
+          "topField": "_requestTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "FBDisplayAdController",
+          "topField": "_requestTime",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|logo image",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "logo image",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdReportingCoordinator",
+          "topField": "_logoImage",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 9,
+          "topClass": "FBAdReportingCoordinator",
+          "topField": "_logoImage",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|preload cache",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "preload cache",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "GADRewardedAdPreloader",
+          "topField": "_preloadCache",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 4,
+          "topClass": "GADRewardedAdPreloader",
+          "topField": "_preloadCache",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|star view",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "star view",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGAppOpenAdView",
+          "topField": "_starView",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 11,
+          "topClass": "PAGAppOpenAdView",
+          "topField": "_starView",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|back button",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "back button",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdReportingOptionsContentView",
+          "topField": "_backButton",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 10,
+          "topClass": "FBAdReportingOptionsContentView",
+          "topField": "_backButton",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "YWP|partial|state subject",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "state subject",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "_TtC8UnityAds16AdLoaderWithGate",
+          "topField": "stateSubject",
+          "verdict": "ambiguous"
+        }
+      },
+      {
+        "key": "battlecats|partial|store url",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "store url",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "POBApplicationInfo",
+          "topField": "_storeURL",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "POBApplicationInfo",
+          "topField": "_storeURL",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|retry interval",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "retry interval",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|source name",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "source name",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "battlecats|partial|data writer",
+        "binary": "battlecats",
+        "mode": "partial",
+        "label": "data writer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|exact|source url",
+        "binary": "TsumTsum",
+        "mode": "exact",
+        "label": "source url",
+        "before": {
+          "candidatePresent": true,
+          "truthRank": 1,
+          "topClass": "GADVideoAssetLoader",
+          "topField": "_sourceURL",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 1,
+          "topClass": "GADVideoAssetLoader",
+          "topField": "_sourceURL",
+          "verdict": "likely"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|source name",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "source name",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "ISAAnalyticsEventEntityProvider",
+          "topField": "_sourceName",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|background task",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "background task",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISSessionCalculationManager",
+          "topField": "_backgroundTask",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 5,
+          "topClass": "ISSessionCalculationManager",
+          "topField": "_backgroundTask",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|data writer",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "data writer",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 6,
+          "topClass": "ISMediationGlobalDataWriterFacade",
+          "topField": "_dataWriter",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|retry interval",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "retry interval",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "IronSourceSdk",
+          "topField": "_retryInterval",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "TsumTsum|partial|logged impression",
+        "binary": "TsumTsum",
+        "mode": "partial",
+        "label": "logged impression",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "FBAdWebKitContentContainer",
+          "topField": "_loggedImpression",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 3,
+          "topClass": "FBAdWebKitContentContainer",
+          "topField": "_loggedImpression",
+          "verdict": "confirmed"
+        }
+      },
+      {
+        "key": "YWP|partial|delay time",
+        "binary": "YWP",
+        "mode": "partial",
+        "label": "delay time",
+        "before": {
+          "candidatePresent": false,
+          "truthRank": 0,
+          "topClass": "PAGDynamicRenderTimeOutControlServer",
+          "topField": "_delayTime",
+          "verdict": "confirmed"
+        },
+        "after": {
+          "candidatePresent": true,
+          "truthRank": 2,
+          "topClass": "PAGDynamicRenderTimeOutControlServer",
+          "topField": "_delayTime",
+          "verdict": "confirmed"
+        }
+      }
+    ]
+  }
+}

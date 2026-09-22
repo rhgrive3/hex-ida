@@ -1,0 +1,1307 @@
+{
+  "schema": "hex-pinpoint-confidence-policy-comparison/v1",
+  "denominator": 426,
+  "policies": {
+    "A": {
+      "name": "current global 3-group gate",
+      "column": "policyAVerdict",
+      "subsets": {
+        "all": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.36619718309859156,
+          "strongPrecision": 0.6995515695067265
+        },
+        "exact": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 96,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 3,
+          "correctStrong": 133,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 133,
+          "strongCoverage": 0.5782608695652174,
+          "strongPrecision": 1
+        },
+        "partial": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 30,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 3,
+          "correctStrong": 23,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 90,
+          "strongCoverage": 0.11734693877551021,
+          "strongPrecision": 0.25555555555555554
+        },
+        "candidatePresent": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 126,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.36619718309859156,
+          "strongPrecision": 0.6995515695067265
+        },
+        "candidateNotFound": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "independentGroups2": {
+          "denominator": 121,
+          "candidatePresent": 121,
+          "candidateNotFound": 0,
+          "top1Correct": 94,
+          "top1Incorrect": 27,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7768595041322314,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 94,
+              "incorrect": 27
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": 0,
+          "strongPrecision": null
+        },
+        "independentGroupsGte3": {
+          "denominator": 277,
+          "candidatePresent": 277,
+          "candidateNotFound": 0,
+          "top1Correct": 172,
+          "top1Incorrect": 105,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6209386281588448,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 16,
+              "incorrect": 38
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.5631768953068592,
+          "strongPrecision": 0.6995515695067265
+        }
+      }
+    },
+    "B": {
+      "name": "legacy any-group likely",
+      "column": "policyBPlanAVerdict",
+      "subsets": {
+        "all": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 65,
+              "incorrect": 20
+            },
+            "ambiguous": {
+              "correct": 67,
+              "incorrect": 75
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 65,
+          "correctStrong": 215,
+          "falseConfirmed": 49,
+          "falseLikely": 20,
+          "falseStrong": 69,
+          "strong": 284,
+          "strongCoverage": 0.5046948356807511,
+          "strongPrecision": 0.7570422535211268
+        },
+        "exact": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 61,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 38,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 61,
+          "correctStrong": 191,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 191,
+          "strongCoverage": 0.8304347826086956,
+          "strongPrecision": 1
+        },
+        "partial": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 4,
+              "incorrect": 20
+            },
+            "ambiguous": {
+              "correct": 29,
+              "incorrect": 74
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 4,
+          "correctStrong": 24,
+          "falseConfirmed": 49,
+          "falseLikely": 20,
+          "falseStrong": 69,
+          "strong": 93,
+          "strongCoverage": 0.12244897959183673,
+          "strongPrecision": 0.25806451612903225
+        },
+        "candidatePresent": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 65,
+              "incorrect": 20
+            },
+            "ambiguous": {
+              "correct": 67,
+              "incorrect": 75
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 65,
+          "correctStrong": 215,
+          "falseConfirmed": 49,
+          "falseLikely": 20,
+          "falseStrong": 69,
+          "strong": 284,
+          "strongCoverage": 0.5046948356807511,
+          "strongPrecision": 0.7570422535211268
+        },
+        "candidateNotFound": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "independentGroups2": {
+          "denominator": 121,
+          "candidatePresent": 121,
+          "candidateNotFound": 0,
+          "top1Correct": 94,
+          "top1Incorrect": 27,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7768595041322314,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 55,
+              "incorrect": 2
+            },
+            "ambiguous": {
+              "correct": 39,
+              "incorrect": 25
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 55,
+          "correctStrong": 55,
+          "falseConfirmed": 0,
+          "falseLikely": 2,
+          "falseStrong": 2,
+          "strong": 57,
+          "strongCoverage": 0.45454545454545453,
+          "strongPrecision": 0.9649122807017544
+        },
+        "independentGroupsGte3": {
+          "denominator": 277,
+          "candidatePresent": 277,
+          "candidateNotFound": 0,
+          "top1Correct": 172,
+          "top1Incorrect": 105,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6209386281588448,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 16,
+              "incorrect": 38
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.5631768953068592,
+          "strongPrecision": 0.6995515695067265
+        }
+      }
+    },
+    "C": {
+      "name": "partial-only 3-group gate",
+      "column": "policyCPlanAVerdict",
+      "subsets": {
+        "all": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 60,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 72,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 60,
+          "correctStrong": 210,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 277,
+          "strongCoverage": 0.49295774647887325,
+          "strongPrecision": 0.7581227436823105
+        },
+        "exact": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 57,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 42,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 57,
+          "correctStrong": 187,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 187,
+          "strongCoverage": 0.8130434782608695,
+          "strongPrecision": 1
+        },
+        "partial": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 30,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 3,
+          "correctStrong": 23,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 90,
+          "strongCoverage": 0.11734693877551021,
+          "strongPrecision": 0.25555555555555554
+        },
+        "candidatePresent": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 60,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 72,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 60,
+          "correctStrong": 210,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 277,
+          "strongCoverage": 0.49295774647887325,
+          "strongPrecision": 0.7581227436823105
+        },
+        "candidateNotFound": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "independentGroups2": {
+          "denominator": 121,
+          "candidatePresent": 121,
+          "candidateNotFound": 0,
+          "top1Correct": 94,
+          "top1Incorrect": 27,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7768595041322314,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 54,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 40,
+              "incorrect": 27
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 54,
+          "correctStrong": 54,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 54,
+          "strongCoverage": 0.4462809917355372,
+          "strongPrecision": 1
+        },
+        "independentGroupsGte3": {
+          "denominator": 277,
+          "candidatePresent": 277,
+          "candidateNotFound": 0,
+          "top1Correct": 172,
+          "top1Incorrect": 105,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6209386281588448,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 16,
+              "incorrect": 38
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.5631768953068592,
+          "strongPrecision": 0.6995515695067265
+        }
+      }
+    },
+    "D": {
+      "name": "metadata + structural 2-group exemption",
+      "column": "policyDPlanAVerdict",
+      "subsets": {
+        "all": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 61,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 71,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 61,
+          "correctStrong": 211,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 278,
+          "strongCoverage": 0.4953051643192488,
+          "strongPrecision": 0.7589928057553957
+        },
+        "exact": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 57,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 42,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 57,
+          "correctStrong": 187,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 187,
+          "strongCoverage": 0.8130434782608695,
+          "strongPrecision": 1
+        },
+        "partial": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 4,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 29,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 4,
+          "correctStrong": 24,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 91,
+          "strongCoverage": 0.12244897959183673,
+          "strongPrecision": 0.26373626373626374
+        },
+        "candidatePresent": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 61,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 71,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 61,
+          "correctStrong": 211,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 278,
+          "strongCoverage": 0.4953051643192488,
+          "strongPrecision": 0.7589928057553957
+        },
+        "candidateNotFound": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "independentGroups2": {
+          "denominator": 121,
+          "candidatePresent": 121,
+          "candidateNotFound": 0,
+          "top1Correct": 94,
+          "top1Incorrect": 27,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7768595041322314,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 55,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 39,
+              "incorrect": 27
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 55,
+          "correctStrong": 55,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 55,
+          "strongCoverage": 0.45454545454545453,
+          "strongPrecision": 1
+        },
+        "independentGroupsGte3": {
+          "denominator": 277,
+          "candidatePresent": 277,
+          "candidateNotFound": 0,
+          "top1Correct": 172,
+          "top1Incorrect": 105,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6209386281588448,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 16,
+              "incorrect": 38
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.5631768953068592,
+          "strongPrecision": 0.6995515695067265
+        }
+      }
+    },
+    "E": {
+      "name": "singleton two-group exemption",
+      "column": "policyEPlanAVerdict",
+      "subsets": {
+        "all": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 60,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 72,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 60,
+          "correctStrong": 210,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 277,
+          "strongCoverage": 0.49295774647887325,
+          "strongPrecision": 0.7581227436823105
+        },
+        "exact": {
+          "denominator": 230,
+          "candidatePresent": 230,
+          "candidateNotFound": 0,
+          "top1Correct": 229,
+          "top1Incorrect": 1,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.9956521739130435,
+          "verdicts": {
+            "confirmed": {
+              "correct": 130,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 57,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 42,
+              "incorrect": 1
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 130,
+          "correctLikely": 57,
+          "correctStrong": 187,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 187,
+          "strongCoverage": 0.8130434782608695,
+          "strongPrecision": 1
+        },
+        "partial": {
+          "denominator": 196,
+          "candidatePresent": 196,
+          "candidateNotFound": 0,
+          "top1Correct": 53,
+          "top1Incorrect": 143,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.27040816326530615,
+          "verdicts": {
+            "confirmed": {
+              "correct": 20,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 3,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 30,
+              "incorrect": 76
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 20,
+          "correctLikely": 3,
+          "correctStrong": 23,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 90,
+          "strongCoverage": 0.11734693877551021,
+          "strongPrecision": 0.25555555555555554
+        },
+        "candidatePresent": {
+          "denominator": 426,
+          "candidatePresent": 426,
+          "candidateNotFound": 0,
+          "top1Correct": 282,
+          "top1Incorrect": 144,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6619718309859155,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 60,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 72,
+              "incorrect": 77
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 60,
+          "correctStrong": 210,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 277,
+          "strongCoverage": 0.49295774647887325,
+          "strongPrecision": 0.7581227436823105
+        },
+        "candidateNotFound": {
+          "denominator": 0,
+          "candidatePresent": 0,
+          "candidateNotFound": 0,
+          "top1Correct": 0,
+          "top1Incorrect": 0,
+          "candidateRecall": null,
+          "rankingAccuracy": null,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 0,
+          "correctStrong": 0,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 0,
+          "strongCoverage": null,
+          "strongPrecision": null
+        },
+        "independentGroups2": {
+          "denominator": 121,
+          "candidatePresent": 121,
+          "candidateNotFound": 0,
+          "top1Correct": 94,
+          "top1Incorrect": 27,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.7768595041322314,
+          "verdicts": {
+            "confirmed": {
+              "correct": 0,
+              "incorrect": 0
+            },
+            "likely": {
+              "correct": 54,
+              "incorrect": 0
+            },
+            "ambiguous": {
+              "correct": 40,
+              "incorrect": 27
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 0,
+          "correctLikely": 54,
+          "correctStrong": 54,
+          "falseConfirmed": 0,
+          "falseLikely": 0,
+          "falseStrong": 0,
+          "strong": 54,
+          "strongCoverage": 0.4462809917355372,
+          "strongPrecision": 1
+        },
+        "independentGroupsGte3": {
+          "denominator": 277,
+          "candidatePresent": 277,
+          "candidateNotFound": 0,
+          "top1Correct": 172,
+          "top1Incorrect": 105,
+          "candidateRecall": 1,
+          "rankingAccuracy": 0.6209386281588448,
+          "verdicts": {
+            "confirmed": {
+              "correct": 150,
+              "incorrect": 49
+            },
+            "likely": {
+              "correct": 6,
+              "incorrect": 18
+            },
+            "ambiguous": {
+              "correct": 16,
+              "incorrect": 38
+            },
+            "none": {
+              "correct": 0,
+              "incorrect": 0
+            }
+          },
+          "correctConfirmed": 150,
+          "correctLikely": 6,
+          "correctStrong": 156,
+          "falseConfirmed": 49,
+          "falseLikely": 18,
+          "falseStrong": 67,
+          "strong": 223,
+          "strongCoverage": 0.5631768953068592,
+          "strongPrecision": 0.6995515695067265
+        }
+      }
+    }
+  },
+  "selectedPolicy": "D",
+  "deltaFromA": {
+    "from": "A",
+    "to": "D",
+    "correctStrong": 55,
+    "falseStrong": 0,
+    "falseConfirmed": 0,
+    "falseLikely": 0,
+    "exactCorrectStrong": 54,
+    "partialCorrectStrong": 1
+  }
+}

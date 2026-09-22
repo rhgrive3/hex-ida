@@ -4,9 +4,9 @@
  * Validates the committed report (rows.jsonl / summary.json) without any
  * binary analysis: schema, query counts, offline replay audit (stored verdicts
  * recomputed from stored fusion equal stored verdicts), aggregate arithmetic,
- * and a production canary (current decide() must still be the measured NEW
- * policy — if productionendpoints move, this report is stale and must be
- * re-measured, never silently reused).
+ * and the historical P1 replay contract.  Production may intentionally move
+ * only after a new, separately bound measurement; this test must never infer
+ * that an old artifact is evidence for the current verdict implementation.
  *
  *   node tests/investigate-pinpoint-confidence-calibration.mjs
  */

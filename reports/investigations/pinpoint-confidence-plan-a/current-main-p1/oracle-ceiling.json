@@ -1,0 +1,49 @@
+{
+  "schema": "hex-pinpoint-confidence-oracle-ceiling/v1",
+  "denominator": 426,
+  "candidateOracle": {
+    "definition": "If the truth candidate is present, choose it.",
+    "correctTop1": 426,
+    "coverage": 1,
+    "candidateRecallLoss": 0
+  },
+  "rankingOracle": {
+    "definition": "A finite evidence-signature diagnostic over the candidates already generated; it does not create an ML model or new binary evidence.",
+    "observedTop1Correct": 282,
+    "observedTop1Accuracy": 0.6619718309859155,
+    "diagnosticFeatureCeiling": 282,
+    "diagnosticFeatureCeilingAccuracy": 0.6619718309859155,
+    "classification": {
+      "definition": {
+        "noCapturedDifferential": "top and truth have the same positive evidence-code/group/kind/id signature in the recorded lattice",
+        "truthHasRobustDeterministicDifferential": "truth has a positive verified or non-metadata identifying evidence token absent from the wrong top; this is diagnostic potential, not a claim that a safe generic reranker already exists",
+        "metadataOrWeakDifferential": "the feature signature differs only by metadata/weak signals, so the recorded lattice does not establish a safe direction for a generic reranker"
+      },
+      "counts": {
+        "rankingCorrect": 282,
+        "candidateAbsent": 0,
+        "snapshotMissing": 0,
+        "noCapturedDifferential": 22,
+        "truthHasRobustDeterministicDifferential": 0,
+        "metadataOrWeakDifferential": 122
+      },
+      "rowsPath": "ranking-oracle-classification.json"
+    }
+  },
+  "confidenceOracle": {
+    "definition": "Know whether the existing top-1 is correct and mark only correct top-1 rows strong.",
+    "correctStrongCeiling": 282,
+    "strongCoverageCeiling": 0.6619718309859155,
+    "falseStrongCeiling": 0,
+    "selectedPolicyCorrectStrong": 211,
+    "calibrationAbstentionGap": 71,
+    "selectedPolicyFalseStrong": 67
+  },
+  "lossDecomposition": {
+    "denominator": 426,
+    "candidateRecallLoss": 0,
+    "rankingLossAfterCandidateRecall": 144,
+    "confidenceCalibrationLossAfterCorrectTop1": 71,
+    "residualFalseStrong": 67
+  }
+}
