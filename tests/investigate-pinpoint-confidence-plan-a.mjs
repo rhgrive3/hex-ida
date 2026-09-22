@@ -1,6 +1,7 @@
 /* Plan-A report contract: validate structure and arithmetic, not fixed corpus scores. */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +19,12 @@ const taxonomy = JSON.parse(fs.readFileSync(path.join(DIR, 'failure-taxonomy.jso
 const oracle = JSON.parse(fs.readFileSync(path.join(DIR, 'oracle-ceiling.json'), 'utf8'));
 const jev = JSON.parse(fs.readFileSync(path.join(DIR, 'jev-eligibility-analysis.json'), 'utf8'));
 const manifest = JSON.parse(fs.readFileSync(path.join(DIR, 'measurement.json'), 'utf8'));
+const context = JSON.parse(fs.readFileSync(path.join(DIR, 'measurement-context.json'), 'utf8'));
 const queries = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/pinpoint-confidence-queries.json'), 'utf8'));
+
+function sha256File(file) {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
 
 function fusion(candidate) {
   return {
@@ -37,6 +43,17 @@ test('Plan-A rows bind the full denominator, current-main provenance, candidate 
   assert.equal(summary.denominatorContract.totalRows, rows.length);
   assert.equal(manifest.complete, true);
   assert.match(manifest.productCommit, /^[0-9a-f]{40}$/);
+  assert.equal(context.schema, 'hex-pinpoint-confidence-current-main-context/v1');
+  assert.equal(context.rawMeasurement.measurementHead, manifest.productCommit);
+  assert.equal(context.rawMeasurement.measurementTree, manifest.productTree);
+  assert.equal(context.rawMeasurement.sha256, sha256File(path.join(DIR, 'measurement.json')));
+  assert.equal(context.rawMeasurement.rowsSha256, sha256File(path.join(DIR, 'rows.jsonl')));
+  assert.ok(context.currentMain.isAncestorOfMeasurementHead);
+  assert.ok(context.currentMain.productionCandidatePaths.length >= 3);
+  for (const productionPath of context.currentMain.productionCandidatePaths) {
+    assert.equal(productionPath.identical, true, `${productionPath.path} must match current main`);
+    assert.equal(productionPath.measurementBlob, productionPath.currentMainBlob);
+  }
   for (const row of field) {
     assert.equal(row.error, undefined);
     assert.equal(row.replayFidelity, 'match');

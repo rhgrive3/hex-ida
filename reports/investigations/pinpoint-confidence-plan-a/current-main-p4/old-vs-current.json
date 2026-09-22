@@ -8,9 +8,9 @@
     "policyColumn": "newVerdict"
   },
   "current": {
-    "manifestPath": "reports/investigations/pinpoint-confidence-plan-a/current-main-p1/measurement.json",
-    "productCommit": "de1bfbb8a58b475b2794386788d2da5c68e218ae",
-    "productTree": "d4a9dbbd4f2001bcaea25a9cfb2b45d960a67fce",
+    "manifestPath": "reports/investigations/pinpoint-confidence-plan-a/current-main-p4/measurement.json",
+    "productCommit": "08d5580c96c8831e13fea9242c858fbc8c1a3212",
+    "productTree": "efe205f2be8ef279e394d24ba5a947110b4f6951",
     "policyColumn": "policyAVerdict"
   },
   "comparison": {

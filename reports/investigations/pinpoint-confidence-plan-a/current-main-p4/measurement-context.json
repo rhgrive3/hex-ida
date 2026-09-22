@@ -1,0 +1,36 @@
+{
+  "schema": "hex-pinpoint-confidence-current-main-context/v1",
+  "rawMeasurement": {
+    "path": "reports/investigations/pinpoint-confidence-plan-a/current-main-p4/measurement.json",
+    "sha256": "3ba2daa243249fec8d4a5bb0a9d916fca49975f7b6390bcce3bb1ea31989bbc6",
+    "rowsPath": "reports/investigations/pinpoint-confidence-plan-a/current-main-p4/rows.jsonl",
+    "rowsSha256": "be2a46ac2a404d4ba96d5719e6216e83de35d6f084b8b7550a6b39fd3105897e",
+    "measurementHead": "08d5580c96c8831e13fea9242c858fbc8c1a3212",
+    "measurementTree": "efe205f2be8ef279e394d24ba5a947110b4f6951"
+  },
+  "currentMain": {
+    "commit": "4ce9459d2f51163e20abb005e222bd93d88771e7",
+    "isAncestorOfMeasurementHead": true,
+    "productionCandidatePaths": [
+      {
+        "path": "js/evidence.js",
+        "measurementBlob": "d626611dd11e05d22c4e26dfbf8868162a26766e",
+        "currentMainBlob": "d626611dd11e05d22c4e26dfbf8868162a26766e",
+        "identical": true
+      },
+      {
+        "path": "js/pinpoint.js",
+        "measurementBlob": "8b83c917aeab3195ab635c2415bb6ddd03bc1afc",
+        "currentMainBlob": "8b83c917aeab3195ab635c2415bb6ddd03bc1afc",
+        "identical": true
+      },
+      {
+        "path": "js/pinpoint-legacy.js",
+        "measurementBlob": "0be5882996f2e76e770c3f2c7b225fab613408df",
+        "currentMainBlob": "0be5882996f2e76e770c3f2c7b225fab613408df",
+        "identical": true
+      }
+    ]
+  },
+  "interpretation": "The current-main P4 production candidate generation, fusion, ranking, and verdict files were byte-identical at collection; the rebased measurement head adds only measurement/report/Jev-boundary work outside that production surface."
+}

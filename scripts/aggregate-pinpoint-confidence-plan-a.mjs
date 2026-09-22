@@ -411,7 +411,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(DIR, 'measurement.json'), 
 if (!manifest.complete) die('measurement manifest is not complete');
 if (field.length !== queries.length) die(`field denominator ${field.length} differs from fixture ${queries.length}`);
 if (field.some((row) => row.error)) die('field measurement has errors');
-if (field.some((row) => row.replayFidelity !== 'match')) die('current production/P1 replay fidelity mismatch');
+if (field.some((row) => row.replayFidelity !== 'match')) die('current production/P4 replay fidelity mismatch');
 for (const row of field) {
   if (!Array.isArray(row.candidates) || !row.candidates.length) die(`candidate snapshot missing for ${keyOf(row)}`);
   for (const policy of POLICIES) if (typeof row[policy.column] !== 'string') die(`policy ${policy.id} missing for ${keyOf(row)}`);

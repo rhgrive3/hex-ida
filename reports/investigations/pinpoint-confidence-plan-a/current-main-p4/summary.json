@@ -7,10 +7,10 @@
   "measurement": {
     "schema": "hex-pinpoint-confidence-measurement/v2",
     "complete": true,
-    "startedAt": "2026-09-22T14:25:58.068Z",
-    "completedAt": "2026-09-22T14:42:28.315Z",
-    "productCommit": "de1bfbb8a58b475b2794386788d2da5c68e218ae",
-    "productTree": "d4a9dbbd4f2001bcaea25a9cfb2b45d960a67fce",
+    "startedAt": "2026-09-22T16:17:08.496Z",
+    "completedAt": "2026-09-22T16:29:21.295Z",
+    "productCommit": "08d5580c96c8831e13fea9242c858fbc8c1a3212",
+    "productTree": "efe205f2be8ef279e394d24ba5a947110b4f6951",
     "node": "v24.20.0",
     "queryFixture": {
       "path": "tests/fixtures/pinpoint-confidence-queries.json",
@@ -33,11 +33,11 @@
     },
     "collector": {
       "path": "scripts/measure-pinpoint-confidence.mjs",
-      "sha256": "87bca61740c1c0afdb8a28df55f7a4fe2045e046e5cf7b090f5f621155789122"
+      "sha256": "3602294358ec4bda36e55c92438ab4f42c645d0f5d5cd9b2fa87a05e66836ec2"
     },
     "policyReplay": {
       "path": "scripts/pinpoint-confidence-policy.mjs",
-      "sha256": "e96ab84c863e1be7dd5e93aa12483c9091b30f8398095e59787e20bbba38a56d"
+      "sha256": "52c8971f225179b85b2c83b39ed80c13fad9496631aa093f6c68e4c8852eaa0f"
     },
     "fieldRows": 426,
     "singleAnalysisPerQuery": true,
