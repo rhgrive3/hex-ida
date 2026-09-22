@@ -39,7 +39,13 @@ head="$(git rev-parse HEAD)"
 
 changed_file=""
 cleanup_changed_file() {
-  if [[ -n "$changed_file" ]]; then rm -f -- "$changed_file"; fi
+  local original_status=$?
+  if [[ -n "$changed_file" ]]; then
+    if ! rm -f -- "$changed_file"; then
+      echo 'could not remove impact path buffer during cleanup' >&2
+    fi
+  fi
+  return "$original_status"
 }
 trap cleanup_changed_file EXIT
 if ! changed_file="$(mktemp)"; then
