@@ -96,8 +96,14 @@
   ],
   "observed": {
     "evaluatedAt": "2026-09-22",
+    "reconciledAt": "2026-09-22",
+    "reconciledOnto": "b1a61d50c0bd2c2b893862c8514e7a05df62ecdd",
     "deterministicTopOffset": 148,
     "deterministicTopField": "mobj_t.momz",
+    "deterministicAnswerVerdict": "ambiguous",
+    "deterministicAnswerWrongTop1": 1,
+    "deterministicAnswerFalseLikely": 0,
+    "reconciliationNote": "Re-measured at the current main head. The measurement that first raised the false-likely finding reported verdict `likely` with `falseLikely: 1` for this same top-1; main's `fix(pinpoint): require 3 independent groups for likely verdict` (#9418, raised from this holdout) landed while this lane was open, and the reconciled measurement now reports `ambiguous` with `falseLikely: 0`. This fixture records the fixed behaviour, not the superseded one; the pre-fix vector stays pinned in `tests/fixtures/pinpoint-false-likely-dsda.json` on main, where the regression for the fix lives.",
     "orderedBy": {
       "boundary": "Shape score per rank. This is the order the referee's c0.. ids are allocated from, so `c<rank - 4>` names boundary rank `rank`.",
       "finalAnswer": "Bayesian fusion order of the same candidates, which is what the product returns."
@@ -106,7 +112,7 @@
     "finalAnswerOrder": [148, 56, 240, 196, 404, 256, 212, 80],
     "rankedShapeScores": [0.2142857142857143, 0.20833333333333334, 0.2, 0.198125, 0.1965909090909091, 0.18333333333333332, 0.14895833333333333, 0.146875],
     "d4D5Gap": 0.0015340909090909016,
-    "finding": "On the real game the true hit-point field (mobj_t.health, offset 196) is only the fifth boundary candidate and the deterministic answer is mobj_t.momz (offset 148), a vertical-momentum field, not a resource. mobj_t.momz is the field that gets the verified drain evidence: gravity subtracts from it, so on the real game the `loc-drain-verified` evidence lands on a momentum field while the truth is not binary-verified at all in the baseline (the baseline verifies boundary ranks 1..4, which are offsets 80, 148, 56 and 240).",
+    "finding": "On the real game the true hit-point field (mobj_t.health, offset 196) is only the fifth boundary candidate and the deterministic answer is mobj_t.momz (offset 148), a vertical-momentum field, not a resource. mobj_t.momz is the field that gets the verified drain evidence: gravity subtracts from it, so on the real game the `loc-drain-verified` evidence lands on a momentum field while the truth is not binary-verified at all in the baseline (the baseline verifies boundary ranks 1..4, which are offsets 80, 148, 56 and 240). After the reconciliation the answer is `ambiguous` rather than `likely`, so the product no longer claims a resource field it did not find; what remains is an ordering miss, not a false claim.",
     "oracleCeiling": {
       "challengerId": "c1",
       "probeCandidateId": "d5",

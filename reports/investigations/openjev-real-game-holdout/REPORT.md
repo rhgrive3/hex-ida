@@ -2,7 +2,7 @@
 
 - 日付: 2026-09-22
 - レーン: OpenJev boundary referee / 実ゲーム holdout（branch `feat/openjev-real-game-holdout`）
-- base: 現 main `1e2b89c9b228f6510c7c2bc9b5f7204633f35c90`
+- base: 現 main `b1a61d50c0bd2c2b893862c8514e7a05df62ecdd`（reconcile 済み。旧 base は `1e2b89c9b228f6510c7c2bc9b5f7204633f35c90`）
 - 正本 fixture: `tests/fixtures/real-game-boundary-holdout.manifest.json`
 - 計測器: `tests/semantic-boundary-real-game-holdout.mjs`（artifact 必須。live は `HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1` + `OPENJEV_API_KEY`）
 - 機械可読な同伴証跡: `measurement-2026-09-22.json`（このディレクトリ）
@@ -28,6 +28,13 @@
 → `promotionEligible: false` を維持し、production は gated のまま。ただし今回は
 **「なぜ救済が起きないか」が 2 つの独立した実測（上限と選択）で特定できている**。
 fixture は緩めておらず、閾値も goal 文言も動かしていない。
+
+5. **この holdout が見つけた false-likely は、先に main 側で修正された。** reconcile 後に再計測すると、
+   同じ top-1（148 = `mobj_t.momz`）が `likely` → **`ambiguous`**、`falseLikely` は **1 → 0**。
+   main の `fix(pinpoint): require 3 independent groups for likely verdict`（#9418）は
+   この holdout の観測を根拠として引用しており（`tests/fixtures/pinpoint-false-likely-dsda.json` の
+   `note` は本 PR #9410 の holdout を出典として明記）、**実ゲームでの再現と修正の両方をこの lane が提供した**。
+   残るのは「順位を外す」ことであり、「見つけていない資源を資源だと言う」ことではない（§4.1）。
 
 ## 2. 固定した artifact
 
@@ -119,7 +126,7 @@ decreases 25 / increases 1 の offset 240（`player_t.ammo[0]`）を選んだ。
 shape score: `0.214286 / 0.208333 / 0.2 / 0.198125 / 0.196591 / 0.183333 / 0.148958 / 0.146875`。
 D4/D5 gap = **0.001534** < `maxD4D5Gap` 0.02 → 曖昧ゲートは発火する。
 
-### offline
+### offline（reconcile 前 = base `1e2b89c9b`）
 
 | variant | final top-1 | rescue | hit@boundary | wrong-top-1 | false-likely | analyze | semantic |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -130,7 +137,7 @@ oracle (`c1` = d5 = 196) の詳細: probe `reconfirmed`（2 analyze、実窓で�
 referee `probe-promoted-by-binary-evidence` / `verificationTargets` が `d1,d2,d3,d4` → `d1,d2,d3,d5` /
 それでも final top-1 は 148。**このケースの 1-probe 上限は「救済できない」と実測された。**
 
-### live OpenJev
+### live OpenJev（reconcile 前）
 
 | variant | final top-1 | rescue | hit@boundary | semantic | referee |
 |---|---|---:|---:|---:|---|
@@ -143,6 +150,42 @@ referee `probe-promoted-by-binary-evidence` / `verificationTargets` が `d1,d2,d
 latency（この実行のサンプル）: choice p50 420.5 ms / p95 862.7 ms、noul p50 566.9 ms。
 
 `labelsConsistent: true` / `promotionEligible: false` / `artifact.pinned: true`。
+
+### reconcile 後（base `b1a61d50c` = 現 main）
+
+main が `fix(pinpoint): require 3 independent groups for likely verdict`（#9418）を含んで進んだため、
+reconcile して同じ artifact / 同じ label / 同じ frozen policy で再計測した。**閾値も fixture も動かしていない。**
+
+| variant | final top-1 | verdict | rescue | hit@boundary | wrong-top-1 | false-likely |
+|---|---|---|---:|---:|---:|---:|
+| 現行 D1〜D4（offline） | 148 (`mobj_t.momz`) | **ambiguous** | 0 | 0 | 1 | **0** |
+| oracle 1-probe（offline, 上限） | 148 | **ambiguous** | 0 | **1** | 1 | **0** |
+
+| variant | final top-1 | verdict | rescue | semantic | referee |
+|---|---|---|---:|---:|---|
+| 現行 D1〜D4（live） | 148 | **ambiguous** | 0 | 0 | no-referee |
+| oracle 1-probe（上限, live） | 148 | **ambiguous** | 0 | 1 | `probe-promoted-by-binary-evidence` → probe `reconfirmed` (d5) |
+| shadow choice | 148 | **ambiguous** | 0 | 1 | received **c0**, margin 0.90（c0 = boundary rank 4 = offset 240） |
+| shadow parallel noul | 148 | **ambiguous** | 0 | 1 | received **c0**, margin 0.06（admission 床 0.2 未満） |
+| gated 1-probe | 148 | **ambiguous** | 0 | 1 | `challenger-not-tail`（c0 は boundary rank 4、probe は d5〜d8 のみ） |
+
+latency（この実行のサンプル）: choice p50 451.7 ms / p95 577.8 ms、noul p50 465.8 ms。
+
+差分は 1 点だけ、しかも本質的である。
+
+| | reconcile 前 | reconcile 後 |
+|---|---|---|
+| top-1 の verdict | `likely` | `ambiguous` |
+| false-likely（top-1 が真値でないのに strong verdict） | 1 | **0** |
+| final top-1 | 148 | 148（不変） |
+| boundaryRescue | 0 | 0（不変） |
+| truth の boundary rank | 5 | 5（不変） |
+| oracle 上限 | 救済なし | 救済なし（不変） |
+
+つまり **main の修正はこの実ゲーム holdout で効いている**（本 lane が見つけた false-likely が実際に消えた）。
+同時に **解決していないこと**も変わらない: 真値は依然 boundary rank 5 で baseline の検証集合の外にあり、
+1-probe は検証 slot を差し替えられるが返り値は 148 のまま、live の選択は依然 `c0`（ammo）である。
+`promotionEligible: false` の理由は「名乗りの誤り」から「順位の取り違え」に純化した。
 
 ### ARM64 runner での再計測（GitHub Actions）
 
@@ -178,11 +221,18 @@ assert した内容（両 leg で `ok: true`、`problems: []`）:
 ## 5. 製品側 findings
 
 1. **`hp` の決定的 top-1 が資源ではない。** `mobj_t.momz`（垂直方向の運動量）に
-   `loc-drain-verified` が付く（gravity が減らす）ため、実ゲームで `likely` として 1 位に出る。
+   `loc-drain-verified` が付く（gravity が減らす）ため、実ゲームで 1 位に出る。
    真値 `mobj_t.health` は baseline の検証集合（boundary rank 1〜4）に入っておらず、しかも
    boundary rank 5 に落ちている。
+   → **名乗りの部分は修正済み（main #9418）**。reconcile 後は `ambiguous` / `falseLikely: 0` で、
+   この fixture が見つけた false-likely は現 main では再現しない（回帰は main の
+   `tests/pinpoint-false-likely-confidence.mjs` + `tests/fixtures/pinpoint-false-likely-dsda.json` が固定）。
+   残るのは順位の誤りであり、これは未修正（下の 2・3）。
 2. **1-probe は答えを変えられない。** oracle 上限で実測（本 fixture と OpenMW fixture の両方）。
-3. **live の選択がまだ外れる。** 実ゲームでは `c1`（真値）ではなく `c0`（ammo）を選ぶ。
+3. **live の選択がまだ外れる。** 実ゲームでは `c1`（真値）ではなく `c0`（boundary rank 4 = `player_t.ammo[0]`）を選ぶ。
+4. **修正は実ゲームで検証できた。** false-likely の修正が入った main 上で、同じ artifact・同じ label・
+   同じ frozen policy の再計測が `falseLikely: 0` を返すこと（§4）が、その修正の実ゲーム側の
+   外部検証になっている（main 側テストは合成ベクトルの固定のみ）。
 
 ## 6. 残作業（production の gate を外す条件）
 

@@ -36,12 +36,12 @@
   "promotionBlocker": "No labelled real-game holdout case shows a boundary rescue by the gated probe, so production stays gated.",
   "upstreamLatencyMs": {
     "choice": {
-      "p50": 420.5,
-      "p95": 862.7
+      "p50": 451.7,
+      "p95": 577.8
     },
     "noul": {
-      "p50": 566.9,
-      "p95": 566.9
+      "p50": 465.8,
+      "p95": 465.8
     }
   },
   "cases": [
@@ -117,8 +117,8 @@
           "boundaryRescue": 0,
           "finalTopOffset": "148",
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 0,
           "referee": {
@@ -173,8 +173,8 @@
           "boundaryRescue": 0,
           "finalTopOffset": "148",
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": {
@@ -229,8 +229,8 @@
           "boundaryRescue": 0,
           "finalTopOffset": "148",
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": {
@@ -239,7 +239,7 @@
             "method": "choice",
             "model": "openjev",
             "challengerId": "c0",
-            "margin": 0.85
+            "margin": 0.9
           },
           "probe": {
             "attempted": false,
@@ -285,8 +285,8 @@
           "boundaryRescue": 0,
           "finalTopOffset": "148",
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": {
@@ -295,7 +295,7 @@
             "method": "noul",
             "model": "openjev",
             "challengerId": "c0",
-            "margin": 0.07000000000000006
+            "margin": 0.06000000000000005
           },
           "probe": {
             "attempted": false,
@@ -341,8 +341,8 @@
           "boundaryRescue": 0,
           "finalTopOffset": "148",
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": {
