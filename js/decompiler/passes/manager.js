@@ -18,7 +18,10 @@ function validTimeBudgetMs(value, fallback) {
 // manager from re-snapshotting the same immutable graph on every pass. A `true`
 // answer is stable forever (a frozen graph cannot gain a mutable descendant); a
 // stale `false` only snapshots something we did not strictly need to, which is
-// always safe.
+// always safe. The skip mirrors `capturePassState`'s own traversal predicate:
+// a value that traversal would not snapshot anyway (a function, a class
+// instance, a WeakMap) is treated as immutable here too, so the two agree about
+// what is pass-owned data.
 const deepImmutableCache = new WeakMap();
 function isDeepImmutable(value) {
   if (value === null || typeof value !== 'object') return true;

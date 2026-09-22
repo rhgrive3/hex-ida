@@ -178,6 +178,9 @@ export class RewriteEngine {
         // candidate. Count once per distinct candidate instead: same work bound,
         // no repeated O(subtree) walk. The time/cancellation half of `overBudget`
         // still runs every iteration because it is not a function of the candidate.
+        // The cache is exact because rules build new nodes rather than mutating
+        // `candidate` in place; `candidateCount` is cleared whenever the loop
+        // replaces `candidate` with a rule's `next`.
         let candidateCount = null;
         const overCandidateWork = () => {
           if (stats.applications >= this.budget.maxApplications) return true;
