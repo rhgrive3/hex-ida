@@ -47,6 +47,19 @@
       "72": "ActorStats.breath.current"
     }
   },
+  "policies": {
+    "note": "Frozen in the labelled fixture, not in the harness code: a promotion decision must be bound to the exact policy identity it was measured with.",
+    "ambiguity": {
+      "schema": "hex-semantic-boundary-ambiguity/v1",
+      "maxD4D5Gap": 0.02,
+      "minD4Score": 0
+    },
+    "admission": {
+      "schema": "hex-semantic-boundary-admission/v1",
+      "minProbability": 0.8,
+      "minMargin": 0.2
+    }
+  },
   "cases": [
     {
       "goal": "hp",
@@ -98,9 +111,9 @@
     "rankedShapeScoresNote": "Ranks 1..5 measured from the instrumentation trace. Only rank 1 (0.19375) is separated; ranks 2..4 tie at 0.1771 and rank 5 trails at 0.1615, which is the 0.015625 D4/D5 gap the ambiguity policy fires on.",
     "labelSelfCheck": "The harness does not trust these labels: it derives reachability from the labelled rank, requires candidateCount to match, and requires the oracle probe to target `d<expectedDeterministicRank>`. A manifest claim that disagrees with the measurement is reported as a label failure and blocks promotion.",
     "upstreamLatencyMs": {
-      "choice": { "p50": 459.1, "p95": 583.4 },
-      "noul": { "p50": 615.3, "p95": 700.9 },
-      "note": "One live run of each case; treat as a sample, not a latency bound. Worker timeout remains 2500 ms."
+      "choice": { "p50": "451..492", "p95": "583..809" },
+      "noul": { "p50": "450..615", "p95": "450..761" },
+      "note": "Observed range across a handful of live runs; treat as a sample, not a latency bound. Worker timeout remains 2500 ms."
     },
     "boundaryRescue": 0,
     "promotionEligible": false

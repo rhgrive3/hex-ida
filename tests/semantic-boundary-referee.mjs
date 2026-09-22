@@ -3,9 +3,13 @@ import fs from 'node:fs';
 import { autoAnalyze } from '../js/auto.js';
 import {
   SEMANTIC_BOUNDARY_GOAL_GUIDANCE,
+  normalizeSemanticBoundaryAdmissionPolicy,
+  normalizeSemanticBoundaryAmbiguityPolicy,
   semanticBoundaryGoalGuidance,
 } from '../js/semantic-boundary-referee.js';
 import {
+  HOLDOUT_ADMISSION_POLICY,
+  HOLDOUT_AMBIGUITY_POLICY,
   TRUE_OFFSET,
   acceptedChoice,
   acceptedNoul,
@@ -275,6 +279,20 @@ for (const referee of [
   const labelledRanks = new Map(HOLDOUT_MANIFEST.cases.map((entry) => [entry.goal, entry.expectedDeterministicRank]));
   assert.equal(labelledRanks.get('hp'), 5);
   assert.equal(labelledRanks.get('stamina'), 1);
+}
+
+// The frozen ambiguity/admission policies live in the labelled fixture, and the
+// synthetic holdout must use exactly the same pair, so both harnesses measure
+// one policy identity instead of two that happen to look alike.
+{
+  const ambiguity = normalizeSemanticBoundaryAmbiguityPolicy(HOLDOUT_MANIFEST.policies?.ambiguity);
+  const admission = normalizeSemanticBoundaryAdmissionPolicy(HOLDOUT_MANIFEST.policies?.admission);
+  assert.ok(ambiguity, 'the OpenMW fixture must freeze a valid ambiguity policy');
+  assert.ok(admission, 'the OpenMW fixture must freeze a valid admission policy');
+  assert.deepEqual(ambiguity, HOLDOUT_AMBIGUITY_POLICY);
+  assert.deepEqual(admission, HOLDOUT_ADMISSION_POLICY);
+  assert.equal(normalizeSemanticBoundaryAmbiguityPolicy({ schema: 'hex-semantic-boundary-ambiguity/v1' }), null);
+  assert.equal(normalizeSemanticBoundaryAdmissionPolicy({ schema: 'hex-semantic-boundary-admission/v1', minProbability: 2 }), null);
 }
 
 process.stdout.write('  ok  semantic boundary referee remains shadow-first and binary-grounded\n');

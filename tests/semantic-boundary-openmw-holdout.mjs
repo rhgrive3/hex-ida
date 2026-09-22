@@ -20,8 +20,8 @@ import { foldShapes } from '../js/shapes.js';
 import { goalFromPreset } from '../js/goals.js';
 import { pinpointLocation } from '../js/pinpoint.js';
 import {
-  SEMANTIC_BOUNDARY_ADMISSION_SCHEMA,
-  SEMANTIC_BOUNDARY_AMBIGUITY_SCHEMA,
+  normalizeSemanticBoundaryAdmissionPolicy,
+  normalizeSemanticBoundaryAmbiguityPolicy,
 } from '../js/semantic-boundary-referee.js';
 import {
   normalizeOpenJevSemanticRankResponse,
@@ -34,11 +34,17 @@ const MANIFEST = JSON.parse(fs.readFileSync(
 ));
 const LIVE_URL = 'https://api.openjev.sh/v1/systemone';
 const UPSTREAM_TIMEOUT_MS = 2500;
-// Ambiguity/admission policies are the holdout-frozen values; promotion stays
-// off until this harness shows a rescue on a real labelled holdout.
-const AMBIGUITY = Object.freeze({ schema: SEMANTIC_BOUNDARY_AMBIGUITY_SCHEMA, maxD4D5Gap: 0.02, minD4Score: 0 });
-const ADMISSION = Object.freeze({ schema: SEMANTIC_BOUNDARY_ADMISSION_SCHEMA, minProbability: 0.8, minMargin: 0.2 });
+// The ambiguity and admission policies are frozen in the labelled fixture, not
+// in this harness, so a promotion decision stays bound to the exact policy
+// identity it was measured with.  A malformed fixture policy fails loudly
+// instead of silently falling back to a convenient default.
+const AMBIGUITY = normalizeSemanticBoundaryAmbiguityPolicy(MANIFEST.policies?.ambiguity);
+const ADMISSION = normalizeSemanticBoundaryAdmissionPolicy(MANIFEST.policies?.admission);
+if (!AMBIGUITY || !ADMISSION) {
+  throw new Error('openmw-holdout: the labelled fixture must freeze a valid ambiguity and admission policy');
+}
 const CASES = Array.isArray(MANIFEST.cases) ? MANIFEST.cases : [];
+if (!CASES.length) throw new Error('openmw-holdout: the labelled fixture has no cases');
 
 const artifact = process.env.HEX_OPENMW_HOLDOUT_ARTIFACT;
 if (!artifact || !fs.existsSync(artifact)) {
@@ -226,6 +232,7 @@ const report = {
   schema: 'hex-openmw-boundary-holdout-evaluation/v1',
   fixture: MANIFEST.kind,
   artifact: { path: artifact, bytes: fs.statSync(artifact).size },
+  frozenPolicies: { ambiguity: AMBIGUITY, admission: ADMISSION },
   live,
   // Promotion needs a case that both misses deterministically and is rescued by
   // the gated probe, and every case's manifest labels must agree with the
