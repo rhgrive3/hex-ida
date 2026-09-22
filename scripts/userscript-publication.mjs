@@ -124,11 +124,17 @@ async function assertRegularPublicationInput(file, expected, io, guard = async (
 
 // Never truncate an existing generated file before the replacement has been
 // written, synced and read back. A directory-sync failure still fails the build.
-export async function writeFileVerified(file, content, { io = fs } = {}) {
-  const staged = await stageFile(file, content, io);
+export async function writeFileVerified(file, content, { io = fs, containmentRoot } = {}) {
+  if (!containmentRoot) throw new TypeError('userscript-publication-containment-root-required');
+  const directory = dirname(resolve(file));
+  const directoryIdentity = await assertSafePublicationDirectory(directory, { io, containmentRoot });
+  const guard = () => assertPublicationDirectoryIdentity(directoryIdentity, { io });
+  const staged = await stageFile(file, content, io, guard);
   try {
+    await guard();
     await io.rename(staged.path, file);
-    await syncDirectory(dirname(file), io);
+    await guard();
+    await syncDirectory(directory, io, guard);
   } finally { await unlinkIfSame(staged.path, staged.identity, io).catch(() => {}); }
 }
 
@@ -177,8 +183,12 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
       record.temporaryIdentity = staged.identity;
       await guard();
       await io.link(file, record.backup);
-      record.backupIdentity = await pathEntryIdentity(record.backup, io);
+      // The filesystem mutation has happened. Record that fact before the
+      // fallible identity lookup so cleanup can never mistake an existing
+      // operation-owned backup for "no backup". If identity capture fails,
+      // finalization retains the recovery lock rather than unlinking blindly.
       record.backedUp = true;
+      record.backupIdentity = await pathEntryIdentity(record.backup, io);
       await guard();
     }
     await syncDirectory(directory, io, guard);
