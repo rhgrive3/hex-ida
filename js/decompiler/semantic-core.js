@@ -6,7 +6,7 @@
  * gotos rather than manufacturing source structure.
  */
 
-import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance, mustAlias } from '../ir.js';
+import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
