@@ -11,7 +11,9 @@
   4. `feat(jev): select the true boundary candidate on the OpenMW holdout`
   5. `b66f6e23e` `feat(jev): retry unhelpful probe windows and pin goal wording to the holdout`
      — goal 文言の単一情報源化・probe の複数ウィンドウ化・holdout のケース表化
-  6. `docs(jev): refresh the boundary referee handoff`（このファイル）
+  6. `4e9846915` `docs(jev): refresh the boundary referee handoff`
+  7. `044255706` `feat(jev): only ask the referee for a goal with calibrated guidance`
+  8. `docs(jev): reflect the calibrated-goal eligibility`（このファイル更新）
 - 引き継ぎ資料: このファイル（作業ツリーは clean で commit 済み）
 
 ## 何を実装したか
@@ -75,7 +77,20 @@
   全窓不発なら 3 窓で打ち切って結果が baseline と完全一致する、を固定。
 - 設計書 `docs/design/openjev-boundary-referee.md` の「one-probe」記述も同じ意味に更新。
 
-### 3. 実 OpenMW holdout を「ケース表」駆動に（1 goal → 2 goal）
+### 3. 較正済み goal だけが問い合わせ可能に（`uncalibrated-goal`）
+
+- 変更前: 「supported shape goal」なら誰でも問い合わせ可能だった。
+- 実測（合成 fixture）: `level`/`item` は `hp` と**同一の5候補**を返す。つまり
+  「この候補のどれが level か」という問いは原理的に答えられず、確信のある誤答を招く。
+  `attack`/`damage` は候補 0 件。
+- 変更後: `SEMANTIC_BOUNDARY_GOAL_GUIDANCE` にエントリがある goal だけが eligible。
+  無い goal は `reason: 'uncalibrated-goal'` で **ネットワーク送出ゼロ**。
+  現時点で eligible なのは `hp`/`stamina` のみ。
+- 帰結: goal を有効化する正しい手段が「集合を広げる」ではなく
+  **「ラベル付き holdout ケースを追加する」**になる（テストがそれを強制）。
+- 回帰: `tests/semantic-boundary-referee.mjs`（未較正 6 goal で calls=0、`hp`/`stamina` は eligible）。
+
+### 4. 実 OpenMW holdout を「ケース表」駆動に（1 goal → 2 goal）
 
 - `tests/fixtures/openmw-boundary-holdout.manifest.json` に `cases[]` と `objectLayout` を追加。
   `hp`（`health.current` = offset 24）に加えて
@@ -153,8 +168,9 @@ HEX_OPENMW_HOLDOUT_ARTIFACT=... HEX_OPENMW_HOLDOUT_LIVE=1 node tests/semantic-bo
    truth が rank 4〜5 に落ちるケースを集める。rank 1〜3 のケースでは referee の問いが
    ill-posed（真値が boundary set に無い）ため、救済の判定材料にならない。
 2. 救済が確認できた場合のみ interactive single-goal の production caller から callback を注入する。
-3. `level`/`item` の扱いを見直す。family が "any resource" の goal は referee の問いが
-   意味を持ちにくいので、eligibility を family で絞るか、goal 別文言を較正する。
+3. `money`/`score`/`level`/`item`/`attack`/`damage` を有効化する場合は、先に goal 別の
+   ラベル付き holdout ケースを作る。本引き継ぎで eligibility を「較正済み goal のみ」に
+   絞ったため、holdout を足せば自動的に eligible になる（実装変更は不要）。
 4. background auto、Deep mode、設定画面、汎用 OpenJev proxy は追加しない。
 5. `OPENJEV_API_KEY` の実値を repo / frontend bundle / logs / response / evidence に書かない。
 
