@@ -171,5 +171,51 @@ test('5 discriminating binary evidence allows strong', () => {
     'truly discriminating binary must allow strong: ' + show(discRes));
 });
 
+/* 6. Pinned DSDA observed-evidence regression (test-only manifest, no binary).
+ * Exact strengths/LRs from the pinned ARM64 artifact measurement. Guards against
+ * evidence-construction regressions that would return likely again while CI stays green. */
+test('6 pinned DSDA evidence vector stays ambiguous with large margin', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const manifest = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/pinpoint-false-likely-dsda.json'), 'utf8'));
+  const { starsOf } = await import('../js/evidence.js');
+  const { verdictLead } = await import('../js/narrate.js');
+  const built = manifest.candidates.map((c) => ({
+    key: c.key,
+    offset: c.offset,
+    fusion: fuse(c.evidence.map((e) => ev(e.code, e.strength, {}, e.lr)), manifest.fuseOpts),
+  }));
+  built.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+  eq(built.map((c) => c.offset).join(','), manifest.expected.order.join(','),
+    'pinned ranking must reproduce observed order');
+  const res = decide(built);
+  eq(res.verdict, manifest.expected.verdict, 'pinned DSDA must stay ambiguous: ' + show(res));
+  ok(Math.abs(res.top.fusion.logOdds - manifest.expected.topLogOdds) < 1e-6,
+    'top logOdds must reproduce observed: ' + res.top.fusion.logOdds);
+  ok(Math.abs(res.margin - manifest.expected.margin) < 1e-6,
+    'large margin must reproduce observed (~45x): ' + res.margin);
+  ok(res.margin >= Math.log(4), 'pinned case is large-margin, not close');
+  eq(res.top.fusion.independentGroups, manifest.expected.topIndependentGroups, 'pinned top has 2 groups');
+  eq(starsOf(res.top.fusion.probability, res.verdict), manifest.expected.topStars,
+    'ambiguous high-p must not render 4 stars');
+  ok(res.missing.includes(manifest.expected.missingIncludes), 'missing must name independence: ' + show(res));
+  const lead = verdictLead(res.verdict);
+  ok(!/拮抗|too close/i.test(lead), 'large-margin ambiguous lead must not claim closeness: ' + lead);
+  ok(/決め手が足りない|Not enough decisive/i.test(lead), 'lead must be generic insufficiency: ' + lead);
+});
+
+/* 7. Presentation contract: stars follow the final verdict, not raw probability. */
+test('7 starsOf caps ambiguous high-p at 3, preserves likely/confirmed', async () => {
+  const { starsOf } = await import('../js/evidence.js');
+  eq(starsOf(0.9157, VERDICT.AMBIGUOUS), 3, 'DSDA-like ambiguous p0.91 must be 3, not 4');
+  eq(starsOf(0.99, VERDICT.AMBIGUOUS), 3, 'ambiguous never 4 even at p0.99');
+  eq(starsOf(0.9157, VERDICT.LIKELY), 4, 'likely high-p stays 4');
+  eq(starsOf(0.999, VERDICT.CONFIRMED), 5, 'confirmed stays 5');
+  eq(starsOf(0.2, VERDICT.AMBIGUOUS), 2, 'ambiguous low-p unchanged');
+  eq(starsOf(0.2, null), 2, 'runner-up raw (null verdict) unchanged');
+});
+
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) process.exit(1);

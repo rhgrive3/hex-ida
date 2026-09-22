@@ -1008,6 +1008,17 @@ export function decide(ranked, opts) {
 /** 確率 → ★ の数。決着の言葉と食い違わないように、ここで一本化する。 */
 export function starsOf(probability, verdict) {
   if (verdict === VERDICT.CONFIRMED) return 5;
+  /*
+   * ambiguous に落とした top が raw 確率だけで 4★ になると、決着 (ambiguous) と
+   * 表示 (likely 相当の 4★) が食い違う。DSDA は p0.91 margin 45x でも groups=2 で
+   * ambiguous であり、4★ は嘘になる。ambiguous の表示は 3★ を上限にする。
+   * runner-up 用の verdict=null (決定なし、raw 強度) はそのままにする。
+   */
+  if (verdict === VERDICT.AMBIGUOUS) {
+    if (probability >= 0.5) return 3;
+    if (probability >= 0.15) return 2;
+    return 1;
+  }
   if (probability >= 0.85) return 4;
   if (probability >= 0.5) return 3;
   if (probability >= 0.15) return 2;
