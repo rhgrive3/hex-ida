@@ -36,6 +36,21 @@ assert.ok(acrossStore.search(/load_\d+ =/) < acrossStore.indexOf('a1->field_0 = 
 assert.match(acrossStore, /a2->field_0\s*=\s*load_\d+;/);
 assert.doesNotMatch(acrossStore, /a2->field_0\s*=\s*a1->field_0;/);
 
+// A read-modify-write is still a memory-order barrier. Re-rendering the
+// pre-store load after writing the derived value would turn old+1 into new+1
+// and would also invent a second MMIO/faulting read.
+const rmwAcrossStore = render([
+  { mn: 'ldr', ops: 'x19, [x0]' },
+  { mn: 'add', ops: 'x19, x19, #1' },
+  { mn: 'str', ops: 'x19, [x0]' },
+  { mn: 'str', ops: 'x19, [x1]' },
+  { mn: 'ret', ops: '' },
+]);
+assert.match(rmwAcrossStore, /load_\d+\s*=\s*a1->field_0;/);
+assert.match(rmwAcrossStore, /a1->field_0\s*=\s*load_\d+ \+ 1;/);
+assert.match(rmwAcrossStore, /a2->field_0\s*=\s*load_\d+ \+ 1;/);
+assert.doesNotMatch(rmwAcrossStore, /a2->field_0\s*=\s*a1->field_0 \+ 1;/);
+
 // Do not pessimize pure values: constants/arithmetic can still move across a call safely.
 const pureAcrossCall = render([
   { mn: 'mov', ops: 'x19, #5' },
