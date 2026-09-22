@@ -19,7 +19,7 @@ import {
   edgeAccountingFailures,
   runPhase8Stage,
 } from '../../../js/decompiler/phase8/index.js';
-import { readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
+import { readSemanticControlLineHistory, registerSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
 import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
 import { validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
@@ -76,9 +76,10 @@ function bodyOf(rows) {
   return rows.map(([kind, indent, text, block], index) => makeLine(kind, indent, text, block, index));
 }
 
-function project(ir, rows, { opts = {}, overrideAnalysis = null } = {}) {
+function project(ir, rows, { opts = {}, overrideAnalysis = null, decorateBody = null } = {}) {
   const { analysis, facts, induction } = analyze(ir);
   const body = bodyOf(rows);
+  if (typeof decorateBody === 'function') decorateBody(body, ir);
   const result = {
     ir,
     types: {},
@@ -1112,6 +1113,56 @@ test('loop V. an already-emitted while keeps its construct and loses its proven 
   assert.equal(projected.rewriteProof.at(-1).rule, LOOP_PROJECTION_RULE);
   assert.equal(projected.rewriteProof.at(-1).evidence.version, LOOP_CONTROL_PROJECTION_VERSION);
   assert.equal(projected.rewriteProof.at(-1).after, 'control:loop-break-continue-refine');
+});
+
+test('loop V-landing. an already-emitted break is not rewritten across an intervening rendered block', () => {
+  const { result, projected } = project(breakWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `if (c1) goto loc_${hex(5)};`, 3],
+    ['stmt', 2, 's = 4;', 4],
+    ['ctrl', 1, '}', 4],
+    ['stmt', 1, 'intervening = 1;', 0],
+    ['stmt', 1, 'return s;', 5],
+  ]);
+  assert.equal(projected, result,
+    'a bare break is refused when the first rendered statement after the loop is not the proven exit block');
+  const texts = textsOf(projected);
+  assert.ok(texts.some((text) => /^if \(c1\) goto /.test(text)),
+    'the proven CFG edge remains an explicit goto when rendered fallthrough disagrees');
+  assert.ok(!texts.some((text) => /^if \(c1\) break;/.test(text)));
+});
+
+test('loop V-history. refining a residual jump appends to existing control provenance', () => {
+  const priorRecord = Object.freeze({ rule: 'fixture-upstream-control-history' });
+  const { projected } = project(breakWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `if (c1) goto loc_${hex(5)};`, 3],
+    ['stmt', 2, 's = 4;', 4],
+    ['ctrl', 1, '}', 4],
+    ['stmt', 1, 'return s;', 5],
+  ], {
+    decorateBody(body, ir) {
+      registerSemanticControlLineHistory(body[3], Object.freeze({
+        ir,
+        instruction: null,
+        canonical: Object.freeze({ isCurrent: () => true }),
+        records: Object.freeze([priorRecord]),
+        selection: Object.freeze({ form: 'residual-conditional-goto', target: 5 }),
+        isCurrent: () => true,
+      }));
+    },
+  });
+  const rewritten = projected.cAst.body.find((node) => node.text === 'if (c1) break;');
+  assert.ok(rewritten, 'the proven residual jump is still refined');
+  const history = readSemanticControlLineHistory(rewritten, projected.ir);
+  assert.ok(history, 'the refined line publishes current control history');
+  assert.equal(history.records.length, 2);
+  assert.equal(history.records[0], priorRecord, 'upstream provenance remains first');
+  assert.equal(history.records[1].rule, LOOP_PROJECTION_RULE, 'the refinement record is appended');
 });
 
 test('loop W. refining an already-emitted while is idempotent', () => {
