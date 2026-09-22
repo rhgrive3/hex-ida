@@ -174,6 +174,20 @@ test('N6 negative: items vs recorded group disagreement fails closed', () => {
   eq(res.verdict, VERDICT.AMBIGUOUS, 'items (metadata+dataflow) beat spoofed recorded combo: ' + show(res));
 });
 
+test('N7b negative: unknown positive evidence cannot hide behind metadata fallback', () => {
+  const top = { fusion: fuse([
+    ev('field-name-asked', 1, {}),
+    ev('size-fits', 1, { size: 4 }),
+    ev('custom-unknown-evidence', 1, {}, 4),
+  ], SMALL) };
+  ok(sameSet(top.fusion.groups, ['metadata', 'structural']),
+    'legacy groupOf fallback still projects the unknown item into metadata');
+  ok(top.fusion.items.some((item) => item.code === 'custom-unknown-evidence' && item.applied > 0),
+    'counterexample must contain positive unknown evidence');
+  const res = decide([top, { fusion: fuse([ev('field-name-weak', 1, {})], SMALL) }], FIELD_OPTS);
+  eq(res.verdict, VERDICT.AMBIGUOUS, 'P4 admission must reject unregistered applied evidence: ' + show(res));
+});
+
 test('N7 negative: identifying evidence still required', () => {
   const res = decide([{ fusion: recorded({ identifying: 0 }) }, { fusion: strongRunner(0) }], FIELD_OPTS);
   eq(res.verdict, VERDICT.AMBIGUOUS, 'no identifying => ambiguous: ' + show(res));
@@ -192,10 +206,16 @@ test('N9 negative: p below likely threshold stays ambiguous', () => {
 });
 
 test('N10 negative: confirmed requirements unchanged (2-group p0.99 => likely, not confirmed)', () => {
-  const res = decide([{ fusion: recorded({ logOdds: 6, probability: 0.995 }) }, { fusion: strongRunner(-6) }], FIELD_OPTS);
+  const res = decide([{ fusion: recorded({ logOdds: 6, probability: 0.995, items: [{ code: 'field-name-asked', family: 'name', applied: 1 }, { code: 'size-fits', family: 'struct', applied: 1 }] }) }, { fusion: strongRunner(-6) }], FIELD_OPTS);
   eq(res.verdict, VERDICT.LIKELY, 'high-p trusted 2-group tops out at likely: ' + show(res));
   ok(res.verdict !== VERDICT.CONFIRMED, 'confirmed must not be reachable at 2 groups');
   ok(res.missing.includes('need-independent-evidence'), 'missing still records the group shortfall');
+});
+
+test('N11 negative: candidate-not-found empty lattice stays none under the field flag', () => {
+  const res = decide([], FIELD_OPTS);
+  eq(res.verdict, VERDICT.NONE, 'an absent truth/candidate lattice cannot become strong: ' + show(res));
+  eq(res.top, null, 'candidate-not-found has no top candidate');
 });
 
 /* ── Regression ────────────────────────────────────────────── */
@@ -270,7 +290,7 @@ test('R3 regression: field-only scope is explicit in production sources', () => 
 });
 
 test('R4 regression: replay shares the production core (P1/P4 parity)', () => {
-  const trusted = recorded({});
+  const trusted = recorded({ items: [{ code: 'field-name-asked', family: 'name', applied: 1 }, { code: 'size-fits', family: 'struct', applied: 1 }] });
   const runner = strongRunner(-4);
   const p1 = newVerdictForFusion(trusted, runner);
   const p4 = p4VerdictForFusion(trusted, runner);
@@ -284,7 +304,6 @@ test('R4 regression: replay shares the production core (P1/P4 parity)', () => {
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) process.exit(1);
-
 
 
 

@@ -34,6 +34,19 @@ export const CONFIRM_GROUPS = 3;
 export const AMBIGUOUS_P = 0.35;
 export const AMBIGUOUS_FLOOR = 0.05;
 
+/**
+ * Plan-A policy IDs.  These are intentionally descriptive rather than score
+ * thresholds: the comparison changes only the independence admission rule for
+ * `likely`; candidate generation, fusion, ranking, and `confirmed` stay put.
+ */
+export const PLAN_A_POLICY = Object.freeze({
+  A_CURRENT_GLOBAL_3: 'A-current-global-3',
+  B_LEGACY_ANY_GROUP: 'B-legacy-any-group',
+  C_PARTIAL_ONLY_3: 'C-partial-only-3',
+  D_METADATA_STRUCTURAL: 'D-metadata-structural-2',
+  E_SINGLETON_2: 'E-singleton-2',
+});
+
 function num(v) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -113,4 +126,46 @@ export function policyCVerdictForFusion(topFusion, runnerFusion, topCodes) {
   const accessor = codes.has('getter-verified') || codes.has('setter-verified');
   const ok = indepOf(topFusion) >= CONFIRM_GROUPS || accessor;
   return finish(topFusion, runnerFusion, ok);
+}
+
+/** A: shipped #9418 rule — every likely needs at least three groups. */
+export function planAPolicyAVerdictForFusion(topFusion, runnerFusion) {
+  return newVerdictForFusion(topFusion, runnerFusion);
+}
+
+/** B: the pre-#9418 rule, retained only as a historical counterfactual. */
+export function planAPolicyBVerdictForFusion(topFusion, runnerFusion) {
+  return oldVerdictForFusion(topFusion, runnerFusion);
+}
+
+/**
+ * C: preserve the conservative partial-query rule while allowing an exact
+ * query to use two independently sourced observations.  This is a broad
+ * mode-level alternative, not the selected evidence-level policy.
+ */
+export function planAPolicyCVerdictForFusion(topFusion, runnerFusion, mode) {
+  const exact = mode === 'exact';
+  return finish(topFusion, runnerFusion,
+    indepOf(topFusion) >= CONFIRM_GROUPS || (exact && indepOf(topFusion) >= 2));
+}
+
+/**
+ * D: minimal evidence-aware exemption.  It admits exactly the independently
+ * recorded metadata + structural pair; every other two-group combination
+ * remains ambiguous.  Confirmed is unchanged because finish() retains the
+ * three-group confirmed prerequisites in baseMissing().
+ */
+export function planAPolicyDVerdictForFusion(topFusion, runnerFusion) {
+  return p4VerdictForFusion(topFusion, runnerFusion);
+}
+
+/**
+ * E: a deliberately generic alternative — a two-group likely only if there
+ * is exactly one candidate.  It is included to show why candidate cardinality
+ * is not a substitute for evidence provenance.
+ */
+export function planAPolicyEVerdictForFusion(topFusion, runnerFusion, candidateCount) {
+  const singleton = Number.isSafeInteger(candidateCount) && candidateCount === 1;
+  return finish(topFusion, runnerFusion,
+    indepOf(topFusion) >= CONFIRM_GROUPS || (singleton && indepOf(topFusion) >= 2));
 }

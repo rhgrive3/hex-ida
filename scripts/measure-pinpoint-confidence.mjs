@@ -24,12 +24,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { openBinary } from '../tests/harness.mjs';
 import { pinpointField } from '../js/pinpoint.js';
 import { parseGoal } from '../js/goals.js';
+import { groupOf } from '../js/evidence.js';
 import {
   oldVerdictForFusion, newVerdictForFusion, p4VerdictForFusion,
   policyBVerdictForFusion, policyCVerdictForFusion,
+  planAPolicyAVerdictForFusion, planAPolicyBVerdictForFusion,
+  planAPolicyCVerdictForFusion, planAPolicyDVerdictForFusion,
+  planAPolicyEVerdictForFusion,
 } from './pinpoint-confidence-policy.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,21 +53,96 @@ const fusionOf = (c) => {
   if (!c || !c.fusion) return null;
   const f = c.fusion;
   return {
-    logOdds: f.logOdds, probability: f.probability,
+    logOdds: f.logOdds, probability: f.probability, rawProbability: f.rawProbability,
     verified: f.verified, identifying: f.identifying,
-    independentGroups: f.independentGroups, groups: f.groups,
+    independentGroups: f.independentGroups,
+    groups: Array.isArray(f.groups) ? [...f.groups] : null,
+    byGroup: f.byGroup && typeof f.byGroup === 'object' ? { ...f.byGroup } : null,
+    byFamily: f.byFamily && typeof f.byFamily === 'object' ? { ...f.byFamily } : null,
+    items: Array.isArray(f.items) ? f.items.map((it) => ({
+      code: it.code, family: it.family, kind: it.kind, id: !!it.id, applied: it.applied,
+    })) : null,
   };
 };
-const topEvidenceOf = (c, n = 8) => {
+const evidenceOf = (c, n = Infinity) => {
   const items = (c && c.fusion && c.fusion.items) || [];
   return items.slice().sort((a, b) => Math.abs(b.applied) - Math.abs(a.applied)).slice(0, n)
-    .map((it) => ({ code: it.code, strength: round4(it.strength), lr: round4(it.lr), applied: round4(it.applied) }));
+    .map((it) => ({
+      code: it.code, group: groupOf(it), family: it.family, kind: it.kind, identifying: !!it.id,
+      strength: round4(it.strength), lr: round4(it.lr), applied: round4(it.applied),
+    }));
 };
+const topEvidenceOf = (c, n = 8) => evidenceOf(c, n);
 const codesOf = (c) => ((c && c.fusion && c.fusion.items) || []).map((it) => it.code);
+
+function candidateSnapshot(c, rank, query) {
+  return {
+    rank,
+    key: typeof c?.key === 'string' ? c.key : null,
+    className: c?.className || null,
+    fieldName: c?.field?.name || null,
+    truth: c?.className === query.class && c?.field?.name === query.ivar,
+    askedByName: c?.askedByName === true,
+    askedBySequence: c?.askedBySequence === true,
+    askedByWords: c?.askedByWords === true,
+    recallLane: c?.recallLane === true,
+    fusion: fusionOf(c),
+    evidence: evidenceOf(c),
+  };
+}
+
+function sha256File(file) {
+  const hash = createHash('sha256');
+  hash.update(fs.readFileSync(file));
+  return hash.digest('hex');
+}
+
+function gitValue(...args) {
+  try { return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim() || null; }
+  catch { return null; }
+}
+
+function writeMeasurementManifest({ out, queries, fieldRows, startedAt }) {
+  const fixtures = {
+    battlecats: 'tests/battlecats', TsumTsum: 'tests/TsumTsum', YWP: 'tests/YWP',
+  };
+  const fixtureHashes = Object.fromEntries(Object.entries(fixtures).map(([name, relative]) => {
+    const file = path.join(ROOT, relative);
+    return [name, fs.existsSync(file) ? { bytes: fs.statSync(file).size, sha256: sha256File(file) } : null];
+  }));
+  const manifest = {
+    schema: 'hex-pinpoint-confidence-measurement/v2',
+    complete: true,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    productCommit: gitValue('rev-parse', 'HEAD'),
+    productTree: gitValue('rev-parse', 'HEAD^{tree}'),
+    node: process.version,
+    queryFixture: {
+      path: 'tests/fixtures/pinpoint-confidence-queries.json',
+      rows: queries.length,
+      sha256: sha256File(path.join(ROOT, 'tests/fixtures/pinpoint-confidence-queries.json')),
+    },
+    fixtures: fixtureHashes,
+    collector: {
+      path: 'scripts/measure-pinpoint-confidence.mjs',
+      sha256: sha256File(path.join(ROOT, 'scripts/measure-pinpoint-confidence.mjs')),
+    },
+    policyReplay: {
+      path: 'scripts/pinpoint-confidence-policy.mjs',
+      sha256: sha256File(path.join(ROOT, 'scripts/pinpoint-confidence-policy.mjs')),
+    },
+    fieldRows,
+    singleAnalysisPerQuery: true,
+    replayAddsNoAnalysis: true,
+  };
+  fs.writeFileSync(path.join(out, 'measurement.json'), JSON.stringify(manifest, null, 2) + '\n');
+}
 
 const keyOf = (r) => `${r.binary}|${r.mode}|${r.label}`;
 
 async function main() {
+  const startedAt = new Date().toISOString();
   fs.mkdirSync(OUT, { recursive: true });
   const rowsPath = path.join(OUT, 'rows.jsonl');
   const done = new Set();
@@ -98,6 +179,9 @@ async function main() {
   if (dsda) { out.write(JSON.stringify(dsda) + '\n'); ran++; }
   out.close();
   await new Promise((r) => out.on('close', r));
+  const fieldRows = fs.readFileSync(rowsPath, 'utf8').split('\n').filter(Boolean)
+    .map((line) => JSON.parse(line)).filter((row) => row.kind === 'field').length;
+  writeMeasurementManifest({ out: OUT, queries, fieldRows, startedAt });
   process.stdout.write(`done: ${ran} new rows, ${skipped} resumed-skipped -> ${rowsPath}\n`);
 }
 
@@ -141,17 +225,23 @@ async function runFieldQuery(q, getWorld) {
   const topF = fusionOf(top);
   const runF = fusionOf(runner);
   const codes = codesOf(top);
+  const candidateSnapshots = cands.map((candidate, index) => candidateSnapshot(candidate, index + 1, q));
   const oldV = topF ? oldVerdictForFusion(topF, runF) : { verdict: 'none', margin: 0, marginRatio: 1, missing: ['no-candidate'] };
   const newV = topF ? newVerdictForFusion(topF, runF) : oldV;
   /* P4 field policy replay: production field decide() allows the trusted 2-group exception. */
   const p4V = topF ? p4VerdictForFusion(topF, runF) : newV;
   const bV = topF ? policyBVerdictForFusion(topF, runF, codes) : oldV;
   const cV = topF ? policyCVerdictForFusion(topF, runF, codes) : oldV;
-  const fidelity = topF ? (p4V.verdict === res.verdict ? 'match' : `MISMATCH:recomputed=${p4V.verdict},production=${res.verdict}`) : 'no-fusion';
+  const planA = topF ? planAPolicyAVerdictForFusion(topF, runF) : oldV;
+  const planB = topF ? planAPolicyBVerdictForFusion(topF, runF) : oldV;
+  const planC = topF ? planAPolicyCVerdictForFusion(topF, runF, q.mode) : oldV;
+  const planD = topF ? planAPolicyDVerdictForFusion(topF, runF) : oldV;
+  const planE = topF ? planAPolicyEVerdictForFusion(topF, runF, cands.length) : oldV;
+  const fidelity = topF ? (planD.verdict === res.verdict ? 'match' : `MISMATCH:recomputed=${planD.verdict},production=${res.verdict}`) : 'no-fusion';
   return {
     ...base, goal: goal.id,
     topClass: top?.className || null, topField: top?.field?.name || null,
-    topCorrect: truthRank0 === 0,
+    topCorrect: truthRank0 === 0, candidatePresent: truthRank0 >= 0,
     truthRank: truthRank0 + 1, candidateCount: cands.length,
     universe: res.universe, checked: res.checked, analyzeCalls,
     verificationRounds, latencyMs,
@@ -164,10 +254,15 @@ async function runFieldQuery(q, getWorld) {
     independentGroups: topF?.independentGroups ?? null,
     groups: topF?.groups ?? null,
     evidence: topEvidenceOf(top),
+    candidates: candidateSnapshots,
     oldVerdict: oldV.verdict, newVerdict: newV.verdict,
     p4Verdict: p4V.verdict,
     policyBVerdict: bV.verdict, policyCVerdict: cV.verdict,
-    missing: newV.missing, replayFidelity: fidelity,
+    currentVerdict: res.verdict,
+    policyAVerdict: planA.verdict, policyBPlanAVerdict: planB.verdict,
+    policyCPlanAVerdict: planC.verdict, policyDPlanAVerdict: planD.verdict,
+    policyEPlanAVerdict: planE.verdict,
+    missing: planD.missing, p1ReplayVerdict: newV.verdict, replayFidelity: fidelity,
   };
 }
 

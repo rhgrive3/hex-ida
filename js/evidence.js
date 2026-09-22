@@ -939,37 +939,49 @@ function fusionAuthority(fusion) {
  */
 const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
 
+/*
+ * P4 strong-verdict admission must not use groupOf()'s legacy unknown→metadata
+ * fallback as authority. Resolve only registered evidence codes here.
+ */
+function canonicalAppliedGroup(it) {
+  if (!it || !(it.applied > 0) || typeof it.code !== 'string') return null;
+  const info = Object.hasOwn(EVIDENCE, it.code)
+    ? EVIDENCE[it.code]
+    : (Object.hasOwn(ADAPTER_EVIDENCE, it.code) ? ADAPTER_EVIDENCE[it.code] : null);
+  if (!info) return null;
+
+  for (const [re, g] of CODE_GROUP) if (re.test(it.code)) return g;
+  const g = FAMILY_GROUP[info.family];
+  return typeof g === 'string' && CANONICAL_GROUPS.has(g) ? g : null;
+}
+
 /* 観測された出どころの集合。検証を通せなければ null（＝例外は通らない）。 */
-function observedGroupSet(fusion) {
+function observedGroupSet(fusion, evidenceItems) {
   if (!fusion || typeof fusion !== 'object') return null;
-  let itemsSet = null;
-  if (Array.isArray(fusion.items)) {
-    itemsSet = new Set();
-    for (const it of fusion.items) {
-      if (!it || !(it.applied > 0)) continue;
-      const g = groupOf(it);
-      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return null;
-      itemsSet.add(g);
-    }
-    if (!itemsSet.size) itemsSet = null;
+  if (!Array.isArray(fusion.groups)) return null;
+  const sourceItems = Array.isArray(fusion.items) ? fusion.items : evidenceItems;
+  if (!Array.isArray(sourceItems)) return null;
+
+  const itemsSet = new Set();
+  for (const it of sourceItems) {
+    if (!it || !(it.applied > 0)) continue;
+    const g = canonicalAppliedGroup(it);
+    if (!g) return null;
+    itemsSet.add(g);
   }
-  let recordedSet = null;
-  if (Array.isArray(fusion.groups)) {
-    recordedSet = new Set();
-    for (const g of fusion.groups) {
-      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return null;
-      recordedSet.add(g);
-    }
-    if (fusion.groups.length !== recordedSet.size) return null;
-    if (fusion.independentGroups !== undefined) {
-      if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups !== recordedSet.size) return null;
-    }
+  if (!itemsSet.size) return null;
+
+  const recordedSet = new Set();
+  for (const g of fusion.groups) {
+    if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return null;
+    recordedSet.add(g);
   }
-  if (itemsSet && recordedSet) {
-    if (itemsSet.size !== recordedSet.size) return null;
-    for (const g of itemsSet) if (!recordedSet.has(g)) return null;
-  }
-  return itemsSet || recordedSet;
+  if (fusion.groups.length !== recordedSet.size) return null;
+  if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups !== recordedSet.size) return null;
+
+  if (itemsSet.size !== recordedSet.size) return null;
+  for (const g of itemsSet) if (!recordedSet.has(g)) return null;
+  return itemsSet;
 }
 
 /* likely の出どころ条件。independent >= 3 はこれまでどおり。P4 例外は opts 明示時のみ。 */
@@ -977,7 +989,7 @@ function likelyGroupsGate(fusion, independent, opts) {
   if (independent >= CONFIRM.groups) return true;
   if (!opts || opts.allowTrustedTwoGroup !== true) return false;
   if (independent !== TRUSTED_LIKELY_GROUPS.length) return false;
-  const observed = observedGroupSet(fusion);
+  const observed = observedGroupSet(fusion, opts.trustedTwoGroupItems);
   if (!observed || observed.size !== TRUSTED_LIKELY_GROUPS.length) return false;
   for (const g of TRUSTED_LIKELY_GROUPS) if (!observed.has(g)) return false;
   return true;
