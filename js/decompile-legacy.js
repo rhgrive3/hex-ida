@@ -452,6 +452,31 @@ function decideMaterial(model, vg) {
    * `x25 = …` の行だけが消えるという壊れ方をしていた。
    */
   const material = new Set();
+  /*
+   * Some instructions are intentionally left outside the expression graph and
+   * are rendered as a builtin/raw-asm compatibility statement.  Their textual
+   * renderer still names hardware source registers, so a one-use producer must
+   * not be inlined away or the output would reference an undefined register.
+   */
+  const opaqueInputs = new Set();
+  for (const insn of insns) {
+    if (insn.data || insn.isCall || insn.memory || insn.isBranch || insn.isReturn) continue;
+    const base = (insn.mnemonic || '').toLowerCase();
+    const writes = (insn.writes || []).filter((reg) => reg !== 'nzcv');
+    const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base);
+    const resolvedNoWrite = SKIP_MN.test(base) || /^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn|bics|brk|udf|svc)$/.test(base);
+    if (writes.length && resolvedFallback) continue;
+    if (!writes.length && resolvedNoWrite) continue;
+    const modeled = writes.some((reg) => {
+      const value = vg.defAt(insn.row, reg);
+      return value && value.k !== 'reg';
+    });
+    if (modeled) continue;
+    for (const reg of insn.reads || []) {
+      const value = vg.at(insn.row, reg);
+      if (value && vg.nodeDef.has(value)) opaqueInputs.add(value);
+    }
+  }
   for (const [nodeValue, first] of vg.nodeDef) {
     /*
      * 生存の判定は「行として出す側」で行う。
@@ -469,6 +494,7 @@ function decideMaterial(model, vg) {
       lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def);
     /* 呼び出しは、結果を使っていなくても必ず行として残す（呼んだこと自体が処理）。 */
     if (nodeValue.k === 'call') { material.add(nodeValue); continue; }
+    if (opaqueInputs.has(nodeValue)) { material.add(nodeValue); continue; }
     if (live) { material.add(nodeValue); continue; }
     if (n === 0) continue;                       // 誰も使わない値。行ごと消える。
     if (n > 1 || crossed.has(nodeValue) || big) material.add(nodeValue);
@@ -522,6 +548,7 @@ function decideMaterial(model, vg) {
     let dropped = 0;
     for (const nodeValue of Array.from(material)) {
       if (nodeValue.k === 'call') continue;                 // 呼び出しは残す（副作用）
+      if (opaqueInputs.has(nodeValue)) continue;              // raw/builtin renderer still names this register
       const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
       const bi = def ? blockOf.get(def.row) : null;
       /*
@@ -584,6 +611,7 @@ function decideMaterial(model, vg) {
     let merged = 0;
     for (const nodeValue of Array.from(material)) {
       if (nodeValue.k === 'call') continue;             // 呼び出しは順序が意味を持つ
+      if (opaqueInputs.has(nodeValue)) continue;          // raw/builtin renderer still names this register
       if (crossed.has(nodeValue)) continue;             // 別のブロックから使われている
       if ((refs.get(nodeValue) || 0) !== 1) continue;
       const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
@@ -798,7 +826,11 @@ function memNodeName(m, ctx) {
   }
   if (m.baseReg && m.disp != null && !m.index && ctx.fieldFor) {
     const named = ctx.fieldFor(m.baseReg, Number(m.disp), m.row);
-    if (named && named.name) return varOf(m.baseReg, ctx) + '->' + named.name;
+    if (named && named.name) {
+      const resolvedBase = m.base ? exprText(ctx, m.base, null) : null;
+      const baseText = resolvedBase || varOf(m.baseReg, ctx);
+      return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
+    }
   }
   return null;
 }
@@ -1203,12 +1235,12 @@ function conditionOf(insn, ctx) {
   const base = (insn.mnemonic || '').toLowerCase();
   if (base === 'cbz' || base === 'cbnz') {
     const r = insn.ops[0];
-    return { kind: 'zero', reg: r ? varOf(regOf(r), ctx) : '?', neg: base === 'cbnz' };
+    return { kind: 'zero', reg: r ? operandText(r, ctx, insn) : '?', neg: base === 'cbnz' };
   }
   if (base === 'tbz' || base === 'tbnz') {
     const r = insn.ops[0];
     const bit = insn.ops[1] && insn.ops[1].value != null ? Number(insn.ops[1].value) : 0;
-    return { kind: 'bit', reg: r ? varOf(regOf(r), ctx) : '?', bit, neg: base === 'tbnz' };
+    return { kind: 'bit', reg: r ? operandText(r, ctx, insn) : '?', bit, neg: base === 'tbnz' };
   }
   const m = /^b\.(\w+)$/.exec(base);
   if (m) {
@@ -1309,8 +1341,11 @@ function hexImm(v) {
 function operandText(op, ctx, insn) {
   if (!op) return '?';
   if (op.k === 'reg') {
-    const base = varOf(regOf(op), ctx);
-    return op.bits === 32 && op.cls === 'gp' ? '(int32)' + base : base;
+    const reg = regOf(op);
+    const value = insn && ctx.values ? ctx.values.at(insn.row, reg) : null;
+    const resolved = value ? exprText(ctx, value, null) : null;
+    const base = resolved || varOf(reg, ctx);
+    return op.bits === 32 && op.cls === 'gp' ? '(int32)' + (resolved ? '(' + base + ')' : base) : base;
   }
   if (op.k === 'imm') {
     if (op.value == null && op.float != null) return String(op.float);
@@ -1324,9 +1359,10 @@ function operandText(op, ctx, insn) {
 }
 
 /** [x0, #0x20] を *(型 *)(x0 + 0x20) に。名前が分かっていれば x0->hp に。 */
-function memText(op, ctx, insn) {
+function memText(op, ctx, insn, extraDisp = 0n) {
   const base = regOf(op.base);
-  const disp = op.disp && op.disp.value != null ? op.disp.value : 0n;
+  const rawDisp = op.disp && op.disp.value != null ? op.disp.value : 0n;
+  const disp = rawDisp + BigInt(extraDisp || 0n);
   const size = insn && insn.memory ? (insn.memory.size || 8) : 8;
   const float = insn && insn.ops[0] && insn.ops[0].k === 'reg' && (insn.ops[0].cls === 'fp' || insn.ops[0].cls === 'vec');
 
@@ -1335,18 +1371,21 @@ function memText(op, ctx, insn) {
   /* 行き先が 1 つに決まっているなら、レジスタ経由ではなくその場所を書く */
   const ref = insn ? ctx.refOf.get(insn.row) : null;
   if (ref && ref.load && !op.index) {
-    const sym = ctx.symbolFor(ref.addr);
+    const refAddr = ref.addr + BigInt(extraDisp || 0n);
+    const sym = ctx.symbolFor(refAddr);
     if (sym) return sym;
-    return '*(' + typeFromAccess(size, { float }) + ' *)0x' + ref.addr.toString(16).toUpperCase();
+    return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
   }
 
+  const baseText = op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx);
   const named = ctx.fieldFor ? ctx.fieldFor(base, Number(disp), insn ? insn.row : null) : null;
-  if (named && named.name) return varOf(base, ctx) + '->' + named.name;
+  if (named && named.name) return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
 
   const type = typeFromAccess(size, { float });
+  const indexText = op.index ? operandText(op.index, ctx, insn) : null;
   const inner = op.index
-    ? varOf(base, ctx) + ' + ' + varOf(regOf(op.index), ctx) + (op.shift && op.shift.amount ? ' * ' + (1 << op.shift.amount) : '')
-    : (disp ? varOf(base, ctx) + ' + ' + hexImm(disp) : varOf(base, ctx));
+    ? baseText + ' + ' + indexText + (op.shift && op.shift.amount ? ' * ' + (1 << op.shift.amount) : '')
+    : (disp ? baseText + ' + ' + hexImm(disp) : baseText);
   return '*(' + type + ' *)(' + inner + ')';
 }
 
@@ -1625,7 +1664,8 @@ function statementFor(insn, ctx, node) {
       { kind: 'comment', pure: true, compare: true });
   }
   if (/^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base)) {
-    return mk('/* ' + insn.mnemonic + ' ' + insn.operands + ' — 次の分岐のための比較 */',
+    const args = insn.ops.map((op) => operandText(op, ctx, insn)).join(', ');
+    return mk('/* ' + insn.mnemonic + ' ' + args + ' — 次の分岐のための比較 */',
       { kind: 'comment', pure: true, compare: true });
   }
 
@@ -1675,7 +1715,8 @@ function statementFor(insn, ctx, node) {
       { dst, pure: true });
   }
   if (base === 'bfi' || base === 'bfxil' || base === 'ubfx' || base === 'sbfx' || base === 'ubfiz') {
-    return mk(varOf(dst, ctx) + ' = ' + base + '(' + insn.operands + ');',
+    const args = insn.ops.map((op) => operandText(op, ctx, insn)).join(', ');
+    return mk(varOf(dst, ctx) + ' = ' + base + '(' + args + ');',
       { dst, pure: true, note: 'ビットの一部を取り出す / 差し込む処理です。' });
   }
   if (base === 'brk' || base === 'udf') {
@@ -1837,18 +1878,21 @@ function conditionalSelect(insn, ctx, mk, base, dst) {
 function memoryStatement(insn, ctx, mk, base) {
   const m = insn.memory;
   const mem = insn.ops.find((x) => x.k === 'mem');
-  const place = mem ? memText(mem, ctx, insn) : '*(?)';
   const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp';
+  const elemSize = pair ? Math.max(1, Number(m.size || 16) / 2) : Number(m.size || 8);
+  const placeInsn = pair ? { ...insn, memory: { ...m, size: elemSize } } : insn;
+  const place = mem ? memText(mem, ctx, placeInsn) : '*(?)';
+  const place2 = pair && mem ? memText(mem, ctx, placeInsn, BigInt(elemSize)) : null;
 
   /* 排他アクセス（スレッドどうしがぶつからないようにする読み書き） */
   if (/^(ldxr|ldaxr|ldxrb|ldaxrb|ldxrh|ldaxrh)/.test(base)) {
-    const d = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?';
+    const d = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : '?';
     return mk(d + ' = __atomic_load(' + addressExpr(place) + ');',
       { dst: insn.writes[0], note: '他のスレッドと取り合わないように読み出しています。' });
   }
   if (/^(stxr|stlxr|stxrb|stlxrb|stxrh|stlxrh)/.test(base)) {
     const status = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?';
-    const src = insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?';
+    const src = insn.ops[1] ? operandText(insn.ops[1], ctx, insn) : '?';
     return mk(status + ' = __atomic_store(' + addressExpr(place) + ', ' + src + ');',
       { dst: insn.writes[0], note: '書き込めたら 0、他に取られていたら 1 が返ります。' });
   }
@@ -1857,7 +1901,7 @@ function memoryStatement(insn, ctx, mk, base) {
     const d0 = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : '?';
     if (pair) {
       const d1 = insn.ops[1] ? nameForDef(ctx, insn.row, regOf(insn.ops[1])) : '?';
-      return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + nextSlot(place, m) + ';',
+      return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + (place2 || nextSlot(place, m)) + ';',
         { dst: insn.writes[0] });
     }
     const text = ctx.textOf.get(insn.row);
@@ -1886,7 +1930,7 @@ function memoryStatement(insn, ctx, mk, base) {
   const s0 = stored[0] || (insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?');
   if (pair) {
     const s1 = stored[1] || (insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?');
-    return mk(place + ' = ' + s0 + ';   ' + nextSlot(place, m) + ' = ' + s1 + ';', {});
+    return mk(place + ' = ' + s0 + ';   ' + (place2 || nextSlot(place, m)) + ' = ' + s1 + ';', {});
   }
   return mk(place + ' = ' + s0 + ';');
 }
@@ -1927,13 +1971,16 @@ function callStatement(insn, ctx, mk) {
   /* Objective-C のメソッド呼び出しは [obj method:…] で書く */
   const sel = call && call.selector ? call.selector : (name ? (/objc_msgSend(?:Super2?)?\$(.+)$/.exec(name) || [])[1] : null);
   if (sel) {
-    const parts = sel.split(':').filter(Boolean);
+    const argc = (sel.match(/:/g) || []).length;
+    const parts = argc ? sel.split(':').slice(0, argc) : [];
     const argv = [];
-    for (let i = 0; i < Math.max(1, parts.length); i++) argv.push(varOf('x' + (i + 2), ctx));
-    const body = parts.length
+    for (let i = 0; i < argc; i++) argv.push(registerValueText(ctx, insn.row, 'x' + (i + 2)));
+    const body = argc
       ? parts.map((p, i) => p + ':' + argv[i]).join(' ')
       : sel;
-    return mk(varOf('x0', ctx) + ' = [' + varOf('x0', ctx) + ' ' + body + '];',
+    const receiverValue = registerValueText(ctx, insn.row, 'x0');
+    const receiver = needsParens(receiverValue) ? '(' + receiverValue + ')' : receiverValue;
+    return mk(nameForDef(ctx, insn.row, 'x0') + ' = [' + receiver + ' ' + body + '];',
       { dst: 'x0', call: true, reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
         note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
   }
@@ -1958,7 +2005,15 @@ function callStatement(insn, ctx, mk) {
 
 function indirectName(insn, ctx) {
   const r = insn.ops && insn.ops[0] ? regOf(insn.ops[0]) : null;
-  return r ? '(*' + varOf(r, ctx) + ')' : '(*func)';
+  if (!r) return '(*func)';
+  const target = registerValueText(ctx, insn.row, r);
+  return '(*' + (needsParens(target) ? '(' + target + ')' : target) + ')';
+}
+
+function registerValueText(ctx, row, reg) {
+  const value = ctx.values ? ctx.values.at(row, reg) : null;
+  const text = value ? exprText(ctx, value, null) : null;
+  return text || varOf(reg, ctx);
 }
 
 /**
