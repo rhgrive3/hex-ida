@@ -7,9 +7,10 @@ import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
-import { writeFileVerified as writeFile, publishUserscriptFiles } from './userscript-publication.mjs';
+import { writeFileVerified, publishUserscriptFiles } from './userscript-publication.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const writeFile = (file, content) => writeFileVerified(file, content, { containmentRoot: root });
 const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
