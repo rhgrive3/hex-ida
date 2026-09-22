@@ -101,6 +101,8 @@ const SAFE_LOOP_EDGE_CONSTRUCTS = new Set([
 const UNSAFE_EDGE_KINDS = new Set(['unwind', 'exception']);
 
 const LOOP_NODE_TEXT = /^(?:while|for|do)\b/;
+const SWITCH_NODE_TEXT = /^switch\b/;
+const EMITTED_WHILE_TEXT = /^while\b/;
 const CONDITIONAL_TEXT = /^if\s*\(/;
 const JUMP_TEXT = /\bgoto\s+loc_[0-9a-fA-F]+\s*;/g;
 const TRAILING_JUMP_TEXT = /\bgoto\s+loc_[0-9a-fA-F]+\s*;\s*$/;
@@ -416,28 +418,39 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
   const span = findAlreadyProjectedSpan(body, headerIndex);
   if (!span) return null;
 
-  // A jump whose target sits inside a nested already-emitted loop must not
-  // become a bare `break`/`continue` here: those statements bind to the
-  // innermost loop. Leaving the goto is the fail-closed answer.
+  // A jump whose target sits inside a nested already-emitted loop or switch
+  // must not become a bare `break`/`continue` here: those statements bind to
+  // the innermost construct. Leaving the goto is the fail-closed answer.
   const nestedRanges = [];
   for (let index = span.start + 1; index < span.end; index += 1) {
     const node = body[index];
     if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
-    if (!LOOP_NODE_TEXT.test(node.text.trim())) continue;
+    const text = node.text.trim();
+    if (!LOOP_NODE_TEXT.test(text) && !SWITCH_NODE_TEXT.test(text)) continue;
     if (blockOf(node) === proof.header) continue;
     const nested = findAlreadyProjectedSpan(body, index);
     if (!nested) continue;
     nestedRanges.push(nested);
     index = nested.end;
   }
-  const insideNestedLoop = (index) =>
+  const insideNestedConstruct = (index) =>
     nestedRanges.some((range) => index >= range.start && index <= range.end);
+
+  // The emitted header text — not the CFG proof form — decides whether a
+  // latch goto may become `continue`. A proof-while paired with an emitted
+  // `for (...)` would run the for-increment on continue while the original
+  // goto bypassed it.
+  const emittedHeader = String(body[span.start]?.text ?? '').trim();
+  const emittedWhileHeader = EMITTED_WHILE_TEXT.test(emittedHeader);
 
   const rewrites = [];
   for (let index = span.start + 1; index < span.end; index += 1) {
-    if (insideNestedLoop(index)) continue;
+    if (insideNestedConstruct(index)) continue;
     const node = body[index];
     const owner = blockOf(node);
+    // Ownership is breakEdgeKeys/latchEdgeKeys from this proof: a jump whose
+    // block is not a member cannot be refined under this construct.
+    if (owner == null || !proof.members.has(owner)) continue;
     const targets = jumpTargetsOf(node.text);
     if (targets.length === 0) continue;
     for (const target of targets) {
@@ -455,9 +468,10 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
       if (edge.construct === 'loop-back-edge') {
         if (!proof.latchEdgeKeys.has(`${edge.from}->${edge.to}`)) continue;
         // The construct is already closed with `}`, so there is no closing bare
-        // jump to absorb. An interior back edge in a pre-test loop re-tests the
-        // same condition `continue` would.
-        if (proof.form !== 'while') continue;
+        // jump to absorb. An interior back edge may become `continue` only when
+        // both the CFG form is a pre-test loop and the emitted C header is a
+        // `while` — for/do headers rebind continue to a different target.
+        if (proof.form !== 'while' || !emittedWhileHeader) continue;
         rewrites.push({ index, text: 'continue', edge, targetBlock });
       }
     }
@@ -477,7 +491,7 @@ function refineAlreadyProjectedLoop(body, proof, ctx, headerIndex, blockOf, bloc
     rule: LOOP_PROJECTION_RULE,
     phase: 'phase8-control-projection',
     before: 'control:natural-loop-goto',
-    after: proof.form === 'do-while' ? 'control:do-while-loop' : 'control:while-loop',
+    after: 'control:loop-break-continue-refine',
     evidence: Object.freeze({
       kind: 'canonical-loop-facts-adoption',
       version: LOOP_CONTROL_PROJECTION_VERSION,
@@ -556,13 +570,10 @@ function projectOneLoop(body, proof, ctx) {
     return resolved;
   };
 
-  const headerAddress = asAddress(ctx.blockAddress(proof.header));
-  const exitAddress = asAddress(ctx.blockAddress(proof.exitTarget));
-  if (headerAddress == null || exitAddress == null) return null;
-
   // The upstream renderer may already have emitted this loop. Projecting it a
   // second time would nest two constructs over one region, so the construct is
   // left alone — but proven break/continue gotos inside it are still refined.
+  // The refine path does not need header/exit addresses, so it runs first.
   for (let index = 0; index < body.length; index += 1) {
     const node = body[index];
     if (node?.kind !== 'ctrl' || typeof node.text !== 'string') continue;
@@ -570,6 +581,10 @@ function projectOneLoop(body, proof, ctx) {
     if (blockOf(node) !== proof.header) continue;
     return refineAlreadyProjectedLoop(body, proof, ctx, index, blockOf, blockIndexAt);
   }
+
+  const headerAddress = asAddress(ctx.blockAddress(proof.header));
+  const exitAddress = asAddress(ctx.blockAddress(proof.exitTarget));
+  if (headerAddress == null || exitAddress == null) return null;
 
   // Ownership. Every rendered node whose block belongs to the loop must form one
   // contiguous run: a loop whose nodes are interleaved with nodes nobody owns

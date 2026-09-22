@@ -1111,6 +1111,7 @@ test('loop V. an already-emitted while keeps its construct and loses its proven 
   assert.ok(texts.includes('s = 4;'), 'the rest of the body is preserved');
   assert.equal(projected.rewriteProof.at(-1).rule, LOOP_PROJECTION_RULE);
   assert.equal(projected.rewriteProof.at(-1).evidence.version, LOOP_CONTROL_PROJECTION_VERSION);
+  assert.equal(projected.rewriteProof.at(-1).after, 'control:loop-break-continue-refine');
 });
 
 test('loop W. refining an already-emitted while is idempotent', () => {
@@ -1125,10 +1126,73 @@ test('loop W. refining an already-emitted while is idempotent', () => {
   ];
   const { result, projected } = project(breakWhileIr(), body);
   assert.notEqual(projected, result);
-  const again = applyStructuredControlProjection(projected, projected.rewriteProof && result
-    ? (() => { const { analysis } = analyze(breakWhileIr()); return analysis; })()
-    : analyze(breakWhileIr()).analysis);
+  const { analysis } = analyze(breakWhileIr());
+  const again = applyStructuredControlProjection(projected, analysis);
   assert.equal(again, projected, 'a second refine pass must not rewrite a break that is already a break');
+});
+
+test('loop V-bis. an already-emitted while loses its proven continue goto', () => {
+  const { result, projected, facts } = project(continueWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, `if (c1) goto loc_${hex(1)};`, 2],
+    ['stmt', 2, 's = 3;', 3],
+    ['ctrl', 1, '}', 3],
+    ['stmt', 1, 'return s;', 4],
+  ]);
+  assert.ok(facts.edges.some((edge) =>
+    edge.from === 2 && edge.to === 1 && edge.construct === 'loop-back-edge'),
+  'the interior edge is a canonical loop-back-edge');
+  assert.notEqual(projected, result, 'the proven continue goto must be refined');
+  const texts = textsOf(projected);
+  assert.equal(count(texts, /^while \(/), 1, 'the already-emitted construct is not nested');
+  assert.ok(texts.includes('if (c1) continue;'), 'the interior back-edge goto becomes continue');
+  assert.ok(!texts.some((text) => /^if \(c1\) goto /.test(text)), 'the residual continue goto is gone');
+  assert.equal(projected.rewriteProof.at(-1).after, 'control:loop-break-continue-refine');
+});
+
+test('loop V-ter. a goto inside an emitted switch is not rewritten to break', () => {
+  const { result, projected, facts } = project(breakWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `while (c0) {`, 1],
+    ['stmt', 2, 's = 2;', 2],
+    ['ctrl', 2, `switch (c1) {`, 2],
+    ['ctrl', 3, `case 0: goto loc_${hex(5)};`, 3],
+    ['ctrl', 2, '}', 2],
+    ['stmt', 4, 's = 4;', 4],
+    ['ctrl', 1, '}', 4],
+    ['stmt', 1, 'return s;', 5],
+  ]);
+  assert.ok(facts.edges.some((edge) =>
+    edge.from === 3 && edge.to === 5 && edge.construct === 'loop-break'),
+  'the canonical facts still call this exit a break');
+  assert.equal(projected, result,
+    'a goto inside a retained switch span is left alone so break cannot bind to the switch');
+  const texts = textsOf(projected);
+  assert.ok(texts.some((text) => /^case 0: goto loc_/.test(text)),
+    'the switch case keeps its residual goto');
+  assert.ok(!texts.some((text) => /^case 0: break;/.test(text)),
+    'the switch case never receives an unlabeled break');
+});
+
+test('loop V-quater. an emitted for header does not receive continue', () => {
+  const { result, projected, facts } = project(continueWhileIr(), [
+    ['stmt', 1, 's = 0;', 0],
+    ['ctrl', 1, `for (i = 0; c0; i++) {`, 1],
+    ['stmt', 2, `if (c1) goto loc_${hex(1)};`, 2],
+    ['stmt', 2, 's = 3;', 3],
+    ['ctrl', 1, '}', 3],
+    ['stmt', 1, 'return s;', 4],
+  ]);
+  assert.ok(facts.edges.some((edge) =>
+    edge.from === 2 && edge.to === 1 && edge.construct === 'loop-back-edge'),
+  'the interior edge is a canonical loop-back-edge');
+  const texts = textsOf(projected);
+  assert.ok(texts.includes('for (i = 0; c0; i++) {'), 'the emitted for header is preserved');
+  assert.ok(!texts.some((text) => /continue\s*;/.test(text)),
+    'no continue may run a for-increment the original goto bypassed');
+  assert.ok(texts.some((text) => /^if \(c1\) goto /.test(text)),
+    'the latch goto stays a goto under a for header');
 });
 
 test('loop X. a jump inside a nested already-emitted loop is not stolen as an outer break', () => {
