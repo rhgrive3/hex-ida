@@ -383,6 +383,22 @@ function poolSize(stepCount) {
   return Math.max(1, Math.min(requested, stepCount));
 }
 
+async function runCommandContained(job, runCommand = runQuietCommand) {
+  const started = process.hrtime.bigint();
+  try {
+    return await runCommand({ ...job, cwd: root });
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      signal: null,
+      error,
+      logPath: null,
+      durationMs: Number(process.hrtime.bigint() - started) / 1e6,
+    };
+  }
+}
+
 async function runPool(jobs, concurrency, onSettled, runCommand = runQuietCommand) {
   const results = new Array(jobs.length);
   let nextIndex = 0;
@@ -391,7 +407,7 @@ async function runPool(jobs, concurrency, onSettled, runCommand = runQuietComman
       const index = nextIndex++;
       if (index >= jobs.length) return;
       const job = jobs[index];
-      results[index] = await runCommand({ ...job, cwd: root });
+      results[index] = await runCommandContained(job, runCommand);
       onSettled?.(index, results[index]);
     }
   }
@@ -455,7 +471,7 @@ export async function runCheckParallel({
     await runPoolIndexes(poolIndexes);
     poolIndexes = [];
     stdout.write(`check:parallel: exclusive barrier ${job.label}\n`);
-    results[index] = await runCommand({ ...job, cwd: root });
+    results[index] = await runCommandContained(job, runCommand);
     reportResult(job, results[index]);
   }
   await runPoolIndexes(poolIndexes);
