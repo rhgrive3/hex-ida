@@ -1,0 +1,60 @@
+{
+  "schema": "hex-pinpoint-oracle-ceiling/v1",
+  "metadata": {
+    "totalQueries": 426,
+    "exactQueries": 230,
+    "partialQueries": 196,
+    "productionAnalyzeBudget": 12,
+    "productionProbeBudget": 6
+  },
+  "top1Accuracy": {
+    "baseline": 282,
+    "oracleB": 316,
+    "oracleA": 316,
+    "top1GainB": 34,
+    "top1GainA": 34
+  },
+  "confidence": {
+    "baselineCorrectStrong": 156,
+    "oracleBCorrectStrong": 188,
+    "oracleACorrectStrong": 188,
+    "baselineFalseStrong": 67,
+    "oracleBFalseStrong": 54,
+    "oracleAFalseStrong": 56
+  },
+  "classificationCounts": {
+    "PROBE-RESOLVABLE": 156,
+    "BUDGET-RESOLVABLE": 32,
+    "ONLY-UNBOUNDED-RESOLVABLE": 0,
+    "INTENT-AMBIGUOUS": 156,
+    "EVIDENCE-ABSENT": 10,
+    "ANALYSIS-UNSUPPORTED": 72
+  },
+  "probeStatistics": {
+    "totalProbesEvaluated": 4635,
+    "usefulProbesCount": 842,
+    "usefulRate": "0.1817",
+    "byFamily": {
+      "shape_evidence": {
+        "total": 1252,
+        "useful": 224,
+        "usefulRate": "0.1789"
+      },
+      "accessor_getter_verify": {
+        "total": 894,
+        "useful": 183,
+        "usefulRate": "0.2047"
+      },
+      "setter_verify": {
+        "total": 743,
+        "useful": 109,
+        "usefulRate": "0.1467"
+      },
+      "class_local_method_inspect": {
+        "total": 1746,
+        "useful": 326,
+        "usefulRate": "0.1867"
+      }
+    }
+  }
+}
