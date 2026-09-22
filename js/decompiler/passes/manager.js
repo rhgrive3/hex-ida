@@ -10,12 +10,59 @@ function validTimeBudgetMs(value, fallback) {
     : fallback;
 }
 
+// A subtree that is entirely frozen, and holds no collection whose internal
+// slots `Object.freeze` does not protect (Map/Set/Date/RegExp/buffers), cannot
+// be mutated by a pass and so never needs a rollback pre-image. Canonical
+// artifacts such as the deep-frozen semantic IR are shared unchanged across
+// every optional pass; recognizing one once and caching the answer stops the
+// manager from re-snapshotting the same immutable graph on every pass. A `true`
+// answer is stable forever (a frozen graph cannot gain a mutable descendant); a
+// stale `false` only snapshots something we did not strictly need to, which is
+// always safe. The skip mirrors `capturePassState`'s own traversal predicate:
+// a value that traversal would not snapshot anyway (a function, a class
+// instance, a WeakMap) is treated as immutable here too, so the two agree about
+// what is pass-owned data.
+const deepImmutableCache = new WeakMap();
+function isDeepImmutable(value) {
+  if (value === null || typeof value !== 'object') return true;
+  const cached = deepImmutableCache.get(value);
+  if (cached !== undefined) return cached;
+  const stack = [value];
+  const seen = new Set();
+  let immutable = true;
+  while (stack.length) {
+    const current = stack.pop();
+    if (current === null || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    const known = deepImmutableCache.get(current);
+    if (known === true) continue;
+    if (known === false) { immutable = false; break; }
+    if (current instanceof Map || current instanceof Set || current instanceof Date
+        || current instanceof RegExp || current instanceof ArrayBuffer || ArrayBuffer.isView(current)) {
+      immutable = false; break;
+    }
+    const proto = Object.getPrototypeOf(current);
+    // Anything the traversal below would not snapshot is also not snapshotted
+    // here, so it can be ignored rather than forcing a conservative fallback.
+    if (!Array.isArray(current) && proto !== Object.prototype && proto !== null) continue;
+    if (!Object.isFrozen(current)) { immutable = false; break; }
+    const descriptors = Object.getOwnPropertyDescriptors(current);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if ('value' in descriptor) stack.push(descriptor.value);
+    }
+  }
+  deepImmutableCache.set(value, immutable);
+  return immutable;
+}
+
 function capturePassState(state) {
   const __t0 = globalThis.__hexPerfProbe ? performance.now() : 0; // PERF-PROBE
   const pending = [state], seen = new Set(), records = [];
   while (pending.length) {
     const value = pending.pop();
     if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+    if (isDeepImmutable(value)) continue;
     seen.add(value);
     const proto = Object.getPrototypeOf(value);
     const map = value instanceof Map, set = value instanceof Set, date = value instanceof Date;

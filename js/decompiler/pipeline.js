@@ -600,7 +600,11 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       const fields=queryRecord(value), definition=fields.def==null?null:queryRecord(fields.def);
       if(fields.const==null && ['bin','un','cmp','mov','sel','bfx','bfi'].includes(definition?.op)) auto.push(value);
     }
-    const targets = queryArray(submitted.targets ?? auto);
+    // An empty explicit target list means "no target was named", not "prove
+    // nothing": the whole point of the optimizer is to derive the eligible
+    // scalar values itself. Only a genuinely empty derivation stays a no-op.
+    const explicit = queryArray(submitted.targets ?? []);
+    const targets = explicit.length > 0 ? explicit : auto;
     const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
     preparedPlan = plan;
     const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};

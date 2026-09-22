@@ -176,11 +176,32 @@ function candidate(kind, support, conflicts, extra = {}) {
   });
 }
 
-function overlaps(left, right) {
-  if (left.offset == null || right.offset == null) return false;
-  const leftEnd = left.offset + BigInt(Math.max(0, left.byteWidth));
-  const rightEnd = right.offset + BigInt(Math.max(0, right.byteWidth));
-  return left.offset < rightEnd && right.offset < leftEnd;
+// Overlapping fixed accesses, in the exact (lower-index, higher-index) order the
+// former all-pairs scan emitted. Fields are swept by interval start so a region
+// whose accesses do not overlap costs O(n log n) instead of O(n^2); the pairs
+// are re-sorted back into emission order so diagnostics and `members` that read
+// the first few stay byte-identical.
+function overlappingFields(fixed) {
+  const items = [];
+  for (let index = 0; index < fixed.length; index += 1) {
+    const field = fixed[index];
+    if (field.offset == null) continue;
+    items.push({ index, start: field.offset, end: field.offset + BigInt(Math.max(0, field.byteWidth)) });
+  }
+  if (items.length < 2) return [];
+  items.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.index - b.index));
+  const pairs = [];
+  for (let left = 0; left < items.length; left += 1) {
+    for (let right = left + 1; right < items.length; right += 1) {
+      // Sorted by start: once the later interval starts at or after this one
+      // ends, no remaining interval can overlap it.
+      if (items[right].start >= items[left].end) break;
+      if (items[left].start >= items[right].end) continue;
+      pairs.push([Math.min(items[left].index, items[right].index), Math.max(items[left].index, items[right].index)]);
+    }
+  }
+  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return pairs.map(([a, b]) => [fixed[a], fixed[b]]);
 }
 
 /**
@@ -198,12 +219,7 @@ export function candidatesFor(region) {
   // Overlap: two accesses covering the same bytes with different widths are a
   // union as much as they are a struct. Both are published and the overlap keeps
   // either from being certain.
-  const overlapping = [];
-  for (let left = 0; left < fixed.length; left += 1) {
-    for (let right = left + 1; right < fixed.length; right += 1) {
-      if (overlaps(fixed[left], fixed[right])) overlapping.push([fixed[left], fixed[right]]);
-    }
-  }
+  const overlapping = overlappingFields(fixed);
   // Two widths at one offset never show up as two overlapping fields, because
   // one offset is one field observation. It is the same question all the same:
   // the bytes are being read two ways.
