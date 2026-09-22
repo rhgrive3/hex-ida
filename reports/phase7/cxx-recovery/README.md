@@ -229,9 +229,9 @@ the member loads survive codegen:
 | `readNameChar(Player*, int)` | — | (none) | indexed base is a computed `add`, no index in the IR |
 | `Player::takeDamage` | — | — | IR build refused the function (`semantic-ssa-control-flow-mismatch`) |
 
-Totals: **7 member fields across the two RTTI fixtures (5 at `-O0`, 2 at `-O2`),
-2 typed with a proven category (both `float` at `+0x18`), 5 width-only, 0
-unknown**. At `-O2` only `readHealth` and `readSpeed` keep a receiver load that
+Totals: **7 fixture-level member-field observations across the two RTTI fixtures
+(5 at `-O0`, 2 at `-O2`; the table shows 5 distinct offsets), 2 typed with a
+proven category (both `float` at `+0x18`), 5 width-only, 0 unknown**. At `-O2` only `readHealth` and `readSpeed` keep a receiver load that
 survives codegen.
 
 The narrow part is deliberate, and two review findings tightened it:
