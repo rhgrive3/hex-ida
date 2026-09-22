@@ -173,8 +173,19 @@ export class RewriteEngine {
         }
 
         let candidate = mapChildren(n, (child) => rewritten.get(child) || child);
+        // The node-budget check is a pure function of the candidate subtree, but
+        // the loop below consulted it once per rule over the same unchanged
+        // candidate. Count once per distinct candidate instead: same work bound,
+        // no repeated O(subtree) walk. The time/cancellation half of `overBudget`
+        // still runs every iteration because it is not a function of the candidate.
+        let candidateCount = null;
+        const overCandidateWork = () => {
+          if (stats.applications >= this.budget.maxApplications) return true;
+          if (candidateCount == null) candidateCount = nodeCount(candidate, new Set(), this.budget.nodeBudget);
+          return candidateCount > this.budget.nodeBudget;
+        };
         for (const rule of rules) {
-          if (overBudget(candidate)) { stats.budgetExceeded = true; break; }
+          if (overCandidateWork() || now() >= deadline || context.shouldAbort?.()) { stats.budgetExceeded = true; break; }
           const match = rule.match(candidate, context);
           if (!match) continue;
           if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
@@ -196,6 +207,7 @@ export class RewriteEngine {
           stats.applications++;
           stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
           candidate = next;
+          candidateCount = null;
           if (rule.repeatability === 'once') break;
         }
         rewritten.set(n, candidate);

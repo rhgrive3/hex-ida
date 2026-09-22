@@ -166,3 +166,34 @@ test('#5113 cyclic state survives the fork and rolls back on failure', () => {
   assert.deepEqual(state.observed.nodes, ['real']);
   assert.equal(state.observed.tag, 'original');
 });
+
+test('#5113 a deep-frozen subtree needs no rollback pre-image while siblings still roll back', () => {
+  const freezeDeep = (value) => {
+    if (value && typeof value === 'object') {
+      for (const key of Reflect.ownKeys(value)) freezeDeep(value[key]);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  // A frozen artifact comparable to the canonical semantic IR, which the
+  // manager sees (unchanged) on every optional pass.
+  const ir = freezeDeep({ values: Array.from({ length: 200 }, (_, i) => ({ id: i, origin: { rows: [i] } })) });
+  const state = { ir, memo: new Map([['real', 'v']]), ast: { body: { kind: 'original' } }, keep: 'present' };
+  const previousProbe = globalThis.__hexPerfProbe;
+  let records = 0;
+  globalThis.__hexPerfProbe = { recordCapturePassState(_ms, count) { records = count; } };
+  let out;
+  try {
+    out = new PassManager([{
+      name: 'frozen-sibling-corruptor',
+      required: false,
+      run(s) { s.memo.set('forged', 'x'); s.ast.body.kind = 'mutated'; delete s.keep; throw new Error('partial'); },
+    }]).run(state);
+  } finally { globalThis.__hexPerfProbe = previousProbe; }
+  // The frozen IR alone is hundreds of objects; skipping it is the point.
+  assert.ok(records < 50, `frozen subtree was snapshotted: ${records} records`);
+  assert.equal(out.memo.has('forged'), false, 'mutable Map still rolls back');
+  assert.equal(out.ast.body.kind, 'original', 'mutable nested object still rolls back');
+  assert.equal(out.keep, 'present', 'deleted key still restores');
+  assert.equal(out.passMetrics[0].ok, false);
+});
