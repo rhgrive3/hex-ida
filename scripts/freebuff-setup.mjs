@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// freebuff isolated-HOME setup — idempotent restorer for ./freebuff-1..8.
+// freebuff isolated-HOME setup — idempotent restorer for ./freebuff-N.
 //
 // Background: ./freebuff-N used to be untracked shell wrappers with isolated
 // HOME dirs at /mnt/workspace/.freebuff-homes (outside the repo). Untracked
@@ -15,15 +15,22 @@
 //     once in shared/ and missing per-HOME binaries become symlinks to it
 //     (the launcher treats a symlink as installed; a later background update
 //     atomically replaces the link with a per-HOME copy for that HOME only).
-//   - tracked wrappers: <repo>/freebuff-1..8 (regenerated here, must be committed)
+//   - tracked wrappers: <repo>/freebuff-N (regenerated here, must be committed).
+//     N is any positive integer; full setup materializes 1..count (default 8)
+//     plus any freebuff-N already present on disk or as an existing HOME.
 //   - launcher: <repo>/.tools/npm/bin/freebuff (reinstalled on demand)
 //   - one-time migration of small identity files from the legacy outside path.
 //   - off-repo mirror: /mnt/workspace/.dev-state/freebuff-restore/ (survives
 //     git clean/reset; auto-heal hook in .persistent-bashrc restores from it).
 //
+// Startup cost: wrapper launches use --ensure N with rescanHomes=false and a
+// sidecar/version probe cache so they do not spawn `freebuff --version` against
+// every HOME on every launch (that path used to cost ~25s).
+//
 // Usage:
-//   node scripts/freebuff-setup.mjs            ensure all 1..8 + launcher + wrappers
-//   node scripts/freebuff-setup.mjs --ensure N  fast path for wrappers (one HOME + launcher)
+//   node scripts/freebuff-setup.mjs             ensure 1..count + launcher + wrappers
+//   node scripts/freebuff-setup.mjs --count N   same, with instance count N
+//   node scripts/freebuff-setup.mjs --ensure N  fast path for wrappers (any positive N)
 //   npm run freebuff:setup                      same as the first form
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,15 +39,21 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DATA_ROOT = '/mnt/workspace/.dev-state/freebuff-homes';
+// Exported so the regression guard discovers instances from the same paths the
+// generator materializes them into — a guard with its own private copy of this
+// path can drift from the generator and go green while instances are missing.
+export const DATA_ROOT = '/mnt/workspace/.dev-state/freebuff-homes';
 const SHARED_ROOT = path.join(DATA_ROOT, 'shared');
 // Previous data location inside the repo (kept as a migration source only;
 // HOME under cwd triggers freebuff's startup project picker, so data must
 // not live there).
 const REPO_DATA_ROOT = path.join(ROOT, '.freebuff-homes');
-const LEGACY_ROOT = '/mnt/workspace/.freebuff-homes';
+export const LEGACY_ROOT = '/mnt/workspace/.freebuff-homes';
 const MIRROR_ROOT = '/mnt/workspace/.dev-state/freebuff-restore';
-const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+// Default full-setup instance count. Any positive N is valid via --count/--ensure;
+// existing freebuff-N wrappers/HOMEs beyond this floor are always discovered.
+export const DEFAULT_COUNT = 8;
+const POSITIVE_INT = /^[1-9][0-9]*$/;
 
 // Small identity/config files worth migrating. Everything else is either a
 // re-downloadable binary (freebuff, ~140MB per HOME) or regenerable cache
@@ -60,9 +73,41 @@ const SHARED_FILES = [
 ];
 const SHARED_BIN = path.join(SHARED_ROOT, 'manicode', 'freebuff');
 const SHARED_BIN_VERSION = path.join(SHARED_ROOT, 'manicode', 'freebuff.version');
+// path -> { version, size, mtimeMs } so warm launches skip `freebuff --version`.
+const VERSION_CACHE = path.join(SHARED_ROOT, 'manicode', 'freebuff-version-cache.json');
 // Source files mirrored off-repo so git clean/reset cannot destroy the
 // restorer itself. Wrappers are generated, not mirrored (they embed no state).
 const MIRRORED = ['scripts/freebuff-setup.mjs', 'tests/freebuff-wrappers.mjs'];
+
+const XDG_OPEN_SHIM = `#!/usr/bin/env bash
+# Route xdg-open through VS Code's $BROWSER helper so freebuff login URLs
+# open the VS Code "open external URL" popup in headless/container envs
+# where no real display server or system xdg-open exists.
+set -euo pipefail
+if [[ -n "\${BROWSER:-}" && -x "\${BROWSER}" ]]; then
+  exec "\${BROWSER}" "$@"
+fi
+echo "xdg-open shim: \\$BROWSER is not set or not executable" >&2
+exit 1
+`;
+
+export function ensureXdgOpenShim(root = ROOT) {
+  const p = path.join(root, '.tools', 'bin', 'xdg-open');
+  let entry = null;
+  try {
+    entry = fs.lstatSync(p);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  let healthy = false;
+  if (entry?.isFile() && !entry.isSymbolicLink()) {
+    healthy = fs.readFileSync(p, 'utf8') === XDG_OPEN_SHIM && (entry.mode & 0o111) !== 0;
+  }
+  if (healthy) return false;
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  publishTextAtomically(p, XDG_OPEN_SHIM, 0o755);
+  return true;
+}
 
 export function wrapperScript(n) {
   return `#!/usr/bin/env bash
@@ -77,6 +122,11 @@ REPO="$(cd "$(dirname "\${BASH_SOURCE[0]:-$0}")" && pwd)"
 FB_HOME="/mnt/workspace/.dev-state/freebuff-homes/$N/home"
 node "$REPO/scripts/freebuff-setup.mjs" --ensure "$N"
 export HOME="$FB_HOME"
+# freebuff skips browser open when DISPLAY/WAYLAND_DISPLAY are unset; keep a
+# dummy DISPLAY so it attempts open, and route PATH xdg-open to our $BROWSER shim.
+: "\${DISPLAY:=:0}"
+export DISPLAY
+export PATH="$REPO/.tools/bin:$PATH"
 # freebuff always starts in the repo root, wherever the wrapper is invoked from.
 cd "$REPO"
 exec "$REPO/.tools/npm/bin/freebuff" "$@"
@@ -491,6 +541,50 @@ export function newerVersionCandidate(current, candidate) {
   return !current || cmpVersions(current.version, candidate.version) < 0 ? candidate : current;
 }
 
+export function parseEnsureSelector(raw) {
+  if (typeof raw !== 'string' || !POSITIVE_INT.test(raw)) {
+    throw new Error(`freebuff setup: invalid --ensure selector '${raw}'. Expected a positive integer instance number`);
+  }
+  return raw;
+}
+
+// Instance numbers for full setup / scans: always 1..count, union any freebuff-N
+// wrappers under root and any numeric HOME dirs under the given data roots.
+export function resolveNums({
+  count = DEFAULT_COUNT,
+  root = null,
+  dataRoot = null,
+  legacyRoot = null,
+} = {}) {
+  const limit = Number(count);
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(`freebuff setup: invalid instance count '${count}'. Expected a positive integer`);
+  }
+  const nums = new Set();
+  for (let i = 1; i <= limit; i += 1) nums.add(String(i));
+
+  const absorb = (dir, pattern) => {
+    if (!dir) return;
+    let names = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const match = pattern.exec(name);
+      if (match) nums.add(match[1]);
+    }
+  };
+
+  if (root) absorb(root, /^freebuff-([1-9][0-9]*)$/);
+  absorb(dataRoot, /^([1-9][0-9]*)$/);
+  absorb(legacyRoot, /^([1-9][0-9]*)$/);
+  if (root) absorb(path.join(root, '.freebuff-homes'), /^([1-9][0-9]*)$/);
+
+  return [...nums].sort((a, b) => Number(a) - Number(b));
+}
+
 function isSafeExistingPath(root, target) {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = path.resolve(target);
@@ -526,6 +620,61 @@ function binaryVersion(bin) {
   try {
     const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 30000 });
     const v = (r.stdout || '').trim().split('\n')[0].trim();
+    return /^\d+\.\d+\.\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function binaryVersionCached(bin, { versionProbe = binaryVersion, cachePath = VERSION_CACHE } = {}) {
+  let identity = null;
+  try {
+    const st = fs.statSync(bin);
+    if (!st.isFile()) return null;
+    identity = { size: st.size, mtimeMs: Math.round(st.mtimeMs) };
+  } catch {
+    return null;
+  }
+
+  let cache = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cache = parsed;
+  } catch {}
+
+  const hit = cache[bin];
+  if (
+    hit
+    && hit.size === identity.size
+    && hit.mtimeMs === identity.mtimeMs
+    && typeof hit.version === 'string'
+    && /^\d+\.\d+\.\d+$/.test(hit.version)
+  ) {
+    return hit.version;
+  }
+
+  const version = versionProbe(bin);
+  if (!version) return null;
+  try {
+    const after = fs.statSync(bin);
+    cache[bin] = {
+      version,
+      size: after.size,
+      mtimeMs: Math.round(after.mtimeMs),
+    };
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    const tmp = `${cachePath}.tmp-${process.pid}-${randomUUID()}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(cache)}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, cachePath);
+  } catch {}
+  return version;
+}
+
+// Sidecar written after a validated shared-binary publish. Trusted over a
+// fresh spawn: freebuff only updates per-HOME copies, not the shared file.
+export function readSharedSidecarVersion(sidecarPath = SHARED_BIN_VERSION) {
+  try {
+    const v = fs.readFileSync(sidecarPath, 'utf8').trim();
     return /^\d+\.\d+\.\d+$/.test(v) ? v : null;
   } catch {
     return null;
@@ -569,24 +718,29 @@ function publishTextAtomically(dst, content, mode = 0o600, { fsImpl = fs, contai
 
 // Keep one shared binary copy; returns { path, version } or null when no
 // usable copy exists anywhere yet (first launch then downloads for its HOME).
-function ensureSharedBinary() {
+// rescanHomes=false (wrapper --ensure path): when a usable shared binary is
+// already present, skip the cross-HOME `--version` scan entirely — that scan
+// used to dominate startup (~16 spawns × ~1.5s).
+export function ensureSharedBinary({ rescanHomes = true, versionProbe = binaryVersion } = {}) {
   ensureSafeDirectory(DATA_ROOT, path.dirname(SHARED_BIN));
   let sharedBest = null;
   if (realBinary(SHARED_BIN, SHARED_ROOT)) {
-    const v = binaryVersion(SHARED_BIN) || (() => {
-      try { return fs.readFileSync(SHARED_BIN_VERSION, 'utf8').trim() || null; } catch { return null; }
-    })();
+    const v = readSharedSidecarVersion()
+      || binaryVersionCached(SHARED_BIN, { versionProbe, cachePath: VERSION_CACHE });
     if (v) {
       sharedBest = { path: SHARED_BIN, version: v };
     }
   }
 
+  if (sharedBest && !rescanHomes) return sharedBest;
+
   let best = sharedBest;
+  const nums = resolveNums({ count: DEFAULT_COUNT, dataRoot: DATA_ROOT, legacyRoot: LEGACY_ROOT });
   for (const base of [DATA_ROOT, LEGACY_ROOT]) {
-    for (const n of NUMS) {
+    for (const n of nums) {
       const p = path.join(base, n, 'home', '.config', 'manicode', 'freebuff');
       if (!realBinary(p, base)) continue;
-      const v = binaryVersion(p);
+      const v = binaryVersionCached(p, { versionProbe, cachePath: VERSION_CACHE });
       if (!v) continue;
       best = newerVersionCandidate(best, { path: p, version: v });
     }
@@ -598,7 +752,10 @@ function ensureSharedBinary() {
         // Stage in the shared directory, validate the complete executable, and
         // only then atomically rename over the live path. Existing HOME links
         // therefore observe complete old-or-new bytes, never an in-place copy.
-        publishExecutableAtomically(best.path, SHARED_BIN, best.version, { containmentRoot: SHARED_ROOT });
+        publishExecutableAtomically(best.path, SHARED_BIN, best.version, {
+          containmentRoot: SHARED_ROOT,
+          versionProbe,
+        });
       }
     } catch {
       return sharedBest;
@@ -752,12 +909,12 @@ function ensureHome(n, shared) {
   return { migrated: migrated + sharedMigrated };
 }
 
-function cleanupRepoData() {
+function cleanupRepoData(nums = resolveNums({ count: DEFAULT_COUNT, dataRoot: DATA_ROOT, legacyRoot: LEGACY_ROOT })) {
   // Remove the old in-repo data root once every number has moved out and
   // no unmigrated HOME_FILES remain in REPO_DATA_ROOT.
   try {
     if (!fs.existsSync(REPO_DATA_ROOT)) return false;
-    for (const n of NUMS) {
+    for (const n of nums) {
       if (!fs.existsSync(path.join(DATA_ROOT, n, 'home', '.config', 'manicode', 'credentials.json'))) return false;
       const repoHome = path.join(REPO_DATA_ROOT, n, 'home');
       if (fs.existsSync(repoHome)) {
@@ -794,9 +951,10 @@ function ensureLauncher() {
   return true;
 }
 
-export function ensureWrappers(root = ROOT) {
+export function ensureWrappers(root = ROOT, nums = null) {
+  const list = nums ?? resolveNums({ count: DEFAULT_COUNT, root });
   let wrote = 0;
-  for (const n of NUMS) {
+  for (const n of list) {
     const p = path.join(root, `freebuff-${n}`);
     const content = wrapperScript(n);
     let entry = null;
@@ -852,33 +1010,51 @@ export function parseArgs(argv = process.argv.slice(2)) {
   if (argv.length === 0) {
     return { mode: 'full' };
   }
-  if (argv[0] === '--ensure') {
-    if (argv.length === 2 && NUMS.includes(argv[1])) {
-      return { mode: 'ensure', num: argv[1] };
+  if (argv[0] === '--count') {
+    if (argv.length === 2 && POSITIVE_INT.test(argv[1])) {
+      return { mode: 'full', count: argv[1] };
     }
     const target = argv.length > 1 ? argv.slice(1).join(' ') : '<missing>';
-    throw new Error(`freebuff setup: invalid --ensure selector '${target}'. Expected one of: ${NUMS.join(', ')}`);
+    throw new Error(`freebuff setup: invalid --count selector '${target}'. Expected a positive integer instance count`);
   }
-  throw new Error(`freebuff setup: unrecognized argument(s) '${argv.join(' ')}'. Usage: freebuff-setup.mjs [--ensure 1..8]`);
+  if (argv[0] === '--ensure') {
+    if (argv.length === 2) {
+      return { mode: 'ensure', num: parseEnsureSelector(argv[1]) };
+    }
+    const target = argv.length > 1 ? argv.slice(1).join(' ') : '<missing>';
+    throw new Error(`freebuff setup: invalid --ensure selector '${target}'. Expected a positive integer instance number`);
+  }
+  throw new Error(`freebuff setup: unrecognized argument(s) '${argv.join(' ')}'. Usage: freebuff-setup.mjs [--ensure N] [--count N]`);
 }
 
 export function run(argv = process.argv.slice(2)) {
   const parsed = parseArgs(argv);
   if (parsed.mode === 'ensure') {
     ensureShared();
-    ensureHome(parsed.num, ensureSharedBinary());
+    // Wrapper hot path: never rescan every HOME for a newer binary — sidecar +
+    // probe cache keep this off the critical path (full setup still rescans).
+    ensureHome(parsed.num, ensureSharedBinary({ rescanHomes: false }));
     ensureLauncher();
+    ensureXdgOpenShim(ROOT);
+    ensureWrappers(ROOT, [parsed.num]);
     return { mode: 'ensure', num: parsed.num };
   }
 
-  const shared = ensureSharedBinary();
+  const nums = resolveNums({
+    count: parsed.count ?? DEFAULT_COUNT,
+    root: ROOT,
+    dataRoot: DATA_ROOT,
+    legacyRoot: LEGACY_ROOT,
+  });
+  const shared = ensureSharedBinary({ rescanHomes: true });
   let totalMigrated = 0;
-  for (const n of NUMS) totalMigrated += ensureHome(n, shared).migrated;
-  const repoCleaned = cleanupRepoData();
+  for (const n of nums) totalMigrated += ensureHome(n, shared).migrated;
+  const repoCleaned = cleanupRepoData(nums);
   const launcherInstalled = ensureLauncher();
-  const wrappersWrote = ensureWrappers();
+  const xdgShim = ensureXdgOpenShim(ROOT);
+  const wrappersWrote = ensureWrappers(ROOT, nums);
   const mirrored = ensureMirror();
-  const summary = `freebuff setup: migrated=${totalMigrated} repo-data-removed=${repoCleaned} launcher=${launcherInstalled ? 'installed' : 'ok'} wrappers=${wrappersWrote} mirror=${mirrored} (re)wrote`;
+  const summary = `freebuff setup: migrated=${totalMigrated} repo-data-removed=${repoCleaned} launcher=${launcherInstalled ? 'installed' : 'ok'} xdg-open-shim=${xdgShim ? 'wrote' : 'ok'} wrappers=${wrappersWrote} mirror=${mirrored} (re)wrote instances=${nums.length}`;
   console.log(summary);
   return {
     mode: 'full',
@@ -887,6 +1063,7 @@ export function run(argv = process.argv.slice(2)) {
     launcherInstalled,
     wrappersWrote,
     mirrored,
+    nums,
     summary,
   };
 }

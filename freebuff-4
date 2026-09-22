@@ -10,6 +10,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 FB_HOME="/mnt/workspace/.dev-state/freebuff-homes/$N/home"
 node "$REPO/scripts/freebuff-setup.mjs" --ensure "$N"
 export HOME="$FB_HOME"
+# freebuff skips browser open when DISPLAY/WAYLAND_DISPLAY are unset; keep a
+# dummy DISPLAY so it attempts open, and route PATH xdg-open to our $BROWSER shim.
+: "${DISPLAY:=:0}"
+export DISPLAY
+export PATH="$REPO/.tools/bin:$PATH"
 # freebuff always starts in the repo root, wherever the wrapper is invoked from.
 cd "$REPO"
 exec "$REPO/.tools/npm/bin/freebuff" "$@"
