@@ -2,7 +2,7 @@
 
 ## 2026-09-22: 実ゲーム holdout を固定して再計測（現 main）
 
-base は現 main `adadf37ac0a7877d201cbc8faf711b1b5b95c4af`（#9407）。
+base は現 main `b1a61d50c0bd2c2b893862c8514e7a05df62ecdd`（`adadf37ac` から reconcile。途中の main 前進は #9409 / #9412 / #9418）。
 
 ### 何を固定したか
 
@@ -37,7 +37,7 @@ base は現 main `adadf37ac0a7877d201cbc8faf711b1b5b95c4af`（#9407）。
 | Luanti `luanti_…_macos12.3_arm64.zip` | arm64 Mach-O として shape scan は動くが、local symbol が落ちていて label を実命令で正当化できない |
 | **DSDA-Doom v0.29.4 mac-arm64** | **採用**。小さい / Mach-O arm64 / zip / local function symbol が残る / 実 gameplay 資源フィールドがある |
 
-### 再計測（offline）
+### 再計測（offline）（reconcile 前 = base `1e2b89c9b`）
 
 `HEX_SEMANTIC_BOUNDARY_HOLDOUT_ARTIFACT=tests/.real-game-holdout/dsda-doom node tests/semantic-boundary-real-game-holdout.mjs`
 
@@ -56,7 +56,7 @@ base は現 main `adadf37ac0a7877d201cbc8faf711b1b5b95c4af`（#9407）。
   つまり 1-probe の上限がこのケースで実測されていて、値は「救済できない」である。
 - `labelsConsistent: true` / `promotionEligible: false`。artifact の sha256 は fixture の pin と一致（`artifact.pinned: true`）。
 
-### 再計測（live OpenJev、`HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1`）
+### 再計測（live OpenJev、`HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1`）（reconcile 前）
 
 | variant | final top-1 | rescue | hit@boundary | analyze | semantic | referee |
 |---|---|---:|---:|---:|---:|---|
@@ -80,18 +80,45 @@ latency: choice p50 ≈ 421 ms / p95 ≈ 863 ms、noul p50 = 567 ms。
    （5 候補が p=0.9822 で同点になり ordering が勝つ）ので、これは製品の性質であり、
    実 ARM64 リリースで再現したことになる。
 
+### reconcile 後（現 main `b1a61d50c`）
+
+main が `fix(pinpoint): require 3 independent groups for likely verdict`（#9418）を含んで進んだ。
+この修正は**この holdout の観測を出典として引いている**（main の `tests/fixtures/pinpoint-false-likely-dsda.json` の
+`note` は「PR #9410 holdout」と明記）ので、reconcile して同じ artifact / 同じ label / 同じ frozen policy で再計測した。
+
+| variant (live) | final top-1 | verdict | rescue | hit@boundary | semantic | referee |
+|---|---|---|---:|---:|---:|---|
+| 現行 D1〜D4 | 148 | **ambiguous** | 0 | 0 | 0 | no-referee |
+| oracle 1-probe（上限） | 148 | **ambiguous** | 0 | **1** | 1 | `probe-promoted-by-binary-evidence` → `reconfirmed` (d5) |
+| shadow choice | 148 | **ambiguous** | 0 | 0 | 1 | received **c0**, margin 0.90 |
+| shadow parallel noul | 148 | **ambiguous** | 0 | 0 | 1 | received **c0**, margin 0.06（床 0.2 未満） |
+| gated 1-probe | 148 | **ambiguous** | 0 | 0 | 1 | `challenger-not-tail` |
+
+| | reconcile 前 | reconcile 後 |
+|---|---|---|
+| top-1 の verdict | `likely` | **`ambiguous`** |
+| false-likely | 1 | **0** |
+| final top-1 / rescue / 真値 rank / oracle 上限 | 148 / 0 / 5 / 救済なし | 同じ（不変） |
+
+つまり **main の修正は実ゲームで効いている**（本 lane が見つけた false-likely が再現しない）。
+同時に、順位の誤り（真値が boundary rank 5 で baseline の検証集合の外、1-probe が返り値を動かせない、
+live が `c0`=ammo を選ぶ）は**一切解決していない**ので `promotionEligible: false` は維持される。
+
 ### 再計測（ARM64 ランナー、GitHub Actions）
 
 同じ head を **ARM64 ランナー 2 種**で計測し、測定値そのものを assert している。
 
 ```
-run 35687189172  success  head 6195f1a1f7f172e520e8523dd5096029e672956d
+run 35695074399  success  head 9d05bf7c4bc1c017dcc592d78d4168fd4751941f   (reconcile 後)
   leg macos-14          uname -m = arm64    node = darwin arm64
   leg ubuntu-24.04-arm  uname -m = aarch64  node = linux arm64
   -> ok: true  problems: []
-     baseline top 148 / truthHitAtBoundary 0 / boundaryRescue 0 / falseLikely 1
+     baseline top 148 / verdict ambiguous / falseLikely 0
+     truthHitAtBoundary 0 / boundaryRescue 0
      oracle probe reconfirmed(d5) / verificationTargets d1,d2,d3,d5 / top 148
      labelsConsistent true / promotionEligible false
+
+（旧: run 35687189172 @ 6195f1a1f / run 35691359826 @ 45359e755 — 内容は同じで verdict が likely / falseLikely 1 だった）
 ```
 
 assert しているのは: checkout head = dispatch SHA、ランナーが ARM64 であること（`uname -m` と `process.arch`）、
@@ -105,8 +132,10 @@ baseline の「真値は検証集合の外」、oracle 上限の probe 結果と
 つまり救済が起きない理由は「referee の守備範囲に真値が無い」ではなく、
 **probe が検証集合を変えても返り値を変えられない**こと（＋ live の選択がまだ外れること）である。
 同時に、決定的経路が「資源ではない運動量フィールド」(`mobj_t.momz`、gravity で減るので
-`loc-drain-verified` が付く) を `likely` で top-1 に出すことも実測で確認された（`wrongTop1:1` / `falseLikely:1`）。
-これは fixture を緩める話ではなく製品側の findings であり、`promotionEligible:false` を維持する。
+`loc-drain-verified` が付く) を top-1 に出すことも実測で確認された（`wrongTop1: 1`）。
+このうち「名乗り」の部分（`likely` / `falseLikely: 1`）は本 holdout の観測を根拠に main の #9418 で修正され、
+reconcile 後は `ambiguous` / `falseLikely: 0` である。残るのは**順位の誤り**であり、
+これは fixture を緩める話ではなく製品側の findings である（`promotionEligible: false` を維持）。
 
 ### 追加した機械強制
 
@@ -126,11 +155,17 @@ baseline の「真値は検証集合の外」、oracle 上限の probe 結果と
 - `tests/semantic-boundary-holdout-labels.mjs`: 上記 2 つを artifact 無しで回帰固定
   （rank 1〜4 のラベルは必ず失敗 / 未計測 oracle は必ず失敗 / instrumentation 欠落は fail closed /
   コミット済み fixture 自身の rank・oracle・ceiling の整合）。
+- **どの runner からも実行されていない regression を canonical gate へ接続**:
+  この lane の focused test は `npm test` の chain に 1 つも入っていなかった（実行されない回帰は回帰ではない）。
+  今回の PR で lane の test を `npm test` に接続し、さらに main の #9418 が追加した
+  `tests/pinpoint-false-likely-confidence.mjs` も**どの runner からも呼ばれていなかった**ため、同じ chain に接続した。
+  これは「未実行の回帰が 3 回続いた」という process failure の恒久修正（guardrails: A repeated process failure
+  must gain a permanent automated regression where technically possible）。
 
 ## 現在地
 
 - 実装ブランチ: `feat/openjev-real-game-holdout`（PR #9410）
-- base: 最新 main `1e2b89c9b228f6510c7c2bc9b5f7204633f35c90` に rebase 済み
+- base: 最新 main `b1a61d50c0bd2c2b893862c8514e7a05df62ecdd` に reconcile 済み
 - 計測レポート: `reports/investigations/openjev-real-game-holdout/REPORT.md`
   （機械可読な同伴証跡: `measurement-2026-09-22.json`, `arm64-runner-evidence-2026-09-22.json`）
 - 正確な SHA は `git log --oneline` を参照。rebase でハッシュが変わるため、以下は subject で記録する（古い順）:

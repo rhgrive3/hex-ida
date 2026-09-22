@@ -1,13 +1,13 @@
 {
   "schema": "hex-openjev-arm64-holdout-runner-evidence/v1",
   "date": "2026-09-22",
-  "measuredHead": "6195f1a1f7f172e520e8523dd5096029e672956d",
+  "measuredHead": "9d05bf7c4bc1c017dcc592d78d4168fd4751941f",
   "workflow": {
     "repository": "rhgrive3/actions",
     "path": ".github/workflows/openjev-real-game-holdout.yml",
-    "commit": "0013f7932d07fbd73ab6b12b11dce8a7de38a8d0",
-    "runId": 35687189172,
-    "url": "https://github.com/rhgrive3/actions/actions/runs/35687189172",
+    "commit": "a2df06921dcb8037092a8ebd038302006654d7d4",
+    "runId": 35695074399,
+    "url": "https://github.com/rhgrive3/actions/actions/runs/35695074399",
     "conclusion": "success",
     "asserts": [
       "the checked-out head equals the dispatched TARGET_SHA",
@@ -17,6 +17,7 @@
       "the artifact-free label self-check passes",
       "case labels: truth offset/rank, recorded boundary order, every labelChecks entry true",
       "baseline: truth sits outside the D1..D4 verification set (truthHitAtBoundary 0)",
+      "baseline: the answer is `ambiguous` with falseLikely 0 (the reconciliation with main #9418)",
       "declared-oracle ceiling: probe reconfirms d5 and swaps the verification slot, answer stays @148",
       "promotionEligible stays false"
     ]
@@ -27,7 +28,7 @@
       "artifactFamily": "holdout-macos-14",
       "uname": "arm64",
       "nodeRuntime": "darwin arm64",
-      "head": "6195f1a1f7f172e520e8523dd5096029e672956d",
+      "head": "9d05bf7c4bc1c017dcc592d78d4168fd4751941f",
       "labelSelfCheck": "semantic-boundary-holdout-labels: ok",
       "archive": {
         "url": "https://github.com/kraflab/dsda-doom/releases/download/v0.29.4/dsda-doom-0.29.4-mac-arm64.zip",
@@ -73,8 +74,8 @@
           "truthHitAtBoundary": 0,
           "boundaryRescue": 0,
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 0,
           "referee": "no-referee",
@@ -92,8 +93,8 @@
           "truthHitAtBoundary": 1,
           "boundaryRescue": 0,
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": "probe-promoted-by-binary-evidence",
@@ -113,7 +114,7 @@
       "artifactFamily": "holdout-ubuntu-24.04-arm",
       "uname": "aarch64",
       "nodeRuntime": "linux arm64",
-      "head": "6195f1a1f7f172e520e8523dd5096029e672956d",
+      "head": "9d05bf7c4bc1c017dcc592d78d4168fd4751941f",
       "labelSelfCheck": "semantic-boundary-holdout-labels: ok",
       "archive": {
         "url": "https://github.com/kraflab/dsda-doom/releases/download/v0.29.4/dsda-doom-0.29.4-mac-arm64.zip",
@@ -159,8 +160,8 @@
           "truthHitAtBoundary": 0,
           "boundaryRescue": 0,
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 0,
           "referee": "no-referee",
@@ -178,8 +179,8 @@
           "truthHitAtBoundary": 1,
           "boundaryRescue": 0,
           "wrongTop1": 1,
-          "falseLikely": 1,
-          "verdict": "likely",
+          "falseLikely": 0,
+          "verdict": "ambiguous",
           "analyzeCalls": 18,
           "semanticCalls": 1,
           "referee": "probe-promoted-by-binary-evidence",
@@ -193,6 +194,20 @@
           ]
         }
       }
+    }
+  ],
+  "supersededRuns": [
+    {
+      "runId": 35687189172,
+      "measuredHead": "6195f1a1f7f172e520e8523dd5096029e672956d",
+      "conclusion": "success",
+      "note": "pre-reconciliation measurement: same artifact/labels/values except verdict `likely` and falseLikely 1"
+    },
+    {
+      "runId": 35691359826,
+      "measuredHead": "45359e755c2851c3063ccc67ea80f711dc3ba88d",
+      "conclusion": "success",
+      "note": "pre-reconciliation measurement at the superseded head; identical values to run 35687189172"
     }
   ]
 }

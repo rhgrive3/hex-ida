@@ -194,29 +194,35 @@ latency（この実行のサンプル）: choice p50 451.7 ms / p95 577.8 ms、n
 
 | 項目 | 値 |
 |---|---|
-| run | [35687189172](https://github.com/rhgrive3/actions/actions/runs/35687189172) `success` |
-| 計測した head | `6195f1a1f7f172e520e8523dd5096029e672956d` |
-| workflow commit | `0013f7932d07fbd73ab6b12b11dce8a7de38a8d0` |
+| run（reconcile 後・本レポートの計測） | [35695074399](https://github.com/rhgrive3/actions/actions/runs/35695074399) `success` |
+| 計測した head | `9d05bf7c4bc1c017dcc592d78d4168fd4751941f` |
+| workflow commit | `a2df06921dcb8037092a8ebd038302006654d7d4` |
 | leg 1 | `macos-14` → `uname -m` = `arm64`, node = `darwin arm64` |
 | leg 2 | `ubuntu-24.04-arm` → `uname -m` = `aarch64`, node = `linux arm64` |
+| 旧（reconcile 前） | [35687189172](https://github.com/rhgrive3/actions/actions/runs/35687189172) @ `6195f1a1f` / [35691359826](https://github.com/rhgrive3/actions/actions/runs/35691359826) @ `45359e755` — どちらも `falseLikely: 1` |
 
 assert した内容（両 leg で `ok: true`、`problems: []`）:
 
-- checkout した head が dispatch した SHA と一致すること
+- checkout した head が dispatch した `TARGET_SHA` と一致すること
 - ランナーが ARM64 であること（`uname -m` と `process.arch`）
+- manifest の upstream commit が pin と一致すること
 - artifact の sha256 が manifest の pin と一致してから測定を始めること（`artifact.pinned: true`）
 - artifact 不要の label self-check が通ること
 - ケースの label（真値 offset/rank、記録済み boundary 順、`labelChecks` 全件 true、`labelsConsistent`）
 - baseline は真値が **D1〜D4 の検証集合の外**にあること（`truthHitAtBoundary: 0`）
+- baseline の verdict が **`ambiguous`** で `falseLikely: 0` であること（main #9418 との reconcile 結果）
 - oracle 上限: probe が d5 を `reconfirmed` し検証 slot を `d1,d2,d3,d5` に差し替え、答えは 148 のまま
 - `promotionEligible: false`
 
-両 leg の測定値は一致し、offline の表（top-1 148 / boundaryRescue 0 / oracle ceiling 救済なし）と同一。
-証跡は `arm64-runner-evidence-2026-09-22.json`（run の成果物から機械的に生成）。
+両 leg の測定値は一致し、offline / live の reconcile 後表と同一。
+証跡は `arm64-runner-evidence-2026-09-22.json`（run の成果物から機械的に生成。`supersededRuns` に reconcile 前の run を保持）。
 
-> 注: 上記 run は**このレポートと証跡ファイルを追加する直前の head**を計測している。
-> その後の差分は本ディレクトリのドキュメント/証跡のみで、コードは変更していない。
-> 最終 head についても同じワークフローを再実行しており、その run は PR 本文に記録する。
+> 注 1: assert スクリプトの初回実行（run 35694932504）は、私が書いた検査文が oracle variant を宣言前に参照する参照順序のバグで
+> 落ちた。製品側の失敗ではない（測定そのものは同じ値）。参照順を修正して再実行した結果が上の run。
+>
+> 注 2: 上記 run はこのレポートと証跡ファイルを**追加する直前の head**を計測している。
+> その後の差分は本ディレクトリのドキュメント/証跡（と `package.json` の test chain）のみで、
+> 測定対象のコードは変更していない。最終 head でも同じワークフローを再実行している（PR 本文に記録）。
 
 ## 5. 製品側 findings
 
@@ -252,6 +258,13 @@ assert した内容（両 leg で `ok: true`、`problems: []`）:
   - コミット済み fixture 自身が、記録済み boundary 順・oracle id・ceiling と整合すること
 - `tests/fixtures/real-holdout-labels.mjs`: 上記検査の実装（artifact 不要）。
 - harness: oracle は request の全 id に応答。`ceilingMeasured` を報告（未計測を 0 と混同しない）。
+- **実行されていない回帰を canonical gate へ接続**（reconcile で追加）:
+  - この lane の focused test は `npm test` chain に 1 つも入っていなかった。
+  - さらに main の #9418 が追加した `tests/pinpoint-false-likely-confidence.mjs` も
+    **どの runner からも呼ばれていなかった**（`package.json` / workflows / CircleCI を検索して 0 件）。
+  - 両方を `npm test` に接続した。実行されない回帰は回帰ではない。
+- `falseLikely` の恒久回帰は main 側の `tests/pinpoint-false-likely-confidence.mjs`
+  （固定 DSDA 証跡ベクトル7件）が担う。本 fixture はその**出典**であり、artifact 必須のため canonical gate には入れない。
 
 ## 8. 証跡
 
@@ -260,5 +273,5 @@ assert した内容（両 leg で `ok: true`、`problems: []`）:
 - label 検査: `tests/fixtures/real-holdout-labels.mjs`, `tests/semantic-boundary-holdout-labels.mjs`
 - 取得: `scripts/fetch-real-game-holdout.mjs`, `tests/semantic-boundary-holdout-fetch.mjs`
 - 計測生データ: `measurement-2026-09-22.json`（offline + live の全 variant、latency、label 検査）
-- ARM64 runner での再計測: `arm64-runner-evidence-2026-09-22.json`（run 35687189172, head `6195f1a1f`, 2 legs とも success）
+- ARM64 runner での再計測: `arm64-runner-evidence-2026-09-22.json`（run 35695074399, head `9d05bf7c4`, 2 legs とも success。reconcile 前の run は `supersededRuns`）
 - 手順の正本: `docs/openjev-boundary-referee-handoff.md`（ARM64 節）と PR 本文
