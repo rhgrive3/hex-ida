@@ -14,8 +14,8 @@
  *   signedness, so a plain `ldr w` proves "32-bit integer", not "signed int",
  * - a value flowing into a vector register, the only in-IR witness that a
  *   4/8-byte member is a float/double,
- * - an 8-byte loaded value later used as an address base or call/return
- *   argument, the witness for a pointer or object pointer,
+ * - an 8-byte loaded value later used as an address base, the witness for a
+ *   pointer or object pointer; generic call/return operands are not pointer proof,
  * - indexed access with an element scale, the witness for array-like,
  * - a 1-byte member compared against 0/1 or stored from a literal 0/1, the
  *   witness for bool-like.
