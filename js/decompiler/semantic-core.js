@@ -1800,10 +1800,10 @@ function materialization(ctx) {
       if (index >= to) break;
       const store = instructions[index];
       if (!mayAliasProvenance(load?.loc, store?.loc)) continue;
-      // A read-modify-write that stores this exact SSA value back to the same
-      // location refreshes the source-level memory expression. Later uses may
-      // safely render the committed field again until another clobber occurs.
-      if (mustAlias(load?.loc, store?.loc) && sameValue(valueOf(store?.args?.[0]), current)) continue;
+      // Even a store of the same SSA value is an ordering barrier. Re-rendering
+      // a prior load after that store would introduce a second memory observation
+      // that did not exist in the machine program (and is observably wrong for
+      // MMIO/faulting memory). Preserve the original load instead.
       return true;
     }
     return false;
