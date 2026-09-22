@@ -136,4 +136,17 @@ for (const [name, lines, expected] of [
   assert.doesNotMatch(text, /^\s*x0 = \[/gm, text);
 }
 
+{
+  for (const lines of [
+    ['str xzr, [x0]', 'mov x0, #0', 'ret'],
+    ['stp xzr, x1, [x0]', 'mov x0, #0', 'ret'],
+    ['stp x1, xzr, [x0]', 'mov x0, #0', 'ret'],
+  ]) {
+    const { model } = fixture(lines);
+    const writes = buildValues(model).memWrites;
+    assert.ok(writes.length >= 1, lines[0]);
+    assert.ok(writes.some((w) => renderExpr(w.value) === '0'), lines[0]);
+  }
+}
+
 console.log('legacy value-sink integrity: ok');
