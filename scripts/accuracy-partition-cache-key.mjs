@@ -92,7 +92,26 @@ export function partitionFiles(root = ROOT, partition) {
     return true;
   });
   for (const relative of [...COMMON_FILES, ...(partition.startsWith('pseudoc-') ? PSEUDOC_FILES : [])]) {
-    if (fs.existsSync(path.join(root, relative))) selected.push(relative);
+    const fullPath = path.join(root, relative);
+    let entry;
+    try {
+      entry = fs.lstatSync(fullPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+      throw error;
+    }
+    if (entry.isSymbolicLink()) {
+      const realTarget = fs.realpathSync(fullPath);
+      if (!pathIsWithin(allowedRealRoot, realTarget)) {
+        throw new Error(`accuracy cache key: selected input escapes repository: ${relative}`);
+      }
+      if (!fs.statSync(fullPath).isFile()) {
+        throw new Error(`accuracy cache key: selected input is not a file: ${relative}`);
+      }
+    } else if (!entry.isFile()) {
+      throw new Error(`accuracy cache key: selected input is not a file: ${relative}`);
+    }
+    selected.push(relative);
   }
   return [...new Set(selected)].sort();
 }

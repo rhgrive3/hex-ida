@@ -36,17 +36,17 @@ jobs:
               per_page: 100,
             });
 
-            const keepBranches = new Set(['main']);
+            const keepHeads = new Set([`${sameRepo}\0main`]);
             const keepPrNumbers = new Set();
             for (const pr of openPrs) {
               keepPrNumbers.add(pr.number);
               if (pr.head.repo?.full_name === sameRepo && pr.head.ref) {
-                keepBranches.add(pr.head.ref);
+                keepHeads.add(`${sameRepo}\0${pr.head.ref}`);
               }
             }
 
             core.info(`Open PRs: ${[...keepPrNumbers].join(', ') || '(none)'}`);
-            core.info(`Protected branches: ${[...keepBranches].join(', ')}`);
+            core.info(`Protected same-repository heads: ${[...keepHeads].map((key) => key.replace('\0', ':')).join(', ')}`);
 
             const candidates = [];
             for (const status of ['queued', 'in_progress', 'waiting', 'pending']) {
@@ -76,16 +76,20 @@ jobs:
               }
 
               const branch = run.head_branch || '';
+              const headRepository = run.head_repository?.full_name || '';
               const linkedOpenPr = (run.pull_requests || []).some((pr) => keepPrNumbers.has(pr.number));
-              if (keepBranches.has(branch) || linkedOpenPr) {
-                core.info(`KEEP ${run.id} ${branch} ${run.name}`);
+              const protectedSameRepoHead = headRepository
+                ? keepHeads.has(`${headRepository}\0${branch}`)
+                : false;
+              if (protectedSameRepoHead || linkedOpenPr) {
+                core.info(`KEEP ${run.id} ${headRepository || '(unknown-repo)'}:${branch} ${run.name}`);
                 preserved++;
                 continue;
               }
 
               try {
                 await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
-                core.info(`CANCEL ${run.id} ${branch} ${run.name}`);
+                core.info(`CANCEL ${run.id} ${headRepository || '(unknown-repo)'}:${branch} ${run.name}`);
                 cancelled++;
               } catch (error) {
                 if (error.status === 409) {
