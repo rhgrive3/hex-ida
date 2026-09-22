@@ -1,24 +1,31 @@
 /*
- * OLD/NEW confidence policy replay (measurement-only, no production import).
+ * OLD / NEW(#9418 P1) / P4 confidence policy replay (measurement-only output).
  *
- * Compares exactly the two policies from the task, offline, from recorded fusion:
+ * NEW (P1) and P4 delegate to the production decision core
+ * (verdictForFusions in js/evidence.js) so the replay can never drift from
+ * production decide(). Policy endpoints:
+ *   OLD (pre-#9418 baseline, historical, local replay only):
+ *     confirmed: identifying>0, verified, groups>=3, p>=0.99, margin>=ln20
+ *     likely:    p>=0.85 AND margin>=ln(4), no independent-group requirement
+ *   NEW / P1 (#9418, production default):
+ *     confirmed: identical to OLD
+ *     likely:    p>=0.85 AND margin>=ln(4) AND independentGroups>=3
+ *   P4 (production field path, allowTrustedTwoGroup=true):
+ *     confirmed: unchanged (still needs >=3 groups)
+ *     likely:    p>=0.85 AND margin>=ln(4) AND
+ *                (groups>=3 OR exactly {metadata, structural} 2-group combo,
+ *                 validated fail-closed by the production gate)
+ *   Both keep the pre-existing identifying downgrade and the ambiguous/none
+ *   thresholds below. Field path has no maxVerdict cap, so none is applied here.
  *
- * OLD (pre-#9418 baseline):
- *   confirmed: identical to NEW (identifying>0, verified, groups>=3, p>=0.99, margin>=ln20)
- *   likely:    p>=0.85 AND margin>=ln(4), no independent-group requirement
- * NEW (#9418):
- *   confirmed: identical
- *   likely:    p>=0.85 AND margin>=ln(4) AND independentGroups>=3
- *
- * Both keep the pre-existing identifying downgrade (no identifying evidence
- * caps the verdict at ambiguous) and the ambiguous/none thresholds below.
- * Field path has no maxVerdict cap, so none is applied here.
- *
- * Counterfactuals (measurement-only, pre-specified, not tuned, never implemented):
+ * OLD / B / C stay local: they are historical or measurement-only
+ * counterfactuals and are never production semantics (never implemented):
  *   Policy B: OLD + likely additionally requires verified evidence.
  *   Policy C: OLD + groups==2 likely additionally requires accessor-level
  *             verification (getter-verified or setter-verified) in top items.
  */
+import { verdictForFusions } from '../js/evidence.js';
+
 export const LIKELY_P = 0.85;
 export const LIKELY_MARGIN = Math.log(4);
 export const CONFIRM_P = 0.99;
@@ -70,9 +77,23 @@ function finish(top, runner, likelyOk) {
   return { verdict, margin, marginRatio: margin === Infinity ? Infinity : Math.exp(margin), missing };
 }
 
-/** NEW (#9418): likely requires 3 independent groups. */
+/**
+ * NEW (#9418 P1): likely requires 3 independent groups.
+ * Delegates to the production core with the P4 exception OFF, so replay and
+ * production decide() can never disagree on this policy.
+ */
 export function newVerdictForFusion(topFusion, runnerFusion) {
-  return finish(topFusion, runnerFusion, indepOf(topFusion) >= CONFIRM_GROUPS);
+  return verdictForFusions(topFusion, runnerFusion, { allowTrustedTwoGroup: false });
+}
+
+/**
+ * P4 (production field policy): trusted 2-group {metadata, structural} likely
+ * exception allowed. Pass `{ allowTrustedTwoGroup: false }` for the location
+ * path (field-only exception must not apply there).
+ */
+export function p4VerdictForFusion(topFusion, runnerFusion, opts) {
+  const allow = !opts || opts.allowTrustedTwoGroup !== false;
+  return verdictForFusions(topFusion, runnerFusion, { ...(opts || {}), allowTrustedTwoGroup: allow });
 }
 
 /** OLD (baseline): likely has no group requirement. */

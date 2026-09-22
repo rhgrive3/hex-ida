@@ -28,7 +28,7 @@ import { openBinary } from '../tests/harness.mjs';
 import { pinpointField } from '../js/pinpoint.js';
 import { parseGoal } from '../js/goals.js';
 import {
-  oldVerdictForFusion, newVerdictForFusion,
+  oldVerdictForFusion, newVerdictForFusion, p4VerdictForFusion,
   policyBVerdictForFusion, policyCVerdictForFusion,
 } from './pinpoint-confidence-policy.mjs';
 
@@ -143,9 +143,11 @@ async function runFieldQuery(q, getWorld) {
   const codes = codesOf(top);
   const oldV = topF ? oldVerdictForFusion(topF, runF) : { verdict: 'none', margin: 0, marginRatio: 1, missing: ['no-candidate'] };
   const newV = topF ? newVerdictForFusion(topF, runF) : oldV;
+  /* P4 field policy replay: production field decide() allows the trusted 2-group exception. */
+  const p4V = topF ? p4VerdictForFusion(topF, runF) : newV;
   const bV = topF ? policyBVerdictForFusion(topF, runF, codes) : oldV;
   const cV = topF ? policyCVerdictForFusion(topF, runF, codes) : oldV;
-  const fidelity = topF ? (newV.verdict === res.verdict ? 'match' : `MISMATCH:recomputed=${newV.verdict},production=${res.verdict}`) : 'no-fusion';
+  const fidelity = topF ? (p4V.verdict === res.verdict ? 'match' : `MISMATCH:recomputed=${p4V.verdict},production=${res.verdict}`) : 'no-fusion';
   return {
     ...base, goal: goal.id,
     topClass: top?.className || null, topField: top?.field?.name || null,
@@ -163,6 +165,7 @@ async function runFieldQuery(q, getWorld) {
     groups: topF?.groups ?? null,
     evidence: topEvidenceOf(top),
     oldVerdict: oldV.verdict, newVerdict: newV.verdict,
+    p4Verdict: p4V.verdict,
     policyBVerdict: bV.verdict, policyCVerdict: cV.verdict,
     missing: newV.missing, replayFidelity: fidelity,
   };
@@ -215,6 +218,7 @@ async function maybeRunDsda() {
       groups: topF?.groups ?? null,
       evidence: topEvidenceOf(top),
       oldVerdict: oldV.verdict, newVerdict: newV.verdict,
+      p4Verdict: p4VerdictForFusion(topF, runF, { allowTrustedTwoGroup: false }).verdict,
       policyBVerdict: policyBVerdictForFusion(topF, runF, codes).verdict,
       policyCVerdict: policyCVerdictForFusion(topF, runF, codes).verdict,
       missing: newV.missing,
@@ -259,6 +263,7 @@ async function maybeRunDsda() {
       groups: topF?.groups ?? null,
       evidence: topEvidenceOf(top),
       oldVerdict: oldV.verdict, newVerdict: newV.verdict,
+      p4Verdict: p4VerdictForFusion(topF, runF, { allowTrustedTwoGroup: false }).verdict,
       policyBVerdict: policyBVerdictForFusion(topF, runF, codes).verdict,
       policyCVerdict: policyCVerdictForFusion(topF, runF, codes).verdict,
       missing: newV.missing,

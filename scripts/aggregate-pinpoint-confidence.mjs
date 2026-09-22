@@ -65,6 +65,41 @@ const OLD = contingency(field, 'oldVerdict');
 const NEW = contingency(field, 'newVerdict');
 const POLB = contingency(field, 'policyBVerdict');
 const POLC = contingency(field, 'policyCVerdict');
+const P4 = contingency(field, 'p4Verdict');
+
+// P4 production validation vs NEW (#9418 P1): safety diff over the same rows.
+const rowId = (r) => `${r.binary}|${r.mode}|${r.label}`;
+const falseStrongAs = (r, col) => r.topCorrect !== true && strongOf(r[col]);
+const correctStrongAs = (r, col) => r.topCorrect === true && strongOf(r[col]);
+const p4Safety = {
+  newlyIntroducedFalseStrong: field.filter((r) => !falseStrongAs(r, 'newVerdict') && falseStrongAs(r, 'p4Verdict')).map(rowId),
+  removedFalseStrong: field.filter((r) => falseStrongAs(r, 'newVerdict') && !falseStrongAs(r, 'p4Verdict')).map(rowId),
+  newlyRestoredCorrectStrong: field.filter((r) => !correctStrongAs(r, 'newVerdict') && correctStrongAs(r, 'p4Verdict')).map(rowId),
+  downgradedCorrectStrong: field.filter((r) => correctStrongAs(r, 'newVerdict') && !correctStrongAs(r, 'p4Verdict')).map(rowId),
+  dsdaVerdict: dsdaRows[0] ? (dsdaRows[0].p4Verdict ?? null) : null,
+  dsdaHoldoutAmbiguous: dsdaRows[0] ? dsdaRows[0].p4Verdict === 'ambiguous' : null,
+};
+
+// P4 results per evidence combination of the top candidate.
+function p4ByEvidenceCombination() {
+  const out = {};
+  for (const r of field) {
+    const combo = ((Array.isArray(r.groups) ? r.groups.slice().sort() : []).join('+')) || 'none';
+    const b = out[combo] || (out[combo] = { queries: 0, correct: 0, wrong: 0, p1Strong: 0, p1FalseStrong: 0, p4Strong: 0, p4FalseStrong: 0 });
+    b.queries++;
+    const st = statusOf(r);
+    if (st === 'correct') {
+      b.correct++;
+      if (strongOf(r.newVerdict)) b.p1Strong++;
+      if (strongOf(r.p4Verdict)) b.p4Strong++;
+    } else if (st === 'wrong') {
+      b.wrong++;
+      if (strongOf(r.newVerdict)) { b.p1Strong++; b.p1FalseStrong++; }
+      if (strongOf(r.p4Verdict)) { b.p4Strong++; b.p4FalseStrong++; }
+    }
+  }
+  return out;
+}
 
 // Abstention cost: OLD likely -> NEW ambiguous, split by correctness.
 let costCorrect = 0, costWrong = 0;
@@ -244,11 +279,13 @@ const summary = {
   },
   policies: {
     OLD: 'likely: p>=0.85 AND margin>=ln4, no group requirement; confirmed unchanged',
-    NEW: 'likely: p>=0.85 AND margin>=ln4 AND independentGroups>=3 (#9418); confirmed unchanged',
+    NEW: 'likely: p>=0.85 AND margin>=ln4 AND independentGroups>=3 (#9418 P1); confirmed unchanged',
+    P4: 'field path production policy: likely requires groups>=3 OR exactly {metadata,structural} 2-group (fail-closed validation); confirmed unchanged',
     B: 'OLD + likely requires verified evidence (measurement-only)',
     C: 'OLD + groups==2 likely requires getter/setter-verified (measurement-only)',
   },
-  contingency: { OLD, NEW, policyB: POLB, policyC: POLC },
+  contingency: { OLD, NEW, P4, policyB: POLB, policyC: POLC },
+  p4Validation: { safety: p4Safety, byEvidenceCombination: p4ByEvidenceCombination() },
   abstentionCost: {
     preventedFalseStrong: prevented,
     oldCorrectLikelyToNewAmbiguous: costCorrect,
@@ -282,6 +319,7 @@ const summary = {
     probability: dsdaRows[0].probability, margin: dsdaRows[0].margin,
     marginRatio: dsdaRows[0].marginRatio, independentGroups: dsdaRows[0].independentGroups,
     groups: dsdaRows[0].groups, oldVerdict: dsdaRows[0].oldVerdict, newVerdict: dsdaRows[0].newVerdict,
+    p4Verdict: dsdaRows[0].p4Verdict ?? null,
     analyzeCalls: dsdaRows[0].analyzeCalls, missing: dsdaRows[0].missing,
   } : null,
 };
@@ -292,6 +330,7 @@ const pct = (v) => (v == null ? 'n/a' : (v * 100).toFixed(1) + '%');
 process.stdout.write([
   `field queries=${s.dataset.fieldQueries} errors=${s.dataset.errored}`,
   `OLD falseStrong=${s.contingency.OLD.falseStrong} NEW falseStrong=${s.contingency.NEW.falseStrong} prevented=${s.abstentionCost.preventedFalseStrong}`,
+  `P4 correctStrong=${s.contingency.P4.correctConfirmed + s.contingency.P4.correctLikely} falseStrong=${s.contingency.P4.falseStrong} newFalseStrong=${s.p4Validation.safety.newlyIntroducedFalseStrong.length} restoredCorrectStrong=${s.p4Validation.safety.newlyRestoredCorrectStrong.length} dsda=${s.p4Validation.safety.dsdaVerdict}`,
   `abstention: correct likely->ambiguous=${s.abstentionCost.oldCorrectLikelyToNewAmbiguous}, wrong likely->ambiguous=${s.abstentionCost.oldWrongLikelyToNewAmbiguous}`,
   `P(correct|OLD likely,g2): ${pct(s.pCorrectGivenOldLikelyG2.observed)} n=${s.pCorrectGivenOldLikelyG2.n}`,
   `groups: ${Object.entries(s.groups).map(([g, b]) => `${g}:{q=${b.queries},acc=${pct(b.accuracy)},oldStrong=${b.oldStrong},oldFalse=${b.oldFalseStrong},newStrong=${b.newStrong},newFalse=${b.newFalseStrong}}`).join(' ')}`,

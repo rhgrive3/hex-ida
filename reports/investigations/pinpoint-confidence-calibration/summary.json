@@ -30,7 +30,8 @@
   },
   "policies": {
     "OLD": "likely: p>=0.85 AND margin>=ln4, no group requirement; confirmed unchanged",
-    "NEW": "likely: p>=0.85 AND margin>=ln4 AND independentGroups>=3 (#9418); confirmed unchanged",
+    "NEW": "likely: p>=0.85 AND margin>=ln4 AND independentGroups>=3 (#9418 P1); confirmed unchanged",
+    "P4": "field path production policy: likely requires groups>=3 OR exactly {metadata,structural} 2-group (fail-closed validation); confirmed unchanged",
     "B": "OLD + likely requires verified evidence (measurement-only)",
     "C": "OLD + groups==2 likely requires getter/setter-verified (measurement-only)"
   },
@@ -59,6 +60,18 @@
       "falseStrong": 67,
       "strong": 223
     },
+    "P4": {
+      "correctConfirmed": 150,
+      "correctLikely": 61,
+      "correctAmbiguous": 71,
+      "wrongConfirmed": 49,
+      "wrongLikely": 18,
+      "wrongAmbiguous": 77,
+      "none": 0,
+      "error": 0,
+      "falseStrong": 67,
+      "strong": 278
+    },
     "policyB": {
       "correctConfirmed": 150,
       "correctLikely": 6,
@@ -82,6 +95,110 @@
       "error": 0,
       "falseStrong": 69,
       "strong": 225
+    }
+  },
+  "p4Validation": {
+    "safety": {
+      "newlyIntroducedFalseStrong": [],
+      "removedFalseStrong": [],
+      "newlyRestoredCorrectStrong": [
+        "battlecats|exact|response callback",
+        "battlecats|exact|migration invoked callback",
+        "battlecats|exact|button state",
+        "battlecats|exact|should initiate offset query",
+        "battlecats|exact|app lovin max empty delegate",
+        "battlecats|exact|ad mob empty delegate",
+        "battlecats|exact|child views",
+        "battlecats|exact|image loaded",
+        "battlecats|exact|video currently shown to user",
+        "battlecats|exact|right meter",
+        "battlecats|exact|freeride engagement start uptime",
+        "battlecats|exact|has playback ended",
+        "battlecats|exact|overlay view observers",
+        "battlecats|exact|presentation error url strings",
+        "battlecats|exact|is jailbroken",
+        "battlecats|exact|cached content type",
+        "battlecats|exact|done button handler",
+        "battlecats|exact|mediation app open ad",
+        "battlecats|exact|interstitial zone id to smash delegate",
+        "battlecats|exact|creative types list",
+        "battlecats|exact|ad media view",
+        "battlecats|exact|interstitial demand sources",
+        "battlecats|exact|is video completed",
+        "battlecats|exact|ar session",
+        "battlecats|exact|session depth counter",
+        "TsumTsum|exact|expandable presenter",
+        "TsumTsum|exact|custom one point five click implemented by publisher",
+        "TsumTsum|exact|close button image",
+        "TsumTsum|exact|has ended render timing",
+        "TsumTsum|exact|root trailing space constraint",
+        "TsumTsum|exact|m auto retry after wakeup",
+        "TsumTsum|exact|product vc",
+        "TsumTsum|exact|demand source id to bn delegate",
+        "TsumTsum|exact|current session depth",
+        "TsumTsum|exact|fullscreen ad delegate",
+        "TsumTsum|exact|unique int id generator",
+        "TsumTsum|exact|load tasks state storage",
+        "TsumTsum|exact|request impression configuration",
+        "TsumTsum|exact|default flags by sdk name",
+        "TsumTsum|exact|user engagement timer",
+        "TsumTsum|exact|dsl controller did appear",
+        "YWP|exact|update link block",
+        "YWP|exact|interstitial ad did click callback",
+        "YWP|exact|gameplay icon view",
+        "YWP|exact|omsdk factory",
+        "YWP|exact|last touch begin timestamp",
+        "YWP|exact|forced ad orientation",
+        "YWP|exact|signals need update",
+        "YWP|exact|control pan gesture",
+        "YWP|exact|paga 0 ptr void",
+        "YWP|exact|auto reverse animation",
+        "YWP|exact|image timer",
+        "YWP|exact|user context",
+        "YWP|exact|has notify for anchor",
+        "YWP|partial|bar info"
+      ],
+      "downgradedCorrectStrong": [],
+      "dsdaVerdict": "ambiguous",
+      "dsdaHoldoutAmbiguous": true
+    },
+    "byEvidenceCombination": {
+      "metadata": {
+        "queries": 28,
+        "correct": 16,
+        "wrong": 12,
+        "p1Strong": 0,
+        "p1FalseStrong": 0,
+        "p4Strong": 0,
+        "p4FalseStrong": 0
+      },
+      "dataflow+metadata+structural": {
+        "queries": 277,
+        "correct": 172,
+        "wrong": 105,
+        "p1Strong": 223,
+        "p1FalseStrong": 67,
+        "p4Strong": 223,
+        "p4FalseStrong": 67
+      },
+      "metadata+structural": {
+        "queries": 119,
+        "correct": 94,
+        "wrong": 25,
+        "p1Strong": 0,
+        "p1FalseStrong": 0,
+        "p4Strong": 55,
+        "p4FalseStrong": 0
+      },
+      "dataflow+metadata": {
+        "queries": 2,
+        "correct": 0,
+        "wrong": 2,
+        "p1Strong": 0,
+        "p1FalseStrong": 0,
+        "p4Strong": 0,
+        "p4FalseStrong": 0
+      }
     }
   },
   "abstentionCost": {
@@ -356,6 +473,7 @@
     ],
     "oldVerdict": "likely",
     "newVerdict": "ambiguous",
+    "p4Verdict": "ambiguous",
     "analyzeCalls": 18,
     "missing": [
       "need-independent-evidence",
