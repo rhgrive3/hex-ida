@@ -156,10 +156,19 @@ export async function runSyntheticBoundaryCase(options = {}) {
   const fixture = syntheticShapeFixture(options);
   const events = [];
   let analyzeCalls = 0;
+  // `probeBarrenSites` models a candidate whose first scanned update site is
+  // not the window that shows the change; the probe must stay bounded but keep
+  // looking instead of giving up after one unhelpful window.
+  let trueOffsetObservations = 0;
+  const barren = Number.isFinite(options.probeBarrenSites) ? Math.max(0, Math.floor(options.probeBarrenSites)) : 0;
   const analyze = async (start) => {
     analyzeCalls++;
     const offset = fixture.addressToOffset.get(start.toString());
-    if (offset === TRUE_OFFSET && options.probeFails !== true) return modelChanging(start, offset);
+    if (offset === TRUE_OFFSET) {
+      if (options.probeFails === true) return unrelatedModel(start);
+      if (trueOffsetObservations++ < barren) return unrelatedModel(start);
+      return modelChanging(start, offset);
+    }
     if (offset === 0x50n) return modelChanging(start, offset);
     return unrelatedModel(start);
   };

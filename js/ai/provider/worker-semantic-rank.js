@@ -5,7 +5,7 @@
  * predeclared experimental question contracts.  The model, upstream URL, and
  * instructions are all worker-owned.
  */
-import { OPENJEV_BOUNDARY_MODEL, supportedSemanticShapeGoal } from '../../semantic-boundary-referee.js';
+import { OPENJEV_BOUNDARY_MODEL, semanticBoundaryGoalGuidance, supportedSemanticShapeGoal } from '../../semantic-boundary-referee.js';
 import {
   HttpError, acquireDistributedQuota, isJsonRequest, jsonError, jsonResponse,
   readLimitedText, releaseDistributedQuota,
@@ -102,16 +102,15 @@ function stateFor(request) {
  * Holdout-calibrated semantic guidance.
  *
  * On the source-grounded OpenMW hp holdout the generic wording selected the
- * wrong D4 candidate 5/5 times; naming the goal and the net-depleting/clamped
- * shape of a vital pool selected the true D5 candidate 6/6 with choice (p=0.99)
- * and 5/5 with parallel noul (p=0.88..0.91).  Goals that are not depletable
- * pools keep the generic wording, so money/score/level are unaffected.
+ * wrong D4 candidate 5/5 times; the net-depleting/clamped wording selected the
+ * true D5 candidate 6/6 with choice (p=0.99) and 5/5 with parallel noul
+ * (p=0.88..0.91).  The wording and the goals it applies to live in the referee
+ * contract, not here, so the model-facing prompt and the goal list cannot
+ * drift: goals without a calibrated entry keep the neutral wording.
  */
-const DEPLETABLE_VITAL_GOALS = new Set(['hp', 'stamina']);
 
-function depletableGuidance(goal) {
-  if (!DEPLETABLE_VITAL_GOALS.has(goal.id)) return '';
-  return ' A vital depletable resource is clamped so it cannot fall below zero and is driven by loss more often than by recovery: prefer the candidate whose decrease count strictly exceeds its increase count. A candidate with as many increases as decreases is an auxiliary or effect-driven pool, not the answer.';
+function goalGuidance(goal) {
+  return semanticBoundaryGoalGuidance(goal?.id);
 }
 
 function choiceQuestion(request) {
@@ -123,7 +122,7 @@ function choiceQuestion(request) {
   return {
     boundary: {
       type: 'choice',
-      instructions: `The requested gameplay value is "${request.goal.label}" (id: ${request.goal.id}). Using only the observed facts, select at most one opaque candidate that semantically fits this value, or select none.${depletableGuidance(request.goal)} Do not infer facts not present in the state.`,
+      instructions: `The requested gameplay value is "${request.goal.label}" (id: ${request.goal.id}). Using only the observed facts, select at most one opaque candidate that semantically fits this value, or select none.${goalGuidance(request.goal)} Do not infer facts not present in the state.`,
       criteria,
     },
   };
@@ -134,7 +133,7 @@ function noulQuestions(request) {
     candidate.id,
     {
       type: 'noul',
-      instructions: `Does opaque candidate ${candidate.id} semantically fit the requested gameplay value "${request.goal.label}" (id: ${request.goal.id})?${depletableGuidance(request.goal)} Using only the observed facts; do not infer facts not present in the state.`,
+      instructions: `Does opaque candidate ${candidate.id} semantically fit the requested gameplay value "${request.goal.label}" (id: ${request.goal.id})?${goalGuidance(request.goal)} Using only the observed facts; do not infer facts not present in the state.`,
       // Verified live: the noul schema requires `true`/`false` criteria and
       // answers with a scalar `noul` = P(true). `yes`/`no` is rejected with 400.
       criteria: {

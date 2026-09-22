@@ -4,15 +4,19 @@
  * The artifact is compiled from pinned OpenMW source (GPL-3.0-only) and is
  * therefore never committed to this repository. Point HEX_OPENMW_HOLDOUT_ARTIFACT
  * at the locally built arm64 Mach-O. The deterministic D1..D4 baseline always
- * runs; the three referee variants need HEX_OPENMW_HOLDOUT_LIVE=1 and a real
+ * runs; the referee variants need HEX_OPENMW_HOLDOUT_LIVE=1 and a real
  * OPENJEV_API_KEY, so a run without the key cannot fabricate a shadow result.
  *
- * The same four variants as the synthetic harness are measured: current
- * D1..D4, shadow choice, shadow parallel noul, and the gated single probe.
+ * Every labelled case in the manifest is evaluated, not just the first one, so
+ * a promotion decision can never rest on a single goal. The four variants are
+ * the same as the synthetic harness: current D1..D4, shadow choice, shadow
+ * parallel noul, and the gated single probe, plus a deterministic oracle that
+ * marks the ceiling of the one-probe path for cases whose truth is reachable
+ * from the boundary set.
  */
 import fs from 'node:fs';
 import { openBinary } from './harness.mjs';
-import { foldShapes, byGoal } from '../js/shapes.js';
+import { foldShapes } from '../js/shapes.js';
 import { goalFromPreset } from '../js/goals.js';
 import { pinpointLocation } from '../js/pinpoint.js';
 import {
@@ -34,6 +38,7 @@ const UPSTREAM_TIMEOUT_MS = 2500;
 // off until this harness shows a rescue on a real labelled holdout.
 const AMBIGUITY = Object.freeze({ schema: SEMANTIC_BOUNDARY_AMBIGUITY_SCHEMA, maxD4D5Gap: 0.02, minD4Score: 0 });
 const ADMISSION = Object.freeze({ schema: SEMANTIC_BOUNDARY_ADMISSION_SCHEMA, minProbability: 0.8, minMargin: 0.2 });
+const CASES = Array.isArray(MANIFEST.cases) ? MANIFEST.cases : [];
 
 const artifact = process.env.HEX_OPENMW_HOLDOUT_ARTIFACT;
 if (!artifact || !fs.existsSync(artifact)) {
@@ -48,7 +53,6 @@ if (!artifact || !fs.existsSync(artifact)) {
 
 const key = typeof process.env.OPENJEV_API_KEY === 'string' ? process.env.OPENJEV_API_KEY : '';
 const live = process.env.HEX_OPENMW_HOLDOUT_LIVE === '1' && key.length > 0;
-const truthOffset = BigInt(MANIFEST.truth.offset);
 const upstreamLatency = { choice: [], noul: [] };
 
 function percentile(values, q) {
@@ -95,7 +99,22 @@ const program = {
   },
 };
 
-async function runVariant(name, options = {}) {
+// A deterministic oracle challenger makes the ceiling of the one-probe path
+// reproducible without touching the network. It answers the labelled boundary
+// id (the boundary set is ranks 4..N, so `c1` is the true D5) with a high
+// probability, so a rescue here is the best the mechanism can ever do.
+function oracleReferee(challengerId) {
+  return async () => ({
+    model: 'openjev', method: 'choice', challengerId,
+    probabilities: challengerId === 'c0'
+      ? { c0: 0.95, c1: 0.03, none: 0.02 }
+      : { c0: 0.03, c1: 0.95, none: 0.02 },
+    abstain: false,
+  });
+}
+
+async function runVariant(caseDef, name, options = {}) {
+  const truthOffset = BigInt(caseDef.offset);
   const analyzeStats = { calls: 0 };
   let semanticCalls = 0;
   const referee = options.referee
@@ -103,7 +122,7 @@ async function runVariant(name, options = {}) {
     : undefined;
   const traces = [];
   const result = await pinpointLocation({
-    goal: goalFromPreset('hp'),
+    goal: goalFromPreset(caseDef.goal),
     ranked: [],
     shapes,
     program,
@@ -121,13 +140,16 @@ async function runVariant(name, options = {}) {
   });
   const trace = traces.at(-1) || null;
   const topOffset = result.top?.offset == null ? null : BigInt(result.top.offset);
+  // The labelled truth is ranked N; the boundary set is ranks 4.., so the rank
+  // is what maps the truth onto a boundary id.
+  const truthId = `d${caseDef.expectedDeterministicRank}`;
   return {
     name,
     candidateCount: trace?.candidateCount ?? null,
     d4Score: trace?.d4Score ?? null,
     d5Score: trace?.d5Score ?? null,
     d4D5Gap: trace?.gap ?? null,
-    verificationHitAt4: Array.isArray(trace?.verificationTargets) && trace.verificationTargets.includes('d5') ? 1 : 0,
+    truthHitAtBoundary: Array.isArray(trace?.verificationTargets) && trace.verificationTargets.includes(truthId) ? 1 : 0,
     boundaryRescue: topOffset != null && topOffset === truthOffset ? 1 : 0,
     finalTopOffset: topOffset == null ? null : topOffset.toString(),
     wrongTop1: topOffset != null && topOffset !== truthOffset ? 1 : 0,
@@ -141,45 +163,57 @@ async function runVariant(name, options = {}) {
   };
 }
 
-// A deterministic oracle challenger makes the ceiling of the one-probe path
-// reproducible without touching the network. It answers c1 (the true D5) with a
-// high probability, so a rescue here is the best the mechanism can ever do.
-const oracleReferee = async () => ({
-  model: 'openjev', method: 'choice', challengerId: 'c1',
-  probabilities: { c0: 0.03, c1: 0.95, none: 0.02 }, abstain: false,
-});
-
-const current = await runVariant('current-d1-d4');
-const variants = [current];
-variants.push(await runVariant('gated-one-probe-oracle-ceiling', { mode: 'probe', referee: oracleReferee }));
-if (live) {
-  variants.push(await runVariant('shadow-choice', { mode: 'shadow', referee: liveReferee('choice') }));
-  variants.push(await runVariant('shadow-parallel-noul', { mode: 'shadow', referee: liveReferee('noul') }));
-  variants.push(await runVariant('gated-one-probe', { mode: 'probe', referee: liveReferee('choice') }));
+async function evaluateCase(caseDef) {
+  const variants = [];
+  const current = await runVariant(caseDef, 'current-d1-d4');
+  variants.push(current);
+  const oracle = caseDef.oracleChallengerId
+    ? await runVariant(caseDef, 'gated-one-probe-oracle-ceiling', { mode: 'probe', referee: oracleReferee(caseDef.oracleChallengerId) })
+    : null;
+  if (oracle) variants.push(oracle);
+  if (live) {
+    variants.push(await runVariant(caseDef, 'shadow-choice', { mode: 'shadow', referee: liveReferee('choice') }));
+    variants.push(await runVariant(caseDef, 'shadow-parallel-noul', { mode: 'shadow', referee: liveReferee('noul') }));
+    variants.push(await runVariant(caseDef, 'gated-one-probe', { mode: 'probe', referee: liveReferee('choice') }));
+  }
+  const gated = variants.find((variant) => variant.name === 'gated-one-probe') || null;
+  // A case is promotional only when the deterministic baseline misses the
+  // truth and the gated probe rescues it. When the truth is not reachable from
+  // the boundary set, the case reports that limitation instead of a rescue.
+  const promotionEligible = Boolean(gated && current.boundaryRescue === 0 && gated.boundaryRescue === 1);
+  return {
+    goal: caseDef.goal,
+    field: caseDef.field,
+    truthOffset: String(caseDef.offset),
+    expectedDeterministicRank: caseDef.expectedDeterministicRank,
+    boundaryTruthReachable: caseDef.boundaryTruthReachable === true,
+    // The fixture must reproduce the labelled deterministic top; otherwise the
+    // labels are stale and the case is not usable as evidence.
+    fixtureReproduced: current.finalTopOffset === String(caseDef.deterministicTopOffset),
+    oracleCeilingRescues: oracle ? oracle.boundaryRescue === 1 : null,
+    promotionEligible,
+    variants,
+  };
 }
 
-const gated = variants.find((variant) => variant.name === 'gated-one-probe');
-const oracle = variants.find((variant) => variant.name === 'gated-one-probe-oracle-ceiling');
-// Promotion requires a real rescue and an oracle that also rescues: if even a
-// perfect referee cannot change the final top-1, the probe path is not useful.
-const promotionEligible = Boolean(
-  gated && oracle && gated.boundaryRescue === 1 && oracle.boundaryRescue === 1 && current.boundaryRescue === 0,
-);
+const cases = [];
+for (const caseDef of CASES) cases.push(await evaluateCase(caseDef));
+
 const report = {
   schema: 'hex-openmw-boundary-holdout-evaluation/v1',
   fixture: MANIFEST.kind,
-  upstream: MANIFEST.upstream,
   artifact: { path: artifact, bytes: fs.statSync(artifact).size },
-  truth: MANIFEST.truth,
   live,
-  promotionEligible,
-  promotionBlocker: promotionEligible
+  // Promotion needs a case that both misses deterministically and is rescued by
+  // the gated probe. A single labelled case is not enough to enable it.
+  promotionEligible: cases.some((entry) => entry.promotionEligible),
+  promotionBlocker: cases.some((entry) => entry.promotionEligible)
     ? null
-    : 'The source-grounded OpenMW holdout does not show a boundary rescue by the gated probe; production stays gated.',
+    : 'No labelled OpenMW case shows a boundary rescue by the gated probe, so production stays gated.',
   upstreamLatencyMs: {
     choice: { p50: percentile(upstreamLatency.choice, 0.5), p95: percentile(upstreamLatency.choice, 0.95) },
     noul: { p50: percentile(upstreamLatency.noul, 0.5), p95: percentile(upstreamLatency.noul, 0.95) },
   },
-  variants,
+  cases,
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

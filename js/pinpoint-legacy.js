@@ -1074,7 +1074,10 @@ export async function pinpointFunction(opts) {
 /* 裏取りに開く関数の数と、開く候補の数。ここを増やすと確実に遅くなる。 */
 const VERIFY_CANDIDATES = 4;
 const VERIFY_FUNCTIONS = 3;
-const SEMANTIC_BOUNDARY_PROBE_RESERVE = VERIFY_CANDIDATES * VERIFY_FUNCTIONS + 1;
+/* The probe may open at most VERIFY_FUNCTIONS windows, exactly like the
+ * ordinary verifier, so the reserve is the untouched D1..D4 envelope plus that
+ * bounded probe.  A failed probe must never eat into the baseline plan. */
+const SEMANTIC_BOUNDARY_PROBE_RESERVE = VERIFY_CANDIDATES * VERIFY_FUNCTIONS + VERIFY_FUNCTIONS;
 
 function shapeTraceId(index) { return `d${index + 1}`; }
 
@@ -1142,7 +1145,16 @@ async function probeShapeCandidate(candidate, o, progress, cancelled, trace, can
   if (cancelled() || spent(o)) { trace.probe.status = cancelled() ? 'cancelled' : 'budget-spent'; return false; }
   const program = o.program || null;
   const seen = new Set();
+  // One candidate can have several update sites, and the first one the scanner
+  // reports is not necessarily the window that shows the change.  The probe is
+  // still a single bounded probe: it opens at most VERIFY_FUNCTIONS distinct
+  // windows, the same cap the ordinary verifier applies, and it stops at the
+  // first window that actually reconfirms the write.
+  let opened = 0;
+  let unreadable = 0;
   for (const site of candidate.shapeSites || []) {
+    if (opened >= VERIFY_FUNCTIONS) break;
+    if (cancelled() || spent(o)) break;
     let range = null;
     try { range = program ? program.functionRange(site) : null; } catch { range = null; }
     const start = range?.start;
@@ -1150,15 +1162,18 @@ async function probeShapeCandidate(candidate, o, progress, cancelled, trace, can
     const key = start.toString();
     if (seen.has(key)) continue;
     seen.add(key);
-    progress({ phase: 'probe-shape', done: 0, all: 1 });
+    progress({ phase: 'probe-shape', done: opened, all: VERIFY_FUNCTIONS });
     charge(o);
-    trace.probe.analyzeCalls = 1;
+    opened++;
+    trace.probe.analyzeCalls++;
     let model = null;
     try { model = await o.analyze(start, range.end != null ? range.end : null); } catch { model = null; }
-    if (!model) { trace.probe.status = 'analyze-failed'; return false; }
+    // An unreadable window is one site's problem, not the probe's; keep the
+    // remaining sites in play and report the failure only if none could be read.
+    if (!model) { unreadable++; continue; }
     const purpose = describePurpose({ model, addr: start, fields: o.fields, textAt: o.textAt || null });
     const change = changeAt(purpose, candidate.offset);
-    if (!change) { trace.probe.status = 'change-not-reconfirmed'; return false; }
+    if (!change) continue;
     // Do not mutate the candidate until the whole probe has succeeded.  A
     // failed probe must leave the ordinary D1..D4 result path byte-for-byte
     // equivalent except for the intentionally bounded attempted analysis.
@@ -1168,7 +1183,9 @@ async function probeShapeCandidate(candidate, o, progress, cancelled, trace, can
     trace.probe.status = 'reconfirmed';
     return true;
   }
-  trace.probe.status = 'function-unavailable';
+  if (cancelled() || spent(o)) { trace.probe.status = cancelled() ? 'cancelled' : 'budget-spent'; return false; }
+  if (opened === 0) { trace.probe.status = 'function-unavailable'; return false; }
+  trace.probe.status = unreadable === opened ? 'analyze-failed' : 'change-not-reconfirmed';
   return false;
 }
 

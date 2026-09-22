@@ -11,7 +11,7 @@ Given deterministic candidates `D1..D8`:
 - Normal verification remains `D1..D4`.
 - Only when the deterministic `D4/D5` boundary is genuinely ambiguous may OpenJev inspect compact semantic facts for `D4..D8`.
 - It may propose at most one challenger from `D5..D8`.
-- A challenger never enters normal verification directly. It first gets at most **one bounded binary-grounded probe**.
+- A challenger never enters normal verification directly. It first gets at most **one bounded binary-grounded probe**, which may open at most `VERIFY_FUNCTIONS = 3` distinct function windows—the same cap the ordinary verifier applies.
 - If that probe fails, Hex uses the original `D1..D4`.
 - If it succeeds, existing deterministic evidence—not Jev probability—decides whether the challenger can compete with D4.
 
@@ -96,9 +96,11 @@ If using parallel noul, all candidate questions must be in one System One reques
 
 ## Bounded one-probe rule
 
-An admitted D5–D8 challenger gets at most one unique-function probe before normal verification. Reuse existing binary-grounded mechanisms such as `program.functionRange()`, `analyze()`, `describePurpose()`, and `changeAt()`.
+An admitted D5–D8 challenger gets at most one probe before normal verification, and that one probe may open at most `VERIFY_FUNCTIONS = 3` distinct function windows. Reuse existing binary-grounded mechanisms such as `program.functionRange()`, `analyze()`, `describePurpose()`, and `changeAt()`.
 
-The probe must independently re-establish the relevant field/change from actual instructions. If it cannot, discard the challenger and preserve the original D1–D4 path.
+The probe must independently re-establish the relevant field/change from actual instructions. A window that does not reconfirm the change is not evidence, but it also does not end the probe: the next scanned site is tried, still inside the same three-window cap. Only when no window reconfirms the change is the challenger discarded and the original D1–D4 path preserved.
+
+`SEMANTIC_BOUNDARY_PROBE_RESERVE` is therefore `VERIFY_CANDIDATES * VERIFY_FUNCTIONS + VERIFY_FUNCTIONS` (15): the untouched `D1..D4` envelope plus the whole bounded probe, so a failed probe can never eat into the baseline plan.
 
 A successful probe still does **not** turn Jev probability into evidence. D1–D3 remain unchanged, and D4/challenger competition must be resolved from existing binary-grounded evidence.
 
@@ -191,7 +193,7 @@ At minimum:
 4. incomplete/capped scan: 0 calls.
 5. abstain/no challenger: original D1–D4.
 6. recommendation inside D1–D4: no extra probe.
-7. admitted D5–D8 challenger: at most one analyze probe.
+7. admitted D5–D8 challenger: at most one probe, bounded to at most 3 distinct analyze windows.
 8. failed probe: original verification set/result.
 9. successful probe: D1–D3 unchanged.
 10. Jev probability alone cannot increase proof/evidence/verdict/confidence.

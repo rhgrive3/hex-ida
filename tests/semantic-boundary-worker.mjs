@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import worker from '../worker.js';
 import { createSemanticBoundaryReferee, semanticBoundaryWireRequest } from '../js/semantic-boundary-client.js';
 import { setAuthContext } from '../js/auth/runtime-context.js';
+import { SEMANTIC_BOUNDARY_GOAL_GUIDANCE } from '../js/semantic-boundary-referee.js';
 import { __semanticRankTest } from '../js/ai/provider/worker-semantic-rank.js';
 
 const SECRET = 'server-only-openjev-secret';
@@ -240,6 +241,12 @@ for (const outcome of [
   const hpChoice = __semanticRankTest.openJevRequestBody({ goal: { id: 'hp', label: 'HP' }, candidates: body().candidates, method: 'choice' });
   assert.match(hpChoice.questions.boundary.instructions, /decrease count strictly exceeds its increase count/);
   assert.match(hpChoice.questions.boundary.instructions, /id: hp/);
+  // The worker must not keep its own copy of the wording or of the goal list:
+  // the outbound prompt is exactly the referee contract's calibrated table, so
+  // the model-facing text and the calibrated goal set cannot drift apart.
+  assert.equal(hpChoice.questions.boundary.instructions.includes(SEMANTIC_BOUNDARY_GOAL_GUIDANCE.hp.text), true);
+  const staminaChoice = __semanticRankTest.openJevRequestBody({ goal: { id: 'stamina', label: 'Stamina' }, candidates: body().candidates, method: 'choice' });
+  assert.equal(staminaChoice.questions.boundary.instructions.includes(SEMANTIC_BOUNDARY_GOAL_GUIDANCE.stamina.text), true);
   const moneyChoice = __semanticRankTest.openJevRequestBody({ goal: { id: 'money', label: 'Money' }, candidates: body().candidates, method: 'choice' });
   assert.equal(/strictly exceeds/.test(moneyChoice.questions.boundary.instructions), false);
   const hpNoul = __semanticRankTest.openJevRequestBody({ goal: { id: 'hp', label: 'HP' }, candidates: body().candidates, method: 'noul' });

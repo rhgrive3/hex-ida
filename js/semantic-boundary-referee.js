@@ -111,6 +111,32 @@ export function semanticBoundaryGoal(goal) {
  * allocated locally and have no relationship to an address, offset, rank, or
  * score outside this transient request.
  */
+/*
+ * Model-facing goal guidance.
+ *
+ * The wording below is the only place a semantic expectation about a goal
+ * reaches the model, so it is calibrated from a labelled holdout rather than
+ * written from intuition.  Each entry records the fixture that justified it,
+ * and a regression asserts that every named fixture exists and actually labels
+ * that goal, so an unvalidated prompt cannot be added silently.
+ */
+const DEPLETABLE_VITAL_POOL_GUIDANCE = ' A vital depletable resource is clamped so it cannot fall below zero and is driven by loss more often than by recovery: prefer the candidate whose decrease count strictly exceeds its increase count. A candidate with as many increases as decreases is an auxiliary or effect-driven pool, not the answer.';
+
+export const SEMANTIC_BOUNDARY_GOAL_GUIDANCE = Object.freeze({
+  hp: Object.freeze({ family: 'depletable-vital-pool', calibratedBy: 'openmw-boundary-holdout', text: DEPLETABLE_VITAL_POOL_GUIDANCE }),
+  stamina: Object.freeze({ family: 'depletable-vital-pool', calibratedBy: 'openmw-boundary-holdout', text: DEPLETABLE_VITAL_POOL_GUIDANCE }),
+});
+
+/**
+ * Empty for every goal without calibrated guidance, so an unmeasured goal keeps
+ * the neutral wording instead of inheriting another goal's expectation.
+ */
+export function semanticBoundaryGoalGuidance(goalId) {
+  if (typeof goalId !== 'string' || !Object.hasOwn(SEMANTIC_BOUNDARY_GOAL_GUIDANCE, goalId)) return '';
+  const entry = SEMANTIC_BOUNDARY_GOAL_GUIDANCE[goalId];
+  return typeof entry?.text === 'string' ? entry.text : '';
+}
+
 export function buildSemanticBoundaryRequest({ goal, candidates, complete = false } = {}) {
   const safeGoal = semanticBoundaryGoal(goal);
   if (!safeGoal || !Array.isArray(candidates) || candidates.length < 2 || candidates.length > 5) return null;

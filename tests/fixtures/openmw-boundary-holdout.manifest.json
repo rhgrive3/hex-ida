@@ -34,6 +34,47 @@
     "auth": "Bearer env.OPENJEV_API_KEY",
     "note": "Verified against the live service. The only offered model is `openjev` (GET https://api.openjev.sh/v1/models); an `openjev-0.1` request returns 422. `api.codiv.ai` rejects this key with 401. `noul` requires `true`/`false` criteria and answers with a scalar `noul` = P(true)."
   },
+  "objectLayout": {
+    "note": "Measured from the pinned stat.hpp layout and confirmed by the candidate set the scanner finds. Positions are byte offsets of DynamicStat<int>::mCurrent.",
+    "candidateOffsets": {
+      "24": "ActorStats.health.current",
+      "36": "ActorStats.magicka.current",
+      "48": "ActorStats.fatigue.current",
+      "60": "ActorStats.shield.current",
+      "84": "ActorStats.poison.current"
+    },
+    "absentFromCandidates": {
+      "72": "ActorStats.breath.current"
+    }
+  },
+  "cases": [
+    {
+      "goal": "hp",
+      "goalLabel": "Hit points",
+      "field": "ActorStats.health.current",
+      "offset": 24,
+      "expectedCandidateCount": 5,
+      "expectedDeterministicRank": 5,
+      "expectedD4D5Gap": 0.015625,
+      "deterministicTopOffset": 48,
+      "deterministicTopIsTruth": false,
+      "boundaryTruthReachable": true,
+      "oracleChallengerId": "c1"
+    },
+    {
+      "goal": "stamina",
+      "goalLabel": "Stamina",
+      "field": "ActorStats.fatigue.current",
+      "offset": 48,
+      "expectedCandidateCount": 5,
+      "expectedDeterministicRank": 1,
+      "expectedD4D5Gap": 0.015625,
+      "deterministicTopOffset": 48,
+      "deterministicTopIsTruth": true,
+      "boundaryTruthReachable": false,
+      "oracleChallengerId": null
+    }
+  ],
   "truth": {
     "goal": "hp",
     "field": "ActorStats.health.current",
@@ -51,6 +92,12 @@
     "liveParallelNoul": "c1 (D5) at p=0.88..0.91 (5/5)",
     "gatedOneProbeStatus": "admitted -> probe reconfirmed; verification-hit@4 = 1",
     "oracleCeiling": "Even a forced oracle challenger leaves the final top-1 unchanged: the five candidates are all DynamicStat<int>::mCurrent and tie at p=0.9822 in the deterministic fusion, so ordering wins.",
+    "staminaCase": "The deterministic top is already ActorStats.fatigue.current (offset 48) and the labelled truth is ranked 1, so it sits outside the D4..D8 boundary set the referee is given. Live choice and live parallel noul both answer c1 (ActorStats.health.current), the gated probe therefore swaps rank 4 for rank 5, and the final top-1 stays the labelled truth: an admitted-but-wrong challenger did not move an already-correct result.",
+    "probeWindows": "A probe may open up to VERIFY_FUNCTIONS = 3 distinct windows and stops at the first one that reconfirms the write. On both live cases it reconfirmed on the first window (1 analyze call).",
+    "upstreamLatencyMs": {
+      "choice": { "p50": 451.4, "p95": 630.1 },
+      "noul": { "p50": 458.7, "p95": 761.3 }
+    },
     "boundaryRescue": 0,
     "promotionEligible": false
   },
