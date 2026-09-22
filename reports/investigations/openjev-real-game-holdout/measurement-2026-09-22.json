@@ -1,0 +1,373 @@
+{
+  "schema": "hex-semantic-boundary-real-game-holdout-evaluation/v1",
+  "fixture": {
+    "schema": "hex-real-game-boundary-holdout/v1",
+    "kind": "external-upstream-arm64-game-release",
+    "upstream": {
+      "product": "DSDA-Doom 0.29.4 (Doom source port)",
+      "repository": "https://github.com/kraflab/dsda-doom.git",
+      "tag": "v0.29.4",
+      "commit": "e443ff7a3e6090a1ff92ad7a426916c4fd35ecc5",
+      "license": "GPL-2.0",
+      "licenseEvidence": "prboom2/COPYING in the pinned tag is the GNU General Public License version 2 (June 1991)."
+    }
+  },
+  "artifact": {
+    "path": "/mnt/workspace/hex-ida/.worktrees/openjev-holdout-main/tests/.real-game-holdout/dsda-doom",
+    "bytes": 2814096,
+    "sha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8",
+    "pinned": true
+  },
+  "frozenPolicies": {
+    "ambiguity": {
+      "schema": "hex-semantic-boundary-ambiguity/v1",
+      "maxD4D5Gap": 0.02,
+      "minD4Score": 0
+    },
+    "admission": {
+      "schema": "hex-semantic-boundary-admission/v1",
+      "minProbability": 0.8,
+      "minMargin": 0.2
+    }
+  },
+  "live": true,
+  "labelsConsistent": true,
+  "promotionEligible": false,
+  "promotionBlocker": "No labelled real-game holdout case shows a boundary rescue by the gated probe, so production stays gated.",
+  "upstreamLatencyMs": {
+    "choice": {
+      "p50": 420.5,
+      "p95": 862.7
+    },
+    "noul": {
+      "p50": 566.9,
+      "p95": 566.9
+    }
+  },
+  "cases": [
+    {
+      "goal": "hp",
+      "field": "mobj_t.health",
+      "truthOffset": "196",
+      "expectedDeterministicRank": 5,
+      "boundaryTruthReachable": true,
+      "truthReachableByRank": true,
+      "rankedShapeScores": [
+        0.2142857142857143,
+        0.20833333333333334,
+        0.2,
+        0.198125,
+        0.1965909090909091,
+        0.18333333333333332,
+        0.14895833333333333,
+        0.146875
+      ],
+      "rankedCandidateOffsets": [
+        "80",
+        "148",
+        "56",
+        "240",
+        "196",
+        "404",
+        "256",
+        "212"
+      ],
+      "labelChecks": {
+        "candidateCountMatches": true,
+        "rankWithinCandidates": true,
+        "truthRankMatchesBoundaryOrder": true,
+        "reachabilityClaimMatchesRank": true,
+        "deterministicTopClaimMatchesMeasurement": true,
+        "deterministicTopReproduced": true,
+        "oracleProbeTargetsLabelledRank": true,
+        "oracleCeilingMeasured": true
+      },
+      "labelsConsistent": true,
+      "oracleCeilingRescues": false,
+      "ceilingMeasured": true,
+      "promotionEligible": false,
+      "variants": [
+        {
+          "name": "current-d1-d4",
+          "candidateCount": 8,
+          "d4Score": 0.198125,
+          "d5Score": 0.1965909090909091,
+          "d4D5Gap": 0.0015340909090909016,
+          "rankedShapeScores": [
+            0.2142857142857143,
+            0.20833333333333334,
+            0.2,
+            0.198125,
+            0.1965909090909091,
+            0.18333333333333332,
+            0.14895833333333333,
+            0.146875
+          ],
+          "rankedCandidateOffsets": [
+            "80",
+            "148",
+            "56",
+            "240",
+            "196",
+            "404",
+            "256",
+            "212"
+          ],
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "finalTopOffset": "148",
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 0,
+          "referee": {
+            "called": false,
+            "status": "no-referee",
+            "method": null,
+            "model": null,
+            "challengerId": null,
+            "margin": null
+          },
+          "probe": {
+            "attempted": false,
+            "success": false,
+            "status": "not-attempted",
+            "candidateId": null,
+            "analyzeCalls": 0
+          },
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        },
+        {
+          "name": "gated-one-probe-oracle-ceiling",
+          "candidateCount": 8,
+          "d4Score": 0.198125,
+          "d5Score": 0.1965909090909091,
+          "d4D5Gap": 0.0015340909090909016,
+          "rankedShapeScores": [
+            0.2142857142857143,
+            0.20833333333333334,
+            0.2,
+            0.198125,
+            0.1965909090909091,
+            0.18333333333333332,
+            0.14895833333333333,
+            0.146875
+          ],
+          "rankedCandidateOffsets": [
+            "80",
+            "148",
+            "56",
+            "240",
+            "196",
+            "404",
+            "256",
+            "212"
+          ],
+          "truthHitAtBoundary": 1,
+          "boundaryRescue": 0,
+          "finalTopOffset": "148",
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": {
+            "called": true,
+            "status": "probe-promoted-by-binary-evidence",
+            "method": "choice",
+            "model": "openjev",
+            "challengerId": "c1",
+            "margin": 0.9299999999999999
+          },
+          "probe": {
+            "attempted": true,
+            "success": true,
+            "status": "reconfirmed",
+            "candidateId": "d5",
+            "analyzeCalls": 2
+          },
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d5"
+          ]
+        },
+        {
+          "name": "shadow-choice",
+          "candidateCount": 8,
+          "d4Score": 0.198125,
+          "d5Score": 0.1965909090909091,
+          "d4D5Gap": 0.0015340909090909016,
+          "rankedShapeScores": [
+            0.2142857142857143,
+            0.20833333333333334,
+            0.2,
+            0.198125,
+            0.1965909090909091,
+            0.18333333333333332,
+            0.14895833333333333,
+            0.146875
+          ],
+          "rankedCandidateOffsets": [
+            "80",
+            "148",
+            "56",
+            "240",
+            "196",
+            "404",
+            "256",
+            "212"
+          ],
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "finalTopOffset": "148",
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": {
+            "called": true,
+            "status": "received",
+            "method": "choice",
+            "model": "openjev",
+            "challengerId": "c0",
+            "margin": 0.85
+          },
+          "probe": {
+            "attempted": false,
+            "success": false,
+            "status": "not-attempted",
+            "candidateId": null,
+            "analyzeCalls": 0
+          },
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        },
+        {
+          "name": "shadow-parallel-noul",
+          "candidateCount": 8,
+          "d4Score": 0.198125,
+          "d5Score": 0.1965909090909091,
+          "d4D5Gap": 0.0015340909090909016,
+          "rankedShapeScores": [
+            0.2142857142857143,
+            0.20833333333333334,
+            0.2,
+            0.198125,
+            0.1965909090909091,
+            0.18333333333333332,
+            0.14895833333333333,
+            0.146875
+          ],
+          "rankedCandidateOffsets": [
+            "80",
+            "148",
+            "56",
+            "240",
+            "196",
+            "404",
+            "256",
+            "212"
+          ],
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "finalTopOffset": "148",
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": {
+            "called": true,
+            "status": "received",
+            "method": "noul",
+            "model": "openjev",
+            "challengerId": "c0",
+            "margin": 0.07000000000000006
+          },
+          "probe": {
+            "attempted": false,
+            "success": false,
+            "status": "not-attempted",
+            "candidateId": null,
+            "analyzeCalls": 0
+          },
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        },
+        {
+          "name": "gated-one-probe",
+          "candidateCount": 8,
+          "d4Score": 0.198125,
+          "d5Score": 0.1965909090909091,
+          "d4D5Gap": 0.0015340909090909016,
+          "rankedShapeScores": [
+            0.2142857142857143,
+            0.20833333333333334,
+            0.2,
+            0.198125,
+            0.1965909090909091,
+            0.18333333333333332,
+            0.14895833333333333,
+            0.146875
+          ],
+          "rankedCandidateOffsets": [
+            "80",
+            "148",
+            "56",
+            "240",
+            "196",
+            "404",
+            "256",
+            "212"
+          ],
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "finalTopOffset": "148",
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": {
+            "called": true,
+            "status": "challenger-not-tail",
+            "method": "choice",
+            "model": "openjev",
+            "challengerId": "c0",
+            "margin": 0.9
+          },
+          "probe": {
+            "attempted": false,
+            "success": false,
+            "status": "not-attempted",
+            "candidateId": null,
+            "analyzeCalls": 0
+          },
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        }
+      ]
+    }
+  ]
+}
