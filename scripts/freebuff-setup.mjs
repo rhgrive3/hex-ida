@@ -325,18 +325,37 @@ export function moveDirectoryIfMissing(src, dst, { containmentRoot = DATA_ROOT, 
   }
 }
 
-function moveIfMissing(src, dst, containmentRoot = null, { fsImpl = fs } = {}) {
-  if (!fsImpl.existsSync(src)) return false;
-  if (!containmentRoot) {
-    if (fsImpl.existsSync(dst)) return false;
-    fsImpl.mkdirSync(path.dirname(dst), { recursive: true });
-    try { fsImpl.renameSync(src, dst); return true; } catch { return false; }
+export function moveIfMissing(src, dst, containmentRoot = null, { fsImpl = fs } = {}) {
+  try {
+    fsImpl.lstatSync(src);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
   }
+
+  if (!containmentRoot) {
+    fsImpl.mkdirSync(path.dirname(dst), { recursive: true });
+    try {
+      fsImpl.lstatSync(dst);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    fsImpl.renameSync(src, dst);
+    return true;
+  }
+
   const stable = openStableDirectory(containmentRoot, path.dirname(dst), { fsImpl });
   try {
     const actualDst = path.join(stable.path, path.basename(dst));
-    try { fsImpl.lstatSync(actualDst); return false; } catch (error) { if (error?.code !== 'ENOENT') return false; }
-    try { fsImpl.renameSync(src, actualDst); return true; } catch { return false; }
+    try {
+      fsImpl.lstatSync(actualDst);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    fsImpl.renameSync(src, actualDst);
+    return true;
   } finally {
     try { stable.close(); } catch {}
   }
