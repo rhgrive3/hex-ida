@@ -10,6 +10,7 @@ const validatorPath = resolve(repoRoot, 'scripts/validate-auth-config.mjs');
 const wranglerPath = resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js');
 const productionConfigPath = resolve(repoRoot, 'wrangler.jsonc');
 const HANDOFF_CONFIG_NAME = 'wrangler.jsonc';
+const HANDOFF_ENTRY_NAME = 'worker-entry.js';
 
 export class SubprocessSignalError extends Error {
   constructor(label, signal) {
@@ -61,6 +62,7 @@ export function runProductionDeploy({
 
   const approvedBytes = Buffer.from(readFileSync(configPath));
   const approvedConfig = parseJsonc(approvedBytes.toString('utf8'));
+  const configRoot = dirname(resolve(configPath));
   const token = randomUUIDImpl();
   const snapshotPath = resolve(snapshotDirectory, `.wrangler.production-snapshot-${process.pid}-${token}.jsonc`);
   const handoffDirectoryPath = resolve(snapshotDirectory, `.wrangler.production-handoff-${process.pid}-${token}`);
@@ -72,7 +74,9 @@ export function runProductionDeploy({
   let handoffDirectoryFd = null;
   let handoffDirectoryIdentity = null;
   let ownsHandoffConfig = false;
+  let ownsHandoffEntrypoint = false;
   let parentStableConfigPath = null;
+  let parentStableMainPath = null;
   let primaryError = null;
   let status = null;
   let deploymentAttempted = false;
@@ -116,6 +120,38 @@ export function runProductionDeploy({
       throw new Error('Production config handoff file is not the approved snapshot inode.');
     }
 
+    const approvedMain = approvedConfig?.main;
+    if (approvedMain !== './worker-entry.js' && approvedMain !== 'worker-entry.js') {
+      throw new Error('Production worker entrypoint must be worker-entry.js.');
+    }
+    const mainCandidate = resolve(configRoot, approvedMain);
+    let mainEntry;
+    try {
+      mainEntry = lstatSync(mainCandidate);
+    } catch (error) {
+      throw new Error('Production worker entrypoint provenance could not be established.', { cause: error });
+    }
+    if (mainEntry.isSymbolicLink() || !mainEntry.isFile()) {
+      throw new Error('Production worker entrypoint must be a real regular file.');
+    }
+    const mainFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
+    const mainFd = openSync(mainCandidate, mainFlags);
+    try {
+      const openedMain = fstatSync(mainFd);
+      if (!openedMain.isFile() || !sameIdentity(openedMain, mainEntry)) {
+        throw new Error('Production worker entrypoint identity changed before lock.');
+      }
+      parentStableMainPath = `/proc/self/fd/${handoffDirectoryFd}/${HANDOFF_ENTRY_NAME}`;
+      linkSync(mainCandidate, parentStableMainPath);
+      ownsHandoffEntrypoint = true;
+      const stableMainEntry = lstatSync(parentStableMainPath);
+      if (stableMainEntry.isSymbolicLink() || !stableMainEntry.isFile() || !sameIdentity(stableMainEntry, openedMain)) {
+        throw new Error('Production worker entrypoint handoff is not the approved inode.');
+      }
+    } finally {
+      closeSync(mainFd);
+    }
+
     // Once locked, ordinary processes with workspace write access cannot swap
     // the config entry. The child receives the directory descriptor directly,
     // so replacing/renaming any ancestor pathname cannot redirect its lookup.
@@ -150,13 +186,10 @@ export function runProductionDeploy({
       const beforeDeploy = Buffer.from(readSnapshotSync(parentStableConfigPath));
       if (!beforeDeploy.equals(approvedBytes)) throw new Error('Production config snapshot changed after validation.');
 
-      // Wrangler resolves path-like fields relative to the config location. The
-      // stable config lives under /proc, so preserve the approved project-root
-      // semantics explicitly for the path-bearing deploy inputs used here.
-      const configRoot = dirname(resolve(configPath));
-      const mainPath = typeof approvedConfig?.main === 'string' ? resolve(configRoot, approvedConfig.main) : null;
-      if (!mainPath) throw new Error('Validated production config has no worker entrypoint.');
-      const deploymentArgs = [wranglerPath, 'deploy', mainPath, '--config', stableConfigPath];
+      // The worker entrypoint is handed to Wrangler through the locked directory
+      // inode, not through the writable workspace pathname that was validated.
+      const stableMainPath = `/proc/self/fd/${inheritedDirectoryFd}/${HANDOFF_ENTRY_NAME}`;
+      const deploymentArgs = [wranglerPath, 'deploy', stableMainPath, '--config', stableConfigPath];
       if (typeof approvedConfig?.assets?.directory === 'string') {
         deploymentArgs.push('--assets', resolve(configRoot, approvedConfig.assets.directory));
       }
@@ -182,8 +215,12 @@ export function runProductionDeploy({
       recordCleanup(() => rmSync(parentStableConfigPath, { force: true }));
       ownsHandoffConfig = false;
     }
+    if (ownsHandoffEntrypoint && parentStableMainPath) {
+      recordCleanup(() => rmSync(parentStableMainPath, { force: true }));
+      ownsHandoffEntrypoint = false;
+    }
 
-    // If removing the stable config failed, leave the directory in place rather
+    // If removing a stable handoff entry failed, leave the directory in place rather
     // than stacking a second derivative cleanup error on the same root cause.
     if (cleanupErrors.length === 0 && ownsHandoffDirectory && handoffDirectoryIdentity) {
       recordCleanup(() => {
