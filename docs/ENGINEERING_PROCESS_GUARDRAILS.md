@@ -302,6 +302,14 @@ Failures included duplicate lease issuance while a claim was in flight, local RP
 
 **Permanent rule:** a PR that adds or changes tests MUST have those tests pass on its own head; a red result identical to the shared baseline red does not exempt a PR from verifying its own added tests are green in isolation. When a lane's canonical baseline is red, per-PR automation MUST diff failures against that baseline (new-failure detection) instead of reporting a uniform UNSTABLE, and consolidations MUST run each absorbed PR's added tests on the absorbing lane head before merge.
 
+### EP-032 — Untracked instance wrappers plus an uncommitted generator silently removed live instances
+
+**Evidence:** On 2026-09-22 `./freebuff-9` … `./freebuff-12` stopped existing as commands while their isolated HOMEs stayed live (`/mnt/workspace/.dev-state/freebuff-homes/9..12`, instance 10 running continuously). The 20:01 rebase/reset on `investigate/pinpoint-confidence-real-binary-calibration` reverted `scripts/freebuff-setup.mjs` to the committed 1..8 version — its generalization (any positive N, `--count N`, HOME/wrapper discovery) existed only as WIP in `stash@{0}` (`wip-unrelated-freebuff-package-before-pr9432-resume-20260922`) — and the untracked wrappers 9..12 were removed from the repo root by repo cleanup. `tests/freebuff-wrappers.mjs` stayed green the entire time because its checked instance set was the constant `1..DEFAULT_COUNT`, so losing a live instance produced no machine-readable signal (the same failure class the guard itself was written for).
+
+**Process cause:** generated instance artifacts lived at the repo root where rebase/cleanup reach, but the generator that produces them was uncommitted WIP and the wrappers themselves were untracked; the guard's denominator was a hardcoded constant rather than the live instance set, so the checked set and the real set were allowed to diverge.
+
+**Permanent rule:** generated instance wrappers MUST be committed (tracked) in the same change as the generator that produces them, and a guard MUST derive the checked instance set by discovering existing wrappers and HOMEs from the same paths the generator uses — never from a hardcoded count. A live instance with no wrapper, an untracked wrapper, or a wrapper that drifted from the generator is a failing gate, not a silent absence. Enforcement: `tests/freebuff-wrappers.mjs` (discovered-set contract item 6, run by `npm run freebuff:test` and `npm run migration:test`).
+
 ---
 
 ## 3. Mandatory workflow for every future master phase
