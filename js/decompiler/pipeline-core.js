@@ -27,7 +27,8 @@ import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
-  readSemanticConditionalRegions, readSemanticLocalDeclaration } from './semantic-core.js';
+  readSemanticConditionalRegions, readSemanticLocalDeclaration,
+  readSemanticOrderedMaterializations } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -1131,6 +1132,11 @@ function buildCanonicalExpressions(state) {
 
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
+  const ordered = state.orderedMaterializations?.get(v.id);
+  if (ordered && ordered.value === v && ordered.definition === v.def) {
+    return expr.variable(ordered.name, v.bits || 64, signedFor(state, v), origin(v.def, v),
+      { ssaId:v.id, orderedMemoryObservation:true });
+  }
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
   if (state.expressionMemo.has(memoKey)) return state.expressionMemo.get(memoKey);
   if (state.expressionActive.has(v.id)) return expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(v.def, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
@@ -1934,6 +1940,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   const opts = applyDecompilerProfile(rawOpts);
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
+    orderedMaterializations: readSemanticOrderedMaterializations(result, result.ir) || new Map(),
     localDeclarations: new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))
       .filter(Boolean).map(owner => [owner.key, owner])),
     proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
