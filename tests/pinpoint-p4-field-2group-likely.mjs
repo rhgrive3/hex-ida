@@ -198,6 +198,12 @@ test('N10 negative: confirmed requirements unchanged (2-group p0.99 => likely, n
   ok(res.missing.includes('need-independent-evidence'), 'missing still records the group shortfall');
 });
 
+test('N11 negative: candidate-not-found empty lattice stays none under the field flag', () => {
+  const res = decide([], FIELD_OPTS);
+  eq(res.verdict, VERDICT.NONE, 'an absent truth/candidate lattice cannot become strong: ' + show(res));
+  eq(res.top, null, 'candidate-not-found has no top candidate');
+});
+
 /* ── Regression ────────────────────────────────────────────── */
 
 test('R1 regression: "wait time" family stays ambiguous under P4 (recall lane stability)', async () => {
@@ -284,7 +290,6 @@ test('R4 regression: replay shares the production core (P1/P4 parity)', () => {
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) process.exit(1);
-
 
 
 
