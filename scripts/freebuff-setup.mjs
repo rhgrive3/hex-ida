@@ -133,6 +133,102 @@ function sameDirectoryIdentity(a, b) {
   return Boolean(a && b && a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino);
 }
 
+function sameFileIdentity(a, b) {
+  return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
+}
+
+function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedSource = path.resolve(source);
+  if (!pathIsWithin(resolvedRoot, resolvedSource) || resolvedSource === resolvedRoot) {
+    throw new Error(`freebuff setup: migration source outside source root: ${resolvedSource}`);
+  }
+
+  let rootEntry;
+  try {
+    rootEntry = fsImpl.lstatSync(resolvedRoot);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+    throw new Error(`freebuff setup: migration source root is not a real directory: ${resolvedRoot}`);
+  }
+
+  const parent = path.dirname(resolvedSource);
+  let current = resolvedRoot;
+  const relativeParent = path.relative(resolvedRoot, parent);
+  for (const part of relativeParent ? relativeParent.split(path.sep) : []) {
+    current = path.join(current, part);
+    let entry;
+    try {
+      entry = fsImpl.lstatSync(current);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`freebuff setup: unsafe migration source ancestor: ${current}`);
+    }
+  }
+
+  const expectedParent = fsImpl.lstatSync(parent);
+  const directoryFlags = fs.constants.O_RDONLY
+    | (fs.constants.O_DIRECTORY || 0)
+    | (fs.constants.O_NOFOLLOW || 0);
+  const parentFd = fsImpl.openSync(parent, directoryFlags);
+  let fileFd = null;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (fileFd !== null) fsImpl.closeSync(fileFd);
+    fsImpl.closeSync(parentFd);
+  };
+  try {
+    const openedParent = fsImpl.fstatSync(parentFd);
+    if (!sameDirectoryIdentity(expectedParent, openedParent)) {
+      throw new Error(`freebuff setup: migration source directory identity changed: ${parent}`);
+    }
+    const stableParent = `/proc/self/fd/${parentFd}`;
+    const viaParentHandle = fsImpl.statSync(stableParent);
+    if (!sameDirectoryIdentity(openedParent, viaParentHandle)) {
+      throw new Error(`freebuff setup: stable migration source directory unavailable: ${parent}`);
+    }
+
+    const leaf = path.join(stableParent, path.basename(resolvedSource));
+    let expectedFile;
+    try {
+      expectedFile = fsImpl.lstatSync(leaf);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        close();
+        return null;
+      }
+      throw error;
+    }
+    if (expectedFile.isSymbolicLink() || !expectedFile.isFile()) {
+      throw new Error(`freebuff setup: migration source is not a real file: ${resolvedSource}`);
+    }
+
+    const fileFlags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    fileFd = fsImpl.openSync(leaf, fileFlags);
+    const openedFile = fsImpl.fstatSync(fileFd);
+    if (!sameFileIdentity(expectedFile, openedFile)) {
+      throw new Error(`freebuff setup: migration source identity changed before copy: ${resolvedSource}`);
+    }
+    const stableFile = `/proc/self/fd/${fileFd}`;
+    const viaFileHandle = fsImpl.statSync(stableFile);
+    if (!sameFileIdentity(openedFile, viaFileHandle)) {
+      throw new Error(`freebuff setup: stable migration source handle unavailable: ${resolvedSource}`);
+    }
+    return { path: stableFile, close };
+  } catch (error) {
+    try { close(); } catch {}
+    throw error;
+  }
+}
+
 export function openStableDirectory(root, target, { fsImpl = fs } = {}) {
   const resolvedTarget = ensureSafeDirectory(root, target, { fsImpl });
   const expected = fsImpl.lstatSync(resolvedTarget);
@@ -163,8 +259,12 @@ export function openStableDirectory(root, target, { fsImpl = fs } = {}) {
   }
 }
 
-export function copyIfMissing(src, dst, executable = false, containmentRoot = null, { fsImpl = fs } = {}) {
+export function copyIfMissing(src, dst, executable = false, containmentRoot = null, {
+  fsImpl = fs,
+  sourceRoot = null,
+} = {}) {
   let stable = null;
+  let stableSource = null;
   let actualDst = dst;
   try {
     if (containmentRoot) {
@@ -179,9 +279,25 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
-    if (!fsImpl.existsSync(src)) return false;
+    let actualSrc = src;
+    if (sourceRoot) {
+      stableSource = openStableMigrationSource(sourceRoot, src, { fsImpl });
+      if (!stableSource) return false;
+      actualSrc = stableSource.path;
+    } else {
+      let sourceEntry;
+      try {
+        sourceEntry = fsImpl.lstatSync(src);
+      } catch (error) {
+        if (error?.code === 'ENOENT') return false;
+        throw error;
+      }
+      if (sourceEntry.isSymbolicLink() || !sourceEntry.isFile()) {
+        throw new Error(`freebuff setup: migration source is not a real file: ${src}`);
+      }
+    }
     try {
-      fsImpl.copyFileSync(src, actualDst, fs.constants.COPYFILE_EXCL);
+      fsImpl.copyFileSync(actualSrc, actualDst, fs.constants.COPYFILE_EXCL);
     } catch (error) {
       if (error?.code === 'EEXIST') return false;
       throw error;
@@ -192,6 +308,7 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
     }
     return true;
   } finally {
+    try { stableSource?.close(); } catch {}
     try { stable?.close(); } catch {}
   }
 }
@@ -577,7 +694,7 @@ function ensureShared() {
       continue;
     }
     const src = path.join(LEGACY_ROOT, 'shared', rel);
-    if (copyIfMissing(src, dst, !rel.endsWith('.json'), SHARED_ROOT)) migrated++;
+    if (copyIfMissing(src, dst, !rel.endsWith('.json'), SHARED_ROOT, { sourceRoot: path.join(LEGACY_ROOT, 'shared') })) migrated++;
   }
   ensureSafeDirectory(SHARED_ROOT, path.join(SHARED_ROOT, 'history', 'projects'));
   return migrated;
@@ -609,12 +726,12 @@ function ensureHome(n, shared) {
   ensureSafeDirectory(DATA_ROOT, home);
   if (fs.existsSync(repoHome)) {
     for (const rel of HOME_FILES) {
-      if (copyIfMissing(path.join(repoHome, rel), path.join(home, rel), false, home)) migrated++;
+      if (copyIfMissing(path.join(repoHome, rel), path.join(home, rel), false, home, { sourceRoot: repoHome })) migrated++;
     }
   }
   const sharedMigrated = ensureShared();
   for (const rel of HOME_FILES) {
-    if (copyIfMissing(path.join(legacy, rel), path.join(home, rel), false, home)) migrated++;
+    if (copyIfMissing(path.join(legacy, rel), path.join(home, rel), false, home, { sourceRoot: legacy })) migrated++;
   }
   ensureHomeLinks(home);
   if (shared && linkSharedBinary(home, shared)) migrated++;
