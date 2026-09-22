@@ -90,7 +90,7 @@ test('offline replay audit: stored verdicts recompute exactly', () => {
     const codes = (r.evidence || []).map((e) => e.code);
     eq(oldVerdictForFusion(t, u).verdict, r.oldVerdict, `OLD ${r.binary}|${r.mode}|${r.label}`);
     eq(newVerdictForFusion(t, u).verdict, r.newVerdict, `NEW ${r.binary}|${r.mode}|${r.label}`);
-    eq(p4VerdictForFusion(t, u).verdict, r.p4Verdict, `P4 ${r.binary}|${r.mode}|${r.label}`);
+    eq(p4VerdictForFusion(t, u, { trustedTwoGroupItems: r.evidence }).verdict, r.p4Verdict, `P4 ${r.binary}|${r.mode}|${r.label}`);
     eq(policyBVerdictForFusion(t, u, codes).verdict, r.policyBVerdict, `B ${r.binary}|${r.mode}|${r.label}`);
     eq(policyCVerdictForFusion(t, u, codes).verdict, r.policyCVerdict, `C ${r.binary}|${r.mode}|${r.label}`);
   }
