@@ -107,6 +107,31 @@ try {
   // PR-only lanes remain disabled on main regardless of the changed path.
   assert.equal(route(commitA, 'main', 'pr-only', '^js/ai/'), 'false');
 
+  // #9435: best-effort impact-buffer cleanup must preserve an already-established
+  // routing result and exit status.
+  const cleanupFakeBin = join(root, 'cleanup-fake-bin');
+  const cleanupRm = join(cleanupFakeBin, 'rm');
+  mkdirSync(cleanupFakeBin, { recursive: true });
+  write(cleanupRm, [
+    '#!/usr/bin/env bash',
+    "printf 'forced cleanup failure\\n' >&2",
+    'exit 73',
+    '',
+  ].join('\n'));
+  chmodSync(cleanupRm, 0o755);
+  for (const [head, routedBranch, mode, expected] of [
+    [commitA, 'main', 'pr-only', 'false'],
+    [commitA, 'main', 'main-and-branch', 'true'],
+    [commitB, '', 'main-and-branch', 'true'],
+  ]) {
+    const result = routeResult(head, routedBranch, mode, '^js/ai/', {
+      PATH: `${cleanupFakeBin}:${process.env.PATH || ''}`,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), expected);
+    assert.match(result.stderr, /could not remove impact path buffer during cleanup/);
+  }
+
   // A descendant remote head is not proof that a replacement pipeline exists.
   // D is explicitly CI-skipped, so C must still route its own gated change.
   assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'true');
