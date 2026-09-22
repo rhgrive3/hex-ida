@@ -76,6 +76,12 @@ const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
   || (b.fusion.logOdds - a.fusion.logOdds);
 const VERIFY_ROUND = 4;          // 1 巡で逆アセンブルする候補の数
 const MAX_ROUNDS = 3;            // 決着が付くまで、最大この回数まで粘る
+/*
+ * P4: field 経路でのみ trusted 2-group（metadata+structural）の likely を許可する。
+ * location（pinpointLocation / maxVerdict=likely の経路）と function 経路には
+ * この opts を渡さない。field 専用の例外を location へ誤適用しないこと。
+ */
+const FIELD_LIKELY_OPTS = Object.freeze({ allowTrustedTwoGroup: true });
 
 /**
  * 目的から、値（フィールド）を 1 個に決める。
@@ -213,7 +219,7 @@ export async function pinpointField(opts) {
   for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
   candidates.sort(byRecallLane);
   let ranked = candidates.slice(0, MAX_CANDIDATES);
-  let result = decide(ranked);
+  let result = decide(ranked, FIELD_LIKELY_OPTS);
 
   /* ── 4. 決着が付くまで、上位を実際に逆アセンブルして確かめる ──
      ここがこのツールの新しいところ。候補を並べて終わりにしない。 */
@@ -252,7 +258,7 @@ export async function pinpointField(opts) {
       }
       for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
       ranked.sort(byRecallLane);
-      result = decide(ranked);
+      result = decide(ranked, FIELD_LIKELY_OPTS);
     }
   }
 

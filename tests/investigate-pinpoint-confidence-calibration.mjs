@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  oldVerdictForFusion, newVerdictForFusion,
+  oldVerdictForFusion, newVerdictForFusion, p4VerdictForFusion,
   policyBVerdictForFusion, policyCVerdictForFusion,
 } from '../scripts/pinpoint-confidence-policy.mjs';
 
@@ -44,7 +44,7 @@ const dsda = rows.filter((r) => r.kind === 'location');
 
 const REQUIRED = ['binary', 'mode', 'label', 'expectedClass', 'expectedField', 'topClass', 'topField',
   'topCorrect', 'truthRank', 'candidateCount', 'probability', 'logOdds', 'margin', 'verified',
-  'identifying', 'independentGroups', 'groups', 'evidence', 'oldVerdict', 'newVerdict',
+  'identifying', 'independentGroups', 'groups', 'evidence', 'oldVerdict', 'newVerdict', 'p4Verdict',
   'policyBVerdict', 'policyCVerdict', 'missing', 'replayFidelity', 'analyzeCalls'];
 
 test('query fixture: 426 queries with #9413 per-binary/mode counts', () => {
@@ -90,6 +90,7 @@ test('offline replay audit: stored verdicts recompute exactly', () => {
     const codes = (r.evidence || []).map((e) => e.code);
     eq(oldVerdictForFusion(t, u).verdict, r.oldVerdict, `OLD ${r.binary}|${r.mode}|${r.label}`);
     eq(newVerdictForFusion(t, u).verdict, r.newVerdict, `NEW ${r.binary}|${r.mode}|${r.label}`);
+    eq(p4VerdictForFusion(t, u).verdict, r.p4Verdict, `P4 ${r.binary}|${r.mode}|${r.label}`);
     eq(policyBVerdictForFusion(t, u, codes).verdict, r.policyBVerdict, `B ${r.binary}|${r.mode}|${r.label}`);
     eq(policyCVerdictForFusion(t, u, codes).verdict, r.policyCVerdict, `C ${r.binary}|${r.mode}|${r.label}`);
   }
@@ -130,13 +131,37 @@ test('DSDA holdout row: OLD likely -> NEW ambiguous, ranking intact', () => {
   eq(d.oldVerdict, 'likely', 'OLD false-likely');
   eq(d.newVerdict, 'ambiguous', 'NEW honest');
   eq(d.independentGroups, 2, 'groups 2');
+  eq(d.p4Verdict, 'ambiguous', 'P4 (location path, flag off) keeps DSDA ambiguous');
   eq(d.replayFidelity, 'match', 'fidelity');
 });
 
-test('production canary: decide() is still the measured NEW policy', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'js/evidence.js'), 'utf8');
-  ok(/probability >= LIKELY\.p && margin >= LIKELY\.margin && independent >= CONFIRM\.groups/.test(src),
-    'NEW groups gate must still be the production rule; if it moved, re-measure instead of reusing this report');
+test('P4 production validation gates: no new/downgraded false-strong deltas, DSDA stays ambiguous', () => {
+  const safety = summary.p4Validation && summary.p4Validation.safety;
+  ok(safety, 'summary.p4Validation.safety present');
+  eq(safety.newlyIntroducedFalseStrong.length, 0, 'P4 must not introduce any false-strong vs P1');
+  eq(safety.downgradedCorrectStrong.length, 0, 'P4 must not downgrade any correct-strong vs P1');
+  eq(safety.dsdaVerdict, 'ambiguous', 'DSDA holdout stays ambiguous under P4');
+  ok(summary.contingency.P4.falseStrong <= summary.contingency.NEW.falseStrong, 'P4 false-strong must not increase');
+  const p4cs = summary.contingency.P4.correctConfirmed + summary.contingency.P4.correctLikely;
+  const p1cs = summary.contingency.NEW.correctConfirmed + summary.contingency.NEW.correctLikely;
+  ok(p4cs >= p1cs, `P4 correct-strong must not decrease (p4=${p4cs}, p1=${p1cs})`);
+});
+
+test('production canary: decide() is still the measured P4 policy endpoints', () => {
+  const root = path.resolve(HERE, '..');
+  const src = fs.readFileSync(path.join(root, 'js/evidence.js'), 'utf8');
+  ok(/likelyGroupsGate\(topFusion, independent, opts\)/.test(src),
+    'P4 groups gate must still be the production likely rule; if it moved, re-measure instead of reusing this report');
+  ok(/TRUSTED_LIKELY_GROUPS = Object\.freeze\(\[GROUP\.METADATA, GROUP\.STRUCTURAL\]\)/.test(src),
+    'trusted pair must stay exactly metadata+structural');
+  const legacy = fs.readFileSync(path.join(root, 'js/pinpoint-legacy.js'), 'utf8');
+  eq((legacy.match(/allowTrustedTwoGroup: true/g) || []).length, 1,
+    'legacy must wire the field-only P4 flag exactly once (FIELD_LIKELY_OPTS)');
+  ok(/decide\(list, \{ maxVerdict: VERDICT\.LIKELY \}\)/.test(legacy),
+    'location path must not enable the P4 exception');
+  const facade = fs.readFileSync(path.join(root, 'js/pinpoint.js'), 'utf8');
+  eq((facade.match(/allowTrustedTwoGroup: true/g) || []).length, 1,
+    'facade field decide must pass the P4 flag exactly once');
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');

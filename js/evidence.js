@@ -916,25 +916,90 @@ function fusionAuthority(fusion) {
   };
 }
 
-/**
- * 並べた候補から結論を出す。
+/*
+ * P4 — #9418 の global 3-group policy を production で決着させる field 専用の
+ * 信頼できる 2 系統の例外。
  *
- * @param {Array} ranked  [{fusion:{logOdds, probability, verified, independentGroups}, ...}] 降順
- * @param {object} [opts]
- *   maxVerdict  これより上には行かせない。名前が読めない相手（クラス表のない
- *               バイナリの「+0x20 の値」など）を「確定」と呼ばないために使う。
- * @returns {{verdict, top, runnerUp, margin, marginRatio, independentGroups,
- *            missing:Array<string>}}
+ *   likely = p/margin の既存しきい値 + ( independentGroups >= 3
+ *            OR {metadata, structural} の厳密一致の 2 系統 )
+ *
+ * confirmed の条件は P4 で変更しない（2 系統では confirmed 不可のまま）。
+ * identifying が無いときの likely → ambiguous の下落も後段の共通処理のまま。
+ *
+ * 例外は group 名の文字列比較だけでは通さない:
+ *   - independentGroupCount() と同じ canonical 検証を通す。
+ *   - items から数え直した出どころと、記録された groups / independentGroups が
+ *     食い違う・重複している・未知の group を含む場合は fail-closed
+ *     （group 情報の偽装や重複で例外を通さない）。
+ *   - 組み合わせは {metadata, structural} の厳密一致のみ。
+ *     dataflow を含む metadata+dataflow / structural+dataflow は例外にしない
+ *     （DSDA-Doom location の false-likely がこの経路に入るため）。
+ *   - allowTrustedTwoGroup を渡さない location / function 経路には効かない
+ *     （field 専用。opts が true のときだけ有効）。
  */
-export function decide(ranked, opts) {
-  const list = (ranked || []).filter((c) => c && c.fusion);
-  if (!list.length) return { verdict: VERDICT.NONE, top: null, runnerUp: null, margin: 0, marginRatio: 1, independentGroups: 0, missing: ['no-candidate'] };
+const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
 
-  const top = list[0];
-  const runnerUp = list[1] || null;
-  const authority = fusionAuthority(top.fusion);
-  const rivalAuthority = runnerUp ? fusionAuthority(runnerUp.fusion) : null;
-  const margin = !runnerUp ? Infinity
+/* 観測された出どころの集合。検証を通せなければ null（＝例外は通らない）。 */
+function observedGroupSet(fusion) {
+  if (!fusion || typeof fusion !== 'object') return null;
+  let itemsSet = null;
+  if (Array.isArray(fusion.items)) {
+    itemsSet = new Set();
+    for (const it of fusion.items) {
+      if (!it || !(it.applied > 0)) continue;
+      const g = groupOf(it);
+      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return null;
+      itemsSet.add(g);
+    }
+    if (!itemsSet.size) itemsSet = null;
+  }
+  let recordedSet = null;
+  if (Array.isArray(fusion.groups)) {
+    recordedSet = new Set();
+    for (const g of fusion.groups) {
+      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return null;
+      recordedSet.add(g);
+    }
+    if (fusion.groups.length !== recordedSet.size) return null;
+    if (fusion.independentGroups !== undefined) {
+      if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups !== recordedSet.size) return null;
+    }
+  }
+  if (itemsSet && recordedSet) {
+    if (itemsSet.size !== recordedSet.size) return null;
+    for (const g of itemsSet) if (!recordedSet.has(g)) return null;
+  }
+  return itemsSet || recordedSet;
+}
+
+/* likely の出どころ条件。independent >= 3 はこれまでどおり。P4 例外は opts 明示時のみ。 */
+function likelyGroupsGate(fusion, independent, opts) {
+  if (independent >= CONFIRM.groups) return true;
+  if (!opts || opts.allowTrustedTwoGroup !== true) return false;
+  if (independent !== TRUSTED_LIKELY_GROUPS.length) return false;
+  const observed = observedGroupSet(fusion);
+  if (!observed || observed.size !== TRUSTED_LIKELY_GROUPS.length) return false;
+  for (const g of TRUSTED_LIKELY_GROUPS) if (!observed.has(g)) return false;
+  return true;
+}
+
+/**
+ * 1 位 / 2 位の fusion から決着を出す核。
+ *
+ * production decide() と measurement replay（scripts/pinpoint-confidence-policy.mjs）
+ * が同じ判定を共有するための export。判定ロジックの複製は作らない。
+ * ranked リストに依存する部分（top/runnerUp の同定、maxVerdict の天井）は
+ * decide() 側に残す。
+ *
+ * @param {object} topFusion
+ * @param {object|null} runnerFusion
+ * @param {object} [opts]  maxVerdict / allowTrustedTwoGroup（field 経路のみ true）
+ * @returns {{verdict, margin, marginRatio, independentGroups, missing:Array<string>}}
+ */
+export function verdictForFusions(topFusion, runnerFusion, opts) {
+  const authority = fusionAuthority(topFusion);
+  const rivalAuthority = runnerFusion ? fusionAuthority(runnerFusion) : null;
+  const margin = !runnerFusion ? Infinity
     : (authority.logOdds !== null && rivalAuthority.logOdds !== null
       ? authority.logOdds - rivalAuthority.logOdds : -Infinity);
   const marginRatio = margin === Infinity ? Infinity : Math.exp(margin);
@@ -952,7 +1017,7 @@ export function decide(ranked, opts) {
    * 独立性は出どころ (group) で数える。系統 (family) では数えない。
    * families は説明用に残してあるが、確定の条件には一切使わない。
    */
-  const independent = independentGroupCount(top.fusion);
+  const independent = independentGroupCount(topFusion);
   if (independent < CONFIRM.groups) missing.push('need-independent-evidence');
   if (probability < CONFIRM.p) missing.push('need-more-evidence');
   if (margin < CONFIRM.margin) missing.push('need-separation');
@@ -968,10 +1033,14 @@ export function decide(ranked, opts) {
    * evidence が実質 tie したとき最後に残る loc-shared / breadth / weak / correlated /
    * saturated の差だけでは strong verdict を名乗らせない。足りないときは
    * ambiguous に落とし、missing の need-independent-evidence が理由として残る。
+   *
+   * P4: field 経路のみ（allowTrustedTwoGroup）、{metadata, structural} の厳密一致の
+   * 2 系統なら likely を許可する（p/margin しきい値は変更なし）。dataflow を含む組は
+   * likelyGroupsGate が拒否する。
    */
-  else if (probability >= LIKELY.p && margin >= LIKELY.margin && independent >= CONFIRM.groups) verdict = VERDICT.LIKELY;
+  else if (probability >= LIKELY.p && margin >= LIKELY.margin && likelyGroupsGate(topFusion, independent, opts)) verdict = VERDICT.LIKELY;
   else if (probability >= 0.35 ||
-    (runnerUp && margin < LIKELY.margin && probability >= AMBIGUOUS_FLOOR)) {
+    (runnerFusion && margin < LIKELY.margin && probability >= AMBIGUOUS_FLOOR)) {
     /*
      * 「上位が拮抗している」だけで割れていると言ってはいけない。
      * 確からしさが 0 のものどうしも拮抗する。それは割れているのではなく、
@@ -990,6 +1059,35 @@ export function decide(ranked, opts) {
   if (!(authority.identifying > 0) && verdictRank(verdict) > verdictRank(VERDICT.AMBIGUOUS)) {
     verdict = VERDICT.AMBIGUOUS;
   }
+
+  return { verdict, margin, marginRatio, independentGroups: independent, missing };
+}
+
+/**
+ * 並べた候補から結論を出す。
+ *
+ * @param {Array} ranked  [{fusion:{logOdds, probability, verified, independentGroups}, ...}] 降順
+ * @param {object} [opts]
+ *   maxVerdict  これより上には行かせない。名前が読めない相手（クラス表のない
+ *               バイナリの「+0x20 の値」など）を「確定」と呼ばないために使う。
+ *   allowTrustedTwoGroup  P4 の 2 系統（metadata+structural）例外を許す。
+ *               field 経路だけ true を渡す（location / function には渡さない）。
+ * @returns {{verdict, top, runnerUp, margin, marginRatio, independentGroups,
+ *            missing:Array<string>}}
+ */
+export function decide(ranked, opts) {
+  const list = (ranked || []).filter((c) => c && c.fusion);
+  if (!list.length) return { verdict: VERDICT.NONE, top: null, runnerUp: null, margin: 0, marginRatio: 1, independentGroups: 0, missing: ['no-candidate'] };
+
+  const top = list[0];
+  const runnerUp = list[1] || null;
+  /* 決着本体は verdictForFusions（production と measurement replay の共有核）。 */
+  const core = verdictForFusions(top.fusion, runnerUp ? runnerUp.fusion : null, opts);
+  let verdict = core.verdict;
+  const margin = core.margin;
+  const marginRatio = core.marginRatio;
+  const independent = core.independentGroups;
+  const missing = core.missing;
 
   /*
    * 名前が読めない相手（クラス表のないバイナリの「+0x20 の値」）は、

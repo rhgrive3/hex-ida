@@ -56,7 +56,11 @@ function burstScopedState(registry, callback, opts, createState) {
   return entry.shared;
 }
 
-function narrowedPriorCount(candidates, universe) {
+/*
+ * 測定（confidence replay / oracle harness）と production が同じ prior 計算を
+ * 共有するための export。measurement 側へ複製を作らない。
+ */
+export function narrowedPriorCount(candidates, universe) {
   if (!candidates.length) return Math.max(1, universe || 1);
   /*
    * 名前がまるごと一致した枠があるなら、事前オッズはその数で据え置く。
@@ -75,8 +79,10 @@ function narrowedPriorCount(candidates, universe) {
  * 語並び・語彙の recall lane より必ず先に並ぶ。recall lane が完全一致を
  * 押しのけると、名前で探した人へ名前の違う値を返す元の不具合に戻るため。
  * recall lane が無い通常のクエリでは、従来どおり fusion だけで並ぶ。
+ *
+ * oracle replay も production と同じこの比較子を使う（export して共有）。
  */
-function byRecallLane(a, b) {
+export function byRecallLane(a, b) {
   return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
     || (b.fusion.logOdds - a.fusion.logOdds);
 }
@@ -345,7 +351,8 @@ export async function pinpointField(opts = {}) {
   const priorCandidates = narrowedPriorCount(ranked, raw.universe);
   for (const c of ranked) c.fusion = fuse(c.evidence || [], { candidates: priorCandidates });
   ranked.sort(byRecallLane);
-  const decision = decide(ranked);
+  /* P4: field 経路でのみ trusted 2-group（metadata+structural）の likely を許可。 */
+  const decision = decide(ranked, { allowTrustedTwoGroup: true });
   const oldTopKey = raw.top && raw.top.key;
   const newTopKey = decision.top && decision.top.key;
 

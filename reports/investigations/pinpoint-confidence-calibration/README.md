@@ -57,14 +57,100 @@ Evaluates:
 - In Exact: False-strong was already 0 (0/230). NEW destroyed 58 correct-strong answers for 0 safety gain.
 - In Partial: 67 of the 67 false-strong cases in NEW (100%) already have 3+ groups. NEW cannot prevent them.
 
-## Phase 2 — Policy Settlement (#9418 Comparison)
+## Phase 2 — Policy Settlement (#9418 Comparison → P4 Production)
 
-Comparison across the 5 candidate policies:
+Comparison across the 6 candidate policies (offline replay from the recorded fusion
+in `rows.jsonl`; P1/P4 replay delegates to the production core):
 - **P0 (OLD baseline)**: likely has no group requirement.
-- **P1 (CURRENT #9418)**: likely requires `independentGroups >= 3`.
+- **P1 (#9418)**: likely requires `independentGroups >= 3`.
 - **P2 (Ambiguity-aware)**: 2-group likely permitted when no competing candidate exists (`candidateCount <= 1`).
 - **P3 (Direct-name exception)**: 2-group likely permitted when `field-name-asked` matches directly.
-- **P4 (Metadata + Structural combo)**: 2-group likely permitted when groups are `metadata + structural`.
+- **P4 (Metadata + Structural combo, PRODUCTION)**: field path only, likely permitted
+  for `>= 3` groups OR exactly the `metadata + structural` 2-group combination
+  (fail-closed group validation: unknown/malformed/duplicated group metadata and
+  items-vs-recorded disagreement never open the exception; dataflow combos excluded;
+  confirmed unchanged; identifying/p/margin thresholds unchanged).
+
+| Policy | Exact Correct-Strong | Exact False-Strong | Partial Correct-Strong | Partial False-Strong | Overall Correct-Strong | Overall False-Strong | DSDA Holdout |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **P0 (OLD)** | 191 | 0 | 24 | 69 | 215 | 69 | likely (FALSE) |
+| **P1 (#9418)** | 133 | 0 | 23 | 67 | 156 | 67 | ambiguous (CORRECT) |
+| **P2 (Ambiguity-aware)** | 187 | 0 | 23 | 67 | 210 | 67 | ambiguous (CORRECT) |
+| **P3 (Direct-name)** | 187 | 0 | 23 | 69 | 210 | 69 | ambiguous (CORRECT) |
+| **P4 (PRODUCTION)** | **187** | **0** | **24** | **67** | **211** | **67** | **ambiguous (CORRECT)** |
+
+**Key Insight:**
+- In 2-group queries (n=57):
+  - `metadata + structural`: n=55, correct=55, wrong=0 (**100% accuracy**).
+  - `dataflow + metadata`: n=2, correct=0, wrong=2 (0% accuracy).
+  - `structural + dataflow` (DSDA): n=1, correct=0, wrong=1 (0% accuracy).
+- P4 allows `metadata + structural` 2-group likely while rejecting `structural + dataflow` (DSDA) and `dataflow + metadata` (`view frame`).
+- P4 restores 55 correct-strong verdicts without adding a single false-strong verdict anywhere (Exact 0/230, Partial 67/196, DSDA ambiguous).
+
+## Phase 2b — P4 Production Validation (re-measured on the P4 branch, not replayed)
+
+`rows.jsonl`/`summary.json` were regenerated from the production `pinpointField`
+full-analysis path on the same 426 field queries (#9413 identity: BattleCats
+exact 120 / partial 86, TsumTsum 60/60, YWP 50/50) plus the same DSDA pinned
+location holdout. P1 (`newVerdict`) remains recorded from the same fusion for the
+side-by-side comparison; `p4Verdict` is the production verdict (`replayFidelity`
+checks it against `pinpointField` — 426/426 `match`).
+
+### Ranking (truth rank — policy-independent, confirms the re-measurement)
+
+| | Rank 1 | Rank 2–4 | Rank 5–8 | Rank 9+ | Not-found |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Exact (230)** | 229 | 1 | 0 | 0 | 0 |
+| **Partial (196)** | 53 | 100 | 32 | 11 | 0 |
+| **Overall (426)** | **282 (66.2%)** | 101 | 32 | 11 | 0 |
+
+Ranking is unchanged by the policy (as P4 only opens verdicts, never reorders).
+
+### Confidence (P1 vs production P4)
+
+| Regime | P1 Correct-Strong | P4 Correct-Strong | P1 False-Strong | P4 False-Strong |
+| :--- | :--- | :--- | :--- | :--- |
+| **Exact (230)** | 133 | **187** (+54) | 0 | 0 |
+| **Partial (196)** | 23 | **24** (+1) | 67 | 67 |
+| **Overall (426)** | 156 | **211** (+55) | 67 | 67 |
+
+Full P4 contingency: correct confirmed 150 / likely 61 / ambiguous 71;
+wrong confirmed 49 / likely 18 / ambiguous 77; total strong 278, false-strong 67.
+
+### Safety (Phase 2 adoption gate — all must hold)
+
+- **Newly introduced false-strong: 0** (`summary.json p4Validation.safety.newlyIntroducedFalseStrong`).
+- **Removed false-strong: 0** (no accidental masking either).
+- **Newly restored correct-strong: 55** (54 exact + 1 partial `battlecats|partial|bar info`; full list in `summary.json p4Validation.safety`).
+- **Downgraded correct-strong: 0**.
+- **DSDA holdout: ambiguous** (OLD likely → P4 ambiguous; ranking intact: top 148,
+  truth 196 rank 4/8, p 0.9157, margin 3.82, groups `dataflow+structural` — rejected).
+- Exact regressions: none (ranking identical; no new false-strong).
+
+### Evidence-combination breakdown (top candidate groups, `p4Validation.byEvidenceCombination`)
+
+| Combination | Queries | Correct | Wrong | P1 Strong | P1 False-Strong | P4 Strong | P4 False-Strong |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `dataflow+metadata+structural` | 277 | 172 | 105 | 223 | 67 | 223 | 67 |
+| `metadata+structural` | 119 | 94 | 25 | 0 | 0 | 55 | 0 |
+| `metadata` | 28 | 16 | 12 | 0 | 0 | 0 | 0 |
+| `dataflow+metadata` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
+
+(Per-query sets: P4 restores 55 of the 119 `metadata+structural` rows — those already
+meeting the likely p/margin thresholds and identifying evidence; the remaining 64
+stay ambiguous under the unchanged p/margin/identifying gates, never downgraded.)
+
+Conclusion: P4 reproduces the exact numbers predicted by the measurement-only
+counterfactual (`correct-strong 211, false-strong 67`) with zero new false-strong,
+zero downgrades, zero exact regressions, and DSDA correctly ambiguous. P4 is
+adopted as the production policy (field path only; location/function unchanged).
+
+## Phase 3 & 4 — Finite Probe Catalog & Oracle Probe Ceiling
+
+> The v1 oracle artifacts below were measured under pre-P4 production and the v1
+> harness (greedy oracle, prior/ordering/provenance defects documented in the task).
+> They are superseded by the v2 oracle re-measurement on the P4 final baseline
+> (separate measurement PR, exact policy+corpus binding via `final-baseline.json`).
 
 | Policy | Exact Correct-Strong | Exact False-Strong | Partial Correct-Strong | Partial False-Strong | Overall Correct-Strong | Overall False-Strong | DSDA Holdout |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
