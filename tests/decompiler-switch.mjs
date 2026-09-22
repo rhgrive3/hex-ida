@@ -30,9 +30,11 @@ const result = decompile(model, {
 });
 
 assert.match(result.pseudocode, /switch \(kind\)/);
-assert.match(result.pseudocode, /case 0: goto loc_1004;/);
-assert.match(result.pseudocode, /case 1: goto loc_100C;/i);
-assert.match(result.pseudocode, /default: goto loc_1014;/);
+assert.match(result.pseudocode, /case 0:\s*\n\s*return 1;/);
+assert.match(result.pseudocode, /case 1:\s*\n\s*return 2;/i);
+assert.match(result.pseudocode, /default:\s*\n\s*return 3;/);
+assert.doesNotMatch(result.pseudocode, /return x0;/);
+assert.doesNotMatch(result.pseudocode, /goto loc_1004|goto loc_100C|goto loc_1014/i);
 assert.ok(result.evidence.some((e) => e.reason === 'verified jump-table/switch descriptor'));
 
 // With no verified descriptor the same indirect branch must remain explicit,
