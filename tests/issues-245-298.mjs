@@ -74,7 +74,10 @@ assert.equal(validateSchema(12, { type: 'integer' }).ok, true);
   const fieldEnd = core.indexOf('/* ── クラスの前提', fieldStart);
   assert.ok(fieldStart >= 0 && fieldEnd > fieldStart);
   const fieldBody = core.slice(fieldStart, fieldEnd);
-  assert.match(fieldBody, /const priorCandidates = narrowed \? asked\.length : universe/);
+  // Candidate narrowing may append a bounded lexical recall lane after the
+  // exact-name lane, so the prior keeps the exact-name count instead of the
+  // widened candidate count. The single-prior invariant is unchanged.
+  assert.match(fieldBody, /const priorCandidates = narrowed\s*\?\s*Math\.max\(1, byName\.length \|\| asked\.length\)\s*:\s*universe;/);
   assert.equal((fieldBody.match(/candidates: priorCandidates/g) || []).length, 2);
   assert.doesNotMatch(fieldBody, /candidates: narrowed \? asked\.length : universe/);
 

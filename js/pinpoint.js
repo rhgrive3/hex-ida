@@ -58,11 +58,27 @@ function burstScopedState(registry, callback, opts, createState) {
 
 function narrowedPriorCount(candidates, universe) {
   if (!candidates.length) return Math.max(1, universe || 1);
+  /*
+   * 名前がまるごと一致した枠があるなら、事前オッズはその数で据え置く。
+   * 候補集合の後ろに bounded な recall lane（語並び・語彙の一致）が足されても、
+   * 完全一致クエリの確率を不当に下げないため。
+   */
   const exact = candidates.filter((c) => c && c.askedByName);
-  if (exact.length && exact.length === candidates.length) return exact.length;
+  if (exact.length) return exact.length;
   const literal = candidates.filter((c) => c && (c.askedBySequence || c.askedByWords));
   if (literal.length && literal.length === candidates.length) return literal.length;
   return Math.max(1, universe || candidates.length);
+}
+
+/*
+ * 完全一致の枠（askedByName）は、candidate narrowing が後ろへ足した
+ * 語並び・語彙の recall lane より必ず先に並ぶ。recall lane が完全一致を
+ * 押しのけると、名前で探した人へ名前の違う値を返す元の不具合に戻るため。
+ * recall lane が無い通常のクエリでは、従来どおり fusion だけで並ぶ。
+ */
+function byRecallLane(a, b) {
+  return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
+    || (b.fusion.logOdds - a.fusion.logOdds);
 }
 
 // The public facade accepts only safe, non-negative integer limits. Explicit
@@ -328,7 +344,7 @@ export async function pinpointField(opts = {}) {
   const ranked = raw.candidates.slice();
   const priorCandidates = narrowedPriorCount(ranked, raw.universe);
   for (const c of ranked) c.fusion = fuse(c.evidence || [], { candidates: priorCandidates });
-  ranked.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+  ranked.sort(byRecallLane);
   const decision = decide(ranked);
   const oldTopKey = raw.top && raw.top.key;
   const newTopKey = decision.top && decision.top.key;
