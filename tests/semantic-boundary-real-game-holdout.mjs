@@ -34,6 +34,7 @@ import {
   normalizeOpenJevSemanticRankResponse,
   openJevRequestBody,
 } from '../js/ai/provider/worker-semantic-rank.js';
+import { evaluateHoldoutLabels } from './fixtures/real-holdout-labels.mjs';
 
 const DEFAULT_MANIFEST = new URL('./fixtures/real-game-boundary-holdout.manifest.json', import.meta.url);
 const MANIFEST = JSON.parse(fs.readFileSync(
@@ -132,16 +133,18 @@ const program = {
 
 // A deterministic oracle challenger makes the ceiling of the one-probe path
 // reproducible without touching the network. It answers the labelled boundary
-// id (the boundary set is ranks 4..N, so `c1` is the true D5) with a high
-// probability, so a rescue here is the best the mechanism can ever do.
+// id (the boundary set is ranks 4..N, so `c<rank - 4>` is the labelled rank)
+// with a high probability, so a rescue here is the best the mechanism can ever
+// do.  Every id the request actually carries gets an explicit probability: the
+// contract rejects a partial distribution, and the boundary set is as wide as
+// the candidate list, not always two entries wide.
 function oracleReferee(challengerId) {
-  return async () => ({
-    model: 'openjev', method: 'choice', challengerId,
-    probabilities: challengerId === 'c0'
-      ? { c0: 0.95, c1: 0.03, none: 0.02 }
-      : { c0: 0.03, c1: 0.95, none: 0.02 },
-    abstain: false,
-  });
+  return async ({ candidates }) => {
+    const ids = (candidates || []).map((candidate) => candidate?.id).filter(Boolean);
+    const probabilities = { none: 0.02 };
+    for (const id of ids) probabilities[id] = id === challengerId ? 0.95 : 0.01;
+    return { model: 'openjev', method: 'choice', challengerId, probabilities, abstain: false };
+  };
 }
 
 async function runVariant(caseDef, name, options = {}) {
@@ -181,6 +184,7 @@ async function runVariant(caseDef, name, options = {}) {
     d5Score: trace?.d5Score ?? null,
     d4D5Gap: trace?.gap ?? null,
     rankedShapeScores: trace?.rankedShapeScores ?? null,
+    rankedCandidateOffsets: trace?.rankedCandidateOffsets ?? null,
     truthHitAtBoundary: Array.isArray(trace?.verificationTargets) && trace.verificationTargets.includes(truthId) ? 1 : 0,
     boundaryRescue: topOffset != null && topOffset === truthOffset ? 1 : 0,
     finalTopOffset: topOffset == null ? null : topOffset.toString(),
@@ -209,24 +213,25 @@ async function evaluateCase(caseDef) {
     variants.push(await runVariant(caseDef, 'gated-one-probe', { mode: 'probe', referee: liveReferee('choice') }));
   }
   const gated = variants.find((variant) => variant.name === 'gated-one-probe') || null;
-  const rank = Number(caseDef.expectedDeterministicRank);
-  // The boundary set is ranks 4..N, so only a truth ranked 4 or later can be
-  // reached by the referee at all.  This is derived, not trusted: a manifest
-  // claim that contradicts the rank is reported as a label failure below.
-  const truthReachableByRank = Number.isFinite(rank) && rank >= 4;
   const rankedShapeScores = current.rankedShapeScores;
-  const labelChecks = {
-    candidateCountMatches: Array.isArray(rankedShapeScores) && rankedShapeScores.length === caseDef.expectedCandidateCount,
-    rankWithinCandidates: Array.isArray(rankedShapeScores) && rank >= 1 && rank <= rankedShapeScores.length,
-    reachabilityClaimMatchesRank: (caseDef.boundaryTruthReachable === true) === truthReachableByRank,
-    deterministicTopClaimMatchesMeasurement: (caseDef.deterministicTopIsTruth === true)
-      === (current.finalTopOffset === String(caseDef.offset)),
-    deterministicTopReproduced: current.finalTopOffset === String(caseDef.deterministicTopOffset),
-    // When the oracle runs it names the boundary id it forced; that id must be
-    // the rank the manifest labelled, which proves the rank label is real.
-    oracleProbeTargetsLabelledRank: oracle ? oracle.probe?.candidateId === `d${rank}` : true,
-  };
-  const labelsConsistent = Object.values(labelChecks).every(Boolean);
+  // The label checks live in a fixture module so the failure mode they exist
+  // for — a rank label that can never be contradicted — is itself regression
+  // tested without the pinned artifact.
+  const { rank, truthReachableByRank, labelChecks, labelsConsistent } = evaluateHoldoutLabels({
+    caseDef,
+    measurement: {
+      rankedShapeScores,
+      rankedCandidateOffsets: current.rankedCandidateOffsets,
+      finalTopOffset: current.finalTopOffset,
+      oracle: oracle
+        ? {
+          refereeStatus: oracle.referee?.status ?? null,
+          probeCandidateId: oracle.probe?.candidateId ?? null,
+          probeAttempted: oracle.probe?.attempted === true,
+        }
+        : null,
+    },
+  });
   // A case is promotional only when the deterministic baseline misses the
   // truth and the gated probe rescues it. When the truth is not reachable from
   // the boundary set, the case reports that limitation instead of a rescue.
@@ -242,9 +247,15 @@ async function evaluateCase(caseDef) {
     boundaryTruthReachable: caseDef.boundaryTruthReachable === true,
     truthReachableByRank,
     rankedShapeScores,
+    rankedCandidateOffsets: current.rankedCandidateOffsets,
     labelChecks,
     labelsConsistent,
+    // The one-probe ceiling: what the mechanism can do when the challenger is
+    // known to be the labelled truth.  `oracleCeilingRescues: false` on a case
+    // whose oracle probed the labelled rank is a product finding, not a label
+    // failure, and it must never be reported as an unmeasured null.
     oracleCeilingRescues: oracle ? oracle.boundaryRescue === 1 : null,
+    ceilingMeasured: oracle ? oracle.probe?.attempted === true : null,
     promotionEligible,
     variants,
   };

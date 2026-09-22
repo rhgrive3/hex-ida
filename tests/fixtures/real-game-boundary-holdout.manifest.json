@@ -85,23 +85,40 @@
       "field": "mobj_t.health",
       "offset": 196,
       "expectedCandidateCount": 8,
-      "expectedDeterministicRank": 4,
+      "expectedDeterministicRank": 5,
       "expectedD4D5Gap": 0.0015340909090909016,
       "deterministicTopOffset": 148,
       "deterministicTopIsTruth": false,
       "boundaryTruthReachable": true,
-      "oracleChallengerId": null,
-      "labelNote": "The labelled truth is verified inside the normal D1..D4 set, so the referee is not allowed to inspect it as a challenger; the case measures whether the real game is rescued by the deterministic path alone, not by a D5..D8 challenger."
+      "oracleChallengerId": "c1",
+      "labelNote": "The rank is the *boundary* order (shape score per rank), which is the order the referee's c0.. ids are allocated from, not the final answer order: the truth sits at boundary rank 5, so the referee can reach it as c1 and spend the one bounded probe on it. Ranks 1..4 are always inside the baseline D1..D4 verification set, so a 'rank 4' label can never be contradicted by the harness and is not a usable label. The oracle challenger is declared so the rank claim stays bound to a measurement: the oracle result only counts if the probe actually targeted d5."
     }
   ],
   "observed": {
     "evaluatedAt": "2026-09-22",
     "deterministicTopOffset": 148,
     "deterministicTopField": "mobj_t.momz",
-    "rankedCandidateOffsets": [148, 56, 240, 196, 404, 256, 212, 80],
+    "orderedBy": {
+      "boundary": "Shape score per rank. This is the order the referee's c0.. ids are allocated from, so `c<rank - 4>` names boundary rank `rank`.",
+      "finalAnswer": "Bayesian fusion order of the same candidates, which is what the product returns."
+    },
+    "boundaryOrder": [80, 148, 56, 240, 196, 404, 256, 212],
+    "finalAnswerOrder": [148, 56, 240, 196, 404, 256, 212, 80],
     "rankedShapeScores": [0.2142857142857143, 0.20833333333333334, 0.2, 0.198125, 0.1965909090909091, 0.18333333333333332, 0.14895833333333333, 0.146875],
     "d4D5Gap": 0.0015340909090909016,
-    "finding": "On the real game the true hit-point field (mobj_t.health, offset 196) is verified but still loses the final ordering to mobj_t.momz (offset 148), which is a vertical-momentum field, not a resource. The referee cannot change this: the labelled truth is at rank 4, and the referee may only inspect ranks 5..8."
+    "finding": "On the real game the true hit-point field (mobj_t.health, offset 196) is only the fifth boundary candidate and the deterministic answer is mobj_t.momz (offset 148), a vertical-momentum field, not a resource. mobj_t.momz is the field that gets the verified drain evidence: gravity subtracts from it, so on the real game the `loc-drain-verified` evidence lands on a momentum field while the truth is not binary-verified at all in the baseline (the baseline verifies boundary ranks 1..4, which are offsets 80, 148, 56 and 240).",
+    "oracleCeiling": {
+      "challengerId": "c1",
+      "probeCandidateId": "d5",
+      "probeStatus": "reconfirmed",
+      "refereeStatus": "probe-promoted-by-binary-evidence",
+      "verificationTargets": ["d1", "d2", "d3", "d5"],
+      "analyzeCalls": 2,
+      "finalTopOffset": "148",
+      "boundaryRescue": 0,
+      "note": "With the labelled truth forced as the challenger, the gated probe opens the writing window, reconfirms it with binary evidence, and the product does promote it into the boundary verification slot - and the returned answer does not move. The one-probe ceiling for this case is therefore measured, not assumed: the probe path can change which candidate is binary-verified, but not the final ordering. The synthetic OpenMW fixture measured the same ceiling (`oracleCeiling` there: five DynamicStat<int>::mCurrent candidates tie at p=0.9822 and ordering wins), so this is a property of the product, reproduced on a real upstream ARM64 release."
+    },
+    "remainingWork": "Un-gating the probe path needs a product change that lets a reconfirmed probe move the returned answer, and it must be validated against the counterexample the other labelled holdout already measures: an admitted challenger that is wrong must not move an already-correct answer. That counterexample needs the local OpenMW compiler fixture, which is not fetchable from this repository, so it is out of scope for this fixture."
   },
-  "scope": "Real upstream ARM64 game release, hash-pinned. It replaces the earlier locally-built two-file compiler fixture for this lane, which could not exhibit a boundary rescue because every pool was an arbitrary subset of one upstream translation unit. This fixture cannot by itself authorize production promotion."
+  "scope": "Real upstream ARM64 game release, hash-pinned. It replaces the earlier locally-built two-file compiler fixture for this lane, which could not exhibit a boundary rescue because every pool was an arbitrary subset of one upstream translation unit. This fixture cannot by itself authorize production promotion, and its own labels are checked against the measurement: the boundary rank must be the rank the truth actually occupies, and a declared oracle must really have probed that rank, otherwise the case reports a label failure instead of evidence."
 }

@@ -1096,6 +1096,15 @@ function makeSemanticBoundaryTrace(candidates, eligibility) {
     // Shape score per rank.  Internal-only instrumentation: it lets a labelled
     // holdout check its own rank claims instead of trusting the manifest.
     rankedShapeScores: candidates.slice(0, 8).map(shapeScoreForTrace),
+    // The offsets those scores belong to, in the same boundary order the
+    // referee's candidate ids are allocated from.  This is what makes a
+    // labelled "the truth is at rank N" claim falsifiable: without it a rank
+    // that always happens to sit inside the baseline verification set can never
+    // be contradicted.  Internal-only, like the scores: offsets are exactly
+    // what the referee packet is not allowed to carry.
+    rankedCandidateOffsets: candidates.slice(0, 8).map((candidate) => (
+      candidate?.offset == null ? null : String(candidate.offset)
+    )),
     eligibility: eligibility?.eligible === true ? 'eligible' : (eligibility?.reason || null),
     mode: null,
     referee: { called: false, status: 'not-requested', method: null, model: null, challengerId: null, margin: null },
@@ -1291,6 +1300,7 @@ function emitSemanticBoundaryInstrumentation(o, trace, output, list, candidateId
     d5Score: trace.d5Score,
     gap: trace.gap,
     rankedShapeScores: Array.isArray(trace.rankedShapeScores) ? trace.rankedShapeScores.slice() : [],
+    rankedCandidateOffsets: Array.isArray(trace.rankedCandidateOffsets) ? trace.rankedCandidateOffsets.slice() : [],
     eligibility: trace.eligibility,
     mode: trace.mode,
     referee: { ...trace.referee },

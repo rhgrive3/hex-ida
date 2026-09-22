@@ -44,27 +44,46 @@ base は現 main `adadf37ac0a7877d201cbc8faf711b1b5b95c4af`（#9407）。
 | variant | final top-1 | rescue | wrong-top-1 | false-likely | analyze | semantic |
 |---|---|---:|---:|---:|---:|---:|
 | 現行 D1〜D4 | 148 (`mobj_t.momz`) | 0 | 1 | 1 | 18 | 0 |
+| oracle 1-probe（上限） | 148 | 0 | 1 | 1 | 18 | 1 |
 
-- 候補順: 148, 56, 240, **196**, 404, 256, 212, 80（8 件）。labelled truth は **rank 4（D4、通常検証の内側）**。
+- 2 つの順序を混同しないこと。**boundary 順**（= shape score 順 = referee の `c0..` の割当順）は
+  `80, 148, 56, 240, **196**, 404, 256, 212`、**final answer 順**（= fusion 順 = 製品の返り値）は
+  `148, 56, 240, **196**, 404, 256, 212, 80`。真値 `mobj_t.health`(196) は
+  boundary **rank 5**（= `c1`）であり、final 順では 4 番目である。
 - D4/D5 gap = 0.001534 < `maxD4D5Gap` 0.02 → ゲートは発火する。
+- oracle: `c1`(=d5=196) を強制 → probe `reconfirmed` (2 analyze) → referee `probe-promoted-by-binary-evidence`
+  （検証 slot が `d1,d2,d3,d4` → `d1,d2,d3,d5` に差し替わる）→ **final top-1 は 148 のまま**。
+  つまり 1-probe の上限がこのケースで実測されていて、値は「救済できない」である。
 - `labelsConsistent: true` / `promotionEligible: false`。artifact の sha256 は fixture の pin と一致（`artifact.pinned: true`）。
 
 ### 再計測（live OpenJev、`HEX_SEMANTIC_BOUNDARY_HOLDOUT_LIVE=1`）
 
-| variant | final top-1 | rescue | analyze | semantic | referee |
-|---|---|---:|---:|---:|---|
-| 現行 D1〜D4 | 148 | 0 | 18 | 0 | no-referee |
-| shadow choice | 148 | 0 | 18 | 1 | received c0, margin 0.88 |
-| shadow parallel noul | 148 | 0 | 18 | 1 | received c0, margin 0.07 |
-| gated 1-probe | 148 | 0 | 18 | 1 | `challenger-not-tail`（c0 は D4 なので probe しない） |
+| variant | final top-1 | rescue | hit@boundary | analyze | semantic | referee |
+|---|---|---:|---:|---:|---:|---|
+| 現行 D1〜D4 | 148 | 0 | 0 | 18 | 0 | no-referee |
+| oracle 1-probe（上限） | 148 | 0 | **1** | 18 | 1 | `probe-promoted-by-binary-evidence` → probe `reconfirmed` (d5) |
+| shadow choice | 148 | 0 | 0 | 18 | 1 | received **c0**, margin 0.85 |
+| shadow parallel noul | 148 | 0 | 0 | 18 | 1 | received **c0**, margin 0.07 |
+| gated 1-probe | 148 | 0 | 0 | 18 | 1 | `challenger-not-tail`（c0 は boundary rank 4 で、probe は d5〜d8 にしか出せない） |
 
-latency: choice p50 ≈ 467 ms / p95 ≈ 855 ms、noul p50 = 707 ms。
+latency: choice p50 ≈ 421 ms / p95 ≈ 863 ms、noul p50 = 567 ms。
 
-**実ゲームでの結論:** OpenJev は labelled truth（`mobj_t.health` = 境界集合の先頭 c0 = D4）を実際に選ぶ。
-しかし契約上 challenger は D5〜D8 からしか出せないため probe には進まず（`challenger-not-tail`）、
-どの variant でも top-1 は 148（`mobj_t.momz` = 垂直方向の運動量）のままである。
-つまりこの実ゲーム・この goal では、**referee の守備範囲に真値が無い**ため救済は原理的に起きない。
-同時に、決定的経路が「資源ではない運動量フィールド」を `likely` で top-1 に出すことが実測で確認された（`wrongTop1:1` / `falseLikely:1`）。
+**実ゲームでの結論（2つあり、どちらも実測）:**
+
+1. **live の referee は真値 `c1` ではなく `c0`（boundary rank 4 = offset 240 = `player_t.ammo[0]`、decreases 25 / increases 1）を選ぶ。**
+   noul の margin 0.07 は admission（minMargin 0.2）で弾かれ、choice は margin 0.85 で
+   admission は通るが `challenger-not-tail` で probe に進まない（c0 は boundary rank 4）。
+   つまり**モデル側は still 未成熟**であり、閾値を緩める根拠にはならない。
+2. **oracle で真値 `c1` を強制しても final top-1 は動かない。** probe は実窓で書き込みを
+   `reconfirmed` し、製品はそれを boundary 検証 slot に昇格させる（`probe-promoted-by-binary-evidence`）が、
+   返る答えは 148 のままである。同じ上限は合成 OpenMW fixture でも実測されている
+   （5 候補が p=0.9822 で同点になり ordering が勝つ）ので、これは製品の性質であり、
+   実 ARM64 リリースで再現したことになる。
+
+つまり救済が起きない理由は「referee の守備範囲に真値が無い」ではなく、
+**probe が検証集合を変えても返り値を変えられない**こと（＋ live の選択がまだ外れること）である。
+同時に、決定的経路が「資源ではない運動量フィールド」(`mobj_t.momz`、gravity で減るので
+`loc-drain-verified` が付く) を `likely` で top-1 に出すことも実測で確認された（`wrongTop1:1` / `falseLikely:1`）。
 これは fixture を緩める話ではなく製品側の findings であり、`promotionEligible:false` を維持する。
 
 ### 追加した機械強制
@@ -74,6 +93,17 @@ latency: choice p50 ≈ 467 ms / p95 ≈ 855 ms、noul p50 = 707 ms。
 - harness は artifact の sha256 を manifest の pin と照合し、一致しなければ**測定を拒否**する（別バイナリの証跡で promotion できない）。
 - `tests/semantic-boundary-referee.mjs`: 3 fixture（synthetic / openmw / 実ゲーム）が同一の frozen policy を使うこと、
   実ゲーム label が pin 済み identity と二重導出 provenance を持つことを固定。
+- **label を反証可能にする**: `tests/fixtures/real-holdout-labels.mjs` が rank claim を
+  harness の内部計測（`rankedCandidateOffsets` = boundary 順）と突き合わせる。
+  以前は「baseline 検証集合に `d<rank>` が入っているか」だけを見ていたので、
+  rank 1〜4 は常に集合に入る → **rank 4 のラベルは絶対に反証できない**という穴があった
+  （偽の `labelsConsistent: true` を生む）。
+- oracle challenger を宣言したケースは、oracle が実際に admission を通り `d<rank>` を probe したことまで要求する。
+  以前は oracle 応答が部分的（境界候補が 5 件あるのに `c0/c1` しか返さない）だと契約が `invalid-response` で弾き、
+  **上限が未計測のまま 0 として報告される**穴があった（実ゲームで実際に起きていた）。
+- `tests/semantic-boundary-holdout-labels.mjs`: 上記 2 つを artifact 無しで回帰固定
+  （rank 1〜4 のラベルは必ず失敗 / 未計測 oracle は必ず失敗 / instrumentation 欠落は fail closed /
+  コミット済み fixture 自身の rank・oracle・ceiling の整合）。
 
 ## 現在地
 
