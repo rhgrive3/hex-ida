@@ -220,6 +220,64 @@ size と Git blob sha1 を検証する（secret 不要）。3種をスクラッ�
 **結論: この機能の目標シナリオは構成可能な holdout から再現せず、再現していたのは fixture 側の
 非対称性だった。** 「Jev をさらに改善する」のではなく、機能の是非を判断する段階。
 
+### 10. 実バイナリでの前提検定（決定的・実測）
+
+設計書の前提を、構築 fixture ではなく**実在の配布アプリ**で検定した。
+
+- 対象: `battlecats` / `TsumTsum` / `YWP`（`npm run fixtures:large` で取得、size + blob sha1 検証済み）
+- ラベル: そのバイナリ中で名前が一意なフィールド（正解が定義できるものだけを問う）
+- 測定器: `pinpointField` は既にランク順の候補を返すため、新しい計装は不要だった
+  （真値の順位をそのまま読める。branch で足した instrumentation はこの用途には不要だった）
+- 実測スクリプトと生データ: `evidence/openjev-boundary-referee/boundary-premise-*.json`、
+  `evidence/openjev-boundary-referee/measure-boundary-premise.mjs.txt`
+
+| モード | クエリ数 | top-1 正解 | top-4 外（取り逃し） |
+|---|---:|---:|---:|
+| 完全な名前（一意） | 230 | **229 (99.6%)** | **0** |
+| うろ覚えの名前（部分） | **196** | 53 (27.0%) | **65 (33.2%)** |
+
+取り逃し 65 件の内訳:
+
+| 内訳 | 件数 | 割合 | referee に可能か |
+|---|---:|---:|---|
+| **候補にすら入っていない** | 54 | **27.6%** | ❌ 原理的に不可（候補から選ぶ装置なので） |
+| 候補にはあるが D4 以下 | 11 | 5.6% | △ |
+| うち referee の発火条件に合致 | **4** | **2.0%** | ○ |
+
+発火条件に合致した実例（全て `goal = free`）:
+
+```
+battlecats: action button  → FBNativeAdBaseView._callToActionButton        rank 7/7   gap 0.0000
+TsumTsum  : new count      → LCLGCategoryNewCount.mCategoryNewCount        rank 5/5   gap 0.0008
+YWP       : custom close   → GADCloseButton._enabledOnCustomClose          rank 5/12  gap 0.0000
+YWP       : load finish    → PAGExpressRewardFullScreenVM._normalPlayableLoadFinish rank 5/8 gap 0.0000
+```
+
+**確定したこと:**
+
+1. 設計書の前提は**真**。「実バイナリで真値が D1〜D4 の外に落ちる障害は実在する」（33.2%）。
+2. しかしその 83%（54/65）は **recall の失敗**であり、referee の設計範囲外。
+   referee は「既存候補から 1 つ選ぶ」装置なので、候補に無いものは選べない。
+3. referee が発火できるのは **2.0%** のみ。しかも 4 件とも `goal = free` で、
+   現行の二重の関門（`supported-goal` と `uncalibrated-goal`）により **1件も発火しない**。
+   → **実データでの測定インパクトは 0。**
+
+**`free` の正体（重要）:** `js/goals.js` の `parseGoal` は、プリセットに当たらない入力を
+`{ id: 'free', free: true, text: raw }` にする。つまり `free` は **自由入力モード**であり、
+実利用の主流（この標本では 196 件中 192 件）。`semanticBoundaryGoal()` は `goal.label ||
+ goal.text || id` を使うので、**自由入力を有効化すればユーザーの生の言葉がそのままモデルに渡る**。
+
+次の実装（4 件の実ケースでの最終検証）に必要な変更:
+
+1. `SUPPORTED_SHAPE_GOALS` に `free` を追加（自由入力は `goal.text` が意味の担い手で、
+   こちらが用意する期待文が無いため「較正」の対象がない。
+   `uncalibrated-goal` は「作者が書いた文言が未検証」を防ぐための規則で、自由入力には適用しない）。
+2. 実バイナリ用の holdout harness（既存の OpenMW 版は shapes-only なので、
+   ObjC の fields 経路： `pinpointField` + `semanticBoundaryReferee` を使う）。
+3. 上記 4 件を labelled case として登録し、oracle 上限と live choice/noul を測定。
+
+ここまでで前提検定は完了したので、残るは「この 4 件で top-1 が動くか」だけ。
+
 ### 6. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
 
 - `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
