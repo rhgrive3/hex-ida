@@ -14,17 +14,28 @@
     "checkedIn": false,
     "reason": "The locally compiled artifact incorporates GPL-licensed upstream source and must remain outside this proprietary repository."
   },
+  "derivation": {
+    "why": "The first fixture gave the labelled truth the FEWEST update functions (health 3) while upstream gives it the MOST (21), which inverted the one quantity that survives verification. It measured the fixture, not the model.",
+    "breadthRule": "Per-pool function count = number of distinct upstream functions that update that pool in the pinned commit, by one grep rule over apps/ and components/: matches on `setHealth(` / `getHealth().setCurrent(` / `setDynamic(0,` for health, and the analogous patterns for magicka (1) and fatigue (2).",
+    "measuredUpstreamCounts": { "health": 21, "fatigue": 18, "magicka": 14 },
+    "comparisonPools": "The two pools that do not exist upstream in this form (shield, poison) take the MEDIAN of the three real counts (18), so the comparison is neither stacked for nor against the labelled truth.",
+    "mixRule": "Every pool uses the same 2:1 decrement/increment mix, so the only per-pool difference is how many functions touch it.",
+    "abandonedFixture": "The earlier symmetric 5-pool wrapper (health 3 / magicka 4 / fatigue 5 / shield 4 / poison 4 functions) produced deterministic rank 5 for the truth and no rescue. It is retained only as the counter-example that exposed the inversion."
+  },
   "compiler": {
+    "toolchain": "Ubuntu clang 14.0.0-1ubuntu1.1 + ld64.lld",
     "target": "arm64-apple-macos11",
     "optimization": "-O1",
-    "flags": "-std=c++20 -fno-exceptions -fno-rtti -fno-unwind-tables -fno-asynchronous-unwind-tables",
-    "linkMode": "freestanding Mach-O for the existing Node analysis harness"
+    "compile": "clang++ -target arm64-apple-macos11 -O1 -std=c++20 -fno-exceptions -fno-rtti -fno-unwind-tables -fno-asynchronous-unwind-tables -nostdlib -nostdinc++ -I<fixtureDir> -I<openmwSourceRoot> -c openmw_breadth.cpp -o breadth.o",
+    "link": "clang++ -target arm64-apple-macos11 -fuse-ld=lld -nostdlib -Wl,-e,__start breadth.o -o openmw-holdout-breadth-arm64-o1.macho",
+    "note": "The entry symbol must be passed as `__start` (the stored Mach-O name for the C symbol `_start`)."
   },
   "artifact": {
-    "file": "openmw-holdout-arm64-o1.macho",
+    "file": "openmw-holdout-breadth-arm64-o1.macho",
     "arch": "arm64",
-    "bytes": 24800,
-    "sha256": "7e2d25f7fd4c1cc7c93f04417665a22487ab5f7880a7ae9af7dc47b3e7c64bcc",
+    "bytes": 28736,
+    "sha256": "f86fd4f947a11e90da9c7703918bf27b08b3b39ed749c8a22b02cf3d152f66de",
+    "upstreamFunctions": 89,
     "buildEnvVar": "HEX_OPENMW_HOLDOUT_ARTIFACT"
   },
   "openJevContract": {
@@ -67,12 +78,13 @@
       "field": "ActorStats.health.current",
       "offset": 24,
       "expectedCandidateCount": 5,
-      "expectedDeterministicRank": 5,
-      "expectedD4D5Gap": 0.015625,
-      "deterministicTopOffset": 48,
-      "deterministicTopIsTruth": false,
-      "boundaryTruthReachable": true,
-      "oracleChallengerId": "c1"
+      "expectedDeterministicRank": 1,
+      "expectedD4D5Gap": 0,
+      "deterministicTopOffset": 24,
+      "deterministicTopIsTruth": true,
+      "boundaryTruthReachable": false,
+      "oracleChallengerId": null,
+      "note": "The labelled truth is rank 1 on the breadth-faithful fixture: the deterministic model already answers this goal, so the referee has no scenario to act on."
     },
     {
       "goal": "stamina",
@@ -80,43 +92,25 @@
       "field": "ActorStats.fatigue.current",
       "offset": 48,
       "expectedCandidateCount": 5,
-      "expectedDeterministicRank": 1,
-      "expectedD4D5Gap": 0.015625,
-      "deterministicTopOffset": 48,
-      "deterministicTopIsTruth": true,
+      "expectedDeterministicRank": 2,
+      "expectedD4D5Gap": 0,
+      "deterministicTopOffset": 24,
+      "deterministicTopIsTruth": false,
       "boundaryTruthReachable": false,
-      "oracleChallengerId": null
+      "oracleChallengerId": null,
+      "note": "Rank 2 and already verified by the baseline; it loses to health only because health has more upstream update functions. Rank 2 is inside the ordinary verification set, so the boundary referee again has nothing to add."
     }
   ],
-  "truth": {
-    "goal": "hp",
-    "field": "ActorStats.health.current",
-    "offset": 24,
-    "expectedDeterministicRank": 5,
-    "expectedCandidateCount": 5,
-    "expectedD4D5Gap": 0.015625
-  },
   "observed": {
     "evaluatedAt": "2026-09-22",
-    "currentTopOffset": 48,
-    "refereeSelection": "c1 (D5, the true candidate) with the goal-aware net-depleting wording",
-    "liveChoiceChallenger": "c1 (D5)",
-    "liveChoiceNote": "The generic wording selected the wrong c0 (D4) 5/5 times; the goal-aware net-depleting wording selects the true c1 (D5) 6/6 at p=0.99.",
-    "liveParallelNoul": "c1 (D5) at p=0.88..0.91 (5/5)",
-    "gatedOneProbeStatus": "admitted -> probe reconfirmed; verification-hit@4 = 1",
-    "oracleCeiling": "Even a forced oracle challenger leaves the final top-1 unchanged: the five candidates are all DynamicStat<int>::mCurrent and tie at p=0.9822 in the deterministic fusion, so ordering wins.",
-    "staminaCase": "The deterministic top is already ActorStats.fatigue.current (offset 48) and the labelled truth is ranked 1, so it sits outside the D4..D8 boundary set the referee is given. Live choice and live parallel noul both answer c1 (ActorStats.health.current), the gated probe therefore swaps rank 4 for rank 5, and the final top-1 stays the labelled truth: an admitted-but-wrong challenger did not move an already-correct result.",
-    "probeWindows": "A probe may open up to VERIFY_FUNCTIONS = 3 distinct windows and stops at the first one that reconfirms the write. On both live cases it reconfirmed on the first window (1 analyze call).",
-    "rankedShapeScores": [0.19375, 0.17708333333333331, 0.17708333333333331, 0.17708333333333331, 0.16145833333333334],
-    "rankedShapeScoresNote": "Ranks 1..5 measured from the instrumentation trace. Only rank 1 (0.19375) is separated; ranks 2..4 tie at 0.1771 and rank 5 trails at 0.1615, which is the 0.015625 D4/D5 gap the ambiguity policy fires on.",
-    "labelSelfCheck": "The harness does not trust these labels: it derives reachability from the labelled rank, requires candidateCount to match, and requires the oracle probe to target `d<expectedDeterministicRank>`. A manifest claim that disagrees with the measurement is reported as a label failure and blocks promotion.",
-    "upstreamLatencyMs": {
-      "choice": { "p50": "451..492", "p95": "583..809" },
-      "noul": { "p50": "450..615", "p95": "450..761" },
-      "note": "Observed range across a handful of live runs; treat as a sample, not a latency bound. Worker timeout remains 2500 ms."
-    },
-    "boundaryRescue": 0,
+    "breadthFaithfulTop": "offset 24 (the labelled hp truth)",
+    "rankedShapeScores": [0.25, 0.25, 0.25, 0.25, 0.25],
+    "d4D5Gap": 0,
+    "eligibility": "eligible",
+    "finding": "The ambiguity gate fires on this case (gap 0 <= 0.02) even though the top-1 is already the labelled truth and the wrong candidates are not reachable from the boundary set. On a breadth-faithful fixture the referee can therefore only be neutral or harmful, never corrective.",
+    "verifiedCandidateProbabilities": "All four verified candidates tie at p=0.982155; ordering decides, and breadth now puts the truth first.",
+    "oldFixtureResult": "On the inverted fixture the truth sat at rank 5 and neither choice, parallel noul, nor a forced oracle challenger changed the final top-1.",
     "promotionEligible": false
   },
-  "scope": "Source-grounded compiler fixture only. It is not a full OpenMW release binary and cannot by itself authorize production promotion. On this holdout neither choice nor parallel noul changes the final top-1, so the referee stays shadow-only."
+  "scope": "Source-grounded compiler fixture only. It is not a full OpenMW release binary and cannot by itself authorize production promotion. The breadth-faithful fixture removes the referee's target scenario rather than enabling it, so production stays gated."
 }

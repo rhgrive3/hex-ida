@@ -265,6 +265,19 @@ A promotion decision needs to know which evidence can still separate candidates 
 | rank 1 (leader) | 3.4012 (n=3) | 1.7918 (n=3) | 1.1632 (n=3) | 4.0080 | 0.982155 |
 | labelled truth (rank 5) | 3.4012 (n=3) | 1.7918 (n=3) | 0.7754 (n=2) | 3.6203 | 0.973924 |
 
-The verified codes carry **constant** likelihood ratios (`loc-drain-verified` lr 30, `loc-clamp-verified` lr 6) and their strength saturates at two confirmed changes, so “verified drain” behaves as one binary fact. The only graded quantity left is `loc-shared` — how many functions touch the field. A referee can therefore only change the outcome when the labelled truth is not behind on usage breadth; a case whose truth is touched by fewer functions than its decoys cannot be rescued by any referee, including a perfect one. Holdout cases must be selected with that condition in mind, and each pool must include all of the upstream project's real update sites rather than a hand-picked subset.
+The verified codes carry **constant** likelihood ratios (`loc-drain-verified` lr 30, `loc-clamp-verified` lr 6) and their strength saturates at two confirmed changes, so “verified drain” behaves as one binary fact. The only graded quantity left is `loc-shared` — how many functions touch the field. A referee can therefore only change the outcome when the labelled truth is not behind on usage breadth; a case whose truth is touched by fewer functions than its decoys cannot be rescued by any referee, including a perfect one.
+
+### The activation scenario did not survive a breadth-faithful fixture
+
+The measurement above came from a fixture that assigned the true pool **fewer** update sites than its decoys. Counting the upstream commit's real update sites per pool gives health 21, fatigue 18, magicka 14 — the true pool has the **most**, so that fixture had the one surviving discriminator inverted. Rebuilding it faithfully (all upstream sites per pool, median breadth for the pools the upstream type does not have, identical 2:1 change mix everywhere) gives:
+
+| case | labelled truth | deterministic rank | baseline top-1 | truth rescue |
+|---|---|---:|---|---:|
+| `hp` | offset 24 | **1** | **offset 24 = truth** | **1** |
+| `stamina` | offset 48 | 2 | offset 24 | 0 |
+
+So the premise this feature is built on — a labelled truth stranded in the boundary set (rank 4+) — is not reproducible from this source once breadth matches the upstream. When the truth *is* first, the ambiguity gate still fires (saturated scores make the D4/D5 gap 0), so the referee would be consulted on a case that needs no help: under a faithful fixture it can only be neutral or harmful. `maxD4D5Gap` is not a risk signal on saturated scores; it would additionally need a precondition that the top-1 is actually at risk.
+
+Feature status: **no demonstrated rescue scenario, so production stays off.** Deciding whether to freeze/remove this path, add a top-1-risk precondition to the gate and re-evaluate, or first hand-label a real binary where the truth really is in the boundary set and loses on breadth is a product decision. Adding more goal wording is not a substitute — the deterministic layer already resolves the goals it can label.
 
 Success is not “making Hex AI-powered.” Success is leaving already-clear deterministic results untouched while rescuing a genuinely ambiguous D5–D8 true candidate into one bounded binary-grounded probe—and retaining exactly the current Hex behavior when OpenJev is removed.

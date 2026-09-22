@@ -276,9 +276,19 @@ for (const referee of [
     assert.equal(HOLDOUT_MANIFEST.kind, 'external-source-grounded-arm64-fixture');
     assert.ok(labelled.has(goalId), `${goalId} guidance has no labelled holdout case`);
   }
+  // Measured ranks on the breadth-faithful fixture: the hp truth wins outright and
+  // the stamina truth sits inside the ordinary verified set, so neither case puts a
+  // labelled truth in the boundary set the referee can reach.  These used to be
+  // 5 and 1 on a fixture that had the one surviving discriminator (update-site
+  // breadth) inverted relative to the upstream source.
   const labelledRanks = new Map(HOLDOUT_MANIFEST.cases.map((entry) => [entry.goal, entry.expectedDeterministicRank]));
-  assert.equal(labelledRanks.get('hp'), 5);
-  assert.equal(labelledRanks.get('stamina'), 1);
+  assert.equal(labelledRanks.get('hp'), 1);
+  assert.equal(labelledRanks.get('stamina'), 2);
+  for (const entry of HOLDOUT_MANIFEST.cases) {
+    // reachability is derived from rank, never asserted independently
+    assert.equal(entry.boundaryTruthReachable, entry.expectedDeterministicRank >= 4, `${entry.goal} reachability must follow from its rank`);
+    assert.equal(entry.oracleChallengerId, entry.boundaryTruthReachable ? `d${entry.expectedDeterministicRank}` : null, `${entry.goal} oracle target must follow from its rank`);
+  }
 }
 
 // The frozen ambiguity/admission policies live in the labelled fixture, and the

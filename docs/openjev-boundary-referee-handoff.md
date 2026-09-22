@@ -128,13 +128,15 @@ oracle referee で真値（offset 24）を probe → 検証成功させたとき
   producer は strength `Math.min(1, drains.length / 2)` を渡すが、drains>=2 で **飽和**する。
   よって「検証済み drain」は実質**二値の事実**であり、候補間に差を作らない。
 - **検証後に残る唯一の graded な差は `loc-shared`（その offset を触る関数数 = breadth）**。
-- この fixture は health を触る関数を decoy より少なく配置しているため、真値は検証後も
-  leader に **0.0082 差で負ける**（p 0.9739 vs 0.9822）。oracle 上限でも動かない理由はこれ。
-- したがって抑制要因は**製品欠陥ではなく**、「検証後の識別子が使用頻度（breadth）だけ」という
-  モデルの性質である。実アプリの HP はダメージ/回復/UI/セーブ/死亡判定など多数の関数から
-  触られるため breadth で勝てる可能性がある。
-- 次に作るべき holdout の正しい条件: **真値が rank 4〜5 に落ち、かつ breadth で decoy に負けない**ケース。
-  公平性のため、各 pool は**上流の実関数を全件**含める（恣意的な部分集合を選ばない）。
+- 当時の fixture は health を触る関数を decoy より少なく配置していたため、真値は検証後も
+  leader に **0.0082 差で負けた**（p 0.9739 vs 0.9822）。oracle 上限でも動かなかった理由はこれ。
+- 抑制要因は**製品欠陥ではなく**、「検証後の識別子が使用頻度（breadth）だけ」という
+  モデルの性質である。
+- **ただし当時の fixture の breadth 割り当ては上流と逆だった。§9 で上流忠実に作り直した結果、
+  `hp` の真値は rank 1（= baseline の top-1）になり、この節の「救済不能」は fixture の産物
+  だったと確定した。**
+- 残る結論（今も有効）: 検証後に graded な差を作るのは breadth だけなので、holdout の
+  breadth 割り当ては**上流の実測値に従わなければならない**（恣意的な部分集合を選ばない）。
 
 ### 8. 実バイナリでの救済探索（実行済み）と、そこで当たった壁
 
@@ -177,6 +179,47 @@ size と Git blob sha1 を検証する（secret 不要）。3種をスクラッ�
   （独立オラクル `tests/oracle.py` は python + `lief` + `capstone` が必要で、この環境には未導入。
   導入しても真値は結局 ivar 名に依存するため、この壁は残る。）
 
+### 9. 上流忠実な breadth での再検定（決着・重要）
+
+§7 の結論に対する唯一の反証可能な仮説は「breadth 割り当てが上流と逆だから真値が沈む」だった。
+これを**実測で検証**し、**反証された**（仮説は当たり、救済シナリオは消えた）。
+
+1. 上流コミット固定のまま、pool を更新する実関数数を grep で機械的に数えた:
+
+   | pool | 上流の更新関数数 |
+   |---|---:|
+   | health | **21** |
+   | fatigue | 18 |
+   | magicka | 14 |
+
+   → 上流は **health が最多**。旧 fixture は health を 3（最少）にしていたので、唯一有効な
+   識別子（breadth）の順序が**真逆**だった。
+2. 上流忠実版を生成（実在しない shield/poison は 3 実値の**中央値 18** を採用、全 pool で
+   減算2:加算1の同型、関数は上流の全件を含める）。86 関数 → 89 関数、arm64 Mach-O 28736 bytes。
+3. 再検定結果（offline harness、`labelsConsistent: true`）:
+
+   | case | 真値 offset | deterministic rank | baseline top-1 | truth rescue |
+   |---|---|---:|---|---:|
+   | `hp` | 24 | **1** | **24 = 真値** | **1** |
+   | `stamina` | 48 | 2 | 24 | 0 |
+
+- **`hp` の真値は rank 1。決定的モデルが既に正解を出している。**
+  検証済み候補は依然 4 件が p=0.982155 で完全同点だが、breadth が真値を先頭に置くため
+  同点が問題にならない。
+- `stamina` の真値は rank 2。これは baseline が検証する通常集合（rank 1〜4）の**内側**で、
+  負ける理由は「health の方が更新関数が多い」という breadth 差のみ。referee が住む
+  boundary set（rank 4〜）には**入らない**。
+- 含意: **referee が想定する「真値が rank 4〜5 に取り残される」状況は、上流忠実な breadth の下では
+  この source から再現しない。**
+- さらに: この case は ambiguity ゲートが**発火する**（gap 0 ≤ 0.02、スコア飽和）。しかし top-1 は
+  既に真値。すなわち **ゲートは「助けが要らないケース」で鳴っている**。breadth 忠実な下では
+  referee は**中立か有害のみ**で、是正にはならない。
+  - 独立した欠陥として記録: `maxD4D5Gap` は飽和スコアではリスク信号にならない。
+    top-1 の安全性を条件に含めない限り、常時発火する。
+
+**結論: この機能の目標シナリオは構成可能な holdout から再現せず、再現していたのは fixture 側の
+非対称性だった。** 「Jev をさらに改善する」のではなく、機能の是非を判断する段階。
+
 ### 6. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
 
 - `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
@@ -202,10 +245,11 @@ arm64 Mach-O をローカルビルドし、既存 shape scan に通した。GPL 
 24 = health、36 = magicka、48 = fatigue、60 = shield、84 = poison
 （72 = breath は fixture に更新がなく candidate に出ない）。
 
-`HEX_OPENMW_HOLDOUT_LIVE=1` の live OpenJev 結果（証跡:
-`/mnt/workspace/.dev-state/agent-work/evidence/openjev-boundary-referee/openmw-holdout-live.json`）:
+以下の live 表は **旧（breadth 反転）fixture** の測定値であり、現在の manifest は §9 の
+**上流忠実 fixture** を指す（真値 `hp` = rank 1）。履歴として保存する（証跡:
+`/mnt/workspace/.dev-state/agent-work/evidence/openjev-boundary-referee/openmw-holdout-live.json`）。
 
-### case `hp`（真値 offset 24、deterministic rank 5、baseline top = 48）
+### case `hp`（旧 fixture: 真値 offset 24、deterministic rank 5、baseline top = 48）
 
 | 方式 | final top-1 | truth rescue | hit@boundary | analyze | semantic | referee |
 |---|---|---:|---:|---:|---:|---|
@@ -267,13 +311,19 @@ HEX_OPENMW_HOLDOUT_ARTIFACT=... HEX_OPENMW_HOLDOUT_LIVE=1 node tests/semantic-bo
 
 ## 次にやること
 
-1. **救済が成立するケースを増やす。** 条件は §7 と §8 の両方:
+0. **機能の是非を決める（最優先）。** §9 の結果、referee の目標シナリオ（真値が rank 4〜5 に
+   取り残される）は上流忠実な holdout では再現しない。判断材料:
+   - `hp` は **真値が rank 1**。決定的モデルが既に解いている。
+   - `stamina` は rank 2 = baseline 検証集合の内側。referee の射程外。
+   - ゲートは「助けが要らないケース」で発火する（gap 0 ≤ 0.02）。
+   → **A) 凍結・撤去**、**B) ゲートに「top-1 が危険なときだけ」の前条件を足して再評価**、
+   **C) 手動 RE で真値を付けた実バイナリケースを人手で1件持ち込んでから再判定** のいずれかを選ぶ。
+   C を選ぶ場合は「真値が boundary set にあり、かつ breadth で負ける」実例が要る（§7）。
+1. **救済が成立するケースを増やす場合の条件**（§7 と §8 の両方）:
    - 真値が rank 4〜5 に落ちること、**かつ breadth（`loc-shared` の関数数）で decoy に負けない**こと。
    - 実バイナリは取得可能（§8）だが、**hp/stamina の名前由来真値は 3種とも存在しない**。
      実アプリで測るなら「手動 RE で真値を確定したラベル付きケース」を人手で作るしかない。
-   - 自前で完結させるなら「上流 OSS を固定 commit でビルドし、pool ごとの実関数を**全件**含める」
-     source-grounded fixture（OpenMW の arm64 手順が再現可能。clang 14 + 固定 commit）。
-     部分集合を選ばないことが公平性の条件。
+   - 自作 fixture を使う場合は**pool ごとの上流実関数を全件・上流順で**含める（§9 の失敗を繰り返さない）。
    - rank 1〜3 のケースは referee の問いが ill-posed（真値が boundary set に無い）ため判定材料にならない。
 2. 救済が確認できた場合のみ interactive single-goal の production caller から callback を注入する。
 3. `money`/`score`/`level`/`item`/`attack`/`damage` を有効化する場合は、先に goal 別の
