@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -186,6 +186,22 @@ export async function digestFile(path) {
   return { size, sha256: hash.digest('hex') };
 }
 
+export async function digestFixtureHandle(handle) {
+  const hash = createHash('sha256');
+  let size = 0;
+  const stream = handle.createReadStream({ autoClose: false });
+  for await (const chunk of stream) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { size, sha256: hash.digest('hex') };
+}
+
+function sameFileIdentity(left, right) {
+  return String(left?.dev) === String(right?.dev)
+    && String(left?.ino) === String(right?.ino);
+}
+
 class FixtureVerificationError extends Error {
   constructor(message) {
     super(message);
@@ -198,7 +214,11 @@ function invalidFixture(message) {
   return new FixtureVerificationError(message);
 }
 
-export async function verify(name, path, spec, { statImpl = lstat, digestFileImpl = digestFile } = {}) {
+export async function verify(name, path, spec, {
+  statImpl = lstat,
+  openImpl = open,
+  digestHandleImpl = digestFixtureHandle,
+} = {}) {
   let info;
   try {
     // Verification owns the cache directory entry, not merely whichever target
@@ -213,9 +233,43 @@ export async function verify(name, path, spec, { statImpl = lstat, digestFileImp
   if (info.isSymbolicLink?.()) throw invalidFixture(`${name}: fixture path must not be a symbolic link`);
   if (!info.isFile()) throw invalidFixture(`${name}: fixture path is not a file`);
   if (info.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${info.size} != ${spec.size})`);
-  const digest = await digestFileImpl(path);
-  if (digest.sha256 !== spec.sha256) throw invalidFixture(`${name}: SHA-256 mismatch`);
-  return digest;
+
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let handle;
+  try {
+    handle = await openImpl(path, flags);
+  } catch (error) {
+    if (error?.code === 'ELOOP' || error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      throw invalidFixture(`${name}: fixture identity changed before hashing`);
+    }
+    throw error;
+  }
+
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameFileIdentity(info, opened) || opened.size !== info.size) {
+      throw invalidFixture(`${name}: fixture identity changed before hashing`);
+    }
+    const digest = await digestHandleImpl(handle);
+    if (digest.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${digest.size} != ${spec.size})`);
+    if (digest.sha256 !== spec.sha256) throw invalidFixture(`${name}: SHA-256 mismatch`);
+
+    let current;
+    try {
+      current = await statImpl(path);
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+        throw invalidFixture(`${name}: fixture identity changed during hashing`);
+      }
+      throw error;
+    }
+    if (current.isSymbolicLink?.() || !current.isFile() || !sameFileIdentity(opened, current)) {
+      throw invalidFixture(`${name}: fixture identity changed during hashing`);
+    }
+    return digest;
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function releaseBody(response) {
