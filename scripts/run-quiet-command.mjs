@@ -288,7 +288,7 @@ export async function runQuietCommand({
   if (child.stdout) sources.add(child.stdout);
   if (child.stderr) sources.add(child.stderr);
   for (const source of sources) {
-    source.once('error', (error) => {
+    source.on('error', (error) => {
       recordInfrastructureError('pipe', error);
       resumeSources();
     });
