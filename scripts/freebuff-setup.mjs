@@ -274,7 +274,11 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
       fsImpl.mkdirSync(path.dirname(dst), { recursive: true });
     }
     try {
-      fsImpl.lstatSync(actualDst);
+      const existing = fsImpl.lstatSync(actualDst);
+      if (executable && existing.isFile() && !existing.isSymbolicLink() && (existing.mode & 0o111) === 0) {
+        fsImpl.chmodSync(actualDst, 0o755);
+        return true;
+      }
       return false;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
