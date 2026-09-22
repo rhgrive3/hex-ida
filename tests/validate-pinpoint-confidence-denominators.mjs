@@ -17,6 +17,9 @@ function eq(actual, expected, label) {
 eq(field.length, 426, 'fieldRows');
 eq(dsda.length, 1, 'dsdaHoldoutRows');
 eq(rows.length, 427, 'totalRows');
+eq(summary.dataset.fieldRows, 426, 'summary.dataset.fieldRows');
+eq(summary.dataset.dsdaHoldoutRows, 1, 'summary.dataset.dsdaHoldoutRows');
+eq(summary.dataset.totalRows, 427, 'summary.dataset.totalRows');
 eq(summary.dataset.fieldQueries, 426, 'summary.dataset.fieldQueries');
 eq(summary.dataset.dsdaHoldout, 'included-separately', 'summary.dataset.dsdaHoldout');
 eq(summary.exact.queries + summary.partialOverall.queries, 426, 'field regime denominator');
