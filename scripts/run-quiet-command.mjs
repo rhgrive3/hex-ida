@@ -219,6 +219,9 @@ export async function runQuietCommand({
   const logClosed = new Promise((resolve) => log.once('close', resolve));
   let tail = Buffer.alloc(0);
   let logError = null;
+  let pipeError = null;
+  let firstInfrastructureError = null;
+  let firstInfrastructureKind = null;
   let child;
   let terminationController = null;
 
@@ -245,11 +248,20 @@ export async function runQuietCommand({
     }
   };
 
+  const recordInfrastructureError = (kind, error) => {
+    if (!firstInfrastructureError) {
+      firstInfrastructureError = error;
+      firstInfrastructureKind = kind;
+    }
+    if (kind === 'log' && !logError) logError = error;
+    if (kind === 'pipe' && !pipeError) pipeError = error;
+    terminationController?.request();
+  };
+
   log.on('drain', resumeSources);
   log.on('error', (error) => {
-    if (!logError) logError = error;
+    recordInfrastructureError('log', error);
     resumeSources();
-    terminationController?.request();
   });
 
   try {
@@ -276,6 +288,10 @@ export async function runQuietCommand({
   if (child.stdout) sources.add(child.stdout);
   if (child.stderr) sources.add(child.stderr);
   for (const source of sources) {
+    source.once('error', (error) => {
+      recordInfrastructureError('pipe', error);
+      resumeSources();
+    });
     source.once('end', () => sources.delete(source));
     source.once('close', () => sources.delete(source));
   }
@@ -301,20 +317,23 @@ export async function runQuietCommand({
     ? await terminationController.settledStatus
     : firstOutcome.status;
   terminationController.stop();
-  if (status.error) {
-    const diagnostic = Buffer.from(`${status.error.stack || status.error}\n`);
+  const controlledError = firstInfrastructureKind === 'pipe'
+    ? firstInfrastructureError
+    : status.error;
+  if (controlledError) {
+    const diagnostic = Buffer.from(`${controlledError.stack || controlledError}\n`);
     tail = appendTail(tail, diagnostic);
     try { log.write(diagnostic); } catch {}
   }
   try { log.end(); } catch {}
   try { await logClosed; } catch {}
 
-  if (logError) {
+  if (firstInfrastructureKind === 'log') {
     try { cleanupDirectory(); } catch {}
-    throw logError;
+    throw firstInfrastructureError;
   }
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
-  if (!status.error && status.code === 0) {
+  if (!controlledError && status.code === 0) {
     let cleanupError = null;
     try { cleanupDirectory(); } catch (error) { cleanupError = error; }
     stdout.write(`${label}: PASS (${(durationMs / 1000).toFixed(1)}s)\n`);
@@ -324,22 +343,28 @@ export async function runQuietCommand({
     return Object.freeze({ ok: true, status: 0, signal: null, logPath: cleanupError ? logPath : null, cleanupError, durationMs });
   }
 
-  const spawnFailure = Boolean(status.error);
+  const pipeFailure = firstInfrastructureKind === 'pipe';
+  const spawnFailure = !pipeFailure && Boolean(status.error);
+  const infrastructureFailure = pipeFailure || spawnFailure;
   let spawnCleanupError = null;
-  if (spawnFailure) {
+  if (infrastructureFailure) {
     try { cleanupDirectory(); } catch (error) { spawnCleanupError = error; }
   }
-  const statusText = status.error
-    ? `spawn error: ${status.error.code || status.error.message}`
-    : (status.signal ? `signal ${status.signal}` : `exit ${status.code}`);
+  const statusText = pipeFailure
+    ? `pipe error: ${controlledError.code || controlledError.message}`
+    : status.error
+      ? `spawn error: ${status.error.code || status.error.message}`
+      : (status.signal ? `signal ${status.signal}` : `exit ${status.code}`);
   stderr.write(`${label}: FAIL (${statusText}, ${(durationMs / 1000).toFixed(1)}s)\n`);
   const text = tail.toString('utf8').trim();
   if (text) stderr.write(`--- failure tail (max 64 KiB) ---\n${text}\n--- end failure tail ---\n`);
-  if (spawnFailure) {
+  if (infrastructureFailure) {
     if (spawnCleanupError) {
       stderr.write(`${label}: WARN diagnostic temp cleanup failed (${spawnCleanupError.code || spawnCleanupError.message}); retained ${logPath}\n`);
     } else {
-      stderr.write('Spawn failure log cleaned after diagnostic capture.\n');
+      stderr.write(pipeFailure
+        ? 'Pipe failure log cleaned after diagnostic capture.\n'
+        : 'Spawn failure log cleaned after diagnostic capture.\n');
     }
   } else stderr.write(`Full log: ${logPath}\n`);
   stderr.write('Rerun with HEX_TEST_OUTPUT=verbose for live full output.\n');
@@ -347,8 +372,8 @@ export async function runQuietCommand({
     ok: false,
     status: status.code,
     signal: status.signal,
-    error: status.error ?? null,
-    logPath: spawnFailure ? (spawnCleanupError ? logPath : null) : logPath,
+    error: controlledError ?? null,
+    logPath: infrastructureFailure ? (spawnCleanupError ? logPath : null) : logPath,
     cleanupError: spawnCleanupError,
     durationMs,
   });
