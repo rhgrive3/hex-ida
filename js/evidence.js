@@ -959,7 +959,17 @@ export function decide(ranked, opts) {
 
   let verdict = VERDICT.NONE;
   if (!missing.length) verdict = VERDICT.CONFIRMED;
-  else if (probability >= LIKELY.p && margin >= LIKELY.margin) verdict = VERDICT.LIKELY;
+  /*
+   * 有力 (likely) も確定と同じく独立した出どころを 3 つ以上要する。
+   * 確からしさと 2 位との差だけでは、検証済み truth が存在するのに別候補を
+   * "likely" と断言する false-likely が起きる (DSDA-Doom real ARM64 holdout:
+   * top-1 offset 148 momz が p0.91 margin 3.8 で likely、truth offset 196 health は
+   * rank 4 で verify 済み/未検証を問わず groups=2 のまま)。強い binary-grounded
+   * evidence が実質 tie したとき最後に残る loc-shared / breadth / weak / correlated /
+   * saturated の差だけでは strong verdict を名乗らせない。足りないときは
+   * ambiguous に落とし、missing の need-independent-evidence が理由として残る。
+   */
+  else if (probability >= LIKELY.p && margin >= LIKELY.margin && independent >= CONFIRM.groups) verdict = VERDICT.LIKELY;
   else if (probability >= 0.35 ||
     (runnerUp && margin < LIKELY.margin && probability >= AMBIGUOUS_FLOOR)) {
     /*
