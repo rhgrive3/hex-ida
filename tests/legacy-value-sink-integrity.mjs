@@ -149,4 +149,15 @@ for (const [name, lines, expected] of [
   }
 }
 
+{
+  for (const rawOp of ['msr tpidr_el0, x8', 'dc cvau, x8', 'ic ivau, x8']) {
+    const { text } = fixture(['add x8, x0, #16', rawOp, 'mov x0, #0', 'ret']);
+    assert.match(text, /x8 = a1 \+ 16;/, `${rawOp}: ${text}`);
+    assert.match(text, /__asm\([^\n]*x8/, `${rawOp}: ${text}`);
+  }
+  const { text } = fixture(['add x8, x0, #5', 'rbit x0, x8', 'ret']);
+  assert.match(text, /reverse_bits\(a1 \+ 5\)/, text);
+  assert.doesNotMatch(text, /^\s*x8 =/gm, text);
+}
+
 console.log('legacy value-sink integrity: ok');
