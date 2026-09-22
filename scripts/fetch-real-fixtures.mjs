@@ -198,9 +198,11 @@ function invalidFixture(message) {
   return new FixtureVerificationError(message);
 }
 
-export async function verify(name, path, spec, { statImpl = stat, digestFileImpl = digestFile } = {}) {
+export async function verify(name, path, spec, { statImpl = lstat, digestFileImpl = digestFile } = {}) {
   let info;
   try {
+    // Verification owns the cache directory entry, not merely whichever target
+    // pathname resolution reaches. lstat rejects a symlink leaf before hashing.
     info = await statImpl(path);
   } catch (error) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
@@ -208,6 +210,7 @@ export async function verify(name, path, spec, { statImpl = stat, digestFileImpl
     }
     throw error;
   }
+  if (info.isSymbolicLink?.()) throw invalidFixture(`${name}: fixture path must not be a symbolic link`);
   if (!info.isFile()) throw invalidFixture(`${name}: fixture path is not a file`);
   if (info.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${info.size} != ${spec.size})`);
   const digest = await digestFileImpl(path);
