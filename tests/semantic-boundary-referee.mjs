@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { autoAnalyze } from '../js/auto.js';
+import {
+  SEMANTIC_BOUNDARY_GOAL_GUIDANCE,
+  semanticBoundaryGoalGuidance,
+} from '../js/semantic-boundary-referee.js';
 import {
   TRUE_OFFSET,
   acceptedChoice,
@@ -7,6 +12,11 @@ import {
   runSyntheticBoundaryCase,
   syntheticShapeFixture,
 } from './fixtures/semantic-boundary-holdout.mjs';
+
+const HOLDOUT_MANIFEST = JSON.parse(fs.readFileSync(
+  new URL('./fixtures/openmw-boundary-holdout.manifest.json', import.meta.url),
+  'utf8',
+));
 
 function resultSignature(run) {
   return {
@@ -123,13 +133,48 @@ assert.deepEqual(candidateSignature(gated, [0x20n, 0x30n, 0x40n]), candidateSign
 assert.equal(gated.analyzeCalls, baseline.analyzeCalls + 1, 'the gated path adds at most its single bounded probe');
 assert.equal(gated.result.top?.offset, TRUE_OFFSET, 'binary-grounded probe may rescue the labelled D5 candidate');
 
-// 8. A failed probe mutates neither verification selection nor result.
+// 8. A failed probe mutates neither verification selection nor result, and it
+// stays inside the reserved window cap.
 {
   const failed = await runSyntheticBoundaryCase({ mode: 'probe', probeFails: true, referee: async () => acceptedChoice('c1') });
   assert.deepEqual(resultSignature(failed), baselineSignature);
   assert.deepEqual(failed.trace.verificationTargets, ['d1', 'd2', 'd3', 'd4']);
-  assert.equal(failed.trace.probe.analyzeCalls, 1);
+  assert.ok(failed.trace.probe.analyzeCalls >= 1 && failed.trace.probe.analyzeCalls <= 3);
   assert.equal(failed.trace.probe.success, false);
+  assert.equal(failed.trace.probe.status, 'change-not-reconfirmed');
+  assert.ok(failed.analyzeCalls <= baseline.analyzeCalls + 3, 'a failed probe cannot exceed the reserved window cap');
+}
+
+// 8a. One unhelpful window must not end the probe: a later scanned site that
+// does reconfirm the write settles the probe after exactly one bounded retry.
+{
+  const retried = await runSyntheticBoundaryCase({
+    mode: 'probe',
+    probeBarrenSites: 1,
+    referee: async () => acceptedChoice('c1'),
+  });
+  assert.equal(retried.trace.probe.success, true);
+  assert.equal(retried.trace.probe.status, 'reconfirmed');
+  assert.equal(retried.trace.probe.analyzeCalls, 2, 'the probe retried exactly one unhelpful site');
+  assert.equal(retried.trace.probe.candidateId, 'd5');
+  assert.deepEqual(retried.trace.verificationTargets, ['d1', 'd2', 'd3', 'd5']);
+  assert.equal(retried.result.top?.offset, TRUE_OFFSET, 'a probe that needed a retry still settles the labelled D5 candidate');
+  assert.ok(retried.analyzeCalls > gated.analyzeCalls, 'the retry costs exactly the extra window it opened');
+}
+
+// 8b. The retry is bounded: when every scanned site is unhelpful the probe
+// gives up after at most VERIFY_FUNCTIONS windows and the result is the exact
+// deterministic baseline.
+{
+  const bounded = await runSyntheticBoundaryCase({
+    mode: 'probe',
+    probeBarrenSites: 9,
+    referee: async () => acceptedChoice('c1'),
+  });
+  assert.equal(bounded.trace.probe.success, false);
+  assert.ok(bounded.trace.probe.analyzeCalls <= 3, 'probe windows are capped at VERIFY_FUNCTIONS');
+  assert.deepEqual(resultSignature(bounded), baselineSignature);
+  assert.deepEqual(bounded.trace.verificationTargets, ['d1', 'd2', 'd3', 'd4']);
 }
 
 // 10. A very confident semantic preference in shadow mode cannot add evidence,
@@ -183,6 +228,28 @@ for (const referee of [
     const encoded = JSON.stringify(candidate);
     assert.equal(/address|offset|shapeScore|resourceScore|damageSourceScore|role|rank|pseudocode|assembly/i.test(encoded), false);
   }
+}
+
+// The model-facing prompt wording is calibrated, not intuition: every goal with
+// guidance must name a holdout fixture that exists and actually labels that
+// goal.  This is what stops an unvalidated prompt from being added silently.
+{
+  assert.equal(semanticBoundaryGoalGuidance('hp'), SEMANTIC_BOUNDARY_GOAL_GUIDANCE.hp.text);
+  assert.equal(semanticBoundaryGoalGuidance('money'), '', 'uncalibrated goals keep the neutral wording');
+  assert.equal(semanticBoundaryGoalGuidance('constructor'), '');
+  assert.equal(semanticBoundaryGoalGuidance('toString'), '');
+  assert.equal(semanticBoundaryGoalGuidance(null), '');
+  const labelled = new Set(HOLDOUT_MANIFEST.cases.map((entry) => entry.goal));
+  for (const [goalId, entry] of Object.entries(SEMANTIC_BOUNDARY_GOAL_GUIDANCE)) {
+    assert.equal(typeof entry.text, 'string');
+    assert.ok(entry.text.length > 0, `${goalId} guidance must not be empty`);
+    assert.equal(entry.calibratedBy, 'openmw-boundary-holdout', `${goalId} guidance must cite the source-grounded holdout`);
+    assert.equal(HOLDOUT_MANIFEST.kind, 'external-source-grounded-arm64-fixture');
+    assert.ok(labelled.has(goalId), `${goalId} guidance has no labelled holdout case`);
+  }
+  const labelledRanks = new Map(HOLDOUT_MANIFEST.cases.map((entry) => [entry.goal, entry.expectedDeterministicRank]));
+  assert.equal(labelledRanks.get('hp'), 5);
+  assert.equal(labelledRanks.get('stamina'), 1);
 }
 
 process.stdout.write('  ok  semantic boundary referee remains shadow-first and binary-grounded\n');
