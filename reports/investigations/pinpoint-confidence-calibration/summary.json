@@ -36,20 +36,20 @@
   },
   "contingency": {
     "OLD": {
-      "correctConfirmed": 151,
-      "correctLikely": 74,
-      "correctAmbiguous": 57,
+      "correctConfirmed": 150,
+      "correctLikely": 65,
+      "correctAmbiguous": 67,
       "wrongConfirmed": 49,
-      "wrongLikely": 26,
-      "wrongAmbiguous": 69,
+      "wrongLikely": 20,
+      "wrongAmbiguous": 75,
       "none": 0,
       "error": 0,
-      "falseStrong": 75,
-      "strong": 300
+      "falseStrong": 69,
+      "strong": 284
     },
     "NEW": {
-      "correctConfirmed": 151,
-      "correctLikely": 5,
+      "correctConfirmed": 150,
+      "correctLikely": 6,
       "correctAmbiguous": 126,
       "wrongConfirmed": 49,
       "wrongLikely": 18,
@@ -60,8 +60,8 @@
       "strong": 223
     },
     "policyB": {
-      "correctConfirmed": 151,
-      "correctLikely": 5,
+      "correctConfirmed": 150,
+      "correctLikely": 6,
       "correctAmbiguous": 126,
       "wrongConfirmed": 49,
       "wrongLikely": 20,
@@ -72,8 +72,8 @@
       "strong": 225
     },
     "policyC": {
-      "correctConfirmed": 151,
-      "correctLikely": 5,
+      "correctConfirmed": 150,
+      "correctLikely": 6,
       "correctAmbiguous": 126,
       "wrongConfirmed": 49,
       "wrongLikely": 20,
@@ -85,9 +85,9 @@
     }
   },
   "abstentionCost": {
-    "preventedFalseStrong": 8,
-    "oldCorrectLikelyToNewAmbiguous": 69,
-    "oldWrongLikelyToNewAmbiguous": 8
+    "preventedFalseStrong": 2,
+    "oldCorrectLikelyToNewAmbiguous": 59,
+    "oldWrongLikelyToNewAmbiguous": 2
   },
   "groups": {
     "1": {
@@ -95,8 +95,8 @@
       "correct": 16,
       "wrong": 12,
       "none": 0,
-      "oldStrong": 7,
-      "oldFalseStrong": 2,
+      "oldStrong": 4,
+      "oldFalseStrong": 0,
       "newStrong": 0,
       "newFalseStrong": 0,
       "accuracy": 0.5714285714285714
@@ -106,8 +106,8 @@
       "correct": 94,
       "wrong": 27,
       "none": 0,
-      "oldStrong": 70,
-      "oldFalseStrong": 6,
+      "oldStrong": 57,
+      "oldFalseStrong": 2,
       "newStrong": 0,
       "newFalseStrong": 0,
       "accuracy": 0.7768595041322314
@@ -125,18 +125,18 @@
     }
   },
   "pCorrectGivenOldLikelyG2": {
-    "n": 70,
-    "correct": 64,
-    "observed": 0.9142857142857143
+    "n": 57,
+    "correct": 55,
+    "observed": 0.9649122807017544
   },
   "groupCombinationG2OldLikely": {
     "metadata+structural": {
-      "count": 68,
-      "correct": 64,
-      "wrong": 4,
-      "falseLikely": 4,
-      "accuracy": 0.9411764705882353,
-      "likelyCount": 68
+      "count": 55,
+      "correct": 55,
+      "wrong": 0,
+      "falseLikely": 0,
+      "accuracy": 1,
+      "likelyCount": 55
     },
     "dataflow+metadata": {
       "count": 2,
@@ -148,55 +148,55 @@
     }
   },
   "evidenceInOldFalseLikely": {
-    "n": 26,
+    "n": 20,
     "codes": {
-      "size-fits": 28,
-      "selector-match": 26,
-      "sibling-fields": 22,
+      "size-fits": 24,
+      "selector-match": 20,
       "access-verified": 16,
+      "sibling-fields": 16,
       "field-name-contains": 14,
       "getter-verified": 14,
-      "class-name": 13,
-      "field-name-asked": 12,
+      "class-name": 12,
+      "field-name-asked": 6,
       "setter-verified": 6,
       "written-in-class": 5
     }
   },
   "marginBuckets": {
     "<4x": {
-      "count": 98,
-      "correct": 29,
-      "wrong": 69,
-      "g2": 30,
+      "count": 118,
+      "correct": 43,
+      "wrong": 75,
+      "g2": 45,
       "g3plus": 54
     },
     "4-10x": {
-      "count": 9,
-      "correct": 4,
+      "count": 10,
+      "correct": 5,
       "wrong": 5,
       "g2": 1,
-      "g3plus": 8
+      "g3plus": 9
     },
     "10-20x": {
-      "count": 13,
+      "count": 15,
       "correct": 0,
-      "wrong": 13,
-      "g2": 0,
+      "wrong": 15,
+      "g2": 2,
       "g3plus": 13
     },
     "20-50x": {
-      "count": 18,
-      "correct": 2,
+      "count": 19,
+      "correct": 3,
       "wrong": 16,
       "g2": 0,
-      "g3plus": 18
+      "g3plus": 19
     },
     ">50x": {
-      "count": 288,
-      "correct": 247,
-      "wrong": 41,
-      "g2": 90,
-      "g3plus": 184
+      "count": 264,
+      "correct": 231,
+      "wrong": 33,
+      "g2": 73,
+      "g3plus": 182
     }
   },
   "scoreBuckets": {
@@ -249,13 +249,13 @@
   },
   "exactCoverage": {
     "old": {
-      "correctConfirmed": 131,
-      "correctLikely": 70,
-      "correctAmbiguous": 28
+      "correctConfirmed": 130,
+      "correctLikely": 61,
+      "correctAmbiguous": 38
     },
     "new": {
-      "correctConfirmed": 131,
-      "correctLikely": 2,
+      "correctConfirmed": 130,
+      "correctLikely": 3,
       "correctAmbiguous": 96
     }
   },
@@ -273,144 +273,31 @@
   },
   "regimeG2OldLikely": {
     "exact": {
-      "n": 63,
-      "correct": 63,
+      "n": 54,
+      "correct": 54,
       "observed": 1
     },
     "partial": {
-      "n": 7,
+      "n": 3,
       "correct": 1,
-      "observed": 0.14285714285714285
+      "observed": 0.3333333333333333
     }
   },
-  "highMarginWrongG2": [
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "companion view",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "end timestamp",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "view frame",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "url parameters",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    },
-    {
-      "binary": "TsumTsum",
-      "mode": "partial",
-      "label": "view frame",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    },
-    {
-      "binary": "TsumTsum",
-      "mode": "partial",
-      "label": "end timestamp",
-      "marginRatio": "Infinity",
-      "oldVerdict": "likely",
-      "newVerdict": "ambiguous"
-    }
-  ],
+  "highMarginWrongG2": [],
   "newLikelyPool": {
-    "n": 23,
-    "correct": 5,
+    "n": 24,
+    "correct": 6,
     "combos": {
-      "dataflow+metadata+structural": 23
+      "dataflow+metadata+structural": 24
     }
   },
   "preventedDetail": [
     {
       "binary": "battlecats",
       "mode": "partial",
-      "label": "companion view",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.9479819363166662,
-      "groups": [
-        "metadata",
-        "structural"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "end timestamp",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.9149310749077569,
-      "groups": [
-        "metadata",
-        "structural"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
       "label": "view frame",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.9971714472869282,
-      "groups": [
-        "metadata",
-        "dataflow"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "url parameters",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.9394366816847779,
-      "groups": [
-        "metadata",
-        "structural"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "battlecats",
-      "mode": "partial",
-      "label": "body text",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.8788764380741781,
-      "groups": [
-        "metadata"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "TsumTsum",
-      "mode": "partial",
-      "label": "view frame",
-      "truthRank": 0,
-      "candidateCount": 1,
+      "truthRank": 3,
+      "candidateCount": 3,
       "probability": 0.9971714472869282,
       "groups": [
         "metadata",
@@ -421,25 +308,13 @@
     {
       "binary": "TsumTsum",
       "mode": "partial",
-      "label": "body text",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.8788764380741781,
-      "groups": [
-        "metadata"
-      ],
-      "oldVerdict": "likely"
-    },
-    {
-      "binary": "TsumTsum",
-      "mode": "partial",
-      "label": "end timestamp",
-      "truthRank": 0,
-      "candidateCount": 1,
-      "probability": 0.9149310749077569,
+      "label": "view frame",
+      "truthRank": 3,
+      "candidateCount": 3,
+      "probability": 0.9971714472869282,
       "groups": [
         "metadata",
-        "structural"
+        "dataflow"
       ],
       "oldVerdict": "likely"
     }
@@ -447,19 +322,19 @@
   "partialOverall": {
     "queries": 196,
     "accuracy": 0.27040816326530615,
-    "oldFalseStrong": 75,
+    "oldFalseStrong": 69,
     "newFalseStrong": 67
   },
   "partialPresent": {
-    "queries": 142,
-    "accuracy": 0.3732394366197183,
-    "oldFalseStrong": 43,
-    "newFalseStrong": 43
+    "queries": 196,
+    "accuracy": 0.27040816326530615,
+    "oldFalseStrong": 69,
+    "newFalseStrong": 67
   },
-  "partialNotFound": 54,
+  "partialNotFound": 0,
   "presentVsNotFound": {
-    "present": 372,
-    "notFound": 54
+    "present": 426,
+    "notFound": 0
   },
   "performance": {
     "totalAnalyzeCalls": 2956,

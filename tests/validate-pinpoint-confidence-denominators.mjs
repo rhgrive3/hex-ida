@@ -24,6 +24,6 @@ eq(summary.dataset.fieldQueries, 426, 'summary.dataset.fieldQueries');
 eq(summary.dataset.dsdaHoldout, 'included-separately', 'summary.dataset.dsdaHoldout');
 eq(summary.exact.queries + summary.partialOverall.queries, 426, 'field regime denominator');
 eq(summary.presentVsNotFound.present + summary.presentVsNotFound.notFound, 426, 'field present/not-found denominator');
-eq(summary.partialNotFound, 54, 'partial not-found denominator');
+eq(summary.partialNotFound, 0, 'partial not-found denominator');
 
 process.stdout.write('denominator contract: ok\n');

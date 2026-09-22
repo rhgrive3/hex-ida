@@ -113,12 +113,12 @@ test('summary arithmetic is internally consistent', () => {
   eq(summary.abstentionCost.preventedFalseStrong, c.OLD.falseStrong - c.NEW.falseStrong, 'prevented');
   const gSum = Object.values(summary.groups).reduce((a, b) => a + b.queries, 0);
   eq(gSum, 426, 'groups cover all field queries');
-  eq(summary.pCorrectGivenOldLikelyG2.n, 70, 'g2 likely n');
+  eq(summary.pCorrectGivenOldLikelyG2.n, 57, 'g2 likely n');
   eq(summary.exact.queries + summary.partialOverall.queries, 426, 'regime split');
   eq(summary.presentVsNotFound.present + summary.presentVsNotFound.notFound, 426, 'present/notfound split');
-  eq(summary.partialNotFound, 54, 'not-found kept in denominators');
-  eq(summary.preventedDetail.length, 8, 'prevented detail');
-  eq(summary.newLikelyPool.n, 23, 'NEW likely pool');
+  eq(summary.partialNotFound, 0, 'not-found kept in denominators (0 missing after #9437 recall fix)');
+  eq(summary.preventedDetail.length, 2, 'prevented detail');
+  eq(summary.newLikelyPool.n, 24, 'NEW likely pool');
 });
 
 test('DSDA holdout row: OLD likely -> NEW ambiguous, ranking intact', () => {
