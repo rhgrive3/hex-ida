@@ -706,7 +706,7 @@ export function buildValues(model, opts) {
         }
       } else {
         memoryEpoch++;
-        const srcs = insn.ops.filter((x) => x.k === 'reg' && insn.reads.includes(regKeyOf(x)));
+        const srcs = insn.ops.filter((x) => x.k === 'reg' && (!insn.writes.includes(regKeyOf(x)) || insn.reads.includes(regKeyOf(x))));
         const pair = base === 'stp' || base === 'stnp';
         const list = pair ? srcs.slice(0, 2) : srcs.slice(0, 1);
         const elemSize = pair ? m.size / 2 : m.size;
