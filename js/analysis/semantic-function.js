@@ -4,6 +4,10 @@ import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import {
+  isCxxEvidenceProvider,
+  normalizeCxxEvidenceInput,
+} from './cxx/project.js';
+import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   decompilerSnapshot,
@@ -361,6 +365,36 @@ export function assertScopedCanonicalOwner(owner) {
   if (!SCOPED_DECOMPILER_OWNERS.has(owner)) throw new TypeError('scoped-canonical-issued-owner-required');
   return owner;
 }
+/**
+ * Resolves the C++ object evidence this function's projection may render.
+ *
+ * This entrypoint does not derive evidence and does not scan the binary. It
+ * accepts either a provider issued in this process (which projects from the
+ * slice's already-built class index) or an already-projected canonical value,
+ * and drops everything else. A serialized or hand-built look-alike therefore
+ * renders exactly like no evidence at all, which is what keeps `this` from
+ * being minted by anything but the canonical producer.
+ */
+function cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions) {
+  const explicit = normalizeCxxEvidenceInput(input?.cxxEvidence);
+  if (explicit) return explicit;
+
+  const provider = input?.cxxEvidenceProvider;
+  if (isCxxEvidenceProvider(provider)) {
+    const projected = provider.projectForFunction({
+      functionId: pipeline.functionId ?? null,
+      functionAddress: addressOf(orderedInstructions[0]),
+      functionName: input.name ?? null,
+      rawSymbol: input.rawSymbol ?? input.symbol ?? null,
+      ir: pipeline.legacyV1,
+      metadata: input.cxxMemberMetadata ?? {},
+    });
+    const normalized = normalizeCxxEvidenceInput(projected);
+    if (normalized) return normalized;
+  }
+  return normalizeCxxEvidenceInput(projectionOptions?.cxxEvidence);
+}
+
 function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, projectionOptions = {}) {
   const { decoderSemanticVersion, binaryId, sliceId } = input;
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
@@ -391,8 +425,10 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
+  const cxxEvidence = cxxEvidenceForProjection(input, pipeline, orderedInstructions, projectionOptions);
   const decompiler = decompileSemanticProjection(model, {
     ...projectionOptions,
+    ...(cxxEvidence ? { cxxEvidence } : {}),
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
