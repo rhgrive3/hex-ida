@@ -1,0 +1,28 @@
+{
+  "schema": "hex-pinpoint-final-baseline/v1",
+  "mainSha": "4ce9459d2f51163e20abb005e222bd93d88771e7",
+  "mainShaNotes": "merge of PR #9448 (P4 production confidence policy) into main; every oracle measurement must run against this policy/corpus identity",
+  "confidencePolicySha": "d626611dd11e05d22c4e26dfbf8868162a26766e",
+  "confidencePolicy": "P4 field-only trusted 2-group likely: p>=0.85 AND margin>=ln(4) AND (independentGroups>=3 OR exactly {metadata,structural} validated fail-closed); confirmed/p-margin/identifying unchanged; location+function keep the global 3-group rule",
+  "confidencePolicyPr": "#9448",
+  "queriesFixture": "tests/fixtures/pinpoint-confidence-queries.json",
+  "queriesSha256": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160",
+  "corpusHashes": {
+    "battlecats": { "path": "tests/battlecats", "size": 28153072, "gitBlobSha1": "c8734ebe660465e4e96254b5b86f03121bb7b8ba" },
+    "TsumTsum": { "path": "tests/TsumTsum", "size": 45994784, "gitBlobSha1": "b6b23d3bf1aa7831372bafff55cfd202d74a9d3a" },
+    "YWP": { "path": "tests/YWP", "size": 63455952, "gitBlobSha1": "90295da90c207ce6321908ef0898048634a0a3c7" }
+  },
+  "denominator": { "field": 426, "exact": 230, "partial": 196, "dsdaHoldoutRows": 1 },
+  "productionCandidatePolicy": "pinpointField facade: limit 400, bounded lexical recall lane (MAX_LEXICAL_RESCUE 64, byRecallLane precedence), narrowedPriorCount prior, production field decide()",
+  "productionAnalyzeBudget": 12,
+  "productionProbeBudget": 6,
+  "productionScanBudget": 2,
+  "oracleObjective": [
+    "1. falseStrong == 0 preferred (minimize false-strong)",
+    "2. top1 correct maximized",
+    "3. correct-strong maximized",
+    "4. cost (analyze calls + scan passes) minimized",
+    "5. probe count minimized"
+  ],
+  "policyChangePolicy": "any confidence-policy change invalidates this artifact; oracle re-measurement must not mix runs across different confidencePolicySha/queriesSha256"
+}
