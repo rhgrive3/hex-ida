@@ -266,31 +266,28 @@ export function deterministicTraversal(cfg, options = {}) {
   return Object.freeze(options.includeUnreachable === false ? rpo : [...rpo, ...unreachable]);
 }
 
+function setIntersection(sets) {
+  if (!sets.length) return new Set();
+  const out = new Set(sets[0]);
+  for (const value of [...out]) {
+    if (!sets.every((set) => set.has(value))) out.delete(value);
+  }
+  return out;
+}
+
 export function analyzeSemanticDominance(cfg, options = {}) {
   assertNotAborted(options);
   const tick = workCounter(options);
   const byId = cfgIndex(cfg);
   const reachable = new Set(reachableBlocksWithTick(cfg, cfg.entryBlockId, tick));
   const rpo = reversePostOrderWithTick(cfg, tick);
-  const entry = cfg.entryBlockId;
+  const allReachable = new Set(rpo);
+  const dom = new Map();
+  for (const block of cfg.blocks) {
+    dom.set(block.id, reachable.has(block.id) ? new Set(allReachable) : new Set([block.id]));
+  }
+  dom.set(cfg.entryBlockId, new Set([cfg.entryBlockId]));
 
-  // Immediate dominators are computed directly over the reverse postorder
-  // (Cooper-Harvey-Kennedy), not by intersecting a full "all reachable blocks"
-  // dominance set per block. That removes the O(blocks^2) set memory the old
-  // dataflow held for every block, and the same intersection work is only ever
-  // paid along dominator chains instead of over whole block sets. Full dominator
-  // sets are then recovered from the idom tree, which is the definition of a
-  // dominator, so the published result is unchanged.
-  const order = new Map();
-  for (let index = 0; index < rpo.length; index += 1) order.set(rpo[index], index);
-  const idom = new Map([[entry, entry]]);
-  const intersect = (a, b) => {
-    while (a !== b) {
-      while (order.get(a) > order.get(b)) { tick(); a = idom.get(a); }
-      while (order.get(b) > order.get(a)) { tick(); b = idom.get(b); }
-    }
-    return a;
-  };
   let changed = true;
   let rounds = 0;
   while (changed) {
@@ -299,37 +296,28 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     changed = false;
     for (const id of rpo) {
       tick();
-      if (id === entry) continue;
+      if (id === cfg.entryBlockId) continue;
       const predecessors = byId.get(id).predecessors.filter((pred) => reachable.has(pred));
-      let next = null;
-      for (const pred of predecessors) {
-        if (!idom.has(pred)) continue;
-        next = next == null ? pred : intersect(pred, next);
+      const next = setIntersection(predecessors.map((pred) => dom.get(pred)));
+      next.add(id);
+      const prior = dom.get(id);
+      if (next.size !== prior.size || [...next].some((value) => !prior.has(value))) {
+        dom.set(id, next);
+        changed = true;
       }
-      if (next == null) continue;
-      if (idom.get(id) !== next) { idom.set(id, next); changed = true; }
     }
   }
 
-  // `immediateDominators` keeps its published shape: null at the entry and for
-  // every unreachable block. Internally the entry dominator of itself, which is
-  // how `intersect` terminates.
-  const idomOut = new Map();
-  const dominators = {};
+  const idom = new Map();
   for (const block of cfg.blocks) {
     const id = block.id;
-    if (!reachable.has(id) || id === entry) { idomOut.set(id, null); dominators[id] = [id]; continue; }
-    const chain = [id];
-    let runner = idom.get(id);
-    let guard = cfg.blocks.length + 2;
-    while (runner != null && runner !== entry) {
-      chain.push(runner);
-      runner = idom.get(runner);
-      if (guard-- <= 0) fail('semantic-cfg-invalid-dominator-chain');
+    if (!reachable.has(id) || id === cfg.entryBlockId) {
+      idom.set(id, null);
+      continue;
     }
-    chain.push(entry);
-    dominators[id] = chain.sort();
-    idomOut.set(id, idom.get(id));
+    const strict = [...dom.get(id)].filter((candidate) => candidate !== id);
+    strict.sort((a, b) => dom.get(b).size - dom.get(a).size || compareCanonicalText(a, b));
+    idom.set(id, strict[0] ?? null);
   }
 
   const frontier = new Map(cfg.blocks.map((block) => [block.id, new Set()]));
@@ -340,19 +328,21 @@ export function analyzeSemanticDominance(cfg, options = {}) {
     for (const pred of predecessors) {
       let runner = pred;
       let guard = cfg.blocks.length + 2;
-      while (runner != null && runner !== idomOut.get(block.id) && guard-- > 0) {
+      while (runner != null && runner !== idom.get(block.id) && guard-- > 0) {
         tick();
         frontier.get(runner).add(block.id);
-        runner = idomOut.get(runner);
+        runner = idom.get(runner);
       }
       if (guard <= 0) fail('semantic-cfg-invalid-dominator-chain');
     }
   }
 
+  const dominators = {};
   const immediateDominators = {};
   const dominanceFrontier = {};
   for (const block of cfg.blocks) {
-    immediateDominators[block.id] = idomOut.get(block.id);
+    dominators[block.id] = [...dom.get(block.id)].sort();
+    immediateDominators[block.id] = idom.get(block.id);
     dominanceFrontier[block.id] = [...frontier.get(block.id)].sort();
   }
   return deepFreeze({
