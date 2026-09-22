@@ -461,8 +461,12 @@ function decideMaterial(model, vg) {
   const opaqueInputs = new Set();
   for (const insn of insns) {
     if (insn.data || insn.isCall || insn.memory || insn.isBranch || insn.isReturn) continue;
+    const base = (insn.mnemonic || '').toLowerCase();
     const writes = (insn.writes || []).filter((reg) => reg !== 'nzcv');
-    if (!writes.length) continue;
+    const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base);
+    const resolvedNoWrite = SKIP_MN.test(base) || /^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn|bics|brk|udf|svc)$/.test(base);
+    if (writes.length && resolvedFallback) continue;
+    if (!writes.length && resolvedNoWrite) continue;
     const modeled = writes.some((reg) => {
       const value = vg.defAt(insn.row, reg);
       return value && value.k !== 'reg';
@@ -1660,7 +1664,8 @@ function statementFor(insn, ctx, node) {
       { kind: 'comment', pure: true, compare: true });
   }
   if (/^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base)) {
-    return mk('/* ' + insn.mnemonic + ' ' + insn.operands + ' — 次の分岐のための比較 */',
+    const args = insn.ops.map((op) => operandText(op, ctx, insn)).join(', ');
+    return mk('/* ' + insn.mnemonic + ' ' + args + ' — 次の分岐のための比較 */',
       { kind: 'comment', pure: true, compare: true });
   }
 
