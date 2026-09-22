@@ -39,7 +39,7 @@ test('canonical production deploy validates the default config before invoking W
   assert.deepEqual(deployment.args, [
     resolve(repoRoot, 'node_modules/wrangler/bin/wrangler.js'),
     'deploy',
-    resolve(repoRoot, 'worker-entry.js'),
+    '/proc/self/fd/3/worker-entry.js',
     '--config',
     '/proc/self/fd/3/wrangler.jsonc',
     '--assets',
