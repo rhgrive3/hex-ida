@@ -80,6 +80,28 @@ latency: choice p50 ≈ 421 ms / p95 ≈ 863 ms、noul p50 = 567 ms。
    （5 候補が p=0.9822 で同点になり ordering が勝つ）ので、これは製品の性質であり、
    実 ARM64 リリースで再現したことになる。
 
+### 再計測（ARM64 ランナー、GitHub Actions）
+
+同じ head を **ARM64 ランナー 2 種**で計測し、測定値そのものを assert している。
+
+```
+run 35687189172  success  head 6195f1a1f7f172e520e8523dd5096029e672956d
+  leg macos-14          uname -m = arm64    node = darwin arm64
+  leg ubuntu-24.04-arm  uname -m = aarch64  node = linux arm64
+  -> ok: true  problems: []
+     baseline top 148 / truthHitAtBoundary 0 / boundaryRescue 0 / falseLikely 1
+     oracle probe reconfirmed(d5) / verificationTargets d1,d2,d3,d5 / top 148
+     labelsConsistent true / promotionEligible false
+```
+
+assert しているのは: checkout head = dispatch SHA、ランナーが ARM64 であること（`uname -m` と `process.arch`）、
+manifest の upstream commit、**測定前の artifact sha256 = manifest pin**、artifact 不要の label self-check、
+ケース label（真値 offset/rank・記録済み boundary 順・`labelChecks` 全件・`labelsConsistent`）、
+baseline の「真値は検証集合の外」、oracle 上限の probe 結果と検証 slot の差し替え、`promotionEligible: false`。
+
+証跡: `reports/investigations/openjev-real-game-holdout/arm64-runner-evidence-2026-09-22.json`
+（run の成果物 JSON から機械的に生成。手で書いた数値ではない）。
+
 つまり救済が起きない理由は「referee の守備範囲に真値が無い」ではなく、
 **probe が検証集合を変えても返り値を変えられない**こと（＋ live の選択がまだ外れること）である。
 同時に、決定的経路が「資源ではない運動量フィールド」(`mobj_t.momz`、gravity で減るので
@@ -107,9 +129,10 @@ latency: choice p50 ≈ 421 ms / p95 ≈ 863 ms、noul p50 = 567 ms。
 
 ## 現在地
 
-- 実装ブランチ: `codex/openjev-boundary-referee`
-- base: 最新 main `8d508636d287a4fd95b2550b25f20ae8a3723f2a` に rebase 済み（12 commits, 作業ツリー clean）
-- 作業ツリー: `/mnt/workspace/.dev-state/agent-work/checkouts/openjev-boundary-referee`
+- 実装ブランチ: `feat/openjev-real-game-holdout`（PR #9410）
+- base: 最新 main `1e2b89c9b228f6510c7c2bc9b5f7204633f35c90` に rebase 済み
+- 計測レポート: `reports/investigations/openjev-real-game-holdout/REPORT.md`
+  （機械可読な同伴証跡: `measurement-2026-09-22.json`, `arm64-runner-evidence-2026-09-22.json`）
 - 正確な SHA は `git log --oneline` を参照。rebase でハッシュが変わるため、以下は subject で記録する（古い順）:
   1. `feat: add OpenJev boundary referee shadow harness`
   2. `docs: add OpenJev boundary referee handoff`
@@ -122,7 +145,13 @@ latency: choice p50 ≈ 421 ms / p95 ≈ 863 ms、noul p50 = 567 ms。
   9. `test(jev): make the holdout check its own rank labels`
   10. `docs(jev): record the holdout label self-check`
   11. `test(jev): freeze the holdout policies in the fixture, not the harness`
-  12. `docs(jev): pin the commit list`（このファイル更新）
+  12. `docs(jev): pin the commit list`
+  13. `docs(jev): make the handoff rebase-stable`
+  14. `docs(jev): record what survives verification on the holdout`
+  15. `test(jev): pin the boundary-referee holdout to a real ARM64 game release`
+  16. `test(jev): run the boundary-referee lane tests in the canonical gate`
+  17. `fix(jev): make the real-game holdout's own labels falsifiable`
+  18. `docs(jev): report the real-game holdout measurement and its ceiling`（このファイルを含む）
 - 引き継ぎ資料: このファイル
 
 ## 何を実装したか

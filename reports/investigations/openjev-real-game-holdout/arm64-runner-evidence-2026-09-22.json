@@ -1,0 +1,198 @@
+{
+  "schema": "hex-openjev-arm64-holdout-runner-evidence/v1",
+  "date": "2026-09-22",
+  "measuredHead": "6195f1a1f7f172e520e8523dd5096029e672956d",
+  "workflow": {
+    "repository": "rhgrive3/actions",
+    "path": ".github/workflows/openjev-real-game-holdout.yml",
+    "commit": "0013f7932d07fbd73ab6b12b11dce8a7de38a8d0",
+    "runId": 35687189172,
+    "url": "https://github.com/rhgrive3/actions/actions/runs/35687189172",
+    "conclusion": "success",
+    "asserts": [
+      "the checked-out head equals the dispatched TARGET_SHA",
+      "the runner is ARM64 (uname + process.arch)",
+      "the manifest upstream commit is the pinned one",
+      "the artifact sha256 equals the manifest pin before measuring",
+      "the artifact-free label self-check passes",
+      "case labels: truth offset/rank, recorded boundary order, every labelChecks entry true",
+      "baseline: truth sits outside the D1..D4 verification set (truthHitAtBoundary 0)",
+      "declared-oracle ceiling: probe reconfirms d5 and swaps the verification slot, answer stays @148",
+      "promotionEligible stays false"
+    ]
+  },
+  "legs": [
+    {
+      "runner": "macos-14",
+      "artifactFamily": "holdout-macos-14",
+      "uname": "arm64",
+      "nodeRuntime": "darwin arm64",
+      "head": "6195f1a1f7f172e520e8523dd5096029e672956d",
+      "labelSelfCheck": "semantic-boundary-holdout-labels: ok",
+      "archive": {
+        "url": "https://github.com/kraflab/dsda-doom/releases/download/v0.29.4/dsda-doom-0.29.4-mac-arm64.zip",
+        "bytes": 11359462,
+        "sha256": "cc46a12f114305b5c340a903ecac3fe03ef384626a93edd54e12fc0f1d713540"
+      },
+      "fetchReportBinarySha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8",
+      "binarySha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8",
+      "binaryBytes": 2814096,
+      "artifactPinned": true,
+      "goal": "hp",
+      "field": "mobj_t.health",
+      "truthOffset": "196",
+      "expectedDeterministicRank": 5,
+      "rankedCandidateOffsets": [
+        "80",
+        "148",
+        "56",
+        "240",
+        "196",
+        "404",
+        "256",
+        "212"
+      ],
+      "labelChecks": {
+        "candidateCountMatches": true,
+        "rankWithinCandidates": true,
+        "truthRankMatchesBoundaryOrder": true,
+        "reachabilityClaimMatchesRank": true,
+        "deterministicTopClaimMatchesMeasurement": true,
+        "deterministicTopReproduced": true,
+        "oracleProbeTargetsLabelledRank": true,
+        "oracleCeilingMeasured": true
+      },
+      "labelsConsistent": true,
+      "ceilingMeasured": true,
+      "oracleCeilingRescues": false,
+      "promotionEligible": false,
+      "promotionBlocker": "No labelled real-game holdout case shows a boundary rescue by the gated probe, so production stays gated.",
+      "variants": {
+        "current-d1-d4": {
+          "finalTopOffset": "148",
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 0,
+          "referee": "no-referee",
+          "refereeChallengerId": null,
+          "probe": "not-attempted",
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        },
+        "gated-one-probe-oracle-ceiling": {
+          "finalTopOffset": "148",
+          "truthHitAtBoundary": 1,
+          "boundaryRescue": 0,
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": "probe-promoted-by-binary-evidence",
+          "refereeChallengerId": "c1",
+          "probe": "reconfirmed",
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d5"
+          ]
+        }
+      }
+    },
+    {
+      "runner": "ubuntu-24.04-arm",
+      "artifactFamily": "holdout-ubuntu-24.04-arm",
+      "uname": "aarch64",
+      "nodeRuntime": "linux arm64",
+      "head": "6195f1a1f7f172e520e8523dd5096029e672956d",
+      "labelSelfCheck": "semantic-boundary-holdout-labels: ok",
+      "archive": {
+        "url": "https://github.com/kraflab/dsda-doom/releases/download/v0.29.4/dsda-doom-0.29.4-mac-arm64.zip",
+        "bytes": 11359462,
+        "sha256": "cc46a12f114305b5c340a903ecac3fe03ef384626a93edd54e12fc0f1d713540"
+      },
+      "fetchReportBinarySha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8",
+      "binarySha256": "76d5427c37b0eb0dba9b86c97f4f36345867cb8ad60584e33979092426c573b8",
+      "binaryBytes": 2814096,
+      "artifactPinned": true,
+      "goal": "hp",
+      "field": "mobj_t.health",
+      "truthOffset": "196",
+      "expectedDeterministicRank": 5,
+      "rankedCandidateOffsets": [
+        "80",
+        "148",
+        "56",
+        "240",
+        "196",
+        "404",
+        "256",
+        "212"
+      ],
+      "labelChecks": {
+        "candidateCountMatches": true,
+        "rankWithinCandidates": true,
+        "truthRankMatchesBoundaryOrder": true,
+        "reachabilityClaimMatchesRank": true,
+        "deterministicTopClaimMatchesMeasurement": true,
+        "deterministicTopReproduced": true,
+        "oracleProbeTargetsLabelledRank": true,
+        "oracleCeilingMeasured": true
+      },
+      "labelsConsistent": true,
+      "ceilingMeasured": true,
+      "oracleCeilingRescues": false,
+      "promotionEligible": false,
+      "promotionBlocker": "No labelled real-game holdout case shows a boundary rescue by the gated probe, so production stays gated.",
+      "variants": {
+        "current-d1-d4": {
+          "finalTopOffset": "148",
+          "truthHitAtBoundary": 0,
+          "boundaryRescue": 0,
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 0,
+          "referee": "no-referee",
+          "refereeChallengerId": null,
+          "probe": "not-attempted",
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d4"
+          ]
+        },
+        "gated-one-probe-oracle-ceiling": {
+          "finalTopOffset": "148",
+          "truthHitAtBoundary": 1,
+          "boundaryRescue": 0,
+          "wrongTop1": 1,
+          "falseLikely": 1,
+          "verdict": "likely",
+          "analyzeCalls": 18,
+          "semanticCalls": 1,
+          "referee": "probe-promoted-by-binary-evidence",
+          "refereeChallengerId": "c1",
+          "probe": "reconfirmed",
+          "verificationTargets": [
+            "d1",
+            "d2",
+            "d3",
+            "d5"
+          ]
+        }
+      }
+    }
+  ]
+}

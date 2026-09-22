@@ -144,6 +144,37 @@ latency（この実行のサンプル）: choice p50 420.5 ms / p95 862.7 ms、n
 
 `labelsConsistent: true` / `promotionEligible: false` / `artifact.pinned: true`。
 
+### ARM64 runner での再計測（GitHub Actions）
+
+同じ head を **ARM64 ランナー 2 種**で計測し、測定値そのものを assert して緑にした（ワークフローは
+`rhgrive3/actions`。hex-ida 本体の PR からは成果物と `scripts/fetch-real-game-holdout.mjs` で再現できる）。
+
+| 項目 | 値 |
+|---|---|
+| run | [35687189172](https://github.com/rhgrive3/actions/actions/runs/35687189172) `success` |
+| 計測した head | `6195f1a1f7f172e520e8523dd5096029e672956d` |
+| workflow commit | `0013f7932d07fbd73ab6b12b11dce8a7de38a8d0` |
+| leg 1 | `macos-14` → `uname -m` = `arm64`, node = `darwin arm64` |
+| leg 2 | `ubuntu-24.04-arm` → `uname -m` = `aarch64`, node = `linux arm64` |
+
+assert した内容（両 leg で `ok: true`、`problems: []`）:
+
+- checkout した head が dispatch した SHA と一致すること
+- ランナーが ARM64 であること（`uname -m` と `process.arch`）
+- artifact の sha256 が manifest の pin と一致してから測定を始めること（`artifact.pinned: true`）
+- artifact 不要の label self-check が通ること
+- ケースの label（真値 offset/rank、記録済み boundary 順、`labelChecks` 全件 true、`labelsConsistent`）
+- baseline は真値が **D1〜D4 の検証集合の外**にあること（`truthHitAtBoundary: 0`）
+- oracle 上限: probe が d5 を `reconfirmed` し検証 slot を `d1,d2,d3,d5` に差し替え、答えは 148 のまま
+- `promotionEligible: false`
+
+両 leg の測定値は一致し、offline の表（top-1 148 / boundaryRescue 0 / oracle ceiling 救済なし）と同一。
+証跡は `arm64-runner-evidence-2026-09-22.json`（run の成果物から機械的に生成）。
+
+> 注: 上記 run は**このレポートと証跡ファイルを追加する直前の head**を計測している。
+> その後の差分は本ディレクトリのドキュメント/証跡のみで、コードは変更していない。
+> 最終 head についても同じワークフローを再実行しており、その run は PR 本文に記録する。
+
 ## 5. 製品側 findings
 
 1. **`hp` の決定的 top-1 が資源ではない。** `mobj_t.momz`（垂直方向の運動量）に
@@ -179,4 +210,5 @@ latency（この実行のサンプル）: choice p50 420.5 ms / p95 862.7 ms、n
 - label 検査: `tests/fixtures/real-holdout-labels.mjs`, `tests/semantic-boundary-holdout-labels.mjs`
 - 取得: `scripts/fetch-real-game-holdout.mjs`, `tests/semantic-boundary-holdout-fetch.mjs`
 - 計測生データ: `measurement-2026-09-22.json`（offline + live の全 variant、latency、label 検査）
-- ARM64 runner での再計測: PR 本文および `docs/openjev-boundary-referee-handoff.md` を参照。
+- ARM64 runner での再計測: `arm64-runner-evidence-2026-09-22.json`（run 35687189172, head `6195f1a1f`, 2 legs とも success）
+- 手順の正本: `docs/openjev-boundary-referee-handoff.md`（ARM64 節）と PR 本文
