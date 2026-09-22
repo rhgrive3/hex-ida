@@ -205,7 +205,8 @@ export function runProductionDeploy({
       let current = null;
       try { current = lstatSync(snapshotPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
       if (current && snapshotIdentity && sameIdentity(current, snapshotIdentity)) rmSync(snapshotPath, { force: true });
-      else if (current && !snapshotIdentity) rmSync(snapshotPath, { force: true });
+      // If creation succeeded but identity capture failed, pathname ownership is
+      // uncertain. Never broaden cleanup authority to an unverified replacement.
     });
   }
 
