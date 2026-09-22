@@ -6,7 +6,7 @@
  * gotos rather than manufacturing source structure.
  */
 
-import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition } from '../ir.js';
+import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance, mustAlias } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
@@ -39,6 +39,15 @@ function terminalProofSteps(opts) {
 
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
 const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
+const orderedMaterializationBindings = new WeakMap();
+
+/** Producer-owned ordered load bindings. These are presentation identities,
+ * not alias/equivalence proofs; consumers may only reuse the exact SSA value. */
+export function readSemanticOrderedMaterializations(result, ir) {
+  const entry = orderedMaterializationBindings.get(result);
+  try { return entry?.ir === ir && entry.isCurrent() ? entry.bindings : null; }
+  catch { return null; }
+}
 const controlRenderLines = new WeakMap(), controlRenderHistories = new WeakMap();
 const conditionalRegionHistories = new WeakMap(), conditionalRegionsByRecord = new WeakMap();
 
@@ -941,6 +950,15 @@ function semanticLocalDeclarations(types, body, ctx) {
     if (slot?.key) localDeclarationOwners.set(node, Object.freeze({ ir:ctx.ir, slot, key:slot.key, name, type }));
     out.push(node);
   }
+  for (const [id, name] of ctx.materialNames || []) {
+    const value = (ctx.ir.values || []).find((candidate) => candidate.id === id);
+    if (value?.def?.op !== OP.LOAD || seen.has(name) || !text.includes(name)) continue;
+    const recovered = concreteRecoveredType(ctx.types?.values?.get?.(id));
+    const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
+    const type = recovered || `${value.signed === true ? 'int' : 'uint'}${bits}`;
+    seen.add(name);
+    out.push(line('decl', 1, `${type} ${name};`, null));
+  }
   return out;
 }
 
@@ -1764,10 +1782,81 @@ function terminalConditionalPartition(header, yes, no, ctx, state, allowed = nul
 
 function materialization(ctx) {
   const names = new Map();
+  const instructions = ctx.ir.instructions || [];
+  const position = new Map(instructions.map((inst, index) => [inst, index]));
+  const strongPrefix = new Array(instructions.length + 1).fill(0);
+  const storePositions = [];
+  const strongOrderingBarrier = (inst) => inst?.op === OP.CALL ||
+    inst?.op === OP.CLOBBER || inst?.op === OP.UNKNOWN;
+  for (let i = 0; i < instructions.length; i++) {
+    strongPrefix[i + 1] = strongPrefix[i] + (strongOrderingBarrier(instructions[i]) ? 1 : 0);
+    if (instructions[i]?.op === OP.STORE) storePositions.push(i);
+  }
+  const barrierBetween = (load, current, from, to) => {
+    if (to <= from + 1) return false;
+    if (strongPrefix[to] - strongPrefix[from + 1] > 0) return true;
+    for (const index of storePositions) {
+      if (index <= from) continue;
+      if (index >= to) break;
+      const store = instructions[index];
+      if (!mayAliasProvenance(load?.loc, store?.loc)) continue;
+      // A read-modify-write that stores this exact SSA value back to the same
+      // location refreshes the source-level memory expression. Later uses may
+      // safely render the committed field again until another clobber occurs.
+      if (mustAlias(load?.loc, store?.loc) && sameValue(valueOf(store?.args?.[0]), current)) continue;
+      return true;
+    }
+    return false;
+  };
+  const crossesBarrier = (value) => {
+    const def = value?.def;
+    const di = position.get(def);
+    if (di == null) return false;
+    const originBlock = def.block;
+    const seenValues = new Set();
+    const queue = [value];
+    while (queue.length) {
+      const current = queue.pop();
+      if (!current || seenValues.has(current.id)) continue;
+      seenValues.add(current.id);
+      for (const use of current.uses || []) {
+        if (use === current.def || use?.clobbered) continue;
+        const ui = position.get(use);
+        if (ui == null || ui <= di) continue;
+        // Moving an observation into another Basic Block can make it conditional
+        // (or move it to another path), changing faults/MMIO semantics even if
+        // no explicit store/call sits between the two textual rows.
+        if (use.block !== originBlock) return true;
+        const currentDef = current.def || def;
+        const currentIndex = position.get(currentDef);
+        if (currentIndex != null && barrierBetween(def, current, currentIndex, ui)) return true;
+        // Follow pure SSA transforms transitively. A load feeding add/cmp/select
+        // can otherwise appear safe at its direct use while the derived value is
+        // finally consumed only after a side-effect barrier.
+        if (use.dst && use.op !== OP.CALL && use.op !== OP.LOAD &&
+            use.op !== OP.STORE && use.op !== OP.CLOBBER && use.op !== OP.UNKNOWN) {
+          queue.push(use.dst);
+        }
+      }
+    }
+    return false;
+  };
   for (const v of ctx.ir.values || []) {
-    if (!v.def || v.def.op !== OP.CALL) continue;
+    if (!v.def) continue;
     const meaningfulUses = (v.uses || []).filter((u) => u !== v.def && !u.clobbered);
-    if (meaningfulUses.length) names.set(v.id, `call_${v.id}`);
+    if (!meaningfulUses.length) continue;
+    if (v.def.op === OP.CALL) {
+      names.set(v.id, `call_${v.id}`);
+      continue;
+    }
+    /*
+     * A load is an observation at a specific point in the machine program.
+     * Re-rendering that load only at a later consumer is unsound across a call,
+     * store, unknown effect or explicit clobber: the intervening operation may
+     * change the memory being observed. Preserve the observation by binding it
+     * at the original load. Pure values remain freely inlineable.
+     */
+    if (v.def.op === OP.LOAD && crossesBarrier(v)) names.set(v.id, `load_${v.id}`);
   }
   return names;
 }
@@ -1811,8 +1900,15 @@ function emitBlockStatements(block, out, ctx, indent) {
   const term = blockTerm(block);
   for (const inst of block.insts || []) {
     resetInitialValueOwner(ctx);
-    if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.LOAD || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
-    if (inst.op === OP.STORE) {
+    if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
+    if (inst.op === OP.LOAD) {
+      if (!inst.dst || !ctx.materialNames.has(inst.dst.id)) continue;
+      const rhs = renderValue(inst.dst, ctx, { ignoreMaterial: true });
+      const node = line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${rhs};`, inst.row, inst.address,
+        { source: mergeSource(dependencySource(inst.dst, ctx), sourceForInst(inst, 'load-order')) });
+      out.push(node);
+      ctx.evidence.push(evidenceOf(inst, 'ordered memory load'));
+    } else if (inst.op === OP.STORE) {
       if (isMechanicalStackSpill(inst, ctx)) {
         recordSuppression(ctx, inst, 'compiler-only stack spill', 'omit-mechanical-stack-spill');
         continue;
@@ -2366,10 +2462,23 @@ export function decompileSemantic(model, rawOpts = {}) {
   }
 
   const summary = summarize(body, ctx);
-  return bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
+  const result = bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
   }, ctx), ctx), ctx), ctx, true), ctx);
+  const bindings = new Map();
+  for (const [id, name] of ctx.materialNames) {
+    const value = (ir.values || []).find((candidate) => candidate.id === id);
+    if (value?.def?.op === OP.LOAD) bindings.set(id, Object.freeze({ name, value, definition:value.def }));
+  }
+  if (bindings.size) {
+    const values = ir.values;
+    orderedMaterializationBindings.set(result, Object.freeze({ ir, bindings,
+      isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'values')?.value === values
+        && [...bindings.values()].every((binding) => values.includes(binding.value) && binding.value.def === binding.definition),
+    }));
+  }
+  return result;
 }
