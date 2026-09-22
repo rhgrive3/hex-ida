@@ -84,6 +84,9 @@ export function validateAuthConfig(config, { local = false } = {}) {
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(binding.database_id || '')) throw new Error('AUTH_DB database_id must be a real D1 UUID.');
   if (!local && binding.database_id === LOCAL_D1_ID) throw new Error('Local-only AUTH_DB sentinel: set the real production D1 ID before deployment.');
   if (config.assets?.run_worker_first !== true) throw new Error('Protected asset routes require assets.run_worker_first=true.');
+  if (!local && config?.assets?.directory !== './dist' && config?.assets?.directory !== 'dist') {
+    throw new Error('Production assets directory must be ./dist.');
+  }
   if (!local && config?.main !== './worker-entry.js' && config?.main !== 'worker-entry.js') {
     throw new Error('Production worker entrypoint must be worker-entry.js.');
   }
