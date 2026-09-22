@@ -15,7 +15,9 @@
   7. `044255706` `feat(jev): only ask the referee for a goal with calibrated guidance`
   8. `eb54fbe59` `docs(jev): reflect the calibrated-goal eligibility`
   9. `5e9f7067e` `test(jev): make the holdout check its own rank labels`
-  10. `docs(jev): record the holdout label self-check`（このファイル更新）
+  10. `15087f4a5` `docs(jev): record the holdout label self-check`
+  11. `36f4a4842` `test(jev): freeze the holdout policies in the fixture, not the harness`
+  12. `docs(jev): pin the commit list`（このファイル更新）
 - 引き継ぎ資料: このファイル（作業ツリーは clean で commit 済み）
 
 ## 何を実装したか
@@ -102,7 +104,17 @@
   ケースごとの `promotionEligible` と「truth が boundary set に到達可能か」を報告する。
 - 目的: 単一ケースの結果で production 昇格を判断しないこと（証跡の被覆を広げる）。
 
-### 5. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
+### 5. 凍結ポリシーを harness から fixture へ
+
+- 変更前: `maxD4D5Gap: 0.02` / `minProbability: 0.8` / `minMargin: 0.2` が
+  `tests/semantic-boundary-openmw-holdout.mjs` のリテラルだった。
+- 変更後: `tests/fixtures/openmw-boundary-holdout.manifest.json` の `policies` が唯一の情報源。
+  harness は `normalizeSemanticBoundaryAmbiguityPolicy` / `...AdmissionPolicy` で検証し、
+  不正なら throw（暗黙の既定値へ落ちない）。証跡レポートに `frozenPolicies` を記録。
+- 回帰: `tests/semantic-boundary-referee.mjs` が「合成 holdout と実 OpenMW holdout が
+  同一のポリシーを使う」ことを固定。似て見える2つのポリシーが別物にならないようにする。
+
+### 6. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
 
 - `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
   (`rankedShapeScores`) を追加（内部専用。referee には渡らない）。
