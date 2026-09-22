@@ -655,19 +655,25 @@ export function buildValues(model, opts) {
         const pair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp';
         const list = pair ? dstOps.slice(0, 2) : dstOps.slice(0, 1);
         const elemSize = pair ? m.size / 2 : m.size;
+        // Pair destinations are committed after both addresses are read. Keep
+        // the pre-instruction base/index values stable even if Rt/Rt2 aliases
+        // the address registers.
+        const baseValBefore = m.base ? regs.get(m.base) : null;
+        const indexValBefore = m.index ? regs.get(m.index) : null;
         list.forEach((dop, k) => {
           const key = regKeyOf(dop);
           if (!key || key === m.base && memOp && (memOp.mode === 'pre' || memOp.mode === 'post')) return;
+          const step = pair ? BigInt(k * elemSize) : 0n;
+          const effectiveDisp = (m.disp ?? 0n) + step;
           let v = null;
           if (txt && k === 0) v = node('str', { addr: txt.addr, text: txt.text });
           else if (slot) {
-            const stackDisp = m.disp + BigInt(k * elemSize);
-            v = stackRead(m, stackDisp, elemSize);
+            v = stackRead(m, effectiveDisp, elemSize);
           }
           if (!v) {
-            const baseVal = m.base ? regs.get(m.base) : null;
-            const absolute = baseVal && baseVal.k === 'addr' && m.disp != null
-              ? baseVal.addr + m.disp : null;
+            const baseVal = baseValBefore;
+            const absolute = baseVal && baseVal.k === 'addr'
+              ? baseVal.addr + effectiveDisp : null;
             v = node('mem', {
               baseReg: m.base,
               /*
@@ -680,8 +686,8 @@ export function buildValues(model, opts) {
                * 置き場は baseReg と disp だけで 1 つに決まるので、木は要らない。
                */
               base: (m.stack || baseVal == null || baseVal.k === 'reg') ? null : baseVal,
-              disp: m.disp != null ? m.disp + BigInt(k * (m.size / (pair ? 2 : 1))) : null,
-              index: m.index ? applyShift(regs.get(m.index) || regNode(m.index, row), memOp && memOp.shift, 64) : null,
+              disp: effectiveDisp === 0n ? null : effectiveDisp,
+              index: m.index ? applyShift(indexValBefore || regNode(m.index, row), memOp && memOp.shift, 64) : null,
               indexShift: memOp && memOp.shift ? { ...memOp.shift } : null,
               scale: m.scale ?? null,
               size: pair ? m.size / 2 : m.size,
@@ -696,21 +702,22 @@ export function buildValues(model, opts) {
         });
         // 後置・前置インデックスはベースも進む
         if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
-          emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
+          emit(m.base, bin('add', baseValBefore || regNode(m.base, row), constNode(m.writebackDisp), 64));
         }
       } else {
         memoryEpoch++;
-        const srcs = insn.ops.filter((x) => x.k === 'reg');
+        const srcs = insn.ops.filter((x) => x.k === 'reg' && insn.reads.includes(regKeyOf(x)));
         const pair = base === 'stp' || base === 'stnp';
         const list = pair ? srcs.slice(0, 2) : srcs.slice(0, 1);
         const elemSize = pair ? m.size / 2 : m.size;
         list.forEach((sop, k) => {
           const v = valueOf(sop, row, regBits(sop));
           const step = pair ? BigInt(k * elemSize) : 0n;
-          if (slot && m.disp != null) stackWrite(m, m.disp + step, elemSize, v);
+          const effectiveDisp = (m.disp ?? 0n) + step;
+          if (slot) stackWrite(m, effectiveDisp, elemSize, v);
           memWrites.push({
             row, address: insn.address, baseReg: m.base,
-            disp: m.disp != null ? m.disp + step : null,
+            disp: effectiveDisp === 0n ? null : effectiveDisp,
             size: elemSize, stack: !!m.stack,
             index: m.index || null, value: v,
           });
