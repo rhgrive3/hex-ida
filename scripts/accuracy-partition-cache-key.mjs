@@ -27,7 +27,6 @@ const pathIsWithin = (root, target) => {
 };
 
 function walk(dir, root, out, visitedDirs = new Set(), allowedRealRoot = null) {
-  if (!fs.existsSync(dir)) return;
   let realDir;
   try {
     realDir = fs.realpathSync(dir);
