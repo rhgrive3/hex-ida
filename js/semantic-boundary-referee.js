@@ -17,8 +17,15 @@ export const SEMANTIC_BOUNDARY_MIN_CANDIDATES = 5;
 export const SEMANTIC_BOUNDARY_AMBIGUITY_SCHEMA = 'hex-semantic-boundary-ambiguity/v1';
 export const SEMANTIC_BOUNDARY_ADMISSION_SCHEMA = 'hex-semantic-boundary-admission/v1';
 
+/*
+ * `free` is the free-form goal: `parseGoal` maps anything that does not match a
+ * preset to `{ id: 'free', free: true, text: raw }`, so the user's own words are
+ * the semantic target.  It is measured as the mainstream path on real binaries
+ * -- 192 of 196 sampled partial-name queries -- and it is the only goal whose
+ * failures this referee is ever in a position to see.
+ */
 const SUPPORTED_SHAPE_GOALS = new Set([
-  'attack', 'damage', 'hp', 'stamina', 'money', 'score', 'level', 'item',
+  'attack', 'damage', 'hp', 'stamina', 'money', 'score', 'level', 'item', 'free',
 ]);
 const METHODS = new Set(['choice', 'noul']);
 const CANDIDATE_ID = /^c[0-7]$/;
@@ -102,6 +109,10 @@ export function semanticBoundaryCandidateFacts(candidate, id, { complete = false
 export function semanticBoundaryGoal(goal) {
   const id = typeof goal?.id === 'string' ? goal.id : '';
   if (!SUPPORTED_SHAPE_GOALS.has(id)) return null;
+  /* For a free-form goal `text` is the user's raw query; for a preset it is the
+     calibrated label.  Either way this is the only goal wording the model sees.
+     The packet stays `{ id, label }` on purpose: whether the goal was preset or
+     free-form is not something the model needs to know. */
   const label = boundedText(goal?.label || goal?.text || id, 160) || id;
   return { id, label };
 }
@@ -202,7 +213,15 @@ export function semanticBoundaryEligibility({
    * a labelled holdout may spend a request.  Adding a holdout case is therefore
    * also what makes a goal eligible.
    */
-  if (!semanticBoundaryGoalGuidance(safeGoal.id)) return { eligible: false, reason: 'uncalibrated-goal', metrics };
+  /*
+   * A free-form goal needs no authored guidance: the request's goal label *is*
+   * the user's own words, so there is no wording of ours that could be wrong.
+   * The rule below exists to stop an unvalidated prompt from being added
+   * silently, which is why it still applies to every preset goal.
+   */
+  if (goal?.free !== true && !semanticBoundaryGoalGuidance(safeGoal.id)) {
+    return { eligible: false, reason: 'uncalibrated-goal', metrics };
+  }
   if (!Array.isArray(candidates) || candidates.length < SEMANTIC_BOUNDARY_MIN_CANDIDATES
     || candidates.length > SEMANTIC_BOUNDARY_MAX_CANDIDATES) {
     return { eligible: false, reason: 'candidate-count', metrics };

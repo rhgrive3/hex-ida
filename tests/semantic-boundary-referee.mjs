@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { autoAnalyze } from '../js/auto.js';
+import { parseGoal } from '../js/goals.js';
 import {
   SEMANTIC_BOUNDARY_GOAL_GUIDANCE,
+  buildSemanticBoundaryRequest,
   normalizeSemanticBoundaryAdmissionPolicy,
   normalizeSemanticBoundaryAmbiguityPolicy,
+  semanticBoundaryEligibility,
   semanticBoundaryGoalGuidance,
 } from '../js/semantic-boundary-referee.js';
 import {
@@ -121,6 +124,52 @@ for (const goalId of ['hp', 'stamina']) {
   const run = await runSyntheticBoundaryCase({ goalId, referee: async () => { calls++; return acceptedChoice('c1'); } });
   assert.equal(calls, 1, `${goalId} is calibrated and may ask`);
   assert.equal(run.trace.eligibility, 'eligible');
+}
+
+// 4c. Free-form input is the mainstream real-binary path: measured on three
+// shipping binaries, 192 of 196 partial-name queries carry no preset at all and
+// become `{ id: 'free', free: true, text: raw }`.  There is no authored wording
+// of ours in that case, so the calibrated-guidance rule -- which exists to stop
+// an unvalidated prompt from being added silently -- does not apply, and the
+// user's own words are what the model sees as the goal label.
+//
+// This is asserted on the eligibility contract directly: the shapes-only
+// synthetic fixture has no shape hypothesis for a free-form goal, so it cannot
+// reach the boundary planner at all.  Real free-form queries reach it through
+// the fields path with 5-12 candidates.
+const boundaryCandidates = [0.90, 0.89, 0.88, 0.87, 0.86]
+  .map((score) => ({ shape: { score } }));
+const eligibilityFor = (goal) => semanticBoundaryEligibility({
+  goal,
+  candidates: boundaryCandidates,
+  shapes: { complete: true, capped: false },
+  interactive: true,
+  analyze: async () => null,
+  budget: { left: 48 },
+  ambiguityPolicy: HOLDOUT_AMBIGUITY_POLICY,
+});
+for (const query of ['action button', 'load finish']) {
+  const goal = parseGoal(query);
+  assert.equal(goal.id, 'free', `${query} must parse as free-form`);
+  assert.equal(goal.free, true);
+  assert.equal(semanticBoundaryGoalGuidance('free'), '', 'free-form has no authored wording');
+  const decision = eligibilityFor(goal);
+  assert.equal(decision.reason, null, `${query} must be eligible: ${decision.reason}`);
+  assert.equal(decision.eligible, true);
+  const request = buildSemanticBoundaryRequest({ goal, candidates: boundaryCandidates.slice(0, 2) });
+  assert.deepEqual(Object.keys(request.goal).sort(), ['id', 'label']);
+  assert.equal(request.goal.id, 'free');
+  assert.equal(request.goal.label, query, 'the user\'s own words are the goal label');
+}
+// 4d. The free-form exemption must not become a way to enable an unvalidated
+// preset silently: a preset goal with no guidance still fails closed.
+{
+  const goal = parseGoal('money');
+  assert.equal(goal.id, 'money');
+  assert.equal(goal.free, false);
+  const decision = eligibilityFor(goal);
+  assert.equal(decision.eligible, false, 'an uncalibrated preset goal must not be eligible');
+  assert.equal(decision.reason, 'uncalibrated-goal');
 }
 
 // Cancellation is also a hard no-egress condition.

@@ -113,16 +113,31 @@ function goalGuidance(goal) {
   return semanticBoundaryGoalGuidance(goal?.id);
 }
 
+/*
+ * A free-form goal carries the user's own words in `label`, so the question asks
+ * what the user asked for rather than naming a preset gameplay value.  This is
+ * the query shape that actually misses the verified window on real binaries;
+ * preset goals keep their calibrated wording byte-for-byte.
+ */
+function freeFormQuestion(request) {
+  return request.goal.id === 'free';
+}
+
 function choiceQuestion(request) {
   const criteria = Object.fromEntries(request.candidates.map((candidate) => [
     candidate.id,
-    `The observed facts for opaque candidate ${candidate.id} semantically fit the requested gameplay value.`,
+    freeFormQuestion(request)
+      ? `The observed facts for opaque candidate ${candidate.id} match what the user asked for.`
+      : `The observed facts for opaque candidate ${candidate.id} semantically fit the requested gameplay value.`,
   ]));
   criteria.none = 'None of these candidates can be selected from the supplied observations.';
+  const instructions = freeFormQuestion(request)
+    ? `The user asked for: "${request.goal.label}". Using only the observed facts, select at most one opaque candidate that matches that request, or select none. Do not infer facts not present in the state.`
+    : `The requested gameplay value is "${request.goal.label}" (id: ${request.goal.id}). Using only the observed facts, select at most one opaque candidate that semantically fits this value, or select none.${goalGuidance(request.goal)} Do not infer facts not present in the state.`;
   return {
     boundary: {
       type: 'choice',
-      instructions: `The requested gameplay value is "${request.goal.label}" (id: ${request.goal.id}). Using only the observed facts, select at most one opaque candidate that semantically fits this value, or select none.${goalGuidance(request.goal)} Do not infer facts not present in the state.`,
+      instructions,
       criteria,
     },
   };
@@ -133,11 +148,15 @@ function noulQuestions(request) {
     candidate.id,
     {
       type: 'noul',
-      instructions: `Does opaque candidate ${candidate.id} semantically fit the requested gameplay value "${request.goal.label}" (id: ${request.goal.id})?${goalGuidance(request.goal)} Using only the observed facts; do not infer facts not present in the state.`,
+      instructions: freeFormQuestion(request)
+        ? `Does opaque candidate ${candidate.id} match what the user asked for ("${request.goal.label}")? Using only the observed facts; do not infer facts not present in the state.`
+        : `Does opaque candidate ${candidate.id} semantically fit the requested gameplay value "${request.goal.label}" (id: ${request.goal.id})?${goalGuidance(request.goal)} Using only the observed facts; do not infer facts not present in the state.`,
       // Verified live: the noul schema requires `true`/`false` criteria and
       // answers with a scalar `noul` = P(true). `yes`/`no` is rejected with 400.
       criteria: {
-        true: `Candidate ${candidate.id} fits the requested gameplay value.`,
+        true: freeFormQuestion(request)
+          ? `Candidate ${candidate.id} matches what the user asked for.`
+          : `Candidate ${candidate.id} fits the requested gameplay value.`,
         false: `Candidate ${candidate.id} does not fit, or the supplied facts are insufficient.`,
       },
     },
