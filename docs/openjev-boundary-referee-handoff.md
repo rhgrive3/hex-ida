@@ -136,6 +136,47 @@ oracle referee で真値（offset 24）を probe → 検証成功させたとき
 - 次に作るべき holdout の正しい条件: **真値が rank 4〜5 に落ち、かつ breadth で decoy に負けない**ケース。
   公平性のため、各 pool は**上流の実関数を全件**含める（恣意的な部分集合を選ばない）。
 
+### 8. 実バイナリでの救済探索（実行済み）と、そこで当たった壁
+
+**実バイナリは取得できた:**
+
+```sh
+cd <worktree>
+node tools/fetch-large-fixtures.mjs battlecats   # → tests/battlecats（git 追跡対象なので即退避＋restore）
+```
+
+`tools/fetch-large-fixtures.mjs` は `tests/large-fixtures.json` の公開 GitHub raw URL から取得し、
+size と Git blob sha1 を検証する（secret 不要）。3種をスクラッチへ退避して placeholder を復元した:
+
+| fixture | bytes | SHA-256（`tests/fixtures/real-binaries.json` と一致） |
+|---|---|---|
+| battlecats | 28153072 | `567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13` |
+| TsumTsum | 45994784 | `4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3` |
+| YWP | 63455952 | `cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6` |
+
+退避先: `/mnt/workspace/.dev-state/agent-work/scratch/real-fixtures/`（worktree は clean のまま）
+
+**しかし真値の壁に当たった。** 3種について ObjC metadata の ivar を全量調べ、
+「名前がバイナリ中で一意」かつ `parseGoal(name).id` が referee の対応 goal になるものを抽出した結果:
+
+| fixture | classes | ivars | 一意名 | そのうち goal に写像できるもの | 内訳 |
+|---|---:|---:|---:|---:|---|
+| battlecats | 3151 | 11078 | 4479 | **8** | money 5 / level 2 / item 1 |
+| TsumTsum | 3260 | 11775 | 4674 | **9** | money 4 / item 2 / level 2 / attack 1 |
+| YWP | 3590 | 15093 | 6269 | **8** | money 3 / item 3 / level 2 |
+
+- 抽出されたのはすべて **AdMob / Facebook / 課金SDK のフィールド**（`GADAdValue.currencyCode`,
+  `FBAdExperienceConfig.adExperienceType`, `APMInAppPurchaseItem.webOrderLineItemID` など）。
+- **`hp` / `stamina` に写像できる一意名は 3種とも 0 件**。ゲーム値は ObjC ivar として
+  一意名で露出していない。
+- したがって「実アプリで hp の救済を測る」には、名前由来の真値ではなく
+  **手動 RE で真値を確定する**必要がある。
+- 参考: `tests/accuracy-base.mjs` の `pinpoint` feature はまさに「一意名の ivar」を正解として
+  使っている。つまり repository の実バイナリ精度測定は **名前が残っている経路** を測っており、
+  referee が住む **名前の無い shape 経路** はこのラベル源では被覆されない。
+  （独立オラクル `tests/oracle.py` は python + `lief` + `capstone` が必要で、この環境には未導入。
+  導入しても真値は結局 ivar 名に依存するため、この壁は残る。）
+
 ### 6. holdout が自分のラベルを検証する（＋ 計測スコアの可視化）
 
 - `js/pinpoint-legacy.js` の instrumentation に「ランク順の shape score 配列」
@@ -226,12 +267,13 @@ HEX_OPENMW_HOLDOUT_ARTIFACT=... HEX_OPENMW_HOLDOUT_LIVE=1 node tests/semantic-bo
 
 ## 次にやること
 
-1. **救済が成立するケースを増やす。** ただし条件は「設定済み実バイナリ」ではなく上記 §7 に従う:
+1. **救済が成立するケースを増やす。** 条件は §7 と §8 の両方:
    - 真値が rank 4〜5 に落ちること、**かつ breadth（`loc-shared` の関数数）で decoy に負けない**こと。
-   - `tests/.real-fixtures/` の実アプリ3種（battlecats / TsumTsum / YWP）は `HEX_FIXTURE_*_URL`
-     が未設定のためこの環境では取得できない（`scripts/fetch-real-fixtures.mjs` は URL 必須）。
-   - 現実的な代替は「別の上流 OSS プロジェクトを固定 commit でビルドし、pool ごとの実関数を
-     全件含める」source-grounded fixture。OpenMW の arm64 ビルド手順は再現可能（clang 14 + 固定 commit）。
+   - 実バイナリは取得可能（§8）だが、**hp/stamina の名前由来真値は 3種とも存在しない**。
+     実アプリで測るなら「手動 RE で真値を確定したラベル付きケース」を人手で作るしかない。
+   - 自前で完結させるなら「上流 OSS を固定 commit でビルドし、pool ごとの実関数を**全件**含める」
+     source-grounded fixture（OpenMW の arm64 手順が再現可能。clang 14 + 固定 commit）。
+     部分集合を選ばないことが公平性の条件。
    - rank 1〜3 のケースは referee の問いが ill-posed（真値が boundary set に無い）ため判定材料にならない。
 2. 救済が確認できた場合のみ interactive single-goal の production caller から callback を注入する。
 3. `money`/`score`/`level`/`item`/`attack`/`damage` を有効化する場合は、先に goal 別の
