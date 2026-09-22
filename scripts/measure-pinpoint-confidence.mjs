@@ -59,6 +59,9 @@ const fusionOf = (c) => {
     groups: Array.isArray(f.groups) ? [...f.groups] : null,
     byGroup: f.byGroup && typeof f.byGroup === 'object' ? { ...f.byGroup } : null,
     byFamily: f.byFamily && typeof f.byFamily === 'object' ? { ...f.byFamily } : null,
+    items: Array.isArray(f.items) ? f.items.map((it) => ({
+      code: it.code, family: it.family, kind: it.kind, id: !!it.id, applied: it.applied,
+    })) : null,
   };
 };
 const evidenceOf = (c, n = Infinity) => {
