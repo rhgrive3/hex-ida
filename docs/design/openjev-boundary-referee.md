@@ -256,4 +256,15 @@ Likely touched/added files when implementation eventually begins:
 
 ## Final design criterion
 
+## What survives verification (measured)
+
+A promotion decision needs to know which evidence can still separate candidates *after* the normal verifier runs. On the source-grounded OpenMW fixture, with a forced oracle challenger so the labelled truth is probed and verified:
+
+| candidate | loc-drain-verified | loc-clamp-verified | loc-shared | logOdds | p |
+|---|---|---|---|---|---|
+| rank 1 (leader) | 3.4012 (n=3) | 1.7918 (n=3) | 1.1632 (n=3) | 4.0080 | 0.982155 |
+| labelled truth (rank 5) | 3.4012 (n=3) | 1.7918 (n=3) | 0.7754 (n=2) | 3.6203 | 0.973924 |
+
+The verified codes carry **constant** likelihood ratios (`loc-drain-verified` lr 30, `loc-clamp-verified` lr 6) and their strength saturates at two confirmed changes, so “verified drain” behaves as one binary fact. The only graded quantity left is `loc-shared` — how many functions touch the field. A referee can therefore only change the outcome when the labelled truth is not behind on usage breadth; a case whose truth is touched by fewer functions than its decoys cannot be rescued by any referee, including a perfect one. Holdout cases must be selected with that condition in mind, and each pool must include all of the upstream project's real update sites rather than a hand-picked subset.
+
 Success is not “making Hex AI-powered.” Success is leaving already-clear deterministic results untouched while rescuing a genuinely ambiguous D5–D8 true candidate into one bounded binary-grounded probe—and retaining exactly the current Hex behavior when OpenJev is removed.
