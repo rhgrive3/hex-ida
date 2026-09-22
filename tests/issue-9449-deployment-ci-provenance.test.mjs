@@ -48,7 +48,8 @@ test('#9449 clean checkout rejects CI commit that differs from HEAD', () => {
 });
 
 test('#9449 absent or invalid CI commit keeps clean HEAD fallback', () => {
-  assert.equal(deploymentCommit('/repo', {}, fakeGit().execFileSyncImpl ? { execFileSyncImpl: fakeGit().execFileSyncImpl } : {}), HEAD);
+  const absent = fakeGit();
+  assert.equal(deploymentCommit('/repo', {}, absent), HEAD);
 
   const git = fakeGit();
   assert.equal(
