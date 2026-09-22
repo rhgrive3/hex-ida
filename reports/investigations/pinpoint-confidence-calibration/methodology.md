@@ -1,13 +1,26 @@
 # Methodology
 
+## Population and denominator contract
+
+The committed artifact has exactly **427 rows**: **426 field rows** plus **1
+DSDA location holdout row**. `fieldRows=426`, `dsdaHoldoutRows=1`, and
+`totalRows=427` are provenance counts. Every OLD/NEW/B/C headline metric,
+contingency table, cost, group, margin, exact-name, partial-name, and
+present/not-found metric uses the **426 field rows** unless it is explicitly
+labelled `DSDA`; the DSDA row is excluded from field aggregates. The 54
+partial not-found rows remain in every field denominator that covers the full
+or partial field population. The same contract is recorded in
+`denominator-contract.md` and must be enforced by the focused validation test.
+
 ## Design
 
 Single analysis per query with offline replay. For each of the 426 labelled
-queries, the production pipeline (`pinpointField`, `limit: 400`, no budget
-cap — identical to the #9413 premise runs) executes exactly once. The run
-records ranked candidates and fusion internals (logOdds, probability,
-verified, identifying, independentGroups, groups, top evidence codes with
-applied contributions, margin, universe, check counts, analyze-call count).
+field queries, the production pipeline (`pinpointField`, `limit: 400`, no
+budget cap — identical to the #9413 premise runs) executes exactly once. The
+separate DSDA location holdout contributes one additional row. The run records
+ranked candidates and fusion internals (logOdds, probability, verified,
+identifying, independentGroups, groups, top evidence codes with applied
+contributions, margin, universe, check counts, analyze-call count).
 OLD (`p>=0.85, margin>=ln(4)`, no group gate), NEW (#9418, plus
 `independentGroups>=3`), and counterfactuals B/C are then derived purely
 offline from the same recorded fusion via
