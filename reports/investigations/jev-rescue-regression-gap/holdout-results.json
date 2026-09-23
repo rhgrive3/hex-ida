@@ -1,11 +1,33 @@
 {
   "schema": "hex-jev-rescue-regression-holdout/v1",
   "protocol": {
-    "primary": "development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates",
+    "primary": "development=battlecats partial rows; observed=TsumTsum+YWP partial rows; final catalog was NOT pre-registered: G24-G34 including G28 were added after holdout inspection",
     "loo": "leave-one-binary-out: select on two binaries, evaluate on the third",
     "queryFamily": "diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented",
-    "forbidden": "thresholds are not hand-tuned after holdout inspection in this source; provenance before label inspection is not established by this commit",
-    "interpretation": "The BattleCats -> TsumTsum+YWP split is a cross-binary observed split, not an independent free-form validation set; this commit does not prove the gate catalog was fixed before holdout labels were inspected."
+    "forbidden": "do not describe G28 or the final G0-G34 catalog as pre-registered or holdout-validated; freeze a future catalog before collecting a new independent holdout",
+    "interpretation": "Audit of the work history proves the first holdout run used G0-G23; G17/G18 were later rewritten and G24-G34 including G28_strong_only were added after holdout inspection. G28 14/0 is post-hoc within-corpus evidence, not independent validation.",
+    "provenanceAudit": {
+      "status": "POST_HOC_CONFIRMED",
+      "firstHoldoutCatalog": "G0-G23",
+      "postHoldoutAdded": [
+        "G24",
+        "G25",
+        "G26",
+        "G27",
+        "G28",
+        "G29",
+        "G30",
+        "G31",
+        "G32",
+        "G33",
+        "G34"
+      ],
+      "rewrittenAfterFirstRun": [
+        "G17",
+        "G18"
+      ],
+      "preHoldoutFreeze": false
+    }
   },
   "splits": {
     "development": {
