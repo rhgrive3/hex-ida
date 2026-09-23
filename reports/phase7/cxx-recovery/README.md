@@ -12,7 +12,7 @@ Phase 4.** This is not a master-phase cutover; see
 
 - Measurement artifact: [`measurement.json`](./measurement.json)
 - Machine-readable taxonomy: [`taxonomy.json`](./taxonomy.json)
-- Regressions: `tests/phase7/cxx/{rtti-evidence,virtual-dispatch,member-types,projection,analysis-seam}.test.mjs`
+- Regressions: `tests/phase7/cxx/{rtti-evidence,virtual-dispatch,member-types,member-evidence,projection,analysis-seam}.test.mjs`
 - Measurement script: `tools/validation/phase7/cxx/measure-cxx-recovery.mjs`
 
 ---
@@ -245,6 +245,66 @@ The narrow part is deliberate, and two review findings tightened it:
   single byte, or a store of literal `0`/`1`; a byte compared against `42` stays
   `int8`.
 
+#### 5.3.1 Through the projection seam (the path a consumer reads)
+
+The numbers above are the producer measured directly. `pipelineMemberTypes`
+measures the same evidence through the canonical analysis entrypoint with a
+provider built from the fixture, which is the only path on which member evidence
+reaches a report. It counts **only functions whose receiver is proven**, so a
+free `Class*` accessor contributes nothing:
+
+| Fixture | Receiver-proven functions | Member fields | Typed | Width-only | Unknown |
+| --- | --- | --- | --- | --- | --- |
+| `game-rtti-o2` | 6 of 8 | 6 | 6 | 0 | 0 |
+| `game-rtti-o0` | 6 of 8 | 6 | 6 | 0 | 0 |
+| `game-nortti-o2` | 6 of 8 | 6 | 6 | 0 | 0 |
+
+Per function: five `takeDamage`/`update` overrides report one member each
+(`+0x8`/`+0xc` as `int32_t|uint32_t`, `+0x18` as `float`), so the same field at
+the same offset is reached from each override independently rather than being
+propagated from a class-level guess. The remaining two functions are
+`Player::Player()` and `Entity::~Entity()`; see the boundary note below.
+
+#### 5.3.2 Two measurement defects found while doing this, both fixed
+
+1. **A failed projection re-reported the previous function's members.** The
+   provider exposed a bare "last successful projection" slot and a counter that
+   counted *attempts*, so "did this call project?" was answered by counting
+   calls. A four-byte `ret`-only destructor was therefore measured as having a
+   `float` member at `+0x18` — `Actor::update`'s member, replayed onto
+   `Entity::~Entity` and `Player::Player()`. `lastAttempt()` now returns
+   `{ functionId, functionAddress, projection }` bound to the request it
+   answered (`projection: null` when that request proved nothing), and
+   `stats().projections` became `stats().attempts`. This removed **2 fabricated
+   typed member fields** from the measurement; the true count is 6 per fixture,
+   not 8. The measurement script now also asserts the recorded address is the
+   disassembled function's own start address before reading a projection.
+   Regression: `a failed attempt reports itself, never the previous projection`.
+2. **Aliased symbols silently measured as "no evidence".** LLVM 14 emits *no
+   rows* for `--disassemble-symbols` when a symbol shares its address with
+   another symbol, which is exactly how `Player::Player()` (`C1`/`C2`) and the
+   destructors (`D1`/`D2`) are laid out in the `-O2` fixture. The measurement
+   reported them as `disassembly-unavailable` and skipped them, so the
+   constructor path was never measured at all. Disassembly now falls back to the
+   symbol's declared address range, `toolchain.objdumpVersion` is recorded in the
+   artifact, and the versioned `llvm-objdump-18` is preferred over a bare
+   `llvm-objdump` that may be LLVM 14.
+
+#### 5.3.3 Boundary: constructor / destructor members do not reach the seam
+
+The provider's symbol-syntax rule *does* prove `this` for a constructor and a
+destructor (`constructor-has-this`, `destructor-has-this` — covered by a
+regression), and the measurement now reaches those functions instead of
+skipping them. It still reports `no-receiver-proof` for `Player::Player()` and
+`Entity::~Entity()` through the analysis entrypoint, so **no member evidence is
+produced for them in a report**. This is recorded as a limitation, not claimed:
+for the fixture's `Entity::~Entity()` the provider does project a receiver (with
+0 members, which is honest for a 4-byte `ret`), while the constructor's call
+returns no projection, so the loss is in the entrypoint's IR binding rather than
+in the member classifier. Fixing it means changing how the semantic IR exposes
+entry arguments, which is a different subsystem; it is left as an explicit
+follow-up rather than worked around in the member code.
+
 ### 5.4 False positive / overclaim checks
 
 - **Fabricated slots:** the BEFORE enumeration returned 64 entries across 8
@@ -279,14 +339,14 @@ These are the exact `performance` / `noEvidenceCost` values in the artifact:
 
 | Case | Iterations | Mean |
 | --- | --- | --- |
-| BEFORE (symbol-only discovery + fixed-cap vtable read) | 300 | 0.659 ms/call |
-| AFTER (canonical evidence, bounded extents) | 300 | 0.543 ms/call |
-| No C++ evidence, empty symbol table | 300 | 0.008 ms/call |
-| No C++ evidence, 50 000 ordinary C symbols | 75 | 0.566 ms/call |
+| BEFORE (symbol-only discovery + fixed-cap vtable read) | 300 | 0.666 ms/call |
+| AFTER (canonical evidence, bounded extents) | 300 | 0.502 ms/call |
+| No C++ evidence, empty symbol table | 300 | 0.007 ms/call |
+| No C++ evidence, 50 000 ordinary C symbols | 75 | 0.579 ms/call |
 
 Repeat runs move these means, so treat the ratio rather than the absolute
-numbers as the claim: in the recorded run the enabled path measured **0.82x**
-the path it replaces (`meanRatio: 0.82`). One run cannot establish that the new
+numbers as the claim: in the recorded run the enabled path measured **0.75x**
+the path it replaces (`meanRatio: 0.75`). One run cannot establish that the new
 path is *always* faster; the mechanism it relies on (reading each table only to
 its proven extent, and no memory reads at all on a C-only slice) is the durable
 reason, the ratio is a single sample. The reason is that it reads each
@@ -394,8 +454,8 @@ Unsupported on purpose (kept explicit, never guessed):
 | 1 — existing recovery audit + real-binary taxonomy | done (this document, `taxonomy.json`) |
 | 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 23 regressions) |
 | 3 — call-site-scoped virtual dispatch | done (`virtual-dispatch.js`, 13 regressions) |
-| 4 — field / member type propagation | measured; module implemented and covered (16 regressions); **not** productionised into the decompiler projection because the measured improvement is a category label, not yet a rendered type |
-| 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 17 regressions); worker-side producer lifecycle still open |
+| 4 — field / member type propagation | measured; module implemented and covered (23 regressions: 16 `member-types`, 7 `member-evidence`); canonical member evidence now reaches the projection seam; **not** rendered into the decompiler's pseudocode because the measured improvement is a category label, and rendering needs a decompiler re-baseline |
+| 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 24 regressions: 19 `projection`, 5 `analysis-seam`); worker-side producer lifecycle still open |
 
 Per the brief: a capability whose improvement cannot be measured is not
 productionised. Phase 4's *rendering* (extending `fieldFor` consumers to display
@@ -416,7 +476,7 @@ measurement are the deliverable.
 
 - `node tests/check.mjs` (syntax lint, 5473 files) — PASS.
 - `node tests/module-boundaries.mjs` — PASS.
-- `node tests/phase7/run.mjs --group cxx` — PASS (5/480 discovered files, 69 tests: 23 rtti-evidence, 13 virtual-dispatch, 16 member-types, 13 projection, 4 analysis-seam).
+- `node tests/phase7/run.mjs --group cxx` — PASS (6/481 discovered files, 83 tests: 23 rtti-evidence, 13 virtual-dispatch, 16 member-types, 7 member-evidence, 19 projection, 5 analysis-seam).
 - `tests/phase8/cxx-object-decompiler-projection.test.mjs` and
   `tests/phase7/cxx-object-evidence.test.mjs` — PASS (no regression in the
   existing C++ decompiler projection).
