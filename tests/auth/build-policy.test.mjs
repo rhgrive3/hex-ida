@@ -26,6 +26,7 @@ test('graph gate rejects privileged transitive modules, requires existing implem
 });
 
 test('privileged graph kind discriminator fails closed', () => {
+  const resolver = (value) => String(value);
   const parent = { inputs: {
     'js/userscript/dev/parent-worker-runtime.js': {},
     'js/userscript/dev/parent-rpc.js': {},
@@ -53,7 +54,7 @@ test('privileged graph kind discriminator fails closed', () => {
     'node_modules/pkg/js/userscript/dev/parent-rpc.js': {},
     'other/js/userscript/dev/bootstrap-host.js': {},
   } };
-  assert.throws(() => assertPrivilegedGraph(shadowedParent, 'parent', { repoRoot }), /parent bundle omits/);
+  assert.throws(() => assertPrivilegedGraph(shadowedParent, 'parent', { repoRoot, realpathSync: resolver }), /parent bundle omits/);
 
   const shadowedChild = { inputs: {
     'vendor/shadow/js/ai/dev/supervisor/dev-supervisor-v0.js': {},
@@ -61,7 +62,7 @@ test('privileged graph kind discriminator fails closed', () => {
     'custom/js/ai/dev/ui/engine-router.js': {},
     'js/ai/dev/ui/controls.js': {},
   } };
-  assert.throws(() => assertPrivilegedGraph(shadowedChild, 'child', { repoRoot }), /child bundle omits/);
+  assert.throws(() => assertPrivilegedGraph(shadowedChild, 'child', { repoRoot, realpathSync: resolver }), /child bundle omits/);
 
   // Absolute paths within repoRoot are accepted; absolute paths outside are rejected
   const absoluteValidParent = { inputs: {
@@ -69,14 +70,14 @@ test('privileged graph kind discriminator fails closed', () => {
     '/repo/hex-ida/js/userscript/dev/parent-rpc.js': {},
     '/repo/hex-ida/js/userscript/dev/bootstrap-host.js': {},
   } };
-  assert.doesNotThrow(() => assertPrivilegedGraph(absoluteValidParent, 'parent', { repoRoot }));
+  assert.doesNotThrow(() => assertPrivilegedGraph(absoluteValidParent, 'parent', { repoRoot, realpathSync: resolver }));
 
   const absoluteOutsideParent = { inputs: {
     '/outside/repo/js/userscript/dev/parent-worker-runtime.js': {},
     '/outside/repo/js/userscript/dev/parent-rpc.js': {},
     '/outside/repo/js/userscript/dev/bootstrap-host.js': {},
   } };
-  assert.throws(() => assertPrivilegedGraph(absoluteOutsideParent, 'parent', { repoRoot }), /parent bundle omits/);
+  assert.throws(() => assertPrivilegedGraph(absoluteOutsideParent, 'parent', { repoRoot, realpathSync: resolver }), /parent bundle omits/);
 
   // Windows separator support
   const windowsParent = { inputs: {
@@ -84,7 +85,7 @@ test('privileged graph kind discriminator fails closed', () => {
     'js\\userscript\\dev\\parent-rpc.js': {},
     'js\\userscript\\dev\\bootstrap-host.js': {},
   } };
-  assert.doesNotThrow(() => assertPrivilegedGraph(windowsParent, 'parent', { repoRoot }));
+  assert.doesNotThrow(() => assertPrivilegedGraph(windowsParent, 'parent', { repoRoot, realpathSync: resolver }));
 });
 
 test('local D1 configuration is usable but production sentinel is explicitly rejected', async () => {
@@ -105,7 +106,7 @@ test('JSONC loader accepts inline comments, trailing commas, and comment-like st
       "database_id": "11111111-2222-3333-4444-555555555555",
       "migrations_dir": "migrations/auth",
     }],
-    "assets": { "run_worker_first": true },
+    "assets": { "directory": "./dist", "run_worker_first": true },
     "commentLikeValue": "https://example.test/a//b",
   }`);
   assert.equal(validateAuthConfig(config), true);

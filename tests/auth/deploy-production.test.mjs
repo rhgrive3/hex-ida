@@ -18,12 +18,27 @@ test('canonical production deploy validates the default config before invoking W
   assert.doesNotMatch(config.build.command, /validate-auth-config|deploy-production/);
 
   const calls = [];
-  const status = runProductionDeploy({
-    run(command, args, options) {
-      calls.push({ command, args, options });
-      return { status: 0 };
-    },
-  });
+  const fakeDist = resolve(repoRoot, 'dist');
+  let createdDist = false;
+  const fs = await import('node:fs');
+  if (!fs.existsSync(fakeDist)) {
+    fs.mkdirSync(fakeDist, { recursive: true });
+    fs.writeFileSync(resolve(fakeDist, 'index.html'), '<html></html>');
+    createdDist = true;
+  }
+  let status;
+  try {
+    status = runProductionDeploy({
+      run(command, args, options) {
+        calls.push({ command, args, options });
+        return { status: 0 };
+      },
+    });
+  } finally {
+    if (createdDist) {
+      fs.rmSync(fakeDist, { recursive: true, force: true });
+    }
+  }
 
   assert.equal(status, 0);
   assert.equal(calls.length, 2);
