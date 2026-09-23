@@ -368,3 +368,28 @@ test('public location history remains in the existing provenance owner and canon
     ['tests/phase8/provenance/public-location-history.test.mjs']);
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', ['tests/phase8/provenance/unowned-location.test.mjs'], manifest));
 });
+
+
+test('C-AST validation batches repeated public-location consumer checks', () => {
+  const previousProbe = globalThis.__hexPerfProbe;
+  const probe = { calls:0, ms:0, memoHits:0, settleRechecks:0, settleMs:0,
+    obs:new WeakMap(), obsList:[], callers:new Map(), stacks:false };
+  globalThis.__hexPerfProbe = probe;
+  let result;
+  try {
+    const f = fixture({ store:true });
+    const source = f.ir.instructions.find(inst => inst.op === 'store');
+    const seed = { semantic:true, ir:f.ir, types:{ values:new Map(), locations:new Map() },
+      lines:Array.from({ length:64 }, () => ({ kind:'stmt', indent:1, text:'old = old;', row:source.row, addr:source.address })),
+      warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
+    // Force the optional pass budget to expire so this exercises the mandatory
+    // out-of-pass fallback that dominates the FAST tail.
+    result = enhanceSemanticDecompilation(seed, f.model, { decompilerTimeBudgetMs:0 });
+  } finally { globalThis.__hexPerfProbe = previousProbe; }
+  const locationChecks = probe.obsList.filter(record => String(record.origin || '').includes('sealFacadeLocationHistory'));
+  assert.ok(result.cAst?.body?.length);
+  assert.ok(locationChecks.length > 0, 'expected actual facade location observation');
+  assert.ok(locationChecks.every(record => record.calls < 20),
+    `shared location history was fully rescanned per consumer: ${JSON.stringify(locationChecks.map(record => record.calls))}`);
+  assert.ok(probe.memoHits >= 40, `expected batched validation reuse, got ${probe.memoHits}`);
+});
