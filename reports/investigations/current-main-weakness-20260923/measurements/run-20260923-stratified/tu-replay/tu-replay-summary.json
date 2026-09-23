@@ -1,0 +1,243 @@
+{
+  "schema": "hex-current-main-tu-replay/v1",
+  "runDir": "/mnt/workspace/hex-ida/reports/investigations/current-main-weakness-20260923/measurements/run-20260923-stratified",
+  "clang": "clang",
+  "clangTimeoutMs": 30000,
+  "chunkLimit": 256,
+  "denominator": {
+    "cases": 6,
+    "functions": 391
+  },
+  "caseStates": {
+    "FAIL": 6
+  },
+  "rawCaseFamilies": {
+    "undeclared-local": 6
+  },
+  "tuCaseFamilies": {
+    "undeclared-local": 6
+  },
+  "comparison": {
+    "rawOk": 0,
+    "tuOk": 0,
+    "rescuedByPackager": 0
+  },
+  "unresolvedTotals": {
+    "pseudo-intrinsic": 14,
+    "unresolved-call-sentinel": 6,
+    "unresolved-global": 108,
+    "unresolved-prototype": 453
+  },
+  "cases": [
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 74,
+      "discovered": 74,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 3,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 25,
+        "unresolved-prototype": 72
+      },
+      "includes": 1,
+      "prototypes": 27,
+      "globals": 0,
+      "sourceChars": 30870,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 501,
+        "warnings": 31,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 364,
+        "warnings": 34,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 65,
+      "discovered": 65,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 3,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 18,
+        "unresolved-prototype": 105
+      },
+      "includes": 1,
+      "prototypes": 33,
+      "globals": 0,
+      "sourceChars": 34997,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 689,
+        "warnings": 51,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 462,
+        "warnings": 46,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 80,
+      "discovered": 80,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 1,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 13,
+        "unresolved-prototype": 47
+      },
+      "includes": 1,
+      "prototypes": 14,
+      "globals": 0,
+      "sourceChars": 20569,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 428,
+        "warnings": 23,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 277,
+        "warnings": 20,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 54,
+      "discovered": 54,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 3,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 14,
+        "unresolved-prototype": 37
+      },
+      "includes": 1,
+      "prototypes": 18,
+      "globals": 0,
+      "sourceChars": 16313,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 291,
+        "warnings": 27,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 200,
+        "warnings": 23,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 75,
+      "discovered": 75,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 3,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 25,
+        "unresolved-prototype": 160
+      },
+      "includes": 1,
+      "prototypes": 40,
+      "globals": 0,
+      "sourceChars": 50712,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 1133,
+        "warnings": 108,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 776,
+        "warnings": 107,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "state": "FAIL",
+      "functions": 43,
+      "discovered": 43,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 1,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 13,
+        "unresolved-prototype": 32
+      },
+      "includes": 1,
+      "prototypes": 16,
+      "globals": 0,
+      "sourceChars": 13918,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 215,
+        "warnings": 21,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 166,
+        "warnings": 22,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    }
+  ]
+}

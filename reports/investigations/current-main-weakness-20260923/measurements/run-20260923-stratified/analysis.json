@@ -1,0 +1,2291 @@
+{
+  "schema": "hex-current-main-analysis/v1",
+  "run": {
+    "schema": "hex-current-main-harness-run/v1",
+    "label": "current-main",
+    "headSha": "09dfcb283f721b6598f34675a8a42480147d5752",
+    "sourceIdentity": "d28028877bb24054114cb6f9b149c95f74ec9b694d0ab33efc3ebdeaf1ede6e8",
+    "configHash": "9ae87e001607206aa0d08cb7124674dafe32dea83a9ee07570640a7e96d60b90",
+    "config": {
+      "label": "current-main",
+      "functionTimeoutMs": 10000,
+      "structure": "slow",
+      "structureThresholdMs": 250,
+      "productTimeoutMs": 900000
+    },
+    "manifest": {
+      "path": "benchmarks/public/codefuse-arm64/manifest.json"
+    },
+    "denominator": 32,
+    "createdAt": "2026-09-23T06:04:07.727Z",
+    "updatedAt": "2026-09-23T06:04:07.727Z"
+  },
+  "denominator": {
+    "cases": 32,
+    "functions": 2258
+  },
+  "caseStates": {
+    "MEASURED": 32
+  },
+  "functionStates": {
+    "PASS": 2258
+  },
+  "stateShare": {
+    "PASS": 1
+  },
+  "coverage": {
+    "unknownInstructions": {
+      "count": 1960,
+      "min": 0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 2,
+      "max": 16,
+      "sum": 292,
+      "mean": 0.1489795918367347
+    },
+    "functionsWithUnknownInstructions": 95,
+    "warnings": {
+      "count": 2258,
+      "min": 0,
+      "p50": 3,
+      "p90": 4,
+      "p95": 4,
+      "p99": 5,
+      "max": 6,
+      "sum": 5135,
+      "mean": 2.2741364038972542
+    },
+    "functionsWithWarnings": 1643,
+    "structured": 1922,
+    "semanticModel": 2258,
+    "projectionWithheld": 0
+  },
+  "latency": {
+    "all": {
+      "count": 2258,
+      "min": 8.60274300002493,
+      "p50": 1402.3122670000303,
+      "p90": 7972.487113999989,
+      "p95": 12221.969830000002,
+      "p99": 30703.986292999994,
+      "max": 149641.284853,
+      "sum": 7890475.2232039925,
+      "mean": 3494.453154651901
+    },
+    "byState": {
+      "PASS": {
+        "count": 2258,
+        "min": 8.60274300002493,
+        "p50": 1402.3122670000303,
+        "p90": 7972.487113999989,
+        "p95": 12221.969830000002,
+        "p99": 30703.986292999994,
+        "max": 149641.284853,
+        "sum": 7890475.2232039925,
+        "mean": 3494.453154651901
+      }
+    },
+    "bySizeBucket": {
+      "0-32": {
+        "count": 1126,
+        "min": 29.070031000010204,
+        "p50": 446.12294700001075,
+        "p90": 1694.5875349999988,
+        "p95": 2087.922860000006,
+        "p99": 3099.8914889999996,
+        "max": 4380.563169,
+        "sum": 798033.8794749989,
+        "mean": 708.7334631216687
+      },
+      "1025+": {
+        "count": 8,
+        "min": 55056.40855699999,
+        "p50": 61609.39630299999,
+        "p90": 89007.47282699999,
+        "p95": 89007.47282699999,
+        "p99": 89007.47282699999,
+        "max": 89007.47282699999,
+        "sum": 511304.213031,
+        "mean": 63913.026628875
+      },
+      "129-256": {
+        "count": 183,
+        "min": 1648.8849250000058,
+        "p50": 6952.980374999999,
+        "p90": 18207.37510200002,
+        "p95": 21934.22318,
+        "p99": 31120.706770999997,
+        "max": 33098.142703,
+        "sum": 1700986.4209499995,
+        "mean": 9295.007764754095
+      },
+      "257-512": {
+        "count": 84,
+        "min": 3624.330010999998,
+        "p50": 8800.139628000004,
+        "p90": 26993.446315999987,
+        "p95": 31337.105183000007,
+        "p99": 73398.98064899999,
+        "max": 73398.98064899999,
+        "sum": 1109553.8603790002,
+        "mean": 13208.97452832143
+      },
+      "33-64": {
+        "count": 490,
+        "min": 8.60274300002493,
+        "p50": 1827.4262390000004,
+        "p90": 4310.833320999998,
+        "p95": 5064.571796000004,
+        "p99": 8274.990894999995,
+        "max": 9176.084992000018,
+        "sum": 1111838.221638,
+        "mean": 2269.057595179592
+      },
+      "513-1024": {
+        "count": 20,
+        "min": 3746.0522439999913,
+        "p50": 18117.10423299999,
+        "p90": 70893.819498,
+        "p95": 82544.971738,
+        "p99": 149641.284853,
+        "max": 149641.284853,
+        "sum": 647378.343841,
+        "mean": 32368.91719205
+      },
+      "65-128": {
+        "count": 347,
+        "min": 1103.3980889999948,
+        "p50": 5226.6276910000015,
+        "p90": 9610.218451999972,
+        "p95": 12400.481796000036,
+        "p99": 16704.571884999998,
+        "max": 20413.051510999998,
+        "sum": 2011380.283889999,
+        "mean": 5796.484967982706
+      }
+    },
+    "byGotoBucket": {
+      "0": {
+        "count": 1972,
+        "min": 8.60274300002493,
+        "p50": 1212.3721789999981,
+        "p90": 6664.568834999998,
+        "p95": 8800.139628000004,
+        "p99": 18022.409935000003,
+        "max": 73398.98064899999,
+        "sum": 5090021.506584998,
+        "mean": 2581.146808613082
+      },
+      "1": {
+        "count": 146,
+        "min": 159.946935999993,
+        "p50": 2181.9300220000005,
+        "p90": 11291.501346000001,
+        "p95": 18702.70913999999,
+        "p99": 33098.142703,
+        "max": 39880.271607,
+        "sum": 684546.3870539999,
+        "mean": 4688.673883931507
+      },
+      "11+": {
+        "count": 17,
+        "min": 10221.855261000004,
+        "p50": 30159.04732699995,
+        "p90": 64461.08625599998,
+        "p95": 89007.47282699999,
+        "p99": 89007.47282699999,
+        "max": 89007.47282699999,
+        "sum": 661134.65357,
+        "mean": 38890.273739411765
+      },
+      "2-3": {
+        "count": 91,
+        "min": 485.5137140000006,
+        "p50": 5739.082821000004,
+        "p90": 26670.196338999987,
+        "p95": 43431.608358000056,
+        "p99": 149641.284853,
+        "max": 149641.284853,
+        "sum": 1050212.25157,
+        "mean": 11540.793973296704
+      },
+      "4-10": {
+        "count": 32,
+        "min": 1103.3980889999948,
+        "p50": 10860.610672999988,
+        "p90": 24031.77374199999,
+        "p95": 26126.52593199999,
+        "p99": 28016.125671999995,
+        "max": 28016.125671999995,
+        "sum": 404560.42442499986,
+        "mean": 12642.513263281246
+      }
+    },
+    "byCase": {
+      "1/1_clang_O0_g": {
+        "count": 75,
+        "min": 166.74502899999788,
+        "p50": 5226.6276910000015,
+        "p90": 13529.266094999999,
+        "p95": 20413.051510999998,
+        "p99": 30703.986292999994,
+        "max": 30703.986292999994,
+        "sum": 519653.8849019998,
+        "mean": 6928.718465359997
+      },
+      "1/1_clang_O2_no_g": {
+        "count": 74,
+        "min": 106.7200300000004,
+        "p50": 1345.0869509999993,
+        "p90": 7985.27879099999,
+        "p95": 13920.219847,
+        "p99": 23739.759760999994,
+        "max": 23739.759760999994,
+        "sum": 222946.61994499993,
+        "mean": 3012.792161418918
+      },
+      "1/1_gcc_O1_g": {
+        "count": 74,
+        "min": 176.47837599999912,
+        "p50": 1167.5201610000076,
+        "p90": 5861.011264000001,
+        "p95": 9619.932271999998,
+        "p99": 70893.819498,
+        "max": 70893.819498,
+        "sum": 255302.53449500006,
+        "mean": 3450.0342499324333
+      },
+      "1/1_gcc_Os_no_g": {
+        "count": 74,
+        "min": 103.49436300000525,
+        "p50": 1174.6248359999954,
+        "p90": 6887.546495000017,
+        "p95": 14199.041217999998,
+        "p99": 28016.125671999995,
+        "max": 28016.125671999995,
+        "sum": 204086.917704,
+        "mean": 2757.931320324324
+      },
+      "2/2_clang_O0_g": {
+        "count": 69,
+        "min": 102.53311299999768,
+        "p50": 4627.773699999998,
+        "p90": 18078.051813,
+        "p95": 38861.833631999965,
+        "p99": 64461.08625599998,
+        "max": 64461.08625599998,
+        "sum": 559990.7897569999,
+        "mean": 8115.808547202898
+      },
+      "2/2_clang_O2_no_g": {
+        "count": 67,
+        "min": 82.8680990000139,
+        "p50": 1506.522227999998,
+        "p90": 18207.37510200002,
+        "p95": 46690.637093,
+        "p99": 73398.98064899999,
+        "max": 73398.98064899999,
+        "sum": 457592.147836,
+        "mean": 6829.733549791045
+      },
+      "2/2_gcc_O1_g": {
+        "count": 69,
+        "min": 114.1990939999996,
+        "p50": 1160.0212229999888,
+        "p90": 8790.648714999996,
+        "p95": 40684.47949,
+        "p99": 149641.284853,
+        "max": 149641.284853,
+        "sum": 439273.10129699996,
+        "mean": 6366.2768303913035
+      },
+      "2/2_gcc_Os_no_g": {
+        "count": 69,
+        "min": 88.50535799999489,
+        "p50": 1231.7192620000023,
+        "p90": 6676.403216999999,
+        "p95": 18783.539749999996,
+        "p99": 89007.47282699999,
+        "max": 89007.47282699999,
+        "sum": 375098.88687199994,
+        "mean": 5436.215751768115
+      },
+      "3/3_clang_O0_g": {
+        "count": 67,
+        "min": 158.32463400000051,
+        "p50": 4892.505858000004,
+        "p90": 9187.930758999952,
+        "p95": 12221.969830000002,
+        "p99": 39880.271607,
+        "max": 39880.271607,
+        "sum": 367416.39300300006,
+        "mean": 5483.826761238807
+      },
+      "3/3_clang_O2_no_g": {
+        "count": 65,
+        "min": 54.881609999982174,
+        "p50": 943.9187999999995,
+        "p90": 8571.794129000002,
+        "p95": 12666.539665000018,
+        "p99": 24843.458981999996,
+        "max": 24843.458981999996,
+        "sum": 206472.3811890002,
+        "mean": 3176.4981721384647
+      },
+      "3/3_gcc_O1_g": {
+        "count": 65,
+        "min": 104.32911800000147,
+        "p50": 1346.087415,
+        "p90": 6501.214218000008,
+        "p95": 11762.068455,
+        "p99": 51665.75628600002,
+        "max": 51665.75628600002,
+        "sum": 218225.36651199998,
+        "mean": 3357.3133309538457
+      },
+      "3/3_gcc_Os_no_g": {
+        "count": 65,
+        "min": 87.45910400000139,
+        "p50": 1167.3098539999992,
+        "p90": 3994.124005000005,
+        "p95": 6885.792523000004,
+        "p99": 10400.047606000004,
+        "max": 10400.047606000004,
+        "sum": 125211.14098600003,
+        "mean": 1926.3252459384619
+      },
+      "4/4_clang_O0_g": {
+        "count": 80,
+        "min": 56.99493600000096,
+        "p50": 2830.278289000009,
+        "p90": 9853.411450999993,
+        "p95": 13649.622960999986,
+        "p99": 21000.167585000017,
+        "max": 21000.167585000017,
+        "sum": 350472.9955670001,
+        "mean": 4380.912444587501
+      },
+      "4/4_clang_O2_no_g": {
+        "count": 79,
+        "min": 83.84665200000018,
+        "p50": 313.89830599999914,
+        "p90": 6311.865036000003,
+        "p95": 14358.479455,
+        "p99": 31120.706770999997,
+        "max": 31120.706770999997,
+        "sum": 169396.26201999994,
+        "mean": 2144.256481265822
+      },
+      "4/4_gcc_O1_g": {
+        "count": 80,
+        "min": 59.32330799999909,
+        "p50": 463.77513100000215,
+        "p90": 7981.424999999988,
+        "p95": 10980.996967999992,
+        "p99": 25724.991661,
+        "max": 25724.991661,
+        "sum": 167322.155779,
+        "mean": 2091.5269472375
+      },
+      "4/4_gcc_Os_no_g": {
+        "count": 80,
+        "min": 68.5904159999991,
+        "p50": 321.11156000000483,
+        "p90": 3049.677730999996,
+        "p95": 4711.874708000003,
+        "p99": 17357.024268,
+        "max": 17357.024268,
+        "sum": 93119.06429699998,
+        "mean": 1163.9883037124996
+      },
+      "5-1/5-1_clang_O0_g": {
+        "count": 216,
+        "min": 83.49945499999922,
+        "p50": 1801.1655800000008,
+        "p90": 6180.16210300001,
+        "p95": 7983.653775000013,
+        "p99": 12666.538996999996,
+        "max": 13857.71282,
+        "sum": 591086.2796079996,
+        "mean": 2736.510553740739
+      },
+      "5-1/5-1_clang_O2_no_g": {
+        "count": 41,
+        "min": 35.44240400000126,
+        "p50": 479.3408350000004,
+        "p90": 2740.054592999999,
+        "p95": 4424.690771999998,
+        "p99": 8916.688981,
+        "max": 8916.688981,
+        "sum": 48421.18037900001,
+        "mean": 1181.0043994878051
+      },
+      "5-1/5-1_gcc_O1_g": {
+        "count": 70,
+        "min": 73.02078199999232,
+        "p50": 680.6502499999915,
+        "p90": 4658.050853000001,
+        "p95": 8527.87458399999,
+        "p99": 12169.054468999995,
+        "max": 12169.054468999995,
+        "sum": 114775.2563249999,
+        "mean": 1639.64651892857
+      },
+      "5-1/5-1_gcc_Os_no_g": {
+        "count": 89,
+        "min": 56.55396900000051,
+        "p50": 323.5278859999962,
+        "p90": 3979.7787480000043,
+        "p95": 5708.646457000003,
+        "p99": 9701.831805999998,
+        "max": 9701.831805999998,
+        "sum": 103031.91874499989,
+        "mean": 1157.6620083707853
+      },
+      "5-23/5-23_clang_O0_g": {
+        "count": 55,
+        "min": 24.566154000000097,
+        "p50": 2003.5308519999999,
+        "p90": 7844.922885000007,
+        "p95": 13025.083402999997,
+        "p99": 16704.571884999998,
+        "max": 16704.571884999998,
+        "sum": 206409.16293600004,
+        "mean": 3752.893871563637
+      },
+      "5-23/5-23_clang_O2_no_g": {
+        "count": 54,
+        "min": 18.48072000000684,
+        "p50": 551.1282649999994,
+        "p90": 6561.522284999999,
+        "p95": 9247.140675999995,
+        "p99": 15515.867278999998,
+        "max": 15515.867278999998,
+        "sum": 115268.947811,
+        "mean": 2134.6101446481484
+      },
+      "5-23/5-23_gcc_O1_g": {
+        "count": 54,
+        "min": 34.15083300000697,
+        "p50": 815.5420189999986,
+        "p90": 5042.834185999993,
+        "p95": 11089.064516999992,
+        "p99": 12881.094635000001,
+        "max": 12881.094635000001,
+        "sum": 108479.500526,
+        "mean": 2008.8796393703703
+      },
+      "5-23/5-23_gcc_Os_no_g": {
+        "count": 54,
+        "min": 39.98731899999984,
+        "p50": 467.4500479999988,
+        "p90": 3559.403768999997,
+        "p95": 6465.257836999997,
+        "p99": 11905.044462000005,
+        "max": 11905.044462000005,
+        "sum": 85110.06502699998,
+        "mean": 1576.1123153148144
+      },
+      "6/6_clang_O0_g": {
+        "count": 75,
+        "min": 9.986629999999423,
+        "p50": 3805.5848659999974,
+        "p90": 8800.139628000004,
+        "p95": 20278.705877,
+        "p99": 43431.608358000056,
+        "max": 43431.608358000056,
+        "sum": 402956.47106400004,
+        "mean": 5372.752947520001
+      },
+      "6/6_clang_O2_no_g": {
+        "count": 75,
+        "min": 10.23958200000925,
+        "p50": 2137.0563380000003,
+        "p90": 10639.232852000008,
+        "p95": 18418.041526000015,
+        "p99": 26126.52593199999,
+        "max": 26126.52593199999,
+        "sum": 321649.6004469999,
+        "mean": 4288.661339293332
+      },
+      "6/6_gcc_O1_g": {
+        "count": 75,
+        "min": 8.669785000034608,
+        "p50": 2119.4503729999997,
+        "p90": 8791.758398000005,
+        "p95": 18022.409935000003,
+        "p99": 30159.04732699995,
+        "max": 30159.04732699995,
+        "sum": 315057.7321570001,
+        "mean": 4200.769762093335
+      },
+      "6/6_gcc_Os_no_g": {
+        "count": 75,
+        "min": 8.60274300002493,
+        "p50": 2348.709692000004,
+        "p90": 6224.323584999991,
+        "p95": 8785.314347999985,
+        "p99": 27365.37474,
+        "max": 27365.37474,
+        "sum": 242047.14947700006,
+        "mean": 3227.2953263600007
+      },
+      "7/7_clang_O0_g": {
+        "count": 44,
+        "min": 61.81176499999856,
+        "p50": 2461.3550490000052,
+        "p90": 10928.295245999994,
+        "p95": 11488.003743999987,
+        "p99": 31337.105183000007,
+        "max": 31337.105183000007,
+        "sum": 228807.94334299996,
+        "mean": 5200.180530522726
+      },
+      "7/7_clang_O2_no_g": {
+        "count": 43,
+        "min": 55.85280700000294,
+        "p50": 889.993177999997,
+        "p90": 5603.357754000001,
+        "p95": 7792.873539,
+        "p99": 11868.572975000003,
+        "max": 11868.572975000003,
+        "sum": 92394.876018,
+        "mean": 2148.7180469302325
+      },
+      "7/7_gcc_O1_g": {
+        "count": 43,
+        "min": 73.46733200000017,
+        "p50": 1295.6395900000007,
+        "p90": 6865.214865999998,
+        "p95": 10240.892261,
+        "p99": 14717.876029,
+        "max": 14717.876029,
+        "sum": 93692.93142699997,
+        "mean": 2178.9053820232552
+      },
+      "7/7_gcc_Os_no_g": {
+        "count": 43,
+        "min": 31.481712000000698,
+        "p50": 1063.5010060000004,
+        "p90": 5483.813755999996,
+        "p95": 6184.236205000001,
+        "p99": 20694.73796,
+        "max": 20694.73796,
+        "sum": 89705.565753,
+        "mean": 2086.175947744186
+      }
+    },
+    "totalFunctions": 2258
+  },
+  "goto": {
+    "functionsWithGoto": 286,
+    "share": 0.1267,
+    "distribution": {
+      "count": 2258,
+      "min": 0,
+      "p50": 0,
+      "p90": 1,
+      "p95": 2,
+      "p99": 6,
+      "max": 312,
+      "sum": 2497,
+      "mean": 1.1058458813108947
+    },
+    "byState": {
+      "PASS": {
+        "count": 2258,
+        "min": 0,
+        "p50": 0,
+        "p90": 1,
+        "p95": 2,
+        "p99": 6,
+        "max": 312,
+        "sum": 2497,
+        "mean": 1.1058458813108947
+      }
+    }
+  },
+  "structure": {
+    "measured": 1851,
+    "cfgBlocks": {
+      "count": 0,
+      "min": null,
+      "p50": null,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "sum": null,
+      "mean": null
+    },
+    "irValues": {
+      "count": 0,
+      "min": null,
+      "p50": null,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "sum": null,
+      "mean": null
+    },
+    "irInstructions": {
+      "count": 0,
+      "min": null,
+      "p50": null,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "max": null,
+      "sum": null,
+      "mean": null
+    },
+    "correlations": {
+      "elapsedVsSize": {
+        "n": 2258,
+        "rho": 0.9041
+      },
+      "elapsedVsGotos": {
+        "n": 2258,
+        "rho": 0.2952
+      },
+      "elapsedVsCfgBlocks": {
+        "n": 0,
+        "rho": null
+      },
+      "elapsedVsIrValues": {
+        "n": 0,
+        "rho": null
+      }
+    },
+    "structuralMs": {
+      "count": 1851,
+      "min": 0.4404300000751391,
+      "p50": 0.8356130000029225,
+      "p90": 1.1764960000000428,
+      "p95": 1.5359819999721367,
+      "p99": 27.536237999996956,
+      "max": 47.77233100000012,
+      "sum": 2480.8160480000124,
+      "mean": 1.3402571842247502
+    }
+  },
+  "reasons": {
+    "families": {},
+    "byState": {}
+  },
+  "slowest": [
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "5364",
+      "name": "test_composite_types",
+      "sizeBytes": 772,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 149641.28,
+      "gotos": 2,
+      "pseudocodeChars": 3730,
+      "nonEmptyLines": 97,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.95,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "5872",
+      "name": "__addtf3",
+      "sizeBytes": 2964,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 89007.47,
+      "gotos": 312,
+      "pseudocodeChars": 39178,
+      "nonEmptyLines": 565,
+      "unknownInstructions": 16,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.87,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "3240",
+      "name": "test_array_types",
+      "sizeBytes": 620,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 82544.97,
+      "gotos": 2,
+      "pseudocodeChars": 2094,
+      "nonEmptyLines": 72,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.11,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "2708",
+      "name": "array_3d",
+      "sizeBytes": 312,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 73398.98,
+      "gotos": 0,
+      "pseudocodeChars": 1615,
+      "nonEmptyLines": 66,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.08,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "5852",
+      "name": "test_control_flow_l2",
+      "sizeBytes": 652,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 70893.82,
+      "gotos": 2,
+      "pseudocodeChars": 2404,
+      "nonEmptyLines": 71,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.05,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "8656",
+      "name": "__addtf3",
+      "sizeBytes": 2964,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 64461.09,
+      "gotos": 312,
+      "pseudocodeChars": 36660,
+      "nonEmptyLines": 565,
+      "unknownInstructions": 16,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.81,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "8848",
+      "name": "__multf3",
+      "sizeBytes": 2048,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 63922.63,
+      "gotos": 160,
+      "pseudocodeChars": 29797,
+      "nonEmptyLines": 308,
+      "unknownInstructions": 12,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.03,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "6176",
+      "name": "__addtf3",
+      "sizeBytes": 2964,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 63518.46,
+      "gotos": 312,
+      "pseudocodeChars": 49958,
+      "nonEmptyLines": 565,
+      "unknownInstructions": 16,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.12,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "8960",
+      "name": "__multf3",
+      "sizeBytes": 2048,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 61609.4,
+      "gotos": 160,
+      "pseudocodeChars": 30364,
+      "nonEmptyLines": 308,
+      "unknownInstructions": 12,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.83,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "5984",
+      "name": "__addtf3",
+      "sizeBytes": 2964,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 58149.84,
+      "gotos": 312,
+      "pseudocodeChars": 39111,
+      "nonEmptyLines": 565,
+      "unknownInstructions": 16,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.87,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "11632",
+      "name": "__multf3",
+      "sizeBytes": 2048,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 55578.91,
+      "gotos": 160,
+      "pseudocodeChars": 30141,
+      "nonEmptyLines": 308,
+      "unknownInstructions": 12,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.9,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "9152",
+      "name": "__multf3",
+      "sizeBytes": 2048,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 55056.41,
+      "gotos": 160,
+      "pseudocodeChars": 30324,
+      "nonEmptyLines": 308,
+      "unknownInstructions": 12,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.62,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "7196",
+      "name": "test_memory_op_functions",
+      "sizeBytes": 468,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 51665.76,
+      "gotos": 2,
+      "pseudocodeChars": 1939,
+      "nonEmptyLines": 56,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.91,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "3544",
+      "name": "test_array_types",
+      "sizeBytes": 580,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 46690.64,
+      "gotos": 0,
+      "pseudocodeChars": 3982,
+      "nonEmptyLines": 110,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.76,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "13572",
+      "name": "param_thread_local_storage",
+      "sizeBytes": 668,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 43431.61,
+      "gotos": 2,
+      "pseudocodeChars": 3053,
+      "nonEmptyLines": 75,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.62,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "4128",
+      "name": "test_array_types",
+      "sizeBytes": 944,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 41200.52,
+      "gotos": 0,
+      "pseudocodeChars": 3927,
+      "nonEmptyLines": 94,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.18,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "4260",
+      "name": "test_pointer_types",
+      "sizeBytes": 476,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 40684.48,
+      "gotos": 2,
+      "pseudocodeChars": 1577,
+      "nonEmptyLines": 49,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.86,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "5408",
+      "name": "linked_list_heap",
+      "sizeBytes": 372,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 39880.27,
+      "gotos": 1,
+      "pseudocodeChars": 1529,
+      "nonEmptyLines": 49,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.77,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "7760",
+      "name": "test_composite_types",
+      "sizeBytes": 836,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 38861.83,
+      "gotos": 0,
+      "pseudocodeChars": 4140,
+      "nonEmptyLines": 95,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.09,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "3328",
+      "name": "vla_stack",
+      "sizeBytes": 224,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 33098.14,
+      "gotos": 1,
+      "pseudocodeChars": 1077,
+      "nonEmptyLines": 25,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.96,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "5236",
+      "name": "test_obf_opt_edge",
+      "sizeBytes": 308,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 31337.11,
+      "gotos": 0,
+      "pseudocodeChars": 1616,
+      "nonEmptyLines": 35,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.57,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "3268",
+      "name": "param_varargs",
+      "sizeBytes": 172,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 31120.71,
+      "gotos": 2,
+      "pseudocodeChars": 1008,
+      "nonEmptyLines": 37,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.09,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "4428",
+      "name": "loop_break",
+      "sizeBytes": 152,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 30703.99,
+      "gotos": 1,
+      "pseudocodeChars": 434,
+      "nonEmptyLines": 19,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.45,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "11996",
+      "name": "param_atomic_ops",
+      "sizeBytes": 392,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 30159.05,
+      "gotos": 20,
+      "pseudocodeChars": 2285,
+      "nonEmptyLines": 69,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.57,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "6184",
+      "name": "large_jump_table",
+      "sizeBytes": 168,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 28016.13,
+      "gotos": 6,
+      "pseudocodeChars": 1103,
+      "nonEmptyLines": 34,
+      "unknownInstructions": 3,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.87,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "2548",
+      "name": "param_opaque_predicate",
+      "sizeBytes": 300,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 27806.36,
+      "gotos": 2,
+      "pseudocodeChars": 962,
+      "nonEmptyLines": 29,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.98,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "8756",
+      "name": "test_standard_library_functions",
+      "sizeBytes": 308,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 27365.37,
+      "gotos": 0,
+      "pseudocodeChars": 883,
+      "nonEmptyLines": 28,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.85,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "3216",
+      "name": "if_elseif_long",
+      "sizeBytes": 168,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 27084.02,
+      "gotos": 0,
+      "pseudocodeChars": 625,
+      "nonEmptyLines": 26,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.95,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "8864",
+      "name": "test_standard_library_functions",
+      "sizeBytes": 316,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 26993.45,
+      "gotos": 0,
+      "pseudocodeChars": 945,
+      "nonEmptyLines": 31,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.79,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "2272",
+      "name": "varargs_func",
+      "sizeBytes": 172,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 26784.57,
+      "gotos": 2,
+      "pseudocodeChars": 1007,
+      "nonEmptyLines": 37,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.57,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "10356",
+      "name": "param_signal_handling",
+      "sizeBytes": 464,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 26670.2,
+      "gotos": 3,
+      "pseudocodeChars": 2511,
+      "nonEmptyLines": 72,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.85,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "8544",
+      "name": "param_pipe_communication",
+      "sizeBytes": 184,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 26126.53,
+      "gotos": 8,
+      "pseudocodeChars": 981,
+      "nonEmptyLines": 37,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.88,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "2976",
+      "name": "test_calling_conventions",
+      "sizeBytes": 544,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 25724.99,
+      "gotos": 6,
+      "pseudocodeChars": 1976,
+      "nonEmptyLines": 61,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.6,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "3232",
+      "name": "alloca_usage",
+      "sizeBytes": 192,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 24843.46,
+      "gotos": 11,
+      "pseudocodeChars": 837,
+      "nonEmptyLines": 31,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.84,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "11692",
+      "name": "param_thread_local_storage",
+      "sizeBytes": 412,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 24031.77,
+      "gotos": 4,
+      "pseudocodeChars": 2361,
+      "nonEmptyLines": 58,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.77,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "6152",
+      "name": "test_control_flow_l3",
+      "sizeBytes": 248,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 23739.76,
+      "gotos": 0,
+      "pseudocodeChars": 820,
+      "nonEmptyLines": 21,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.09,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "7260",
+      "name": "test_control_flow_l3",
+      "sizeBytes": 420,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 22922.35,
+      "gotos": 2,
+      "pseudocodeChars": 1336,
+      "nonEmptyLines": 43,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.84,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "11916",
+      "name": "param_mutex_lock",
+      "sizeBytes": 320,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 22021.52,
+      "gotos": 1,
+      "pseudocodeChars": 1205,
+      "nonEmptyLines": 36,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.73,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "4172",
+      "name": "ptr_increment",
+      "sizeBytes": 140,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 21934.22,
+      "gotos": 5,
+      "pseudocodeChars": 584,
+      "nonEmptyLines": 19,
+      "unknownInstructions": 0,
+      "structured": false,
+      "coverageMode": "linear",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 1.24,
+        "structuralReason": "cfg-unavailable"
+      }
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "4524",
+      "name": "linked_list_heap",
+      "sizeBytes": 312,
+      "state": "PASS",
+      "completeness": "complete",
+      "reason": null,
+      "elapsedMs": 21737.19,
+      "gotos": 4,
+      "pseudocodeChars": 2327,
+      "nonEmptyLines": 70,
+      "unknownInstructions": 0,
+      "structured": true,
+      "coverageMode": "structured",
+      "structure": {
+        "cfgBlocks": null,
+        "cfgEdges": null,
+        "irValues": null,
+        "irInstructions": null,
+        "irBlocks": null,
+        "structuralMs": 0.9,
+        "structuralReason": "cfg-unavailable"
+      }
+    }
+  ],
+  "discovery": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "functionCount": 75,
+      "complete": true,
+      "states": {
+        "PASS": 75
+      },
+      "setup": {
+        "binaryReadMs": 2.027419000000009,
+        "binaryHashMs": 0.9712399999998524,
+        "binaryOpenMs": 1849.8534410000002,
+        "binaryIdentityMs": 12.368807000000288,
+        "symbolAnalysisMs": 134.60478999999987,
+        "functionDiscoveryMs": 150.31864799999994,
+        "programConstructionMs": 48.17892500000016,
+        "totalSetupMs": 2202.590021
+      },
+      "elapsedMs": 523917.9
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "functionCount": 74,
+      "complete": true,
+      "states": {
+        "PASS": 74
+      },
+      "setup": {
+        "binaryReadMs": 2.238364000000047,
+        "binaryHashMs": 0.8109289999999874,
+        "binaryOpenMs": 1889.6002160000003,
+        "binaryIdentityMs": 57.41977599999973,
+        "symbolAnalysisMs": 201.9506720000004,
+        "functionDiscoveryMs": 47.16567699999996,
+        "programConstructionMs": 83.46101899999985,
+        "totalSetupMs": 2286.95108
+      },
+      "elapsedMs": 228098.4
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "functionCount": 74,
+      "complete": true,
+      "states": {
+        "PASS": 74
+      },
+      "setup": {
+        "binaryReadMs": 46.071785999999975,
+        "binaryHashMs": 1.3111089999999876,
+        "binaryOpenMs": 1900.515517,
+        "binaryIdentityMs": 14.64844499999981,
+        "symbolAnalysisMs": 176.26726299999973,
+        "functionDiscoveryMs": 48.78362299999981,
+        "programConstructionMs": 87.96863899999971,
+        "totalSetupMs": 2281.0612659999997
+      },
+      "elapsedMs": 259866.5
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "functionCount": 74,
+      "complete": true,
+      "states": {
+        "PASS": 74
+      },
+      "setup": {
+        "binaryReadMs": 2.004654999999957,
+        "binaryHashMs": 0.9468850000000657,
+        "binaryOpenMs": 1793.283823,
+        "binaryIdentityMs": 57.66654100000005,
+        "symbolAnalysisMs": 140.84416199999987,
+        "functionDiscoveryMs": 103.8268250000001,
+        "programConstructionMs": 42.19829600000003,
+        "totalSetupMs": 2194.6568260000004
+      },
+      "elapsedMs": 208764.6
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "functionCount": 69,
+      "complete": true,
+      "states": {
+        "PASS": 69
+      },
+      "setup": {
+        "binaryReadMs": 52.764536000000135,
+        "binaryHashMs": 1.155670999999984,
+        "binaryOpenMs": 1830.1363489999999,
+        "binaryIdentityMs": 58.71176199999991,
+        "symbolAnalysisMs": 130.0592959999999,
+        "functionDiscoveryMs": 107.85845100000006,
+        "programConstructionMs": 95.37629800000013,
+        "totalSetupMs": 2280.8652650000004
+      },
+      "elapsedMs": 564386.3
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "functionCount": 67,
+      "complete": true,
+      "states": {
+        "PASS": 67
+      },
+      "setup": {
+        "binaryReadMs": 2.08500099999992,
+        "binaryHashMs": 0.8248980000000756,
+        "binaryOpenMs": 1801.1249679999999,
+        "binaryIdentityMs": 55.567197999999735,
+        "symbolAnalysisMs": 203.20245400000022,
+        "functionDiscoveryMs": 114.79945600000019,
+        "programConstructionMs": 94.93485999999984,
+        "totalSetupMs": 2277.776943
+      },
+      "elapsedMs": 462073.7
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "functionCount": 69,
+      "complete": true,
+      "states": {
+        "PASS": 69
+      },
+      "setup": {
+        "binaryReadMs": 2.272226000000046,
+        "binaryHashMs": 1.1678640000000087,
+        "binaryOpenMs": 1970.3523340000002,
+        "binaryIdentityMs": 19.862115999999787,
+        "symbolAnalysisMs": 179.51673600000004,
+        "functionDiscoveryMs": 108.10068700000011,
+        "programConstructionMs": 73.96895700000005,
+        "totalSetupMs": 2360.12053
+      },
+      "elapsedMs": 444009.1
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "functionCount": 69,
+      "complete": true,
+      "states": {
+        "PASS": 69
+      },
+      "setup": {
+        "binaryReadMs": 6.747814999999946,
+        "binaryHashMs": 0.9702429999999822,
+        "binaryOpenMs": 1729.26334,
+        "binaryIdentityMs": 56.21466700000019,
+        "symbolAnalysisMs": 136.03845199999978,
+        "functionDiscoveryMs": 161.56444499999998,
+        "programConstructionMs": 101.67471999999998,
+        "totalSetupMs": 2197.026616
+      },
+      "elapsedMs": 379929.7
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "functionCount": 67,
+      "complete": true,
+      "states": {
+        "PASS": 67
+      },
+      "setup": {
+        "binaryReadMs": 44.531332999999904,
+        "binaryHashMs": 0.8273739999999634,
+        "binaryOpenMs": 2202.5079559999995,
+        "binaryIdentityMs": 10.94105800000034,
+        "symbolAnalysisMs": 222.6074949999993,
+        "functionDiscoveryMs": 108.07104699999945,
+        "programConstructionMs": 92.35017400000015,
+        "totalSetupMs": 2686.276538
+      },
+      "elapsedMs": 371975.5
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "functionCount": 65,
+      "complete": true,
+      "states": {
+        "PASS": 65
+      },
+      "setup": {
+        "binaryReadMs": 6.544607000000042,
+        "binaryHashMs": 1.1352170000000115,
+        "binaryOpenMs": 1856.1468750000001,
+        "binaryIdentityMs": 13.762216999999964,
+        "symbolAnalysisMs": 184.2094350000002,
+        "functionDiscoveryMs": 102.2113519999998,
+        "programConstructionMs": 92.26939300000004,
+        "totalSetupMs": 2261.236605
+      },
+      "elapsedMs": 210556.6
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "functionCount": 65,
+      "complete": true,
+      "states": {
+        "PASS": 65
+      },
+      "setup": {
+        "binaryReadMs": 2.4171299999998155,
+        "binaryHashMs": 0.9315029999997932,
+        "binaryOpenMs": 1969.270285,
+        "binaryIdentityMs": 17.283635999999206,
+        "symbolAnalysisMs": 118.90758199999982,
+        "functionDiscoveryMs": 97.23852700000043,
+        "programConstructionMs": 92.86380300000019,
+        "totalSetupMs": 2303.367448
+      },
+      "elapsedMs": 222222.2
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "functionCount": 65,
+      "complete": true,
+      "states": {
+        "PASS": 65
+      },
+      "setup": {
+        "binaryReadMs": 3.7337199999999484,
+        "binaryHashMs": 1.1032999999999902,
+        "binaryOpenMs": 958.243827,
+        "binaryIdentityMs": 9.748869999999897,
+        "symbolAnalysisMs": 86.00800200000003,
+        "functionDiscoveryMs": 87.42419800000016,
+        "programConstructionMs": 35.82900400000017,
+        "totalSetupMs": 1186.5444750000001
+      },
+      "elapsedMs": 127879.3
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "functionCount": 80,
+      "complete": true,
+      "states": {
+        "PASS": 80
+      },
+      "setup": {
+        "binaryReadMs": 3.7939010000000053,
+        "binaryHashMs": 1.0008119999999963,
+        "binaryOpenMs": 1593.860857,
+        "binaryIdentityMs": 10.292725000000246,
+        "symbolAnalysisMs": 158.52528099999972,
+        "functionDiscoveryMs": 45.32436200000029,
+        "programConstructionMs": 79.150979,
+        "totalSetupMs": 1896.320977
+      },
+      "elapsedMs": 354305.2
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "functionCount": 79,
+      "complete": true,
+      "states": {
+        "PASS": 79
+      },
+      "setup": {
+        "binaryReadMs": 4.014120000000048,
+        "binaryHashMs": 1.0361370000000534,
+        "binaryOpenMs": 1498.8037030000003,
+        "binaryIdentityMs": 10.012022000000343,
+        "symbolAnalysisMs": 167.97982300000012,
+        "functionDiscoveryMs": 39.948825999999826,
+        "programConstructionMs": 75.15938199999982,
+        "totalSetupMs": 1802.2240869999998
+      },
+      "elapsedMs": 173075.9
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "functionCount": 80,
+      "complete": true,
+      "states": {
+        "PASS": 80
+      },
+      "setup": {
+        "binaryReadMs": 56.16082600000004,
+        "binaryHashMs": 1.4141450000001896,
+        "binaryOpenMs": 1483.368999,
+        "binaryIdentityMs": 9.248916000000008,
+        "symbolAnalysisMs": 86.7496000000001,
+        "functionDiscoveryMs": 40.61737800000037,
+        "programConstructionMs": 73.05735100000038,
+        "totalSetupMs": 1755.4772649999998
+      },
+      "elapsedMs": 170699.9
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "functionCount": 80,
+      "complete": true,
+      "states": {
+        "PASS": 80
+      },
+      "setup": {
+        "binaryReadMs": 2.1758579999998346,
+        "binaryHashMs": 0.7834550000000036,
+        "binaryOpenMs": 972.0788479999999,
+        "binaryIdentityMs": 8.904203999999936,
+        "symbolAnalysisMs": 85.35530500000004,
+        "functionDiscoveryMs": 34.92251699999997,
+        "programConstructionMs": 32.93924599999991,
+        "totalSetupMs": 1167.8172660000002
+      },
+      "elapsedMs": 95798.6
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "functionCount": 216,
+      "complete": true,
+      "states": {
+        "PASS": 216
+      },
+      "setup": {
+        "binaryReadMs": 4.126925000000028,
+        "binaryHashMs": 1.669744000000037,
+        "binaryOpenMs": 1200.6586799999998,
+        "binaryIdentityMs": 26.909248999999818,
+        "symbolAnalysisMs": 195.3270389999998,
+        "functionDiscoveryMs": 68.7204200000001,
+        "programConstructionMs": 51.38433900000018,
+        "totalSetupMs": 1553.9039730000002
+      },
+      "elapsedMs": 596625.4
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "functionCount": 41,
+      "complete": true,
+      "states": {
+        "PASS": 41
+      },
+      "setup": {
+        "binaryReadMs": 4.311388999999963,
+        "binaryHashMs": 0.92144200000007,
+        "binaryOpenMs": 1089.8739890000002,
+        "binaryIdentityMs": 6.985957999999755,
+        "symbolAnalysisMs": 51.55134999999973,
+        "functionDiscoveryMs": 47.418151999999736,
+        "programConstructionMs": 25.40206100000023,
+        "totalSetupMs": 1230.2780760000003
+      },
+      "elapsedMs": 50655.5
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "functionCount": 70,
+      "complete": true,
+      "states": {
+        "PASS": 70
+      },
+      "setup": {
+        "binaryReadMs": 2.5664620000000014,
+        "binaryHashMs": 1.2179449999998724,
+        "binaryOpenMs": 1451.7439279999999,
+        "binaryIdentityMs": 25.19308000000001,
+        "symbolAnalysisMs": 112.16838300000018,
+        "functionDiscoveryMs": 57.58150500000011,
+        "programConstructionMs": 36.80025500000011,
+        "totalSetupMs": 1691.612304
+      },
+      "elapsedMs": 118016
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "functionCount": 89,
+      "complete": true,
+      "states": {
+        "PASS": 89
+      },
+      "setup": {
+        "binaryReadMs": 6.936776000000009,
+        "binaryHashMs": 1.2776099999998678,
+        "binaryOpenMs": 1301.7997549999998,
+        "binaryIdentityMs": 10.829126999999971,
+        "symbolAnalysisMs": 165.8863940000001,
+        "functionDiscoveryMs": 80.13505199999963,
+        "programConstructionMs": 34.574873000000025,
+        "totalSetupMs": 1606.492662
+      },
+      "elapsedMs": 107006.3
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "functionCount": 55,
+      "complete": true,
+      "states": {
+        "PASS": 55
+      },
+      "setup": {
+        "binaryReadMs": 2.385373999999956,
+        "binaryHashMs": 1.1173250000001644,
+        "binaryOpenMs": 1199.6170579999998,
+        "binaryIdentityMs": 10.353314999999839,
+        "symbolAnalysisMs": 102.41455600000018,
+        "functionDiscoveryMs": 39.45798599999989,
+        "programConstructionMs": 63.109226000000035,
+        "totalSetupMs": 1422.7020209999998
+      },
+      "elapsedMs": 209017.4
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "functionCount": 54,
+      "complete": true,
+      "states": {
+        "PASS": 54
+      },
+      "setup": {
+        "binaryReadMs": 2.0975459999999657,
+        "binaryHashMs": 0.8333039999999983,
+        "binaryOpenMs": 1376.059732,
+        "binaryIdentityMs": 9.161023999999998,
+        "symbolAnalysisMs": 99.06316199999992,
+        "functionDiscoveryMs": 36.49314100000038,
+        "programConstructionMs": 56.726310999999896,
+        "totalSetupMs": 1586.4232760000002
+      },
+      "elapsedMs": 118149.9
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "functionCount": 54,
+      "complete": true,
+      "states": {
+        "PASS": 54
+      },
+      "setup": {
+        "binaryReadMs": 2.3015069999999014,
+        "binaryHashMs": 1.0323349999998754,
+        "binaryOpenMs": 1304.1280239999999,
+        "binaryIdentityMs": 19.1223329999998,
+        "symbolAnalysisMs": 162.9771780000001,
+        "functionDiscoveryMs": 33.315140000000156,
+        "programConstructionMs": 60.45817500000021,
+        "totalSetupMs": 1588.6355529999998
+      },
+      "elapsedMs": 111111.1
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "functionCount": 54,
+      "complete": true,
+      "states": {
+        "PASS": 54
+      },
+      "setup": {
+        "binaryReadMs": 2.0661129999998593,
+        "binaryHashMs": 0.7082279999999628,
+        "binaryOpenMs": 1262.8566329999999,
+        "binaryIdentityMs": 6.948003000000426,
+        "symbolAnalysisMs": 101.54465500000015,
+        "functionDiscoveryMs": 31.816655000000083,
+        "programConstructionMs": 62.235931000000164,
+        "totalSetupMs": 1472.236479
+      },
+      "elapsedMs": 87712.7
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "functionCount": 75,
+      "complete": true,
+      "states": {
+        "PASS": 75
+      },
+      "setup": {
+        "binaryReadMs": 3.6742629999998826,
+        "binaryHashMs": 0.9558729999998832,
+        "binaryOpenMs": 1217.174504,
+        "binaryIdentityMs": 12.897731999999905,
+        "symbolAnalysisMs": 138.49826600000006,
+        "functionDiscoveryMs": 45.55079500000011,
+        "programConstructionMs": 81.43207500000017,
+        "totalSetupMs": 1504.3726739999997
+      },
+      "elapsedMs": 405964.9
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "functionCount": 75,
+      "complete": true,
+      "states": {
+        "PASS": 75
+      },
+      "setup": {
+        "binaryReadMs": 3.835248999999976,
+        "binaryHashMs": 1.0949840000000677,
+        "binaryOpenMs": 1194.723558,
+        "binaryIdentityMs": 9.543402000000242,
+        "symbolAnalysisMs": 130.07352100000026,
+        "functionDiscoveryMs": 41.70169699999997,
+        "programConstructionMs": 63.23297199999979,
+        "totalSetupMs": 1448.5644780000002
+      },
+      "elapsedMs": 324600.9
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "functionCount": 75,
+      "complete": true,
+      "states": {
+        "PASS": 75
+      },
+      "setup": {
+        "binaryReadMs": 27.416408000000047,
+        "binaryHashMs": 1.320500999999922,
+        "binaryOpenMs": 1107.25697,
+        "binaryIdentityMs": 18.416787000000113,
+        "symbolAnalysisMs": 117.45548999999983,
+        "functionDiscoveryMs": 72.78284200000007,
+        "programConstructionMs": 43.049630000000434,
+        "totalSetupMs": 1392.518335
+      },
+      "elapsedMs": 317922.4
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "functionCount": 75,
+      "complete": true,
+      "states": {
+        "PASS": 75
+      },
+      "setup": {
+        "binaryReadMs": 2.3974849999999606,
+        "binaryHashMs": 1.0407109999998738,
+        "binaryOpenMs": 1312.2590240000002,
+        "binaryIdentityMs": 12.262846999999965,
+        "symbolAnalysisMs": 173.3115810000004,
+        "functionDiscoveryMs": 43.76478399999996,
+        "programConstructionMs": 66.2334420000002,
+        "totalSetupMs": 1616.515141
+      },
+      "elapsedMs": 245313.2
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "functionCount": 44,
+      "complete": true,
+      "states": {
+        "PASS": 44
+      },
+      "setup": {
+        "binaryReadMs": 5.707777999999962,
+        "binaryHashMs": 1.1305970000000798,
+        "binaryOpenMs": 1336.2526090000001,
+        "binaryIdentityMs": 10.761372999999821,
+        "symbolAnalysisMs": 88.23254399999996,
+        "functionDiscoveryMs": 70.48597900000004,
+        "programConstructionMs": 103.13742000000002,
+        "totalSetupMs": 1620.511999
+      },
+      "elapsedMs": 231404.7
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "functionCount": 43,
+      "complete": true,
+      "states": {
+        "PASS": 43
+      },
+      "setup": {
+        "binaryReadMs": 3.77159400000005,
+        "binaryHashMs": 0.8657019999998283,
+        "binaryOpenMs": 1242.8092259999999,
+        "binaryIdentityMs": 19.162117000000308,
+        "symbolAnalysisMs": 92.58343999999988,
+        "functionDiscoveryMs": 61.58183999999983,
+        "programConstructionMs": 28.19312499999978,
+        "totalSetupMs": 1486.2473599999998
+      },
+      "elapsedMs": 94862.5
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "functionCount": 43,
+      "complete": true,
+      "states": {
+        "PASS": 43
+      },
+      "setup": {
+        "binaryReadMs": 16.590161999999964,
+        "binaryHashMs": 1.0980999999999312,
+        "binaryOpenMs": 1388.3323140000002,
+        "binaryIdentityMs": 9.321061999999984,
+        "symbolAnalysisMs": 85.1537629999998,
+        "functionDiscoveryMs": 31.603335000000243,
+        "programConstructionMs": 28.91966000000002,
+        "totalSetupMs": 1565.6985370000002
+      },
+      "elapsedMs": 96343.6
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "functionCount": 43,
+      "complete": true,
+      "states": {
+        "PASS": 43
+      },
+      "setup": {
+        "binaryReadMs": 26.76886599999989,
+        "binaryHashMs": 1.0086180000000695,
+        "binaryOpenMs": 1607.4144000000001,
+        "binaryIdentityMs": 7.862602000000152,
+        "symbolAnalysisMs": 96.25141600000006,
+        "functionDiscoveryMs": 57.53120600000011,
+        "programConstructionMs": 31.485321000000113,
+        "totalSetupMs": 1832.5951859999998
+      },
+      "elapsedMs": 92426.5
+    }
+  ]
+}

@@ -1,0 +1,3293 @@
+{
+  "schema": "hex-current-main-recompilability-replay/v1",
+  "runDir": "/mnt/workspace/hex-ida/reports/investigations/current-main-weakness-20260923/measurements/run-20260923-stratified",
+  "clang": "clang",
+  "clangTimeoutMs": 30000,
+  "maxFunctionsPerCase": 6,
+  "denominator": {
+    "cases": 32,
+    "sampledFunctions": 192
+  },
+  "caseStates": {
+    "FAIL": 32
+  },
+  "caseFirstFamilies": {
+    "undeclared-local": 32
+  },
+  "functionFirstFamilies": {
+    "undeclared-local": 52,
+    "undeclared-identifier": 86,
+    "unknown-type-name": 31,
+    "undeclared-global": 23
+  },
+  "firstFailureSamples": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 949
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 332
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 788
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 501
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 2282
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 2145
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 2103
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 1939
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 787
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 527
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 699
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 689
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 718
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 220
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 400
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 428
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 2245
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 206
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 369
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 427
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 422
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 206
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 313
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 291
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 1111
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 812
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 1236
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 1133
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 421
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 212
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 285
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "firstFamily": "undeclared-local",
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "errors": 215
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 949,
+      "warnings": 27,
+      "bodies": 75,
+      "functions": 75
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 332,
+      "warnings": 23,
+      "bodies": 74,
+      "functions": 74
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 788,
+      "warnings": 26,
+      "bodies": 74,
+      "functions": 74
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 501,
+      "warnings": 31,
+      "bodies": 74,
+      "functions": 74
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 2282,
+      "warnings": 26,
+      "bodies": 69,
+      "functions": 69
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 2145,
+      "warnings": 23,
+      "bodies": 67,
+      "functions": 67
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 2103,
+      "warnings": 28,
+      "bodies": 69,
+      "functions": 69
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 1939,
+      "warnings": 33,
+      "bodies": 69,
+      "functions": 69
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 787,
+      "warnings": 43,
+      "bodies": 67,
+      "functions": 67
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 527,
+      "warnings": 43,
+      "bodies": 65,
+      "functions": 65
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 699,
+      "warnings": 48,
+      "bodies": 65,
+      "functions": 65
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 689,
+      "warnings": 51,
+      "bodies": 65,
+      "functions": 65
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 718,
+      "warnings": 14,
+      "bodies": 80,
+      "functions": 80
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 220,
+      "warnings": 16,
+      "bodies": 79,
+      "functions": 79
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 400,
+      "warnings": 24,
+      "bodies": 80,
+      "functions": 80
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 428,
+      "warnings": 23,
+      "bodies": 80,
+      "functions": 80
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 2245,
+      "warnings": 197,
+      "bodies": 216,
+      "functions": 216
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 206,
+      "warnings": 17,
+      "bodies": 41,
+      "functions": 41
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 369,
+      "warnings": 35,
+      "bodies": 70,
+      "functions": 70
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 427,
+      "warnings": 34,
+      "bodies": 89,
+      "functions": 89
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 422,
+      "warnings": 18,
+      "bodies": 55,
+      "functions": 55
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 206,
+      "warnings": 21,
+      "bodies": 54,
+      "functions": 54
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 313,
+      "warnings": 25,
+      "bodies": 54,
+      "functions": 54
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 291,
+      "warnings": 27,
+      "bodies": 54,
+      "functions": 54
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 1111,
+      "warnings": 54,
+      "bodies": 75,
+      "functions": 75
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 812,
+      "warnings": 83,
+      "bodies": 75,
+      "functions": 75
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 1236,
+      "warnings": 105,
+      "bodies": 75,
+      "functions": 75
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 1133,
+      "warnings": 108,
+      "bodies": 75,
+      "functions": 75
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 421,
+      "warnings": 21,
+      "bodies": 44,
+      "functions": 44
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 212,
+      "warnings": 21,
+      "bodies": 43,
+      "functions": 43
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 285,
+      "warnings": 19,
+      "bodies": 43,
+      "functions": 43
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "state": "FAIL",
+      "syntax": false,
+      "object": null,
+      "firstDiagnostic": {
+        "kind": "error",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "firstFamily": "undeclared-local",
+      "errors": 215,
+      "warnings": 21,
+      "bodies": 43,
+      "functions": 43
+    }
+  ],
+  "functions": [
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2144",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3046.649845,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2176",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 714.353102,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2368",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1778.470600999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2420",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 225.34543000000122,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2448",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1566.2792150000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O0_g",
+      "address": "2496",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1570.0506729999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FE0'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2144",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3197.3265950000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2176",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 804.9727059999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2368",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1798.8065939999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2420",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 240.06434799999988,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2448",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1345.0869509999993,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_clang_O2_no_g",
+      "address": "2496",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1513.8971500000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2344",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2957.843528,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2368",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 697.9408429999994,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2560",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1695.8025239999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2612",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 282.0484299999989,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2640",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1472.6867390000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "2688",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1394.2725259999988,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2344",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3127.3295820000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2368",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 750.4426969999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2560",
+      "name": "main",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 4380.563169,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2624",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1594.1833729999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2676",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 242.18449300000066,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "1/1_gcc_Os_no_g",
+      "address": "2704",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1425.5249459999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FD0'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1632",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3099.8914889999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1664",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 792.7455810000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1856",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1764.9342929999993,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1908",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 292.2162189999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1936",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1420.3216890000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_14FC0'"
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "address": "1984",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1554.7412209999984,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1544",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3116.5049849999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1568",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 808.0650009999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1728",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1711.1314110000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1780",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 259.43146400000114,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1808",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1419.2482600000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "1856",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1456.850708,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "1720",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3117.985317,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "1744",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 998.897833,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "1920",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1778.0575230000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "1972",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 208.71918599999844,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "2000",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1483.0343329999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FD0'"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "2048",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1602.6826850000016,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FF8'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "1720",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3183.501478,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "1744",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 882.8315200000006,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "1920",
+      "name": "main",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 4794.194464,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "1984",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1410.5443759999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "2036",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 274.8311479999993,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "2064",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1490.153252,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FD0'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2312",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2800.603918,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2336",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 635.1266780000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2688",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1514.8641289999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2740",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 206.43203100000028,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2768",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1332.6560209999989,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FB8'"
+    },
+    {
+      "caseId": "3/3_clang_O0_g",
+      "address": "2816",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1381.192954,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FE0'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2248",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3680.307256,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2272",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 811.7179859999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2624",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1716.2338,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2676",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 284.32051499999943,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2704",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1517.6630999999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FB8'"
+    },
+    {
+      "caseId": "3/3_clang_O2_no_g",
+      "address": "2752",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1560.2009660000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2448",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 3668.0840130000006,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2480",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 803.9031240000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2816",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1791.722292999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2868",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 306.57928699999866,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2896",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1515.6552080000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "2944",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1346.087415,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FF8'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2448",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1438.6567799999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2480",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 517.0928709999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2816",
+      "name": "main",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2996.8466770000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2880",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1167.3098539999992,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2932",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 231.22388499999943,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "3/3_gcc_Os_no_g",
+      "address": "2960",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1222.0702810000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "1712",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2501.204791,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "1744",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 646.2528900000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "1920",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1212.425013,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "1972",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 192.62679899999966,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "2000",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1163.479991000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FC0'"
+    },
+    {
+      "caseId": "4/4_clang_O0_g",
+      "address": "2048",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1347.5800330000002,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1576",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2223.209875,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1600",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 680.378753,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1792",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1319.6238050000002,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1844",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 175.922501,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1872",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1174.362349000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FC0'"
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "address": "1920",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1180.536736,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FE0'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "1848",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2400.3051200000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "1872",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 687.040559,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "2048",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1188.1448840000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "2100",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 155.13534399999935,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "2128",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 956.9223580000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_O1_g",
+      "address": "2176",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 940.1535430000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "1848",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1603.194594,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "1872",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 412.1836569999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "2048",
+      "name": "main",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2159.2751879999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "2112",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 931.4644269999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "2164",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 194.47501999999986,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "4/4_gcc_Os_no_g",
+      "address": "2192",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 886.8548950000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FD0'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "6536",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1892.014861,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "6560",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 508.81430699999964,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "6976",
+      "name": "__cxx_global_var_init",
+      "sizeBytes": 64,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2198.158303,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_m10'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "7040",
+      "name": "_GLOBAL__sub_I_5_1.cpp",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1068.1212110000006,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "7104",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 733.8286229999994,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O0_g",
+      "address": "7156",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 106.72314899999947,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3400",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1682.681426,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3424",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 479.3408350000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3776",
+      "name": "_GLOBAL__sub_I_5_1.cpp",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1827.4262390000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3840",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1122.279367,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3892",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 183.72839900000054,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_clang_O2_no_g",
+      "address": "3920",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 820.3596950000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5208",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2146.4679920000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5232",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 603.2858860000006,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5696",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1195.7906819999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5748",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 181.88562899999943,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5776",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 975.4388389999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_O1_g",
+      "address": "5824",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1068.739066,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_13FF0'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "5688",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2260.5488060000002,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "5712",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 600.5660879999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "6144",
+      "name": "_Z18test_cpp_exceptionv",
+      "sizeBytes": 208,
+      "state": "PASS",
+      "gotos": 2,
+      "elapsedMs": 9701.831805999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint32'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "6352",
+      "name": "main",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1326.5499299999992,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "6376",
+      "name": "_GLOBAL__sub_I__Z20test_cpp_member_funcv",
+      "sizeBytes": 64,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2603.317751999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFE0'"
+    },
+    {
+      "caseId": "5-1/5-1_gcc_Os_no_g",
+      "address": "6464",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1146.812211999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "1920",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2284.619098,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "1952",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 565.3660199999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "2176",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2003.5308519999999,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "2240",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1158.2198430000008,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "2292",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 142.2678560000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O0_g",
+      "address": "2320",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1023.0267590000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_12FC0'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "1920",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2299.3117330000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "1952",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 641.1341160000002,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "2176",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2138.982073,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "2240",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1298.359622,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "2292",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 131.916964,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_clang_O2_no_g",
+      "address": "2320",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1093.8951990000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2032",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2215.9503539999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2064",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 663.6971010000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2304",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2010.668581,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2368",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1061.6325209999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2420",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 110.29255700000067,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_O1_g",
+      "address": "2448",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 988.5476799999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_11FD0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2032",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2091.055538,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2064",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 529.3153319999992,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2304",
+      "name": "main",
+      "sizeBytes": 28,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2144.121411,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2336",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1641.948101,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2432",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 881.1121950000015,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "5-23/5-23_gcc_Os_no_g",
+      "address": "2484",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 123.19083799999862,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "4808",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2084.5729340000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "4832",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 568.6632220000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "5888",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1585.425964,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "5952",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 946.0696989999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "6004",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 107.96447999999964,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "address": "6032",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 864.3295610000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_14FC0'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "4808",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2137.0563380000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "4832",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 530.7929260000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "5888",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1661.0351679999994,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "5952",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 914.1796750000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "6004",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 187.13549799999964,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "6/6_clang_O2_no_g",
+      "address": "6032",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 866.2091929999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_14FC0'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "5000",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2172.873666,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "5024",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 455.49457600000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "6080",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1745.158953,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "6144",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 978.7047819999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "6196",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 113.82306700000026,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "6/6_gcc_O1_g",
+      "address": "6224",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 862.5704779999996,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_14FD0'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "5000",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2123.3426460000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "5024",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 624.148948,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "6080",
+      "name": "main",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2462.9515,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "6112",
+      "name": "init_have_lse_atomics",
+      "sizeBytes": 36,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1716.1602690000009,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "6208",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1041.0432700000001,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "6/6_gcc_Os_no_g",
+      "address": "6260",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 259.48349899999994,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "1864",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1964.787252,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "1888",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 399.96170600000005,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "2112",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1088.4914599999993,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "2164",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 122.92018000000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "2192",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 960.806552,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O0_g",
+      "address": "2240",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 861.2332620000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_11FE0'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "1808",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2213.697563,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "1840",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 503.4000419999993,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "2048",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1102.0130639999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "2100",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 193.85250300000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "2128",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 983.847229,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_clang_O2_no_g",
+      "address": "2176",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1020.7772050000012,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2120",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2122.829168,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2144",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 626.6257540000006,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2432",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1295.6395900000007,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2484",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 137.55944099999942,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2512",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1163.2440969999998,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_11FD0'"
+    },
+    {
+      "caseId": "7/7_gcc_O1_g",
+      "address": "2560",
+      "name": "register_tm_clones",
+      "sizeBytes": 60,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1002.9235659999995,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-global",
+      "firstMessage": "use of undeclared identifier 'global_11FF8'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2120",
+      "name": "_init",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 2464.195863,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2144",
+      "name": "$x",
+      "sizeBytes": 32,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 668.8220149999997,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2432",
+      "name": "main",
+      "sizeBytes": 24,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1633.2986650000003,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-local",
+      "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2496",
+      "name": "_start",
+      "sizeBytes": 52,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1063.5010060000004,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2548",
+      "name": "call_weak_fn",
+      "sizeBytes": 20,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 191.1815749999987,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "unknown-type-name",
+      "firstMessage": "unknown type name 'uint64'"
+    },
+    {
+      "caseId": "7/7_gcc_Os_no_g",
+      "address": "2576",
+      "name": "deregister_tm_clones",
+      "sizeBytes": 48,
+      "state": "PASS",
+      "gotos": 0,
+      "elapsedMs": 1055.019386,
+      "syntax": false,
+      "timedOut": false,
+      "firstFamily": "undeclared-identifier",
+      "firstMessage": "use of undeclared identifier 'uint64'"
+    }
+  ]
+}
