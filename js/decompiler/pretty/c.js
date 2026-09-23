@@ -182,7 +182,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'field': {
       const access = `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
       const label = typeof n.cxxMemberTypeLabel === 'string' ? n.cxxMemberTypeLabel.trim() : '';
-      return label && label.length <= 80 && /^[A-Za-z0-9_\\[\\]| *-]+$/.test(label)
+      return label && label.length <= 80 && /^[A-Za-z0-9_\[\]| *-]+$/.test(label)
         ? `${access} /* ${label} */`
         : access;
     }
