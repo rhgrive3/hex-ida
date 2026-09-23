@@ -197,3 +197,42 @@ test('#5113 a deep-frozen subtree needs no rollback pre-image while siblings sti
   assert.equal(out.keep, 'present', 'deleted key still restores');
   assert.equal(out.passMetrics[0].ok, false);
 });
+
+
+test('#5113 immutable certification caches shared frozen descendants, not only wrapper roots', () => {
+  const freezeDeep = (value, seen = new Set()) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    for (const key of Reflect.ownKeys(value)) freezeDeep(value[key], seen);
+    Object.freeze(value);
+    return value;
+  };
+  let shared = { leaf: true };
+  for (let i = 0; i < 300; i += 1) shared = { index: i, next: shared };
+  freezeDeep(shared);
+  const wrappers = Array.from({ length: 100 }, (_, index) => Object.freeze({ index, shared }));
+  const state = { wrappers, mutable: { value: 1 } };
+
+  const original = Object.getOwnPropertyDescriptors;
+  let descriptorReads = 0;
+  Object.getOwnPropertyDescriptors = function countedDescriptors(value) {
+    descriptorReads += 1;
+    return original(value);
+  };
+  try {
+    new PassManager([{
+      name: 'successful-noop',
+      required: false,
+      run(s) { s.mutable.value = 2; return s; },
+    }], { timeBudgetMs: 1000 }).run(state);
+  } finally {
+    Object.getOwnPropertyDescriptors = original;
+  }
+
+  assert.equal(state.mutable.value, 2, 'successful optional mutations still commit');
+  // Root-only immutable caching re-walks the 301-node shared chain for every
+  // wrapper (>30k descriptor reads). Whole-subgraph certification keeps this
+  // linear in the unique graph plus the wrappers. Leave generous headroom for
+  // rollback capture of the mutable state itself.
+  assert.ok(descriptorReads < 1000, `shared frozen graph was repeatedly rescanned: ${descriptorReads}`);
+});
