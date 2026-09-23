@@ -115,7 +115,7 @@
     },
     {
       "id": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth"
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth"
     },
     {
       "id": "G29_strong_or_ambiguous_top3",
@@ -159,7 +159,7 @@
     },
     "oneRegression": {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 39,
       "wrongToCorrect": 15,
       "correctToWrong": 1,
@@ -208,7 +208,7 @@
     },
     "oneRegression": {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 52,
       "wrongToCorrect": 14,
       "correctToWrong": 0,
@@ -358,7 +358,7 @@
     },
     {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 91,
       "wrongToCorrect": 29,
       "correctToWrong": 1,
@@ -501,5 +501,5 @@
       "falseStrongDelta": 0
     }
   ],
-  "caveat": "Full-corpus frontiers are descriptive; production claims use holdout-selected gates only."
+  "caveat": "Full-corpus frontiers and the cross-binary split are descriptive. G28 is development-selected; independent free-form validation is still required before any production claim."
 }
