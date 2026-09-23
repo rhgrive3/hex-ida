@@ -155,8 +155,11 @@ test('#9520 backup replaced by another object is not removed', async () => {
         await rename(from, to);
         if (from === temp && to === target) {
           const [backup] = await backups(root);
-          await fs.rm(path.join(root, backup));
-          await fs.writeFile(path.join(root, backup), 'OTHER');
+          // Create the replacement while the backup still exists so the
+          // filesystem cannot hand the freed inode number straight back.
+          const other = path.join(root, 'other.tmp');
+          await fs.writeFile(other, 'OTHER');
+          await fs.rename(other, path.join(root, backup));
         }
       },
       rmImpl: async (file, options) => { removed.push(file); return fs.rm(file, options); },
