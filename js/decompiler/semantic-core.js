@@ -2386,6 +2386,16 @@ export function decompileSemantic(model, rawOpts = {}) {
   ir.ipdom = graph.immediatePostDominators;
   const rmw = readModifyWrite(ir);
   const firstAddr = model.instructions?.[0]?.address ?? opts.addr ?? 0n;
+  const missingAddress = Symbol('missing block address');
+  const rowToAddress = new Map();
+  for (const block of ir.blocks) rowToAddress.set(block.startRow, missingAddress);
+  if (Array.isArray(model.instructions)) {
+    for (const inst of model.instructions) {
+      if (inst && !Number.isNaN(inst.row) && rowToAddress.get(inst.row) === missingAddress) {
+        rowToAddress.set(inst.row, inst.address);
+      }
+    }
+  }
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
@@ -2409,7 +2419,13 @@ export function decompileSemantic(model, rawOpts = {}) {
       remaining:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
       maxEdges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) } : null,
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
-    blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
+    blockAddress: (bi) => {
+      const startRow = ir.blocks[bi]?.startRow;
+      const address = rowToAddress.get(startRow);
+      return address === missingAddress || address == null
+        ? firstAddr + BigInt(startRow || 0) * 4n
+        : address;
+    },
   };
   beginStatementRenderHistory(ctx);
   beginControlRenderHistory(ctx);

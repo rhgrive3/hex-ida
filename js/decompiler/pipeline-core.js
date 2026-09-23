@@ -1988,9 +1988,14 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   // Budgets are a degradation boundary, not a validity boundary. If a large function
   // exhausts the optional pass budget, finish the mandatory representation layers
   // once without additional fixed-point work so callers always receive a coherent AST.
-  advanced.expressions ||= new Map([...advanced.expressionMemo.entries()]
-    .filter(([key]) => String(key).endsWith(':v'))
-    .map(([key, value]) => [Number(String(key).split(':')[0]), value]));
+  if (!advanced.expressions) {
+    const expressions = new Map();
+    for (const [key, value] of advanced.expressionMemo.entries()) {
+      const text = String(key);
+      if (text.endsWith(':v')) expressions.set(Number(text.split(':')[0]), value);
+    }
+    advanced.expressions = expressions;
+  }
   advanced.rewriteProof ||= [];
   advanced.rewriteStats ||= { iterations: 0, applications: 0, budgetExceeded: true, elapsedMs: 0, byRule: {} };
   advanced.highVariables ||= recoverHighVariables(advanced.ir, advanced.types, opts);
