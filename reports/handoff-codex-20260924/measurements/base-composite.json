@@ -1,0 +1,315 @@
+{
+  "schema": "hex-tail-focused-profile/v1",
+  "targetSha": null,
+  "caseId": "2/2_gcc_O1_g",
+  "name": "test_composite_types",
+  "address": 5364,
+  "binary": "5a9b20c5e2d337ab12f812eccc2e13ba040f2d67477df839ee62d703a844152e.bin",
+  "profile": "fast",
+  "runs": [
+    {
+      "run": 0,
+      "elapsedMs": 60557.09,
+      "snapshotMs": 2.13,
+      "status": {
+        "completeness": "complete",
+        "reason": null,
+        "hasValue": true
+      },
+      "memoryDelta": {
+        "rss": 2463121408,
+        "heapUsed": 1990720752
+      },
+      "probe": {
+        "passManagerMs": 7505.93,
+        "outsidePassManagerMs": 53051.16,
+        "outsideRatio": 0.8761,
+        "capturePassState": {
+          "calls": 1,
+          "ms": 7412.45,
+          "records": 34545
+        },
+        "phases": [
+          {
+            "name": "high-variable-recovery",
+            "ms": 7505.48,
+            "ok": true
+          }
+        ],
+        "verification": {
+          "calls": 18,
+          "ms": 2.37,
+          "memoHits": 0,
+          "settleRechecks": 0,
+          "settleMs": 0.01,
+          "duplicateCalls": 0,
+          "observations": [
+            {
+              "calls": 1,
+              "ms": 0.95,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.2,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.2,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.16,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.15,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.13,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.13,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.12,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            },
+            {
+              "calls": 1,
+              "ms": 0.11,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- finishBuildSelection <- recordMovSelection"
+            },
+            {
+              "calls": 1,
+              "ms": 0.11,
+              "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+            }
+          ]
+        }
+      },
+      "cpuTop": [
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 7030.63,
+          "share": 0.1159
+        },
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 3653.53,
+          "share": 0.0602
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 2245.59,
+          "share": 0.037
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 1380.92,
+          "share": 0.0228
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 962.34,
+          "share": 0.0159
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 897.54,
+          "share": 0.0148
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 585.11,
+          "share": 0.0096
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 584.37,
+          "share": 0.0096
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 559.12,
+          "share": 0.0092
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 549.93,
+          "share": 0.0091
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 529.23,
+          "share": 0.0087
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 523.26,
+          "share": 0.0086
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 521.42,
+          "share": 0.0086
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 514.57,
+          "share": 0.0085
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 489.67,
+          "share": 0.0081
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 488.28,
+          "share": 0.0081
+        },
+        {
+          "functionName": "semanticOwnKeys",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 52,
+          "selfMs": 479.5,
+          "share": 0.0079
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 477.28,
+          "share": 0.0079
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 474.72,
+          "share": 0.0078
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 474.55,
+          "share": 0.0078
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 470.57,
+          "share": 0.0078
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 468.81,
+          "share": 0.0077
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 468.78,
+          "share": 0.0077
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 468.22,
+          "share": 0.0077
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 462.16,
+          "share": 0.0076
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 461.22,
+          "share": 0.0076
+        },
+        {
+          "functionName": "semanticOwnKeys",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 52,
+          "selfMs": 443.08,
+          "share": 0.0073
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 441.04,
+          "share": 0.0073
+        },
+        {
+          "functionName": "semanticOwnKeys",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 52,
+          "selfMs": 436.7,
+          "share": 0.0072
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///mnt/workspace/hex-ida/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 416.8,
+          "share": 0.0069
+        }
+      ],
+      "cpuProfile": "base-composite.cpuprofile"
+    }
+  ]
+}

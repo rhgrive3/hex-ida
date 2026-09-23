@@ -1,0 +1,8 @@
+CRITICAL: Do NOT end your turn after writing a todo list or plan. After any todo update immediately continue with the next tool call. The run is finished only when a git commit exists and the listed tests pass.
+
+Work only in the git worktree /mnt/workspace/wt-red4 (branch fix/root-red-semantics). Repo: Hex (node ESM). Do not push.
+PROBLEM: on current main the root issue regression gate (npm run root-issue-regressions:test, which runs every tests/issue-* file) is RED. Your files:
+tests/issue-4692-semantic-ir-constant-canonical.mjs tests/issue-5702-purpose-provenance-forwarding.test.mjs tests/issue-6133-x87-trusted-terminal-domain.mjs
+For EACH file: run it alone (node --test <file> for *.test.mjs, node <file> for plain .mjs), read the failure, find the FIRST divergence, and fix the real cause. Decide per failure whether (a) production code regressed (fix production, minimal change), (b) the test fixture is stale versus a later intended contract change (update fixture while preserving the security/correctness property the test protects; do not weaken assertions), or (c) the test is not hermetic (depends on host env vars such as JEV_PRUNING_HOME, HOME, PATH, platform, network, or on other tests) — make it hermetic. Use git log -S / git log -- <file> to find the commit that broke it. Never delete or skip a test, never add it to exclusions.
+Finally run all your files again one by one; all must pass. Also run: node tests/root-issue-regressions.mjs is too slow — do not run it.
+Commit: "fix: restore root issue regressions (semantics)" + blank line + short explanation of each root cause + blank line + "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>". Print a per-file summary: root cause class (a/b/c) and fix.

@@ -1,0 +1,18 @@
+Work only in the git worktree /mnt/workspace/wt-digest (branch perf/semantic-digest-reuse). Repo: Hex (JS decompiler, node ESM). Do not push.
+Other agents are concurrently changing js/decompiler/phase8/analysis-identity.js and js/decompiler/passes/manager.js — DO NOT edit those two files.
+
+GOAL: remove repeated digest/serialization and repeated dataflow scans on the FAST decompile path, keeping output bit-identical.
+CPU profile (inclusive ms) for FAST decompile of __addtf3 (36.5 s total) on current main:
+ - stableDigest (js/core/identity/index.js:109) 5.9 s total via stableStringify 4.7 s / jsonSafe 3.0 s. Callers: buildSemanticSsa (js/semantics/ssa/build.js:101) 1.95 s; buildSemanticV2CompatibilityPipeline (js/semantics/compat/index.js:677) 1.86 s; forwardingStatusFromArtifactFull (js/semantics/memoryssa/queries.js:1084) 0.58 s; semanticIrMatches (js/semantics/memoryssa/operand-forwarding.js:118) 0.50 s; semanticIrDigestFor (js/analysis/alias/regions-v2-core.js:218) 0.49 s; canonicalMemorySsaDigest (js/semantics/memoryssa/proof-core.js:191) 0.2 s.
+ - valueFeedsAddressOrCall (js/semantics/compat/semantic-ir-v2-to-v1-finalize.js:29) 1.6 s self, called from compactProjectedState (:90) <- finalizeLegacyProjection (:477). Likely a per-value scan over all uses/instructions => make it an index/worklist computed once per function (e.g. precompute the set of values that feed an address or call by one backward traversal).
+ - captureCertifiedDataGraph / captureIrData / certifyData / enqueue in js/core/identity/live-data.js (~1.4 s on test_composite_types), matchesBodyCore (live-data.js:395).
+ - fnv64Text (js/core/identity/fnv64.js:24) ~2 s total.
+Typical cause: the same (often deep-frozen / immutable) semantic IR object is digested/serialized several times in one decompile. Fix pattern: cache digests for deep-frozen objects in a WeakMap keyed by object identity (only when the object graph is provably immutable — reuse any existing deep-frozen check in js/core/identity), or compute a digest once and pass it along to the next consumer instead of recomputing. Never cache digests of mutable objects across mutations.
+
+Equivalence (mandatory):
+ - Before changing anything, record baseline outputs: run
+   node /tmp/claude-0/-mnt-workspace-hex-ida/40472aea-bded-46c9-8e0c-871b3f42be35/scratchpad/dec.mjs . benchmarks/public/codefuse-arm64/inputs/c50d30201c285eb4343ee8adce1a67e527a7692dc0924be1e339fe4e4c672709.bin first:60 /tmp/claude-0/-mnt-workspace-hex-ida/40472aea-bded-46c9-8e0c-871b3f42be35/scratchpad/digest-before.json
+   and the same for 5872 (the slow __addtf3; ~35 s). After changes rerun to digest-after.json and confirm every function's `sha` is identical; report total/max ms before/after.
+ - Add unit tests tests/performance/semantic-digest-reuse.test.mjs proving (a) cached digest == fresh stableDigest for frozen graphs, (b) mutation of a non-frozen object is still observed (no stale cache), (c) the new valueFeedsAddressOrCall index gives the same answer as the old per-value function on randomized small IR fixtures (keep the old implementation in the test as reference).
+ - Run: node --test tests/performance/*.test.mjs ; node tests/semantic-v2/run.mjs 2>&1 | tail -3 ; node tests/decompiler/run.mjs 2>&1 | tail -3 ; node tests/phase8/run.mjs 2>&1 | tail -3 (use node scripts/run-quiet-command.mjs --label x -- <cmd> for long ones).
+Commit: "perf(semantics): reuse immutable digests and index address/call feeders" + blank line + "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>". Print summary with before/after ms and equivalence result.

@@ -1,0 +1,17 @@
+{
+  "schema": "hex-realgame-oracle/v1",
+  "game": "openmw",
+  "binary": "packages/root/usr/games/openmw",
+  "sha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+  "dynamic": {
+    "vtables": 1847,
+    "typeinfos": 2564,
+    "typeNames": 2456
+  },
+  "debug": {
+    "status": "unavailable",
+    "dwarfClasses": 0,
+    "dwarfMembers": 0
+  }
+}

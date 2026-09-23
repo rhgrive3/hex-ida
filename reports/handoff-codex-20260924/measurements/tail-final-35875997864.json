@@ -1,0 +1,991 @@
+{
+  "schema": "hex-current-fast-tail-aggregate/v1",
+  "targetSha": "18a7750ee54eff3fa265172106ce4f014199237d",
+  "profiles": 12,
+  "rows": [
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "name": "test_composite_types",
+      "address": 5364,
+      "elapsedMs": 27087.22,
+      "outsideRatio": 0.8775,
+      "passManagerMs": 3318.54,
+      "capturePassStateMs": 3264.64,
+      "captureRecords": 34545,
+      "cpuTop": [
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 3047.6,
+          "share": 0.1123
+        },
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 2289.68,
+          "share": 0.0844
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1415.46,
+          "share": 0.0522
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 268.22,
+          "share": 0.0099
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 264.08,
+          "share": 0.0097
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 257.58,
+          "share": 0.0095
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 251.42,
+          "share": 0.0093
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 244.8,
+          "share": 0.009
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 240.72,
+          "share": 0.0089
+        },
+        {
+          "functionName": "semanticOwnKeys",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 52,
+          "selfMs": 240.05,
+          "share": 0.0088
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "name": "__addtf3",
+      "address": 8656,
+      "elapsedMs": 22054.95,
+      "outsideRatio": 0.8702,
+      "passManagerMs": 2863.34,
+      "capturePassStateMs": 1722.66,
+      "captureRecords": 123843,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 2029.5,
+          "share": 0.0919
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 1171.09,
+          "share": 0.053
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 920.88,
+          "share": 0.0417
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 792.74,
+          "share": 0.0359
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 527.57,
+          "share": 0.0239
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 482.09,
+          "share": 0.0218
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 476.91,
+          "share": 0.0216
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 413.99,
+          "share": 0.0187
+        },
+        {
+          "functionName": "(anonymous)",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 54,
+          "selfMs": 333.12,
+          "share": 0.0151
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 271.93,
+          "share": 0.0123
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "name": "__addtf3",
+      "address": 6176,
+      "elapsedMs": 21333.77,
+      "outsideRatio": 0.8672,
+      "passManagerMs": 2833.77,
+      "capturePassStateMs": 1697.94,
+      "captureRecords": 123843,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1736.87,
+          "share": 0.0813
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 1167.64,
+          "share": 0.0546
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 848.37,
+          "share": 0.0397
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 785.42,
+          "share": 0.0367
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 647.27,
+          "share": 0.0303
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 484.13,
+          "share": 0.0227
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 476.07,
+          "share": 0.0223
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 411.38,
+          "share": 0.0192
+        },
+        {
+          "functionName": "(anonymous)",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 54,
+          "selfMs": 320.81,
+          "share": 0.015
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 277.99,
+          "share": 0.013
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "name": "__addtf3",
+      "address": 5872,
+      "elapsedMs": 21033.91,
+      "outsideRatio": 0.8908,
+      "passManagerMs": 2297.43,
+      "capturePassStateMs": 1531.09,
+      "captureRecords": 123843,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1795.44,
+          "share": 0.0851
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 1374.77,
+          "share": 0.0652
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 988.93,
+          "share": 0.0469
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 914.13,
+          "share": 0.0433
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 422.88,
+          "share": 0.02
+        },
+        {
+          "functionName": "compactProjectedState",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 90,
+          "selfMs": 402.63,
+          "share": 0.0191
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 372.8,
+          "share": 0.0177
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 367.42,
+          "share": 0.0174
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 359.25,
+          "share": 0.017
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 319.84,
+          "share": 0.0152
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "name": "__multf3",
+      "address": 8960,
+      "elapsedMs": 20608.06,
+      "outsideRatio": 0.9091,
+      "passManagerMs": 1872.49,
+      "capturePassStateMs": 1339.2,
+      "captureRecords": 85223,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1979.5,
+          "share": 0.0959
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1171.87,
+          "share": 0.0568
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 975.32,
+          "share": 0.0472
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 397.37,
+          "share": 0.0192
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 377,
+          "share": 0.0183
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 364.56,
+          "share": 0.0177
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 336.7,
+          "share": 0.0163
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 288.22,
+          "share": 0.014
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 275.57,
+          "share": 0.0133
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 274.38,
+          "share": 0.0133
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "name": "__multf3",
+      "address": 8848,
+      "elapsedMs": 20507.03,
+      "outsideRatio": 0.9097,
+      "passManagerMs": 1851.99,
+      "capturePassStateMs": 1356.97,
+      "captureRecords": 85223,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 2062.57,
+          "share": 0.1003
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1217.55,
+          "share": 0.0592
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 964.76,
+          "share": 0.0469
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 407.03,
+          "share": 0.0198
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 405.74,
+          "share": 0.0197
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 320.83,
+          "share": 0.0156
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 320.6,
+          "share": 0.0156
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 296.46,
+          "share": 0.0144
+        },
+        {
+          "functionName": "semanticDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 333,
+          "selfMs": 286.83,
+          "share": 0.014
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 262.21,
+          "share": 0.0128
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "name": "__multf3",
+      "address": 11632,
+      "elapsedMs": 20120.33,
+      "outsideRatio": 0.9028,
+      "passManagerMs": 1954.7,
+      "capturePassStateMs": 1413.57,
+      "captureRecords": 85223,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1718.66,
+          "share": 0.0853
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1204.15,
+          "share": 0.0597
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 1016.96,
+          "share": 0.0504
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 409.08,
+          "share": 0.0203
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 374.15,
+          "share": 0.0186
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 345.07,
+          "share": 0.0171
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 330.27,
+          "share": 0.0164
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 298.81,
+          "share": 0.0148
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 289.96,
+          "share": 0.0144
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 241.29,
+          "share": 0.012
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "name": "test_array_types",
+      "address": 3240,
+      "elapsedMs": 19690.63,
+      "outsideRatio": 0.8686,
+      "passManagerMs": 2588.24,
+      "capturePassStateMs": 2541.79,
+      "captureRecords": 29941,
+      "cpuTop": [
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 2299.82,
+          "share": 0.1165
+        },
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1603.54,
+          "share": 0.0813
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 726.07,
+          "share": 0.0368
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 193.06,
+          "share": 0.0098
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 177,
+          "share": 0.009
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 175.88,
+          "share": 0.0089
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 174.78,
+          "share": 0.0089
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 168.66,
+          "share": 0.0085
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 167.22,
+          "share": 0.0085
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 164.28,
+          "share": 0.0083
+        }
+      ]
+    },
+    {
+      "caseId": "6/6_clang_O0_g",
+      "name": "param_thread_local_storage",
+      "address": 13572,
+      "elapsedMs": 18873.62,
+      "outsideRatio": 0.8758,
+      "passManagerMs": 2343.51,
+      "capturePassStateMs": 2301.82,
+      "captureRecords": 28201,
+      "cpuTop": [
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 2116.02,
+          "share": 0.1118
+        },
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1631.35,
+          "share": 0.0862
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1040.64,
+          "share": 0.055
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 229.32,
+          "share": 0.0121
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 179.93,
+          "share": 0.0095
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 174.39,
+          "share": 0.0092
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 172.12,
+          "share": 0.0091
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 171.77,
+          "share": 0.0091
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 170.2,
+          "share": 0.009
+        },
+        {
+          "functionName": "encode",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 157,
+          "selfMs": 167.22,
+          "share": 0.0088
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_clang_O0_g",
+      "name": "test_composite_types",
+      "address": 7760,
+      "elapsedMs": 16742.54,
+      "outsideRatio": 0.3841,
+      "passManagerMs": 10311.25,
+      "capturePassStateMs": 10222.02,
+      "captureRecords": 37364,
+      "cpuTop": [
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 9641.52,
+          "share": 0.5743
+        },
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 941.33,
+          "share": 0.0561
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 278.15,
+          "share": 0.0166
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 118.46,
+          "share": 0.0071
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 115.2,
+          "share": 0.0069
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 82.92,
+          "share": 0.0049
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 82.71,
+          "share": 0.0049
+        },
+        {
+          "functionName": "stableStringify",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 105,
+          "selfMs": 77.99,
+          "share": 0.0046
+        },
+        {
+          "functionName": "stableStringify",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 105,
+          "selfMs": 77.9,
+          "share": 0.0046
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 64.94,
+          "share": 0.0039
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "name": "__multf3",
+      "address": 9152,
+      "elapsedMs": 15946,
+      "outsideRatio": 0.9119,
+      "passManagerMs": 1405.29,
+      "capturePassStateMs": 1055.04,
+      "captureRecords": 85223,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1286.78,
+          "share": 0.0805
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 1166.93,
+          "share": 0.073
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 719.61,
+          "share": 0.045
+        },
+        {
+          "functionName": "valueFeedsAddressOrCall",
+          "url": "file:///home/runner/work/actions/actions/target/js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
+          "line": 29,
+          "selfMs": 418.03,
+          "share": 0.0262
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 386.81,
+          "share": 0.0242
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 319.64,
+          "share": 0.02
+        },
+        {
+          "functionName": "capturePassState",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 59,
+          "selfMs": 248.88,
+          "share": 0.0156
+        },
+        {
+          "functionName": "addressTaken",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/types/high-variables.js",
+          "line": 52,
+          "selfMs": 225.56,
+          "share": 0.0141
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 214.12,
+          "share": 0.0134
+        },
+        {
+          "functionName": "stableDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/index.js",
+          "line": 109,
+          "selfMs": 213.89,
+          "share": 0.0134
+        }
+      ]
+    },
+    {
+      "caseId": "4/4_clang_O2_no_g",
+      "name": "param_varargs",
+      "address": 3268,
+      "elapsedMs": 13761.58,
+      "outsideRatio": 0.987,
+      "passManagerMs": 179.36,
+      "capturePassStateMs": 169.6,
+      "captureRecords": 8982,
+      "cpuTop": [
+        {
+          "functionName": "(garbage collector)",
+          "url": "",
+          "line": 0,
+          "selfMs": 1077.17,
+          "share": 0.078
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 250.59,
+          "share": 0.0181
+        },
+        {
+          "functionName": "isDeepImmutable",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/passes/manager.js",
+          "line": 26,
+          "selfMs": 117.67,
+          "share": 0.0085
+        },
+        {
+          "functionName": "fastJsonTextDigest",
+          "url": "file:///home/runner/work/actions/actions/target/js/decompiler/phase8/analysis-identity.js",
+          "line": 118,
+          "selfMs": 110.12,
+          "share": 0.008
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 106.75,
+          "share": 0.0077
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 99.13,
+          "share": 0.0072
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 98.98,
+          "share": 0.0072
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 98.7,
+          "share": 0.0071
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 94.09,
+          "share": 0.0068
+        },
+        {
+          "functionName": "matchesBodyCore",
+          "url": "file:///home/runner/work/actions/actions/target/js/core/identity/live-data.js",
+          "line": 395,
+          "selfMs": 93.93,
+          "share": 0.0068
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+Work only in the git worktree /mnt/workspace/wt-capture (branch perf/pass-capture-immutable). Repo: Hex, a JS decompiler (node, ESM). Do not push.
+
+GOAL: speed up js/decompiler/passes/manager.js `isDeepImmutable` and `capturePassState` without changing rollback semantics.
+
+Measured problem: capturePassState is called before every optional pass; on __addtf3 it takes 2.5 s (123,843 records) and isDeepImmutable 1.8 s self time. Root cause of isDeepImmutable cost: it caches only the ROOT value's answer. capturePassState calls isDeepImmutable(value) for every object it visits; for a frozen object whose subtree contains one mutable leaf, every frozen ancestor re-walks its whole subtree (quadratic). Also each call allocates a new Set.
+
+Required change:
+1. Rewrite isDeepImmutable as an iterative post-order DFS that caches the answer for EVERY visited node (WeakMap deepImmutableCache). Exact cycle handling: use Tarjan-style SCC (or equivalent) so that nodes in a strongly connected component get one shared answer; never cache `true` for a node whose answer could depend on an unfinished on-stack node. Caching `false` conservatively is always safe (a stale false only snapshots more). A `true` answer must be correct: the node is frozen, is a plain object/array (Object.prototype or null proto, or Array), and every data-property descendant (via Object.getOwnPropertyDescriptors values, including symbol keys) is deep-immutable; Map/Set/Date/RegExp/ArrayBuffer/typed arrays => false; non-plain class instances / functions are skipped (treated immutable) exactly as today.
+2. In capturePassState keep the same records and the same restore closure behaviour. Micro-optimize only where semantics are identical (e.g. avoid re-checking isDeepImmutable for primitives).
+3. Keep the PERF-PROBE lines (globalThis.__hexPerfProbe) working.
+
+Tests (mandatory):
+- Add tests/performance/pass-capture-immutable-equivalence.test.mjs: construct states mixing frozen subgraphs with deep mutable leaves, cycles across frozen/mutable nodes, SCCs, Map/Set/Date inside frozen objects, class instances, symbol keys, accessors; for each, run a PassManager (import { PassManager } from '../../js/decompiler/passes/manager.js') with an optional pass that mutates deep data (including a mutable leaf under frozen ancestors, map/set entries, deleting/adding keys) then throws; assert the state is restored exactly (deep compare with a structuredClone-like snapshot taken before; for cycles compare manually). Also an optional pass that succeeds must keep mutations. Also include a test that the result of isDeepImmutable is identical to a naive reference implementation (write the naive recursive reference in the test; export isDeepImmutable from manager.js under a test-only name like `__isDeepImmutableForTest` if needed).
+- Run: node --test tests/performance/*.test.mjs ; node tests/decompiler/run.mjs 2>&1 | tail -5 ; and grep tests for 'passes/manager' and run those files too.
+- Real-binary check before/after (identical `sha`, report ms):
+  node /tmp/claude-0/-mnt-workspace-hex-ida/40472aea-bded-46c9-8e0c-871b3f42be35/scratchpad/dec.mjs . benchmarks/public/codefuse-arm64/inputs/c50d30201c285eb4343ee8adce1a67e527a7692dc0924be1e339fe4e4c672709.bin 5872
+  (~35 s per run; "before" via git stash / stash pop of your js change).
+
+When green, commit only your files: "perf(passes): cache deep-immutability per node for rollback capture" + blank line + "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>". Print a summary with before/after ms and test results.

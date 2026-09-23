@@ -1,0 +1,385 @@
+{
+  "schema": "hex-realgame-stages/v1",
+  "stages": [
+    {
+      "stage": "openProduct",
+      "ok": true,
+      "ms": 16183.78,
+      "at": "2026-09-23T16:47:15.444Z",
+      "detail": {
+        "profile": {
+          "binaryReadMs": 5.901326999999981,
+          "binaryHashMs": 4.575191999999959,
+          "binaryOpenMs": 10983.038716000001,
+          "binaryIdentityMs": 279.6124029999992,
+          "symbolAnalysisMs": 1390.5437469999997,
+          "functionDiscoveryMs": 1398.7699329999996,
+          "programConstructionMs": 2108.506566,
+          "totalSetupMs": 16183.593318
+        },
+        "unsupported": false,
+        "reason": null
+      }
+    },
+    {
+      "stage": "findCxxClasses",
+      "ok": true,
+      "ms": 9.51,
+      "at": "2026-09-23T16:47:15.454Z",
+      "detail": {
+        "classes": 893
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 6.14,
+      "at": "2026-09-23T16:47:15.461Z",
+      "detail": {
+        "done": 50,
+        "total": 300
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 21.05,
+      "at": "2026-09-23T16:47:15.476Z",
+      "detail": {
+        "done": 100,
+        "total": 300
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 24.66,
+      "at": "2026-09-23T16:47:15.479Z",
+      "detail": {
+        "done": 150,
+        "total": 300
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 25.67,
+      "at": "2026-09-23T16:47:15.480Z",
+      "detail": {
+        "done": 200,
+        "total": 300
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 29.82,
+      "at": "2026-09-23T16:47:15.485Z",
+      "detail": {
+        "done": 250,
+        "total": 300
+      }
+    },
+    {
+      "stage": "vtables",
+      "ok": true,
+      "ms": 35.19,
+      "at": "2026-09-23T16:47:15.490Z",
+      "detail": {
+        "done": 300,
+        "total": 300
+      }
+    },
+    {
+      "stage": "snapshot",
+      "ok": true,
+      "ms": 1.37,
+      "at": "2026-09-23T16:47:15.492Z",
+      "detail": null
+    },
+    {
+      "stage": "functions",
+      "ok": true,
+      "ms": 43.9,
+      "at": "2026-09-23T16:47:15.537Z",
+      "detail": {
+        "count": 12000
+      }
+    },
+    {
+      "stage": "selectTargets",
+      "ok": true,
+      "ms": 3.83,
+      "at": "2026-09-23T16:47:15.541Z",
+      "detail": {
+        "count": 85
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 0.85,
+      "at": "2026-09-23T16:47:15.543Z",
+      "detail": {
+        "address": "9658712",
+        "ms": 0.85,
+        "completeness": "unsupported",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 372.32,
+      "at": "2026-09-23T16:47:15.917Z",
+      "detail": {
+        "address": "6591440",
+        "ms": 372.32,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 392.18,
+      "at": "2026-09-23T16:47:16.310Z",
+      "detail": {
+        "address": "6591488",
+        "ms": 392.18,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 113.6,
+      "at": "2026-09-23T16:47:16.425Z",
+      "detail": {
+        "address": "5805408",
+        "ms": 113.6,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 105.8,
+      "at": "2026-09-23T16:47:16.532Z",
+      "detail": {
+        "address": "5839760",
+        "ms": 105.8,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 0.37,
+      "at": "2026-09-23T16:47:16.533Z",
+      "detail": {
+        "address": "9658616",
+        "ms": 0.37,
+        "completeness": "unsupported",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 116.77,
+      "at": "2026-09-23T16:47:16.650Z",
+      "detail": {
+        "address": "6641632",
+        "ms": 116.77,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 276.34,
+      "at": "2026-09-23T16:47:16.928Z",
+      "detail": {
+        "address": "6637856",
+        "ms": 276.34,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 1774.99,
+      "at": "2026-09-23T16:47:18.704Z",
+      "detail": {
+        "address": "7431668",
+        "ms": 1774.99,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 1534.62,
+      "at": "2026-09-23T16:47:20.240Z",
+      "detail": {
+        "address": "7403936",
+        "ms": 1534.62,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 1569.42,
+      "at": "2026-09-23T16:47:21.810Z",
+      "detail": {
+        "address": "7404080",
+        "ms": 1569.42,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 1914.97,
+      "at": "2026-09-23T16:47:23.727Z",
+      "detail": {
+        "address": "7404228",
+        "ms": 1914.97,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 0.28,
+      "at": "2026-09-23T16:47:23.728Z",
+      "detail": {
+        "address": "9568312",
+        "ms": 0.28,
+        "completeness": "unsupported",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 0.24,
+      "at": "2026-09-23T16:47:23.729Z",
+      "detail": {
+        "address": "8589934592",
+        "ms": 0.24,
+        "completeness": "unsupported",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 134.48,
+      "at": "2026-09-23T16:47:23.865Z",
+      "detail": {
+        "address": "4658000",
+        "ms": 134.48,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 131.82,
+      "at": "2026-09-23T16:47:23.998Z",
+      "detail": {
+        "address": "4658292",
+        "ms": 131.82,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 139.39,
+      "at": "2026-09-23T16:47:24.141Z",
+      "detail": {
+        "address": "2563824",
+        "ms": 139.39,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 349.04,
+      "at": "2026-09-23T16:47:24.491Z",
+      "detail": {
+        "address": "2607552",
+        "ms": 349.04,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 141.6,
+      "at": "2026-09-23T16:47:24.634Z",
+      "detail": {
+        "address": "2565812",
+        "ms": 141.6,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "decompile",
+      "ok": true,
+      "ms": 352.48,
+      "at": "2026-09-23T16:47:24.987Z",
+      "detail": {
+        "address": "2607696",
+        "ms": 352.48,
+        "completeness": "complete",
+        "error": null
+      }
+    },
+    {
+      "stage": "result",
+      "ok": true,
+      "ms": 1.78,
+      "at": "2026-09-23T16:47:24.991Z",
+      "detail": {
+        "totals": {
+          "classes": 893,
+          "vtables": 200,
+          "typeinfos": 354,
+          "vtableSlots": 2305,
+          "resolvedVtableSlots": 1899,
+          "namedVtableSlots": 1214,
+          "functions": 12000,
+          "decompileSampled": 20,
+          "virtualTargetsSampled": 20,
+          "completeSampled": 16,
+          "completeVirtualTargets": 16,
+          "indirectCallMarkers": 4,
+          "memberAccessNames": 6,
+          "classMentions": 11
+        }
+      }
+    }
+  ],
+  "lastStage": "result",
+  "memory": 865566720
+}

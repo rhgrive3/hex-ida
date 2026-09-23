@@ -1,0 +1,14 @@
+Work only in the git worktree /mnt/workspace/wt-decl (branch fix/pseudocode-declarations). Repo: Hex (JS decompiler, node ESM). Do not push.
+
+CONTEXT: reports/investigations/current-main-weakness-20260923/README.md (measured on an OLD snapshot 09dfcb283 — do not treat its numbers as current). Then: raw recompilation failed 32/32 cases and 192/192 sampled function bodies; first divergence case-level = undeclared-local 32/32; per-function failure families: undeclared-identifier 86, undeclared-local 52, unknown-type-name 31 (e.g. uint64), undeclared-global 23. Harness: reports/investigations/current-main-weakness-20260923/harness/{measure-functions.mjs,recompile-replay.mjs,tu-replay.mjs}.
+
+STEP 1 (measure current state first): run the measurement harness on current code for the 32-case sample (see README "Run config"; use --workers 8 --structure none) or at least 8 cases (one per group, config gcc_O1_g) if time is tight, then recompile-replay and tu-replay, to get CURRENT counts of: functions with goto, total goto, unknown-instruction functions, unstructured, and recompilation failure families. Save the summary JSON to reports/investigations/output-recompilation-20260924/before.json.
+STEP 2 (fix what remains in the pseudocode emitter, binary-grounded, no fake data):
+ - Declare every emitted local (local_*, local_p*, var_*, stack slots, temporaries) at the top of the function body with its recovered type (or an explicit sized fallback type like `uint64_t`/`int32_t`/`void *`).
+ - Emit standard fixed-width type names (uint8_t..uint64_t, int*_t) or add a stable prelude/typedef header used by the TU packager so `uint64`-style names are defined. Pick one consistent convention.
+ - Globals referenced in bodies must be declared (extern with type from evidence, or `extern uint8_t g_xxx[]` fallback) by the TU packager; unresolved call targets get a prototype.
+ - Pseudo-intrinsics / unknown instructions must stay visible (e.g. __asm_unknown("...") with a declared prototype in the prelude) — never silently dropped.
+ Find the emitter code (git grep for 'local_' / 'var_' emission in js/decompiler).
+STEP 3: re-measure (same subset) into after.json; compare. Target: undeclared-local 0, unknown-type-name 0; report remaining families honestly.
+Tests: add focused tests (tests/decompiler/ or root tests/issue-*.test.mjs) asserting declarations for locals, type names defined, globals declared, and that a clang -fsyntax-only (clang is at /usr/bin/clang; use `-target aarch64-linux-gnu -fsyntax-only -w -x c -`) check passes for a few small emitted functions. Run node tests/decompiler/run.mjs and node --test on your new tests.
+Commit: "fix(decompiler): declare locals, fixed-width types and globals so emitted C parses" + blank line + "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>". Print summary with before/after counts.

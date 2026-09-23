@@ -1,0 +1,16 @@
+import { readFile } from 'node:fs/promises';
+import { Backend } from '/mnt/workspace/hex-ida/js/backend.js';
+import { ArtifactStore } from '/mnt/workspace/hex-ida/js/core/artifacts/store.js';
+import { MemoryArtifactBackend } from '/mnt/workspace/hex-ida/js/core/artifacts/backends.js';
+import { ArtifactAnalysisOrchestrator } from '/mnt/workspace/hex-ida/js/cache/artifact-orchestration.js';
+import { installNodeWorkerTransport, closeNodeWorkers } from '/mnt/workspace/hex-ida/tools/validation/public-benchmark/node-worker.mjs';
+const bytes = await readFile(process.argv[2]);
+const file = new File([bytes], 'x.bin');
+installNodeWorkerTransport();
+const runtime = new ArtifactAnalysisOrchestrator({store:new ArtifactStore({backend:new MemoryArtifactBackend()})});
+const backend = new Backend({artifactOrchestrator:runtime});
+const t=performance.now();
+const info = await backend.open(file);
+console.log('openMs', performance.now()-t);
+console.log("warnings", JSON.stringify(info.warnings, null, 1)?.slice(0,3000)); console.log(JSON.stringify({keys:Object.keys(info), format:info.format, formatId:info.formatId, err:info.error, slices:info.slices?.map(s=>({info:s.info && Object.fromEntries(Object.entries(s.info).filter(([k,v])=>typeof v!=='object')), cap:s.capability, nreg:s.regions?.length}))}, (k,v)=>typeof v==='bigint'?String(v):v, 1).slice(0,4000));
+backend.dispose(); runtime.close(); await closeNodeWorkers();

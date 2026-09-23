@@ -1,0 +1,17 @@
+{
+  "schema": "hex-realgame-oracle/v1",
+  "game": "openttd",
+  "binary": "packages/root/usr/games/openttd",
+  "sha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+  "dynamic": {
+    "vtables": 200,
+    "typeinfos": 354,
+    "typeNames": 871
+  },
+  "debug": {
+    "status": "unavailable",
+    "dwarfClasses": 0,
+    "dwarfMembers": 0
+  }
+}
