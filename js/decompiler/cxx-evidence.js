@@ -63,27 +63,98 @@ export function currentCppReceiver(opts = {}, ir = null) {
   return rec;
 }
 
-export function isCppReceiverAlias(value, rec) {
+const receiverAliasClosureCache = new WeakMap();
+
+function receiverAliasSource(inst, currentValue = null) {
+  if (!inst) return null;
+  if (inst.op === 'mov' || inst.op === 'copy') {
+    return inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
+  }
+  if (inst.op === 'unary' || inst.op === 'un') {
+    if (!['sxt64', 'uxt64', 'bitcast', 'zext', 'sext'].includes(inst.sub)) return null;
+    const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
+    const target = currentValue ?? inst.dst ?? null;
+    return source && target && isWidthPreservingAliasCast(target, source) ? source : null;
+  }
+  return null;
+}
+
+function receiverAliasClosure(rec, ir) {
+  if (!rec || !ir || !Array.isArray(ir.instructions)) return null;
+  let byReceiver = receiverAliasClosureCache.get(ir);
+  if (!byReceiver) {
+    byReceiver = new Map();
+    receiverAliasClosureCache.set(ir, byReceiver);
+  }
+  const key = String(rec.digest ?? rec.canonicalValueId ?? '');
+  if (byReceiver.has(key)) return byReceiver.get(key);
+
+  const aliasIds = new Set([String(rec.canonicalValueId)]);
+  const spilled = new Map();
+  for (const inst of ir.instructions) {
+    if (inst?.op !== 'store') continue;
+    const loc = inst.loc ?? null;
+    const base = loc?.base ?? inst.addr?.base ?? null;
+    if (base?.reg !== 'sp') continue;
+    const disp = loc?.disp ?? inst.addr?.disp ?? null;
+    if (disp == null) continue;
+    const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
+    const slot = String(disp);
+    const sources = spilled.get(slot) ?? new Set();
+    sources.add(source?.id == null ? null : String(source.id));
+    spilled.set(slot, sources);
+  }
+
+  // Mirror the producer-side receiver closure. A stack reload is a receiver
+  // alias only when every visible store to that slot already aliases `this`.
+  // Reused frame slots therefore fail closed instead of minting a receiver.
+  for (let pass = 0; pass < 6; pass++) {
+    let changed = false;
+    for (const inst of ir.instructions) {
+      const dst = inst?.dst ?? null;
+      if (dst?.id == null) continue;
+      const source = receiverAliasSource(inst);
+      if (source) {
+        if (source.id == null || !aliasIds.has(String(source.id))) continue;
+        if (dst.bits != null && source.bits != null && Number(dst.bits) !== Number(source.bits)) continue;
+      } else if (inst.op === 'load') {
+        const loc = inst.loc ?? null;
+        const base = loc?.base ?? inst.addr?.base ?? null;
+        if (base?.reg !== 'sp') continue;
+        const disp = loc?.disp ?? inst.addr?.disp ?? null;
+        if (disp == null) continue;
+        const sources = spilled.get(String(disp));
+        if (!sources?.size || ![...sources].every(id => id !== null && aliasIds.has(id))) continue;
+      } else {
+        continue;
+      }
+      const id = String(dst.id);
+      if (!aliasIds.has(id)) {
+        aliasIds.add(id);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+
+  byReceiver.set(key, aliasIds);
+  return aliasIds;
+}
+
+export function isCppReceiverAlias(value, rec, ir = null) {
   if (!value || !rec) return false;
+  if (ir) {
+    const closure = receiverAliasClosure(rec, ir);
+    if (value.id != null && closure?.has(String(value.id))) return true;
+  }
   const visited = new Set(), pending = [value];
   while (pending.length) {
     const current = pending.pop();
     if (!current || visited.has(current)) continue;
     visited.add(current);
     if (sameId(current.id, rec.canonicalValueId)) return true;
-    const definition = current.def;
-    if (!definition) continue;
-    if (definition.op === 'mov' || definition.op === 'copy') {
-      const source = definition.args?.[0]?.value ?? definition.args?.[0] ?? null;
-      if (source) pending.push(source);
-      continue;
-    }
-    if (definition.op === 'unary' || definition.op === 'un') {
-      if (['sxt64', 'uxt64', 'bitcast', 'zext', 'sext'].includes(definition.sub)) {
-        const source = definition.args?.[0]?.value ?? definition.args?.[0] ?? null;
-        if (source && isWidthPreservingAliasCast(current, source)) pending.push(source);
-      }
-    }
+    const source = receiverAliasSource(current.def, current);
+    if (source) pending.push(source);
   }
   return false;
 }
@@ -91,7 +162,7 @@ export function isCppReceiverAlias(value, rec) {
 export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callReceiver = null) {
   if (!ir || !inst || !callReceiver) return null;
   const receiver = currentCppReceiver(opts, ir);
-  if (!receiver || !isCppReceiverAlias(callReceiver, receiver)) return null;
+  if (!receiver || !isCppReceiverAlias(callReceiver, receiver, ir)) return null;
 
   const source = opts?.cxxEvidence?.virtualSlots;
   const slots = Array.isArray(source) ? source
@@ -99,7 +170,7 @@ export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callRec
   return slots.find(slot => {
     if (!isCanonicalCppVirtualSlotEvidence(slot) || slot.virtualSlotKnown !== true) return false;
     const slotReceiver = ir.values?.find?.(value => sameId(value?.id, slot.receiverValueId)) ?? null;
-    if (!slotReceiver || !isCppReceiverAlias(slotReceiver, receiver)) return false;
+    if (!slotReceiver || !isCppReceiverAlias(slotReceiver, receiver, ir)) return false;
     if (slot.callSiteId != null && sameId(slot.callSiteId, inst.id)) return true;
     return slot.callSiteAddress != null && inst.address != null
       && sameAddress(slot.callSiteAddress, inst.address);
@@ -121,7 +192,7 @@ export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callRec
 export function currentCppMember(opts = {}, ir = null, base = null, offset = null) {
   if (!ir || !base || offset == null) return null;
   const receiver = currentCppReceiver(opts, ir);
-  if (!receiver || !isCppReceiverAlias(base, receiver)) return null;
+  if (!receiver || !isCppReceiverAlias(base, receiver, ir)) return null;
 
   let wanted;
   try { wanted = BigInt(offset); } catch { return null; }
@@ -129,10 +200,21 @@ export function currentCppMember(opts = {}, ir = null, base = null, offset = nul
   const source = opts?.cxxEvidence?.members;
   const members = Array.isArray(source) ? source
     : source instanceof Map ? [...source.values()] : [];
-  return members.find((member) => {
+  if (wanted < 0n) return null;
+  const matches = members.filter((member) => {
     if (!isCanonicalCppMemberEvidence(member) || member.accessProven !== true) return false;
     if (member.receiverDigest !== receiver.digest) return false;
     if (!sameId(member.functionId, receiver.functionId)) return false;
+    if (member.snapshotId !== receiver.snapshotId) return false;
     try { return BigInt(member.offsetBytes) === wanted; } catch { return false; }
-  }) ?? null;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Presentation-only type label from already-canonical member evidence. */
+export function cppMemberTypeLabel(member) {
+  if (!isCanonicalCppMemberEvidence(member) || member.typeProven !== true) return null;
+  const label = typeof member.typeLabel === 'string' ? member.typeLabel.trim() : '';
+  if (!label || label.length > 160 || /[\r\n]/.test(label) || label.includes('/*') || label.includes('*/')) return null;
+  return label;
 }
