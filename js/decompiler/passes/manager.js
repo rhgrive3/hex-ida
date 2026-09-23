@@ -52,7 +52,19 @@ function isDeepImmutable(value) {
       if ('value' in descriptor) stack.push(descriptor.value);
     }
   }
-  deepImmutableCache.set(value, immutable);
+  if (immutable) {
+    // Every traversed plain/array node was proven frozen and only reaches
+    // nodes that this rollback traversal also treats as immutable. Cache the
+    // whole proven closure, not only the queried root. Large canonical IRs
+    // expose many descendants directly through the mutable pass state; without
+    // this closure fill each descendant re-walks most of the same frozen graph.
+    for (const current of seen) deepImmutableCache.set(current, true);
+  } else {
+    // A false answer is safe to retain only for the queried root: the failure
+    // may have been caused by one mutable descendant while an already-visited
+    // sibling is itself deeply immutable.
+    deepImmutableCache.set(value, false);
+  }
   return immutable;
 }
 
