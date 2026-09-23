@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// freebuff isolated-HOME setup — idempotent restorer for ./freebuff-1..8.
+// freebuff isolated-HOME setup — idempotent restorer for ./freebuff-1..12.
 //
 // Background: ./freebuff-N used to be untracked shell wrappers with isolated
 // HOME dirs at /mnt/workspace/.freebuff-homes (outside the repo). Untracked
@@ -15,14 +15,14 @@
 //     once in shared/ and missing per-HOME binaries become symlinks to it
 //     (the launcher treats a symlink as installed; a later background update
 //     atomically replaces the link with a per-HOME copy for that HOME only).
-//   - tracked wrappers: <repo>/freebuff-1..8 (regenerated here, must be committed)
+//   - tracked wrappers: <repo>/freebuff-1..12 (regenerated here, must be committed)
 //   - launcher: <repo>/.tools/npm/bin/freebuff (reinstalled on demand)
 //   - one-time migration of small identity files from the legacy outside path.
 //   - off-repo mirror: /mnt/workspace/.dev-state/freebuff-restore/ (survives
 //     git clean/reset; auto-heal hook in .persistent-bashrc restores from it).
 //
 // Usage:
-//   node scripts/freebuff-setup.mjs            ensure all 1..8 + launcher + wrappers
+//   node scripts/freebuff-setup.mjs            ensure all 1..12 + launcher + wrappers
 //   node scripts/freebuff-setup.mjs --ensure N  fast path for wrappers (one HOME + launcher)
 //   npm run freebuff:setup                      same as the first form
 import fs from 'node:fs';
@@ -40,7 +40,7 @@ const SHARED_ROOT = path.join(DATA_ROOT, 'shared');
 const REPO_DATA_ROOT = path.join(ROOT, '.freebuff-homes');
 const LEGACY_ROOT = '/mnt/workspace/.freebuff-homes';
 const MIRROR_ROOT = '/mnt/workspace/.dev-state/freebuff-restore';
-const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
 
 // Small identity/config files worth migrating. Everything else is either a
 // re-downloadable binary (freebuff, ~140MB per HOME) or regenerable cache
@@ -934,7 +934,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     const target = argv.length > 1 ? argv.slice(1).join(' ') : '<missing>';
     throw new Error(`freebuff setup: invalid --ensure selector '${target}'. Expected one of: ${NUMS.join(', ')}`);
   }
-  throw new Error(`freebuff setup: unrecognized argument(s) '${argv.join(' ')}'. Usage: freebuff-setup.mjs [--ensure 1..8]`);
+  throw new Error(`freebuff setup: unrecognized argument(s) '${argv.join(' ')}'. Usage: freebuff-setup.mjs [--ensure 1..12]`);
 }
 
 export function run(argv = process.argv.slice(2)) {

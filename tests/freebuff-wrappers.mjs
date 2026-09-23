@@ -1,4 +1,4 @@
-// Regression guard for ./freebuff-1..8.
+// Regression guard for ./freebuff-1..12.
 //
 // Failure mode being prevented: the wrappers used to be untracked files
 // pointing at HOME dirs outside the workspace (/mnt/workspace/.freebuff-homes,
@@ -7,7 +7,7 @@
 // taking even the staged restoration with it.
 //
 // Enforced contract:
-//   1. freebuff-1..8 exist at the repo root, are executable, set an isolated
+//   1. freebuff-1..12 exist at the repo root, are executable, set an isolated
 //      HOME under /mnt/workspace/.dev-state, and cd to the repo root at
 //      launch. HOME must be outside both the repo (git clean/reset reach)
 //      and the launch cwd: freebuff shows its "Select project directory"
@@ -25,7 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
 const failures = [];
 function check(cond, message) {
   if (!cond) failures.push(message);
@@ -100,8 +100,9 @@ const { copyIfMissing, ensureMetadata, parseArgs } = await import('../scripts/fr
 assert.deepEqual(parseArgs([]), { mode: 'full' });
 assert.deepEqual(parseArgs(['--ensure', '1']), { mode: 'ensure', num: '1' });
 assert.deepEqual(parseArgs(['--ensure', '8']), { mode: 'ensure', num: '8' });
+assert.deepEqual(parseArgs(['--ensure', '12']), { mode: 'ensure', num: '12' });
 
-assert.throws(() => parseArgs(['--ensure', '9']), /invalid --ensure selector '9'/);
+assert.throws(() => parseArgs(['--ensure', '13']), /invalid --ensure selector '13'/);
 assert.throws(() => parseArgs(['--ensure', '0']), /invalid --ensure selector '0'/);
 assert.throws(() => parseArgs(['--ensure']), /invalid --ensure selector '<missing>'/);
 assert.throws(() => parseArgs(['--ensure', '1', '--typo']), /invalid --ensure selector/);
@@ -177,9 +178,9 @@ try {
 }
 
 const setupScript = path.join(root, 'scripts/freebuff-setup.mjs');
-const badEnsure9 = spawnSync(process.execPath, [setupScript, '--ensure', '9'], { cwd: root, encoding: 'utf8' });
-check(badEnsure9.status !== 0, '--ensure 9 must exit non-zero');
-check(badEnsure9.stderr.includes("invalid --ensure selector '9'"), '--ensure 9 error must report invalid selector 9');
+const badEnsure13 = spawnSync(process.execPath, [setupScript, '--ensure', '13'], { cwd: root, encoding: 'utf8' });
+check(badEnsure13.status !== 0, '--ensure 13 must exit non-zero');
+check(badEnsure13.stderr.includes("invalid --ensure selector '13'"), '--ensure 13 error must report invalid selector 13');
 
 const badBareEnsure = spawnSync(process.execPath, [setupScript, '--ensure'], { cwd: root, encoding: 'utf8' });
 check(badBareEnsure.status !== 0, 'bare --ensure must exit non-zero');
