@@ -269,7 +269,7 @@ export function createCppVirtualSlotEvidence(input = {}) {
   const virtualSlotKnown = Boolean(input.virtualSlotKnown);
   const closureProven = input.closureProven === true;
   const candidateTargetIds = Array.isArray(input.candidateTargetIds)
-    ? Object.freeze([...new Set(input.candidateTargetIds.map(String))].sort())
+    ? Object.freeze([...new Set(input.candidateTargetIds.map(String)).sort())
     : Object.freeze([]);
 
   // Exact target promotion requires the dispatch itself to be proven virtual,
@@ -307,8 +307,8 @@ export function createCppVirtualSlotEvidence(input = {}) {
 /**
  * Creates an immutable canonical member (field) evidence record.
  *
- * A member record states three separate things, and keeping them separate is
- * the point:
+ * A member record states three separate things, and keeping them separate is the
+ * point:
  *
  * - `accessProven`: the function really reads or writes `this + offsetBytes`, so
  *   the *offset* is binary-grounded;
@@ -334,6 +334,7 @@ export function createCppMemberEvidence(input = {}) {
   const snapshotId = typeof input.snapshotId === 'string' && input.snapshotId.trim()
     ? input.snapshotId.trim() : fail('cpp-member-snapshot-id-required');
 
+  if (input.offsetBytes == null) fail('cpp-member-offset-invalid');
   const offsetBytes = nonNegativeBigInt(input.offsetBytes, 'cpp-member-offset-invalid');
 
   const sizeBytes = Number.isSafeInteger(input.sizeBytes) && input.sizeBytes >= 0 && input.sizeBytes <= 64
