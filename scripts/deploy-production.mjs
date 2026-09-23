@@ -316,7 +316,14 @@ export function runProductionDeploy({
                 mkdirSync(dstChild, { mode: 0o700 });
                 copyTree(srcChild, dstChild);
                 const postRecurseStat = statDescriptor(fstatSync, childDirFd);
-                if (!postRecurseStat.isDirectory() || !sameIdentity(postRecurseStat, openedDirStat)) {
+                // Recursion enumerates by pathname: the path must still name the
+                // opened directory afterwards, or a swapped-in symlink could have
+                // redirected the nested traversal.
+                let postRecursePathStat = null;
+                try { postRecursePathStat = lstatSync(srcChild); } catch {}
+                if (!postRecurseStat.isDirectory() || !sameIdentity(postRecurseStat, openedDirStat)
+                    || !postRecursePathStat || postRecursePathStat.isSymbolicLink()
+                    || !sameIdentity(postRecursePathStat, openedDirStat)) {
                   const err = new Error(`Asset directory child ${srcChild} identity changed after recursion`);
                   err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
                   throw err;
