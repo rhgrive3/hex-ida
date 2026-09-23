@@ -1,0 +1,49 @@
+{
+  "schema": "hex-jev-rescue-regression-baseline/v1",
+  "productCommit": "2b8e98d61ee59cedc365a9baf102f75b7189eb28",
+  "productTree": "3e035f536f44c42fadba5a12db6e9b33c7a17d82",
+  "measuredAt": "2026-09-23T06:09:46.070Z",
+  "queryFixture": {
+    "path": "tests/fixtures/pinpoint-confidence-queries.json",
+    "rows": 426,
+    "sha256": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160"
+  },
+  "N": 426,
+  "candidatePresent": 426,
+  "top1": 282,
+  "wrong": 144,
+  "exact": {
+    "N": 230,
+    "top1": 229
+  },
+  "partial": {
+    "N": 196,
+    "top1": 53
+  },
+  "byBinary": {
+    "battlecats": {
+      "N": 206,
+      "top1": 149,
+      "wrong": 57
+    },
+    "TsumTsum": {
+      "N": 120,
+      "top1": 76,
+      "wrong": 44
+    },
+    "YWP": {
+      "N": 100,
+      "top1": 57,
+      "wrong": 43
+    }
+  },
+  "verdictStrong": 278,
+  "correctStrong": 211,
+  "falseStrong": 67,
+  "wrongStrong": 67,
+  "wrongAmbiguous": 77,
+  "correctStrongPartial": 24,
+  "wrongStrongPartial": 67,
+  "missingJevLabel": [],
+  "jevFailures": 0
+}

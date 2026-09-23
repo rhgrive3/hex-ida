@@ -1,0 +1,1068 @@
+{
+  "schema": "hex-jev-repeated-call-results/v1",
+  "protocol": {
+    "attemptsPerRow": 5,
+    "arm": "label",
+    "source": "repeat.mjs"
+  },
+  "overall": {
+    "n": 28,
+    "sameChoiceRate": 0.9642857142857143,
+    "agreesWithPrimaryRate": 1.0,
+    "meanConfidenceVarApprox": null
+  },
+  "byClassification": {
+    "REGRESSION": {
+      "n": 7,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "RESCUE": {
+      "n": 16,
+      "sameChoiceRate": 0.9375,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "STABLE_CORRECT": {
+      "n": 1,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "STABLE_WRONG": {
+      "n": 4,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    }
+  },
+  "byReason": {
+    "GATE_BOUNDARY": {
+      "n": 6,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "REGRESSION": {
+      "n": 7,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "RESCUE_AMBIGUOUS": {
+      "n": 8,
+      "sameChoiceRate": 0.875,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "RESCUE_SAMPLE": {
+      "n": 7,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    }
+  },
+  "rows": [
+    {
+      "id": "TsumTsum|partial|did appear",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        6,
+        6,
+        6,
+        6,
+        6
+      ],
+      "sameChoice": true,
+      "majorityChoice": 6,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "6": 5
+      },
+      "confidenceMean": 0.658,
+      "confidenceMin": 0.64,
+      "confidenceMax": 0.69,
+      "uniqueMean": 0.166,
+      "uniqueMin": 0.15,
+      "uniqueMax": 0.17,
+      "classification": "REGRESSION",
+      "query": "did appear"
+    },
+    {
+      "id": "TsumTsum|partial|preferences configuration",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sameChoice": true,
+      "majorityChoice": 0,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "0": 5
+      },
+      "confidenceMean": 0.6260000000000001,
+      "confidenceMin": 0.6,
+      "confidenceMax": 0.65,
+      "uniqueMean": 0.184,
+      "uniqueMin": 0.18,
+      "uniqueMax": 0.19,
+      "classification": "STABLE_CORRECT",
+      "query": "preferences configuration"
+    },
+    {
+      "id": "TsumTsum|partial|since boot",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.28200000000000003,
+      "confidenceMin": 0.26,
+      "confidenceMax": 0.31,
+      "uniqueMean": 0.2,
+      "uniqueMin": 0.19,
+      "uniqueMax": 0.21,
+      "classification": "RESCUE",
+      "query": "since boot"
+    },
+    {
+      "id": "TsumTsum|partial|state subject",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.622,
+      "confidenceMin": 0.57,
+      "confidenceMax": 0.65,
+      "uniqueMean": 0.184,
+      "uniqueMin": 0.17,
+      "uniqueMax": 0.21,
+      "classification": "STABLE_WRONG",
+      "query": "state subject"
+    },
+    {
+      "id": "TsumTsum|partial|tracking tokens",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.174,
+      "confidenceMin": 0.14,
+      "confidenceMax": 0.22,
+      "uniqueMean": 0.22799999999999998,
+      "uniqueMin": 0.22,
+      "uniqueMax": 0.24,
+      "classification": "REGRESSION",
+      "query": "tracking tokens"
+    },
+    {
+      "id": "YWP|partial|network items",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.728,
+      "confidenceMin": 0.7,
+      "confidenceMax": 0.76,
+      "uniqueMean": 0.14400000000000002,
+      "uniqueMin": 0.14,
+      "uniqueMax": 0.15,
+      "classification": "REGRESSION",
+      "query": "network items"
+    },
+    {
+      "id": "YWP|partial|render start",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "sameChoice": true,
+      "majorityChoice": 3,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "3": 5
+      },
+      "confidenceMean": 0.628,
+      "confidenceMin": 0.61,
+      "confidenceMax": 0.66,
+      "uniqueMean": 0.22000000000000003,
+      "uniqueMin": 0.21,
+      "uniqueMax": 0.23,
+      "classification": "STABLE_WRONG",
+      "query": "render start"
+    },
+    {
+      "id": "YWP|partial|star view",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sameChoice": true,
+      "majorityChoice": 0,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "0": 5
+      },
+      "confidenceMean": 0.576,
+      "confidenceMin": 0.52,
+      "confidenceMax": 0.61,
+      "uniqueMean": 0.21200000000000002,
+      "uniqueMin": 0.21,
+      "uniqueMax": 0.22,
+      "classification": "STABLE_WRONG",
+      "query": "star view"
+    },
+    {
+      "id": "YWP|partial|state timer",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.568,
+      "confidenceMin": 0.5,
+      "confidenceMax": 0.61,
+      "uniqueMean": 0.262,
+      "uniqueMin": 0.26,
+      "uniqueMax": 0.27,
+      "classification": "RESCUE",
+      "query": "state timer"
+    },
+    {
+      "id": "battlecats|partial|config service",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.6739999999999999,
+      "confidenceMin": 0.65,
+      "confidenceMax": 0.69,
+      "uniqueMean": 0.22000000000000003,
+      "uniqueMin": 0.21,
+      "uniqueMax": 0.23,
+      "classification": "REGRESSION",
+      "query": "config service"
+    },
+    {
+      "id": "battlecats|partial|confirming view",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.6920000000000001,
+      "confidenceMin": 0.67,
+      "confidenceMax": 0.74,
+      "uniqueMean": 0.22000000000000003,
+      "uniqueMin": 0.21,
+      "uniqueMax": 0.23,
+      "classification": "RESCUE",
+      "query": "confirming view"
+    },
+    {
+      "id": "battlecats|partial|deduplication ids",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.982,
+      "confidenceMin": 0.98,
+      "confidenceMax": 0.99,
+      "uniqueMean": 0.27,
+      "uniqueMin": 0.27,
+      "uniqueMax": 0.27,
+      "classification": "RESCUE",
+      "query": "deduplication ids"
+    },
+    {
+      "id": "battlecats|partial|did appear",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        6,
+        6,
+        6,
+        6,
+        6
+      ],
+      "sameChoice": true,
+      "majorityChoice": 6,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "6": 5
+      },
+      "confidenceMean": 0.658,
+      "confidenceMin": 0.62,
+      "confidenceMax": 0.7,
+      "uniqueMean": 0.16,
+      "uniqueMin": 0.15,
+      "uniqueMax": 0.17,
+      "classification": "REGRESSION",
+      "query": "did appear"
+    },
+    {
+      "id": "battlecats|partial|event time",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.41000000000000003,
+      "confidenceMin": 0.36,
+      "confidenceMax": 0.47,
+      "uniqueMean": 0.28800000000000003,
+      "uniqueMin": 0.28,
+      "uniqueMax": 0.3,
+      "classification": "RESCUE",
+      "query": "event time"
+    },
+    {
+      "id": "battlecats|partial|force view",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.176,
+      "confidenceMin": 0.06,
+      "confidenceMax": 0.3,
+      "uniqueMean": 0.23199999999999998,
+      "uniqueMin": 0.22,
+      "uniqueMax": 0.24,
+      "classification": "RESCUE",
+      "query": "force view"
+    },
+    {
+      "id": "battlecats|partial|has audio",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.268,
+      "confidenceMin": 0.23,
+      "confidenceMax": 0.34,
+      "uniqueMean": 0.264,
+      "uniqueMin": 0.25,
+      "uniqueMax": 0.28,
+      "classification": "RESCUE",
+      "query": "has audio"
+    },
+    {
+      "id": "battlecats|partial|info button",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.708,
+      "confidenceMin": 0.67,
+      "confidenceMax": 0.73,
+      "uniqueMean": 0.306,
+      "uniqueMin": 0.29,
+      "uniqueMax": 0.32,
+      "classification": "RESCUE",
+      "query": "info button"
+    },
+    {
+      "id": "battlecats|partial|message sender",
+      "reason": "GATE_BOUNDARY",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sameChoice": true,
+      "majorityChoice": 0,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "0": 5
+      },
+      "confidenceMean": 0.544,
+      "confidenceMin": 0.52,
+      "confidenceMax": 0.58,
+      "uniqueMean": 0.442,
+      "uniqueMin": 0.43,
+      "uniqueMax": 0.45,
+      "classification": "STABLE_WRONG",
+      "query": "message sender"
+    },
+    {
+      "id": "battlecats|partial|playable zip",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.346,
+      "confidenceMin": 0.3,
+      "confidenceMax": 0.41,
+      "uniqueMean": 0.262,
+      "uniqueMin": 0.26,
+      "uniqueMax": 0.27,
+      "classification": "RESCUE",
+      "query": "playable zip"
+    },
+    {
+      "id": "battlecats|partial|server url",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.36,
+      "confidenceMin": 0.31,
+      "confidenceMax": 0.41,
+      "uniqueMean": 0.338,
+      "uniqueMin": 0.32,
+      "uniqueMax": 0.35,
+      "classification": "REGRESSION",
+      "query": "server url"
+    },
+    {
+      "id": "battlecats|partial|session service",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        10,
+        10,
+        10,
+        0,
+        10
+      ],
+      "sameChoice": false,
+      "majorityChoice": 10,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "10": 4,
+        "0": 1
+      },
+      "confidenceMean": 0.374,
+      "confidenceMin": 0.31,
+      "confidenceMax": 0.45,
+      "uniqueMean": 0.20800000000000002,
+      "uniqueMin": 0.2,
+      "uniqueMax": 0.22,
+      "classification": "RESCUE",
+      "query": "session service"
+    },
+    {
+      "id": "battlecats|partial|show service",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.8280000000000001,
+      "confidenceMin": 0.81,
+      "confidenceMax": 0.84,
+      "uniqueMean": 0.174,
+      "uniqueMin": 0.17,
+      "uniqueMax": 0.18,
+      "classification": "RESCUE",
+      "query": "show service"
+    },
+    {
+      "id": "battlecats|partial|since boot",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.27,
+      "confidenceMin": 0.25,
+      "confidenceMax": 0.29,
+      "uniqueMean": 0.19,
+      "uniqueMin": 0.18,
+      "uniqueMax": 0.2,
+      "classification": "RESCUE",
+      "query": "since boot"
+    },
+    {
+      "id": "battlecats|partial|token operation",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.798,
+      "confidenceMin": 0.79,
+      "confidenceMax": 0.8,
+      "uniqueMean": 0.146,
+      "uniqueMin": 0.14,
+      "uniqueMax": 0.15,
+      "classification": "RESCUE",
+      "query": "token operation"
+    },
+    {
+      "id": "battlecats|partial|type detail",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "sameChoice": true,
+      "majorityChoice": 3,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "3": 5
+      },
+      "confidenceMean": 0.576,
+      "confidenceMin": 0.52,
+      "confidenceMax": 0.62,
+      "uniqueMean": 0.186,
+      "uniqueMin": 0.17,
+      "uniqueMax": 0.2,
+      "classification": "REGRESSION",
+      "query": "type detail"
+    },
+    {
+      "id": "battlecats|partial|unit delegate",
+      "reason": "RESCUE_AMBIGUOUS",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.5,
+      "confidenceMin": 0.48,
+      "confidenceMax": 0.53,
+      "uniqueMean": 0.28600000000000003,
+      "uniqueMin": 0.28,
+      "uniqueMax": 0.29,
+      "classification": "RESCUE",
+      "query": "unit delegate"
+    },
+    {
+      "id": "battlecats|partial|user initiated",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.362,
+      "confidenceMin": 0.29,
+      "confidenceMax": 0.41,
+      "uniqueMean": 0.252,
+      "uniqueMin": 0.25,
+      "uniqueMax": 0.26,
+      "classification": "RESCUE",
+      "query": "user initiated"
+    },
+    {
+      "id": "battlecats|partial|view event",
+      "reason": "RESCUE_SAMPLE",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.45,
+      "confidenceMin": 0.39,
+      "confidenceMax": 0.48,
+      "uniqueMean": 0.22399999999999998,
+      "uniqueMin": 0.22,
+      "uniqueMax": 0.24,
+      "classification": "RESCUE",
+      "query": "view event"
+    }
+  ],
+  "regressionDetail": [
+    {
+      "id": "TsumTsum|partial|did appear",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        6,
+        6,
+        6,
+        6,
+        6
+      ],
+      "sameChoice": true,
+      "majorityChoice": 6,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "6": 5
+      },
+      "confidenceMean": 0.658,
+      "confidenceMin": 0.64,
+      "confidenceMax": 0.69,
+      "uniqueMean": 0.166,
+      "uniqueMin": 0.15,
+      "uniqueMax": 0.17,
+      "classification": "REGRESSION",
+      "query": "did appear"
+    },
+    {
+      "id": "TsumTsum|partial|tracking tokens",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.174,
+      "confidenceMin": 0.14,
+      "confidenceMax": 0.22,
+      "uniqueMean": 0.22799999999999998,
+      "uniqueMin": 0.22,
+      "uniqueMax": 0.24,
+      "classification": "REGRESSION",
+      "query": "tracking tokens"
+    },
+    {
+      "id": "YWP|partial|network items",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.728,
+      "confidenceMin": 0.7,
+      "confidenceMax": 0.76,
+      "uniqueMean": 0.14400000000000002,
+      "uniqueMin": 0.14,
+      "uniqueMax": 0.15,
+      "classification": "REGRESSION",
+      "query": "network items"
+    },
+    {
+      "id": "battlecats|partial|config service",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "sameChoice": true,
+      "majorityChoice": 1,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "1": 5
+      },
+      "confidenceMean": 0.6739999999999999,
+      "confidenceMin": 0.65,
+      "confidenceMax": 0.69,
+      "uniqueMean": 0.22000000000000003,
+      "uniqueMin": 0.21,
+      "uniqueMax": 0.23,
+      "classification": "REGRESSION",
+      "query": "config service"
+    },
+    {
+      "id": "battlecats|partial|did appear",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        6,
+        6,
+        6,
+        6,
+        6
+      ],
+      "sameChoice": true,
+      "majorityChoice": 6,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "6": 5
+      },
+      "confidenceMean": 0.658,
+      "confidenceMin": 0.62,
+      "confidenceMax": 0.7,
+      "uniqueMean": 0.16,
+      "uniqueMin": 0.15,
+      "uniqueMax": 0.17,
+      "classification": "REGRESSION",
+      "query": "did appear"
+    },
+    {
+      "id": "battlecats|partial|server url",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "sameChoice": true,
+      "majorityChoice": 2,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "2": 5
+      },
+      "confidenceMean": 0.36,
+      "confidenceMin": 0.31,
+      "confidenceMax": 0.41,
+      "uniqueMean": 0.338,
+      "uniqueMin": 0.32,
+      "uniqueMax": 0.35,
+      "classification": "REGRESSION",
+      "query": "server url"
+    },
+    {
+      "id": "battlecats|partial|type detail",
+      "reason": "REGRESSION",
+      "attempts": 5,
+      "successful": 5,
+      "errors": 0,
+      "choices": [
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "sameChoice": true,
+      "majorityChoice": 3,
+      "agreesWithPrimary": true,
+      "choiceHistogram": {
+        "3": 5
+      },
+      "confidenceMean": 0.576,
+      "confidenceMin": 0.52,
+      "confidenceMax": 0.62,
+      "uniqueMean": 0.186,
+      "uniqueMin": 0.17,
+      "uniqueMax": 0.2,
+      "classification": "REGRESSION",
+      "query": "type detail"
+    }
+  ],
+  "findings": {
+    "regressionSameChoiceRate": {
+      "n": 7,
+      "sameChoiceRate": 1.0,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "rescueSameChoiceRate": {
+      "n": 16,
+      "sameChoiceRate": 0.9375,
+      "agreesWithPrimaryRate": 1.0,
+      "meanConfidenceVarApprox": null
+    },
+    "note": "If regression choices are unstable while rescues are stable, consistency may be a gate feature; if both unstable, production suitability drops.",
+    "regressionStable": 1.0,
+    "rescueStable": 0.9375
+  }
+}

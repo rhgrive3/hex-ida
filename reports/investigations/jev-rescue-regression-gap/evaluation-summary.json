@@ -1,0 +1,152 @@
+{
+  "schema": "hex-jev-rescue-regression-evaluation/v1",
+  "sourceProductCommit": "2b8e98d61ee59cedc365a9baf102f75b7189eb28",
+  "denominator": 426,
+  "baseline": {
+    "top1": 282,
+    "exact": {
+      "N": 230,
+      "top1": 229
+    },
+    "partial": {
+      "N": 196,
+      "top1": 53
+    },
+    "correctStrong": 211,
+    "falseStrong": 67
+  },
+  "labelArm": {
+    "partialN": 196,
+    "baselineCorrect": 53,
+    "jevCorrect": 92,
+    "wrongToCorrect": 46,
+    "correctToWrong": 7,
+    "stableCorrect": 46,
+    "stableWrong": 97,
+    "apiCalls": 196,
+    "failures": 0,
+    "projectedOverallTop1": 321
+  },
+  "byBinary": {
+    "battlecats": {
+      "N": 86,
+      "rescues": 22,
+      "regressions": 4,
+      "baselineCorrect": 29,
+      "jevCorrect": 47
+    },
+    "TsumTsum": {
+      "N": 60,
+      "rescues": 13,
+      "regressions": 2,
+      "baselineCorrect": 16,
+      "jevCorrect": 27
+    },
+    "YWP": {
+      "N": 50,
+      "rescues": 11,
+      "regressions": 1,
+      "baselineCorrect": 8,
+      "jevCorrect": 18
+    }
+  },
+  "primaryAnswers": {
+    "zeroRegressionDevSelected": {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "development": {
+        "triggered": 37,
+        "wrongToCorrect": 5,
+        "correctToWrong": 0,
+        "net": 5
+      },
+      "holdout": {
+        "gateId": "G9_ambiguous_and_same_class_or_cov",
+        "triggered": 42,
+        "wrongToCorrect": 6,
+        "correctToWrong": 1,
+        "net": 5
+      }
+    },
+    "oneRegressionDevSelected": {
+      "gateId": "G28_strong_only",
+      "development": {
+        "triggered": 39,
+        "wrongToCorrect": 15,
+        "correctToWrong": 1,
+        "net": 14
+      },
+      "holdout": {
+        "gateId": "G28_strong_only",
+        "triggered": 52,
+        "wrongToCorrect": 14,
+        "correctToWrong": 0,
+        "net": 14,
+        "correctAfter": 38,
+        "baselineCorrect": 24
+      },
+      "fullCorpus": {
+        "gateId": "G28_strong_only",
+        "triggered": 91,
+        "wrongToCorrect": 29,
+        "correctToWrong": 1,
+        "net": 28,
+        "overallTop1Projected": 310,
+        "correctAfter": 81
+      }
+    }
+  },
+  "missingJev": 0,
+  "verdict": {
+    "classification": "CONDITIONAL_GO",
+    "predicate": "G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.",
+    "holdout": {
+      "split": "development=battlecats; holdout=TsumTsum+YWP",
+      "selectedOn": "development with maxRegression<=1",
+      "gateId": "G28_strong_only",
+      "rescue": 14,
+      "regression": 0,
+      "triggered": 52,
+      "partialCorrectAfter": 38,
+      "partialBaseline": 24
+    },
+    "fullCorpus": {
+      "gateId": "G28_strong_only",
+      "rescue": 29,
+      "regression": 1,
+      "triggered": 91,
+      "top1After": 310,
+      "top1Baseline": 282,
+      "partialAfter": 81,
+      "partialBaseline": 53
+    },
+    "zeroRegression": {
+      "primarySelectionHoldout": {
+        "gateId": "G9_ambiguous_and_same_class_or_cov",
+        "rescue": 6,
+        "regression": 1,
+        "note": "Dev-selected maxReg=0 gate does NOT stay at 0 on holdout"
+      },
+      "fullCorpusPositiveRescueWithZeroReg": false,
+      "bestNearZero": {
+        "gateId": "G28_strong_only",
+        "fullRescue": 29,
+        "fullRegression": 1
+      }
+    },
+    "reasons": [
+      "Holdout-positive narrow predicate (G28): 14 rescues, 0 regressions on TsumTsum+YWP",
+      "Full corpus 29 rescues / 1 regression; top1 282->310 (66.2%->72.8%); partial 53->81 (27.0%->41.3%)",
+      "No catalog gate achieves positive rescue with 0 full-corpus regression",
+      "Repeated calls: regressions are 7/7 choice-stable (consistency cannot filter them)",
+      "Deterministic lexical screen still beats Jev overall (103/4 vs 46/7); Jev-only overlap rescue = 6",
+      "Fixture generator and shared SDK families remain a holdout contamination risk \u2014 not an independent NL intent holdout",
+      "Verdict policy / binary facts unchanged; preference-only; fail-closed baseline fallback"
+    ],
+    "notGoFor": [
+      "force-all partial rerank (7 regressions)",
+      "ambiguous-only as production default (6 regressions on full)",
+      "verdict promotion or evidence minting from Jev"
+    ],
+    "recommendation": "CONDITIONAL_GO for G28_strong_only-style strong-verdict-gated label preference as the only measured candidate; treat broader partial/ambiguous Jev as RESEARCH_ONLY. Requires independent free-form intent holdout before production merge. This PR itself is measurement-only and does not integrate production."
+  }
+}

@@ -1,0 +1,1298 @@
+{
+  "schema": "hex-jev-rescue-regression-feature-summary/v1",
+  "counts": {
+    "RESCUE": 46,
+    "STABLE_CORRECT": 46,
+    "STABLE_WRONG": 97,
+    "REGRESSION": 7
+  },
+  "numeric": {
+    "RESCUE": {
+      "margin": {
+        "n": 46,
+        "min": 0,
+        "p25": 0.23887786125685906,
+        "p50": 2.484906649787999,
+        "p75": 5.76832099579377,
+        "max": 11.01737578099431,
+        "mean": 3.345297089961048
+      },
+      "probability": {
+        "n": 46,
+        "min": 0.7497737675478019,
+        "p25": 0.9932162234918682,
+        "p50": 0.9989761036036311,
+        "p75": 0.9999495994870398,
+        "max": 0.9999974161225544,
+        "mean": 0.9755611357231618
+      },
+      "candidateCount": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 3,
+        "p75": 4,
+        "max": 35,
+        "mean": 4.217391304347826
+      },
+      "independentGroups": {
+        "n": 46,
+        "min": 1,
+        "p25": 3,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.760869565217391
+      },
+      "evidenceGroupCount": {
+        "n": 46,
+        "min": 1,
+        "p25": 3,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.760869565217391
+      },
+      "coverageTop": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "coverageJev": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "evidenceJaccard": {
+        "n": 46,
+        "min": 0.2,
+        "p25": 0.5,
+        "p50": 0.6666666666666666,
+        "p75": 0.8333333333333334,
+        "max": 1,
+        "mean": 0.6713336783988956
+      },
+      "scoreAbsDelta": {
+        "n": 46,
+        "min": 0,
+        "p25": 0.23887786125685906,
+        "p50": 3.614409672418909,
+        "p75": 5.851061249643703,
+        "max": 11.01737578099431,
+        "mean": 3.793808978624079
+      },
+      "jevConfidence": {
+        "n": 46,
+        "min": 0.19,
+        "p25": 0.4,
+        "p50": 0.46,
+        "p75": 0.77,
+        "max": 0.99,
+        "mean": 0.5632608695652174
+      },
+      "jevUnique": {
+        "n": 46,
+        "min": 0.09,
+        "p25": 0.2,
+        "p50": 0.22,
+        "p75": 0.27,
+        "max": 0.32,
+        "mean": 0.22630434782608697
+      },
+      "jevChoiceRank": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 11,
+        "mean": 2.4347826086956523
+      },
+      "queryTokens": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "candidateNameDiversity": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 3,
+        "max": 11,
+        "mean": 3.0434782608695654
+      },
+      "genericRatio": {
+        "n": 46,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0.5,
+        "max": 0.5,
+        "mean": 0.16304347826086957
+      },
+      "suffixMatchTop": {
+        "n": 46,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0,
+        "max": 2,
+        "mean": 0.2391304347826087
+      },
+      "suffixMatchJev": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      }
+    },
+    "REGRESSION": {
+      "margin": {
+        "n": 7,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0.4259394092884241,
+        "max": 4.2439415750451985,
+        "mean": 0.8036274899087228
+      },
+      "probability": {
+        "n": 7,
+        "min": 0.7839195979899498,
+        "p25": 0.9987972751274594,
+        "p50": 0.9993183100278019,
+        "p75": 0.9998570569891304,
+        "max": 0.999968428163918,
+        "mean": 0.9687026130254078
+      },
+      "candidateCount": {
+        "n": 7,
+        "min": 2,
+        "p25": 4,
+        "p50": 5,
+        "p75": 7,
+        "max": 10,
+        "mean": 5.571428571428571
+      },
+      "independentGroups": {
+        "n": 7,
+        "min": 1,
+        "p25": 3,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.7142857142857144
+      },
+      "evidenceGroupCount": {
+        "n": 7,
+        "min": 1,
+        "p25": 3,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.7142857142857144
+      },
+      "coverageTop": {
+        "n": 7,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "coverageJev": {
+        "n": 7,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "evidenceJaccard": {
+        "n": 7,
+        "min": 0.3333333333333333,
+        "p25": 0.3333333333333333,
+        "p50": 0.5,
+        "p75": 0.7142857142857143,
+        "max": 1,
+        "mean": 0.6020408163265306
+      },
+      "scoreAbsDelta": {
+        "n": 7,
+        "min": 0,
+        "p25": 0.5870928007073442,
+        "p50": 3.5277260626950158,
+        "p75": 4.2439415750451985,
+        "max": 7.488606124894357,
+        "mean": 3.4702120190376724
+      },
+      "jevConfidence": {
+        "n": 7,
+        "min": 0.17,
+        "p25": 0.36,
+        "p50": 0.64,
+        "p75": 0.68,
+        "max": 0.74,
+        "mean": 0.5471428571428572
+      },
+      "jevUnique": {
+        "n": 7,
+        "min": 0.14,
+        "p25": 0.15,
+        "p50": 0.18,
+        "p75": 0.21,
+        "max": 0.33,
+        "mean": 0.2
+      },
+      "jevChoiceRank": {
+        "n": 7,
+        "min": 2,
+        "p25": 2,
+        "p50": 3,
+        "p75": 4,
+        "max": 7,
+        "mean": 4
+      },
+      "queryTokens": {
+        "n": 7,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "candidateNameDiversity": {
+        "n": 7,
+        "min": 2,
+        "p25": 3,
+        "p50": 5,
+        "p75": 7,
+        "max": 8,
+        "mean": 5.142857142857143
+      },
+      "genericRatio": {
+        "n": 7,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0,
+        "max": 0.5,
+        "mean": 0.14285714285714285
+      },
+      "suffixMatchTop": {
+        "n": 7,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "suffixMatchJev": {
+        "n": 7,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 1,
+        "max": 2,
+        "mean": 0.7142857142857143
+      }
+    },
+    "STABLE_WRONG": {
+      "margin": {
+        "n": 97,
+        "min": -0.5208800388043007,
+        "p25": 0,
+        "p50": 0.9555114450274365,
+        "p75": 3.186105377914016,
+        "max": 10.599355371546315,
+        "mean": 2.0611268187378036
+      },
+      "probability": {
+        "n": 97,
+        "min": 0.5940594059405939,
+        "p25": 0.9526580995781051,
+        "p50": 0.9987679765155753,
+        "p75": 0.9999669597549439,
+        "max": 0.9999983926890588,
+        "mean": 0.9628117042453889
+      },
+      "candidateCount": {
+        "n": 97,
+        "min": 2,
+        "p25": 4,
+        "p50": 6,
+        "p75": 10,
+        "max": 27,
+        "mean": 7.649484536082475
+      },
+      "independentGroups": {
+        "n": 97,
+        "min": 1,
+        "p25": 2,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.5876288659793816
+      },
+      "evidenceGroupCount": {
+        "n": 97,
+        "min": 1,
+        "p25": 2,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.5876288659793816
+      },
+      "coverageTop": {
+        "n": 97,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "coverageJev": {
+        "n": 97,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "evidenceJaccard": {
+        "n": 97,
+        "min": 0.3333333333333333,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 0.9265463917525774
+      },
+      "scoreAbsDelta": {
+        "n": 97,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0,
+        "max": 8.351702209374352,
+        "mean": 0.7340992294768621
+      },
+      "jevConfidence": {
+        "n": 97,
+        "min": 0.07,
+        "p25": 0.26,
+        "p50": 0.45,
+        "p75": 0.66,
+        "max": 0.97,
+        "mean": 0.48030927835051557
+      },
+      "jevUnique": {
+        "n": 97,
+        "min": 0.06,
+        "p25": 0.2,
+        "p50": 0.25,
+        "p75": 0.31,
+        "max": 0.51,
+        "mean": 0.25824742268041234
+      },
+      "jevChoiceRank": {
+        "n": 97,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 9,
+        "mean": 1.5360824742268042
+      },
+      "queryTokens": {
+        "n": 97,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "candidateNameDiversity": {
+        "n": 97,
+        "min": 2,
+        "p25": 3,
+        "p50": 4,
+        "p75": 6,
+        "max": 13,
+        "mean": 4.618556701030927
+      },
+      "genericRatio": {
+        "n": 97,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0.5,
+        "max": 1,
+        "mean": 0.17010309278350516
+      },
+      "suffixMatchTop": {
+        "n": 97,
+        "min": 0,
+        "p25": 0,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 1.3505154639175259
+      },
+      "suffixMatchJev": {
+        "n": 97,
+        "min": 0,
+        "p25": 0,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 1.3608247422680413
+      }
+    },
+    "STABLE_CORRECT": {
+      "margin": {
+        "n": 46,
+        "min": 0,
+        "p25": 0,
+        "p50": 1.355542697703215,
+        "p75": 6.24607671830749,
+        "max": 9.86688378809488,
+        "mean": 3.278427886511832
+      },
+      "probability": {
+        "n": 46,
+        "min": 0.8502184214786311,
+        "p25": 0.966294496622814,
+        "p50": 0.9991040263391165,
+        "p75": 0.9999733094146273,
+        "max": 0.9999967970545254,
+        "mean": 0.9754998059560009
+      },
+      "candidateCount": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 3,
+        "max": 15,
+        "mean": 2.869565217391304
+      },
+      "independentGroups": {
+        "n": 46,
+        "min": 1,
+        "p25": 2,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.652173913043478
+      },
+      "evidenceGroupCount": {
+        "n": 46,
+        "min": 1,
+        "p25": 2,
+        "p50": 3,
+        "p75": 3,
+        "max": 3,
+        "mean": 2.652173913043478
+      },
+      "coverageTop": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "coverageJev": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "evidenceJaccard": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "scoreAbsDelta": {
+        "n": 46,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "jevConfidence": {
+        "n": 46,
+        "min": 0.19,
+        "p25": 0.54,
+        "p50": 0.8,
+        "p75": 0.89,
+        "max": 1,
+        "mean": 0.7167391304347828
+      },
+      "jevUnique": {
+        "n": 46,
+        "min": 0.13,
+        "p25": 0.2,
+        "p50": 0.23,
+        "p75": 0.25,
+        "max": 0.51,
+        "mean": 0.2400000000000001
+      },
+      "jevChoiceRank": {
+        "n": 46,
+        "min": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "max": 1,
+        "mean": 1
+      },
+      "queryTokens": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "candidateNameDiversity": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 10,
+        "mean": 2.4347826086956523
+      },
+      "genericRatio": {
+        "n": 46,
+        "min": 0,
+        "p25": 0,
+        "p50": 0,
+        "p75": 0,
+        "max": 0.5,
+        "mean": 0.13043478260869565
+      },
+      "suffixMatchTop": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      },
+      "suffixMatchJev": {
+        "n": 46,
+        "min": 2,
+        "p25": 2,
+        "p50": 2,
+        "p75": 2,
+        "max": 2,
+        "mean": 2
+      }
+    }
+  },
+  "categorical": {
+    "RESCUE": {
+      "binary": {
+        "battlecats": 22,
+        "TsumTsum": 13,
+        "YWP": 11
+      },
+      "verdict": {
+        "confirmed": 23,
+        "ambiguous": 17,
+        "likely": 6
+      },
+      "strong": {
+        "true": 29,
+        "false": 17
+      },
+      "sameClass": {
+        "false": 32,
+        "true": 14
+      },
+      "topHasDataflow": {
+        "true": 38,
+        "false": 8
+      },
+      "jevInTopK": {
+        "true": 45,
+        "false": 1
+      },
+      "jevCoverageBeatsTop": {
+        "0": 46
+      }
+    },
+    "REGRESSION": {
+      "binary": {
+        "battlecats": 4,
+        "TsumTsum": 2,
+        "YWP": 1
+      },
+      "verdict": {
+        "ambiguous": 6,
+        "confirmed": 1
+      },
+      "strong": {
+        "false": 6,
+        "true": 1
+      },
+      "sameClass": {
+        "false": 6,
+        "true": 1
+      },
+      "topHasDataflow": {
+        "true": 6,
+        "false": 1
+      },
+      "jevInTopK": {
+        "false": 2,
+        "true": 5
+      },
+      "jevCoverageBeatsTop": {
+        "0": 7
+      }
+    }
+  },
+  "binaryRates": {
+    "RESCUE": {
+      "strong": {
+        "n": 46,
+        "yes": 29,
+        "rate": 0.6304347826086957
+      },
+      "ambiguous": {
+        "n": 46,
+        "yes": 17,
+        "rate": 0.3695652173913043
+      },
+      "topHasDataflow": {
+        "n": 46,
+        "yes": 38,
+        "rate": 0.8260869565217391
+      },
+      "jevCoverageBeatsTop": {
+        "n": 46,
+        "yes": 0,
+        "rate": 0
+      },
+      "sameClass": {
+        "n": 46,
+        "yes": 14,
+        "rate": 0.30434782608695654
+      },
+      "jevInTop3": {
+        "n": 46,
+        "yes": 43,
+        "rate": 0.9347826086956522
+      },
+      "candidateCountGe3": {
+        "n": 46,
+        "yes": 25,
+        "rate": 0.5434782608695652
+      },
+      "candidateCountGe5": {
+        "n": 46,
+        "yes": 9,
+        "rate": 0.1956521739130435
+      },
+      "marginLtLn4": {
+        "n": 46,
+        "yes": 17,
+        "rate": 0.3695652173913043
+      },
+      "marginLt1": {
+        "n": 46,
+        "yes": 14,
+        "rate": 0.30434782608695654
+      },
+      "jevConfGe07": {
+        "n": 46,
+        "yes": 15,
+        "rate": 0.32608695652173914
+      },
+      "jevConfGe08": {
+        "n": 46,
+        "yes": 11,
+        "rate": 0.2391304347826087
+      },
+      "evidenceJaccardLt05": {
+        "n": 46,
+        "yes": 8,
+        "rate": 0.17391304347826086
+      },
+      "scoreAbsDeltaLt2": {
+        "n": 46,
+        "yes": 15,
+        "rate": 0.32608695652173914
+      },
+      "truthRecallLane": {
+        "n": 46,
+        "yes": 0,
+        "rate": 0
+      }
+    },
+    "REGRESSION": {
+      "strong": {
+        "n": 7,
+        "yes": 1,
+        "rate": 0.14285714285714285
+      },
+      "ambiguous": {
+        "n": 7,
+        "yes": 6,
+        "rate": 0.8571428571428571
+      },
+      "topHasDataflow": {
+        "n": 7,
+        "yes": 6,
+        "rate": 0.8571428571428571
+      },
+      "jevCoverageBeatsTop": {
+        "n": 7,
+        "yes": 0,
+        "rate": 0
+      },
+      "sameClass": {
+        "n": 7,
+        "yes": 1,
+        "rate": 0.14285714285714285
+      },
+      "jevInTop3": {
+        "n": 7,
+        "yes": 4,
+        "rate": 0.5714285714285714
+      },
+      "candidateCountGe3": {
+        "n": 7,
+        "yes": 6,
+        "rate": 0.8571428571428571
+      },
+      "candidateCountGe5": {
+        "n": 7,
+        "yes": 4,
+        "rate": 0.5714285714285714
+      },
+      "marginLtLn4": {
+        "n": 7,
+        "yes": 6,
+        "rate": 0.8571428571428571
+      },
+      "marginLt1": {
+        "n": 7,
+        "yes": 6,
+        "rate": 0.8571428571428571
+      },
+      "jevConfGe07": {
+        "n": 7,
+        "yes": 2,
+        "rate": 0.2857142857142857
+      },
+      "jevConfGe08": {
+        "n": 7,
+        "yes": 0,
+        "rate": 0
+      },
+      "evidenceJaccardLt05": {
+        "n": 7,
+        "yes": 2,
+        "rate": 0.2857142857142857
+      },
+      "scoreAbsDeltaLt2": {
+        "n": 7,
+        "yes": 3,
+        "rate": 0.42857142857142855
+      },
+      "truthRecallLane": {
+        "n": 7,
+        "yes": 0,
+        "rate": 0
+      }
+    }
+  },
+  "singleFeatureSeparation": {
+    "margin": [
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 32,
+        "regressionsAllowed": 2,
+        "rescuesKeptLt": 14,
+        "regressionsAllowedLt": 5
+      },
+      {
+        "threshold": 1,
+        "direction": ">=t",
+        "rescuesKept": 32,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 14,
+        "regressionsAllowedLt": 6
+      },
+      {
+        "threshold": 1.3862943611198906,
+        "direction": ">=t",
+        "rescuesKept": 29,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 17,
+        "regressionsAllowedLt": 6
+      },
+      {
+        "threshold": 2,
+        "direction": ">=t",
+        "rescuesKept": 29,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 17,
+        "regressionsAllowedLt": 6
+      },
+      {
+        "threshold": 3,
+        "direction": ">=t",
+        "rescuesKept": 23,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 23,
+        "regressionsAllowedLt": 6
+      },
+      {
+        "threshold": 2.995732273553991,
+        "direction": ">=t",
+        "rescuesKept": 23,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 23,
+        "regressionsAllowedLt": 6
+      }
+    ],
+    "probability": [
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.85,
+        "direction": ">=t",
+        "rescuesKept": 43,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 3,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 0.95,
+        "direction": ">=t",
+        "rescuesKept": 39,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 7,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 0.99,
+        "direction": ">=t",
+        "rescuesKept": 38,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 8,
+        "regressionsAllowedLt": 1
+      }
+    ],
+    "candidateCount": [
+      {
+        "threshold": 2,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 3,
+        "direction": ">=t",
+        "rescuesKept": 25,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 21,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 4,
+        "direction": ">=t",
+        "rescuesKept": 14,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 32,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 5,
+        "direction": ">=t",
+        "rescuesKept": 9,
+        "regressionsAllowed": 4,
+        "rescuesKeptLt": 37,
+        "regressionsAllowedLt": 3
+      },
+      {
+        "threshold": 8,
+        "direction": ">=t",
+        "rescuesKept": 2,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 44,
+        "regressionsAllowedLt": 6
+      }
+    ],
+    "coverageTop": [
+      {
+        "threshold": 0.34,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.67,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 1,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      }
+    ],
+    "coverageJev": [
+      {
+        "threshold": 0.34,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.67,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 1,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      }
+    ],
+    "evidenceJaccard": [
+      {
+        "threshold": 0.2,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.34,
+        "direction": ">=t",
+        "rescuesKept": 42,
+        "regressionsAllowed": 5,
+        "rescuesKeptLt": 4,
+        "regressionsAllowedLt": 2
+      },
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 38,
+        "regressionsAllowed": 5,
+        "rescuesKeptLt": 8,
+        "regressionsAllowedLt": 2
+      },
+      {
+        "threshold": 0.67,
+        "direction": ">=t",
+        "rescuesKept": 19,
+        "regressionsAllowed": 3,
+        "rescuesKeptLt": 27,
+        "regressionsAllowedLt": 4
+      }
+    ],
+    "scoreAbsDelta": [
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 34,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 12,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 1,
+        "direction": ">=t",
+        "rescuesKept": 34,
+        "regressionsAllowed": 4,
+        "rescuesKeptLt": 12,
+        "regressionsAllowedLt": 3
+      },
+      {
+        "threshold": 2,
+        "direction": ">=t",
+        "rescuesKept": 31,
+        "regressionsAllowed": 4,
+        "rescuesKeptLt": 15,
+        "regressionsAllowedLt": 3
+      },
+      {
+        "threshold": 3,
+        "direction": ">=t",
+        "rescuesKept": 27,
+        "regressionsAllowed": 4,
+        "rescuesKeptLt": 19,
+        "regressionsAllowedLt": 3
+      },
+      {
+        "threshold": 4,
+        "direction": ">=t",
+        "rescuesKept": 20,
+        "regressionsAllowed": 3,
+        "rescuesKeptLt": 26,
+        "regressionsAllowedLt": 4
+      }
+    ],
+    "jevConfidence": [
+      {
+        "threshold": 0.3,
+        "direction": ">=t",
+        "rescuesKept": 42,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 4,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 23,
+        "regressionsAllowed": 5,
+        "rescuesKeptLt": 23,
+        "regressionsAllowedLt": 2
+      },
+      {
+        "threshold": 0.6,
+        "direction": ">=t",
+        "rescuesKept": 19,
+        "regressionsAllowed": 4,
+        "rescuesKeptLt": 27,
+        "regressionsAllowedLt": 3
+      },
+      {
+        "threshold": 0.7,
+        "direction": ">=t",
+        "rescuesKept": 15,
+        "regressionsAllowed": 2,
+        "rescuesKeptLt": 31,
+        "regressionsAllowedLt": 5
+      },
+      {
+        "threshold": 0.8,
+        "direction": ">=t",
+        "rescuesKept": 11,
+        "regressionsAllowed": 0,
+        "rescuesKeptLt": 35,
+        "regressionsAllowedLt": 7
+      },
+      {
+        "threshold": 0.9,
+        "direction": ">=t",
+        "rescuesKept": 3,
+        "regressionsAllowed": 0,
+        "rescuesKeptLt": 43,
+        "regressionsAllowedLt": 7
+      }
+    ],
+    "jevUnique": [
+      {
+        "threshold": 0.1,
+        "direction": ">=t",
+        "rescuesKept": 45,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 1,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 0.2,
+        "direction": ">=t",
+        "rescuesKept": 35,
+        "regressionsAllowed": 3,
+        "rescuesKeptLt": 11,
+        "regressionsAllowedLt": 4
+      },
+      {
+        "threshold": 0.3,
+        "direction": ">=t",
+        "rescuesKept": 4,
+        "regressionsAllowed": 1,
+        "rescuesKeptLt": 42,
+        "regressionsAllowedLt": 6
+      },
+      {
+        "threshold": 0.4,
+        "direction": ">=t",
+        "rescuesKept": 0,
+        "regressionsAllowed": 0,
+        "rescuesKeptLt": 46,
+        "regressionsAllowedLt": 7
+      },
+      {
+        "threshold": 0.5,
+        "direction": ">=t",
+        "rescuesKept": 0,
+        "regressionsAllowed": 0,
+        "rescuesKeptLt": 46,
+        "regressionsAllowedLt": 7
+      }
+    ],
+    "independentGroups": [
+      {
+        "threshold": 1,
+        "direction": ">=t",
+        "rescuesKept": 46,
+        "regressionsAllowed": 7,
+        "rescuesKeptLt": 0,
+        "regressionsAllowedLt": 0
+      },
+      {
+        "threshold": 2,
+        "direction": ">=t",
+        "rescuesKept": 43,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 3,
+        "regressionsAllowedLt": 1
+      },
+      {
+        "threshold": 3,
+        "direction": ">=t",
+        "rescuesKept": 38,
+        "regressionsAllowed": 6,
+        "rescuesKeptLt": 8,
+        "regressionsAllowedLt": 1
+      }
+    ]
+  },
+  "queryFamilyOverlap": {
+    "rescueFamilies": 29,
+    "regressionFamilies": 6,
+    "sharedFamilies": []
+  },
+  "fixtureGeneratorCheck": {
+    "note": "Partial queries are last-two-word tails of unique field names; compare coverage/suffix stats.",
+    "meanSuffixMatchTopRescue": {
+      "n": 46,
+      "min": 0,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "max": 2,
+      "mean": 0.2391304347826087
+    },
+    "meanSuffixMatchTopRegression": {
+      "n": 7,
+      "min": 2,
+      "p25": 2,
+      "p50": 2,
+      "p75": 2,
+      "max": 2,
+      "mean": 2
+    },
+    "meanSuffixMatchTruthRescue": {
+      "n": 46,
+      "min": 2,
+      "p25": 2,
+      "p50": 2,
+      "p75": 2,
+      "max": 2,
+      "mean": 2
+    },
+    "meanQueryTokensRescue": {
+      "n": 46,
+      "min": 2,
+      "p25": 2,
+      "p50": 2,
+      "p75": 2,
+      "max": 2,
+      "mean": 2
+    },
+    "meanQueryTokensRegression": {
+      "n": 7,
+      "min": 2,
+      "p25": 2,
+      "p50": 2,
+      "p75": 2,
+      "max": 2,
+      "mean": 2
+    },
+    "truthSuffixFullRescue": {
+      "n": 46,
+      "yes": 3,
+      "rate": 0.06521739130434782
+    }
+  }
+}
