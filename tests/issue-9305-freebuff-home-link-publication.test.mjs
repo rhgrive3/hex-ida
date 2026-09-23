@@ -86,7 +86,7 @@ test('#9305 non-ENOENT inspection errors are not swallowed as successful reconci
     const fsImpl = {
       ...fs,
       lstatSync(p, ...args) {
-        if (p === path.join(manicode, 'message-history.json')) {
+        if (path.basename(p) === 'message-history.json') {
           const error = new Error('EIO: injected inspection failure');
           error.code = 'EIO';
           throw error;

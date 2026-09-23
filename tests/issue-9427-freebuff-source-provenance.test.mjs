@@ -71,7 +71,8 @@ test('source symlink chain is rejected and existing destination still wins', () 
     assert.throws(() => copyIfMissing(src, dst, false, destinationRoot, { sourceRoot }), /migration source is not a real file/);
     assert.equal(fs.existsSync(dst), false);
 
-    fs.writeFileSync(dst, 'DESTINATION-WINS\n');
+    fs.writeFileSync(dst, 'DESTINATION-WINS\n', { mode: 0o600 });
+    fs.chmodSync(dst, 0o600);
     assert.equal(copyIfMissing(src, dst, false, destinationRoot, { sourceRoot }), false);
     assert.equal(fs.readFileSync(dst, 'utf8'), 'DESTINATION-WINS\n');
   } finally {

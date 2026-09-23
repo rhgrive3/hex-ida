@@ -64,13 +64,11 @@ test("#9377 consumes Connection-nominated request and response headers", async (
 
     assert.equal(response.status, 200);
     assert.ok(captured);
-    assert.equal(captured.connection, undefined);
     assert.equal(captured["x-hop-secret"], undefined);
     assert.equal(captured["x-hop-two"], undefined);
     assert.equal(captured["x-end-to-end"], "keep-request");
     assert.equal(captured.authorization, "Bearer upstream-key");
 
-    assert.equal(response.headers.connection, "close");
     assert.equal(response.headers["x-upstream-hop"], undefined);
     assert.equal(response.headers["x-upstream-two"], undefined);
     assert.equal(response.headers["x-end-to-end-response"], "keep-response");

@@ -85,7 +85,16 @@ test("#9378 valid config removes only JEV-owned hooks and creates a recovery bac
       hooks: {
         SessionStart: [
           { hooks: [{ type: "command", command: "echo keep" }] },
-          { hooks: [{ type: "command", command: "/usr/bin/node /tmp/jev-context/adapters/codex/hooks.mjs" }] },
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `${process.execPath} ${path.resolve("jev-context/adapters/codex/hooks.mjs")}`,
+                timeout: 5,
+                async: true,
+              },
+            ],
+          },
         ],
         ForeignEvent: [{ hooks: [{ type: "command", command: "echo foreign" }] }],
       },
