@@ -417,52 +417,6 @@ function collectModel(ir, options, tick) {
   return { values, nodes, variants: sortedVariants, variantBySemanticKey: new Map(sortedVariants.map((variant) => [variant.key, variant])), variantsByKey, eventsByBlock, seedsByVariant };
 }
 
-function createLexicalMinPriorityQueue(initialItems = []) {
-  const heap = [];
-  const push = (item) => {
-    heap.push(item);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = (index - 1) >>> 1;
-      if (heap[index] >= heap[parent]) break;
-      const tmp = heap[index];
-      heap[index] = heap[parent];
-      heap[parent] = tmp;
-      index = parent;
-    }
-  };
-  for (let i = 0; i < initialItems.length; i++) {
-    push(initialItems[i]);
-  }
-  const pop = () => {
-    if (heap.length === 0) return undefined;
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        let smallest = index;
-        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
-        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
-        if (smallest === index) break;
-        const tmp = heap[index];
-        heap[index] = heap[smallest];
-        heap[smallest] = tmp;
-        index = smallest;
-      }
-    }
-    return top;
-  };
-  return {
-    push,
-    pop,
-    get size() { return heap.length; },
-  };
-}
-
 function computePhiBlocks(model, dominance, reachable, options, tick) {
   const phiBlocks = new Map(model.variants.map((variant) => [variant.key, new Set()]));
   const definitionBlocks = new Map(model.variants.map((variant) => [variant.key, new Set()]));
@@ -477,11 +431,12 @@ function computePhiBlocks(model, dominance, reachable, options, tick) {
   for (const variant of model.variants) {
     tick();
     const defs = [...definitionBlocks.get(variant.key)].sort();
-    const queued = new Set(defs);
-    const pending = createLexicalMinPriorityQueue(defs);
+    const pending = new Set(defs);
+    const queued = new Set(pending);
     while (pending.size) {
       tick();
-      const blockId = pending.pop();
+      const blockId = [...pending].sort()[0];
+      pending.delete(blockId);
       for (const frontierId of dominance.dominanceFrontier[blockId] ?? []) {
         tick();
         if (!reachable.has(frontierId)) continue;
@@ -490,7 +445,7 @@ function computePhiBlocks(model, dominance, reachable, options, tick) {
         phis.add(frontierId);
         if (!definitionBlocks.get(variant.key).has(frontierId) && !queued.has(frontierId)) {
           queued.add(frontierId);
-          pending.push(frontierId);
+          pending.add(frontierId);
         }
       }
     }
@@ -768,43 +723,6 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     scalarValueIdBySemantic.set(semanticValue.id, definition.valueId);
   }
 
-  // The idom relation is a tree for reachable blocks. Entry/exit intervals
-  // answer the repeated scalar-use dominance query without scanning its chain.
-  const domChildren = new Map();
-  for (const block of cfg.blocks) {
-    const blockId = block.id;
-    const idom = dominance.immediateDominators[blockId];
-    if (idom == null) continue;
-    const children = domChildren.get(idom);
-    if (children) children.push(blockId);
-    else domChildren.set(idom, [blockId]);
-  }
-  const noDomChildren = [];
-  const domTin = new Map();
-  const domTout = new Map();
-  let domClock = 0;
-  const domDfsStack = [{ blockId: cfg.entryBlockId, childIndex: 0 }];
-  domTin.set(cfg.entryBlockId, ++domClock);
-  while (domDfsStack.length > 0) {
-    const frame = domDfsStack[domDfsStack.length - 1];
-    const children = domChildren.get(frame.blockId) || noDomChildren;
-    if (frame.childIndex < children.length) {
-      const childId = children[frame.childIndex++];
-      domTin.set(childId, ++domClock);
-      domDfsStack.push({ blockId: childId, childIndex: 0 });
-    } else {
-      domTout.set(frame.blockId, ++domClock);
-      domDfsStack.pop();
-    }
-  }
-  const dominatesReachable = (ancestorId, descendantId) => {
-    if (ancestorId === descendantId) return true;
-    const aIn = domTin.get(ancestorId);
-    const dIn = domTin.get(descendantId);
-    if (aIn === undefined || dIn === undefined) return false;
-    return aIn <= dIn && dIn < domTout.get(ancestorId);
-  };
-
   const nodePositions = new Map();
   for (const block of ir.blocks) {
     for (let index = 0; index < block.nodeIds.length; index++) { tick(); nodePositions.set(block.nodeIds[index], { blockId: block.id, index }); }
@@ -827,7 +745,7 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
         const sameBlockBeforeUse = directDefinition.blockId === block.id
           && (sourcePosition == null || sourcePosition.index < usePosition.index);
         if (blockReachable) {
-          if (!dominatesReachable(directDefinition.blockId, block.id)) fail('semantic-ssa-semantic-value-not-dominating-use');
+          if (!(dominance.dominators[block.id] ?? []).includes(directDefinition.blockId)) fail('semantic-ssa-semantic-value-not-dominating-use');
           if (directDefinition.blockId === block.id && sourcePosition != null && sourcePosition.index >= usePosition.index) {
             fail('semantic-ssa-semantic-value-defined-after-use');
           }
