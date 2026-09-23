@@ -21,6 +21,15 @@ When an agent needs a broad test or release-gate run, suppress successful chatte
 - Rely strictly on reactive wakeup notifications from the messaging system. When a background task finishes, the system automatically sends a message to wake you up.
 - Only invoke `manage_task` when explicit operational action is strictly necessary (e.g., cancelling an obsolete command with `kill` or sending required interactive stdin with `send_input`), never for polling or frequent status checking.
 
+## Subagent delegation via `opencode --auto` (Gemini 3.8 Flash High)
+
+When any agent (Codex, Claude Code, Cursor, etc.) needs to spawn subagents, delegate background research, or parallelize execution:
+- **MUST NOT** use default/ordinary builtin subagents (e.g. built-in Sonnet/Opus subagent spawns).
+- **MUST** execute subagent/delegated tasks using `opencode --auto` with Gemini 3.8 Flash High (`gemini-3.8-flash-high` / `proxlane/gemini-3.8-flash-high`).
+- **Unrestricted API quota:** Treat this API as practically unlimited quota/calls. Parallelize aggressively, delegate repetitive searches, file edits, and independent verification passes to `opencode --auto`.
+- Run commands like `opencode --auto "<task prompt>"` when delegating subagent work.
+
+
 <!-- graft:start -->
 ## Graft — repo context graph
 

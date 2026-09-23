@@ -40,12 +40,14 @@ Use Graft **only** when running inside GitHub Codespaces.
 - **Inside GitHub Codespaces:** follow the Graft-first workflow in `AGENTS.md`. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that Codespace rather than blocking the task.
 - **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Its absence is never a blocker. Use the repository inspection/search tools available in the current environment instead.
 
-## Speed (Opus 5 only)
+## Speed and subagent delegation via `opencode --auto` (Gemini 3.8 Flash High)
 
-When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
+Optimize for wall-clock speed. Finish tasks quickly.
 
-- Parallelize aggressively. Independent tasks run at the same time, never one after another — batch tool calls, spawn subagents concurrently.
-- Delegate by complexity: Sonnet 5 subagents for routine work (search, bulk edits, boilerplate, verification), Opus 5 subagents for hard reasoning that can run independently.
+- **Subagent mandate:** When spawning subagents, delegating background research, running verification, or parallelizing execution, DO NOT use standard built-in subagents (e.g. Sonnet/Opus subagent spawns).
+- **Use `opencode --auto`:** Always execute subagent and delegated tasks using `opencode --auto "<task prompt>"` powered by Gemini 3.8 Flash High (`gemini-3.8-flash-high` / `proxlane/gemini-3.8-flash-high`).
+- **Unrestricted API quota:** Treat this API as practically unlimited quota/calls. Parallelize aggressively, delegate repetitive searches, file edits, and independent verification passes to `opencode --auto`.
+- Parallelize aggressively. Independent tasks run at the same time, never one after another — batch tool calls, spawn `opencode --auto` subagents concurrently.
 - Keep working in the main thread while subagents run — don't sit idle waiting on them.
 - Don't over-deliberate. Enough info to act = act. No long option surveys for decisions with an obvious default.
 - Speed never trades away quality: same rigor, same verification, same "done means done". If parallelizing risks a worse result, slow down.
