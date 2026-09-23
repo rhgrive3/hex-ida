@@ -3,7 +3,11 @@ export const DEFAULT_DYNAMIC_SYMBOL_LIMITS = Object.freeze({
   maxOutputObjects: 500_000,
   maxInputBytes: 64 * 1024 * 1024,
   maxOperations: 2_000_000,
-  maxWallMs: 2_000,
+  // Wall-clock stops made parse output depend on host speed (OpenMW lost
+  // 25-60% of its RTTI classes on a loaded host). Work is bounded by the
+  // deterministic limits above; a wall-clock stop applies only when a caller
+  // passes an explicit maxWallMs.
+  maxWallMs: Infinity,
   maxEstimatedBytes: 96 * 1024 * 1024,
   maxStringBytes: 16 * 1024 * 1024,
 });
@@ -18,7 +22,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
     maxOutputObjects: positiveLimit(limits.maxOutputObjects, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxOutputObjects),
     maxInputBytes: positiveLimit(limits.maxInputBytes, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxInputBytes),
     maxOperations: positiveLimit(limits.maxOperations, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxOperations),
-    maxWallMs: positiveLimit(limits.maxWallMs, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxWallMs),
+    maxWallMs: limits.maxWallMs === undefined ? Infinity : positiveLimit(limits.maxWallMs, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxWallMs),
     maxEstimatedBytes: positiveLimit(limits.maxEstimatedBytes, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxEstimatedBytes),
     maxStringBytes: positiveLimit(limits.maxStringBytes, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxStringBytes),
   };
@@ -104,7 +108,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
     },
     checkWall(stage = 'dynamic symbol decode') { return wallOkay(stage); },
     snapshot() {
-      return { ...resolved, inputBytes, operations, outputObjects, stringBytes, estimatedBytes, stopped, reason };
+      return { ...resolved, maxWallMs: Number.isFinite(resolved.maxWallMs) ? resolved.maxWallMs : null, inputBytes, operations, outputObjects, stringBytes, estimatedBytes, stopped, reason };
     },
   };
 }

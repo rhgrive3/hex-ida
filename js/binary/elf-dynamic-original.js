@@ -223,7 +223,10 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     if (strSpan && strOff != null && strSize != null) {
       const n = Number(offset);
       if (Number.isSafeInteger(n) && n >= 0) {
-        const scanned = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+        // The scan stops at the terminating NUL; charging the whole 1 MiB
+        // window per name exhausted the budget after ~8 DT_NEEDED entries.
+        const window = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+        const scanned = name === "" ? window : Math.min(window, decoded + 1);
         dynamicStringScanBytes += Math.max(0, scanned);
       }
     }
