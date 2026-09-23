@@ -7,30 +7,30 @@ Scope: investigation, measurement and design only. **No production Jev integrati
 | # | Question | Answer |
 | ---: | --- | --- |
 | 1 | Biggest difference between 46 rescue and 7 regression | RESCUE are baseline-wrong with fixture truth at rank ≥ 2 (29/46 already strong-verdict wrong tops; 17 ambiguous). All **7 REGRESSION** rows are baseline rank-1 truth. Strong rate: rescue **63%** vs regression **14%**. Regression baselines are mostly small-margin ambiguous flips (6/7 margin < ln 4); only one confirmed strong row breaks. Jev lexical coverage never strictly beats baseline top (coverage is 1.0 on both sides for these tails) — so coverage is **not** the separator. |
-| 2 | Rescue retained at regression = 0 | **Full corpus: 0 positive-rescue gates** in the pre-registered catalog achieve regression=0 (only net-0 gates: G7/G18/G22). Primary development maxReg=0 selection (G9) **leaks 1 regression on holdout** (rescue 6 / reg 1). Holdout diagnostic: G28_strong_only achieves **14 rescue / 0 regression** on TsumTsum+YWP but was selected under maxReg≤1, not maxReg=0. |
-| 3 | Rescue retained at regression ≤ 1 | **Best validated gate G28_strong_only**: development (BattleCats) rescue **15** / reg **1**; **holdout (TsumTsum+YWP) rescue 14 / reg 0**; full corpus rescue **29** / reg **1**. |
-| 4 | Best holdout-tested gate | **`G28_strong_only`** — fire label-only Jev preference only when baseline P4 verdict is strong (`confirmed` or `likely`) on partial queries. Selected on BattleCats with regression ≤ 1; confirmed on TsumTsum+YWP. |
-| 5 | top1 on current main after that gate | **310/426 (72.8%)** vs baseline **282/426 (66.2%)** (+28). |
+| 2 | Rescue retained at regression = 0 | **Full corpus: 0 positive-rescue gates** in the fixed catalog committed here achieve regression=0 (only net-0 gates: G7/G18/G22). Primary development maxReg=0 selection (G9) has **1 regression on the cross-binary observed split** (rescue 6 / reg 1). G28_strong_only shows **14 rescue / 0 regression** on TsumTsum+YWP after being selected on BattleCats under maxReg≤1; this is descriptive, not independent validation. |
+| 3 | Rescue retained at regression ≤ 1 | **Leading candidate G28_strong_only**: development (BattleCats) rescue **15** / reg **1**; **cross-binary observed split (TsumTsum+YWP) 14 / 0**; full-corpus descriptive result **29 / 1**. |
+| 4 | Leading development-selected gate | **`G28_strong_only`** — fire label-only Jev preference only when baseline P4 verdict is strong (`confirmed` or `likely`) on partial queries. Selected on BattleCats with regression ≤ 1; observed at 14/0 on TsumTsum+YWP. The latter is not an independent validation set. |
+| 5 | Descriptive full-corpus top1 after that gate | **310/426 (72.8%)** vs baseline **282/426 (66.2%)** (+28). This reuses the measured corpus and is not a prospective production estimate. |
 | 6 | partial after that gate | **81/196 (41.3%)** vs baseline **53/196 (27.0%)** (+28). |
 | 7 | Jev-specific improvement demonstrated | Force-all Jev-only rescues missed by the best deterministic screen: **6**. Under det-first + G28 fill: **5** rows where det fails and gate+Jev succeed (see [`deterministic-comparison.json`](./deterministic-comparison.json)). Deterministic still beats Jev overall (103/4 vs 46/7). |
 | 8 | strong wrong top1 safe rescuable by Jev | Strong-wrong **partial** baselines are part of the 67 false-strong rows overall; on partial, arm F (diagnostic truth oracle) corrects **29** with 0 regressions. Production-safe **G28** corrects the same **29** with **1** full-corpus regression (the confirmed `config service` row); on holdout **14 / 0**. No verdict promotion is performed. |
-| 9 | Production? | **CONDITIONAL_GO** only for `G28_strong_only`-style **strong-verdict-gated label preference** (preference-only, fail-closed baseline fallback, never mint facts, never change verdicts). Force-all and ambiguous-only remain **NO_GO** for production (7 and 6 regressions). Broader partial Jev stays **RESEARCH_ONLY** until an independent free-form intent holdout exists. This PR does not integrate production. |
+| 9 | Production? | **RESEARCH_ONLY.** Keep `G28_strong_only` as the leading candidate, but do not integrate it into production until it is evaluated once, unchanged, on a newly collected independent free-form intent holdout. Force-all and ambiguous-only remain **NO_GO** for production (7 and 6 regressions). This PR does not integrate production. |
 
 ## Comparison table (required)
 
-| Row | correct top1 (overall / partial) | wrong→correct | correct→wrong | net | triggered | API calls | false-strong Δ |
+| Row | correct top1 (overall / partial) | wrong→correct | correct→wrong | net | triggered | API calls | verdict promotions |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline (`2b8e98d61`) | 282 / 53 | 0 | 0 | 0 | 0 | 0 | 0 |
 | Jev forced rerank (label-only, all partial) | 321 / 92 | 46 | 7 | 39 | 196 | 196 | 0 |
 | Ambiguous-only | 293 / 70 | 17 | 6 | 11 | 105 | 105 | 0 |
 | Best zero-regression gate (`G9_…`) — development | — | 5 | 0 | 5 | 37 | 37 | 0 |
-| Best zero-regression gate — holdout (Tsum+YWP) | — | 6 | 1 | 5 | 42 | 42 | 0 |
-| Best ≤1 regression gate (`G28_strong_only`) — holdout | — | 14 | 0 | 14 | 52 | 52 | 0 |
-| Best validated gate (holdout-selected G28) — full corpus | 310 / 81 | 29 | 1 | 28 | 91 | 91 | 0 |
+| Same G9 — cross-binary observed split (Tsum+YWP) | — | 6 | 1 | 5 | 42 | 42 | 0 |
+| Development-selected `G28_strong_only` — cross-binary observed split | — | 14 | 0 | 14 | 52 | 52 | 0 |
+| G28 — full corpus descriptive | 310 / 81 | 29 | 1 | 28 | 91 | 91 | 0 |
 | Deterministic comparator (BattleCats-selected lexical grid) | 381 / 152 | 103 | 4 | 99 | 196 | 0 | 0 |
 | Oracle (truth choice on force-all partial) | 426 / 196 | 143 | 0 | 143 | 196 | 196 | 0 |
 
-Verdict policy is never rewritten. **false-strong Δ = 0** means preference-only top1 movement without `confirmed`/`likely` promotion. Overwriting a *correct strong* top1 is still counted in `strong-override-arms.json` → `newlyBrokenStrong` (G28 full-corpus breaks 1).
+Verdict policy is never rewritten, so **verdict promotions = 0** for every preference-only arm. That is distinct from false-strong top1 correctness: among partial rows with a strong baseline verdict, G28 changes false-strong from **67 → 39 (Δ -28)** by correcting 29 strong-wrong rows while breaking 1 strong-correct row. `strong-override-arms.json` records the newly broken strong row explicitly.
 
 ## 1. Fresh current-main baseline (Phase 0)
 
@@ -85,13 +85,13 @@ Artifacts: [`feature-summary.json`](./feature-summary.json), [`feature-matrix.js
 
 Protocol (fixed before holdout inspection):
 
-1. Gate catalog is **pre-registered** in `analyze.mjs` (G0–G34).
-2. **Primary split:** development = BattleCats (86 partial), holdout = TsumTsum+YWP (110 partial).
-3. Selection objective on development only: maximize net rescue subject to regression ≤ 0 or ≤ 1.
-4. **Leave-one-binary-out** folds for robustness.
-5. No post-hoc threshold scrubbing on holdout.
+1. Gate catalog is fixed in `analyze.mjs` (G0–G34) for replay, but this single commit does **not** prove the catalog was fixed before the TsumTsum+YWP labels were inspected.
+2. **Primary split:** development = BattleCats (86 partial), cross-binary observed set = TsumTsum+YWP (110 partial).
+3. Selection is computed on development only: maximize net subject to regression ≤ 0 or ≤ 1.
+4. **Leave-one-binary-out** folds are reported as robustness diagnostics.
+5. Query-family features are diagnostics only; there is no separately implemented independent query-family holdout.
 
-| Selection | Gate | Dev (rescue/reg) | Holdout (rescue/reg) | Full (rescue/reg) |
+| Selection | Gate | Dev (rescue/reg) | Cross-binary observed (rescue/reg) | Full descriptive (rescue/reg) |
 | --- | --- | ---: | ---: | ---: |
 | maxReg = 0 | `G9_ambiguous_and_same_class_or_cov` | 5 / 0 | **6 / 1** | 11 / 1 |
 | maxReg ≤ 1 | **`G28_strong_only`** | 15 / 1 | **14 / 0** | **29 / 1** |
@@ -100,7 +100,7 @@ Protocol (fixed before holdout inspection):
 
 **≤1-regression frontier (full corpus, top):** G28/G30/G32/G33 → 29 rescue / 1 reg / net 28; G31_confirmed_only → 23 / 1 / net 22.
 
-**LOO:** with maxReg ≤ 1, every fold selects `G28_strong_only`; test folds give (Tsum 8/0), (YWP 6/0), (battlecats 15/1). With maxReg = 0, folds are unstable (G9/G14/G22) and do not hold at 0.
+**LOO diagnostic:** with maxReg ≤ 1, every fold selects `G28_strong_only`; test folds give (Tsum 8/0), (YWP 6/0), (battlecats 15/1). With maxReg = 0, folds are unstable (G9/G14/G22) and do not hold at 0. Because the fixture generator/SDK families are shared and pre-inspection provenance is not established in this commit, these folds strengthen the research signal but do not establish independent validation.
 
 Pareto front and full tables: [`holdout-results.json`](./holdout-results.json), [`gate-candidates.json`](./gate-candidates.json).
 
@@ -152,7 +152,7 @@ Det-first + G28 gate fill: **5** additional rows (det miss ∧ gate fires ∧ Je
 | Oracle | Meaning | Bound |
 | --- | --- | --- |
 | Perfect Jev choice | always pick fixture truth on force-all | partial 196/196; overall 426/426 |
-| Catalog-bounded observable | best pre-registered gate (truth used only to score) | zero-reg: net 0; ≤1-reg: 29/1 |
+| Catalog-bounded observable | best gate in the fixed committed catalog (truth used only to score) | zero-reg: net 0; ≤1-reg: 29/1 |
 | Strong overwrite forbidden | never move strong baselines | same as ambiguous-only: 17/6 |
 | Ambiguous only | force on ambiguous partial | 17/6 → overall 293/426 |
 | Candidate present | truth in lattice | 426/426 (ceiling on recall = 0) |
@@ -179,17 +179,19 @@ Baseline partial analysis itself is p50 ~1.4 s; Jev adds one ~0.5–0.9 s RTT on
 
 ## 11. Final verdict (Phase 13)
 
-**CONDITIONAL_GO** for predicate **`G28_strong_only`** only:
+**RESEARCH_ONLY.** `G28_strong_only` is the leading candidate, not a production-approved gate.
 
-- Holdout net gain **+14 top1 on partial** with **0 regressions** (TsumTsum+YWP).
-- Full corpus **+28 top1** (282→310), partial **53→81**, one accepted regression.
-- Deterministic comparator still dominates raw accuracy; Jev-specific fill ≈ 5–6 rows.
-- Repeated-call evidence **argues against** stability-based gating (regressions are stable).
-- Fixture/SDK sharing across binaries is **not** an independent intent holdout → production merge still requires a new free-form query holdout.
+- Development (BattleCats): **15 rescue / 1 regression**.
+- Cross-binary observed set (TsumTsum+YWP): **14 rescue / 0 regressions**.
+- Full-corpus descriptive projection: **+28 top1** (282→310), partial **53→81**, with one strong-correct regression.
+- False-strong top1 accounting under G28 is **67→39 (Δ -28)**; verdict labels themselves are never promoted.
+- Deterministic comparator still dominates raw accuracy; Jev-specific fill is ≈5–6 rows.
+- Repeated-call evidence argues against stability-based gating because the regressions themselves are stable.
+- The fixture/SDK sharing and missing proof that the gate catalog predates holdout inspection mean the existing split is not sufficient as independent validation.
 
-**NO_GO** for force-all (7 regressions) and ambiguous-only-as-default (6 regressions).
+Before any production merge, freeze G28 unchanged and evaluate it once on a **new independent free-form intent holdout** that was not used during feature/gate design.
 
-**RESEARCH_ONLY** for any broader partial/ambiguous Jev surface and for semantic naming of unnamed fields.
+**NO_GO** for force-all (7 regressions), ambiguous-only-as-default (6 regressions), verdict promotion, or Jev-minted binary facts.
 
 ## Reproduction
 
@@ -207,17 +209,18 @@ node reports/investigations/jev-rescue-regression-gap/evaluate.mjs \
   --seed <#9471-live-checkpoint>
 node reports/investigations/jev-rescue-regression-gap/analyze.mjs
 node reports/investigations/jev-rescue-regression-gap/repeat.mjs --attempts 5
+node reports/investigations/jev-rescue-regression-gap/replay.mjs       # replays committed projection metrics; no API key/raw checkpoint needed
 node reports/investigations/jev-rescue-regression-gap/build-readme.mjs   # optional; README is also maintained directly
 node reports/investigations/jev-rescue-regression-gap/validate.mjs
 ```
 
-Raw `current-main-baseline-rows.jsonl` (3.7 MB) and live checkpoints stay in local evidence storage; the committed projection is `row-classification.jsonl` + case files + `current-main-baseline.json`.
+Raw `current-main-baseline-rows.jsonl` (3.7 MB) and live checkpoints stay in local evidence storage, so the raw API experiment is **not independently replayable from this PR alone**. The committed projection (`feature-matrix.jsonl`, `row-classification.jsonl`, case files, and baseline summary) is replayable with `replay.mjs`, which rechecks the reported baseline / force-all / G28 counts without external API access.
 
 ## Prohibitions observed
 
 - No production ranking / verdict / Jev integration changes in this PR.
 - Truth never enters gate predicates (machine-checked).
-- No same-dataset gate claimed as validated without a holdout split.
-- No favorable-only split reporting; LOO folds included.
+- The cross-binary split is reported as descriptive evidence, not independent validation.
+- No favorable-only split reporting; LOO diagnostics are included, with their limitations stated.
 - API failures are not counted as Jev successes.
 - No main merge.
