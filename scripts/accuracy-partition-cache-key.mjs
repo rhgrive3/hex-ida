@@ -123,6 +123,8 @@ export function partitionFiles(root = ROOT, partition) {
 
 function sameFileIdentity(left, right) {
   return left && right
+    && left.dev != null && left.ino != null
+    && right.dev != null && right.ino != null
     && String(left.dev) === String(right.dev)
     && String(left.ino) === String(right.ino);
 }
@@ -185,26 +187,31 @@ export function partitionDigest(root = ROOT, partition, {
       hash.update('symlink:');
       hash.update(linkText);
       hash.update('\0');
+      let realTarget;
       try {
-        const realTarget = fsImpl.realpathSync(fullPath);
-        if (!pathIsWithin(allowedRealRoot, realTarget)) {
-          throw new Error(`accuracy cache key: selected input escapes repository while hashing: ${relative}`);
-        }
-        const targetStat = fsImpl.statSync(fullPath);
-        if (targetStat.isFile()) {
-          hash.update(readBoundRegularFile(realTarget, targetStat, allowedRealRoot, fsImpl));
-        }
-        const finalLink = fsImpl.lstatSync(fullPath);
-        const finalRealTarget = fsImpl.realpathSync(fullPath);
-        if (!finalLink.isSymbolicLink()
-            || !sameFileIdentity(lstat, finalLink)
-            || finalRealTarget !== realTarget) {
-          throw new Error(`accuracy cache key: selected symlink identity changed during hashing: ${relative}`);
-        }
+        realTarget = fsImpl.realpathSync(fullPath);
       } catch (error) {
-        // A broken target is an intentional, already-represented symlink state
-        // (#9199). Other failures mean the selected input could not be hashed.
-        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+        // A target that is already broken at the byte-consumption boundary is
+        // an intentional, represented symlink state (#9199).
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+          hash.update('\0');
+          continue;
+        }
+        throw error;
+      }
+      if (!pathIsWithin(allowedRealRoot, realTarget)) {
+        throw new Error(`accuracy cache key: selected input escapes repository while hashing: ${relative}`);
+      }
+      const targetStat = fsImpl.statSync(fullPath);
+      if (targetStat.isFile()) {
+        hash.update(readBoundRegularFile(realTarget, targetStat, allowedRealRoot, fsImpl));
+      }
+      const finalLink = fsImpl.lstatSync(fullPath);
+      const finalRealTarget = fsImpl.realpathSync(fullPath);
+      if (!finalLink.isSymbolicLink()
+          || !sameFileIdentity(lstat, finalLink)
+          || finalRealTarget !== realTarget) {
+        throw new Error(`accuracy cache key: selected symlink identity changed during hashing: ${relative}`);
       }
     } else if (lstat.isFile()) {
       hash.update(readBoundRegularFile(fullPath, lstat, allowedRealRoot, fsImpl));
