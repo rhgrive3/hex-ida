@@ -7,7 +7,6 @@ import { normalizeProjectedCompatibilityLine } from './decompiler/phase8/project
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
 import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
 import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js';
-import { applyDecompilerProfile } from './decompiler/profiles.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -58,7 +57,6 @@ function augmentLegacy(fallback, reason, semantic = null) {
 }
 
 function finalize(result, model, opts) {
-  opts = applyDecompilerProfile(opts);
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
   if (result?.semantic) result = enhanceSemanticDecompilation(result, model, { ...opts, renderProvenance:true });
   result = normalizeCompatibility(result);
@@ -97,23 +95,19 @@ function strictTextAddress(op) {
 // the decompiler entry, and consumers must be able to pin it (#5676).
 export function semanticModelForDecompiler(model) {
   if (!model?.instructions?.length) return model;
-  const originalInstructions = model.instructions;
-  const instructionCount = originalInstructions.length;
-  let instructions = null;
-  for (let index = 0; index < instructionCount; index++) {
-    if (!(index in originalInstructions)) continue;
-    const insn = originalInstructions[index];
+  let changed = false;
+  const instructions = model.instructions.map((insn) => {
     const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
     const directBranch = mn === 'b' || /^b\.[a-z]{2}$/.test(mn) || /^(?:cbz|cbnz|tbz|tbnz)$/.test(mn);
     const directCall = mn === 'bl';
-    if ((!directBranch || insn.branchTarget != null) && (!directCall || insn.callTarget != null)) continue;
+    if ((!directBranch || insn.branchTarget != null) && (!directCall || insn.callTarget != null)) return insn;
     const ops = Array.isArray(insn.ops) ? insn.ops : [];
     const target = strictTextAddress(ops[ops.length - 1]);
-    if (target == null) continue;
-    instructions ||= originalInstructions.slice(0, instructionCount);
-    instructions[index] = directCall ? { ...insn, callTarget: target } : { ...insn, branchTarget: target };
-  }
-  return instructions ? { ...model, instructions } : model;
+    if (target == null) return insn;
+    changed = true;
+    return directCall ? { ...insn, callTarget: target } : { ...insn, branchTarget: target };
+  });
+  return changed ? { ...model, instructions } : model;
 }
 
 function objcMethodInfo(model, opts) {
@@ -501,7 +495,6 @@ function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
 function preferLegacyForUnsupported(model, opts, semantic) {
   const unsupported = semantic?.ctx?.unknownInstructions || 0;
   if (!unsupported) return semantic;
-  if (asmCount(semantic) === 0) return semantic;
   const legacy = augmentLegacy(
     legacyDecompile(model, opts),
     `Semantic IR has ${unsupported} unsupported instruction(s); only this unsupported function uses the isolated legacy expression fallback.`,
