@@ -698,6 +698,13 @@ const holdoutResults = {
     queryFamily: 'diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented',
     interpretation: 'Audit of the work history proves the first holdout run used G0-G23; G17/G18 were later rewritten and G24-G34 including G28_strong_only were added after holdout inspection. G28 14/0 is post-hoc within-corpus evidence, not independent validation.',
     forbidden: 'do not describe G28 or the final G0-G34 catalog as pre-registered or holdout-validated; freeze a future catalog before collecting a new independent holdout',
+    provenanceAudit: {
+      status: 'POST_HOC_CONFIRMED',
+      firstHoldoutCatalog: 'G0-G23',
+      postHoldoutAdded: ['G24','G25','G26','G27','G28','G29','G30','G31','G32','G33','G34'],
+      rewrittenAfterFirstRun: ['G17','G18'],
+      preHoldoutFreeze: false,
+    },
   },
   splits: {
     development: { binary: 'battlecats', N: devSet.length, rescues: rescuesIn(devSet), regressions: devSet.filter((f) => f.classification === 'REGRESSION').length },
@@ -795,6 +802,7 @@ write('gate-candidates.json', {
   fullCorpusZeroRegression: holdoutResults.zeroRegressionFrontierFull.slice(0, 20),
   fullCorpusOneRegression: holdoutResults.oneRegressionFrontierFull.slice(0, 20),
   caveat: 'Full-corpus frontiers and the cross-binary split are descriptive/post-hoc. G28 was added after holdout inspection; independent free-form validation after an explicit catalog freeze is required before any production claim.',
+  provenanceAudit: holdoutResults.protocol.provenanceAudit,
 });
 function pickGate(e) {
   if (!e) return null;
@@ -1136,6 +1144,12 @@ evalSummary.verdict = {
     'verdict promotion or evidence minting from Jev',
   ],
   recommendation: 'RESEARCH_ONLY. Freeze G28_strong_only unchanged with a recorded commit/hash, then evaluate it once on a newly collected independent free-form intent holdout before reconsidering any production merge.',
+  provenanceAudit: {
+    status: 'POST_HOC_CONFIRMED',
+    firstHoldoutCatalog: 'G0-G23',
+    laterChanges: ['G17/G18 rewritten after first holdout run', 'G24-G34 added after holdout inspection', 'G28_strong_only added after strong-rescue bias and holdout outcomes were known'],
+    preHoldoutCatalogFreeze: false,
+  },
 };
 // re-write evaluation with answers
 write('evaluation-summary.json', evalSummary);
