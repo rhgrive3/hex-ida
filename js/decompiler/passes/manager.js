@@ -90,17 +90,27 @@ function capturePassState(state) {
     let descriptors = null;
 
     if (Array.isArray(value)) {
-      // For arrays, record length and elements without allocating property descriptor objects per slot
-      isPlainRecord = true;
+      // For dense arrays with only standard index elements and no custom properties,
+      // record length and values without allocating descriptor objects per slot.
+      const keys = Reflect.ownKeys(value);
       const len = value.length;
-      simpleKeys = ['length'];
-      simpleValues = [len];
-      for (let i = 0; i < len; i += 1) {
-        if (Object.hasOwn(value, i)) {
-          simpleKeys.push(i);
-          simpleValues.push(value[i]);
-          pending.push(value[i]);
+      // Dense standard array has exactly indices 0..len-1 plus "length"
+      let isDenseSimple = keys.length === len + 1 && keys[len] === 'length';
+      if (isDenseSimple) {
+        for (let i = 0; i < len; i += 1) {
+          if (keys[i] !== String(i)) {
+            isDenseSimple = false;
+            break;
+          }
         }
+      }
+      if (isDenseSimple) {
+        isPlainRecord = true;
+        simpleKeys = keys;
+        simpleValues = value.slice();
+        for (let i = 0; i < len; i += 1) pending.push(simpleValues[i]);
+      } else {
+        descriptors = Object.getOwnPropertyDescriptors(value);
       }
     } else if (!map && !set && !date && !(value instanceof RegExp) && (proto === Object.prototype || proto === null)) {
       // Fast path for plain objects with normal own enumerable data properties
@@ -154,9 +164,9 @@ function capturePassState(state) {
           }
         }
         if (Array.isArray(value)) {
-          value.length = simpleValues[0];
-          for (let i = 1; i < simpleKeys.length; i += 1) {
-            value[simpleKeys[i]] = simpleValues[i];
+          value.length = simpleValues.length;
+          for (let i = 0; i < simpleValues.length; i += 1) {
+            value[i] = simpleValues[i];
           }
         } else {
           for (let i = 0; i < simpleKeys.length; i += 1) {

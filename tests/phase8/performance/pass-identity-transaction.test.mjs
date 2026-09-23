@@ -84,6 +84,29 @@ test('a returned state delta preserves unchanged roots and frozen observations',
   assert.deepEqual(state.passMetrics.map(row => row.ok), [true, false]);
 });
 
+test('failed optional passes restore plain array and object fast paths faithfully', () => {
+  const arr = [10, 20, 30];
+  const obj = { a: 1, b: 2 };
+  const state = { arr, obj, opts: { deterministicTransforms: true } };
+  new PassManager([{
+    name: 'mutate-plain-records',
+    run(s) {
+      s.arr.push(40);
+      s.arr[0] = 999;
+      s.obj.a = 888;
+      s.obj.c = 3;
+      delete s.obj.b;
+      throw new Error('rollback');
+    },
+  }]).run(state);
+  assert.equal(state.arr, arr);
+  assert.equal(state.arr.length, 3);
+  assert.deepEqual(state.arr, [10, 20, 30]);
+  assert.equal(state.obj, obj);
+  assert.deepEqual(state.obj, { a: 1, b: 2 });
+  assert.equal(state.passMetrics[0].ok, false);
+});
+
 test('native consumer history shares one live input observation within each read', async () => {
   const [{ loadCorpus }, { decompileEntry }, { readLineExpressionHistory }] = await Promise.all([
     import('../../../tools/validation/phase8/build-corpus.mjs'),

@@ -50,18 +50,11 @@ function rejectUnsupportedCanonicalObject(value) {
   if (!isCanonicalPlainObject(value)) fail('identity-unsupported-object');
 }
 
-const FROZEN_JSON_SAFE_CACHE = new WeakMap();
-const FROZEN_STABLE_DIGEST_CACHE = new WeakMap();
-
 export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
-  if (typeof value === 'object' && Object.isFrozen(value)) {
-    const cached = FROZEN_JSON_SAFE_CACHE.get(value);
-    if (cached !== undefined) return cached;
-  }
   if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
   if (value instanceof Date) {
@@ -106,9 +99,6 @@ export function jsonSafe(value, seen = new WeakSet()) {
     }
   }
   seen.delete(value);
-  if (Object.isFrozen(value) && !(value instanceof Map) && !(value instanceof Set) && !(value instanceof Date)) {
-    FROZEN_JSON_SAFE_CACHE.set(value, out);
-  }
   return out;
 }
 
@@ -117,17 +107,8 @@ export function stableStringify(value) {
 }
 
 export function stableDigest(value) {
-  if (value !== null && typeof value === 'object' && Object.isFrozen(value)) {
-    const cached = FROZEN_STABLE_DIGEST_CACHE.get(value);
-    if (cached !== undefined) return cached;
-  }
   const text = stableStringify(value);
-  const digest = fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
-  if (value !== null && typeof value === 'object' && Object.isFrozen(value)
-      && !(value instanceof Map) && !(value instanceof Set) && !(value instanceof Date)) {
-    FROZEN_STABLE_DIGEST_CACHE.set(value, digest);
-  }
-  return digest;
+  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
 }
 
 const FNV_OFFSET_LOW = 0x84222325;
