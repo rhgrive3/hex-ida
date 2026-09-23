@@ -1985,7 +1985,20 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     { name: 'semantic-rewrite', run: rewriteAll },
     { name: 'semantic-facts', run(s) { s.facts = semanticFacts(s, result); return s; } },
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
-    { name: 'c-ast', run(s) { s.cAst = cAstFromLines(result, s); return s; } },
+    { name: 'c-ast', run(s) {
+      // C-AST construction binds many output nodes to the same producer
+      // histories. Those histories are read-only during this synchronous pass,
+      // so reuse exact validation answers here and recheck every reused answer
+      // before leaving the pass. A stale settle never grants authority: all
+      // stored consumer bindings retain fresh isCurrent() checks for later
+      // readers, and the reason makes the provenance lane fail closed.
+      const validation = createValidationBatch();
+      let cAst = null;
+      validation.run(() => { cAst = cAstFromLines(result, s); });
+      if (validation.settle() > 0) consumerObservationBudget(s).reasons.add('c-ast-validation-stale');
+      s.cAst = cAst;
+      return s;
+    } },
     { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
   ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 250), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
   const advanced = manager.run(state);
