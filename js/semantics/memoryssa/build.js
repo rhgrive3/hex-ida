@@ -40,9 +40,13 @@ export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 const ALIAS_RELATIONS = new Set(MEMORY_SSA_ALIAS_RELATIONS);
 class CanonicalMemorySsaArtifact {
   #producerBrand = true;
+  #semanticIrSource;
+  #canonicalDigest;
 
-  constructor(payload) {
+  constructor(payload, semanticIrSource = null) {
     for (const key of Object.keys(payload)) this[key] = payload[key];
+    this.#semanticIrSource = semanticIrSource;
+    this.#canonicalDigest = typeof payload.canonicalDigest === 'string' ? payload.canonicalDigest : null;
     Object.setPrototypeOf(this, Object.prototype);
   }
 
@@ -53,10 +57,36 @@ class CanonicalMemorySsaArtifact {
       return false;
     }
   }
+
+  static matchesSemanticIr(value, ir) {
+    try {
+      return value !== null && typeof value === 'object' && #producerBrand in value
+        && value.#semanticIrSource === ir;
+    } catch {
+      return false;
+    }
+  }
+
+  static canonicalDigest(value) {
+    try {
+      return value !== null && typeof value === 'object' && #producerBrand in value
+        ? value.#canonicalDigest : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
+}
+
+export function canonicalMemorySsaProducerMatchesSemanticIr(artifact, ir) {
+  return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.matchesSemanticIr(artifact, ir);
+}
+
+export function canonicalMemorySsaProducerDigest(artifact) {
+  return !Array.isArray(artifact) ? CanonicalMemorySsaArtifact.canonicalDigest(artifact) : null;
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -1584,6 +1614,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     ...artifact,
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
-  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
+  const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished, irFunction));
   return published;
 }
