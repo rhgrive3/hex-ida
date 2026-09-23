@@ -12,7 +12,7 @@ import { createProjectionIrObserver, createValidationBatch } from '../core/ident
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
-import { currentCppMember, currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
@@ -411,15 +411,14 @@ function memoryLocation(inst, state) {
     const cxxRec = currentCppReceiver(state.opts, state.ir);
     const baseVal = loc.base || addr.base;
     let cxxMember = null;
-    if (cxxRec && isCppReceiverAlias(baseVal, cxxRec)) {
+    if (cxxRec && isCppReceiverAlias(baseVal, cxxRec, state.ir)) {
       base = expr.variable('this', 64, false, origin(inst));
       cxxMember = currentCppMember(state.opts, state.ir, baseVal, off);
     }
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
+    const memberTypeLabel = cppMemberTypeLabel(cxxMember);
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst),
-      cxxMember?.typeProven && typeof cxxMember.typeLabel === 'string'
-        ? { cxxMemberTypeLabel:cxxMember.typeLabel }
-        : {});
+      memberTypeLabel ? { cxxMemberTypeLabel:memberTypeLabel } : {});
     const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
     (state.fieldLocations ??= new Map()).set(location, { instruction:inst, access });
     return location;
