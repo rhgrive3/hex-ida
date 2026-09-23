@@ -1,12 +1,33 @@
 # Hex completion checkpoint — 2026-09-24
 
-Source: `handoff/codex-20260924` at `8ebdc35b6`; initial product base `a5fd5618e`.
+Source: `handoff/codex-20260924` at `8ebdc35b6`; initial product base `a5fd5618`.
 The original A–J acceptance contract is in `reports/handoff-codex-20260924/ORIGINAL_REQUEST.md` on the handoff branch.
 
-Status: **IN PROGRESS**. This living integration branch accepts one verified change at a time. Each acceptance records its changed-file inventory, exact candidate merge tree, focused and broad results, and updated product head. Generated output and real runtime proof are required where affected.
+Status: **IN PROGRESS**. This living integration branch accepts one verified product change at a time. This checkpoint is an evidence ledger, not a completion claim. No `DONE`, freeze, or merge-readiness claim is valid until every row below has a concrete changed-file inventory, exact candidate merge tree, focused and broad validation, current-main reconciliation, and refetched-main proof.
 
-Active lanes: source metadata determinism, FAST tail performance, C++ projection, output recompilation, and final Pinpoint/Jev decision. Open issues #9523, #9534, and #9550 are owned by the user and remain external blockers until closed. Existing FAST PRs #9552–#9554 are reviewed separately as main moves.
+## Acceptance ledger
 
-Current evidence: `rhgrive3/actions` run `35899282597` succeeded for OpenMW and OpenTTD on `a5fd5618e`, and ran the 32-case FAST screen. It is a baseline, not final product proof. Its OpenMW totals are 1,845 vtables / 2,564 typeinfos; OpenTTD totals are 200 / 354.
+| Item | Required evidence | Current state |
+| --- | --- | --- |
+| A — OpenMW | Production fix, focused regression, rerun, `result.json` | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| B — FAST tail | General optimization, before/after equivalence, repeated p50/p95/p99 | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| C — #9520 | Phase-split source/backup identity guards, regressions, closeout | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| D — C++ projection | RTTI→vtable→slot→virtual target→receiver/class→field/member/type projection plus matched debug holdout | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| E — Pinpoint/Jev | Shortlist ≤255, truth retention, preference-only/fail-closed router, prospective holdout | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| F — Latest-main weakness re-measure | Current values for goto/unstructured/unknown instructions/raw syntax/TU failures and targeted fixes | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| G — 160-case ARM64 benchmark | Exact candidate set, toolchain/runtime identity, complete results | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| H — Final real-game acceptance | OpenMW/OpenTTD reruns, crash count 0, result artifacts | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| I — Final performance benchmark | Repeated FAST and real-game measurements with provenance | **BLOCKED / NOT PRESENT IN THIS HEAD** |
+| J — Freeze | Zero unexplained blockers, focused/full gates green, final report committed, open critical/major issues 0 | **BLOCKED / NOT PRESENT IN THIS HEAD** |
 
-Exit requires: the A–J acceptance list; 160-case ARM64 benchmark; final real-game reruns; repeated FAST p50/p95/p99; focused and full regression gates; zero unexplained blocking failures; final report with exact source, verifier, corpus, toolchain and runtime identities; current-main reconciliation, expected-head merge, and refetched main proof. No DONE or freeze claim before these results exist.
+## Verified baseline only
+
+- `rhgrive3/actions` run `35899282597` succeeded for the OpenMW/OpenTTD baseline on `a5fd5618` and ran the 32-case FAST screen.
+- Baseline totals: OpenMW `1,845` vtables / `2,564` typeinfos; OpenTTD `200` / `354`.
+- These are historical baseline measurements, not current-main or final-product proof.
+- Existing FAST PRs `#9552–#9554` are reviewed separately as main moves.
+- Open issues `#9523`, `#9534`, and `#9550` remain external blockers owned by the user.
+
+## Merge gate
+
+Keep this PR draft and non-mergeable until the acceptance ledger is filled with actual evidence. The next accepted commit must add one verified product change (not just another status update) and record its exact changed-file inventory, candidate merge tree, focused/broad validation, updated product head, and current-main/refetched-main proof. Do not treat a green fast gate or this checkpoint alone as acceptance evidence.
