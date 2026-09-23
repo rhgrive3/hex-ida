@@ -88,8 +88,12 @@ for (const g of holdout.oneRegressionFrontierFull) {
 // deterministic comparison consistent
 assert.equal(det.deterministicScreen.total.N, 196);
 assert.ok(det.overlap.jevOnlyRescue >= 0 && det.overlap.detOnlyRescue >= 0);
-assert.equal(latency.observedLabelCalls, classification.filter((r) => typeof r.jevLatencyMs === 'number' || r.jevError).length
-  || latency.observedLabelCalls); // soft if some missing
+const derivedObservedLabelCalls = classification.filter(
+  (r) => typeof r.jevLatencyMs === 'number' || r.jevError,
+).length;
+// Fail closed on stale/fabricated latency counts: a truthy recorded count must not
+// be accepted as its own fallback when the committed projection disagrees.
+assert.equal(latency.observedLabelCalls, derivedObservedLabelCalls);
 
 // oracle bounds
 assert.ok(oracle.jevPerfectChoiceOracle.partialCorrect <= 196);
