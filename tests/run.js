@@ -4003,4 +4003,5 @@ for (const aiSuite of [
 ]) {
   await import(aiSuite);
 }
+await import('./pinpoint-jev-probe-audit.mjs');
 void currentTest;

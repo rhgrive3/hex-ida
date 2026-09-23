@@ -1,0 +1,28 @@
+{
+  "schema": "hex-pinpoint-jev-probe-audit-manifest/v1",
+  "baselineProductCommit": "433687bae4f8c958e280c656aee01b453e074f46",
+  "sourceSha256": {
+    "js/evidence.js": "5bfca6d81a422cb08d9a939198bd6a8d53bf023f9d38f6a5da7104aaef14f60b",
+    "js/pinpoint.js": "bafa4367606a74c6561b3a7ad761d96f6e1900915fcde48e9f6f03c463b0c463",
+    "js/pinpoint-legacy.js": "1ce5340e2c2c81860f5305758a1608593092914849603fe5bc85d8c699d48bea",
+    "js/pinpoint-jev-eligibility.js": "94a507cee76efc073ae8d2598349c8e5c74608e075273fccca343a28ab7431fd",
+    "scripts/measure-pinpoint-confidence.mjs": "981162efedc3712cf680d86325744dee9847312626696fc559ef2d6547fee8fd",
+    "scripts/measure-pinpoint-jev-probes.mjs": "c74cdda63636539dc05a516fc0e26ace5897f16eabcc569840686c6e3cd04acc",
+    "scripts/pinpoint-probe-scheduler.mjs": "51afb59fdee91ffbbe89d45783a403fe559801f8f10b7bb30f6a22b6ba3fabfa",
+    "scripts/compare-pinpoint-jev-schedulers.mjs": "f3a5b700c5c76082c9982d78784f65ab59c3cc7af285fdb83a8073943751c1cf",
+    "tests/pinpoint-jev-probe-audit.mjs": "34271cfd6706ec03747f9edc694f83f1d1c6d8d8c2554cc8a929ef59b65447c9",
+    "tests/fixtures/pinpoint-confidence-queries.json": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160"
+  },
+  "artifactSha256": {
+    "baseline/measurement.json": "0412b7c7ac99803347fd630709c165cde3f1191df809701165b0ef6cd0904543",
+    "baseline/rows.jsonl": "25934b7f36e7929bd5205a88ec518722b3d7b0fc26b1f53125f64a5662d6c738",
+    "focused-eligible-corpus.jsonl": "585eecf3c5cf53e9b3c2acd78b3d81b37e8c8c0a633cf59f63c9ac92de55577d",
+    "probe-catalog-v2.json": "dd12bc9afc3ed3ce2e7b8db7a1c849cf60a86cec15d19dc9e19956d37b72480d",
+    "probe-transitions.jsonl": "c24a5e0af8a51e1d1b993f51f1f0ccabe836b15c1d3cde8390fbc8d434577555",
+    "heuristic-results.json": "b9cd111edd14931fedd6693adec11d5e27d5ea1d34dd6f017fd5bc9b95a5886e",
+    "oracle-budget-results.json": "0b2b9a1cb3c299d4e5c6e5c31847248922792f18daecd2d9de03d5dad8bdb435",
+    "oracle-unbounded-results.json": "6b5fbda0638c326fee1856bcdba6eb42a732ba20571f6e1552607fc63d553b96",
+    "scheduler-comparison.json": "48a92534b3b60db9c0f91ff29b305e0a0ad0c0ec17acc43c167ddbf5c52666b2",
+    "failure-classification.json": "8a7b48e887442ad18bdf212e4a1cc238488586d1ae0936443e4ed963276c734d"
+  }
+}

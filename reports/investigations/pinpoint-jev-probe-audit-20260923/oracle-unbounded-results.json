@@ -1,0 +1,1776 @@
+{
+  "rows": [
+    {
+      "queryId": "battlecats|partial|info block",
+      "probeIds": [],
+      "top": "ADJOdmManager#48#_fetchOdmInfoBlock",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|expiration date",
+      "probeIds": [],
+      "top": "GACAppCheckToken#16#_expirationDate",
+      "topCorrect": false,
+      "truthRank": 6,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 2,
+      "reducedProbeCount": 1,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|background session",
+      "probeIds": [],
+      "top": "GTMSessionFetcher#113#_clientWillReconnectBackgroundSession",
+      "topCorrect": false,
+      "truthRank": 3,
+      "verdict": "ambiguous",
+      "margin": 1.1066638362341816,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|force view",
+      "probeIds": [],
+      "top": "_TtC22FBAudienceNetworkSwift19FBAdChainParameters#64#chainingForceViewTimes",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|browser clicked",
+      "probeIds": [],
+      "top": "_TtC16FBAdFilterEngine16FBAdFilterEngine#8#timesBrowserClicked",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "battlecats|partial|did appear",
+      "probeIds": [],
+      "top": "FBAdDSLConfiguration#16#_maxNumberOfReloadWebViewAttemptsBeforeViewDidAppear",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|html asset",
+      "probeIds": [],
+      "top": "FBAdDSLViewModel#40#_mainHTMLAsset",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|and browse",
+      "probeIds": [],
+      "top": "FBAdVideoAdView#9#_watchAndBrowseOpen",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.6050819574795623,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|store manager",
+      "probeIds": [],
+      "top": "FBAdContext#96#_appStoreManager",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|pause button",
+      "probeIds": [],
+      "top": "FBAdAdaptiveVideoAdView#128#_playPauseButton",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|current time",
+      "probeIds": [],
+      "top": "FBAdToolbarView#192#_currentTime",
+      "topCorrect": false,
+      "truthRank": 8,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 4,
+      "reducedProbeCount": 2,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|stitching token",
+      "probeIds": [],
+      "top": "APMIdentity#80#_sessionStitchingToken",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "battlecats|partial|confirming view",
+      "probeIds": [],
+      "top": "GADInternalNativeAd#8#_clickConfirmingViewObservers",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|media content",
+      "probeIds": [],
+      "top": "GADNativeAd#80#_mediaContent",
+      "topCorrect": false,
+      "truthRank": 7,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|custom close",
+      "probeIds": [],
+      "top": "GADExpandActionMonitorConfiguration#8#_customCloseBlocked",
+      "topCorrect": false,
+      "truthRank": 4,
+      "verdict": "ambiguous",
+      "margin": 0.7324081924454067,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|view updates",
+      "probeIds": [],
+      "top": "GADActiveViewReporter#17#_adViewNeedsActiveViewUpdates",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0.7324081924454067,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|preferences configuration",
+      "probeIds": [],
+      "top": "GADUserPreferences#32#_cachedPreferencesConfiguration",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "battlecats|partial|session service",
+      "probeIds": [],
+      "top": "ISMediationServices#16#_sessionHistoryService",
+      "topCorrect": false,
+      "truthRank": 11,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|status bar",
+      "probeIds": [],
+      "top": "UADSShowModuleOptions#9#_isStatusBarHidden",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|root view",
+      "probeIds": [
+        "battlecats|partial|root view|ISNSKViewControllerConfiguration#8#_useCustomRootView|setter-verification|4306152160"
+      ],
+      "top": "ISNSKViewControllerConfiguration#8#_useCustomRootView",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "confirmed",
+      "margin": 3.2111237316002175,
+      "cost": {
+        "probes": 1,
+        "calls": 1,
+        "elapsedMs": 3.12
+      },
+      "objective": [
+        0,
+        1,
+        1,
+        0,
+        -1,
+        -1,
+        -3.12
+      ],
+      "scheduler": "Oracle A",
+      "states": 4,
+      "reducedProbeCount": 2,
+      "exact": true,
+      "stopReason": "STOP_RESOLVED"
+    },
+    {
+      "queryId": "battlecats|partial|when done",
+      "probeIds": [],
+      "top": "ISAppStoreObject#8#_showStoreWhenDoneLoading",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.36620409622270245,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|unit delegate",
+      "probeIds": [],
+      "top": "LPMAdUnit#48#_adUnitLoadDelegate",
+      "topCorrect": false,
+      "truthRank": 3,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|server url",
+      "probeIds": [],
+      "top": "POBRequestBuilder#16#_adServerURL",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0.4259394092884241,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|learn more",
+      "probeIds": [],
+      "top": "POBVastPlayerView#8#_showLearnMoreOnPlayback",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|gateway enabled",
+      "probeIds": [],
+      "top": "UADSServiceProvider#8#_isAdsGatewayEnabled",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "battlecats|partial|show service",
+      "probeIds": [],
+      "top": "_TtC8UnityAds19AdObjectFactoryBase#104#adsShowServiceFactory",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.23887786125685906,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "battlecats|partial|state subject",
+      "probeIds": [],
+      "top": "_TtC8UnityAds16AdLoaderWithGate#56#stateSubject",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "battlecats|partial|type detail",
+      "probeIds": [],
+      "top": "_TtCV12VungleAdsSDK8SDKErrorP33_0D59E10B14929585062594D7B1BAC32213_StorageClass#152#_connectionTypeDetail",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "TsumTsum|partial|status bar",
+      "probeIds": [],
+      "top": "UADSShowModuleOptions#9#_isStatusBarHidden",
+      "topCorrect": false,
+      "truthRank": 8,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|media content",
+      "probeIds": [],
+      "top": "GADNativeAd#80#_mediaContent",
+      "topCorrect": false,
+      "truthRank": 7,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|view updates",
+      "probeIds": [],
+      "top": "GADActiveViewReporter#17#_adViewNeedsActiveViewUpdates",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0.7324081924454067,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|preferences configuration",
+      "probeIds": [],
+      "top": "GADUserPreferences#32#_cachedPreferencesConfiguration",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "TsumTsum|partial|tracking tokens",
+      "probeIds": [],
+      "top": "PionPRManager#80#_pendedPushTrackingTokens",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|root view",
+      "probeIds": [
+        "TsumTsum|partial|root view|ISNSKViewControllerConfiguration#8#_useCustomRootView|setter-verification|4310546960"
+      ],
+      "top": "ISNSKViewControllerConfiguration#8#_useCustomRootView",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "confirmed",
+      "margin": 3.2111237316002175,
+      "cost": {
+        "probes": 1,
+        "calls": 1,
+        "elapsedMs": 3.2
+      },
+      "objective": [
+        0,
+        1,
+        1,
+        0,
+        -1,
+        -1,
+        -3.2
+      ],
+      "scheduler": "Oracle A",
+      "states": 4,
+      "reducedProbeCount": 2,
+      "exact": true,
+      "stopReason": "STOP_RESOLVED"
+    },
+    {
+      "queryId": "TsumTsum|partial|when done",
+      "probeIds": [],
+      "top": "ISAppStoreObject#8#_showStoreWhenDoneLoading",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.36620409622270245,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|info block",
+      "probeIds": [],
+      "top": "ISTestSuiteMADUBNListener#24#_didClickWithAdInfoBlockBlock",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|screen state",
+      "probeIds": [],
+      "top": "FADSdkGlobalStateManager#24#_mainScreenStateManager",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|gateway enabled",
+      "probeIds": [],
+      "top": "UADSServiceProvider#8#_isAdsGatewayEnabled",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|show service",
+      "probeIds": [],
+      "top": "_TtC8UnityAds19AdObjectFactoryBase#104#adsShowServiceFactory",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.23887786125685906,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "TsumTsum|partial|state subject",
+      "probeIds": [],
+      "top": "_TtC8UnityAds16AdLoaderWithGate#56#stateSubject",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "TsumTsum|partial|view event",
+      "probeIds": [],
+      "top": "FADEventHub#80#_friendlyObstructionViewRegistrationEventSubscribers",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|pause button",
+      "probeIds": [],
+      "top": "FBAdAdaptiveVideoAdView#112#_playPauseButton",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|and browse",
+      "probeIds": [],
+      "top": "FBAdVideoAdView#9#_watchAndBrowseOpen",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.6050819574795623,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "TsumTsum|partial|did appear",
+      "probeIds": [],
+      "top": "FBAdDSLConfiguration#16#_maxNumberOfReloadWebViewAttemptsBeforeViewDidAppear",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|browser clicked",
+      "probeIds": [],
+      "top": "_TtC16FBAdFilterEngine16FBAdFilterEngine#8#timesBrowserClicked",
+      "topCorrect": true,
+      "truthRank": 1,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "YWP|partial|and browse",
+      "probeIds": [],
+      "top": "FBAdVideoAdView#9#_watchAndBrowseOpen",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.6050819574795623,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|view array",
+      "probeIds": [],
+      "top": "PAGWebViewPoolManager#24#_webViewArray",
+      "topCorrect": false,
+      "truthRank": 4,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|current time",
+      "probeIds": [],
+      "top": "PAGCloseButton#56#_currentTime",
+      "topCorrect": false,
+      "truthRank": 13,
+      "verdict": "ambiguous",
+      "margin": 0.23887786125685917,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 4,
+      "reducedProbeCount": 2,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|user agent",
+      "probeIds": [],
+      "top": "FBAdUtilityUserAgentProvider#24#_userAgent",
+      "topCorrect": false,
+      "truthRank": 8,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 2,
+      "reducedProbeCount": 1,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|media content",
+      "probeIds": [],
+      "top": "GADNativeAd#80#_mediaContent",
+      "topCorrect": false,
+      "truthRank": 7,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|learn more",
+      "probeIds": [],
+      "top": "POBVastPlayerView#8#_showLearnMoreOnPlayback",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|body part",
+      "probeIds": [],
+      "top": "PAG_AFMultipartBodyStream#72#_HTTPBodyPartEnumerator",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|state timer",
+      "probeIds": [],
+      "top": "PAGDynamicView#24#_videoStateTimerMutableArray",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|load finish",
+      "probeIds": [],
+      "top": "FBAdBrowserSessionData#56#_loadFinishMs",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|duration time",
+      "probeIds": [],
+      "top": "PAGMaterialMeta#840#_playableDurationTime",
+      "topCorrect": false,
+      "truthRank": 4,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|preload cache",
+      "probeIds": [],
+      "top": "GADRewardedAdPreloader#8#_preloadCache",
+      "topCorrect": false,
+      "truthRank": 4,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 4,
+      "reducedProbeCount": 2,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|star view",
+      "probeIds": [],
+      "top": "PAGAppOpenAdView#120#_starView",
+      "topCorrect": false,
+      "truthRank": 11,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|first page",
+      "probeIds": [],
+      "top": "PAGUgenRenderEngine#56#_firstPageRenderResult",
+      "topCorrect": false,
+      "truthRank": 3,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|back button",
+      "probeIds": [],
+      "top": "FBAdReportingOptionsContentView#128#_backButton",
+      "topCorrect": false,
+      "truthRank": 10,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true,
+      "stopReason": "STOP_NO_USEFUL_PROBE"
+    },
+    {
+      "queryId": "YWP|partial|show service",
+      "probeIds": [],
+      "top": "_TtC8UnityAds19AdObjectFactoryBase#32#adsShowServiceFactory",
+      "topCorrect": false,
+      "truthRank": 2,
+      "verdict": "ambiguous",
+      "margin": 0.23887786125685906,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    },
+    {
+      "queryId": "YWP|partial|state subject",
+      "probeIds": [],
+      "top": "_TtC8UnityAds16AdLoaderWithGate#56#stateSubject",
+      "topCorrect": false,
+      "truthRank": 5,
+      "verdict": "ambiguous",
+      "margin": 0,
+      "cost": {
+        "probes": 0,
+        "calls": 0,
+        "elapsedMs": 0
+      },
+      "objective": [
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0
+      ],
+      "scheduler": "Oracle A",
+      "stopReason": "STOP_NO_USEFUL_PROBE",
+      "decisions": [
+        {
+          "action": "STOP_NO_USEFUL_PROBE"
+        }
+      ],
+      "states": 1,
+      "reducedProbeCount": 0,
+      "exact": true
+    }
+  ]
+}
