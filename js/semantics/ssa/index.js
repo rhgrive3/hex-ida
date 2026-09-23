@@ -8,6 +8,7 @@ export {
   SEMANTIC_SSA_BUILD_VERSION,
   SEMANTIC_SSA_BUILD_DEFAULT_BUDGET,
   buildSemanticSsa,
+  canonicalSemanticSsaProducerBinding,
 } from './build.js';
 export {
   getSsaDefinition,
