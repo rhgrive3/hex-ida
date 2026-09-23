@@ -44,12 +44,14 @@ test('resolveDecompilerProfile: resolves presets and falls back gracefully', () 
   assert.equal(deep.renderProvenanceBudget, null);
 
   // Defaults and case-insensitivity
-  assert.equal(resolveDecompilerProfile(undefined), deep);
-  assert.equal(resolveDecompilerProfile(''), deep);
+  assert.equal(resolveDecompilerProfile(undefined), fast);
+  assert.equal(resolveDecompilerProfile(''), fast);
   assert.equal(resolveDecompilerProfile('FAST'), fast);
-  assert.equal(resolveDecompilerProfile('unknown-profile'), deep);
-  assert.equal(resolveDecompilerProfile(null), deep);
-  assert.equal(resolveDecompilerProfile(123), deep);
+  assert.equal(resolveDecompilerProfile('unknown-profile'), fast);
+  assert.equal(resolveDecompilerProfile(null), fast);
+  assert.equal(resolveDecompilerProfile(123), fast);
+  assert.equal(resolveDecompilerProfile('deep'), deep);
+  assert.equal(resolveDecompilerProfile('DEEP'), deep);
 });
 
 test('applyDecompilerProfile: applies defaults while respecting caller explicit overrides', () => {
@@ -71,13 +73,13 @@ test('applyDecompilerProfile: applies defaults while respecting caller explicit 
   assert.equal(overridden.phase8TimeBudgetMs, 30, 'unspecified property must inherit from fast preset');
   assert.deepEqual(overridden.renderProvenanceBudget, { maxTransformRecords: 64 }, 'explicit provenance budget must override preset');
 
-  // Default options preserve null/unconstrained budgets
+  // Default options inherit fast preset
   const defaultOpts = applyDecompilerProfile({});
-  assert.equal(defaultOpts.decompilerTimeBudgetMs, 250);
-  assert.equal(defaultOpts.phase8TimeBudgetMs, null);
-  assert.equal(defaultOpts.phase8WorkBudget, null);
-  assert.equal(defaultOpts.renderProvenanceBudget, null);
-  assert.equal(defaultOpts.renderProvenanceBindingBudget, null);
+  assert.equal(defaultOpts.decompilerTimeBudgetMs, 30);
+  assert.equal(defaultOpts.phase8TimeBudgetMs, 30);
+  assert.equal(defaultOpts.phase8WorkBudget, 10000);
+  assert.deepEqual(defaultOpts.renderProvenanceBudget, { maxTransformRecords: 128 });
+  assert.deepEqual(defaultOpts.renderProvenanceBindingBudget, { maxConsumers: 256 });
 });
 
 test('enhanceSemanticDecompilation: executes cleanly under profile: fast', () => {

@@ -2,8 +2,8 @@
  * Decompiler execution profiles.
  *
  * Provides pre-tuned budget configurations for different use cases:
- * - 'fast': Interactive binary exploration, game reverse engineering, rapid function hopping.
- * - 'deep': Comprehensive proof-oriented decompilation (default).
+ * - 'fast': Interactive binary exploration, game reverse engineering, rapid function hopping (default).
+ * - 'deep': Comprehensive proof-oriented decompilation.
  */
 
 export const DECOMPILER_PROFILES = Object.freeze({
@@ -27,12 +27,12 @@ export const DECOMPILER_PROFILES = Object.freeze({
 
 /**
  * Resolve a profile name to its preset settings.
- * Defaults to 'deep' if unspecified or unknown.
+ * Defaults to 'fast' if unspecified or unknown.
  */
 export function resolveDecompilerProfile(profileName) {
-  if (typeof profileName !== 'string') return DECOMPILER_PROFILES.deep;
+  if (typeof profileName !== 'string') return DECOMPILER_PROFILES.fast;
   const key = profileName.trim().toLowerCase();
-  return DECOMPILER_PROFILES[key] || DECOMPILER_PROFILES.deep;
+  return DECOMPILER_PROFILES[key] || DECOMPILER_PROFILES.fast;
 }
 
 /**
