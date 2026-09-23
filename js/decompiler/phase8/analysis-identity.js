@@ -130,6 +130,36 @@ function fastJsonTextDigest(text) {
   return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
+class FastJsonHasher {
+  constructor() {
+    this.hash0 = 0x811c9dc5;
+    this.hash1 = 0x9e3779b9;
+    this.hash2 = 0x243f6a88;
+    this.hash3 = 0xb7e15162;
+  }
+
+  update(text) {
+    let { hash0, hash1, hash2, hash3 } = this;
+    const len = text.length;
+    for (let index = 0; index < len; index += 1) {
+      const code = text.charCodeAt(index);
+      hash0 = Math.imul(hash0 ^ code, 0x01000193) >>> 0;
+      hash1 = Math.imul(hash1 ^ code, 0x85ebca6b) >>> 0;
+      hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35) >>> 0;
+      hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f) >>> 0;
+    }
+    this.hash0 = hash0;
+    this.hash1 = hash1;
+    this.hash2 = hash2;
+    this.hash3 = hash3;
+    return this;
+  }
+
+  digest() {
+    return [this.hash0, this.hash1, this.hash2, this.hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  }
+}
+
 function fastFrozenOriginDigest(value) {
   return fastJsonGraphDigest(value);
 }
@@ -143,13 +173,25 @@ function canonicalSortText(value) {
 
 function typedIdentityText(root) {
   const active = new Set();
+  const memo = new Map();
   const visit = (value) => {
-    if (value != null && typeof value === 'object' && DEEPLY_FROZEN_CACHE.get(value) === true) {
+    if (value != null && typeof value === 'object') {
+      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+        if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+        const cached = FROZEN_IDENTITY_TEXT.get(value);
+        if (cached !== undefined) return cached;
+        const memoized = memo.get(value);
+        if (memoized !== undefined) return memoized;
+        const text = encode(value);
+        memo.set(value, text);
+        if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+        return text;
+      }
       if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
-      const cached = FROZEN_IDENTITY_TEXT.get(value);
-      if (cached !== undefined) return cached;
+      const memoized = memo.get(value);
+      if (memoized !== undefined) return memoized;
       const text = encode(value);
-      if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+      memo.set(value, text);
       return text;
     }
     return encode(value);
@@ -219,8 +261,254 @@ function typedIdentityText(root) {
   return visit(root);
 }
 
+function streamIdentity(root, hasher) {
+  const active = new Set();
+  const memo = new Map();
+
+  const getSubText = (value) => {
+    if (value != null && typeof value === 'object') {
+      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+        if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+        const cached = FROZEN_IDENTITY_TEXT.get(value);
+        if (cached !== undefined) return cached;
+        const memoized = memo.get(value);
+        if (memoized !== undefined) return memoized;
+        const text = encodeToText(value);
+        memo.set(value, text);
+        if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+        return text;
+      }
+      if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+      const memoized = memo.get(value);
+      if (memoized !== undefined) return memoized;
+      const text = encodeToText(value);
+      memo.set(value, text);
+      return text;
+    }
+    return scalarToText(value);
+  };
+
+  const scalarToText = (value) => {
+    if (value === null) return 'null;';
+    switch (typeof value) {
+      case 'undefined':
+        return 'undefined;';
+      case 'function':
+      case 'symbol':
+        throw new TypeError('identity-invalid-semantic-metadata');
+      case 'string': return `string:${value.length}:${value};`;
+      case 'boolean': return value ? 'boolean:1;' : 'boolean:0;';
+      case 'number': {
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        return `number:${Object.is(value, -0) ? '-0' : String(value)};`;
+      }
+      case 'bigint': return `bigint:${value};`;
+      default: break;
+    }
+  };
+
+  const encodeScalar = (value) => {
+    if (value === null) {
+      hasher.update('null;');
+      return;
+    }
+    switch (typeof value) {
+      case 'undefined':
+        hasher.update('undefined;');
+        return;
+      case 'function':
+      case 'symbol':
+        throw new TypeError('identity-invalid-semantic-metadata');
+      case 'string':
+        hasher.update(`string:${value.length}:${value};`);
+        return;
+      case 'boolean':
+        hasher.update(value ? 'boolean:1;' : 'boolean:0;');
+        return;
+      case 'number': {
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        hasher.update(`number:${Object.is(value, -0) ? '-0' : String(value)};`);
+        return;
+      }
+      case 'bigint':
+        hasher.update(`bigint:${value};`);
+        return;
+      default: break;
+    }
+  };
+
+  const encodeToText = (value) => {
+    if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+    active.add(value);
+    try {
+      const keys = semanticOwnKeys(value);
+      const properties = (propertyKeys) => propertyKeys.length === 0 ? '' : `properties:${propertyKeys.length}{${propertyKeys.sort()
+        .map((key) => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          return `key:${key.length}:${key};${getSubText(descriptor.value)}`;
+        }).join('')}}`;
+      if (Array.isArray(value)) {
+        const ownKeys = new Set(keys);
+        let items = '';
+        for (let index = 0; index < value.length; index += 1) {
+          const key = String(index);
+          items += ownKeys.has(key) ? getSubText(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+        }
+        return `array:${value.length}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
+      }
+      if (value instanceof Map) {
+        const entries = [...value.entries()]
+          .map(([key, item]) => `${getSubText(key)}=>${getSubText(item)}`)
+          .sort();
+        return `map:${entries.length}{${entries.join('')}}${properties(keys)}`;
+      }
+      if (value instanceof Set) {
+        const values = [...value.values()].map(getSubText).sort();
+        return `set:${values.length}{${values.join('')}}${properties(keys)}`;
+      }
+      if (value instanceof Date) {
+        const iso = value.toISOString();
+        return `date:${iso.length}:${iso};${properties(keys)}`;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('identity-unsupported-semantic-metadata');
+      }
+      const sortedKeys = keys.sort();
+      return `object:${sortedKeys.length}{${sortedKeys.map((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return `key:${key.length}:${key};${getSubText(descriptor.value)}`;
+      }).join('')}}`;
+    } finally {
+      active.delete(value);
+    }
+  };
+
+  const visit = (value) => {
+    if (value != null && typeof value === 'object') {
+      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+        if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+        const cached = FROZEN_IDENTITY_TEXT.get(value);
+        if (cached !== undefined) {
+          hasher.update(cached);
+          return;
+        }
+        const memoized = memo.get(value);
+        if (memoized !== undefined) {
+          hasher.update(memoized);
+          return;
+        }
+        const text = encodeToText(value);
+        memo.set(value, text);
+        if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+        hasher.update(text);
+        return;
+      }
+      if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+      const memoized = memo.get(value);
+      if (memoized !== undefined) {
+        hasher.update(memoized);
+        return;
+      }
+      encode(value);
+      return;
+    }
+    encodeScalar(value);
+  };
+
+  const encode = (value) => {
+    if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+    active.add(value);
+    try {
+      const keys = semanticOwnKeys(value);
+      if (Array.isArray(value)) {
+        const ownKeys = new Set(keys);
+        hasher.update(`array:${value.length}[`);
+        for (let index = 0; index < value.length; index += 1) {
+          const key = String(index);
+          if (ownKeys.has(key)) {
+            visit(Object.getOwnPropertyDescriptor(value, key).value);
+          } else {
+            hasher.update('hole;');
+          }
+        }
+        hasher.update(']');
+        const nonIndexKeys = keys.filter((key) => !arrayIndexKey(key));
+        if (nonIndexKeys.length > 0) {
+          hasher.update(`properties:${nonIndexKeys.length}{`);
+          for (const key of nonIndexKeys.sort()) {
+            hasher.update(`key:${key.length}:${key};`);
+            visit(Object.getOwnPropertyDescriptor(value, key).value);
+          }
+          hasher.update('}');
+        }
+        return;
+      }
+      if (value instanceof Map) {
+        const entries = [...value.entries()]
+          .map(([key, item]) => `${getSubText(key)}=>${getSubText(item)}`)
+          .sort();
+        hasher.update(`map:${entries.length}{${entries.join('')}}`);
+        if (keys.length > 0) {
+          hasher.update(`properties:${keys.length}{`);
+          for (const key of keys.sort()) {
+            hasher.update(`key:${key.length}:${key};`);
+            visit(Object.getOwnPropertyDescriptor(value, key).value);
+          }
+          hasher.update('}');
+        }
+        return;
+      }
+      if (value instanceof Set) {
+        const values = [...value.values()].map(getSubText).sort();
+        hasher.update(`set:${values.length}{${values.join('')}}`);
+        if (keys.length > 0) {
+          hasher.update(`properties:${keys.length}{`);
+          for (const key of keys.sort()) {
+            hasher.update(`key:${key.length}:${key};`);
+            visit(Object.getOwnPropertyDescriptor(value, key).value);
+          }
+          hasher.update('}');
+        }
+        return;
+      }
+      if (value instanceof Date) {
+        const iso = value.toISOString();
+        hasher.update(`date:${iso.length}:${iso};`);
+        if (keys.length > 0) {
+          hasher.update(`properties:${keys.length}{`);
+          for (const key of keys.sort()) {
+            hasher.update(`key:${key.length}:${key};`);
+            visit(Object.getOwnPropertyDescriptor(value, key).value);
+          }
+          hasher.update('}');
+        }
+        return;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('identity-unsupported-semantic-metadata');
+      }
+      const sortedKeys = keys.sort();
+      hasher.update(`object:${sortedKeys.length}{`);
+      for (const key of sortedKeys) {
+        hasher.update(`key:${key.length}:${key};`);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        visit(descriptor.value);
+      }
+      hasher.update('}');
+    } finally {
+      active.delete(value);
+    }
+  };
+
+  visit(root);
+}
+
 function fastJsonGraphDigest(value) {
-  return fastJsonTextDigest(typedIdentityText(value));
+  const hasher = new FastJsonHasher();
+  streamIdentity(value, hasher);
+  return hasher.digest();
 }
 
 /**
@@ -775,4 +1063,4 @@ export function canonicalAnalysisIdentity(context = {}) {
   return { identity, valid: true, reason: null };
 }
 
-export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS };
+export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS, fastJsonTextDigest };
