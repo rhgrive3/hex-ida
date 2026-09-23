@@ -614,7 +614,7 @@ function methodsOfClass(fields, className) {
  *   - 値を変えそうな動詞（set / add / update / reset / consume / gain）
  *   - それ以外は最初に出てくるもの
  */
-function pickMethodsToRead(methods, goal, n) {
+export function pickMethodsToRead(methods, goal, n) {
   const scored = [];
   for (const m of methods || []) {
     if (m.addr == null || !m.sel) continue;

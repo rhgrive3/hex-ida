@@ -1,0 +1,90 @@
+{
+  "schema": "hex-pinpoint-production-probe-catalog/v2",
+  "productionCommit": "433687bae4f8c958e280c656aee01b453e074f46",
+  "baselineRows": 426,
+  "eligibleRows": 61,
+  "fixtureHashes": {
+    "battlecats": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13",
+    "TsumTsum": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3",
+    "YWP": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6"
+  },
+  "families": [
+    {
+      "family": "getter-verification",
+      "primitive": "verifyAccessor",
+      "disposition": "scored when novel"
+    },
+    {
+      "family": "setter-verification",
+      "primitive": "verifyAccessor",
+      "disposition": "scored when novel"
+    },
+    {
+      "family": "field-read-site-inspection",
+      "primitive": "verifyFunctionHandlesField/fieldUse",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "field-write-site-inspection",
+      "primitive": "verifyFunctionHandlesField/fieldUse",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "class-local-method-inspection",
+      "primitive": "verifyFunctionHandlesField",
+      "disposition": "scored when novel"
+    },
+    {
+      "family": "caller-inspection",
+      "primitive": "ProgramIndex.callersOf + verifyFunctionHandlesField",
+      "disposition": "scored when self field proven"
+    },
+    {
+      "family": "callee-inspection",
+      "primitive": "ProgramIndex.calleesOf + verifyFunctionHandlesField",
+      "disposition": "scored when self field proven"
+    },
+    {
+      "family": "local-dataflow",
+      "primitive": "findValueUpdates through fieldUse",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "read-modify-write-pattern",
+      "primitive": "verifyFunctionHandlesField",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "compare-constant-behavior",
+      "primitive": "constantComparisons through fieldUse",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "mutation-pattern",
+      "primitive": "verifyFunctionHandlesField",
+      "disposition": "inside class method probe"
+    },
+    {
+      "family": "scan-access",
+      "primitive": "scanAccess/fieldAccessMany",
+      "disposition": "index-only; unscored without receiver proof"
+    },
+    {
+      "family": "shape-evidence",
+      "primitive": "valueShapes/shapeEvidenceFor",
+      "disposition": "location primitive exists; no field scorer or receiver mapping, so no field score minted"
+    },
+    {
+      "family": "property-selector-evidence",
+      "primitive": "buildFieldCandidate",
+      "disposition": "already collected by baseline; no novel fact"
+    },
+    {
+      "family": "type-rtti-evidence",
+      "primitive": "FieldIndex metadata",
+      "disposition": "already collected by baseline; no novel fact"
+    }
+  ],
+  "probeCount": 2511,
+  "deduplication": "candidate/code and sourceIdentity; legacy baseline lacking instruction identity conservatively blocks same code"
+}
