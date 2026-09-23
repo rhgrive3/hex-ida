@@ -99,7 +99,7 @@
   "verdict": {
     "classification": "RESEARCH_ONLY",
     "candidatePredicate": "G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.",
-    "interpretation": "G28 was selected on BattleCats development data and then observed on the TsumTsum+YWP cross-binary split. This commit does not provide provenance proving the gate catalog was fixed before holdout labels were inspected, and the fixture/SDK families are shared. Treat the split as descriptive evidence, not independent validation.",
+    "interpretation": "Work-history audit proves G28 was added after TsumTsum/YWP holdout results and the strong-rescue bias had already been inspected. The final BattleCats selection and TsumTsum+YWP 14/0 result are therefore post-hoc within-corpus evidence, not independent validation.",
     "holdoutObserved": {
       "split": "development=battlecats; observed=TsumTsum+YWP",
       "selectedOn": "development with maxRegression<=1",
@@ -143,12 +143,12 @@
       }
     },
     "reasons": [
-      "Cross-binary observed result for G28 is 14 rescues / 0 regressions on TsumTsum+YWP, after development selection on BattleCats.",
+      "G28 measures 14 rescues / 0 regressions on TsumTsum+YWP, but G28 was invented after that holdout had already been inspected; treat 14/0 as post-hoc.",
       "Full corpus descriptive result is 29 rescues / 1 regression; top1 282->310; partial 53->81.",
       "No catalog gate achieves positive rescue with 0 full-corpus regression.",
       "Repeated calls show the regression choices are stable, so consistency does not filter them.",
       "The deterministic lexical screen still beats Jev overall on this generated corpus.",
-      "Fixture-generator/shared-SDK structure and missing pre-inspection provenance prevent treating this as an independent validation."
+      "Work-history audit confirms post-hoc gate construction, and fixture-generator/shared-SDK structure adds another reason this is not independent validation."
     ],
     "notGoFor": [
       "production integration before an independent free-form intent holdout",
@@ -156,7 +156,17 @@
       "ambiguous-only as a production default",
       "verdict promotion or evidence minting from Jev"
     ],
-    "recommendation": "RESEARCH_ONLY. Preserve G28_strong_only as the leading candidate and evaluate it once, unchanged, on a newly collected independent free-form intent holdout before reconsidering any production merge."
+    "recommendation": "RESEARCH_ONLY. Freeze G28_strong_only unchanged with a recorded commit/hash, then evaluate it once on a newly collected independent free-form intent holdout before reconsidering any production merge.",
+    "provenanceAudit": {
+      "status": "POST_HOC_CONFIRMED",
+      "firstHoldoutCatalog": "G0-G23",
+      "laterChanges": [
+        "G17/G18 rewritten after first holdout run",
+        "G24-G34 added after holdout inspection",
+        "G28_strong_only added after strong-rescue bias and holdout outcomes were known"
+      ],
+      "preHoldoutCatalogFreeze": false
+    }
   },
   "reproducibility": {
     "committedProjectionReplay": "node reports/investigations/jev-rescue-regression-gap/replay.mjs",
