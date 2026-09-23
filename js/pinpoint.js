@@ -87,6 +87,33 @@ export function byRecallLane(a, b) {
     || (b.fusion.logOdds - a.fusion.logOdds);
 }
 
+/**
+ * Deterministic <=255 shortlist for external Jev assistance.
+ * Takes the candidates array (budget up to 400), preserves existing Hex score
+ * order with stable tiebreak on candidate key/id/address, and bounds to max (<=255).
+ * The full candidate lattice is NOT pruned; only the Jev request uses the shortlist.
+ */
+export function jevShortlist(candidates, opts = {}) {
+  if (!Array.isArray(candidates) || !candidates.length) return [];
+  const max = Math.max(1, Math.min(255, Number.isSafeInteger(opts?.max) ? opts.max : 64));
+  return candidates.slice().sort((a, b) => {
+    // If candidates have an explicit input index, preserve existing rank order as primary
+    const idxA = Number.isInteger(a?.index) ? a.index : null;
+    const idxB = Number.isInteger(b?.index) ? b.index : null;
+    if (idxA !== null && idxB !== null && idxA !== idxB) return idxA - idxB;
+
+    const scoreA = Number.isFinite(a?.fusion?.logOdds) ? a.fusion.logOdds : (Number.isFinite(a?.score) ? a.score : 0);
+    const scoreB = Number.isFinite(b?.fusion?.logOdds) ? b.fusion.logOdds : (Number.isFinite(b?.score) ? b.score : 0);
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    const laneA = a?.recallLane ? 1 : 0;
+    const laneB = b?.recallLane ? 1 : 0;
+    if (laneA !== laneB) return laneA - laneB;
+    const keyA = String(a?.key ?? a?.id ?? a?.addr ?? a?.fieldName ?? '');
+    const keyB = String(b?.key ?? b?.id ?? b?.addr ?? b?.fieldName ?? '');
+    return keyA.localeCompare(keyB);
+  }).slice(0, max);
+}
+
 // The public facade accepts only safe, non-negative integer limits. Explicit
 // zero is meaningful; malformed values use the historical default rather than
 // reaching Array#slice coercion or relative-index semantics.
