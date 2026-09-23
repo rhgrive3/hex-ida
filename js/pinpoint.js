@@ -312,10 +312,20 @@ function shapeMutationSites(shapes, offset) {
   if (!Number.isFinite(wanted)) return [];
   const out = [];
   const seen = new Set();
+  let family = null;
+  let hasFamily = false;
   for (const entry of shapes.values()) {
     if (!entry || Number(entry.offset) !== wanted) continue;
+    const entryFamily = entry.identity ?? null;
     for (const site of entry.sites || []) {
       if (site?.addr == null) continue;
+      if (!hasFamily) {
+        family = entryFamily;
+        hasFamily = true;
+      } else if (family !== entryFamily) {
+        // Equal displacements in different objects cannot identify this field.
+        return [];
+      }
       const key = site.addr.toString();
       if (seen.has(key)) continue;
       seen.add(key);

@@ -507,7 +507,8 @@ async function readAtAddress(msg, signal) {
   if (hit.region) available = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
   const length = Number(available < BigInt(requested) ? available : BigInt(requested));
   const bytes = (await readFileRange(hit.offset, length, signal)).slice();
-  const result = { found: true, region: hit.region?.name || null, fileOffset: hit.offset, bytes };
+  const result = { found: true, region: hit.region?.name || null, fileOffset: hit.offset, bytes,
+    transferredOwnedBytes: true };
   if (msg.text) {
     const end = bytes.indexOf(0);
     result.text = decoder.decode(end >= 0 ? bytes.subarray(0, end) : bytes);
