@@ -48,5 +48,8 @@ test('issue #9481: source-file close failure does not strand parent directory de
   try { handle.close(); } catch {}
   assert.ok(closedFds.filter(fd => fd === parentFd).length === 1, 'parentFd must not be closed multiple times');
 
+  // The injected close failure leaves the real file descriptor open. Release
+  // it before cleanup so filesystems that reject removal of open files work.
+  fs.closeSync(fileFd);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
