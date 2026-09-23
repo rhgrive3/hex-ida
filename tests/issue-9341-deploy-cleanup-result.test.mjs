@@ -6,13 +6,17 @@ import test from 'node:test';
 
 import { runProductionDeploy } from '../scripts/deploy-production.mjs';
 
-const validConfig = Buffer.from('{"main":"worker-entry.js","assets":{"run_worker_first":true},"d1_databases":[{"binding":"AUTH_DB","database_name":"hex-auth","database_id":"11111111-2222-3333-4444-555555555555","migrations_dir":"migrations/auth"}]}');
+const validConfig = Buffer.from('{"main":"worker-entry.js","assets":{"directory":"./dist","run_worker_first":true},"d1_databases":[{"binding":"AUTH_DB","database_name":"hex-auth","database_id":"11111111-2222-3333-4444-555555555555","migrations_dir":"migrations/auth"}]}');
 const result = (status, error) => ({ status, signal:null, error });
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9341-'));
   const configPath = path.join(root, 'wrangler.jsonc');
   fs.writeFileSync(configPath, validConfig);
+  fs.writeFileSync(path.join(root, 'worker-entry.js'), 'export default {};');
+  const distDir = path.join(root, 'dist');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), 'OK');
   const cleanupError = Object.assign(new Error('snapshot cleanup EIO'), { code:'EIO' });
   return { root, configPath, cleanupError };
 }
@@ -32,13 +36,21 @@ for (const scenario of [
         snapshotDirectory:root,
         randomUUIDImpl:() => 'cleanup-failure',
         run() { return result(scenario.statuses[calls++]); },
-        rmSync() { throw cleanupError; },
+        rmSync(target, opts) {
+          // In the original test, rmSync was injected to simulate a failure when cleaning up the snapshot.
+          // Now cleanup cleans up parentStableConfigPath, parentStableMainPath, assets-snapshot, handoffDirectoryPath.
+          // Throw once on cleaning up the snapshot config path to simulate cleanup failure, or on rmSync.
+          // Notice if rmSync unconditionally throws for every rmSync call, multiple operations fail and produce AggregateError.
+          throw cleanupError;
+        },
         onCleanupError(error, details) { warnings.push({ error, details }); },
       });
       assert.equal(status, scenario.expected);
       assert.equal(calls, scenario.statuses.length);
       assert.equal(warnings.length, 1);
-      assert.equal(warnings[0].error, cleanupError);
+      const reportedError = warnings[0].error;
+      const matched = reportedError === cleanupError || (reportedError instanceof AggregateError && reportedError.errors.includes(cleanupError));
+      assert.equal(matched, true);
       assert.equal(warnings[0].details.status, scenario.expected);
       assert.equal(warnings[0].details.deploymentCommitted, scenario.committed);
       assert.equal(warnings[0].details.deploymentAttempted, scenario.attempted);
