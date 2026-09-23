@@ -645,7 +645,7 @@ function rescuesIn(subset) { return subset.filter((f) => f.classification === 'R
 // Holdout protocol:
 // Split A (primary): development = battlecats, holdout = TsumTsum + YWP
 // Split B: leave-one-binary-out folds
-// Split C: query-family holdout — families present only in one binary go wholly to one side
+// Query-family features are diagnostics only. No independent query-family holdout is implemented here.
 const devSet = featureRows.filter((f) => f.binary === 'battlecats');
 const holdSet = featureRows.filter((f) => f.binary !== 'battlecats');
 const byBinary = {
@@ -655,7 +655,7 @@ const byBinary = {
 };
 
 // Pre-registered selection objective on development:
-// maximize rescue-w2c with constraint regression-c2w <= maxReg (0 or 1), tie-break higher net, then fewer triggers, then gate id.
+// maximize net with constraint regression-c2w <= maxReg (0 or 1), then prefer more rescues, fewer regressions/triggers, then gate id.
 function selectGate(subset, maxReg) {
   const evaluated = GATES.map((g) => applyGate(g, subset));
   const feasible = evaluated.filter((e) => e.correctToWrong <= maxReg);
@@ -679,7 +679,7 @@ function evalOn(holdout, gate) {
   const r = applyGate(g, holdout);
   // overall projected top1 = exact unchanged + partial after gate
   const exactCorrect = exactRows.filter((x) => x.topCorrect).length;
-  const overallTop1 = exactCorrect + r.correctAfter;
+  const exactPlusEvaluatedPartial = exactCorrect + r.correctAfter;
   const falseStrongAfter = holdout.filter((f) => {
     // false strong after gate: still wrong top1 and still strong (verdict unchanged by design)
     return !r.rows.find((x) => x.id === f.id).topCorrectAfter && f.strong;
@@ -687,7 +687,7 @@ function evalOn(holdout, gate) {
   const baselineFalseStrongHold = holdout.filter((f) => !f.baselineCorrect && f.strong).length;
   const strongOverwritten = holdout.filter((f) => f.strong && r.rows.find((x) => x.id === f.id).fired).length;
   const strongBroken = holdout.filter((f) => f.strong && f.baselineCorrect && r.rows.find((x) => x.id === f.id).fired && !r.rows.find((x) => x.id === f.id).topCorrectAfter).length;
-  return { ...r, overallTop1Projected: overallTop1, falseStrongAfter, baselineFalseStrongHold, strongOverwritten, strongBroken };
+  return { ...r, exactPlusEvaluatedPartial, falseStrongAfter, baselineFalseStrongHold, strongOverwritten, strongBroken };
 }
 
 const holdoutResults = {
@@ -695,7 +695,7 @@ const holdoutResults = {
   protocol: {
     primary: 'development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates',
     loo: 'leave-one-binary-out: select on two binaries, evaluate on the third',
-    queryFamily: 'query families defined by tail-2-token key; families exclusive to battlecats form development when possible',
+    queryFamily: 'diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented',
     forbidden: 'thresholds are not hand-tuned after holdout inspection; catalog is fixed in source',
   },
   splits: {
@@ -722,7 +722,7 @@ const holdoutResults = {
       overallTop1Projected: exactCorrect + r.correctAfter,
       partialTop1Projected: r.correctAfter,
       strongOverwritten: featureRows.filter((f) => f.strong && GATES.find((x) => x.id === g.id).pred(f)).length,
-      falseStrongDelta: 0, // verdict policy unchanged by design
+      verdictPromotions: 0, // preference-only; verdict labels are unchanged by design
     };
   }),
 };
@@ -1053,10 +1053,77 @@ evalSummary.primaryAnswers = {
   },
   oneRegressionDevSelected: devOne.selected && {
     gateId: devOne.selected.gateId,
-    development: pickGate(devZero.selected && devOne.selected),
+    development: pickGate(devOne.selected),
     holdout: primaryGate1 && pickGate(primaryGate1),
     fullCorpus: pickGate(holdoutResults.allGatesFullCorpus.find((g) => g.gateId === devOne.selected.gateId)),
   },
+};
+const g28Full = holdoutResults.allGatesFullCorpus.find((g) => g.gateId === 'G28_strong_only');
+const baselineFalseStrongPartial = featureRows.filter((f) => f.strong && !f.baselineCorrect).length;
+const g28FalseStrongAfter = featureRows.filter((f) => f.strong && !f.jevCorrect).length;
+evalSummary.reproducibility = {
+  committedProjectionReplay: 'node reports/investigations/jev-rescue-regression-gap/replay.mjs',
+  rawBaselineRowsCommitted: false,
+  rawLiveCheckpointCommitted: false,
+  scope: 'The committed projection can replay baseline/force-all/G28 summary metrics; raw live API responses and the 3.7 MB baseline rows remain external evidence and are not independently replayable from this PR alone.',
+};
+evalSummary.verdict = {
+  classification: 'RESEARCH_ONLY',
+  candidatePredicate: 'G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.',
+  interpretation: 'G28 was selected on BattleCats development data and then observed on the TsumTsum+YWP cross-binary split. This commit does not provide provenance proving the gate catalog was fixed before holdout labels were inspected, and the fixture/SDK families are shared. Treat the split as descriptive evidence, not independent validation.',
+  holdoutObserved: primaryGate1 && {
+    split: 'development=battlecats; observed=TsumTsum+YWP',
+    selectedOn: 'development with maxRegression<=1',
+    gateId: primaryGate1.gateId,
+    rescue: primaryGate1.wrongToCorrect,
+    regression: primaryGate1.correctToWrong,
+    triggered: primaryGate1.triggered,
+    partialCorrectAfter: primaryGate1.correctAfter,
+    partialBaseline: primaryGate1.baselineCorrect,
+  },
+  fullCorpusDescriptive: g28Full && {
+    gateId: g28Full.gateId,
+    rescue: g28Full.wrongToCorrect,
+    regression: g28Full.correctToWrong,
+    triggered: g28Full.triggered,
+    top1After: g28Full.overallTop1Projected,
+    top1Baseline: baseline.top1,
+    partialAfter: g28Full.correctAfter,
+    partialBaseline: baseline.partial.top1,
+  },
+  falseStrongAccounting: {
+    baselinePartial: baselineFalseStrongPartial,
+    g28AfterPartial: g28FalseStrongAfter,
+    delta: g28FalseStrongAfter - baselineFalseStrongPartial,
+    corrected: featureRows.filter((f) => f.strong && !f.baselineCorrect && f.jevCorrect).length,
+    newlyBroken: featureRows.filter((f) => f.strong && f.baselineCorrect && !f.jevCorrect).length,
+    verdictPromotions: 0,
+  },
+  zeroRegression: {
+    primarySelectionObserved: primaryGate0 && {
+      gateId: primaryGate0.gateId,
+      rescue: primaryGate0.wrongToCorrect,
+      regression: primaryGate0.correctToWrong,
+      note: 'Dev-selected maxReg=0 gate does NOT stay at 0 on the cross-binary observed split',
+    },
+    fullCorpusPositiveRescueWithZeroReg: false,
+    bestNearZero: g28Full && { gateId: g28Full.gateId, fullRescue: g28Full.wrongToCorrect, fullRegression: g28Full.correctToWrong },
+  },
+  reasons: [
+    'Cross-binary observed result for G28 is 14 rescues / 0 regressions on TsumTsum+YWP, after development selection on BattleCats.',
+    'Full corpus descriptive result is 29 rescues / 1 regression; top1 282->310; partial 53->81.',
+    'No catalog gate achieves positive rescue with 0 full-corpus regression.',
+    'Repeated calls show the regression choices are stable, so consistency does not filter them.',
+    'The deterministic lexical screen still beats Jev overall on this generated corpus.',
+    'Fixture-generator/shared-SDK structure and missing pre-inspection provenance prevent treating this as an independent validation.',
+  ],
+  notGoFor: [
+    'production integration before an independent free-form intent holdout',
+    'force-all partial rerank',
+    'ambiguous-only as a production default',
+    'verdict promotion or evidence minting from Jev',
+  ],
+  recommendation: 'RESEARCH_ONLY. Preserve G28_strong_only as the leading candidate and evaluate it once, unchanged, on a newly collected independent free-form intent holdout before reconsidering any production merge.',
 };
 // re-write evaluation with answers
 write('evaluation-summary.json', evalSummary);
