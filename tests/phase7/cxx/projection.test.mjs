@@ -303,6 +303,33 @@ test('the receiver alias closure follows a spill and reload of `this`', async ()
     'the reloaded receiver is a member base, the unrelated value is not');
 });
 
+test('a reused receiver spill slot does not alias an unrelated pointer', async () => {
+  const probe = await rttiProbe();
+  const provider = providerFor(probe);
+  await provider.build();
+
+  const ir = {
+    values: [{ id: 'arg0', kind: 'arg', reg: 'x0', bits: 64 }],
+    instructions: [
+      { op: 'store', id: 's0', loc: { kind: 'stack', base: { reg: 'sp' }, disp: -8n }, args: [{ value: { id: 'arg0' } }] },
+      { op: 'store', id: 's1', loc: { kind: 'stack', base: { reg: 'sp' }, disp: -8n }, args: [{ value: { id: 'otherPointer' } }] },
+      { op: 'load', id: 'l0', loc: { kind: 'stack', base: { reg: 'sp' }, disp: -8n }, dst: { id: 'reloaded', bits: 64 } },
+      { op: 'load', id: 'l1', loc: { kind: 'field', base: { id: 'reloaded' }, disp: 0x20n, size: 4 }, dst: { id: 'fieldValue', bits: 32 } },
+    ],
+  };
+
+  const projection = provider.projectForFunction({
+    functionId: 'fn:player-take-damage',
+    functionAddress: symbolAddress(probe, '_ZN6Player10takeDamageEi'),
+    functionName: '_ZN6Player10takeDamageEi',
+    ir,
+  });
+
+  assert.ok(projection, 'the receiver itself is still proven');
+  assert.deepEqual(projection.members, [],
+    'a stack slot reused for a non-receiver value must not mint member evidence');
+});
+
 test('a member set cannot be replayed against another receiver', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);
