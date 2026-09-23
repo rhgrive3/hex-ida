@@ -18,9 +18,11 @@ export const CPP_RECEIVER_SCHEMA = 'cpp-receiver-evidence/v1';
 export const CPP_CLASS_IDENTITY_SCHEMA = 'cpp-class-identity/v1';
 export const CPP_VTABLE_SCHEMA = 'cpp-vtable-evidence/v1';
 export const CPP_VIRTUAL_SLOT_SCHEMA = 'cpp-virtual-slot-evidence/v1';
+export const CPP_CANONICAL_MEMBER_SCHEMA = 'cpp-canonical-member-evidence/v1';
 
 const canonicalCppReceiverEvidence = new WeakSet();
 const canonicalCppVirtualSlotEvidence = new WeakSet();
+const canonicalCppMemberEvidence = new WeakSet();
 
 export function isCanonicalCppReceiverEvidence(value) {
   return value !== null && typeof value === 'object' && canonicalCppReceiverEvidence.has(value);
@@ -28,6 +30,16 @@ export function isCanonicalCppReceiverEvidence(value) {
 
 export function isCanonicalCppVirtualSlotEvidence(value) {
   return value !== null && typeof value === 'object' && canonicalCppVirtualSlotEvidence.has(value);
+}
+
+/**
+ * True only for member evidence issued by `createCppMemberEvidence` in this
+ * process. A serialized or hand-built record shaped like member evidence — the
+ * obvious way to forge `this->health` as `float` — never passes, exactly like
+ * the receiver and virtual-slot guards.
+ */
+export function isCanonicalCppMemberEvidence(value) {
+  return value !== null && typeof value === 'object' && canonicalCppMemberEvidence.has(value);
 }
 
 function fail(code, detail = '') {
@@ -289,6 +301,101 @@ export function createCppVirtualSlotEvidence(input = {}) {
   record.digest = stableDigest(record);
   const canonical = deepFreeze(record);
   canonicalCppVirtualSlotEvidence.add(canonical);
+  return canonical;
+}
+
+/**
+ * Creates an immutable canonical member (field) evidence record.
+ *
+ * A member record states three separate things, and keeping them separate is
+ * the point:
+ *
+ * - `accessProven`: the function really reads or writes `this + offsetBytes`, so
+ *   the *offset* is binary-grounded;
+ * - `typeProven`: the access shape proves a *type category*. It is false for a
+ *   width-only or contradictory access, and a consumer that renders a type must
+ *   require it rather than defaulting to one;
+ * - the record never carries a field *name*. A proven offset and a proven type
+ *   do not make `this->health` correct, so no name is minted here.
+ *
+ * `receiverDigest` and `functionId` bind the member to the exact receiver
+ * evidence it was derived from, so a member set cannot be replayed against
+ * another function or another receiver.
+ */
+export function createCppMemberEvidence(input = {}) {
+  if (!input || typeof input !== 'object') fail('cpp-member-input-invalid');
+
+  const functionId = typeof input.functionId === 'string' && input.functionId.trim()
+    ? input.functionId.trim() : fail('cpp-member-function-id-required');
+
+  const receiverDigest = typeof input.receiverDigest === 'string' && input.receiverDigest.trim()
+    ? input.receiverDigest.trim() : fail('cpp-member-receiver-digest-required');
+
+  const snapshotId = typeof input.snapshotId === 'string' && input.snapshotId.trim()
+    ? input.snapshotId.trim() : fail('cpp-member-snapshot-id-required');
+
+  // A member without a location cannot be binary-grounded, and `nonNegativeBigInt`
+  // returns null rather than throwing for a missing value, so an absent offset
+  // must be rejected here — exactly as `createCppVtableEvidence` does for its own
+  // address. Otherwise the record would carry
+  // `accessProven: true, offsetBytes: null`, which claims a proven access to a
+  // place the record does not name.
+  if (input.offsetBytes == null) fail('cpp-member-offset-invalid', 'offset is required');
+  const offsetBytes = nonNegativeBigInt(input.offsetBytes, 'cpp-member-offset-invalid');
+  if (offsetBytes == null) fail('cpp-member-offset-invalid', 'offset is required');
+
+  const sizeBytes = Number.isSafeInteger(input.sizeBytes) && input.sizeBytes >= 0 && input.sizeBytes <= 64
+    ? input.sizeBytes : fail('cpp-member-size-invalid');
+
+  const category = typeof input.category === 'string' && input.category.trim()
+    ? input.category.trim() : null;
+  const typeLabel = typeof input.typeLabel === 'string' && input.typeLabel.trim()
+    ? input.typeLabel.trim() : null;
+
+  // A label without a category would be a name-shaped claim with no rule behind
+  // it, so the two are required together or not at all.
+  if ((category == null) !== (typeLabel == null)) {
+    fail('cpp-member-type-and-category-must-agree');
+  }
+  const typeProven = category != null;
+
+  // Every record cites either the rule that proved its type or the reason no
+  // type could be proven. "Unclassified" is a result, not an omission.
+  const rule = typeof input.rule === 'string' && input.rule ? input.rule : null;
+  const reason = input.reason ? String(input.reason) : null;
+  if (typeProven && !rule) fail('cpp-member-rule-required');
+  if (!typeProven && !reason) fail('cpp-member-unproven-reason-required');
+
+  const readCount = Number.isSafeInteger(input.readCount) && input.readCount >= 0 ? input.readCount : 0;
+  const writeCount = Number.isSafeInteger(input.writeCount) && input.writeCount >= 0 ? input.writeCount : 0;
+  if (readCount + writeCount === 0) fail('cpp-member-access-count-required');
+
+  const record = {
+    schema: CPP_CANONICAL_MEMBER_SCHEMA,
+    functionId,
+    receiverDigest,
+    snapshotId,
+    offsetBytes,
+    sizeBytes,
+    accessProven: true,
+    typeProven,
+    category,
+    typeLabel,
+    signedness: input.signedness ? String(input.signedness) : null,
+    categoryCandidates: Array.isArray(input.categoryCandidates)
+      ? Object.freeze([...new Set(input.categoryCandidates.map(String))].sort())
+      : Object.freeze([]),
+    mixedWidths: input.mixedWidths === true,
+    widthOnly: input.widthOnly === true,
+    indexed: input.indexed === true,
+    readCount,
+    writeCount,
+    rule,
+    reason,
+  };
+  record.digest = stableDigest(record);
+  const canonical = deepFreeze(record);
+  canonicalCppMemberEvidence.add(canonical);
   return canonical;
 }
 

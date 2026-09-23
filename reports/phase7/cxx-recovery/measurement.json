@@ -1,13 +1,14 @@
 {
   "schema": "cxx-recovery-measurement/v1",
-  "generatedAt": "2026-09-22T16:57:09.330Z",
+  "generatedAt": "2026-09-23T02:33:07.129Z",
   "toolchain": {
-    "objdump": "llvm-objdump",
+    "objdump": "llvm-objdump-18",
+    "objdumpVersion": "Ubuntu LLVM version 18.1.3",
     "node": "v24.20.0"
   },
   "fixtures": {
     "game-rtti-o2": {
-      "bytes": 7616,
+      "bytes": 7696,
       "before": {
         "classesWithName": 8,
         "abiImplementationClasses": 3,
@@ -75,10 +76,134 @@
         "typedFieldCount": 1,
         "widthOnlyFieldCount": 1,
         "unknownFieldCount": 0
+      },
+      "pipelineMemberTypes": {
+        "fields": 6,
+        "typedFieldCount": 6,
+        "widthOnlyFieldCount": 0,
+        "unknownFieldCount": 0,
+        "functions": [
+          {
+            "symbol": "_ZN6Player10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN9Component4tickEv",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0xc",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x18",
+                "size": 4,
+                "type": "float",
+                "category": "float",
+                "typeProven": true,
+                "rule": "vector-register-flow",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6PlayerC1Ev",
+            "status": "no-receiver-proof",
+            "receiverProven": false,
+            "fields": 0,
+            "details": []
+          },
+          {
+            "symbol": "_ZN6EntityD1Ev",
+            "status": "no-receiver-proof",
+            "receiverProven": false,
+            "fields": 0,
+            "details": []
+          }
+        ]
       }
     },
     "game-rtti-o0": {
-      "bytes": 9200,
+      "bytes": 9280,
       "before": {
         "classesWithName": 8,
         "abiImplementationClasses": 3,
@@ -197,10 +322,134 @@
         "typedFieldCount": 1,
         "widthOnlyFieldCount": 4,
         "unknownFieldCount": 0
+      },
+      "pipelineMemberTypes": {
+        "fields": 6,
+        "typedFieldCount": 6,
+        "widthOnlyFieldCount": 0,
+        "unknownFieldCount": 0,
+        "functions": [
+          {
+            "symbol": "_ZN6Player10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN9Component4tickEv",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0xc",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x18",
+                "size": 4,
+                "type": "float",
+                "category": "float",
+                "typeProven": true,
+                "rule": "vector-register-flow",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6PlayerC1Ev",
+            "status": "no-receiver-proof",
+            "receiverProven": false,
+            "fields": 0,
+            "details": []
+          },
+          {
+            "symbol": "_ZN6EntityD1Ev",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 0,
+            "details": []
+          }
+        ]
       }
     },
     "game-nortti-o2": {
-      "bytes": 6456,
+      "bytes": 6536,
       "before": {
         "classesWithName": 8,
         "abiImplementationClasses": 3,
@@ -235,28 +484,152 @@
         "typedFieldCount": 0,
         "widthOnlyFieldCount": 0,
         "unknownFieldCount": 0
+      },
+      "pipelineMemberTypes": {
+        "fields": 6,
+        "typedFieldCount": 6,
+        "widthOnlyFieldCount": 0,
+        "unknownFieldCount": 0,
+        "functions": [
+          {
+            "symbol": "_ZN6Player10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor10takeDamageEi",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN9Component4tickEv",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x8",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6Entity6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0xc",
+                "size": 4,
+                "type": "int32_t|uint32_t",
+                "category": "int32",
+                "typeProven": true,
+                "rule": "word-access",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN5Actor6updateEf",
+            "status": "ok",
+            "receiverProven": true,
+            "fields": 1,
+            "details": [
+              {
+                "offset": "0x18",
+                "size": 4,
+                "type": "float",
+                "category": "float",
+                "typeProven": true,
+                "rule": "vector-register-flow",
+                "reason": null
+              }
+            ]
+          },
+          {
+            "symbol": "_ZN6PlayerC1Ev",
+            "status": "no-receiver-proof",
+            "receiverProven": false,
+            "fields": 0,
+            "details": []
+          },
+          {
+            "symbol": "_ZN6EntityD1Ev",
+            "status": "no-receiver-proof",
+            "receiverProven": false,
+            "fields": 0,
+            "details": []
+          }
+        ]
       }
     }
   },
   "performance": {
     "baselineSymbolOnly": {
       "iterations": 300,
-      "totalMs": 197.7,
-      "meanMs": 0.659
+      "totalMs": 199.93,
+      "meanMs": 0.6664
     },
     "cxxRecoveryEnabled": {
       "iterations": 300,
-      "totalMs": 162.787,
-      "meanMs": 0.5426
+      "totalMs": 150.597,
+      "meanMs": 0.502
     },
-    "meanRatio": 0.82
+    "meanRatio": 0.75
   },
   "noEvidenceCost": {
     "emptyTable": {
       "latency": {
         "iterations": 300,
-        "totalMs": 2.325,
-        "meanMs": 0.0078
+        "totalMs": 2.223,
+        "meanMs": 0.0074
       },
       "classesFound": 0,
       "reads": 0
@@ -265,8 +638,8 @@
       "symbolCount": 50000,
       "latency": {
         "iterations": 75,
-        "totalMs": 42.443,
-        "meanMs": 0.5659
+        "totalMs": 43.446,
+        "meanMs": 0.5793
       },
       "reads": 0
     }
@@ -275,6 +648,9 @@
     "BEFORE reflects main capability: findCxxClasses (symbol-only) plus readVtable with a fixed slot cap.",
     "AFTER is buildCxxClassEvidence + resolveVirtualTargetSet + recoverMemberTypeEvidence.",
     "Member types are measured on IR built from llvm-objdump disassembly of the linked fixture.",
-    "classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false."
+    "pipelineMemberTypes measures the same evidence through the canonical analysis entrypoint with a provider built from the fixture, i.e. the path a consumer actually reads. It only counts functions whose receiver is proven, so a free `Class*` accessor contributes nothing.",
+    "classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false.",
+    "Disassembly is fetched by symbol name; a name that yields no rows is retried over the declared symbol-table address range, so constructor/destructor aliases are measured instead of silently reported as unavailable.",
+    "toolchain.objdumpVersion is recorded because LLVM 14 cannot disassemble an aliased symbol by name at all; a run without the address-range fallback and without LLVM 18 under-reports members."
   ]
 }

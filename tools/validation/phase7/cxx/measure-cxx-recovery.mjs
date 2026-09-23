@@ -25,6 +25,9 @@ import { fileURLToPath } from 'node:url';
 
 import { openCxxFixture } from '../../../../tests/phase7/cxx/fixtures/open.mjs';
 import { buildCxxFixtures } from '../../../../tests/phase7/cxx/fixtures/build.mjs';
+import { parseOperands } from '../../../../js/arm64.js';
+import { analyzeSemanticFunction } from '../../../../js/analysis/semantic-function.js';
+import { createCxxEvidenceProvider } from '../../../../js/analysis/cxx/project.js';
 import { findCxxClasses, readVtable } from '../../../../js/rtti.js';
 import { buildCxxClassEvidence } from '../../../../js/analysis/cxx/rtti-evidence.js';
 import { resolveVirtualTargetSet } from '../../../../js/analysis/cxx/virtual-dispatch.js';
@@ -50,6 +53,20 @@ const MEMBER_FUNCTIONS = Object.freeze({
   ],
   'game-rtti-o2': ['_Z10readHealthP6Entity', '_Z9readSpeedP5Actor'],
 });
+
+// Real member functions (not free `Class*` accessors): the projection seam only
+// claims a member when `this` itself is proven, so these are the functions whose
+// member evidence can reach a consumer.
+const PIPELINE_MEMBER_FUNCTIONS = Object.freeze([
+  '_ZN6Player10takeDamageEi',
+  '_ZN6Entity10takeDamageEi',
+  '_ZN5Actor10takeDamageEi',
+  '_ZN9Component4tickEv',
+  '_ZN6Entity6updateEf',
+  '_ZN5Actor6updateEf',
+  '_ZN6PlayerC1Ev',
+  '_ZN6EntityD1Ev',
+]);
 
 function parseArgs(argv) {
   const options = { json: path.join(ROOT, 'reports/phase7/cxx-recovery/measurement.json'), iterations: 300 };
@@ -188,22 +205,26 @@ function objdumpPath() {
   // The selector is `--disassemble-symbols=`. Verified against LLVM 14.0.0 and
   // LLVM 18.1.3: both reject `--disassemble=<symbol>` with
   // `error: unknown argument`, so the alias is not a usable substitute here.
-  const candidates = [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'llvm-objdump-18'];
+  //
+  // The versioned binary is preferred because LLVM 14 silently emits no rows for
+  // a symbol that shares its address with another symbol (the C1/C2 and D1/D2
+  // constructor/destructor aliases), which would drop every constructor and
+  // destructor from the measurement without any error.
+  const candidates = [process.env.LLVM_OBJDUMP, 'llvm-objdump-18', 'llvm-objdump'];
   for (const candidate of candidates) {
     if (!candidate) continue;
     const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
     if (probe.status !== 0) continue;
-    if (!/LLVM/i.test(probe.stdout || '')) continue;
-    return candidate;
+    const banner = (probe.stdout || '').split('\n')[0].trim();
+    if (!/LLVM/i.test(banner)) continue;
+    return { path: candidate, version: banner };
   }
   return null;
 }
 
-function disassembleFunction(elfPath, symbol, objdump) {
-  const result = spawnSync(objdump, ['--disassemble-symbols=' + symbol, '--no-show-raw-insn', elfPath], { encoding: 'utf8' });
-  if (result.status !== 0) return null;
+function parseDisassemblyRows(stdout) {
   const rows = [];
-  for (const line of (result.stdout || '').split('\n')) {
+  for (const line of (stdout || '').split('\n')) {
     const match = /^\s*([0-9a-f]+):\s+([a-z][\w.]*)\s*(.*)$/.exec(line);
     if (!match) continue;
     const address = BigInt(`0x${match[1]}`);
@@ -211,7 +232,51 @@ function disassembleFunction(elfPath, symbol, objdump) {
     const operands = match[3].replace(/\s*\/\/.*$/, '').trim();
     rows.push({ row: rows.length, address, mn: mnemonic, ops: operands });
   }
-  return rows.length ? rows : null;
+  return rows;
+}
+
+function runDisassembly(objdumpPath, args, elfPath) {
+  const result = spawnSync(objdumpPath, [...args, '--no-show-raw-insn', elfPath], { encoding: 'utf8' });
+  if (result.status !== 0) return [];
+  return parseDisassemblyRows(result.stdout);
+}
+
+/**
+ * Disassembles one function by name, falling back to its symbol-table address
+ * range when the name selector yields nothing.
+ *
+ * The fallback is not decoration: a constructor/destructor alias cannot be
+ * measured by name on LLVM 14 at all, and "no rows" is indistinguishable from a
+ * function this fixture does not contain. Falling back to the declared address
+ * range makes the measurement toolchain-independent instead of leaving the
+ * `receiverProven` constructor path unmeasured, and it never invents a range —
+ * an unknown or zero-sized symbol still yields null.
+ */
+function disassembleFunction(elfPath, symbol, objdumpPath, symbolInfo = null) {
+  const byName = runDisassembly(objdumpPath, ['--disassemble-symbols=' + symbol], elfPath);
+  if (byName.length) return byName;
+
+  const address = symbolInfo?.address ?? null;
+  const size = symbolInfo?.size ?? null;
+  if (address == null || !Number.isSafeInteger(size) || size <= 0) return null;
+
+  const start = `0x${address.toString(16)}`;
+  const stop = `0x${(address + BigInt(size)).toString(16)}`;
+  const byRange = runDisassembly(objdumpPath, ['--start-address=' + start, '--stop-address=' + stop], elfPath);
+  return byRange.length ? byRange : null;
+}
+
+/** Address and declared size of a named symbol, or null when it is absent. */
+function symbolInfoOf(probe, name) {
+  const { addrs = [], names = [] } = probe.symbols ?? {};
+  for (let index = 0; index < names.length; index++) {
+    if (names[index] !== name) continue;
+    const address = addrs[index];
+    if (address == null) continue;
+    const size = probe.symbolSizeOf ? probe.symbolSizeOf(address) : null;
+    return { address, size: typeof size === 'number' ? size : (size == null ? null : Number(size)) };
+  }
+  return null;
 }
 
 /**
@@ -281,7 +346,7 @@ function measureMemberTypes(probe, objdump) {
   let unknown = 0;
 
   for (const symbol of names) {
-    const rows = disassembleFunction(probe.artifactPath, symbol, objdump);
+    const rows = disassembleFunction(probe.artifactPath, symbol, objdump.path, symbolInfoOf(probe, symbol));
     if (!rows) { perFunction.push({ symbol, status: 'disassembly-unavailable' }); continue; }
     const rowOfAddress = (address) => rows.find((row) => row.address === BigInt(address))?.row ?? null;
     let model;
@@ -329,6 +394,92 @@ function measureMemberTypes(probe, objdump) {
 }
 
 // ── performance ────────────────────────────────────────────────────────────
+
+/**
+ * Measures member evidence as the *product* sees it: the canonical analysis
+ * entrypoint, driven with a provider built from the same fixture. This is the
+ * number that matters after the projection seam was added, because it is the
+ * only path on which member evidence reaches a consumer.
+ */
+async function measurePipelineMembers(probe, objdump) {
+  const provider = createCxxEvidenceProvider({
+    symbols: probe.symbols,
+    read: probe.read,
+    pointerBytes: probe.pointerBytes,
+    symbolSizeOf: probe.symbolSizeOf,
+    sectionEndOf: probe.sectionEndOf,
+    architecture: 'arm64',
+    snapshotId: `fixture:${probe.name}`,
+  });
+  // The class index must exist before the synchronous per-function projection can
+  // return anything; without this every function would report no proof, which is
+  // exactly how a silently-empty measurement looks.
+  await provider.build();
+  const perFunction = [];
+  let fields = 0;
+  let typed = 0;
+  let widthOnly = 0;
+  let unknown = 0;
+
+  for (const symbol of PIPELINE_MEMBER_FUNCTIONS) {
+    const rows = disassembleFunction(probe.artifactPath, symbol, objdump.path, symbolInfoOf(probe, symbol));
+    if (!rows) { perFunction.push({ symbol, status: 'disassembly-unavailable' }); continue; }
+
+    const input = {
+      architecture: 'arm64', platform: 'linux', abiId: 'aapcs64', mode: 'a64',
+      decoderSemanticVersion: 'cxx-recovery-measurement', binaryId: 'cxx-measurement',
+      sliceId: 'cxx-measurement-slice', name: symbol,
+      instructions: rows.map((row, index) => ({
+        address: row.address, size: 4, length: 4, mode: 'a64', mnemonic: row.mn,
+        opStr: row.ops, ops: parseOperands(row.ops), instructionId: `measure-${index}`,
+        origin: { instructionIds: [`measure-${index}`] },
+      })),
+    };
+
+    let projection = null;
+    let status = 'ok';
+    try {
+      analyzeSemanticFunction({ ...input, cxxEvidenceProvider: provider });
+      // `lastAttempt()` is bound to the request it answered, so the evidence is
+      // read only when the recorded address is this function's own start. A bare
+      // "last projection" slot plus an attempt counter would report the previous
+      // function's members here — exactly what a `ret`-only destructor exposed.
+      const attempt = provider.lastAttempt();
+      const requested = rows[0]?.address ?? null;
+      if (attempt && requested != null && attempt.functionAddress === requested) {
+        projection = attempt.projection;
+      } else {
+        status = 'attempt-not-bound-to-this-function';
+      }
+    } catch (error) {
+      status = `analysis-failed:${error?.message || error}`;
+    }
+    if (status === 'ok' && !projection) status = 'no-receiver-proof';
+
+    const members = projection?.members ?? [];
+    fields += members.length;
+    for (const member of members) {
+      if (member.typeProven) typed++; else if (member.widthOnly) widthOnly++; else unknown++;
+    }
+    perFunction.push({
+      symbol,
+      status,
+      receiverProven: Boolean(projection),
+      fields: members.length,
+      details: members.map((member) => ({
+        offset: `0x${member.offsetBytes.toString(16)}`,
+        size: member.sizeBytes,
+        type: member.typeLabel,
+        category: member.category,
+        typeProven: member.typeProven,
+        rule: member.rule,
+        reason: member.reason,
+      })),
+    });
+  }
+
+  return { fields, typedFieldCount: typed, widthOnlyFieldCount: widthOnly, unknownFieldCount: unknown, functions: perFunction };
+}
 
 async function measureLatency(iterations, fn) {
   // One warm pass so JIT/caches are not part of the first sample.
@@ -415,6 +566,7 @@ async function main() {
     return;
   }
   const objdump = objdumpPath();
+  console.log(objdump ? `objdump: ${objdump.version} (${objdump.path})` : 'objdump: unavailable, member measurement skipped');
 
   const fixtures = {};
   const probes = [];
@@ -429,10 +581,14 @@ async function main() {
       before: await measureBefore(probe),
       after: await measureAfter(probe),
       memberTypes: { functions: [] },
+      pipelineMemberTypes: { functions: [] },
     };
   }
   if (objdump) {
-    for (const probe of probes) fixtures[probe.name].memberTypes = measureMemberTypes(probe, objdump);
+    for (const probe of probes) {
+      fixtures[probe.name].memberTypes = measureMemberTypes(probe, objdump);
+      fixtures[probe.name].pipelineMemberTypes = await measurePipelineMembers(probe, objdump);
+    }
   }
 
   const performance = await measurePerformance(probes, options.iterations);
@@ -441,7 +597,7 @@ async function main() {
   const report = {
     schema: 'cxx-recovery-measurement/v1',
     generatedAt: new Date().toISOString(),
-    toolchain: { objdump: objdump || null, node: process.version },
+    toolchain: { objdump: objdump?.path || null, objdumpVersion: objdump?.version || null, node: process.version },
     fixtures,
     performance,
     noEvidenceCost: noEvidence,
@@ -449,7 +605,10 @@ async function main() {
       'BEFORE reflects main capability: findCxxClasses (symbol-only) plus readVtable with a fixed slot cap.',
       'AFTER is buildCxxClassEvidence + resolveVirtualTargetSet + recoverMemberTypeEvidence.',
       'Member types are measured on IR built from llvm-objdump disassembly of the linked fixture.',
+      'pipelineMemberTypes measures the same evidence through the canonical analysis entrypoint with a provider built from the fixture, i.e. the path a consumer actually reads. It only counts functions whose receiver is proven, so a free `Class*` accessor contributes nothing.',
       'classSlotTargetSets counts one enumerated (class, slot) pair with at least one candidate; it is not observed call-site evidence, and every such set is closureProven: false.',
+      'Disassembly is fetched by symbol name; a name that yields no rows is retried over the declared symbol-table address range, so constructor/destructor aliases are measured instead of silently reported as unavailable.',
+      'toolchain.objdumpVersion is recorded because LLVM 14 cannot disassemble an aliased symbol by name at all; a run without the address-range fallback and without LLVM 18 under-reports members.',
     ],
   };
 
@@ -462,6 +621,9 @@ async function main() {
     console.log(`  AFTER  rtti=${data.after.rttiPresent} classes=${data.after.classesWithName} typeinfo=${data.after.typeinfoParsed} inheritance=${data.after.inheritanceEdges} slots=${data.after.slots} aliasedSlots=${data.after.slotsWithMergedAliases} classSlotTargetSets=${data.after.classSlotTargetSets} (singleCandidate=${data.after.singleCandidateTargetSets} multiCandidate=${data.after.multiCandidateTargetSets}) targets=${data.after.totalResolvedTargets}`);
     if (data.memberTypes.functions.length) {
       console.log(`  MEMBER fields=${data.memberTypes.fields} typed=${data.memberTypes.typedFieldCount} widthOnly=${data.memberTypes.widthOnlyFieldCount} unknown=${data.memberTypes.unknownFieldCount}`);
+    }
+    if (data.pipelineMemberTypes.functions.length) {
+      console.log(`  PIPELINE-MEMBER fields=${data.pipelineMemberTypes.fields} typed=${data.pipelineMemberTypes.typedFieldCount} widthOnly=${data.pipelineMemberTypes.widthOnlyFieldCount} unknown=${data.pipelineMemberTypes.unknownFieldCount}`);
     }
   }
   console.log(`\nPERF baseline=${performance.baselineSymbolOnly.meanMs}ms/call enabled=${performance.cxxRecoveryEnabled.meanMs}ms/call ratio=${performance.meanRatio}x`);

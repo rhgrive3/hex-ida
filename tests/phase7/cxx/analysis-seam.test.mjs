@@ -17,7 +17,7 @@ import test from 'node:test';
 import { parseOperands } from '../../../js/arm64.js';
 import { analyzeSemanticFunction } from '../../../js/analysis/semantic-function.js';
 import { createCxxEvidenceProvider } from '../../../js/analysis/cxx/project.js';
-import { isCanonicalCppReceiverEvidence } from '../../../js/analysis/cxx/object-evidence.js';
+import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence } from '../../../js/analysis/cxx/object-evidence.js';
 import { buildCxxFixtures } from './fixtures/build.mjs';
 import { openCxxFixture } from './fixtures/open.mjs';
 
@@ -34,7 +34,11 @@ function objdumpTool() {
   // measured against LLVM 14.0.0 and LLVM 18.1.3, both reject the newer-looking
   // `--disassemble=<symbol>` with `unknown argument`. Requiring the version
   // banner keeps the skip honest instead of silently measuring nothing.
-  for (const candidate of [process.env.LLVM_OBJDUMP, 'llvm-objdump', 'llvm-objdump-18']) {
+  //
+  // The versioned binary is preferred where it exists: LLVM 14 emits no rows at
+  // all for a symbol that shares its address with another symbol, which is how a
+  // constructor/destructor alias would otherwise measure as "no evidence".
+  for (const candidate of [process.env.LLVM_OBJDUMP, 'llvm-objdump-18', 'llvm-objdump']) {
     if (!candidate) continue;
     const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
     if (probe.status !== 0) continue;
@@ -143,6 +147,46 @@ test('the analysis entrypoint renders `this` from provider-held C++ evidence', {
   assert.equal(provider.stats().provided >= 1, true, 'the seam must have supplied evidence');
 });
 
+test('the analysis entrypoint projects typed member evidence for a proven receiver', { skip }, async () => {
+  const rows = disassemble(built.artifacts[FIXTURE].path, MEMBER, tool);
+  assert.ok(rows, 'fixture must disassemble');
+
+  const provider = providerFor(openProbe());
+  await provider.build();
+
+  analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+
+  const attempt = provider.lastAttempt();
+  assert.equal(attempt.functionAddress, rows[0].address,
+    'the answer must belong to the function that was asked about');
+  const projection = attempt.projection;
+  assert.ok(projection, 'the seam must have projected evidence');
+  assert.equal(projection.receiver.receiverRole, 'this');
+  assert.equal(projection.members.length >= 1, true,
+    'Player::takeDamage touches at least one member');
+
+  for (const member of projection.members) {
+    assert.equal(isCanonicalCppMemberEvidence(member), true);
+    assert.equal(member.accessProven, true, 'every member offset is binary-grounded');
+    assert.equal(member.receiverDigest, projection.receiver.digest);
+    assert.equal(member.functionId, projection.functionId);
+    // The producer never invents a field name; only a category may appear.
+    assert.equal(typeof member.offsetBytes, 'bigint');
+    if (member.typeProven) {
+      assert.equal(typeof member.typeLabel, 'string');
+      assert.equal(typeof member.rule, 'string');
+    } else {
+      assert.equal(typeof member.reason, 'string');
+    }
+  }
+
+  // `health`/`state` are plain 4-byte aggregates in the fixture, so the honest
+  // answer is a width-proven integer pair, not a claimed signedness.
+  const typed = projection.members.filter((member) => member.typeProven);
+  assert.equal(typed.length >= 1, true);
+  for (const member of typed) assert.match(member.typeLabel, /int32_t/);
+});
+
 test('a free function never receives a receiver from the same provider', { skip }, async () => {
   const rows = disassemble(built.artifacts[FIXTURE].path, FREE_FUNCTION, tool);
   assert.ok(rows);
@@ -159,6 +203,10 @@ test('a free function never receives a receiver from the same provider', { skip 
     'x0 in a free function is never this');
   assert.equal(provider.stats().provided, 0);
   assert.equal(provider.stats().unproven >= 1, true);
+  assert.equal(provider.stats().memberFields, 0,
+    'a free function\'s pointer argument is not a member base');
+  assert.equal(provider.lastAttempt().projection, null,
+    'the attempt must be recorded for the free function and prove nothing');
 });
 
 test('a structural look-alike of the evidence renders nothing', { skip }, async () => {
