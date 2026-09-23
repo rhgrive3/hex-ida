@@ -91,7 +91,18 @@ jobs:
       - name: Diagnostic userscript group 3c - worker syntax
         run: node --check worker-entry.js
       - name: Diagnostic userscript group 3d - release version
-        run: node tests/userscript-release-version.mjs
+        shell: bash
+        run: |
+          set +e
+          node tests/userscript-release-version.mjs >/tmp/release-version-focused.out 2>&1
+          status=$?
+          {
+            echo '### userscript-release-version focused failure'
+            echo '~~~'
+            tail -n 24 /tmp/release-version-focused.out
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - name: Diagnostic embed protocol
         run: node tests/userscript-embed-protocol.mjs
       - name: Diagnostic sanitize shared refs
