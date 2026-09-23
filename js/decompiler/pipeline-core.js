@@ -2019,9 +2019,20 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   advanced.highVariables ||= recoverHighVariables(advanced.ir, advanced.types, opts);
   advanced.prototype ||= recoverFunctionPrototype(advanced.ir, advanced.types, opts);
   advanced.aggregateLayouts ||= recoverAggregateLayouts(advanced.ir, advanced.types, opts);
-  advanced.facts ||= semanticFacts(advanced, result);
-  advanced.semanticAst ||= semanticAstOf(advanced, advanced.facts);
-  advanced.cAst ||= validatedCAstFromLines(result, advanced);
+  if (!advanced.facts || !advanced.semanticAst || !advanced.cAst) {
+    // FAST can exhaust the optional pass budget before the whole
+    // representation tail. Keep the mandatory fallback coherent and reuse
+    // exact currentness answers across facts -> semantic AST -> C AST, then
+    // revalidate every reused answer before anything leaves this synchronous
+    // section.
+    const validation = createValidationBatch();
+    validation.run(() => {
+      advanced.facts ||= semanticFacts(advanced, result);
+      advanced.semanticAst ||= semanticAstOf(advanced, advanced.facts);
+      advanced.cAst ||= cAstFromLines(result, advanced);
+    });
+    if (validation.settle() > 0) consumerObservationBudget(advanced).reasons.add('representation-fallback-validation-stale');
+  }
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
   const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
