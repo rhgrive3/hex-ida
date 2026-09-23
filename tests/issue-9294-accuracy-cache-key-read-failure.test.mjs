@@ -21,7 +21,18 @@ test('#9294 selected regular-file read failures fail closed', () => {
     for (const code of ['EACCES', 'EIO']) {
       const injected = fsWith({
         readFileSync(file, ...args) {
-          if (path.resolve(file) === path.resolve(selected)) {
+          const matches = typeof file === 'number'
+            ? (() => {
+                try {
+                  const fdStat = fs.fstatSync(file);
+                  const selStat = fs.statSync(selected);
+                  return fdStat.dev === selStat.dev && fdStat.ino === selStat.ino;
+                } catch {
+                  return false;
+                }
+              })()
+            : path.resolve(file) === path.resolve(selected);
+          if (matches) {
             const error = new Error(`${code}: injected read failure`);
             error.code = code;
             throw error;
