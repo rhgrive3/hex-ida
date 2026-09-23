@@ -9,7 +9,7 @@
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
-import { currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
@@ -964,17 +964,12 @@ function semanticLocalDeclarations(types, body, ctx) {
 
 function isReceiverAlias(val, _rec, ctx) {
   const rec = currentCppReceiver(ctx?.opts || {}, ctx?.ir || null);
-  return rec ? isCppReceiverAlias(val, rec) : false;
+  return rec ? isCppReceiverAlias(val, rec, ctx?.ir || null) : false;
 }
 
 function cppMemberTypeSuffix(member) {
-  if (!member?.typeProven || typeof member.typeLabel !== 'string') return '';
-  const label = member.typeLabel.trim();
-  // Producer labels are presentation hints, never executable syntax. Keep the
-  // projection bounded to the small type vocabulary it issues and fail closed
-  // rather than copying arbitrary text into a C comment.
-  if (!label || label.length > 80 || !/^[A-Za-z0-9_\[\]| *-]+$/.test(label)) return '';
-  return ` /* ${label} */`;
+  const label = cppMemberTypeLabel(member);
+  return label ? ` /* ${label} */` : '';
 }
 
 export function renderMemoryLocation(loc, inst, ctx) {
