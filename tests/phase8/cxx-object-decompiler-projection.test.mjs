@@ -517,7 +517,7 @@ test('canonical member type evidence reaches pseudocode as a non-semantic field 
   opts.cxxEvidence = { receiver, members:[member] };
   const result = decompileSemantic(model, opts);
   assert.ok(result);
-  assert.match(result.pseudocode, /this->field_38\\s*\\/\\* int32_t\\|uint32_t \\*\\//,
+  assert.match(result.pseudocode, /this->field_38\s*\/\* int32_t\|uint32_t \*\//,
     'the canonical type category should be visible without pretending it is a field name');
 });
 
@@ -554,7 +554,7 @@ test('enhanced projection preserves canonical C++ member type annotations', () =
   const seed = decompileSemantic(model, opts);
   const enhanced = enhanceCore(seed, model, opts);
   assert.ok(enhanced);
-  assert.match(enhanced.pseudocode, /this->field_38\\s*\\/\\* int32_t\\|uint32_t \\*\\//);
+  assert.match(enhanced.pseudocode, /this->field_38\s*\/\* int32_t\|uint32_t \*\//);
 });
 
 test('canonical member evidence cannot be replayed onto another receiver', () => {
@@ -600,7 +600,7 @@ test('canonical member evidence cannot be replayed onto another receiver', () =>
   const result = decompileSemantic(model, opts);
   assert.ok(result);
   assert.match(result.pseudocode, /this->field_38/);
-  assert.doesNotMatch(result.pseudocode, /int32_t\\|uint32_t/,
+  assert.doesNotMatch(result.pseudocode, /int32_t\|uint32_t/,
     'member evidence bound to another receiver must fail closed at projection time');
 });
 
