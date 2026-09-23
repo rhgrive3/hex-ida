@@ -1,0 +1,44 @@
+{
+  "schema": "hex-completion-main-reconciliation/v1",
+  "recordedAt": "2026-09-23T19:31:33.402Z",
+  "integrationBefore": "a34bf89bcfb64d225cdb6194d1b70155de630dc2",
+  "main": "60aa41b5bf797310afe4abea9d56e3d14a7c8f1e",
+  "mergeCommit": "889b42eaf469f88502e1a9b620e3e4afcb85aa3a",
+  "mergeTree": "d49df0d85b004193abf6024a20ff76047cd10edd",
+  "generatedCheckpoint": "2bf303289d11efe331e26697055be804d24b1d90",
+  "mainFiles": [
+    "js/analysis/alias/regions-v2-core.js",
+    "js/analysis/alias/regions-v2.js",
+    "js/semantics/memoryssa/build.js",
+    "js/semantics/memoryssa/operand-forwarding.js",
+    "js/semantics/memoryssa/queries.js",
+    "js/semantics/ssa/build.js",
+    "js/semantics/ssa/index.js",
+    "tests/performance/memoryssa-operand-forwarding-indexing.test.mjs",
+    "tests/performance/semantic-ssa-producer-digest-reuse.test.mjs",
+    "tests/phase7/performance/semantic-ir-producer-digest-reuse.test.mjs"
+  ],
+  "generatedRebuild": "PASS; npm run userscript:build; zero git diff for committed userscript output",
+  "semanticV2": {
+    "verdict": "BLOCKING",
+    "newFailures": [],
+    "baselineFailureCount": 13,
+    "identicalFailureSet": true,
+    "failureFamilies": [
+      "semantic-v2:c4-return-control-target.test.mjs",
+      "semantic-v2:issue-3327-artifact-storage-integrity.test.mjs",
+      "semantic-v2:issue-4513-memoryssa-access-provider-completeness.test.mjs",
+      "semantic-v2:issue-4534-ssa-definition-binding.test.mjs",
+      "semantic-v2:issue-4602-data-operation-arity.test.mjs",
+      "semantic-v2:repair-storage-class-alias.test.mjs",
+      "semantic-v2:repair-v1-add-with-carry-def-use.test.mjs",
+      "semantic-v2-evidence-chain:current-corpus-group.mjs",
+      "semantic-v2-required-regressions:integration-required-regression-gates.test.mjs",
+      "[phase3-required] effects:test",
+      "[phase3-required] invariants:test",
+      "[phase3-required] decompiler:test",
+      "decompiler:decompiler-semantic.mjs"
+    ]
+  },
+  "componentAcceptance": "LOCKED until red baseline repaired and exact head gates pass"
+}

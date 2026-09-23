@@ -28,6 +28,16 @@ Status: **IN PROGRESS**. This living integration branch accepts one verified pro
 - Existing FAST PRs `#9552–#9554` are reviewed separately as main moves.
 - Open issues `#9523`, `#9534`, and `#9550` remain external blockers owned by the user.
 
+## Current-main reconciliation (still blocking)
+
+`main` at `60aa41b5b` was merged into this integration branch at `889b42eaf`.
+The generated userscript was rebuilt and committed at `2bf303289`, then a
+second canonical build produced zero diff. The exact-head `semantic-v2` gate
+failed in 13 places. The same 13 failure families occur on the exact current
+`main` head, with zero new integration failures. The gate remains **BLOCKING**;
+no component is accepted while it is red. Exact SHA, merge tree, changed-file
+inventory, and failure comparison are in `MAIN_RECONCILIATION.json`.
+
 ## Merge gate
 
 Keep this PR draft and non-mergeable until the acceptance ledger is filled with actual evidence. The next accepted commit must add one verified product change (not just another status update) and record its exact changed-file inventory, candidate merge tree, focused/broad validation, updated product head, and current-main/refetched-main proof. Do not treat a green fast gate or this checkpoint alone as acceptance evidence.
