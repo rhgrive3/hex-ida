@@ -20,24 +20,26 @@ function graph(paths) {
 }
 
 test('issue #9273: POSIX filesystem root preserves complete privileged graphs', () => {
+  const resolver = (value) => String(value);
   assert.doesNotThrow(() => assertPrivilegedGraph(
     graph(parentRequired.map((input) => `/${input}`)),
     'parent',
-    { repoRoot: '/' },
+    { repoRoot: '/', realpathSync: resolver },
   ));
   assert.doesNotThrow(() => assertPrivilegedGraph(
     graph(childRequired.map((input) => `/${input}`)),
     'child',
-    { repoRoot: '/' },
+    { repoRoot: '/', realpathSync: resolver },
   ));
 });
 
 test('issue #9273: filesystem-root graphs still fail closed when required inputs are missing', () => {
+  const resolver = (value) => String(value);
   assert.throws(
     () => assertPrivilegedGraph(
       graph(parentRequired.slice(1).map((input) => `/${input}`)),
       'parent',
-      { repoRoot: '/' },
+      { repoRoot: '/', realpathSync: resolver },
     ),
     /parent bundle omits js\/userscript\/dev\/parent-worker-runtime\.js/,
   );
@@ -45,7 +47,7 @@ test('issue #9273: filesystem-root graphs still fail closed when required inputs
     () => assertPrivilegedGraph(
       graph(childRequired.slice(0, -1).map((input) => `/${input}`)),
       'child',
-      { repoRoot: '/' },
+      { repoRoot: '/', realpathSync: resolver },
     ),
     /child bundle omits js\/ai\/dev\/ui\/controls\.js/,
   );
@@ -53,9 +55,10 @@ test('issue #9273: filesystem-root graphs still fail closed when required inputs
 
 test('issue #9273: non-root trailing separators still normalize to repository-relative inputs', () => {
   const repoRoot = '/tmp/hex-ida///';
+  const resolver = (value) => String(value);
   assert.doesNotThrow(() => assertPrivilegedGraph(
     graph(parentRequired.map((input) => `/tmp/hex-ida/${input}`)),
     'parent',
-    { repoRoot },
+    { repoRoot, realpathSync: resolver },
   ));
 });
