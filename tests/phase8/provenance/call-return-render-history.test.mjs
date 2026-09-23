@@ -289,3 +289,47 @@ test('initial observation never evaluates a uses getter to collect reverse-index
   assert.equal(observerReads, 0);
   assert.ok(readSemanticStatementLineHistory(f.callLine, f.ir) === null);
 });
+
+
+test('initial render validation batches repeated producer checks and settles before publication', () => {
+  const lines = [...Array.from({ length: 24 }, () => 'bl #0x100001000'), 'ret'];
+  const previousProbe = globalThis.__hexPerfProbe;
+  const probe = {
+    calls: 0, ms: 0, memoHits: 0, settleRechecks: 0, settleMs: 0,
+    obs: new WeakMap(), obsList: [], callers: new Map(), stacks: false,
+  };
+  let f;
+  globalThis.__hexPerfProbe = probe;
+  try {
+    f = fixture({ lines, returnType: 'void' });
+  } finally {
+    globalThis.__hexPerfProbe = previousProbe;
+  }
+  const history = readSemanticStatementRenderHistory(f.seed);
+  assert.ok(history);
+  assert.deepEqual(history.reasons, []);
+  assert.equal(f.seed.semanticStatementRenderHistory.completeness, 'complete');
+  assert.ok(probe.memoHits >= 20, `expected repeated currentness checks to hit the render batch: ${probe.memoHits}`);
+  assert.ok(probe.settleRechecks > 0, 'batched answers must be revalidated before publication');
+  assert.ok(probe.calls < probe.memoHits, `full graph validation still dominated batched reads: calls=${probe.calls} hits=${probe.memoHits}`);
+});
+
+test('initial render validation drops all batched history when an input changes before settle', () => {
+  let ir = null, symbolCalls = 0;
+  const f = fixture({
+    lines: ['bl #0x100001000', 'bl #0x100001000', 'ret'],
+    returnType: 'void',
+    beforeRender(currentIr) { ir = currentIr; },
+    options: {
+      symbolFor() {
+        symbolCalls++;
+        if (symbolCalls === 2) ir.renderCallbackMutation = { changed: true };
+        return 'callee';
+      },
+    },
+  });
+  assert.ok(symbolCalls >= 2);
+  assert.equal(f.seed.semanticStatementRenderHistory.completeness, 'incomplete');
+  assert.ok(f.seed.semanticStatementRenderHistory.reasons.includes('initial-render-validation-stale'));
+  assert.equal(readSemanticStatementLineHistory(f.callLine, f.ir), null);
+});
