@@ -1,0 +1,466 @@
+{
+  "schema": "hex-current-main-profile-slowest/v1",
+  "runDir": "/mnt/workspace/hex-ida/reports/investigations/current-main-weakness-20260923/measurements/run-20260923-stratified",
+  "runsPerFunction": 1,
+  "denominator": 4,
+  "passTotalsMs": {
+    "high-variable-recovery": 18274.21
+  },
+  "records": [
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "5364",
+      "name": "test_composite_types",
+      "sizeBytes": 772,
+      "state": "PASS",
+      "gotos": 2,
+      "profile": [
+        {
+          "run": 0,
+          "elapsedMs": 65366.36,
+          "status": {
+            "completeness": "complete",
+            "reason": null
+          },
+          "decompilePassTotalMs": 7950.73,
+          "phases": [
+            {
+              "name": "high-variable-recovery",
+              "ms": 7950.3,
+              "skipped": false,
+              "ok": true
+            },
+            {
+              "name": "prototype-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "aggregate-layout-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "canonical-expression-build",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-rewrite",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-facts",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "typed-semantic-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "c-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "pretty-print",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            }
+          ],
+          "capturePassState": {
+            "calls": 1,
+            "ms": 7855.07,
+            "records": 34545
+          },
+          "verification": {
+            "matchesBodyCalls": 18,
+            "matchesBodyMs": 2.35,
+            "memoHits": 0,
+            "settleRechecks": 0,
+            "settleMs": 0.01,
+            "duplicateCalls": 0,
+            "observations": [
+              {
+                "calls": 1,
+                "ms": 0.9,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.29,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.22,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.15,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.14,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "5872",
+      "name": "__addtf3",
+      "sizeBytes": 2964,
+      "state": "PASS",
+      "gotos": 312,
+      "profile": [
+        {
+          "run": 0,
+          "elapsedMs": 38261.47,
+          "status": {
+            "completeness": "complete",
+            "reason": null
+          },
+          "decompilePassTotalMs": 4117.93,
+          "phases": [
+            {
+              "name": "high-variable-recovery",
+              "ms": 4117.42,
+              "skipped": false,
+              "ok": true
+            },
+            {
+              "name": "prototype-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "aggregate-layout-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "canonical-expression-build",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-rewrite",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-facts",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "typed-semantic-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "c-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "pretty-print",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            }
+          ],
+          "capturePassState": {
+            "calls": 1,
+            "ms": 2696.86,
+            "records": 123843
+          },
+          "verification": {
+            "matchesBodyCalls": 8,
+            "matchesBodyMs": 2.04,
+            "memoHits": 0,
+            "settleRechecks": 0,
+            "settleMs": 0.01,
+            "duplicateCalls": 0,
+            "observations": [
+              {
+                "calls": 1,
+                "ms": 0.56,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.54,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.51,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.34,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.03,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- finishBuildSelection <- recordMovSelection"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_gcc_Os_no_g",
+      "address": "3240",
+      "name": "test_array_types",
+      "sizeBytes": 620,
+      "state": "PASS",
+      "gotos": 2,
+      "profile": [
+        {
+          "run": 0,
+          "elapsedMs": 35195.62,
+          "status": {
+            "completeness": "complete",
+            "reason": null
+          },
+          "decompilePassTotalMs": 4011.11,
+          "phases": [
+            {
+              "name": "high-variable-recovery",
+              "ms": 4010.96,
+              "skipped": false,
+              "ok": true
+            },
+            {
+              "name": "prototype-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "aggregate-layout-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "canonical-expression-build",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-rewrite",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-facts",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "typed-semantic-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "c-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "pretty-print",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            }
+          ],
+          "capturePassState": {
+            "calls": 1,
+            "ms": 3923.05,
+            "records": 29941
+          },
+          "verification": {
+            "matchesBodyCalls": 10,
+            "matchesBodyMs": 1.07,
+            "memoHits": 0,
+            "settleRechecks": 0,
+            "settleMs": 0,
+            "duplicateCalls": 0,
+            "observations": [
+              {
+                "calls": 1,
+                "ms": 0.28,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.27,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.17,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.14,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              },
+              {
+                "calls": 1,
+                "ms": 0.11,
+                "origin": "Object.captureCertifiedData <- captureConsumerIrData <- observeBuildSelection <- buildValueRaw"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "2/2_clang_O2_no_g",
+      "address": "2708",
+      "name": "array_3d",
+      "sizeBytes": 312,
+      "state": "PASS",
+      "gotos": 0,
+      "profile": [
+        {
+          "run": 0,
+          "elapsedMs": 31374.82,
+          "status": {
+            "completeness": "complete",
+            "reason": null
+          },
+          "decompilePassTotalMs": 2195.59,
+          "phases": [
+            {
+              "name": "high-variable-recovery",
+              "ms": 2195.53,
+              "skipped": false,
+              "ok": true
+            },
+            {
+              "name": "prototype-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "aggregate-layout-recovery",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "canonical-expression-build",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-rewrite",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "semantic-facts",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "typed-semantic-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "c-ast",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            },
+            {
+              "name": "pretty-print",
+              "ms": 0,
+              "skipped": true,
+              "ok": true
+            }
+          ],
+          "capturePassState": {
+            "calls": 1,
+            "ms": 2177.5,
+            "records": 12893
+          },
+          "verification": {
+            "matchesBodyCalls": 15,
+            "matchesBodyMs": 48.43,
+            "memoHits": 0,
+            "settleRechecks": 0,
+            "settleMs": 0,
+            "duplicateCalls": 11,
+            "observations": [
+              {
+                "calls": 7,
+                "ms": 27.93,
+                "origin": "Object.captureCertifiedDataGraph <- observeProjectedOperationData <- retainAbiBinding <- attachCanonicalFunctionReturns"
+              },
+              {
+                "calls": 5,
+                "ms": 19.89,
+                "origin": "Object.captureCertifiedDataGraph <- observeProjectedOperationData <- sealFacadeAbiBindings <- buildV2CompatFromLegacyModel"
+              },
+              {
+                "calls": 1,
+                "ms": 0.56,
+                "origin": "Object.captureCertifiedData <- prepareProjectionHistory <- applyPhase8Projection <- fullPhase8Projection"
+              },
+              {
+                "calls": 2,
+                "ms": 0.05,
+                "origin": "captureProjectionIrData <- bindSuppressionHistory <- decompileSemantic <- decompileSemantic"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "hex-current-main-harness-run/v1",
+  "label": "current-main",
+  "headSha": "09dfcb283f721b6598f34675a8a42480147d5752",
+  "sourceIdentity": "d28028877bb24054114cb6f9b149c95f74ec9b694d0ab33efc3ebdeaf1ede6e8",
+  "configHash": "9ae87e001607206aa0d08cb7124674dafe32dea83a9ee07570640a7e96d60b90",
+  "config": {
+    "label": "current-main",
+    "functionTimeoutMs": 10000,
+    "structure": "slow",
+    "structureThresholdMs": 250,
+    "productTimeoutMs": 900000
+  },
+  "manifest": {
+    "path": "benchmarks/public/codefuse-arm64/manifest.json"
+  },
+  "denominator": 32,
+  "createdAt": "2026-09-23T06:04:07.727Z",
+  "updatedAt": "2026-09-23T06:04:07.727Z"
+}
