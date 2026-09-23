@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const script = resolve(root, 'scripts/write-deployment-identity.mjs');
 const temp = await mkdtemp(resolve(tmpdir(), 'hex-deployment-identity-'));
+const external = await mkdtemp(resolve(tmpdir(), 'hex-deployment-identity-external-'));
 
 try {
   await mkdir(resolve(temp, 'scripts'), { recursive: true });
@@ -33,15 +34,54 @@ try {
   assert.equal(await generate({}), null, 'staged source changes must disable commit attestation');
 
   git('reset', '--hard', '-q', 'HEAD');
-  await writeFile(resolve(temp, 'untracked-source.js'), 'export const extra = true;\n');
+  const untracked = resolve(temp, 'untracked-source.js');
+  await writeFile(untracked, 'export const extra = true;\n');
   assert.equal(await generate({}), null, 'untracked deployable source must disable commit attestation');
+  await rm(untracked, { force: true });
 
+  assert.equal(
+    await generate({ WORKERS_CI_COMMIT_SHA: head }),
+    head,
+    'Workers CI commit is accepted only when it matches the clean checked-out HEAD',
+  );
   const workersCommit = '0123456789abcdef0123456789abcdef01234567';
-  assert.equal(await generate({ WORKERS_CI_COMMIT_SHA: workersCommit }), workersCommit, 'Workers CI commit must remain authoritative');
+  assert.equal(
+    await generate({ WORKERS_CI_COMMIT_SHA: workersCommit }),
+    null,
+    'mismatched Workers CI commit must not override checked-out HEAD provenance',
+  );
+
+  if (process.platform !== 'win32') {
+    const output = resolve(temp, 'js/userscript/deployment-identity.generated.js');
+    for (const kind of ['absolute', 'relative', 'multihop']) {
+      const victim = resolve(external, `victim-${kind}.js`);
+      await writeFile(victim, 'KEEP\n');
+      await rm(output, { force: true });
+
+      if (kind === 'absolute') {
+        await symlink(victim, output);
+      } else if (kind === 'relative') {
+        await symlink(relative(dirname(output), victim), output);
+      } else {
+        const hop = resolve(external, 'deployment-hop.js');
+        await rm(hop, { force: true });
+        await symlink(victim, hop);
+        await symlink(relative(dirname(output), hop), output);
+      }
+
+      assert.equal(await generate({}), head);
+      assert.equal(await readFile(victim, 'utf8'), 'KEEP\n', `${kind} output symlink target must remain untouched`);
+      const outputEntry = await lstat(output);
+      assert.equal(outputEntry.isSymbolicLink(), false, 'successful publication must replace the symlink leaf itself');
+      assert.equal(outputEntry.isFile(), true);
+      assert.match(await readFile(output, 'utf8'), new RegExp(`DEPLOYMENT_COMMIT="${head}"`));
+    }
+  }
 
   console.log('userscript deployment identity: ok');
 } finally {
   await rm(temp, { recursive: true, force: true });
+  await rm(external, { recursive: true, force: true });
 }
 
 function git(...args) {
