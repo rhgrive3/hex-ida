@@ -9,7 +9,11 @@ import {
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
-import { canonicalSemanticSsaProducerMatches, canonicalSemanticSsaRowMatches } from '../../semantics/ssa/build.js';
+import {
+  canonicalSemanticSsaProducerBindingForIr,
+  canonicalSemanticSsaProducerMatches,
+  canonicalSemanticSsaRowMatches,
+} from '../../semantics/ssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
 import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import {
@@ -215,8 +219,10 @@ const semanticIrDigestMemo = new WeakMap();
  * @param {object|*} ir - The semantic IR object (or primitive value)
  * @returns {string} The canonical stable digest string
  */
-export function semanticIrDigestFor(ir) {
+export function semanticIrDigestFor(ir, ssa = null) {
   if (!ir || typeof ir !== 'object') return stableDigest(ir);
+  const producerBinding = canonicalSemanticSsaProducerBindingForIr(ssa, ir);
+  if (producerBinding?.semanticIrDigest) return producerBinding.semanticIrDigest;
   let digest = semanticIrDigestMemo.get(ir);
   if (digest === undefined) {
     digest = stableDigest(ir);
@@ -276,7 +282,7 @@ export function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, b
   if (!ssa || !binding) return false;
   if (binding.snapshotId == null) return false;
   if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
-  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir)) return false;
+  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir, ssa)) return false;
   if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
   if (!canonicalSemanticSsaRowMatches(use, ssa)) return false;
   const proof = use?.proof;
@@ -314,7 +320,7 @@ export function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRea
   if (!ssa || !binding) return false;
   if (binding.snapshotId == null) return false;
   if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
-  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir)) return false;
+  if (String(binding.semanticIrDigest) !== semanticIrDigestFor(ir, ssa)) return false;
   if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
   if (!canonicalSemanticSsaRowMatches(definition, ssa)) return false;
   const proof = definition?.proof;
@@ -361,7 +367,7 @@ export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     && typeof process?.stderr?.write === 'function';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
-  const semanticIrDigest = semanticIrDigestFor(ir);
+  const semanticIrDigest = semanticIrDigestFor(ir, ssa);
   if (debug) {
     process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${semanticIrDigest} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
   }
