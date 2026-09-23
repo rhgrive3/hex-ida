@@ -693,11 +693,11 @@ function evalOn(holdout, gate) {
 const holdoutResults = {
   schema: 'hex-jev-rescue-regression-holdout/v1',
   protocol: {
-    primary: 'development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates',
+    primary: 'development=battlecats partial rows; observed=TsumTsum+YWP partial rows; final catalog was NOT pre-registered: G24-G34 including G28 were added after holdout inspection',
     loo: 'leave-one-binary-out: select on two binaries, evaluate on the third',
     queryFamily: 'diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented',
-    interpretation: 'The BattleCats -> TsumTsum+YWP split is a cross-binary observed split, not an independent free-form validation set; this commit does not prove the gate catalog was fixed before holdout labels were inspected.',
-    forbidden: 'thresholds are not hand-tuned after holdout inspection in this source; provenance before label inspection is not established by this commit',
+    interpretation: 'Audit of the work history proves the first holdout run used G0-G23; G17/G18 were later rewritten and G24-G34 including G28_strong_only were added after holdout inspection. G28 14/0 is post-hoc within-corpus evidence, not independent validation.',
+    forbidden: 'do not describe G28 or the final G0-G34 catalog as pre-registered or holdout-validated; freeze a future catalog before collecting a new independent holdout',
   },
   splits: {
     development: { binary: 'battlecats', N: devSet.length, rescues: rescuesIn(devSet), regressions: devSet.filter((f) => f.classification === 'REGRESSION').length },
@@ -794,7 +794,7 @@ write('gate-candidates.json', {
   },
   fullCorpusZeroRegression: holdoutResults.zeroRegressionFrontierFull.slice(0, 20),
   fullCorpusOneRegression: holdoutResults.oneRegressionFrontierFull.slice(0, 20),
-  caveat: 'Full-corpus frontiers and the cross-binary split are descriptive. G28 is development-selected; independent free-form validation is still required before any production claim.',
+  caveat: 'Full-corpus frontiers and the cross-binary split are descriptive/post-hoc. G28 was added after holdout inspection; independent free-form validation after an explicit catalog freeze is required before any production claim.',
 });
 function pickGate(e) {
   if (!e) return null;
@@ -1082,7 +1082,7 @@ evalSummary.reproducibility = {
 evalSummary.verdict = {
   classification: 'RESEARCH_ONLY',
   candidatePredicate: 'G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.',
-  interpretation: 'G28 was selected on BattleCats development data and then observed on the TsumTsum+YWP cross-binary split. This commit does not provide provenance proving the gate catalog was fixed before holdout labels were inspected, and the fixture/SDK families are shared. Treat the split as descriptive evidence, not independent validation.',
+  interpretation: 'Work-history audit proves G28 was added after TsumTsum/YWP holdout results and the strong-rescue bias had already been inspected. The final BattleCats selection and TsumTsum+YWP 14/0 result are therefore post-hoc within-corpus evidence, not independent validation.',
   holdoutObserved: primaryGate1 && {
     split: 'development=battlecats; observed=TsumTsum+YWP',
     selectedOn: 'development with maxRegression<=1',
@@ -1122,12 +1122,12 @@ evalSummary.verdict = {
     bestNearZero: g28Full && { gateId: g28Full.gateId, fullRescue: g28Full.wrongToCorrect, fullRegression: g28Full.correctToWrong },
   },
   reasons: [
-    'Cross-binary observed result for G28 is 14 rescues / 0 regressions on TsumTsum+YWP, after development selection on BattleCats.',
+    'G28 measures 14 rescues / 0 regressions on TsumTsum+YWP, but G28 was invented after that holdout had already been inspected; treat 14/0 as post-hoc.',
     'Full corpus descriptive result is 29 rescues / 1 regression; top1 282->310; partial 53->81.',
     'No catalog gate achieves positive rescue with 0 full-corpus regression.',
     'Repeated calls show the regression choices are stable, so consistency does not filter them.',
     'The deterministic lexical screen still beats Jev overall on this generated corpus.',
-    'Fixture-generator/shared-SDK structure and missing pre-inspection provenance prevent treating this as an independent validation.',
+    'Work-history audit confirms post-hoc gate construction, and fixture-generator/shared-SDK structure adds another reason this is not independent validation.',
   ],
   notGoFor: [
     'production integration before an independent free-form intent holdout',
@@ -1135,7 +1135,7 @@ evalSummary.verdict = {
     'ambiguous-only as a production default',
     'verdict promotion or evidence minting from Jev',
   ],
-  recommendation: 'RESEARCH_ONLY. Preserve G28_strong_only as the leading candidate and evaluate it once, unchanged, on a newly collected independent free-form intent holdout before reconsidering any production merge.',
+  recommendation: 'RESEARCH_ONLY. Freeze G28_strong_only unchanged with a recorded commit/hash, then evaluate it once on a newly collected independent free-form intent holdout before reconsidering any production merge.',
 };
 // re-write evaluation with answers
 write('evaluation-summary.json', evalSummary);
