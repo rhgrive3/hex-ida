@@ -696,7 +696,8 @@ const holdoutResults = {
     primary: 'development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates',
     loo: 'leave-one-binary-out: select on two binaries, evaluate on the third',
     queryFamily: 'diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented',
-    forbidden: 'thresholds are not hand-tuned after holdout inspection; catalog is fixed in source',
+    interpretation: 'The BattleCats -> TsumTsum+YWP split is a cross-binary observed split, not an independent free-form validation set; this commit does not prove the gate catalog was fixed before holdout labels were inspected.',
+    forbidden: 'thresholds are not hand-tuned after holdout inspection in this source; provenance before label inspection is not established by this commit',
   },
   splits: {
     development: { binary: 'battlecats', N: devSet.length, rescues: rescuesIn(devSet), regressions: devSet.filter((f) => f.classification === 'REGRESSION').length },
@@ -742,7 +743,7 @@ for (const held of ['battlecats', 'TsumTsum', 'YWP']) {
   };
 }
 
-// Pareto frontier on full corpus (for reporting measured tradeoffs; NOT the validated gate)
+// Pareto frontier on full corpus (descriptive measured tradeoffs; NOT independent validation)
 function pareto(gates, subset) {
   const pts = gates.map((g) => applyGate(g, subset));
   const frontier = [];
@@ -764,6 +765,17 @@ holdoutResults.oneRegressionFrontierFull = holdoutResults.allGatesFullCorpus
   .filter((g) => g.correctToWrong <= 1)
   .sort((a, b) => a.correctToWrong - b.correctToWrong || b.net - a.net)
   .map(({ rows, ...rest }) => rest);
+const baselineFalseStrongForAccounting = featureRows.filter((f) => f.strong && !f.baselineCorrect).length;
+const g28FalseStrongForAccounting = featureRows.filter((f) => f.strong && !f.jevCorrect).length;
+holdoutResults.falseStrongAccounting = {
+  metric: 'wrong top1 among rows whose baseline verdict is strong; verdict label itself is unchanged',
+  baseline: baselineFalseStrongForAccounting,
+  g28After: g28FalseStrongForAccounting,
+  delta: g28FalseStrongForAccounting - baselineFalseStrongForAccounting,
+  corrected: featureRows.filter((f) => f.strong && !f.baselineCorrect && f.jevCorrect).length,
+  newlyBroken: featureRows.filter((f) => f.strong && f.baselineCorrect && !f.jevCorrect).length,
+  verdictPromotions: 0,
+};
 write('holdout-results.json', holdoutResults);
 
 // gate candidates summary (compact)
@@ -782,7 +794,7 @@ write('gate-candidates.json', {
   },
   fullCorpusZeroRegression: holdoutResults.zeroRegressionFrontierFull.slice(0, 20),
   fullCorpusOneRegression: holdoutResults.oneRegressionFrontierFull.slice(0, 20),
-  caveat: 'Full-corpus frontiers are descriptive; production claims use holdout-selected gates only.',
+  caveat: 'Full-corpus frontiers and the cross-binary split are descriptive. G28 is development-selected; independent free-form validation is still required before any production claim.',
 });
 function pickGate(e) {
   if (!e) return null;
