@@ -175,6 +175,13 @@ assert.equal(evaluation.verdict?.falseStrongAccounting?.verdictPromotions, 0);
 assert.ok(!('overallTop1Projected' in h1), 'cross-binary subset metric must not claim full-corpus overall top1');
 assert.equal(h1.exactPlusEvaluatedPartial, 267, 'explicit exact+evaluated-partial diagnostic');
 assert.match(holdout.protocol.queryFamily, /diagnostic only/i);
+assert.equal(holdout.protocol.provenanceAudit?.status, 'POST_HOC_CONFIRMED');
+assert.equal(holdout.protocol.provenanceAudit?.preHoldoutFreeze, false);
+assert.ok(holdout.protocol.provenanceAudit?.postHoldoutAdded?.includes('G28'));
+assert.equal(evaluation.verdict?.provenanceAudit?.status, 'POST_HOC_CONFIRMED');
+assert.equal(evaluation.verdict?.provenanceAudit?.preHoldoutCatalogFreeze, false);
+assert.match(evaluation.verdict?.interpretation || '', /post-hoc/i);
+assert.match(readme, /G28 was (?:invented|created|added).*after holdout/i);
 
 // repeated-call: regressions must not be discarded
 const rep = read('repeated-call-results.json');
