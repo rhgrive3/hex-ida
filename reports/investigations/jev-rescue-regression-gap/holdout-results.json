@@ -3,8 +3,9 @@
   "protocol": {
     "primary": "development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates",
     "loo": "leave-one-binary-out: select on two binaries, evaluate on the third",
-    "queryFamily": "query families defined by tail-2-token key; families exclusive to battlecats form development when possible",
-    "forbidden": "thresholds are not hand-tuned after holdout inspection; catalog is fixed in source"
+    "queryFamily": "diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented",
+    "forbidden": "thresholds are not hand-tuned after holdout inspection; catalog is fixed in source",
+    "interpretation": "The BattleCats -> TsumTsum+YWP split is a cross-binary observed split, not an independent free-form validation set; this commit does not prove the gate catalog was fixed before holdout labels were inspected."
   },
   "splits": {
     "development": {
@@ -40,7 +41,7 @@
     },
     "maxRegression1": {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 39,
       "wrongToCorrect": 15,
       "correctToWrong": 1,
@@ -81,15 +82,15 @@
       "precisionOfIntervention": 0.14285714285714285,
       "rescueRecall": 0.25,
       "regressionRate": 0.023809523809523808,
-      "overallTop1Projected": 258,
       "falseStrongAfter": 40,
       "baselineFalseStrongHold": 40,
       "strongOverwritten": 0,
-      "strongBroken": 0
+      "strongBroken": 0,
+      "exactPlusEvaluatedPartial": 258
     },
     "maxRegression1": {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 52,
       "wrongToCorrect": 14,
       "correctToWrong": 0,
@@ -100,11 +101,11 @@
       "precisionOfIntervention": 0.2692307692307692,
       "rescueRecall": 0.5833333333333334,
       "regressionRate": 0,
-      "overallTop1Projected": 267,
       "falseStrongAfter": 26,
       "baselineFalseStrongHold": 40,
       "strongOverwritten": 52,
-      "strongBroken": 0
+      "strongBroken": 0,
+      "exactPlusEvaluatedPartial": 267
     },
     "maxRegressionUnbounded": {
       "gateId": "G29_strong_or_ambiguous_top3",
@@ -119,11 +120,11 @@
       "precisionOfIntervention": 0.22115384615384615,
       "rescueRecall": 0.9583333333333334,
       "regressionRate": 0.019230769230769232,
-      "overallTop1Projected": 274,
       "falseStrongAfter": 26,
       "baselineFalseStrongHold": 40,
       "strongOverwritten": 52,
-      "strongBroken": 0
+      "strongBroken": 0,
+      "exactPlusEvaluatedPartial": 274
     }
   },
   "leaveOneBinaryOut": {
@@ -136,7 +137,7 @@
       "selected1": "G28_strong_only",
       "eval0": {
         "gateId": "G28_strong_only",
-        "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+        "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
         "triggered": 39,
         "wrongToCorrect": 15,
         "correctToWrong": 1,
@@ -147,15 +148,15 @@
         "precisionOfIntervention": 0.38461538461538464,
         "rescueRecall": 0.6818181818181818,
         "regressionRate": 0.02564102564102564,
-        "overallTop1Projected": 272,
         "falseStrongAfter": 13,
         "baselineFalseStrongHold": 27,
         "strongOverwritten": 39,
-        "strongBroken": 1
+        "strongBroken": 1,
+        "exactPlusEvaluatedPartial": 272
       },
       "eval1": {
         "gateId": "G28_strong_only",
-        "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+        "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
         "triggered": 39,
         "wrongToCorrect": 15,
         "correctToWrong": 1,
@@ -166,11 +167,11 @@
         "precisionOfIntervention": 0.38461538461538464,
         "rescueRecall": 0.6818181818181818,
         "regressionRate": 0.02564102564102564,
-        "overallTop1Projected": 272,
         "falseStrongAfter": 13,
         "baselineFalseStrongHold": 27,
         "strongOverwritten": 39,
-        "strongBroken": 1
+        "strongBroken": 1,
+        "exactPlusEvaluatedPartial": 272
       }
     },
     "TsumTsum": {
@@ -193,15 +194,15 @@
         "precisionOfIntervention": 0.08695652173913043,
         "rescueRecall": 0.15384615384615385,
         "regressionRate": 0.043478260869565216,
-        "overallTop1Projected": 246,
         "falseStrongAfter": 22,
         "baselineFalseStrongHold": 22,
         "strongOverwritten": 0,
-        "strongBroken": 0
+        "strongBroken": 0,
+        "exactPlusEvaluatedPartial": 246
       },
       "eval1": {
         "gateId": "G28_strong_only",
-        "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+        "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
         "triggered": 29,
         "wrongToCorrect": 8,
         "correctToWrong": 0,
@@ -212,11 +213,11 @@
         "precisionOfIntervention": 0.27586206896551724,
         "rescueRecall": 0.6153846153846154,
         "regressionRate": 0,
-        "overallTop1Projected": 253,
         "falseStrongAfter": 14,
         "baselineFalseStrongHold": 22,
         "strongOverwritten": 29,
-        "strongBroken": 0
+        "strongBroken": 0,
+        "exactPlusEvaluatedPartial": 253
       }
     },
     "YWP": {
@@ -239,15 +240,15 @@
         "precisionOfIntervention": null,
         "rescueRecall": 0,
         "regressionRate": null,
-        "overallTop1Projected": 237,
         "falseStrongAfter": 18,
         "baselineFalseStrongHold": 18,
         "strongOverwritten": 0,
-        "strongBroken": 0
+        "strongBroken": 0,
+        "exactPlusEvaluatedPartial": 237
       },
       "eval1": {
         "gateId": "G28_strong_only",
-        "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+        "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
         "triggered": 23,
         "wrongToCorrect": 6,
         "correctToWrong": 0,
@@ -258,11 +259,11 @@
         "precisionOfIntervention": 0.2608695652173913,
         "rescueRecall": 0.5454545454545454,
         "regressionRate": 0,
-        "overallTop1Projected": 243,
         "falseStrongAfter": 12,
         "baselineFalseStrongHold": 18,
         "strongOverwritten": 23,
-        "strongBroken": 0
+        "strongBroken": 0,
+        "exactPlusEvaluatedPartial": 243
       }
     }
   },
@@ -283,7 +284,7 @@
       "overallTop1Projected": 321,
       "partialTop1Projected": 92,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G1_ambiguous_only",
@@ -301,7 +302,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G2_ambiguous_and_multi",
@@ -319,7 +320,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G3_ambiguous_and_margin_lt_ln4",
@@ -337,7 +338,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G4_never_strong_and_jev_top3",
@@ -355,7 +356,7 @@
       "overallTop1Projected": 294,
       "partialTop1Projected": 65,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G5_never_strong_and_jev_cov_ge_top",
@@ -373,7 +374,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G6_ambiguous_and_low_evidence_gap",
@@ -391,7 +392,7 @@
       "overallTop1Projected": 294,
       "partialTop1Projected": 65,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G7_ambiguous_and_jev_cov_beats",
@@ -409,7 +410,7 @@
       "overallTop1Projected": 282,
       "partialTop1Projected": 53,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G8_not_confirmed_and_jev_topk",
@@ -427,7 +428,7 @@
       "overallTop1Projected": 300,
       "partialTop1Projected": 71,
       "strongOverwritten": 21,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G9_ambiguous_and_same_class_or_cov",
@@ -445,7 +446,7 @@
       "overallTop1Projected": 292,
       "partialTop1Projected": 63,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G10_jev_conf_ge_c_and_ambiguous",
@@ -463,7 +464,7 @@
       "overallTop1Projected": 285,
       "partialTop1Projected": 56,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G11_jev_conf_ge_c_and_not_confirmed",
@@ -481,7 +482,7 @@
       "overallTop1Projected": 285,
       "partialTop1Projected": 56,
       "strongOverwritten": 3,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G12_multi_and_not_confirmed",
@@ -499,7 +500,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 15,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G13_ambiguous_and_indep_le2",
@@ -517,7 +518,7 @@
       "overallTop1Projected": 289,
       "partialTop1Projected": 60,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G14_ambiguous_and_no_dataflow_top",
@@ -535,7 +536,7 @@
       "overallTop1Projected": 289,
       "partialTop1Projected": 60,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G15_ambiguous_and_jev_in_topk",
@@ -553,7 +554,7 @@
       "overallTop1Projected": 294,
       "partialTop1Projected": 65,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G16_strict_pair_ambiguous_lowconf",
@@ -571,7 +572,7 @@
       "overallTop1Projected": 292,
       "partialTop1Projected": 63,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G17_never_touch_strong",
@@ -589,7 +590,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G18_strong_small_evidence_gap",
@@ -607,7 +608,7 @@
       "overallTop1Projected": 282,
       "partialTop1Projected": 53,
       "strongOverwritten": 53,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G19_ambiguous_only_repeated_style",
@@ -625,7 +626,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G20_margin_and_multi",
@@ -643,7 +644,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 15,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G21_jev_cov_full_and_multi",
@@ -661,7 +662,7 @@
       "overallTop1Projected": 321,
       "partialTop1Projected": 92,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G22_not_confirmed_and_jev_cov_beats",
@@ -679,7 +680,7 @@
       "overallTop1Projected": 282,
       "partialTop1Projected": 53,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G23_ambiguous_or_jev_only_shorter_name",
@@ -697,7 +698,7 @@
       "overallTop1Projected": 295,
       "partialTop1Projected": 66,
       "strongOverwritten": 4,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G24_not_confirmed_and_low_score_gap",
@@ -715,7 +716,7 @@
       "overallTop1Projected": 294,
       "partialTop1Projected": 65,
       "strongOverwritten": 12,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G25_ambiguous_and_jev_pref_ge_05",
@@ -733,7 +734,7 @@
       "overallTop1Projected": 291,
       "partialTop1Projected": 62,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G26_ambiguous_and_differs_from_top",
@@ -751,7 +752,7 @@
       "overallTop1Projected": 293,
       "partialTop1Projected": 64,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G27_multi_and_jev_cov_ge_top",
@@ -769,11 +770,11 @@
       "overallTop1Projected": 321,
       "partialTop1Projected": 92,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 91,
       "wrongToCorrect": 29,
       "correctToWrong": 1,
@@ -787,7 +788,7 @@
       "overallTop1Projected": 310,
       "partialTop1Projected": 81,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G29_strong_or_ambiguous_top3",
@@ -805,7 +806,7 @@
       "overallTop1Projected": 322,
       "partialTop1Projected": 93,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G30_strong_and_multicand",
@@ -823,7 +824,7 @@
       "overallTop1Projected": 310,
       "partialTop1Projected": 81,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G31_confirmed_only",
@@ -841,7 +842,7 @@
       "overallTop1Projected": 304,
       "partialTop1Projected": 75,
       "strongOverwritten": 69,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G32_likely_or_confirmed_margin_ok",
@@ -859,7 +860,7 @@
       "overallTop1Projected": 310,
       "partialTop1Projected": 81,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G33_not_ambiguous",
@@ -877,7 +878,7 @@
       "overallTop1Projected": 310,
       "partialTop1Projected": 81,
       "strongOverwritten": 91,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     },
     {
       "gateId": "G34_ambiguous_and_jev_suffix_ge",
@@ -895,7 +896,7 @@
       "overallTop1Projected": 297,
       "partialTop1Projected": 68,
       "strongOverwritten": 0,
-      "falseStrongDelta": 0
+      "verdictPromotions": 0
     }
   ],
   "paretoFullCorpus": [
@@ -928,7 +929,7 @@
     },
     {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 91,
       "wrongToCorrect": 29,
       "correctToWrong": 1,
@@ -1112,7 +1113,7 @@
     },
     {
       "gateId": "G28_strong_only",
-      "desc": "Fire only on strong (confirmed/likely) baselines \u2014 production-observable verdict, no truth",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
       "triggered": 91,
       "wrongToCorrect": 29,
       "correctToWrong": 1,
@@ -1254,5 +1255,14 @@
       "strongOverwritten": 0,
       "falseStrongDelta": 0
     }
-  ]
+  ],
+  "falseStrongAccounting": {
+    "metric": "wrong top1 among rows whose baseline verdict is strong; verdict label itself is unchanged",
+    "baseline": 67,
+    "g28After": 39,
+    "delta": -28,
+    "corrected": 29,
+    "newlyBroken": 1,
+    "verdictPromotions": 0
+  }
 }
