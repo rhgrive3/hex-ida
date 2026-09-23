@@ -473,8 +473,8 @@ export class SymbolIndex {
   functionList(region, max = 50000) {
     const resultMax = finiteListMax(max);
     const out = [];
-    const lo = region ? region.vmAddr : 0n;
-    const hi = region ? region.vmAddr + region.size : null;
+    const lo = region ? BigInt(region.vmAddr) : 0n;
+    const hi = region ? lo + BigInt(region.size) : null;
     for (let i = 0; i < this.funcs.length && out.length < resultMax; i++) {
       const a = this.funcs[i];
       if (a < lo) continue;
@@ -495,8 +495,8 @@ export class SymbolIndex {
   symbolList({ region, kind, max = 50000 } = {}) {
     const resultMax = finiteListMax(max);
     const out = [];
-    const lo = region ? region.vmAddr : null;
-    const hi = region ? region.vmAddr + region.size : null;
+    const lo = region ? BigInt(region.vmAddr) : null;
+    const hi = region ? lo + BigInt(region.size) : null;
     for (let i = 0; i < this.addrs.length && out.length < resultMax; i++) {
       const a = this.addrs[i];
       if (lo != null && (a < lo || a >= hi)) continue;
