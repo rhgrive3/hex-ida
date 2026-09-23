@@ -35,7 +35,14 @@ export async function profileBinary(binary, { functionLimit = 0, functionTimeout
       try {
         const current = await product.query.snapshot({ signal:controller.signal });
         const response = await product.query.decompile(current, fn.address, { signal:controller.signal });
-        functions.push({ address:String(fn.address), name:fn.name ?? null, elapsedMs:performance.now() - fnStarted, state:response?.value ? (response?.status?.completeness === 'complete' ? 'PASS' : String(response?.status?.completeness ?? 'UNKNOWN').toUpperCase()) : 'UNSUPPORTED' });
+        const elapsedMs = performance.now() - fnStarted;
+        let state = response?.value ? (response?.status?.completeness === 'complete' ? 'PASS' : String(response?.status?.completeness ?? 'UNKNOWN').toUpperCase()) : 'UNSUPPORTED';
+        let reason = response?.status?.reason ?? null;
+        if (elapsedMs > functionTimeoutMs && state === 'PASS') {
+          state = 'TIMEOUT';
+          reason = reason ?? 'function-timeout-elapsed-exceeded';
+        }
+        functions.push({ address:String(fn.address), name:fn.name ?? null, elapsedMs, state, ...(reason ? { reason } : {}) });
       } catch (caught) {
         functions.push({ address:String(fn.address), name:fn.name ?? null, elapsedMs:performance.now() - fnStarted, state:caught?.name === 'AbortError' ? 'TIMEOUT' : 'CRASH', reason:String(caught?.message || caught) });
       } finally { clearTimeout(timer); }
@@ -65,7 +72,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   const functionLimit = Number(optionValue(args,'--functions','0'));
   const functionTimeoutMs = Number(optionValue(args,'--function-timeout-ms','30000'));
   if (!binaries.length) {
-    console.error('usage: node profile-fresh.mjs <binary> [binary...] [--functions N] [--function-timeout-ms MS]');
+    console.error('usage: node profile-fresh.mjs <binary> [binary...] [--functions N] [--function-timeout-ms MS (in-process best-effort abort; elapsed>limit marked TIMEOUT)]');
     process.exitCode = 2;
   } else {
     const rows=[];

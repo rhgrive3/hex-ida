@@ -128,6 +128,13 @@ export async function runFreshSubject({
         clearTimeout(timer);
       }
       const elapsedMs = now() - fnStarted;
+      if (elapsedMs > functionTimeoutMs && functionResult.state === 'PASS') {
+        functionResult = {
+          ...functionResult,
+          state:'TIMEOUT',
+          reason:functionResult.reason ?? 'function-timeout-elapsed-exceeded',
+        };
+      }
       functionTimings.push(elapsedMs);
       writeReceipt(receiptDir, identity, fn, {
         state:functionResult.state,

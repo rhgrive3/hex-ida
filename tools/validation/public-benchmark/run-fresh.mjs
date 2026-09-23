@@ -49,7 +49,7 @@ export async function runFreshBenchmark({
   const receiptRoot = path.resolve(cwd, optionValue(args, '--receipt-dir', `${outputDir}/.fresh-receipts`));
   const functionTimeoutMs = Number(optionValue(args, '--function-timeout-ms', '10000'));
   const setupTimeoutMs = Number(optionValue(args, '--setup-timeout-ms', '60000'));
-  const watchdogGraceMs = Number(optionValue(args, '--watchdog-grace-ms', '1000'));
+  const watchdogGraceMs = Number(optionValue(args, '--watchdog-grace-ms', '2000'));
   const workers = Number(optionValue(args, '--workers', String(Math.min(8, os.availableParallelism?.() ?? os.cpus().length))));
   const limit = Number(optionValue(args, '--limit', '0'));
   const retryStates = optionValues(args, '--retry-state');
