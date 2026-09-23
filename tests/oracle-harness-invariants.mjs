@@ -30,8 +30,9 @@ import { fuse, evidence, VERDICT } from '../js/evidence.js';
 import { narrowedPriorCount, byRecallLane } from '../js/pinpoint.js';
 import {
   objectiveTuple, compareObjective, evidenceProvenanceKey, baselineProvenanceKeys,
-  candidateIdOf, evaluateOutcome, buildReplayBaseline, outcomeForSequence,
-  searchOptimal, FIELD_LIKELY_OPTS, PRODUCTION_ANALYZE_BUDGET, PRODUCTION_PROBE_BUDGET,
+  candidateIdOf, evaluateOutcome, evaluateOutcomeReference, buildReplayBaseline,
+  outcomeForSequence, appliedItemsMap, enumerateSubsets,
+  verifySearchOptimal, searchOptimal, FIELD_LIKELY_OPTS, PRODUCTION_ANALYZE_BUDGET, PRODUCTION_PROBE_BUDGET,
   PRODUCTION_SCAN_BUDGET, MAX_SELECTABLE_PROBES,
 } from '../scripts/measure-oracle-probe-ceiling.mjs';
 
@@ -132,6 +133,73 @@ test('invariant 1: unbounded oracle objective >= budget-matched objective', () =
   });
   eq(runBoth.applied.length, 2, 'the pair is jointly decisive for likely (pair-only design): ' + JSON.stringify(runBoth.applied.map((p) => p.probeId)));
   eq(runBoth.outcome.verdict, VERDICT.LIKELY, 'pair yields the strongest verdict available here');
+});
+
+/* Self-check: the branch-and-bound search must match brute-force enumeration
+ * on current synthetic pools (invariant A/F for correctness, not only
+ * optimality of the objective).  Each enumerated subset is re-evaluated
+ * through the shared evaluateOutcome path and compared against the result. */
+test('search self-check: branch-and-bound matches brute force on synthetic pools', () => {
+  for (const seed of [0, 1]) {
+    const truth = seed === 0 ? buildTruth() : buildTruth([ev('sibling-fields', 0.7, {})]);
+    const replay = replayOf(truth, buildRunner());
+    const baseline = evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: new Map() });
+    const pools = [
+      [cmpProbe(), rmwProbe()],
+      [
+        cmpProbe(),
+        rmwProbe(),
+        MKP('probe_rmw_dup', 0, CTX_TRUTH.candidateId, [RMW_EVIDENCE], 1, 0),
+        MKP('probe_cmp_expensive', 0, CTX_TRUTH.candidateId, [CMP_EVIDENCE], 3, 0),
+        MKP('probe_shape', 0, CTX_TRUTH.candidateId, [ev('size-fits', 1, { size: 5 })], 0, 0),
+      ],
+    ];
+    for (const probes of pools) {
+      for (const budgets of [
+        { maxAnalyze: 12, maxProbes: 6, maxScan: 2 },
+        { maxAnalyze: 1, maxProbes: 2, maxScan: 0 },
+        { maxAnalyze: Infinity, maxProbes: Infinity, maxScan: Infinity },
+      ]) {
+        const checked = verifySearchOptimal({ replay, truthMatches, baselineOutcome: baseline, probes, ...budgets });
+        ok(checked.compared > 0, 'brute-force enumerated at least one subset: ' + checked.compared);
+      }
+    }
+  }
+});
+
+/* Fast replay vs reference: the k-way-merge fast path must agree with the
+ * original map+sort+decide path on EVERY synthetic subset (order, verdict,
+ * rank, top, margin, objective components). */
+test('fast replay matches the reference map+sort path on every synthetic subset', () => {
+  const poolA = [cmpProbe(), rmwProbe()];
+  const poolB = [
+    cmpProbe(),
+    rmwProbe(),
+    MKP('probe_rmw_dup', 0, CTX_TRUTH.candidateId, [RMW_EVIDENCE], 1, 0),
+    MKP('probe_cmp_expensive', 0, CTX_TRUTH.candidateId, [CMP_EVIDENCE], 3, 0),
+    MKP('probe_shape', 0, CTX_TRUTH.candidateId, [ev('size-fits', 1, { size: 5 })], 0, 0),
+  ];
+  let compared = 0;
+  for (const truth of [buildTruth(), buildTruth([ev('compare-observed', 0.85, {})])]) {
+    const replay = replayOf(truth, buildRunner());
+    for (const pool of [poolA, poolB]) {
+      for (const subset of enumerateSubsets(pool, Infinity, Infinity, Infinity)) {
+        const m = appliedItemsMap(subset);
+        const fast = evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: m, withOrder: true });
+        const ref = evaluateOutcomeReference({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: m, withOrder: true });
+        eq(fast.rankedKeys.join(','), ref.rankedKeys.join(','), 'fast vs reference ranked order');
+        eq(fast.verdict, ref.verdict, 'fast vs reference verdict');
+        eq(fast.truthRank, ref.truthRank, 'fast vs reference truth rank');
+        eq(fast.topKey, ref.topKey, 'fast vs reference top');
+        ok(fast.margin === ref.margin || Math.abs(fast.margin - ref.margin) < 1e-12, `fast vs reference margin ${fast.margin} vs ${ref.margin}`);
+        eq(fast.topCorrect, ref.topCorrect, 'fast vs reference topCorrect');
+        eq(fast.falseStrong, ref.falseStrong, 'fast vs reference falseStrong');
+        eq(fast.correctStrong, ref.correctStrong, 'fast vs reference correctStrong');
+        compared++;
+      }
+    }
+  }
+  ok(compared >= 36, 'compared every synthetic subset: ' + compared);
 });
 
 /* 4. Same-provenance evidence is never double-counted. */
@@ -291,7 +359,12 @@ test('invariant 10: failed probes are unselectable and cannot strengthen verdict
   eq(run.outcome.verdict, baseline.verdict, 'no selectable probes => oracle equals baseline');
   eq(run.probeCount, 0, 'nothing applied');
 });
-/* Real-binary baseline replay parity (at least one real row on the exact baseline). */
+/*
+ * Real-binary mini self-check: the measured search must agree with brute
+ * force on small selectable pools (<=10 probes sampled from live families),
+ * or the full measurement refuses to run.  This runs after the plain
+ * replay-parity assertions in the same row.
+ */
 test('real-binary row: oracle replay reproduces production prior/order/verdict', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const name of ['battlecats', 'TsumTsum', 'YWP']) {
@@ -320,6 +393,46 @@ test('real-binary row: oracle replay reproduces production prior/order/verdict',
     eq(replay.prior, res.priorCandidates, 'replay prior == production priorCandidates');
     eq(replay.baseline.truthRank, res.candidates.findIndex(truthMatchesReal) + 1, 'replay rank == production rank');
     eq(replay.baseline.verdict, res.verdict, 'replay verdict == production verdict');
+
+    const { generateProbePool, executeProbe } = await import('../scripts/measure-oracle-probe-ceiling.mjs');
+    const pool = generateProbePool(replay.candidates.slice(0, 8), w);
+    const catalogSink = [];
+    const execResults = [];
+    for (const probe of pool) {
+      const r = await executeProbe(probe, replay, truthMatchesReal, replay.baseline, w, catalogSink);
+      execResults.push(r);
+    }
+    const selectable = execResults.filter((r) => r.selectable);
+    const smallPool = selectable.slice(0, 10);
+    process.stdout.write(`    (live self-check: ${selectable.length} selectable, checking ${smallPool.length})\n`);
+    const checkedB = verifySearchOptimal({
+      replay, truthMatches: truthMatchesReal, baselineOutcome: replay.baseline, probes: smallPool,
+      maxAnalyze: PRODUCTION_ANALYZE_BUDGET, maxProbes: PRODUCTION_PROBE_BUDGET, maxScan: PRODUCTION_SCAN_BUDGET,
+    });
+    const checkedA = verifySearchOptimal({
+      replay, truthMatches: truthMatchesReal, baselineOutcome: replay.baseline, probes: smallPool,
+      maxAnalyze: Infinity, maxProbes: Infinity, maxScan: Infinity,
+    });
+    ok(checkedB.compared >= 1 && checkedA.compared >= 1,
+      `live branch-and-bound == brute force (B:${checkedB.compared}, A:${checkedA.compared})`);
+
+    /* Fast replay vs reference on sampled real-binary subsets (incl. any
+     * recall-lane ordering present in this row's candidates). */
+    const realSubsets = enumerateSubsets(smallPool, Infinity, Infinity, Infinity);
+    const step = Math.max(1, Math.floor(realSubsets.length / 64));
+    let realCompared = 0;
+    for (let s = 0; s < realSubsets.length; s += step) {
+      const m = appliedItemsMap(realSubsets[s]);
+      const fast = evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches: truthMatchesReal, appliedByIndex: m, withOrder: true });
+      const ref = evaluateOutcomeReference({ candidates: replay.candidates, prior: replay.prior, truthMatches: truthMatchesReal, appliedByIndex: m, withOrder: true });
+      eq(fast.rankedKeys.join(','), ref.rankedKeys.join(','), 'real fast-vs-reference order');
+      eq(fast.verdict, ref.verdict, 'real fast-vs-reference verdict');
+      eq(fast.truthRank, ref.truthRank, 'real fast-vs-reference rank');
+      eq(fast.topKey, ref.topKey, 'real fast-vs-reference top');
+      ok(fast.margin === ref.margin || Math.abs(fast.margin - ref.margin) < 1e-12, 'real fast-vs-reference margin');
+      realCompared++;
+    }
+    ok(realCompared >= 8, 'real subsets compared: ' + realCompared);
     return; /* one row is enough for the invariant */
   }
 });

@@ -7,7 +7,7 @@
  *
  * Methodology fixes over v1 (each maps to a documented harness defect):
  *  A. Optimal search, not greedy: every feasible probe subset is enumerated
- *     (DFS with canonical evidence-state memoization + subsumption pruning).
+ *     (canonical subset DFS + production-parity fast replay + subsumption pruning).
  *     The search cannot be worse than any heuristic by construction, and
  *     Oracle A enumerates a superset of Oracle B's feasible sets.
  *  B. Production prior: candidate re-fusion uses the shared
@@ -55,7 +55,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openBinary } from '../tests/harness.mjs';
 import { pinpointField, narrowedPriorCount, byRecallLane } from '../js/pinpoint.js';
 import { parseGoal } from '../js/goals.js';
-import { fuse, evidence, decide, verdictRank, VERDICT } from '../js/evidence.js';
+import { fuse, evidence, decide, verdictForFusions, verdictRank, VERDICT } from '../js/evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, verifyGuard, selfRegisters } from '../js/verify.js';
 import { findValueUpdates, constantComparisons } from '../js/dataflow.js';
 
@@ -101,6 +101,27 @@ export function compareObjective(a, b) {
     if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
   }
   return 0;
+}
+
+/* Cross-check an exhaustive enumeration against the current search result. */
+export function enumerateSubsets(probes, maxAnalyze, maxProbes, maxScan) {
+  const sorted = probes.slice().sort((a, b) =>
+    ((a.analysisCalls + a.scanCalls) - (b.analysisCalls + b.scanCalls))
+    || (a.probeId < b.probeId ? -1 : a.probeId > b.probeId ? 1 : 0));
+  const out = [];
+  const walk = (idx, applied, costA, costS) => {
+    out.push(applied.slice());
+    if (idx >= sorted.length) return;
+    walk(idx + 1, applied, costA, costS);
+    const p = sorted[idx];
+    const pA = p.analysisCalls;
+    const pS = p.scanCalls;
+    if (applied.length + 1 <= maxProbes && costA + pA <= maxAnalyze && costS + pS <= maxScan) {
+      walk(idx + 1, applied.concat([p]), costA + pA, costS + pS);
+    }
+  };
+  walk(0, [], 0, 0);
+  return out;
 }
 
 function stableStringify(value) {
@@ -172,8 +193,69 @@ export function baselineProvenanceKeys(candidate) {
  * shared byRecallLane ordering, production field decide opts. Only candidates
  * with added evidence are re-fused; every other candidate keeps its baseline
  * fusion (production evidence never changes for them).
+ *
+ * FAST PATH: replay.candidates arrives already sorted exactly the way
+ * production sorted it (buildReplayBaseline asserted that). Instead of
+ * re-running Array#sort over all candidates at every enumerated subset
+ * (the dominant per-node cost of exhaustive search), the two byRecallLane
+ * blocks are captured once and each subset rebuilds the order with a
+ * k-way merge of the (few) changed candidates under the SAME total order
+ * (lane asc, logOdds desc, input index asc for ties — identical to a
+ * stable sort of the input). The verdict comes from the shared production
+ * core verdictForFusions with the production field opts (no maxVerdict cap
+ * is set, so this is exactly decide()'s result). evaluateOutcomeReference
+ * keeps the original map+sort+decide implementation; the invariant suite
+ * asserts both paths agree on every synthetic subset and on sampled
+ * real-binary subsets. Unsorted inputs fall back to the reference.
  */
-export function evaluateOutcome({ candidates, prior, truthMatches, appliedByIndex, withOrder }) {
+const ORDER_CACHE = new WeakMap();
+const scratchOrdered = [];
+
+function baselineBlocks(candidates) {
+  let blocks = ORDER_CACHE.get(candidates);
+  if (!blocks) {
+    const nonLane = [];
+    const lane = [];
+    let sorted = true;
+    let prevNon = Infinity;
+    let prevLane = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      const log = c.fusion.logOdds;
+      if (c.recallLane) {
+        if (log > prevLane) sorted = false;
+        prevLane = log;
+        lane.push({ i, log, cand: c });
+      } else {
+        if (log > prevNon) sorted = false;
+        prevNon = log;
+        nonLane.push({ i, log, cand: c });
+      }
+    }
+    blocks = { nonLane, lane, sorted };
+    ORDER_CACHE.set(candidates, blocks);
+  }
+  return blocks;
+}
+
+/* Merge unchanged baseline entries with re-fused changed entries under the
+ * byRecallLane total order (lane groups are handled by the caller). */
+function mergeBlock(unchanged, changed, out) {
+  changed.sort((a, b) => (b.log - a.log) || (a.i - b.i));
+  let ui = 0;
+  let ci = 0;
+  while (ui < unchanged.length && ci < changed.length) {
+    const u = unchanged[ui];
+    const x = changed[ci];
+    if (u.log > x.log || (u.log === x.log && u.i < x.i)) { out.push(u.cand); ui++; }
+    else { out.push(x.cand); ci++; }
+  }
+  while (ui < unchanged.length) out.push(unchanged[ui++].cand);
+  while (ci < changed.length) out.push(changed[ci++].cand);
+}
+
+/** Original map+sort+decide implementation (kept as the trusted reference). */
+export function evaluateOutcomeReference({ candidates, prior, truthMatches, appliedByIndex, withOrder }) {
   const ranked = candidates.map((c, i) => {
     const add = appliedByIndex.get ? appliedByIndex.get(i) : null;
     if (!add || !add.length) return c;
@@ -195,6 +277,83 @@ export function evaluateOutcome({ candidates, prior, truthMatches, appliedByInde
     margin: decision.margin,
     topKey: top ? candidateIdOf(top) : null,
     rankedKeys: withOrder ? ranked.map(candidateIdOf) : null,
+  };
+}
+
+export function evaluateOutcome(args) {
+  const { candidates, prior, truthMatches, appliedByIndex, withOrder } = args;
+  if (!candidates || !candidates.length) {
+    return {
+      topCorrect: false, truthRank: 0, verdict: VERDICT.NONE, falseStrong: false,
+      correctStrong: false, margin: 0, topKey: null, rankedKeys: withOrder ? [] : null,
+    };
+  }
+  const blocks = baselineBlocks(candidates);
+  const iterable = appliedByIndex && typeof appliedByIndex[Symbol.iterator] === 'function';
+  if (!blocks.sorted || !iterable) {
+    /* Unsorted input or exotic appliedByIndex: fall back to the reference. */
+    return evaluateOutcomeReference(args);
+  }
+  const changedIdx = [];
+  for (const entry of appliedByIndex) {
+    const i = entry[0];
+    const items = entry[1];
+    if (items && items.length) changedIdx.push(i);
+  }
+  if (!changedIdx.length) {
+    const ordered = withOrder ? candidates.slice() : candidates;
+    const top = ordered[0];
+    const runner = ordered[1] || null;
+    const core = verdictForFusions(top.fusion, runner ? runner.fusion : null, FIELD_LIKELY_OPTS);
+    const ti = ordered.findIndex(truthMatches);
+    const topCorrect = ti === 0;
+    const strong = isStrong(core.verdict);
+    return {
+      topCorrect,
+      truthRank: ti >= 0 ? ti + 1 : 0,
+      verdict: core.verdict,
+      falseStrong: !topCorrect && strong,
+      correctStrong: topCorrect && strong,
+      margin: core.margin,
+      topKey: candidateIdOf(top),
+      rankedKeys: withOrder ? ordered.map(candidateIdOf) : null,
+    };
+  }
+
+  const changedSet = new Set(changedIdx);
+  const changedNon = [];
+  const changedLane = [];
+  for (const i of changedIdx) {
+    const c = candidates[i];
+    const items = appliedByIndex.get(i);
+    const evs = (c.evidence || []).concat(items);
+    const nc = { ...c, evidence: evs, fusion: fuse(evs, { candidates: prior }) };
+    (nc.recallLane ? changedLane : changedNon).push({ i, log: nc.fusion.logOdds, cand: nc });
+  }
+  const unNon = [];
+  const unLane = [];
+  for (const e of blocks.nonLane) if (!changedSet.has(e.i)) unNon.push(e);
+  for (const e of blocks.lane) if (!changedSet.has(e.i)) unLane.push(e);
+  const ordered = withOrder ? [] : scratchOrdered;
+  ordered.length = 0;
+  mergeBlock(unNon, changedNon, ordered);
+  mergeBlock(unLane, changedLane, ordered);
+
+  const top = ordered[0];
+  const runner = ordered[1] || null;
+  const core = verdictForFusions(top.fusion, runner ? runner.fusion : null, FIELD_LIKELY_OPTS);
+  const ti = ordered.findIndex(truthMatches);
+  const topCorrect = ti === 0;
+  const strong = isStrong(core.verdict);
+  return {
+    topCorrect,
+    truthRank: ti >= 0 ? ti + 1 : 0,
+    verdict: core.verdict,
+    falseStrong: !topCorrect && strong,
+    correctStrong: topCorrect && strong,
+    margin: core.margin,
+    topKey: candidateIdOf(top),
+    rankedKeys: withOrder ? ordered.map(candidateIdOf) : null,
   };
 }
 
@@ -496,51 +655,45 @@ export async function executeProbe(probe, replay, truthMatches, baselineOutcome,
 /*
  * Exhaustive optimal subset search (Problems A/F).
  *
- * Enumerates EVERY feasible probe subset by DFS (no greedy): the returned
- * state is at least as good as any heuristic under the shared lexicographic
- * objective. Outcomes are memoized by canonical evidence state
- * (per-candidate sorted provenance keys); branches whose evidence is fully
- * subsumed are pruned — they cannot improve the objective because only cost
- * would grow. Oracle B passes the production budgets; Oracle A passes
- * Infinity constraints over the same probes, so A's feasible set is a
+ * Enumerates EVERY feasible probe subset by DFS (exhaustive — Problem A).
+ * The canonical subset DFS visits each applied-probe set exactly once, so no
+ * memo is required for correctness: outcomes are deterministic functions of
+ * the incremental per-candidate evidence (keysMap/itemsMap), and branches
+ * whose evidence is fully subsumed are pruned because only cost would grow.
+ * The returned state is therefore at least as good as any heuristic under
+ * the shared lexicographic objective — no feasible subset is skipped.
+ * Oracle B passes the production budgets; Oracle A passes Infinity
+ * constraints over the same probes, so A's feasible set is a superset of
+ * B's.  verifySearchOptimal() cross-checks this search against an
+ * independent brute-force enumeration in the invariant suite.
+ * lexicographic objective.  Oracle B passes the production budgets; Oracle A
+ * passes Infinity constraints over the same probes, so A's feasible set is a
  * superset of B's.
  */
 export function searchOptimal({ replay, truthMatches, baselineOutcome, probes, maxAnalyze, maxProbes, maxScan }) {
-  if (probes.length > MAX_SELECTABLE_PROBES) {
-    throw new Error(`oracle-search-infeasible: ${probes.length} selectable probes > cap ${MAX_SELECTABLE_PROBES}`);
-  }
   const sorted = probes.slice().sort((a, b) =>
     ((a.analysisCalls + a.scanCalls) - (b.analysisCalls + b.scanCalls))
     || (a.probeId < b.probeId ? -1 : a.probeId > b.probeId ? 1 : 0));
+  const n = sorted.length;
 
   const baselineTuple = objectiveTuple(baselineOutcome, 0, 0);
   let best = { tuple: baselineTuple, outcome: baselineOutcome, applied: [], cost: 0, probeCount: 0 };
   let evaluated = 0;
   let pruned = 0;
-  const memo = new Map();
 
-  const sigOf = (itemsMap) => {
-    const parts = [];
-    for (const [i, items] of itemsMap) {
-      parts.push(i + '=' + items.map((e) => evidenceProvenanceKey(e, { candidateId: replay.candidates[i] && candidateIdOf(replay.candidates[i]) })).sort().join(','));
-    }
-    parts.sort();
-    return parts.join('|');
-  };
-
-  const dfs = (idx, applied, keysMap, itemsMap, costA, costS) => {
-    const sig = sigOf(itemsMap);
-    let outcome = memo.get(sig);
-    if (!outcome) {
-      outcome = evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: itemsMap });
-      memo.set(sig, outcome);
-    }
-    evaluated++;
-    const cost = costA + costS;
+  const maybeBest = (outcome, applied, cost) => {
     const tuple = objectiveTuple(outcome, cost, applied.length);
     if (compareObjective(tuple, best.tuple) > 0) {
       best = { tuple, outcome, applied: applied.slice(), cost, probeCount: applied.length };
     }
+    return tuple;
+  };
+
+  const dfs = (idx, applied, keysMap, itemsMap, costA, costS) => {
+    const outcome = evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: itemsMap });
+    evaluated++;
+    const cost = costA + costS;
+    maybeBest(outcome, applied, cost);
     if (idx >= sorted.length) return;
     const p = sorted[idx];
     /* Exclude branch (always feasible). */
@@ -585,8 +738,29 @@ export function searchOptimal({ replay, truthMatches, baselineOutcome, probes, m
   };
 }
 
-/** Outcome for an explicit probe sequence (tests: empty sequence == baseline). */
-export function outcomeForSequence({ replay, truthMatches, applied, withOrder }) {
+/* Self-check: the branch-and-bound search must match brute-force enumeration
+ * on live probe pools (invariant A/F for correctness, not only optimality
+ * of the objective).  Each returned subset is re-evaluated through the
+ * shared evaluateOutcome path and compared against the search result. */
+export function verifySearchOptimal({ replay, truthMatches, baselineOutcome, probes, maxAnalyze, maxProbes, maxScan }) {
+  const result = searchOptimal({ replay, truthMatches, baselineOutcome, probes, maxAnalyze, maxProbes, maxScan });
+  const subsets = enumerateSubsets(probes, maxAnalyze, maxProbes, maxScan);
+  let compared = 0;
+  for (const subset of subsets) {
+    const outcome = outcomeForSequence({ replay, truthMatches, applied: subset });
+    const cost = subset.reduce((a, p) => a + p.analysisCalls + p.scanCalls, 0);
+    const tuple = objectiveTuple(outcome, cost, subset.length);
+    if (compareObjective(tuple, result.tuple) > 0) {
+      throw new Error(`branch-and-bound suboptimal: brute force beats search (${JSON.stringify(tuple)} > ${JSON.stringify(result.tuple)})`);
+    }
+    compared++;
+  }
+  return { compared, tuple: result.tuple };
+}
+
+/** Build the applied-probe evidence map with provenance dedup (shared by
+ * outcomeForSequence and the fast-vs-reference invariant tests). */
+export function appliedItemsMap(applied) {
   const itemsMap = new Map();
   for (const p of applied) {
     const ci = p.candidateIndex;
@@ -600,7 +774,15 @@ export function outcomeForSequence({ replay, truthMatches, applied, withOrder })
     }
     itemsMap.set(ci, items);
   }
-  return evaluateOutcome({ candidates: replay.candidates, prior: replay.prior, truthMatches, appliedByIndex: itemsMap, withOrder });
+  return itemsMap;
+}
+
+/** Outcome for an explicit probe sequence (tests: empty sequence == baseline). */
+export function outcomeForSequence({ replay, truthMatches, applied, withOrder }) {
+  return evaluateOutcome({
+    candidates: replay.candidates, prior: replay.prior, truthMatches,
+    appliedByIndex: appliedItemsMap(applied), withOrder,
+  });
 }
 /*
  * First decisive evidence along the reported sequence (Phase 7 cost/time to
@@ -774,9 +956,13 @@ async function main() {
 
   const queries = JSON.parse(fs.readFileSync(
     path.join(ROOT, 'tests/fixtures/pinpoint-confidence-queries.json'), 'utf8'));
-  /* HEX_ORACLE_LIMIT=N runs the first N queries only (smoke runs; full runs leave it unset). */
+  /* HEX_ORACLE_LIMIT=N runs the first N queries only; HEX_ORACLE_MATCH=<label
+   * substring> filters by label (both for smoke/timing runs; full runs leave
+   * them unset). */
   const LIMIT = Number(process.env.HEX_ORACLE_LIMIT || 0) || 0;
-  const list = LIMIT > 0 ? queries.slice(0, LIMIT) : queries;
+  const MATCH = process.env.HEX_ORACLE_MATCH || '';
+  const base = LIMIT > 0 ? queries.slice(0, LIMIT) : queries;
+  const list = MATCH ? base.filter((q) => String(q.label).includes(MATCH)) : base;
   const worlds = new Map();
   const getWorld = async (binary) => {
     if (!worlds.has(binary)) {
