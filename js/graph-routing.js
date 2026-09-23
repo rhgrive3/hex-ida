@@ -22,7 +22,7 @@ export function layoutNodes(nodes, edges, byId) {
   const indeg = new Map();
   for (const n of nodes) { succ.set(n.id, []); indeg.set(n.id, 0); }
   for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back') continue;
+    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back' || e.from === e.to) continue;
     succ.get(e.from).push(e.to);
     indeg.set(e.to, indeg.get(e.to) + 1);
   }
@@ -72,7 +72,7 @@ export function layoutNodes(nodes, edges, byId) {
   const pred = new Map();
   for (const n of nodes) pred.set(n.id, []);
   for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back') continue;
+    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back' || e.from === e.to) continue;
     pred.get(e.to).push(e.from);
   }
   const mean = (ids) => (ids.length
