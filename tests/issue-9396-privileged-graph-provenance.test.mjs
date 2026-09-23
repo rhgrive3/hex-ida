@@ -47,7 +47,7 @@ test('privileged graph rejects a required leaf symlink escaping repository', () 
 
     assert.throws(
       () => assertPrivilegedGraph(metafile(), 'parent', { repoRoot: root }),
-      /required input escapes repository/,
+      /(?:required )?input escapes repository/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -20,6 +20,18 @@ for (const input of forbidden) {
 }
 
 test('#9320 POSIX policy remains case-sensitive', () => {
-  assert.doesNotThrow(() => assertStandardGraph({ inputs:{ 'JS/AUTH/PRIVILEGED/secret.js':{} } }, 'standard', { platform:'linux' }));
-  assert.throws(() => assertStandardGraph({ inputs:{ 'js/auth/privileged/secret.js':{} } }, 'standard', { platform:'linux' }), /leaks privileged implementation/);
+  const resolver = (value) => String(value);
+  assert.doesNotThrow(() => assertStandardGraph(
+    { inputs:{ 'JS/AUTH/PRIVILEGED/secret.js':{} } },
+    'standard',
+    { platform:'linux', repoRoot:'/work/hex', realpathSync: resolver },
+  ));
+  assert.throws(
+    () => assertStandardGraph(
+      { inputs:{ 'js/auth/privileged/secret.js':{} } },
+      'standard',
+      { platform:'linux', repoRoot:'/work/hex', realpathSync: resolver },
+    ),
+    /leaks privileged implementation/,
+  );
 });
