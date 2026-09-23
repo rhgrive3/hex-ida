@@ -2,7 +2,11 @@ export const DEFAULT_RELOCATION_BUDGET_LIMITS = Object.freeze({
   maxOutput: 250_000,
   maxInputBytes: 32 * 1024 * 1024,
   maxOperations: 4_000_000,
-  maxWallMs: 1_500,
+  // Wall-clock stops made parse output depend on host speed (OpenMW lost
+  // 25-60% of its RTTI classes on a loaded host). Work is bounded by the
+  // deterministic limits above; a wall-clock stop applies only when a caller
+  // passes an explicit maxWallMs.
+  maxWallMs: Infinity,
 });
 
 function positiveLimit(value, fallback) {
@@ -14,7 +18,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null, signal = n
     maxOutput: positiveLimit(limits.maxOutput, DEFAULT_RELOCATION_BUDGET_LIMITS.maxOutput),
     maxInputBytes: positiveLimit(limits.maxInputBytes, DEFAULT_RELOCATION_BUDGET_LIMITS.maxInputBytes),
     maxOperations: positiveLimit(limits.maxOperations, DEFAULT_RELOCATION_BUDGET_LIMITS.maxOperations),
-    maxWallMs: positiveLimit(limits.maxWallMs, DEFAULT_RELOCATION_BUDGET_LIMITS.maxWallMs),
+    maxWallMs: limits.maxWallMs === undefined ? Infinity : positiveLimit(limits.maxWallMs, DEFAULT_RELOCATION_BUDGET_LIMITS.maxWallMs),
   };
   const now = typeof limits.now === 'function' ? limits.now : Date.now;
   const started = now();
@@ -70,7 +74,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null, signal = n
       return true;
     },
     snapshot(output = 0) {
-      return { inputBytes, operations, output, stopped, reason, ...resolved };
+      return { inputBytes, operations, output, stopped, reason, ...resolved, maxWallMs: Number.isFinite(resolved.maxWallMs) ? resolved.maxWallMs : null };
     },
   };
 }
