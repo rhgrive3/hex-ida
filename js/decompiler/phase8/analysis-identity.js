@@ -41,7 +41,7 @@ const DEEPLY_FROZEN_CACHE = new WeakMap();
 // typed spelling weakly, and cap individual entries to avoid retaining giant
 // strings beside large live graphs. Mutable/unvalidated data always re-encodes.
 const FROZEN_IDENTITY_TEXT = new WeakMap();
-const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
+const FROZEN_GRAPH_DIGEST = new WeakMap();
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -99,6 +99,7 @@ function deeplyFrozen(value, active = new Set()) {
   if (active.has(value)) return false;
   active.add(value);
   let result = true;
+  const visited = [];
   try {
     for (const key of semanticOwnKeys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -106,12 +107,18 @@ function deeplyFrozen(value, active = new Set()) {
         result = false;
         break;
       }
+      if (descriptor.value != null && typeof descriptor.value === 'object') {
+        visited.push(descriptor.value);
+      }
     }
   } catch {
     result = false;
   }
   active.delete(value);
-  if (result) DEEPLY_FROZEN_CACHE.set(value, true);
+  if (result) {
+    DEEPLY_FROZEN_CACHE.set(value, true);
+    for (const child of visited) DEEPLY_FROZEN_CACHE.set(child, true);
+  }
   return result;
 }
 
@@ -141,15 +148,19 @@ function canonicalSortText(value) {
   return typedIdentityText(value);
 }
 
-function typedIdentityText(root) {
+function typedIdentityText(root, externalMemo = null) {
   const active = new Set();
   // Shared sub-objects (definition shapes, ranges, metadata) recur thousands of
   // times in one IR shape. Nothing mutates during this synchronous call, so an
   // object's text is a pure function of the object: encode it once per call.
-  const memo = new Map();
+  const memo = externalMemo ?? new Map();
   const visit = (value) => {
     if (value != null && typeof value === 'object') {
-      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+      let isDeeplyFrozen = DEEPLY_FROZEN_CACHE.get(value);
+      if (isDeeplyFrozen === undefined && Object.isFrozen(value)) {
+        isDeeplyFrozen = deeplyFrozen(value);
+      }
+      if (isDeeplyFrozen === true) {
         if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
         const cached = FROZEN_IDENTITY_TEXT.get(value);
         if (cached !== undefined) return cached;
@@ -157,7 +168,9 @@ function typedIdentityText(root) {
         if (memoized !== undefined) return memoized;
         const text = encode(value);
         memo.set(value, text);
-        if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+        // Retain typed identity text for deeply frozen subgraphs across calls.
+        // Cap individual string length to avoid memory blowup.
+        if (text.length <= 1024 * 1024) FROZEN_IDENTITY_TEXT.set(value, text);
         return text;
       }
       if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
@@ -234,8 +247,21 @@ function typedIdentityText(root) {
   return visit(root);
 }
 
-function fastJsonGraphDigest(value) {
-  return fastJsonTextDigest(typedIdentityText(value));
+function fastJsonGraphDigest(value, memo = null) {
+  if (value != null && typeof value === 'object') {
+    let isDeeplyFrozen = DEEPLY_FROZEN_CACHE.get(value);
+    if (isDeeplyFrozen === undefined && Object.isFrozen(value)) {
+      isDeeplyFrozen = deeplyFrozen(value);
+    }
+    if (isDeeplyFrozen === true) {
+      const cached = FROZEN_GRAPH_DIGEST.get(value);
+      if (cached !== undefined) return cached;
+      const digest = fastJsonTextDigest(typedIdentityText(value, memo));
+      FROZEN_GRAPH_DIGEST.set(value, digest);
+      return digest;
+    }
+  }
+  return fastJsonTextDigest(typedIdentityText(value, memo));
 }
 
 /**
@@ -367,7 +393,7 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
     // rejection behavior while avoiding an intermediate semantic copy and the
     // JSON-safe allocation that made large loop functions miss their budget.
     try {
-      const digest = `metadata:${fastJsonGraphDigest(value)}`;
+      const digest = `metadata:${fastJsonGraphDigest(value, digests.textMemo)}`;
       digests.set(value, digest);
       return digest;
     } catch {
@@ -547,6 +573,7 @@ function irShape(ir) {
   try {
     const memo = new WeakMap();
     const digests = new WeakMap();
+    digests.textMemo = new Map();
     digests.originRefs = new WeakMap();
     digests.originValues = [];
     const definitionCache = new WeakMap();

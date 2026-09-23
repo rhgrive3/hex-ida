@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalAnalysisIdentity as current } from '../../js/decompiler/phase8/analysis-identity.js';
-import { canonicalAnalysisIdentity as original } from '../helpers/analysis-identity-baseline-oracle.mjs';
-import { fixture } from '../phase8/helpers/ir-fixtures.mjs';
+import { canonicalAnalysisIdentity as current } from '../../../js/decompiler/phase8/analysis-identity.js';
+import { canonicalAnalysisIdentity as original } from '../../helpers/analysis-identity-baseline-oracle.mjs';
+import { fixture } from '../helpers/ir-fixtures.mjs';
 
 function buildHeavySharedIr() {
   const f = fixture('heavy-sharing-ir');
@@ -170,4 +170,28 @@ test('canonicalAnalysisIdentity equivalence across diverse shared structures and
     const orig = original({ ir });
     assert.deepEqual(cur, orig);
   }
+});
+
+test('canonicalAnalysisIdentity and PassManager fast path detect and avoid duplicate work across repeated frozen metadata', () => {
+  const f = fixture('duplicate-frozen-metadata');
+  f.block(0);
+  const largeFrozen = Object.freeze({
+    items: Object.freeze(Array.from({ length: 500 }, (_, i) => Object.freeze({ id: `item_${i}`, val: i * 2 }))),
+    nested: Object.freeze({ tag: 'heavy', payload: Object.freeze({ count: 500 }) }),
+  });
+
+  const v1 = f.constant(1n, 32);
+  v1.metadata = Object.freeze({ ctx: largeFrozen, key: 'v1' });
+  const v2 = f.constant(2n, 32);
+  v2.metadata = Object.freeze({ ctx: largeFrozen, key: 'v2' });
+
+  f.binary('add', v1, v2, 32);
+  f.ret();
+  const ir = f.build();
+
+  const first = current({ ir });
+  const second = current({ ir });
+  assert.equal(first.valid, true);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, original({ ir }));
 });

@@ -83,25 +83,95 @@ function capturePassState(state) {
     // traverse them or invoke accessors while capturing the rollback state.
     if (!map && !set && !date && !(value instanceof RegExp) && !Array.isArray(value)
         && proto !== Object.prototype && proto !== null) continue;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
     const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
-    records.push({ value, proto, descriptors, entries, map, set, time:date ? value.getTime() : null });
-    for (const key of Reflect.ownKeys(descriptors)) {
-      if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+    let isPlainRecord = false;
+    let simpleKeys = null;
+    let simpleValues = null;
+    let descriptors = null;
+
+    if (Array.isArray(value)) {
+      // For arrays, record length and elements without allocating property descriptor objects per slot
+      isPlainRecord = true;
+      const len = value.length;
+      simpleKeys = ['length'];
+      simpleValues = [len];
+      for (let i = 0; i < len; i += 1) {
+        if (Object.hasOwn(value, i)) {
+          simpleKeys.push(i);
+          simpleValues.push(value[i]);
+          pending.push(value[i]);
+        }
+      }
+    } else if (!map && !set && !date && !(value instanceof RegExp) && (proto === Object.prototype || proto === null)) {
+      // Fast path for plain objects with normal own enumerable data properties
+      const keys = Reflect.ownKeys(value);
+      let canUseSimple = true;
+      const vals = [];
+      for (let i = 0; i < keys.length; i += 1) {
+        const k = keys[i];
+        const desc = Object.getOwnPropertyDescriptor(value, k);
+        if (desc == null || !('value' in desc) || !desc.enumerable || !desc.configurable || !desc.writable) {
+          canUseSimple = false;
+          break;
+        }
+        vals.push(desc.value);
+      }
+      if (canUseSimple) {
+        isPlainRecord = true;
+        simpleKeys = keys;
+        simpleValues = vals;
+        for (let i = 0; i < vals.length; i += 1) pending.push(vals[i]);
+      } else {
+        descriptors = Object.getOwnPropertyDescriptors(value);
+      }
+    } else {
+      descriptors = Object.getOwnPropertyDescriptors(value);
+    }
+
+    if (!isPlainRecord) {
+      records.push({ value, proto, descriptors, entries, map, set, time: date ? value.getTime() : null, isPlainRecord: false });
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+      }
+    } else {
+      records.push({ value, proto, simpleKeys, simpleValues, entries, map, set, time: null, isPlainRecord: true });
     }
     if (map) for (const [key, entry] of entries) pending.push(key, entry);
     if (set) for (const entry of entries) pending.push(entry);
   }
   if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length); // PERF-PROBE
   return () => {
-    for (const { value, proto, descriptors, entries, map, set, time } of records) {
+    for (const record of records) {
+      const { value, proto, entries, map, set, time, isPlainRecord } = record;
       if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
-      for (const key of Reflect.ownKeys(value)) {
-        if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {
-          throw new Error('pass-rollback-nonconfigurable-property');
+      if (isPlainRecord) {
+        const { simpleKeys, simpleValues } = record;
+        const currentKeys = Reflect.ownKeys(value);
+        const kept = new Set(simpleKeys);
+        for (const k of currentKeys) {
+          if (!kept.has(k)) {
+            if (!Reflect.deleteProperty(value, k)) throw new Error('pass-rollback-nonconfigurable-property');
+          }
         }
+        if (Array.isArray(value)) {
+          value.length = simpleValues[0];
+          for (let i = 1; i < simpleKeys.length; i += 1) {
+            value[simpleKeys[i]] = simpleValues[i];
+          }
+        } else {
+          for (let i = 0; i < simpleKeys.length; i += 1) {
+            value[simpleKeys[i]] = simpleValues[i];
+          }
+        }
+      } else {
+        const { descriptors } = record;
+        for (const key of Reflect.ownKeys(value)) {
+          if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {
+            throw new Error('pass-rollback-nonconfigurable-property');
+          }
+        }
+        Object.defineProperties(value, descriptors);
       }
-      Object.defineProperties(value, descriptors);
       if (map) { Map.prototype.clear.call(value); for (const [key, entry] of entries) Map.prototype.set.call(value, key, entry); }
       if (set) { Set.prototype.clear.call(value); for (const entry of entries) Set.prototype.add.call(value, entry); }
       if (time !== null) Date.prototype.setTime.call(value, time);
