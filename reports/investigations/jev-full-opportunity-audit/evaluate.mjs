@@ -28,7 +28,6 @@ function words(s) {
     .replace(/[^A-Za-z0-9]+/g, ' ').toLowerCase().trim().split(/\s+/).filter(Boolean);
 }
 
-// Frozen, corpus-agnostic offline lexical comparator. Never uses truth labels.
 function deterministicChoice(r) {
   const q = words(r.label);
   const scored = r.candidates.map((c, i) => {
@@ -40,7 +39,6 @@ function deterministicChoice(r) {
     const classMatch = q.filter((w) => cls.includes(w)).length;
     return { i, score: 2 * exact + 0.6 * suffix + coverage + 0.05 * classMatch - 0.015 * Math.max(0, f.length - q.length) };
   }).sort((a, b) => b.score - a.score || a.i - b.i);
-  // A conservative rule only overrides when the lexical advantage is large.
   return scored.length > 1 && scored[0].score - scored[1].score >= 0.7 ? scored[0].i : 0;
 }
 
@@ -77,6 +75,19 @@ function validate(body, response, n) {
   return null;
 }
 
+function projectLive(x, r) {
+  if (!x || x.error) return {
+    choiceIndex: null, selectedKey: null, correct: null, error: x?.error || 'missing-checkpoint',
+    status: x?.status ?? null, latencyMs: null, confidence: null, unique: null,
+  };
+  if (!Number.isInteger(x.choice) || x.choice < 0 || x.choice >= r.candidates.length) throw new Error(`invalid successful choice for ${id(r)}`);
+  return {
+    choiceIndex: x.choice, selectedKey: r.candidates[x.choice]?.key ?? null,
+    correct: !!r.candidates[x.choice]?.truth, error: null, status: x.status ?? null,
+    latencyMs: x.latencyMs ?? null, confidence: x.confidence ?? null, unique: x.unique ?? null,
+  };
+}
+
 function safeWrite(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const pending = `${file}.${process.pid}.pending`;
@@ -96,8 +107,8 @@ async function liveOne(r, arm) {
   }
   if (!process.env.OPENJEV_API_KEY) {
     const result = { schema: 'hex-jev-live-ranking/v1', rowId, arm, bodyHash,
-      status: null, error: 'missing-key', latencyMs: 0, model: null,
-      choice: 0, preference: null, confidence: null, unique: null,
+      status: null, error: 'missing-key', latencyMs: null, model: null,
+      choice: null, preference: null, confidence: null, unique: null,
       usage: null, fallback: 1 };
     safeWrite(file, result);
     return result;
@@ -117,9 +128,9 @@ async function liveOne(r, arm) {
   } catch (e) { error = e?.name === 'TimeoutError' ? 'timeout' : 'network-or-json'; }
   const result = {
     schema: 'hex-jev-live-ranking/v1', rowId, arm, bodyHash, status, error,
-    latencyMs: Math.round((performance.now() - started) * 100) / 100,
+    latencyMs: error ? null : Math.round((performance.now() - started) * 100) / 100,
     model: response?.model || null,
-    choice: response ? Number(response.answers.pick.choice.slice(1)) : 0,
+    choice: response ? Number(response.answers.pick.choice.slice(1)) : null,
     preference: response?.answers?.pick?.probabilities?.[response.answers.pick.choice] ?? null,
     confidence: response?.answers?.pick?.confidence ?? null,
     unique: response?.answers?.unique?.noul ?? null,
@@ -160,7 +171,12 @@ async function main() {
       pick: { ...valid.answers.pick, probabilities: {} } } }, r.candidates.length), 'missing-probability');
     assert.equal(validate(body, { ...valid, answers: { ...valid.answers,
       unique: { type: 'noul', noul: 2 } } }, r.candidates.length), 'malformed-unique');
-    process.stdout.write('live adapter validation: 5/5 response cases\n');
+    assert.equal(projectLive({ error: 'missing-key', choice: null }, r), {
+      choiceIndex: null, selectedKey: null, correct: null, error: 'missing-key',
+      status: null, latencyMs: null, confidence: null, unique: null,
+    });
+    assert.equal(projectLive({ error: 'http-503', choice: null }, r).correct, null);
+    process.stdout.write('live adapter validation: 7/7 response cases\n');
   } else if (MODE === 'summarize') {
     const outRows = rows.map((r) => {
       const rowId = id(r); const detIndex = deterministicChoice(r);
@@ -168,6 +184,8 @@ async function main() {
         const file = path.join(CHECKPOINT, `${sha(`${rowId}|${arm}`)}.json`);
         return [arm, fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null];
       }));
+      const projected = Object.fromEntries(Object.entries(jev).map(([arm, x]) => [arm, projectLive(x, r)]));
+      if (Object.values(projected).some((x) => x.error)) throw new Error(`live observations incomplete; refusing to publish Jev metrics for ${rowId}`);
       return {
         id: rowId, binary: r.binary, mode: r.mode, query: r.label,
         truthKey: `${r.expectedClass}#${r.expectedField}`, baselineTopKey: r.candidates[0]?.key,
@@ -175,12 +193,7 @@ async function main() {
         baselineCorrect: r.topCorrect, verdict: r.p4Verdict, probability: r.probability,
         evidenceGroups: r.groups, analyzeCalls: r.analyzeCalls, baselineLatencyMs: r.latencyMs,
         deterministicIndex: detIndex, deterministicCorrect: !!r.candidates[detIndex]?.truth,
-        jev: Object.fromEntries(Object.entries(jev).map(([arm, x]) => [arm, x && {
-          choiceIndex: x.choice, selectedKey: x.choice == null ? null : r.candidates[x.choice]?.key,
-          correct: x.choice == null ? r.topCorrect : !!r.candidates[x.choice]?.truth,
-          error: x.error, status: x.status, latencyMs: x.latencyMs,
-          confidence: x.confidence, unique: x.unique,
-        }])),
+        jev: projected,
         candidates: r.candidates.map((c) => ({ key: c.key, className: c.className, fieldName: c.fieldName, rank: c.rank,
           truth: c.truth, recallLane: c.recallLane, evidenceCodes: (c.evidence || []).map((e) => e.code),
           groups: c.fusion?.groups || [], score: c.fusion?.logOdds || 0 })),
