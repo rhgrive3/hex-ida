@@ -98,6 +98,10 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
     throw new Error(`${kind} bundle cannot establish repository identity`, { cause: error });
   }
 
+  for (const requiredPath of required) {
+    if (!inputSet.has(requiredPath)) throw new Error(`${kind} bundle omits ${requiredPath}`);
+  }
+
   // The metafile is the provenance boundary for the whole privileged bundle,
   // not only for the required anchor files. Every bundled filesystem input must
   // resolve to a source contained by the canonical repository root.
@@ -113,9 +117,5 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
     }
-  }
-
-  for (const requiredPath of required) {
-    if (!inputSet.has(requiredPath)) throw new Error(`${kind} bundle omits ${requiredPath}`);
   }
 }

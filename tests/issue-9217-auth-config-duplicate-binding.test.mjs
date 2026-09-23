@@ -16,7 +16,7 @@ function authDatabase(overrides = {}) {
 }
 
 function configWith(d1Databases) {
-  return { main: './worker-entry.js', assets: { run_worker_first: true }, d1_databases: d1Databases };
+  return { main: './worker-entry.js', assets: { directory: './dist', run_worker_first: true }, d1_databases: d1Databases };
 }
 
 test('#9217 accepts exactly one policy-compliant AUTH_DB binding', () => {

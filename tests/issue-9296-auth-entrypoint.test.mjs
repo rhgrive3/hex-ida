@@ -12,7 +12,7 @@ function validConfig(main = './worker-entry.js') {
       database_id: '11111111-2222-3333-4444-555555555555',
       migrations_dir: 'migrations/auth',
     }],
-    assets: { run_worker_first: true },
+    assets: { directory: './dist', run_worker_first: true },
   };
 }
 

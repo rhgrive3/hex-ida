@@ -20,22 +20,25 @@ function childInputs(root) {
 }
 
 test('#9310 Windows privileged graph accepts equivalent path casing', () => {
+  const resolver = (value) => String(value);
   assert.doesNotThrow(() => assertPrivilegedGraph(parentInputs('c:/work/hex-ida'), 'parent', {
-    repoRoot:'C:/Work/Hex-IDA', platform:'win32',
+    repoRoot:'C:/Work/Hex-IDA', platform:'win32', realpathSync: resolver,
   }));
   assert.doesNotThrow(() => assertPrivilegedGraph(childInputs('C:/WORK/HEX-IDA'), 'child', {
-    repoRoot:'c:/work/hex-ida', platform:'win32',
+    repoRoot:'c:/work/hex-ida', platform:'win32', realpathSync: resolver,
   }));
 });
 
 test('#9310 Windows case folding does not admit sibling roots', () => {
+  const resolver = (value) => String(value);
   assert.throws(() => assertPrivilegedGraph(parentInputs('c:/work/hex-ida-other'), 'parent', {
-    repoRoot:'C:/Work/Hex-IDA', platform:'win32',
+    repoRoot:'C:/Work/Hex-IDA', platform:'win32', realpathSync: resolver,
   }), /omits/);
 });
 
 test('#9310 POSIX path identity remains case-sensitive', () => {
+  const resolver = (value) => String(value);
   assert.throws(() => assertPrivilegedGraph(parentInputs('/work/hex-ida'), 'parent', {
-    repoRoot:'/work/Hex-IDA', platform:'linux',
+    repoRoot:'/work/Hex-IDA', platform:'linux', realpathSync: resolver,
   }), /omits/);
 });
