@@ -58,7 +58,7 @@ export async function projectScopedTransformOwners(owner, semanticResult, reques
     }
     const before = memoryFrame(pipeline, work);
     let passStop = null;
-    const decompiler = decompileScopedCanonicalOwner(owner, { phase8Optimize: true, scopedTransformEvidence: true,
+    const decompiler = decompileScopedCanonicalOwner(owner, { profile: 'deep', phase8Optimize: true, scopedTransformEvidence: true,
       phase8WorkBudget: Math.min(50000, work.remaining('workUnits')),
       shouldAbort: () => { try { work.charge('workUnits'); return false; } catch (error) { passStop ??= error; return true; } } });
     if (passStop) throw passStop;
