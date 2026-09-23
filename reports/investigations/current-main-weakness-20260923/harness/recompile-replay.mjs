@@ -186,6 +186,47 @@ export function replayRecompilation({ runDir, outDir, clang = 'clang', clangTime
     cases: rows,
     functions: functionRows,
   };
+
+  // Diagnostic transformation: probe what happens if undeclared locals are declared
+  const probeSample = functionRows.map(fn => {
+    const caseRecord = records.find(r => r.caseId === fn.caseId);
+    const fnObj = caseRecord?.functions?.find(f => f.address === fn.address);
+    if (!fnObj?.pseudocode) return { ...fn, probeSyntax: false, probeFamily: 'no-pseudocode' };
+    const idents = new Set(fnObj.pseudocode.match(/\b(local_[a-zA-Z0-9_]+|var_[a-zA-Z0-9_]+|local_p[a-zA-Z0-9_]+)\b/g) || []);
+    let decls = '';
+    for (const id of idents) decls += `  unsigned long ${id} = 0;\n`;
+    const idx = fnObj.pseudocode.indexOf('{');
+    const transformed = (idx !== -1 && decls)
+      ? `${fnObj.pseudocode.slice(0, idx + 1)}\n${decls}${fnObj.pseudocode.slice(idx + 1)}`
+      : fnObj.pseudocode;
+    const probeFile = path.join(os.tmpdir(), `hex-replay-probe-fn-${process.pid}-${Math.random().toString(16).slice(2)}.c`);
+    fs.writeFileSync(probeFile, `${transformed}\n`);
+    const res = runClang({ clang, sourceFile: probeFile, mode: 'syntax', timeoutMs: clangTimeoutMs });
+    const first = res.ok ? null : firstDiagnostic(res.stderr);
+    fs.rmSync(probeFile, { force: true });
+    return {
+      caseId: fn.caseId, address: fn.address, name: fn.name,
+      ok: res.ok,
+      firstFamily: first ? diagnosticFamily(first.message) : null,
+      firstMessage: first ? first.message : null,
+    };
+  });
+  const probePassedCount = probeSample.filter(p => p.ok).length;
+  const probeNextFamilies = {};
+  for (const p of probeSample) {
+    if (!p.ok) {
+      const fam = p.firstFamily ?? 'unknown';
+      probeNextFamilies[fam] = (probeNextFamilies[fam] || 0) + 1;
+    }
+  }
+  summary.localDeclarationDiagnosticProbe = {
+    description: 'Diagnostic transformation declaring undeclared locals (local_*, var_*, local_p*) only; NOT a production fix',
+    sampledFunctions: probeSample.length,
+    syntaxPassed: probePassedCount,
+    syntaxFailed: probeSample.length - probePassedCount,
+    nextFailureFamilies: probeNextFamilies,
+  };
+
   const outPath = path.join(outDir, 'replay-summary.json');
   fs.writeFileSync(outPath, `${JSON.stringify(summary, null, 2)}\n`);
   log(`replay summary -> ${outPath}`);

@@ -1,6 +1,6 @@
 {
   "schema": "hex-current-main-recompilability-replay/v1",
-  "runDir": "/mnt/workspace/hex-ida/reports/investigations/current-main-weakness-20260923/measurements/run-20260923-stratified",
+  "runDir": "/mnt/workspace/hex-ida-cmw-report/reports/investigations/current-main-weakness-20260923/measurements/run-20260923-stratified",
   "clang": "clang",
   "clangTimeoutMs": 30000,
   "maxFunctionsPerCase": 6,
@@ -3289,5 +3289,16 @@
       "firstFamily": "undeclared-identifier",
       "firstMessage": "use of undeclared identifier 'uint64'"
     }
-  ]
+  ],
+  "localDeclarationDiagnosticProbe": {
+    "description": "Diagnostic transformation declaring undeclared locals (local_*, var_*, local_p*) only; NOT a production fix",
+    "sampledFunctions": 192,
+    "syntaxPassed": 43,
+    "syntaxFailed": 149,
+    "nextFailureFamilies": {
+      "undeclared-identifier": 86,
+      "unknown-type-name": 31,
+      "undeclared-global": 32
+    }
+  }
 }

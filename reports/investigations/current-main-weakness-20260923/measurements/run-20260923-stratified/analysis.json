@@ -45,7 +45,10 @@
       "sum": 292,
       "mean": 0.1489795918367347
     },
+    "unknownInstructionsObserved": 1960,
+    "unknownInstructionsMissing": 298,
     "functionsWithUnknownInstructions": 95,
+    "unknownInstructionsObservedRate": 0.0485,
     "warnings": {
       "count": 2258,
       "min": 0,

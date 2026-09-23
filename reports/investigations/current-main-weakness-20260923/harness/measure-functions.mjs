@@ -25,10 +25,12 @@ import {
   atomicWriteJson,
   captureSourceIdentity,
   caseFileName,
+  computeHarnessSourceHash,
   configDigest,
   optionValue,
   optionValues,
   readJson,
+  sha256,
 } from './lib.mjs';
 
 const WORKER_PATH = fileURLToPath(new URL('./case-worker.mjs', import.meta.url));
@@ -109,7 +111,16 @@ export async function measureCurrentMain({
 
   const source = captureSourceIdentity({ repoRoot: REPO_ROOT });
   if (!source.head) throw new Error(`measure-source-identity-unavailable:${source.reason ?? 'unknown'}`);
-  const config = { label, functionTimeoutMs, structure, structureThresholdMs, productTimeoutMs };
+  const harnessHash = computeHarnessSourceHash(path.resolve(path.dirname(fileURLToPath(import.meta.url))));
+  const selectedCaseIds = selected.map(c => c.id).sort();
+  const caseSelectionHash = sha256(selectedCaseIds.join('\n'));
+  const manifestBytes = fs.readFileSync(manifestFile);
+  const benchmarkManifestHash = sha256(manifestBytes);
+
+  const config = {
+    label, functionTimeoutMs, structure, structureThresholdMs, productTimeoutMs,
+    harnessHash, caseSelectionHash, benchmarkManifestHash,
+  };
   const configHash = configDigest(config);
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(receiptRoot, { recursive: true });

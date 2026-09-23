@@ -55,7 +55,10 @@ async function profileTargets({ product, target, runs }) {
   for (let run = 0; run < runs; run++) {
     const probe = makeProbe();
     globalThis.__hexPerfProbe = probe;
+    const tSnapStart = performance.now();
     const snapshot = await product.query.snapshot();
+    const snapshotMs = round(performance.now() - tSnapStart, 2);
+
     const started = performance.now();
     let status = null;
     try {
@@ -66,7 +69,23 @@ async function profileTargets({ product, target, runs }) {
     }
     const elapsedMs = performance.now() - started;
     globalThis.__hexPerfProbe = null;
-    results.push({ run, elapsedMs: round(elapsedMs, 2), status, ...probeSummary(probe) });
+
+    const baseSummary = probeSummary(probe);
+    const passManagerMs = baseSummary.decompilePassTotalMs ?? 0;
+    const outsidePassManagerMs = round(Math.max(0, elapsedMs - passManagerMs), 2);
+
+    results.push({
+      run,
+      elapsedMs: round(elapsedMs, 2),
+      status,
+      coarseTiming: {
+        snapshotMs,
+        passManagerMs,
+        outsidePassManagerMs,
+        unattributedWallRatio: round(outsidePassManagerMs / (elapsedMs || 1), 3),
+      },
+      ...baseSummary,
+    });
   }
   return results;
 }

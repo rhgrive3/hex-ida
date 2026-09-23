@@ -72,6 +72,16 @@ export function configDigest(config) {
   return sha256(stableJson({ schema: 'hex-current-main-harness-config/v1', ...config }));
 }
 
+export function computeHarnessSourceHash(harnessDir) {
+  const files = fs.readdirSync(harnessDir).filter(f => f.endsWith('.mjs') || f.endsWith('.js')).sort();
+  const hashes = [];
+  for (const f of files) {
+    const content = fs.readFileSync(path.join(harnessDir, f));
+    hashes.push(`${f}:${sha256(content)}`);
+  }
+  return sha256(hashes.join('\n'));
+}
+
 export function captureSourceIdentity({ repoRoot = HARNESS_REPO_ROOT, gitExec = execFileSync } = {}) {
   const root = path.resolve(repoRoot);
   try {

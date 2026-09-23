@@ -1,6 +1,6 @@
 {
   "schema": "hex-current-main-weakness-manifest/v1",
-  "generatedAt": "2026-09-23T07:14:20.629Z",
+  "generatedAt": "2026-09-23T08:42:35.267Z",
   "provenance": {
     "headSha": "09dfcb283f721b6598f34675a8a42480147d5752",
     "sourceIdentity": "d28028877bb24054114cb6f9b149c95f74ec9b694d0ab33efc3ebdeaf1ede6e8",
@@ -32,13 +32,13 @@
   "artifacts": [
     {
       "path": "harness/aggregate.mjs",
-      "bytes": 14343,
-      "sha256": "5cec92ad8d6429079038eb38f61fdbde518a21e9103290178de99edf2e73505e"
+      "bytes": 15196,
+      "sha256": "048dcd560f4a41308b62dffcd504222877c0260da5820645b336bd4d125ee9b3"
     },
     {
       "path": "harness/build-manifest.mjs",
-      "bytes": 2777,
-      "sha256": "7b7340ebac60c75dae49b4610559b7077e067524f4cb3c2f71f97a115c30016d"
+      "bytes": 6403,
+      "sha256": "7f79f40f195559293c462f7e4baff8a614c2bce25d25b8aec1407c53e2362764"
     },
     {
       "path": "harness/case-worker.mjs",
@@ -47,23 +47,23 @@
     },
     {
       "path": "harness/lib.mjs",
-      "bytes": 5252,
-      "sha256": "d07d708878e2653a8824e212f9aa48483efedfc2d8c1946bd2846bc2afaca7fb"
+      "bytes": 5609,
+      "sha256": "9ce2e01845cbb5fffdf8a19f1c5dc377b8708bb0cb6a22f0c94060823ce845a7"
     },
     {
       "path": "harness/measure-functions.mjs",
-      "bytes": 9444,
-      "sha256": "8a2e9c54f38c21cd33f49fe1920cf795777d898980481af2ae6351f13f6fd43b"
+      "bytes": 9889,
+      "sha256": "926d7040ae3e2411036ad7989361f064ca7ac0db862b8b37494101bbc1116cd7"
     },
     {
       "path": "harness/profile-slowest.mjs",
-      "bytes": 5823,
-      "sha256": "ddc3b16126e15fa8e125ebf86e066fe7e2abff1ced1c108e1913e71c0073f571"
+      "bytes": 6333,
+      "sha256": "3b0d953bf63d020058c10c51c99deb1309ba75693ac2b902eb1af5c37b500487"
     },
     {
       "path": "harness/recompile-replay.mjs",
-      "bytes": 9925,
-      "sha256": "b7ff81bff69015b150a9ac1532d547e075812168e7a09ec1ee501e9538267c51"
+      "bytes": 11963,
+      "sha256": "282bdb192478237904647f91207d08c8bc22dea37b4228a6d587051f07fcf664"
     },
     {
       "path": "harness/tu-replay.mjs",
@@ -72,8 +72,8 @@
     },
     {
       "path": "measurements/run-20260923-stratified/analysis.json",
-      "bytes": 62503,
-      "sha256": "609f84cfad5f45bea14a73f892a6e668f0d582083fe1523540df755fcce04894"
+      "bytes": 62630,
+      "sha256": "c0fdcc4f33dd05f361d2742c22982cbf443bd2679d83c843bfb85e68a3cdce19"
     },
     {
       "path": "measurements/run-20260923-stratified/cases/312f315f636c616e675f4f305f67.json",
@@ -402,8 +402,8 @@
     },
     {
       "path": "measurements/run-20260923-stratified/recompilability/replay-summary.json",
-      "bytes": 89818,
-      "sha256": "09b1fc71b86607956ea8e3aa7b0848bb6475ab4504532ae9d41d023c73a69495"
+      "bytes": 90212,
+      "sha256": "03758d53b0d0e35663ed2f7c7a2e5a9ffd2cbcd1624fde21d1f4eef1c3452f47"
     },
     {
       "path": "measurements/run-20260923-stratified/run.json",

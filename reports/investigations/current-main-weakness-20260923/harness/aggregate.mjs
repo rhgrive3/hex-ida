@@ -179,13 +179,29 @@ function buildAnalysis(records) {
     row => row.caseId, row => row.elapsedMs,
   );
 
+  const observedUnknownList = functions
+    .map(row => row.unknownInstructions)
+    .filter(val => typeof val === 'number' && Number.isFinite(val));
+  const unknownInstructionsObserved = observedUnknownList.length;
+  const unknownInstructionsMissing = functions.length - unknownInstructionsObserved;
+  if (unknownInstructionsObserved + unknownInstructionsMissing !== functions.length) {
+    throw new Error('invariant-failed: unknownInstructionsObserved + unknownInstructionsMissing !== total functions');
+  }
+  const functionsWithUnknown = functions.filter(row => typeof row.unknownInstructions === 'number' && row.unknownInstructions > 0).length;
+  const unknownRateOnObserved = unknownInstructionsObserved > 0
+    ? round(functionsWithUnknown / unknownInstructionsObserved, 4)
+    : null;
+
   return {
     denominator: { cases: records.length, functions: functions.length },
     caseStates: countStates(records),
     functionStates, stateShare,
     coverage: {
-      unknownInstructions: distribution(functions.map(row => row.unknownInstructions)),
-      functionsWithUnknownInstructions: functions.filter(row => (row.unknownInstructions ?? 0) > 0).length,
+      unknownInstructions: distribution(observedUnknownList),
+      unknownInstructionsObserved,
+      unknownInstructionsMissing,
+      functionsWithUnknownInstructions: functionsWithUnknown,
+      unknownInstructionsObservedRate: unknownRateOnObserved,
       warnings: distribution(functions.map(row => row.warnings)),
       functionsWithWarnings: functions.filter(row => (row.warnings ?? 0) > 0).length,
       structured: functions.filter(row => row.structured === true).length,
