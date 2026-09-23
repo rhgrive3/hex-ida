@@ -41,10 +41,28 @@ function hasProducedTransform(entity, producedId) {
   return entity.origin?.transforms?.some((transform) => transform.passId === 'semantic-ssa'
     && transform.producedEntityIds.includes(producedId));
 }
-function originContains(container, required) {
+function originStrings(origin, key, cache) {
+  if (origin == null || typeof origin !== 'object') return [];
+  let byKey = cache.get(origin);
+  if (byKey == null) { byKey = new Map(); cache.set(origin, byKey); }
+  if (byKey.has(key)) return byKey.get(key);
+  const strings = (origin[key] ?? []).map((item) => stableStringify(item));
+  byKey.set(key, strings);
+  return strings;
+}
+function originContains(container, required, stringCache, setCache) {
   for (const key of ['byteRanges', 'virtualRanges', 'instructionIds', 'operationIds', 'sourceLocations', 'parentEntityIds']) {
-    const have = new Set((container?.[key] ?? []).map((item) => stableStringify(item)));
-    for (const item of required?.[key] ?? []) if (!have.has(stableStringify(item))) return false;
+    let byKey = container && typeof container === 'object' ? setCache.get(container) : null;
+    if (byKey == null && container && typeof container === 'object') {
+      byKey = new Map();
+      setCache.set(container, byKey);
+    }
+    let have = byKey?.get(key);
+    if (have == null) {
+      have = new Set(originStrings(container, key, stringCache));
+      byKey?.set(key, have);
+    }
+    for (const text of originStrings(required, key, stringCache)) if (!have.has(text)) return false;
   }
   return true;
 }
@@ -239,6 +257,11 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   const nodePosition = new Map();
   for (const block of ir.blocks) for (let index = 0; index < block.nodeIds.length; index++) { tick(); nodePosition.set(block.nodeIds[index], { blockId: block.id, index }); }
   const definitionByValue = new Map(ssa.definitions.map((definition) => [definition.valueId, definition]));
+  // Phi validation compares the same origin objects repeatedly across incoming
+  // edges. Cache only within this synchronous validation call so mutations
+  // between validations are still observed exactly as before.
+  const originStringCache = new WeakMap();
+  const originSetCache = new WeakMap();
 
   for (const definition of ssa.definitions) {
     tick();
@@ -260,7 +283,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
         const incomingDef = definitionByValue.get(incoming.valueId);
         if (!incomingDef) fail('semantic-ssa-dangling-phi-value-id');
         if (stableStringify(incomingDef.proof?.machineType ?? null) !== stableStringify(definition.proof.machineType ?? null)) fail('semantic-ssa-phi-type-mismatch');
-        if (!originContains(definition.origin, incomingDef.origin)) fail('semantic-ssa-phi-origin-incomplete');
+        if (!originContains(definition.origin, incomingDef.origin, originStringCache, originSetCache)) fail('semantic-ssa-phi-origin-incomplete');
         const predecessor = incoming.predecessorBlockId;
         if (definition.blockId === cfg.entryBlockId
           && entry.predecessors.length > 0
