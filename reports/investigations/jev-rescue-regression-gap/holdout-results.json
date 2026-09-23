@@ -4,7 +4,7 @@
     "primary": "development=battlecats partial rows; holdout=TsumTsum+YWP partial rows; gate catalog pre-registered; selection only on development; no truth used in predicates",
     "loo": "leave-one-binary-out: select on two binaries, evaluate on the third",
     "queryFamily": "diagnostic only: query families are defined by tail-2-token key; no independent query-family holdout is implemented",
-    "forbidden": "thresholds are not hand-tuned after holdout inspection; catalog is fixed in source",
+    "forbidden": "thresholds are not hand-tuned after holdout inspection in this source; provenance before label inspection is not established by this commit",
     "interpretation": "The BattleCats -> TsumTsum+YWP split is a cross-binary observed split, not an independent free-form validation set; this commit does not prove the gate catalog was fixed before holdout labels were inspected."
   },
   "splits": {
