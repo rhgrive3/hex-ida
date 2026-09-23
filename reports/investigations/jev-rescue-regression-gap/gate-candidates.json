@@ -1,0 +1,527 @@
+{
+  "schema": "hex-jev-gate-candidates/v1",
+  "catalog": [
+    {
+      "id": "G0_force_all_partial",
+      "desc": "Always apply label-only Jev on partial"
+    },
+    {
+      "id": "G1_ambiguous_only",
+      "desc": "Only when baseline verdict is not strong (ambiguous)"
+    },
+    {
+      "id": "G2_ambiguous_and_multi",
+      "desc": "Ambiguous and candidateCount>=2"
+    },
+    {
+      "id": "G3_ambiguous_and_margin_lt_ln4",
+      "desc": "Ambiguous and finite margin < ln(4)"
+    },
+    {
+      "id": "G4_never_strong_and_jev_top3",
+      "desc": "Not strong and Jev choice within baseline top-3"
+    },
+    {
+      "id": "G5_never_strong_and_jev_cov_ge_top",
+      "desc": "Not strong and Jev lexical coverage >= baseline coverage"
+    },
+    {
+      "id": "G6_ambiguous_and_low_evidence_gap",
+      "desc": "Ambiguous and scoreAbsDelta < 2"
+    },
+    {
+      "id": "G7_ambiguous_and_jev_cov_beats",
+      "desc": "Ambiguous and Jev coverage strictly beats baseline"
+    },
+    {
+      "id": "G8_not_confirmed_and_jev_topk",
+      "desc": "Verdict is not confirmed and Jev in top-5"
+    },
+    {
+      "id": "G9_ambiguous_and_same_class_or_cov",
+      "desc": "Ambiguous and (sameClass or Jev coverage beats)"
+    },
+    {
+      "id": "G10_jev_conf_ge_c_and_ambiguous",
+      "desc": "Ambiguous and jevConfidence>=0.6"
+    },
+    {
+      "id": "G11_jev_conf_ge_c_and_not_confirmed",
+      "desc": "Not confirmed and jevConfidence>=0.7"
+    },
+    {
+      "id": "G12_multi_and_not_confirmed",
+      "desc": "candidateCount>=3 and not confirmed"
+    },
+    {
+      "id": "G13_ambiguous_and_indep_le2",
+      "desc": "Ambiguous and independentGroups<=2"
+    },
+    {
+      "id": "G14_ambiguous_and_no_dataflow_top",
+      "desc": "Ambiguous and top lacks dataflow group"
+    },
+    {
+      "id": "G15_ambiguous_and_jev_in_topk",
+      "desc": "Ambiguous and Jev choice in top-5"
+    },
+    {
+      "id": "G16_strict_pair_ambiguous_lowconf",
+      "desc": "Ambiguous, margin<ln4, jevConfidence<=0.85 (avoid overconfident flips)"
+    },
+    {
+      "id": "G17_never_touch_strong",
+      "desc": "Never fire on strong baselines (ambiguous-only equivalent for selection)"
+    },
+    {
+      "id": "G18_strong_small_evidence_gap",
+      "desc": "Fire on strong only when top-vs-Jev score gap <1 and evidence Jaccard>=0.5 (no truth)"
+    },
+    {
+      "id": "G19_ambiguous_only_repeated_style",
+      "desc": "Alias of ambiguous-only"
+    },
+    {
+      "id": "G20_margin_and_multi",
+      "desc": "Finite margin < ln20 and candidateCount>=3"
+    },
+    {
+      "id": "G21_jev_cov_full_and_multi",
+      "desc": "Jev coverage==1 and candidateCount>=2"
+    },
+    {
+      "id": "G22_not_confirmed_and_jev_cov_beats",
+      "desc": "Not confirmed and Jev coverage beats baseline"
+    },
+    {
+      "id": "G23_ambiguous_or_jev_only_shorter_name",
+      "desc": "Ambiguous or Jev picks longer name with equal coverage"
+    },
+    {
+      "id": "G24_not_confirmed_and_low_score_gap",
+      "desc": "Not confirmed and scoreAbsDelta < 2"
+    },
+    {
+      "id": "G25_ambiguous_and_jev_pref_ge_05",
+      "desc": "Ambiguous and Jev preference >= 0.5"
+    },
+    {
+      "id": "G26_ambiguous_and_differs_from_top",
+      "desc": "Ambiguous and Jev field name differs from baseline top"
+    },
+    {
+      "id": "G27_multi_and_jev_cov_ge_top",
+      "desc": "candidateCount>=2 and Jev coverage >= baseline coverage"
+    },
+    {
+      "id": "G28_strong_only",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth"
+    },
+    {
+      "id": "G29_strong_or_ambiguous_top3",
+      "desc": "Strong OR (ambiguous and Jev choice within top-3)"
+    },
+    {
+      "id": "G30_strong_and_multicand",
+      "desc": "Strong and candidateCount>=2"
+    },
+    {
+      "id": "G31_confirmed_only",
+      "desc": "Fire only on confirmed baselines"
+    },
+    {
+      "id": "G32_likely_or_confirmed_margin_ok",
+      "desc": "Strong and (margin infinite or margin>=ln4)"
+    },
+    {
+      "id": "G33_not_ambiguous",
+      "desc": "Fire when verdict is not ambiguous (confirmed or likely or none)"
+    },
+    {
+      "id": "G34_ambiguous_and_jev_suffix_ge",
+      "desc": "Ambiguous and Jev suffix match >= baseline suffix match"
+    }
+  ],
+  "developmentSelected": {
+    "zeroRegression": {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "desc": "Ambiguous and (sameClass or Jev coverage beats)",
+      "triggered": 37,
+      "wrongToCorrect": 5,
+      "correctToWrong": 0,
+      "net": 5,
+      "correctAfter": 34,
+      "baselineCorrect": 29,
+      "N": 86,
+      "precisionOfIntervention": 0.13513513513513514,
+      "rescueRecall": 0.22727272727272727,
+      "regressionRate": 0
+    },
+    "oneRegression": {
+      "gateId": "G28_strong_only",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
+      "triggered": 39,
+      "wrongToCorrect": 15,
+      "correctToWrong": 1,
+      "net": 14,
+      "correctAfter": 43,
+      "baselineCorrect": 29,
+      "N": 86,
+      "precisionOfIntervention": 0.38461538461538464,
+      "rescueRecall": 0.6818181818181818,
+      "regressionRate": 0.02564102564102564
+    },
+    "unbounded": {
+      "gateId": "G29_strong_or_ambiguous_top3",
+      "desc": "Strong OR (ambiguous and Jev choice within top-3)",
+      "triggered": 81,
+      "wrongToCorrect": 21,
+      "correctToWrong": 2,
+      "net": 19,
+      "correctAfter": 48,
+      "baselineCorrect": 29,
+      "N": 86,
+      "precisionOfIntervention": 0.25925925925925924,
+      "rescueRecall": 0.9545454545454546,
+      "regressionRate": 0.024691358024691357
+    }
+  },
+  "holdoutOfSelected": {
+    "zeroRegression": {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "desc": "Ambiguous and (sameClass or Jev coverage beats)",
+      "triggered": 42,
+      "wrongToCorrect": 6,
+      "correctToWrong": 1,
+      "net": 5,
+      "correctAfter": 29,
+      "baselineCorrect": 24,
+      "N": 110,
+      "precisionOfIntervention": 0.14285714285714285,
+      "rescueRecall": 0.25,
+      "regressionRate": 0.023809523809523808,
+      "overallTop1Projected": 258,
+      "falseStrongAfter": 40,
+      "baselineFalseStrongHold": 40,
+      "strongOverwritten": 0,
+      "strongBroken": 0
+    },
+    "oneRegression": {
+      "gateId": "G28_strong_only",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
+      "triggered": 52,
+      "wrongToCorrect": 14,
+      "correctToWrong": 0,
+      "net": 14,
+      "correctAfter": 38,
+      "baselineCorrect": 24,
+      "N": 110,
+      "precisionOfIntervention": 0.2692307692307692,
+      "rescueRecall": 0.5833333333333334,
+      "regressionRate": 0,
+      "overallTop1Projected": 267,
+      "falseStrongAfter": 26,
+      "baselineFalseStrongHold": 40,
+      "strongOverwritten": 52,
+      "strongBroken": 0
+    },
+    "unbounded": {
+      "gateId": "G29_strong_or_ambiguous_top3",
+      "desc": "Strong OR (ambiguous and Jev choice within top-3)",
+      "triggered": 104,
+      "wrongToCorrect": 23,
+      "correctToWrong": 2,
+      "net": 21,
+      "correctAfter": 45,
+      "baselineCorrect": 24,
+      "N": 110,
+      "precisionOfIntervention": 0.22115384615384615,
+      "rescueRecall": 0.9583333333333334,
+      "regressionRate": 0.019230769230769232,
+      "overallTop1Projected": 274,
+      "falseStrongAfter": 26,
+      "baselineFalseStrongHold": 40,
+      "strongOverwritten": 52,
+      "strongBroken": 0
+    }
+  },
+  "fullCorpusZeroRegression": [
+    {
+      "gateId": "G7_ambiguous_and_jev_cov_beats",
+      "desc": "Ambiguous and Jev coverage strictly beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G22_not_confirmed_and_jev_cov_beats",
+      "desc": "Not confirmed and Jev coverage beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G18_strong_small_evidence_gap",
+      "desc": "Fire on strong only when top-vs-Jev score gap <1 and evidence Jaccard>=0.5 (no truth)",
+      "triggered": 53,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0,
+      "rescueRecall": 0,
+      "regressionRate": 0,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 53,
+      "falseStrongDelta": 0
+    }
+  ],
+  "fullCorpusOneRegression": [
+    {
+      "gateId": "G7_ambiguous_and_jev_cov_beats",
+      "desc": "Ambiguous and Jev coverage strictly beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G18_strong_small_evidence_gap",
+      "desc": "Fire on strong only when top-vs-Jev score gap <1 and evidence Jaccard>=0.5 (no truth)",
+      "triggered": 53,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0,
+      "rescueRecall": 0,
+      "regressionRate": 0,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 53,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G22_not_confirmed_and_jev_cov_beats",
+      "desc": "Not confirmed and Jev coverage beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G28_strong_only",
+      "desc": "Fire only on strong (confirmed/likely) baselines — production-observable verdict, no truth",
+      "triggered": 91,
+      "wrongToCorrect": 29,
+      "correctToWrong": 1,
+      "net": 28,
+      "correctAfter": 81,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.31868131868131866,
+      "rescueRecall": 0.6304347826086957,
+      "regressionRate": 0.01098901098901099,
+      "overallTop1Projected": 310,
+      "partialTop1Projected": 81,
+      "strongOverwritten": 91,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G30_strong_and_multicand",
+      "desc": "Strong and candidateCount>=2",
+      "triggered": 91,
+      "wrongToCorrect": 29,
+      "correctToWrong": 1,
+      "net": 28,
+      "correctAfter": 81,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.31868131868131866,
+      "rescueRecall": 0.6304347826086957,
+      "regressionRate": 0.01098901098901099,
+      "overallTop1Projected": 310,
+      "partialTop1Projected": 81,
+      "strongOverwritten": 91,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G32_likely_or_confirmed_margin_ok",
+      "desc": "Strong and (margin infinite or margin>=ln4)",
+      "triggered": 91,
+      "wrongToCorrect": 29,
+      "correctToWrong": 1,
+      "net": 28,
+      "correctAfter": 81,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.31868131868131866,
+      "rescueRecall": 0.6304347826086957,
+      "regressionRate": 0.01098901098901099,
+      "overallTop1Projected": 310,
+      "partialTop1Projected": 81,
+      "strongOverwritten": 91,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G33_not_ambiguous",
+      "desc": "Fire when verdict is not ambiguous (confirmed or likely or none)",
+      "triggered": 91,
+      "wrongToCorrect": 29,
+      "correctToWrong": 1,
+      "net": 28,
+      "correctAfter": 81,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.31868131868131866,
+      "rescueRecall": 0.6304347826086957,
+      "regressionRate": 0.01098901098901099,
+      "overallTop1Projected": 310,
+      "partialTop1Projected": 81,
+      "strongOverwritten": 91,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G31_confirmed_only",
+      "desc": "Fire only on confirmed baselines",
+      "triggered": 69,
+      "wrongToCorrect": 23,
+      "correctToWrong": 1,
+      "net": 22,
+      "correctAfter": 75,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.3333333333333333,
+      "rescueRecall": 0.5,
+      "regressionRate": 0.014492753623188406,
+      "overallTop1Projected": 304,
+      "partialTop1Projected": 75,
+      "strongOverwritten": 69,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "desc": "Ambiguous and (sameClass or Jev coverage beats)",
+      "triggered": 79,
+      "wrongToCorrect": 11,
+      "correctToWrong": 1,
+      "net": 10,
+      "correctAfter": 63,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.13924050632911392,
+      "rescueRecall": 0.2391304347826087,
+      "regressionRate": 0.012658227848101266,
+      "overallTop1Projected": 292,
+      "partialTop1Projected": 63,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G13_ambiguous_and_indep_le2",
+      "desc": "Ambiguous and independentGroups<=2",
+      "triggered": 52,
+      "wrongToCorrect": 8,
+      "correctToWrong": 1,
+      "net": 7,
+      "correctAfter": 60,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.15384615384615385,
+      "rescueRecall": 0.17391304347826086,
+      "regressionRate": 0.019230769230769232,
+      "overallTop1Projected": 289,
+      "partialTop1Projected": 60,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    {
+      "gateId": "G14_ambiguous_and_no_dataflow_top",
+      "desc": "Ambiguous and top lacks dataflow group",
+      "triggered": 50,
+      "wrongToCorrect": 8,
+      "correctToWrong": 1,
+      "net": 7,
+      "correctAfter": 60,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": 0.16,
+      "rescueRecall": 0.17391304347826086,
+      "regressionRate": 0.02,
+      "overallTop1Projected": 289,
+      "partialTop1Projected": 60,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    }
+  ],
+  "caveat": "Full-corpus frontiers and the cross-binary split are descriptive/post-hoc. G28 was added after holdout inspection; independent free-form validation after an explicit catalog freeze is required before any production claim.",
+  "provenanceAudit": {
+    "status": "POST_HOC_CONFIRMED",
+    "firstHoldoutCatalog": "G0-G23",
+    "postHoldoutAdded": [
+      "G24",
+      "G25",
+      "G26",
+      "G27",
+      "G28",
+      "G29",
+      "G30",
+      "G31",
+      "G32",
+      "G33",
+      "G34"
+    ],
+    "rewrittenAfterFirstRun": [
+      "G17",
+      "G18"
+    ],
+    "preHoldoutFreeze": false
+  }
+}

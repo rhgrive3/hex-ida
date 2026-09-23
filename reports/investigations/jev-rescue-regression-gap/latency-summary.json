@@ -1,0 +1,272 @@
+{
+  "schema": "hex-jev-latency-summary/v1",
+  "endpoint": "https://api.openjev.sh/v1/systemone",
+  "model": "openjev",
+  "observedLabelCalls": 196,
+  "p50Ms": 533.66,
+  "p95Ms": 751.97,
+  "p99Ms": 901.41,
+  "maxMs": 1673.57,
+  "failures": 0,
+  "forceAll": {
+    "gateId": "G0_force_all_partial",
+    "callsPer196Partial": 196,
+    "callsPer426": 196,
+    "shareOfPartial": 1,
+    "shareOfAll": 0.460093896713615
+  },
+  "byGate": [
+    {
+      "gateId": "G0_force_all_partial",
+      "callsPer196Partial": 196,
+      "callsPer426": 196,
+      "shareOfPartial": 1,
+      "shareOfAll": 0.460093896713615
+    },
+    {
+      "gateId": "G1_ambiguous_only",
+      "callsPer196Partial": 105,
+      "callsPer426": 105,
+      "shareOfPartial": 0.5357142857142857,
+      "shareOfAll": 0.24647887323943662
+    },
+    {
+      "gateId": "G2_ambiguous_and_multi",
+      "callsPer196Partial": 105,
+      "callsPer426": 105,
+      "shareOfPartial": 0.5357142857142857,
+      "shareOfAll": 0.24647887323943662
+    },
+    {
+      "gateId": "G3_ambiguous_and_margin_lt_ln4",
+      "callsPer196Partial": 103,
+      "callsPer426": 103,
+      "shareOfPartial": 0.5255102040816326,
+      "shareOfAll": 0.24178403755868544
+    },
+    {
+      "gateId": "G4_never_strong_and_jev_top3",
+      "callsPer196Partial": 94,
+      "callsPer426": 94,
+      "shareOfPartial": 0.47959183673469385,
+      "shareOfAll": 0.22065727699530516
+    },
+    {
+      "gateId": "G5_never_strong_and_jev_cov_ge_top",
+      "callsPer196Partial": 105,
+      "callsPer426": 105,
+      "shareOfPartial": 0.5357142857142857,
+      "shareOfAll": 0.24647887323943662
+    },
+    {
+      "gateId": "G6_ambiguous_and_low_evidence_gap",
+      "callsPer196Partial": 96,
+      "callsPer426": 96,
+      "shareOfPartial": 0.4897959183673469,
+      "shareOfAll": 0.22535211267605634
+    },
+    {
+      "gateId": "G7_ambiguous_and_jev_cov_beats",
+      "callsPer196Partial": 0,
+      "callsPer426": 0,
+      "shareOfPartial": 0,
+      "shareOfAll": 0
+    },
+    {
+      "gateId": "G8_not_confirmed_and_jev_topk",
+      "callsPer196Partial": 122,
+      "callsPer426": 122,
+      "shareOfPartial": 0.6224489795918368,
+      "shareOfAll": 0.2863849765258216
+    },
+    {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "callsPer196Partial": 79,
+      "callsPer426": 79,
+      "shareOfPartial": 0.4030612244897959,
+      "shareOfAll": 0.18544600938967137
+    },
+    {
+      "gateId": "G10_jev_conf_ge_c_and_ambiguous",
+      "callsPer196Partial": 44,
+      "callsPer426": 44,
+      "shareOfPartial": 0.22448979591836735,
+      "shareOfAll": 0.10328638497652583
+    },
+    {
+      "gateId": "G11_jev_conf_ge_c_and_not_confirmed",
+      "callsPer196Partial": 34,
+      "callsPer426": 34,
+      "shareOfPartial": 0.17346938775510204,
+      "shareOfAll": 0.07981220657276995
+    },
+    {
+      "gateId": "G12_multi_and_not_confirmed",
+      "callsPer196Partial": 94,
+      "callsPer426": 94,
+      "shareOfPartial": 0.47959183673469385,
+      "shareOfAll": 0.22065727699530516
+    },
+    {
+      "gateId": "G13_ambiguous_and_indep_le2",
+      "callsPer196Partial": 52,
+      "callsPer426": 52,
+      "shareOfPartial": 0.2653061224489796,
+      "shareOfAll": 0.12206572769953052
+    },
+    {
+      "gateId": "G14_ambiguous_and_no_dataflow_top",
+      "callsPer196Partial": 50,
+      "callsPer426": 50,
+      "shareOfPartial": 0.25510204081632654,
+      "shareOfAll": 0.11737089201877934
+    },
+    {
+      "gateId": "G15_ambiguous_and_jev_in_topk",
+      "callsPer196Partial": 101,
+      "callsPer426": 101,
+      "shareOfPartial": 0.5153061224489796,
+      "shareOfAll": 0.23708920187793428
+    },
+    {
+      "gateId": "G16_strict_pair_ambiguous_lowconf",
+      "callsPer196Partial": 91,
+      "callsPer426": 91,
+      "shareOfPartial": 0.4642857142857143,
+      "shareOfAll": 0.2136150234741784
+    },
+    {
+      "gateId": "G17_never_touch_strong",
+      "callsPer196Partial": 105,
+      "callsPer426": 105,
+      "shareOfPartial": 0.5357142857142857,
+      "shareOfAll": 0.24647887323943662
+    },
+    {
+      "gateId": "G18_strong_small_evidence_gap",
+      "callsPer196Partial": 53,
+      "callsPer426": 53,
+      "shareOfPartial": 0.27040816326530615,
+      "shareOfAll": 0.12441314553990611
+    },
+    {
+      "gateId": "G19_ambiguous_only_repeated_style",
+      "callsPer196Partial": 105,
+      "callsPer426": 105,
+      "shareOfPartial": 0.5357142857142857,
+      "shareOfAll": 0.24647887323943662
+    },
+    {
+      "gateId": "G20_margin_and_multi",
+      "callsPer196Partial": 94,
+      "callsPer426": 94,
+      "shareOfPartial": 0.47959183673469385,
+      "shareOfAll": 0.22065727699530516
+    },
+    {
+      "gateId": "G21_jev_cov_full_and_multi",
+      "callsPer196Partial": 196,
+      "callsPer426": 196,
+      "shareOfPartial": 1,
+      "shareOfAll": 0.460093896713615
+    },
+    {
+      "gateId": "G22_not_confirmed_and_jev_cov_beats",
+      "callsPer196Partial": 0,
+      "callsPer426": 0,
+      "shareOfPartial": 0,
+      "shareOfAll": 0
+    },
+    {
+      "gateId": "G23_ambiguous_or_jev_only_shorter_name",
+      "callsPer196Partial": 109,
+      "callsPer426": 109,
+      "shareOfPartial": 0.5561224489795918,
+      "shareOfAll": 0.25586854460093894
+    },
+    {
+      "gateId": "G24_not_confirmed_and_low_score_gap",
+      "callsPer196Partial": 108,
+      "callsPer426": 108,
+      "shareOfPartial": 0.5510204081632653,
+      "shareOfAll": 0.2535211267605634
+    },
+    {
+      "gateId": "G25_ambiguous_and_jev_pref_ge_05",
+      "callsPer196Partial": 77,
+      "callsPer426": 77,
+      "shareOfPartial": 0.39285714285714285,
+      "shareOfAll": 0.1807511737089202
+    },
+    {
+      "gateId": "G26_ambiguous_and_differs_from_top",
+      "callsPer196Partial": 35,
+      "callsPer426": 35,
+      "shareOfPartial": 0.17857142857142858,
+      "shareOfAll": 0.08215962441314555
+    },
+    {
+      "gateId": "G27_multi_and_jev_cov_ge_top",
+      "callsPer196Partial": 196,
+      "callsPer426": 196,
+      "shareOfPartial": 1,
+      "shareOfAll": 0.460093896713615
+    },
+    {
+      "gateId": "G28_strong_only",
+      "callsPer196Partial": 91,
+      "callsPer426": 91,
+      "shareOfPartial": 0.4642857142857143,
+      "shareOfAll": 0.2136150234741784
+    },
+    {
+      "gateId": "G29_strong_or_ambiguous_top3",
+      "callsPer196Partial": 185,
+      "callsPer426": 185,
+      "shareOfPartial": 0.9438775510204082,
+      "shareOfAll": 0.43427230046948356
+    },
+    {
+      "gateId": "G30_strong_and_multicand",
+      "callsPer196Partial": 91,
+      "callsPer426": 91,
+      "shareOfPartial": 0.4642857142857143,
+      "shareOfAll": 0.2136150234741784
+    },
+    {
+      "gateId": "G31_confirmed_only",
+      "callsPer196Partial": 69,
+      "callsPer426": 69,
+      "shareOfPartial": 0.3520408163265306,
+      "shareOfAll": 0.1619718309859155
+    },
+    {
+      "gateId": "G32_likely_or_confirmed_margin_ok",
+      "callsPer196Partial": 91,
+      "callsPer426": 91,
+      "shareOfPartial": 0.4642857142857143,
+      "shareOfAll": 0.2136150234741784
+    },
+    {
+      "gateId": "G33_not_ambiguous",
+      "callsPer196Partial": 91,
+      "callsPer426": 91,
+      "shareOfPartial": 0.4642857142857143,
+      "shareOfAll": 0.2136150234741784
+    },
+    {
+      "gateId": "G34_ambiguous_and_jev_suffix_ge",
+      "callsPer196Partial": 100,
+      "callsPer426": 100,
+      "shareOfPartial": 0.5102040816326531,
+      "shareOfAll": 0.2347417840375587
+    }
+  ],
+  "expectedAddedLatencyNote": "Added latency applies only on fired rows; parallel calls can overlap but user-visible path adds one Jev RTT when fired.",
+  "cacheEligible": "Exact state+model+query+candidate-universe hash could cache repeated phrases; hit rate unmeasured.",
+  "failurePolicy": "timeout/malformed/missing-key => keep baseline top1 (fail closed).",
+  "baselinePartialLatency": {
+    "p50Ms": 1800.08,
+    "p95Ms": 9263.04
+  }
+}

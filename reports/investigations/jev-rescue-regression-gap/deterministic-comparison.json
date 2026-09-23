@@ -1,0 +1,85 @@
+{
+  "schema": "hex-jev-deterministic-comparison/v1",
+  "deterministicScreen": {
+    "protocol": "BattleCats-selected 168-point lexical grid",
+    "selected": {
+      "exact": 0,
+      "extra": 0.5,
+      "classMatch": 0,
+      "suffix": 2
+    },
+    "development": {
+      "N": 86,
+      "correct": 71,
+      "wrongToCorrect": 44,
+      "correctToWrong": 2,
+      "net": 42
+    },
+    "holdout": {
+      "N": 110,
+      "correct": 81,
+      "wrongToCorrect": 59,
+      "correctToWrong": 2,
+      "net": 57
+    },
+    "total": {
+      "N": 196,
+      "correct": 152,
+      "wrongToCorrect": 103,
+      "correctToWrong": 4,
+      "net": 99
+    },
+    "baselinePartial": 53,
+    "caveat": "Benchmark generator shortcut: partial queries are last-two-word tails; not a production proposal."
+  },
+  "jevLabelForced": {
+    "partialCorrect": 92,
+    "wrongToCorrect": 46,
+    "correctToWrong": 7,
+    "apiCalls": 196
+  },
+  "overlap": {
+    "bothRescue": 40,
+    "jevOnlyRescue": 6,
+    "detOnlyRescue": 63
+  },
+  "projectedOverall": {
+    "baseline": 282,
+    "detOnly": 381,
+    "jevForcedOnly": 321
+  },
+  "jevPlusDetGate": {
+    "detFirstBestHoldoutGate": {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "detAppliedFirst": true,
+      "jevTriggeredBeyondDet": 19,
+      "wrongToCorrect": 107,
+      "correctToWrong": 0,
+      "correctAfter": 160,
+      "overallTop1Projected": 389
+    },
+    "detFirstOneRegGate": {
+      "gateId": "G28_strong_only",
+      "detAppliedFirst": true,
+      "jevTriggeredBeyondDet": 19,
+      "wrongToCorrect": 104,
+      "correctToWrong": 0,
+      "correctAfter": 157,
+      "overallTop1Projected": 386
+    },
+    "detFirstAmbiguous": {
+      "gateId": "G1_ambiguous_only",
+      "detAppliedFirst": true,
+      "jevTriggeredBeyondDet": 25,
+      "wrongToCorrect": 108,
+      "correctToWrong": 0,
+      "correctAfter": 161,
+      "overallTop1Projected": 390
+    },
+    "note": "Deterministic first; Jev only fills det misses under gate. Jev-specific gain is rows where det fails and gate+Jev succeed."
+  },
+  "jevSpecificGain": {
+    "gateId": "G9_ambiguous_and_same_class_or_cov",
+    "rowsDetMissesAndJevGateFills": 5
+  }
+}

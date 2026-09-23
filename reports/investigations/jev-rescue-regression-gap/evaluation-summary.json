@@ -1,0 +1,177 @@
+{
+  "schema": "hex-jev-rescue-regression-evaluation/v1",
+  "sourceProductCommit": "2b8e98d61ee59cedc365a9baf102f75b7189eb28",
+  "denominator": 426,
+  "baseline": {
+    "top1": 282,
+    "exact": {
+      "N": 230,
+      "top1": 229
+    },
+    "partial": {
+      "N": 196,
+      "top1": 53
+    },
+    "correctStrong": 211,
+    "falseStrong": 67
+  },
+  "labelArm": {
+    "partialN": 196,
+    "baselineCorrect": 53,
+    "jevCorrect": 92,
+    "wrongToCorrect": 46,
+    "correctToWrong": 7,
+    "stableCorrect": 46,
+    "stableWrong": 97,
+    "apiCalls": 196,
+    "failures": 0,
+    "projectedOverallTop1": 321
+  },
+  "byBinary": {
+    "battlecats": {
+      "N": 86,
+      "rescues": 22,
+      "regressions": 4,
+      "baselineCorrect": 29,
+      "jevCorrect": 47
+    },
+    "TsumTsum": {
+      "N": 60,
+      "rescues": 13,
+      "regressions": 2,
+      "baselineCorrect": 16,
+      "jevCorrect": 27
+    },
+    "YWP": {
+      "N": 50,
+      "rescues": 11,
+      "regressions": 1,
+      "baselineCorrect": 8,
+      "jevCorrect": 18
+    }
+  },
+  "primaryAnswers": {
+    "zeroRegressionDevSelected": {
+      "gateId": "G9_ambiguous_and_same_class_or_cov",
+      "development": {
+        "triggered": 37,
+        "wrongToCorrect": 5,
+        "correctToWrong": 0,
+        "net": 5
+      },
+      "holdout": {
+        "gateId": "G9_ambiguous_and_same_class_or_cov",
+        "triggered": 42,
+        "wrongToCorrect": 6,
+        "correctToWrong": 1,
+        "net": 5
+      }
+    },
+    "oneRegressionDevSelected": {
+      "gateId": "G28_strong_only",
+      "development": {
+        "triggered": 39,
+        "wrongToCorrect": 15,
+        "correctToWrong": 1,
+        "net": 14
+      },
+      "holdout": {
+        "gateId": "G28_strong_only",
+        "triggered": 52,
+        "wrongToCorrect": 14,
+        "correctToWrong": 0,
+        "net": 14,
+        "correctAfter": 38,
+        "baselineCorrect": 24
+      },
+      "fullCorpus": {
+        "gateId": "G28_strong_only",
+        "triggered": 91,
+        "wrongToCorrect": 29,
+        "correctToWrong": 1,
+        "net": 28,
+        "overallTop1Projected": 310,
+        "correctAfter": 81
+      }
+    }
+  },
+  "missingJev": 0,
+  "verdict": {
+    "classification": "RESEARCH_ONLY",
+    "candidatePredicate": "G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.",
+    "interpretation": "Work-history audit proves G28 was added after TsumTsum/YWP holdout results and the strong-rescue bias had already been inspected. The final BattleCats selection and TsumTsum+YWP 14/0 result are therefore post-hoc within-corpus evidence, not independent validation.",
+    "holdoutObserved": {
+      "split": "development=battlecats; observed=TsumTsum+YWP",
+      "selectedOn": "development with maxRegression<=1",
+      "gateId": "G28_strong_only",
+      "rescue": 14,
+      "regression": 0,
+      "triggered": 52,
+      "partialCorrectAfter": 38,
+      "partialBaseline": 24
+    },
+    "fullCorpusDescriptive": {
+      "gateId": "G28_strong_only",
+      "rescue": 29,
+      "regression": 1,
+      "triggered": 91,
+      "top1After": 310,
+      "top1Baseline": 282,
+      "partialAfter": 81,
+      "partialBaseline": 53
+    },
+    "falseStrongAccounting": {
+      "baselinePartial": 67,
+      "g28AfterPartial": 39,
+      "delta": -28,
+      "corrected": 29,
+      "newlyBroken": 1,
+      "verdictPromotions": 0
+    },
+    "zeroRegression": {
+      "primarySelectionObserved": {
+        "gateId": "G9_ambiguous_and_same_class_or_cov",
+        "rescue": 6,
+        "regression": 1,
+        "note": "Dev-selected maxReg=0 gate does NOT stay at 0 on the cross-binary observed split"
+      },
+      "fullCorpusPositiveRescueWithZeroReg": false,
+      "bestNearZero": {
+        "gateId": "G28_strong_only",
+        "fullRescue": 29,
+        "fullRegression": 1
+      }
+    },
+    "reasons": [
+      "G28 measures 14 rescues / 0 regressions on TsumTsum+YWP, but G28 was invented after that holdout had already been inspected; treat 14/0 as post-hoc.",
+      "Full corpus descriptive result is 29 rescues / 1 regression; top1 282->310; partial 53->81.",
+      "No catalog gate achieves positive rescue with 0 full-corpus regression.",
+      "Repeated calls show the regression choices are stable, so consistency does not filter them.",
+      "The deterministic lexical screen still beats Jev overall on this generated corpus.",
+      "Work-history audit confirms post-hoc gate construction, and fixture-generator/shared-SDK structure adds another reason this is not independent validation."
+    ],
+    "notGoFor": [
+      "production integration before an independent free-form intent holdout",
+      "force-all partial rerank",
+      "ambiguous-only as a production default",
+      "verdict promotion or evidence minting from Jev"
+    ],
+    "recommendation": "RESEARCH_ONLY. Freeze G28_strong_only unchanged with a recorded commit/hash, then evaluate it once on a newly collected independent free-form intent holdout before reconsidering any production merge.",
+    "provenanceAudit": {
+      "status": "POST_HOC_CONFIRMED",
+      "firstHoldoutCatalog": "G0-G23",
+      "laterChanges": [
+        "G17/G18 rewritten after first holdout run",
+        "G24-G34 added after holdout inspection",
+        "G28_strong_only added after strong-rescue bias and holdout outcomes were known"
+      ],
+      "preHoldoutCatalogFreeze": false
+    }
+  },
+  "reproducibility": {
+    "committedProjectionReplay": "node reports/investigations/jev-rescue-regression-gap/replay.mjs",
+    "rawBaselineRowsCommitted": false,
+    "rawLiveCheckpointCommitted": false,
+    "scope": "The committed projection can replay baseline/force-all/G28 summary metrics; raw live API responses and the 3.7 MB baseline rows remain external evidence and are not independently replayable from this PR alone."
+  }
+}

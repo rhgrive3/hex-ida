@@ -1,0 +1,142 @@
+[
+  {
+    "id": "battlecats|partial|did appear",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "battlecats|partial|config service",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "battlecats|partial|server url",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "battlecats|partial|type detail",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "TsumTsum|partial|tracking tokens",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "TsumTsum|partial|did appear",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "YWP|partial|network items",
+    "arm": "label",
+    "reason": "REGRESSION"
+  },
+  {
+    "id": "battlecats|partial|deduplication ids",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|token operation",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|force view",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|event time",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|has audio",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|playable zip",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|info button",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|view event",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|user initiated",
+    "arm": "label",
+    "reason": "RESCUE_SAMPLE"
+  },
+  {
+    "id": "battlecats|partial|confirming view",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|since boot",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|session service",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|unit delegate",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|show service",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "TsumTsum|partial|since boot",
+    "arm": "label",
+    "reason": "RESCUE_AMBIGUOUS"
+  },
+  {
+    "id": "battlecats|partial|message sender",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  },
+  {
+    "id": "TsumTsum|partial|preferences configuration",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  },
+  {
+    "id": "YWP|partial|state timer",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  },
+  {
+    "id": "YWP|partial|render start",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  },
+  {
+    "id": "YWP|partial|star view",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  },
+  {
+    "id": "TsumTsum|partial|state subject",
+    "arm": "label",
+    "reason": "GATE_BOUNDARY"
+  }
+]

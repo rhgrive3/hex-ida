@@ -1,0 +1,104 @@
+{
+  "schema": "hex-jev-rescue-regression-gap-manifest/v1",
+  "producedAt": "2026-09-23T06:18:34.000Z",
+  "productCommit": "2b8e98d61ee59cedc365a9baf102f75b7189eb28",
+  "productTree": "3e035f536f44c42fadba5a12db6e9b33c7a17d82",
+  "queryFixture": {
+    "path": "tests/fixtures/pinpoint-confidence-queries.json",
+    "rows": 426,
+    "sha256": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160"
+  },
+  "binaryFixtures": {
+    "battlecats": {
+      "bytes": 28153072,
+      "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13"
+    },
+    "TsumTsum": {
+      "bytes": 45994784,
+      "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3"
+    },
+    "YWP": {
+      "bytes": 63455952,
+      "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6"
+    }
+  },
+  "currentMainMeasurement": {
+    "source": "current-main-measurement.json",
+    "sha256": "657d9ab90d6bc6c421ae918e5fcba4f6c64a8f1e09c47984ddc4f86436d7225f",
+    "fieldRows": 426,
+    "top1MatchVs9471": 0
+  },
+  "jevLive": {
+    "endpoint": "https://api.openjev.sh/v1/systemone",
+    "model": "openjev",
+    "arm": "label",
+    "calls": 196,
+    "failures": 0,
+    "seededFrom": "#9471 live-checkpoint bodyHash match 196/196",
+    "repeatCalls": 140,
+    "secretStored": false
+  },
+  "splits": {
+    "development": "battlecats partial N=86",
+    "holdout": "TsumTsum+YWP partial N=110",
+    "loo": "leave-one-binary-out x3"
+  },
+  "verdict": "RESEARCH_ONLY",
+  "selectedGate": "G28_strong_only",
+  "artifactHashes": {
+    "README.md": "55fdca987dc0a656c00558c04e05b346c4dfebde330b90cb96c3d54b62295c41",
+    "current-main-baseline.json": "7a1ea317eb1e03f23b5fdec0d1207f5f5b0d36d74c09112e9555e036d93e59d9",
+    "current-main-measurement.json": "657d9ab90d6bc6c421ae918e5fcba4f6c64a8f1e09c47984ddc4f86436d7225f",
+    "row-classification.jsonl": "69e3c84e723a6877e2c53ec657bba18fe2152956f4761b66cbb74ff996abe1af",
+    "rescue-cases.jsonl": "6233249cc2251f3ec38ba2f79223c04ebfa26b0694da0b26a55259babb337e04",
+    "regression-cases.jsonl": "1c7da48940452ce0f6dd2b607b3e26ead4a2fa869388db0e6dbd49dd63d09dab",
+    "feature-matrix.jsonl": "5947a45ad9e68c435d05af7968c8f1f4ff9a75e1133191cbe7099cb1e04be294",
+    "feature-summary.json": "7897cf919333c44a1ad22d3715fb31d20a8ac33e85f2062d996e2b5750e28992",
+    "gate-candidates.json": "4fdc2e053dce5c6a2b1eefcd9446a75f019ee881fd6e427523e71ccdae82838e",
+    "holdout-results.json": "1b0d2dc9cedf6d261dd6c6ce44525a7a1cbde404e8e5e414815ee49dcc700d99",
+    "repeated-call-results.json": "8bb6cc555209d3eda9e7d8c0402cccbc3db15ab7dadf6398e3718ee3cbc3c6f9",
+    "deterministic-comparison.json": "35c06fd5f90eeeef7d498ed10b50b24dfcbc145f06c5258ffb7414ccb2e2c3ac",
+    "oracle-ceilings.json": "598c482e3f85ababb7336163f1c7d2d4d7aad52f19a153415d3de845cae78b8f",
+    "latency-summary.json": "7ee57c4eb9a40406905fa776ed18eec1b8863c487515896ac9354095131c7a48",
+    "evaluation-summary.json": "ec4415c447d717d19bf8c69b526e34cd7341e18baf14f44ea897f84e7f1413c4",
+    "strong-override-arms.json": "688e673adf38d5b368380300ecdad79b43daa81e97dc40ae3f502f2c94312212",
+    "repeat-targets.json": "4d7991e32daead3d31ad06de7f1e4ba3ecacafc3bfc124ed75bb6a7281af993d",
+    "analyze.mjs": "cc0257b48bf4a4102215da0b58133b829fc1ae8f6526a72324e59f4b84df2a57",
+    "evaluate.mjs": "5edf0a167bba99827a277446101fcca84e99b876c72a7f6eccf56dd04fc28438",
+    "repeat.mjs": "d214b4bea4266522afcb895d62fa5a0e2f5d6c5d576f85749c7a88fb9e9eebab",
+    "validate.mjs": "878ef0fcc3720a82a56efa027dbd11a3c6c0b671ef23db9add78b019f94f6bdd",
+    "build-readme.mjs": "cea56645a7d08e17db34cbea7026ca12c6c69859c5177bdf4e096ed7f0bbca45",
+    "replay.mjs": "947bdd9e9dd39c2da2821e96aa512ad73380b5db0c02faf81599775259ba55ce"
+  },
+  "limitations": [
+    "Fixture-generator and shared SDK families across binaries; not an independent free-form intent holdout",
+    "No production integration in this PR",
+    "Deterministic lexical screen still beats Jev on raw partial accuracy",
+    "Repeated-call stability cannot separate rescue from regression",
+    "Raw baseline rows and live Jev checkpoints are not committed; replay.mjs reproduces summary metrics from the committed projection only",
+    "Work-history audit confirms G28 was added after holdout inspection; its 14/0 cross-binary result is post-hoc and not holdout validation"
+  ],
+  "selectionStatus": "POST_HOC_CONFIRMED: first holdout run used G0-G23; G17/G18 were rewritten and G24-G34 including G28 were added after holdout inspection. G28 numbers are exploratory only.",
+  "provenanceAudit": {
+    "status": "POST_HOC_CONFIRMED",
+    "firstHoldoutCatalog": "G0-G23",
+    "rewrittenAfterFirstRun": [
+      "G17",
+      "G18"
+    ],
+    "postHoldoutAdded": [
+      "G24",
+      "G25",
+      "G26",
+      "G27",
+      "G28",
+      "G29",
+      "G30",
+      "G31",
+      "G32",
+      "G33",
+      "G34"
+    ],
+    "preHoldoutCatalogFreeze": false
+  }
+}

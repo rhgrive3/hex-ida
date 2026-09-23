@@ -1,0 +1,92 @@
+{
+  "schema": "hex-jev-strong-override-arms/v1",
+  "arms": [
+    {
+      "arm": "A_ambiguous_only",
+      "triggered": 105,
+      "wrongToCorrect": 17,
+      "correctToWrong": 6,
+      "net": 11,
+      "correctAfter": 64,
+      "falseStrongCorrection": 0,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 0,
+      "overallTop1Projected": 293
+    },
+    {
+      "arm": "B_likely_and_below",
+      "triggered": 127,
+      "wrongToCorrect": 23,
+      "correctToWrong": 6,
+      "net": 17,
+      "correctAfter": 70,
+      "falseStrongCorrection": 6,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 22,
+      "overallTop1Projected": 299
+    },
+    {
+      "arm": "C_all_including_confirmed",
+      "triggered": 196,
+      "wrongToCorrect": 46,
+      "correctToWrong": 7,
+      "net": 39,
+      "correctAfter": 92,
+      "falseStrongCorrection": 29,
+      "newlyBrokenStrong": 1,
+      "strongOverwritten": 91,
+      "overallTop1Projected": 321
+    },
+    {
+      "arm": "D_strong_small_binary_evidence_gap",
+      "triggered": 158,
+      "wrongToCorrect": 17,
+      "correctToWrong": 6,
+      "net": 11,
+      "correctAfter": 64,
+      "falseStrongCorrection": 0,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 53,
+      "overallTop1Projected": 293
+    },
+    {
+      "arm": "E_never_overwrite_strong",
+      "triggered": 105,
+      "wrongToCorrect": 17,
+      "correctToWrong": 6,
+      "net": 11,
+      "correctAfter": 64,
+      "falseStrongCorrection": 0,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 0,
+      "overallTop1Projected": 293
+    },
+    {
+      "arm": "F_strong_wrong_only",
+      "triggered": 67,
+      "wrongToCorrect": 29,
+      "correctToWrong": 0,
+      "net": 29,
+      "correctAfter": 82,
+      "falseStrongCorrection": 29,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 67,
+      "overallTop1Projected": 311
+    },
+    {
+      "arm": "G_never_break_strong_correct",
+      "triggered": 172,
+      "wrongToCorrect": 46,
+      "correctToWrong": 6,
+      "net": 40,
+      "correctAfter": 93,
+      "falseStrongCorrection": 29,
+      "newlyBrokenStrong": 0,
+      "strongOverwritten": 67,
+      "overallTop1Projected": 322
+    }
+  ],
+  "baselineFalseStrong": 67,
+  "baselineCorrectStrongPartial": 24,
+  "note": "Verdict labels are not changed; arms only decide whether top1 preference may move. Arms F and G are diagnostic oracles that use fixture truth to define the arm (strong-wrong / break-strong-correct); they are NOT production predicates. Production-safe arms are A–E."
+}

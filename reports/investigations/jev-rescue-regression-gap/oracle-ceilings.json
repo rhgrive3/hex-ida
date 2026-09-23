@@ -1,0 +1,94 @@
+{
+  "schema": "hex-jev-oracle-ceilings/v1",
+  "jevPerfectChoiceOracle": {
+    "desc": "If Jev always chose the fixture-truth candidate whenever it intervened under force-all-partial",
+    "partialCorrect": 196,
+    "overallTop1": 425,
+    "rescuesAvailable": 143,
+    "regressions": 0
+  },
+  "observableDeterministicFeatureOracle": {
+    "desc": "Best possible gate over the pre-registered catalog using truth only for selection (upper bound of catalog), full corpus",
+    "zeroRegression": {
+      "gateId": "G7_ambiguous_and_jev_cov_beats",
+      "desc": "Ambiguous and Jev coverage strictly beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    "oneRegression": {
+      "gateId": "G7_ambiguous_and_jev_cov_beats",
+      "desc": "Ambiguous and Jev coverage strictly beats baseline",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "net": 0,
+      "correctAfter": 53,
+      "baselineCorrect": 53,
+      "N": 196,
+      "precisionOfIntervention": null,
+      "rescueRecall": 0,
+      "regressionRate": null,
+      "overallTop1Projected": 282,
+      "partialTop1Projected": 53,
+      "strongOverwritten": 0,
+      "falseStrongDelta": 0
+    },
+    "note": "Still constrained by catalog predicates; not a free classifier."
+  },
+  "strongOverwriteForbiddenOracle": {
+    "desc": "Force-all-partial but never move strong baselines",
+    "arm": "never_strong",
+    "triggered": 105,
+    "wrongToCorrect": 17,
+    "correctToWrong": 6,
+    "net": 11,
+    "correctAfter": 64,
+    "falseStrongCorrection": 0,
+    "newlyBrokenStrong": 0,
+    "strongOverwritten": 0,
+    "overallTop1Projected": 293
+  },
+  "ambiguousOnlyOracle": {
+    "desc": "Force Jev on all ambiguous partials",
+    "arm": "ambiguous",
+    "triggered": 105,
+    "wrongToCorrect": 17,
+    "correctToWrong": 6,
+    "net": 11,
+    "correctAfter": 64,
+    "falseStrongCorrection": 0,
+    "newlyBrokenStrong": 0,
+    "strongOverwritten": 0,
+    "overallTop1Projected": 293
+  },
+  "candidateOracle": {
+    "present": 426,
+    "N": 426
+  },
+  "jevVsBestDetOnHoldout": {
+    "detHoldout": {
+      "N": 110,
+      "correct": 81,
+      "wrongToCorrect": 59,
+      "correctToWrong": 2,
+      "net": 57
+    },
+    "jevForceHoldout": {
+      "correct": 45,
+      "w2c": 24,
+      "c2w": 3
+    }
+  }
+}
