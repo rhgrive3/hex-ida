@@ -1,0 +1,106 @@
+{
+  "schema": "hex-jev-use-case-matrix/v1",
+  "decisionRule": "GO needs independent real-binary gains beyond a safe deterministic alternative, zero unsafe strong promotion, and acceptable hard-case latency. A forced-choice win on a generated remembered-name label is not a production rescue.",
+  "uses": [
+    {
+      "id": "A", "name": "query interpretation and intent decomposition", "classification": "RESEARCH_ONLY",
+      "screenN": 196, "liveCalls": 196,
+      "baseline": "53/196 top1 on partial remembered-name phrases",
+      "deterministic": "A BattleCats-selected lexical rule gives 152/196, but exploits the common last-two-token query generator",
+      "jev": "Label-only forced preference gives 92/196: 46 wrong-to-correct, 7 correct-to-wrong; this confounds interpretation with ranking",
+      "oracle": "426/426 candidate oracle on existing queries; independent intent labels absent",
+      "reason": "The phrase alone does not identify the hidden benchmark class or field in many cases. Structured type/read-write/unit constraints have no independent ground truth in this corpus.",
+      "nextEvidence": "Collect independently phrased user intents with object context and expected semantic constraints."
+    },
+    {
+      "id": "B", "name": "bounded semantic candidate expansion", "classification": "NO_GO",
+      "screenN": 426, "liveCalls": 0,
+      "baseline": "426/426 truth candidates present on latest main",
+      "deterministic": "#9437 lexical recall lane closed all measured misses",
+      "jev": "No possible additional recall on this denominator; synonyms were not presented as binary facts",
+      "oracle": "426/426 candidate presence; gain ceiling 0/426",
+      "reason": "A new paraphrase corpus could create a new denominator; this result only closes the measured remembered-name set.",
+      "nextEvidence": "Independent paraphrase and gameplay terminology holdout, bounded 64-hypothesis cap, binary existence check."
+    },
+    {
+      "id": "C", "name": "candidate ranking", "classification": "RESEARCH_ONLY",
+      "screenN": 196, "liveCalls": 588,
+      "baseline": "53/196 partial top1; 143 partial wrong and 1 exact wrong",
+      "deterministic": "152/196 after BattleCats-selected lexical rule; 103 rescues and 4 regressions, but generator-biased",
+      "jev": "label 92/196 (46 rescues, 7 regressions); class 88/196 (47,12); evidence 75/196 (38,16)",
+      "oracle": "Arbitrary hidden-truth candidate oracle 196/196; recorded-evidence safe-direction diagnostic has 0 robust truth differentials among 144 wrong",
+      "reason": "Evidence and class context worsen this API's forced-choice results. No live answer supports a safe strong verdict; self-rated uniqueness never reaches 0.9.",
+      "nextEvidence": "Independent user-intent holdout and calibrated hard-case predicate; re-evaluate against a non-generator-trained deterministic reranker."
+    },
+    {
+      "id": "D1", "name": "current Pinpoint evidence probe scheduler", "classification": "NO_GO",
+      "screenN": 61, "liveCalls": 0,
+      "baseline": "19/61 correct top1",
+      "deterministic": "H6 21/61, post-hoc; 222 analyze calls",
+      "jev": "No live scheduler run: same-budget oracle leaves zero resolved gap over H6",
+      "oracle": "budget 21/61, unbounded 21/61; 2/42 eligible wrong recoverable",
+      "reason": "Jev cannot exceed the finite catalog oracle for these 61 cases.",
+      "nextEvidence": "A new receiver-proven read/write primitive, then independent catalog and oracle."
+    },
+    {
+      "id": "D2", "name": "broader evidence acquisition planning", "classification": "RESEARCH_ONLY",
+      "screenN": 105, "liveCalls": 0,
+      "baseline": "29/105 top1 correct; 76/105 wrong among current ambiguous partial rows with >=2 candidates",
+      "deterministic": "H6 on the broadened catalog resolves 2/105 (438 analysis calls; p50 6, p95 6)",
+      "jev": "No Jev scheduler call; the deterministic H6 result is already equal to both measured scheduler oracles",
+      "oracle": "budget 31/105 top1 and 2 resolved; unbounded 31/105 and 2 resolved; resolved gap 0",
+      "reason": "The broadened receiver-safe catalog still has no oracle-only resolution: 51 rows are analysis-primitive missing, 6 binary-evidence insufficient, and 17 other catalog-relative cases.",
+      "nextEvidence": "Add a new receiver-proven read/write or type-propagation primitive, then repeat the same 105-row holdout with a newly frozen oracle. The remaining 39 wrong-but-strong rows are not scheduler-eligible under the fail-closed policy."
+    },
+    {
+      "id": "E", "name": "C++ class, RTTI, virtual dispatch semantics", "classification": "NO_GO",
+      "screenN": 3, "liveCalls": 0,
+      "baseline": "#9447 compiler-produced ARM64 ELF variants already recover proven RTTI, vtable extent and member types; open #9469 at head 6d31d638a7102cd48316bc70a3822a858e3a3ddd carries canonical member evidence into a report",
+      "deterministic": "RTTI/vtable/closure must remain binary-proven; no Jev inference authority",
+      "jev": "No live call for proof obligations; semantic role tested separately under F",
+      "oracle": "No independent real-game semantic role oracle",
+      "reason": "#9469 still reports a missing worker-side producer lifecycle and constructor IR-binding gap; these are reachability/analysis issues, not semantic judgment problems.",
+      "nextEvidence": "Measure unnamed member role on stripped real-game C++ with independent semantic labels."
+    },
+    {
+      "id": "F", "name": "field role and semantic naming", "classification": "RESEARCH_ONLY",
+      "screenN": 7, "liveCalls": 14,
+      "baseline": "#9447 type facts are width/category only; open #9469 at head 6d31d638a7102cd48316bc70a3822a858e3a3ddd projects six typed member observations per compiler fixture, rejects missing offsets, and still mints no semantic names",
+      "deterministic": "On 5 evidence-supported compiler fields: 3/5 local, 4/5 cross-function",
+      "jev": "On the same 5: 2/5 local, 4/5 cross-function; two unsupported fields remained unknown or merely descriptive",
+      "oracle": "5/5 source labels are known; 2/7 roles are not distinguishable from the shown binary facts",
+      "reason": "Small source-derived fixture, direct method-symbol cues and no real-game unnamed-field truth. Jev added no net recovery over deterministic cues.",
+      "nextEvidence": "Stripped field_XX holdout with independently traced use sites, source-hidden labels, and calibrated hypothesis-only UI evaluation."
+    },
+    {
+      "id": "G", "name": "cross-function semantic reasoning", "classification": "RESEARCH_ONLY",
+      "screenN": 7, "liveCalls": 14,
+      "baseline": "Five source-labeled compiler fields with enough shown binary facts; two ambiguous controls",
+      "deterministic": "Method-name/operation cues improve 3/5 local to 4/5 cross-function",
+      "jev": "2/5 local to 4/5 cross-function, equal to deterministic cross-function",
+      "oracle": "5/5 source labels, but two excluded cases cannot be justified by current evidence",
+      "reason": "Cross-function context helps the model, but available named methods give a cheap deterministic explanation.",
+      "nextEvidence": "Real stripped binaries with decrement/refill/clamp/UI/serialization chains and no semantic method names."
+    },
+    {
+      "id": "H", "name": "failure explanation and next-analysis guidance", "classification": "RESEARCH_ONLY",
+      "screenN": 61, "liveCalls": 0,
+      "baseline": "#9464 classifies 22 primitive-missing, 6 insufficient-evidence and 12 other among focused cases",
+      "deterministic": "The same reason codes and probe availability are machine-derivable",
+      "jev": "No live explanatory text test: SystemOne is typed choice/noul/score, and no independent user-value or next-step success oracle exists",
+      "oracle": "59/61 unresolved after all current catalog probes",
+      "reason": "A model could paraphrase failure codes, but no measured unique decision or user benefit is established.",
+      "nextEvidence": "Blinded analyst study comparing deterministic reason templates with model guidance and successful follow-up actions."
+    },
+    {
+      "id": "OTHER", "name": "parser, lifter, function extent, code repair", "classification": "NO_GO",
+      "screenN": 320, "liveCalls": 0,
+      "baseline": "Historical unsupported-semantics report identifies 320 DT_INIT/DT_FINI extent gaps, not current 426 field-query errors",
+      "deterministic": "Loader tags and executable-section windows give the grounded follow-up; #9447 reachability and function-discovery gaps also have structural causes",
+      "jev": "No call: a typed judgment API cannot prove bytes, extent or compile repaired code",
+      "oracle": "Not applicable to semantic choice without a binary verifier",
+      "reason": "Jev preference cannot create missing parser/lifter/extent authority.",
+      "nextEvidence": "Repair deterministic analysis and remeasure; only then screen any residual semantic ambiguity."
+    }
+  ]
+}

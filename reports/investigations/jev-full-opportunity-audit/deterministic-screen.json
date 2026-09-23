@@ -1,0 +1,1211 @@
+{
+  "schema": "hex-jev-deterministic-screen/v1",
+  "protocol": "Fixed 168-point lexical grid; select by BattleCats partial correct count, then fewer regressions; TsumTsum/YWP untouched until selection.",
+  "configurations": 168,
+  "selected": {
+    "exact": 0,
+    "extra": 0.5,
+    "classMatch": 0,
+    "suffix": 2
+  },
+  "development": {
+    "N": 86,
+    "correct": 71,
+    "wrongToCorrect": 44,
+    "correctToWrong": 2
+  },
+  "holdout": {
+    "N": 110,
+    "correct": 81,
+    "wrongToCorrect": 59,
+    "correctToWrong": 2
+  },
+  "total": {
+    "N": 196,
+    "correct": 152,
+    "wrongToCorrect": 103,
+    "correctToWrong": 4
+  },
+  "baseline": {
+    "development": 29,
+    "holdout": 24
+  },
+  "perRow": [
+    {
+      "id": "battlecats|partial|deduplication ids",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|info block",
+      "binary": "battlecats",
+      "selectedIndex": 5,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|wait time",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|store url",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|expiration date",
+      "binary": "battlecats",
+      "selectedIndex": 5,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|token operation",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|refresh handler",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|background session",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|retry interval",
+      "binary": "battlecats",
+      "selectedIndex": 6,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|will disappear",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|force view",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|browser clicked",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|did appear",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|html asset",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|event time",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|companion view",
+      "binary": "battlecats",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|action button",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|options view",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|text color",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|has audio",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|and browse",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|store manager",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|playable zip",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|pause button",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|info button",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|current time",
+      "binary": "battlecats",
+      "selectedIndex": 7,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|conversion info",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|end timestamp",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|stitching token",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|collection enabled",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|view event",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|view frame",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|gesture direction",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|user initiated",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|network info",
+      "binary": "battlecats",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|confirming view",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|since boot",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|choices view",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|media content",
+      "binary": "battlecats",
+      "selectedIndex": 6,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|url parameters",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|output volume",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|current route",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|custom close",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|interface orientations",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|view updates",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|interface orientation",
+      "binary": "battlecats",
+      "selectedIndex": 5,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|source name",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|ping triggers",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|preferences configuration",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|asset viewability",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|session service",
+      "binary": "battlecats",
+      "selectedIndex": 11,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|monitored view",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|resource buffer",
+      "binary": "battlecats",
+      "selectedIndex": 7,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|buffer update",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|store page",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|auction results",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|from cache",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|server data",
+      "binary": "battlecats",
+      "selectedIndex": 6,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|reported availability",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|data writer",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|network service",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|config service",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|close button",
+      "binary": "battlecats",
+      "selectedIndex": 14,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|directory path",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|status bar",
+      "binary": "battlecats",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|root view",
+      "binary": "battlecats",
+      "selectedIndex": 13,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|when done",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|user paying",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|video events",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|view received",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|unit delegate",
+      "binary": "battlecats",
+      "selectedIndex": 7,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|for event",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|server url",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|learn more",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|info dictionary",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|known location",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|gateway enabled",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|show service",
+      "binary": "battlecats",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|sheet storage",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|state subject",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "battlecats|partial|message sender",
+      "binary": "battlecats",
+      "selectedIndex": 11,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|info update",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|type detail",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|action url",
+      "binary": "battlecats",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|body text",
+      "binary": "battlecats",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "battlecats|partial|did change",
+      "binary": "battlecats",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|error code",
+      "binary": "TsumTsum",
+      "selectedIndex": 9,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|status bar",
+      "binary": "TsumTsum",
+      "selectedIndex": 4,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|view frame",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|user initiated",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|network info",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|since boot",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|choices view",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|media content",
+      "binary": "TsumTsum",
+      "selectedIndex": 6,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|output volume",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|current route",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|interface orientations",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|view updates",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|source name",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|ping triggers",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|orientation change",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|preferences configuration",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|asset viewability",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|monitored view",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|resource buffer",
+      "binary": "TsumTsum",
+      "selectedIndex": 7,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|playback state",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|link url",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|tracking tokens",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|background task",
+      "binary": "TsumTsum",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|info update",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|action url",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|body text",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|did change",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|auction results",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|from cache",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|reported availability",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|data writer",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|network service",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|root view",
+      "binary": "TsumTsum",
+      "selectedIndex": 13,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|when done",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|view received",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|info block",
+      "binary": "TsumTsum",
+      "selectedIndex": 4,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|for event",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|unit strategy",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|clock event",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|full cache",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|session state",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|screen state",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|gateway enabled",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|show service",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|state subject",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|message sender",
+      "binary": "TsumTsum",
+      "selectedIndex": 11,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|options view",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|end timestamp",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|collection enabled",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|view event",
+      "binary": "TsumTsum",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|retry interval",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|logged impression",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|pause button",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|playable zip",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|info button",
+      "binary": "TsumTsum",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|current time",
+      "binary": "TsumTsum",
+      "selectedIndex": 6,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|and browse",
+      "binary": "TsumTsum",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|did appear",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "TsumTsum|partial|event time",
+      "binary": "TsumTsum",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "TsumTsum|partial|new count",
+      "binary": "TsumTsum",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|server url",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|browser clicked",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|event time",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|options view",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|and browse",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|button delay",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|view array",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|current time",
+      "binary": "YWP",
+      "selectedIndex": 12,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|network items",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|session state",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|user agent",
+      "binary": "YWP",
+      "selectedIndex": 5,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|conversion info",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|view event",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|gesture direction",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|network info",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|since boot",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|media content",
+      "binary": "YWP",
+      "selectedIndex": 6,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|output volume",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|custom close",
+      "binary": "YWP",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|interface orientations",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|player view",
+      "binary": "YWP",
+      "selectedIndex": 4,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|wait time",
+      "binary": "YWP",
+      "selectedIndex": 3,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|asset viewability",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|monitored view",
+      "binary": "YWP",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|buffer update",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|state change",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|learn more",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|reachability status",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|body part",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|mask view",
+      "binary": "YWP",
+      "selectedIndex": 5,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|open url",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|request time",
+      "binary": "YWP",
+      "selectedIndex": 5,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|logo image",
+      "binary": "YWP",
+      "selectedIndex": 8,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|endcard direct",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|state timer",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|default view",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|load finish",
+      "binary": "YWP",
+      "selectedIndex": 4,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|duration time",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|delay time",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|preload cache",
+      "binary": "YWP",
+      "selectedIndex": 3,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|render start",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|bar info",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|star view",
+      "binary": "YWP",
+      "selectedIndex": 10,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|first page",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|event timer",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|animation time",
+      "binary": "YWP",
+      "selectedIndex": 2,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|back button",
+      "binary": "YWP",
+      "selectedIndex": 9,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|report click",
+      "binary": "YWP",
+      "selectedIndex": 0,
+      "correct": false
+    },
+    {
+      "id": "YWP|partial|show service",
+      "binary": "YWP",
+      "selectedIndex": 1,
+      "correct": true
+    },
+    {
+      "id": "YWP|partial|state subject",
+      "binary": "YWP",
+      "selectedIndex": 3,
+      "correct": false
+    }
+  ]
+}

@@ -39,6 +39,7 @@ import {
 } from './pinpoint-confidence-policy.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FIXTURE_ROOT = process.env.HEX_PINPOINT_FIXTURE_ROOT || ROOT;
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
   const i = args.indexOf(name);
@@ -107,7 +108,7 @@ function writeMeasurementManifest({ out, queries, fieldRows, startedAt }) {
     battlecats: 'tests/battlecats', TsumTsum: 'tests/TsumTsum', YWP: 'tests/YWP',
   };
   const fixtureHashes = Object.fromEntries(Object.entries(fixtures).map(([name, relative]) => {
-    const file = path.join(ROOT, relative);
+    const file = path.join(FIXTURE_ROOT, relative);
     return [name, fs.existsSync(file) ? { bytes: fs.statSync(file).size, sha256: sha256File(file) } : null];
   }));
   const manifest = {
@@ -161,7 +162,7 @@ async function main() {
     if (!worlds.has(binary)) {
       const target = binary === 'battlecats' ? 'tests/battlecats'
         : binary === 'TsumTsum' ? 'tests/TsumTsum' : 'tests/YWP';
-      worlds.set(binary, await openBinary(target, { log: () => {} }));
+      worlds.set(binary, await openBinary(path.join(FIXTURE_ROOT, target), { log: () => {} }));
     }
     return worlds.get(binary);
   };

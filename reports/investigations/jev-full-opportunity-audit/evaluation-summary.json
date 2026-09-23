@@ -1,0 +1,333 @@
+{
+  "schema": "hex-jev-full-opportunity-evaluation/v1",
+  "sourceProductCommit": "09dfcb283f721b6598f34675a8a42480147d5752",
+  "denominator": 426,
+  "candidatePresent": 426,
+  "baselineCorrect": 282,
+  "wrongRanking": 144,
+  "exact": {
+    "N": 230,
+    "baselineCorrect": 229,
+    "interventionCalls": 0
+  },
+  "partial": {
+    "N": 196,
+    "baselineCorrect": 53,
+    "wrong": 143
+  },
+  "deterministic": {
+    "method": "BattleCats-selected 168-point lexical grid; same benchmark generator on both sides",
+    "partial": {
+      "totalN": 196,
+      "baselineCorrect": 53,
+      "correct": 152,
+      "wrongToCorrect": 103,
+      "correctToWrong": 4
+    },
+    "all426ProjectedCorrect": 381,
+    "development": {
+      "N": 86,
+      "correct": 71,
+      "wrongToCorrect": 44,
+      "correctToWrong": 2
+    },
+    "holdout": {
+      "N": 110,
+      "correct": 81,
+      "wrongToCorrect": 59,
+      "correctToWrong": 2
+    }
+  },
+  "jevForcedPreference": {
+    "label": {
+      "allPartial": {
+        "totalN": 196,
+        "baselineCorrect": 53,
+        "correct": 92,
+        "wrongToCorrect": 46,
+        "correctToWrong": 7
+      },
+      "ambiguousOnly": {
+        "totalN": 105,
+        "baselineCorrect": 29,
+        "correct": 40,
+        "wrongToCorrect": 17,
+        "correctToWrong": 6
+      },
+      "exactUnchanged": 229,
+      "additionalAnalyzeCalls": 0,
+      "apiCalls": 196,
+      "failures": 0
+    },
+    "class": {
+      "allPartial": {
+        "totalN": 196,
+        "baselineCorrect": 53,
+        "correct": 88,
+        "wrongToCorrect": 47,
+        "correctToWrong": 12
+      },
+      "ambiguousOnly": {
+        "totalN": 105,
+        "baselineCorrect": 29,
+        "correct": 41,
+        "wrongToCorrect": 19,
+        "correctToWrong": 7
+      },
+      "exactUnchanged": 229,
+      "additionalAnalyzeCalls": 0,
+      "apiCalls": 196,
+      "failures": 0
+    },
+    "evidence": {
+      "allPartial": {
+        "totalN": 196,
+        "baselineCorrect": 53,
+        "correct": 75,
+        "wrongToCorrect": 38,
+        "correctToWrong": 16
+      },
+      "ambiguousOnly": {
+        "totalN": 105,
+        "baselineCorrect": 29,
+        "correct": 35,
+        "wrongToCorrect": 19,
+        "correctToWrong": 13
+      },
+      "exactUnchanged": 229,
+      "additionalAnalyzeCalls": 0,
+      "apiCalls": 196,
+      "failures": 0
+    }
+  },
+  "jevVsDet": {
+    "label": {
+      "jevRescuesDetMisses": 6,
+      "detRescuesJevMisses": 63
+    },
+    "class": {
+      "jevRescuesDetMisses": 8,
+      "detRescuesJevMisses": 64
+    },
+    "evidence": {
+      "jevRescuesDetMisses": 8,
+      "detRescuesJevMisses": 73
+    }
+  },
+  "failClosedGate": {
+    "label": {
+      "predicate": "partial + ambiguous + unique>=0.9 + confidence>=0.9; preference never promotes strong",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0
+    },
+    "class": {
+      "predicate": "partial + ambiguous + unique>=0.9 + confidence>=0.9; preference never promotes strong",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0
+    },
+    "evidence": {
+      "predicate": "partial + ambiguous + unique>=0.9 + confidence>=0.9; preference never promotes strong",
+      "triggered": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0
+    }
+  },
+  "modelPreferenceConfidence": {
+    "label": {
+      "atLeastPoint9N": 21,
+      "correctAmongHigh": 15,
+      "wrongAmongHigh": 6,
+      "maxSelfRatedUniqueness": 0.51
+    },
+    "class": {
+      "atLeastPoint9N": 18,
+      "correctAmongHigh": 15,
+      "wrongAmongHigh": 3,
+      "maxSelfRatedUniqueness": 0.5
+    },
+    "evidence": {
+      "atLeastPoint9N": 16,
+      "correctAmongHigh": 12,
+      "wrongAmongHigh": 4,
+      "maxSelfRatedUniqueness": 0.52
+    }
+  },
+  "fieldRoleCompilerFixture": {
+    "N": 7,
+    "supportedN": 5,
+    "results": {
+      "local": {
+        "supportedN": 5,
+        "deterministicCorrect": 3,
+        "jevCorrect": 2,
+        "jevWrongToCorrect": 0,
+        "jevCorrectToWrong": 1
+      },
+      "crossFunction": {
+        "supportedN": 5,
+        "deterministicCorrect": 4,
+        "jevCorrect": 4,
+        "jevWrongToCorrect": 1,
+        "jevCorrectToWrong": 1
+      }
+    }
+  },
+  "evidencePlanning": {
+    "schema": "hex-jev-broader-scheduler-summary/v1",
+    "source": {
+      "comparisonSha256": "df5fe59fb72f8a685ce816502323046589280366ca816ad8a15268ef056b6f0b",
+      "schedulerPr": 9464,
+      "schedulerHead": "f035af71dd183c25d36af7d1eebe413ecfd4bb04",
+      "corpusSha256": "81a7b1f016340b92d59278b2e768d27e0acd44b28b4e2a4d7482666c84e646dd",
+      "transitionsSha256": "135abcf25c37de45951fd2e8b8b1da197463193bb9b27313cb8d09a7421a6972"
+    },
+    "denominator": 426,
+    "focusedCount": 105,
+    "eligibleWrongBaseline": 76,
+    "budget": {
+      "maxProbeCount": 6,
+      "maxAnalyzeCalls": 6,
+      "maxElapsedMs": 1000
+    },
+    "selectedHeuristic": "H6",
+    "baseline": {
+      "total": 105,
+      "top1Correct": 29,
+      "correctStrong": 0,
+      "falseStrong": 0,
+      "ambiguous": 105,
+      "resolved": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {},
+      "averageProbes": 0,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 0,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "heuristic": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 56,
+      "stopReasons": {
+        "STOP_BUDGET": 56,
+        "STOP_NO_USEFUL_PROBE": 47,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 4.171428571428572,
+      "p50Probes": 6,
+      "p95Probes": 6,
+      "totalAnalyzeCalls": 438,
+      "p50AnalyzeCalls": 6,
+      "p95AnalyzeCalls": 6,
+      "p50ElapsedMs": 9.35,
+      "p95ElapsedMs": 39.16
+    },
+    "budgetOracle": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {
+        "STOP_NO_USEFUL_PROBE": 103,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 0.01904761904761905,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 2,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "unboundedOracle": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {
+        "STOP_NO_USEFUL_PROBE": 103,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 0.01904761904761905,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 2,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "gap": {
+      "oracleBResolvedMinusHeuristicResolved": 0,
+      "all426PercentagePoints": 0,
+      "oracleBWrongToCorrectMinusHeuristic": 0
+    },
+    "probeStatistics": {
+      "catalogProbes": 3545,
+      "independentlyExecuted": 2131,
+      "usefulRate": 0.03003284842796809,
+      "uselessRate": 0.969967151572032,
+      "decisiveRate": 0.0018770530267480056,
+      "selectedUsefulRate": 0.07077625570776255,
+      "timeToFirstDecisiveP50Ms": 7.07,
+      "timeToFirstDecisiveP95Ms": 7.720000000000001,
+      "callsToFirstDecisiveP50": 2,
+      "probesToFirstDecisiveP50": 2
+    },
+    "classificationCounts": {
+      "ALREADY_CORRECT": 29,
+      "HEURISTIC_RESOLVED": 2,
+      "ORACLE_ONLY_RESOLVED": 0,
+      "ONLY_UNBOUNDED_RESOLVED": 0,
+      "BINARY_EVIDENCE_INSUFFICIENT": 6,
+      "ANALYSIS_PRIMITIVE_MISSING": 51,
+      "INTENT_UNDERSPECIFIED": 0,
+      "CONFIDENCE_ONLY": 0,
+      "OTHER": 17
+    }
+  },
+  "confidence": {
+    "currentCorrectStrong": 211,
+    "currentFalseStrong": 67,
+    "policyChanged": false,
+    "modelPreferenceIsNotConfidenceProof": true
+  },
+  "caveats": [
+    "Forced preference is an offline top1 counterfactual, not a safe confirmed/likely decision.",
+    "Partial labels omit context that distinguishes many literal alternatives; binary split shares query construction and SDK families.",
+    "The lexical grid was selected on BattleCats and may exploit the remembered-name fixture generator."
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "hex-jev-field-role-fixture/v1",
+  "binary": "tests/phase7/cxx/fixtures/game.cpp -> game-rtti-o0.elf",
+  "provenance": "clang++ -O0 aarch64-unknown-linux-gnu; llvm-objdump -d -C; see reproduction",
+  "labelSource": "C++ source declarations, withheld from API state",
+  "cases": [
+    {"id":"Entity+0x08","expected":"health","supported":true,"facts":["32-bit word at object offset 8","initialized to 100","read, decreased by a function argument, stored, then returned"],"crossFunction":["Entity::takeDamage(int) subtracts from this offset","readHealth(Entity*) reads this offset"],"addresses":["0x2102f0","0x2102f8","0x2107cc"]},
+    {"id":"Entity+0x0c","expected":"state","supported":false,"facts":["32-bit word at object offset 12","initialized to zero","incremented by one and read in a sum with offset 8"],"crossFunction":["Entity::update(float) increments this offset","readHealth(Entity*) also reads it"],"addresses":["0x210318","0x210320","0x2107d4"]},
+    {"id":"Entity+0x10","expected":"object_reference","supported":true,"facts":["64-bit value at object offset 16","initialized to zero","returned directly from a function"],"crossFunction":["readTarget(Entity*) returns this offset"],"addresses":["0x210808"]},
+    {"id":"Actor+0x18","expected":"speed","supported":true,"facts":["32-bit floating-point value at object offset 24","initialized to 1.5","increased by floating-point 0.5 in an update function"],"crossFunction":["Actor::update(float) adds 0.5 here","readSpeed(Actor*) returns this offset"],"addresses":["0x210428","0x210434","0x2107f0"]},
+    {"id":"Player+0x28","expected":"ammo","supported":false,"facts":["32-bit word at object offset 40","initialized to 30","no independently verified read or write beyond initialization in this sample"],"crossFunction":["Player::Player() initializes the offset; no named consumer was established"],"addresses":["0x210440"]},
+    {"id":"Player+0x2c","expected":"text","supported":true,"facts":["byte array begins at object offset 44","first byte initialized to ASCII P, next to zero","read with an index in a function"],"crossFunction":["readNameChar(Player*, int) indexes this array"],"addresses":["0x21083c","0x210848"]},
+    {"id":"Player+0x3c","expected":"boolean_flag","supported":true,"facts":["byte at object offset 60","initialized to one","written zero only when offset 8 becomes negative","read and masked by one"],"crossFunction":["Player::takeDamage(int) clears the byte under a negative-value condition","isAlive(Player*) reads this byte"],"addresses":["0x21053c","0x210820"]}
+  ]
+}
