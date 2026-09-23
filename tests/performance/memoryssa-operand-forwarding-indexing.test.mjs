@@ -4,7 +4,12 @@ import test from 'node:test';
 import { stableDigest } from '../../js/core/identity/index.js';
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
-import { MEMORY_SSA_BUILD_VERSION, buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
+import {
+  MEMORY_SSA_BUILD_VERSION,
+  buildMemorySsa,
+  canonicalMemorySsaProducerDigest,
+  canonicalMemorySsaProducerMatchesSemanticIr,
+} from '../../js/semantics/memoryssa/build.js';
 import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
 import { forwardExactStackOperandIdentity } from '../../js/semantics/memoryssa/operand-forwarding.js';
 
@@ -74,4 +79,15 @@ test('exact stack operand forwarding indexes canonical MemorySSA tables once', (
   }
   assert.equal(tableFilters, 0, `operand forwarding rescanned canonical MemorySSA tables ${tableFilters} times`);
   assert.equal(regionFinds, 0, `operand forwarding rescanned canonical MemorySSA regions ${regionFinds} times`);
+});
+
+
+test('MemorySSA producer binding authenticates only the exact source IR and published digest', () => {
+  const { ir, memorySsa } = fixture(2);
+  assert.equal(canonicalMemorySsaProducerMatchesSemanticIr(memorySsa, ir), true);
+  assert.equal(canonicalMemorySsaProducerMatchesSemanticIr(memorySsa, { ...ir }), false);
+  assert.equal(canonicalMemorySsaProducerDigest(memorySsa), memorySsa.canonicalDigest);
+  const copied = { ...memorySsa };
+  assert.equal(canonicalMemorySsaProducerMatchesSemanticIr(copied, ir), false);
+  assert.equal(canonicalMemorySsaProducerDigest(copied), null);
 });
