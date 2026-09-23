@@ -2,13 +2,13 @@ import { build, transform } from 'esbuild';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, open, rm, realpath, stat } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { access, readFile, mkdir, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
 import { writeFileVerified, publishUserscriptFiles } from './userscript-publication.mjs';
+import { readResolvedRepositorySource, readStableRepositoryFile, resolveRepositorySource } from './stable-repository-source.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const writeFile = (file, content) => writeFileVerified(file, content, { containmentRoot: root });
@@ -129,7 +129,7 @@ async function buildWorkerAssets() {
   for (const entry of MODULE_WORKER_ENTRIES.slice(1)) {
     modules[entry] = (await bundle(entry, { format: 'esm', graph: 'standard', inventory: `embedded-worker-${entry.replace(/[^a-zA-Z0-9]+/g, '-')}` })).toString('utf8');
   }
-  const wasm = await readFile(resolve(root, 'capstone.wasm'));
+  const wasm = await readStableRepositoryFile('capstone.wasm', { rootDir: root, normalizePath, sourceLabel: 'Capstone WASM source' });
   return { classic, modules, wasm: wasm.toString('base64') };
 }
 function pathIsWithin(rootPath, targetPath) {
@@ -137,54 +137,24 @@ function pathIsWithin(rootPath, targetPath) {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
-function sameClassicSourceIdentity(left, right) {
-  return left && right
-    && left.dev != null && left.ino != null
-    && right.dev != null && right.ino != null
-    && String(left.dev) === String(right.dev)
-    && String(left.ino) === String(right.ino);
-}
-
-export async function resolveClassicSource(path, {
-  rootDir = root,
-  realpathImpl = realpath,
-  statImpl = stat,
-} = {}) {
-  const normalized = normalizePath(path);
-  const lexical = resolve(rootDir, normalized);
-  const [realRoot, realSource] = await Promise.all([realpathImpl(rootDir), realpathImpl(lexical)]);
-  if (!pathIsWithin(realRoot, realSource)) {
-    throw new Error(`Classic worker source escapes repository: ${normalized}`);
-  }
-  const sourceStat = await statImpl(realSource);
-  if (!sourceStat.isFile()) throw new Error(`Classic worker source is not a regular file: ${normalized}`);
-  return { normalized, realSource, sourceStat };
+export async function resolveClassicSource(path, options = {}) {
+  return resolveRepositorySource(path, {
+    ...options,
+    rootDir: options.rootDir ?? root,
+    normalizePath,
+    sourceLabel: 'Classic worker source',
+  });
 }
 
 export async function collectClassic(path, sources, options = {}) {
-  const { normalized, realSource, sourceStat } = await resolveClassicSource(path, options);
+  const resolved = await resolveClassicSource(path, options);
+  const { normalized } = resolved;
   if (sources.has(normalized)) return;
-
-  const openImpl = options.openImpl ?? open;
-  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
-  let handle;
-  try {
-    handle = await openImpl(realSource, flags);
-  } catch (error) {
-    throw new Error(`Classic worker source identity could not be established: ${normalized}`, { cause: error });
-  }
-
-  let source;
-  try {
-    const openedStat = await handle.stat();
-    if (!openedStat.isFile() || !sameClassicSourceIdentity(sourceStat, openedStat)) {
-      throw new Error(`Classic worker source identity changed before read: ${normalized}`);
-    }
-    const readHandleImpl = options.readHandleImpl ?? ((fileHandle) => fileHandle.readFile({ encoding: 'utf8' }));
-    source = await readHandleImpl(handle, normalized);
-  } finally {
-    await handle.close();
-  }
+  const source = await readResolvedRepositorySource(resolved, {
+    ...options,
+    sourceLabel: 'Classic worker source',
+    encoding: 'utf8',
+  });
 
   sources.set(normalized, source);
   for (const dependency of parseImports(source, normalized)) await collectClassic(dependency, sources, options);

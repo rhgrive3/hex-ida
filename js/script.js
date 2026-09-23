@@ -501,10 +501,21 @@ export function createApi(app, out, options = {}) {
      * 関数を動かしてみる。
      * @returns {{x0, steps, stopped, log}}
      */
-    async run(addr, args = [], maxSteps = 20000) {
+    async run(addr, args = [], maxSteps = 20000, context = null) {
+      if (isExecutionContext(args)) {
+        context = args;
+        args = [];
+        maxSteps = 20000;
+      } else if (isExecutionContext(maxSteps)) {
+        context = maxSteps;
+        maxSteps = 20000;
+      }
+      if (!Array.isArray(args)) throw new TypeError('run args must be an array');
+      const signal = signalOf(context);
+      throwIfAborted(signal);
       const emu = makeEmulator(app);
       emu.setup(BigInt(addr), args.map((v) => BigInt(v)));
-      await emu.run(boundedSteps(maxSteps));
+      await emu.run(boundedSteps(maxSteps), { signal });
       return {
         x0: emu.x[0], steps: emu.steps, stopped: emu.stopped,
         log: emu.log.slice(-256), regs: emu.registerList(),

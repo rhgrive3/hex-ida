@@ -176,17 +176,21 @@ export function normalizeFieldName(name) {
 }
 
 /** 開いた名前 haystack の中に、開いた語の並び needle がそのまま入っているか。 */
-function wordSequence(haystack, needle) {
+function wordSequenceAt(haystack, needle) {
   const h = ' ' + haystack + ' ';
   const n = ' ' + needle + ' ';
-  return h.indexOf(n) >= 0;
+  return h.indexOf(n);
 }
+function wordSequence(haystack, needle) { return wordSequenceAt(haystack, needle) >= 0; }
 
-/** needle の語のうち、何割が haystack に入っているか。 */
-function wordCoverage(haystack, needle) {
+/** needle の語のうち、avoid 範囲の外で何割が haystack に入っているか。 */
+function wordCoverage(haystack, needle, blocked = []) {
   const words = needle.split(' ').filter((w) => w.length >= 2);
   if (!words.length) return 0;
-  const have = new Set(haystack.split(' '));
+  const have = new Set();
+  for (const match of haystack.matchAll(/\S+/g)) {
+    if (!overlaps(blocked, match.index, match[0].length)) have.add(match[0]);
+  }
   let hit = 0;
   for (const w of words) if (have.has(w)) hit++;
   return hit / words.length;
@@ -335,8 +339,8 @@ export function matchField(goal, name) {
    * `waterfallLifeCycleHolder` が出る（実際に出ていた）。
    */
   const blocked = avoidSpans(goal, norm);
-  const consider = (score, term, exact, literal, sequence, at, words) => {
-    if (at != null && overlaps(blocked, at, term.length)) return;
+  const consider = (score, term, exact, literal, sequence, at, words, matchLength = null) => {
+    if (at != null && overlaps(blocked, at, matchLength ?? String(term).length)) return;
     if (!best || score > best.score) {
       best = { score, term, exact: !!exact, role, literal: !!literal, sequence: !!sequence, words: !!words };
     }
@@ -370,12 +374,15 @@ export function matchField(goal, name) {
    */
   const asked = normalizeFieldName(goal.text);
   if (asked && asked.length >= 2) {
-    if (norm === asked) consider(1.2, goal.text, true, true);
-    else if (wordSequence(norm, asked)) consider(1.0, goal.text, false, true, true);
+    if (norm === asked) consider(1.2, goal.text, true, true, false, 0, false, asked.length);
     else {
-      const cover = wordCoverage(norm, asked);
-      if (cover >= 0.99) consider(0.95, goal.text, false, true, false, null, true);
-      else if (cover >= 0.6) consider(0.45 * cover, goal.text, false, true);
+      const askedAt = wordSequenceAt(norm, asked);
+      if (askedAt >= 0) consider(1.0, goal.text, false, true, true, askedAt, false, asked.length);
+      else {
+        const cover = wordCoverage(norm, asked, blocked);
+        if (cover >= 0.99) consider(0.95, goal.text, false, true, false, null, true);
+        else if (cover >= 0.6) consider(0.45 * cover, goal.text, false, true);
+      }
     }
   }
 
@@ -383,7 +390,8 @@ export function matchField(goal, name) {
   for (const term of goal.extraTerms || []) {
     const w = normalizeFieldName(term.word);
     if (!w || w.length < 2) continue;
-    if (wordSequence(norm, w)) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w);
+    const at = wordSequenceAt(norm, w);
+    if (at >= 0) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w, false, false, at, false, w.length);
   }
   if (!best && !vocab) {
     // プリセットの文言用の語彙でも一応見る（日本語名の変数など）

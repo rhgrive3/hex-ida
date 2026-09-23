@@ -33,7 +33,21 @@ function canonicalizeIdentityField(field,value){
 }
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
-function asBigInt(value){try{return value==null?null:BigInt(value);}catch{return null;}}
+function asBigInt(value){
+  let address;
+  try {
+    if(typeof value==='bigint')address=value;
+    else if(typeof value==='number'){
+      if(!Number.isSafeInteger(value))return null;
+      address=BigInt(value);
+    }else if(typeof value==='string'){
+      const text=value.trim();
+      if(!text||!/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(text))return null;
+      address=BigInt(text);
+    }else return null;
+  }catch{return null;}
+  return address>=0n?address:null;
+}
 function bytesOf(value){return Array.from(value||[],(x)=>Number(x)&255);}
 function identityKey(identity){
   const meta=identity?.metadata||{};
