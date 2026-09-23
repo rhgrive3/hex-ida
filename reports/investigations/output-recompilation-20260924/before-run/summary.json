@@ -1,0 +1,201 @@
+{
+  "schema": "hex-current-main-harness-summary/v1",
+  "label": "current-main",
+  "headSha": "e54c993e2da875465efb5950b20a83824e02e3c2",
+  "sourceIdentity": "c584932a198eb0996eb2a1b4063911cb9c0116b69fb5452cece06e7dbbb84366",
+  "configHash": "aff107b9168079c36042e557eb04d11334584839fb1499666ccf61d6153131b2",
+  "config": {
+    "label": "current-main",
+    "functionTimeoutMs": 10000,
+    "structure": "none",
+    "structureThresholdMs": 250,
+    "productTimeoutMs": 900000,
+    "harnessHash": "9f34ce58a47f16d7f58d4604b66dc84cc5953e194d2f27059022aca04bb99ea0",
+    "caseSelectionHash": "5df0488721206d74c8b7be80298cd5bbb6be8c3e4adb4dea7687fe34a8447f0d",
+    "benchmarkManifestHash": "de5d7726ef6bb18649a0b8cc5e4d261e01873eb7ae2c5734d203fed7c8eef992"
+  },
+  "denominator": 8,
+  "complete": true,
+  "states": {
+    "MEASURED": 8
+  },
+  "wallMs": 234216.824972,
+  "results": [
+    {
+      "id": "1/1_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 74,
+      "functionStates": {
+        "PASS": 74
+      },
+      "elapsedMs": 240033.488694,
+      "functionElapsedMs": 235049.47877699995,
+      "setup": {
+        "binaryReadMs": 1.8155849999998281,
+        "binaryHashMs": 1.1834460000000036,
+        "binaryOpenMs": 1876.5334209999999,
+        "binaryIdentityMs": 11.956433000000288,
+        "symbolAnalysisMs": 193.71670499999982,
+        "functionDiscoveryMs": 116.3809409999999,
+        "programConstructionMs": 166.1763649999998,
+        "totalSetupMs": 2372.5357
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "2/2_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 69,
+      "functionStates": {
+        "PASS": 69
+      },
+      "elapsedMs": 233072.780349,
+      "functionElapsedMs": 230862.02815700005,
+      "setup": {
+        "binaryReadMs": 1.9215619999999944,
+        "binaryHashMs": 1.2519940000000815,
+        "binaryOpenMs": 856.1023620000001,
+        "binaryIdentityMs": 11.606260999999904,
+        "symbolAnalysisMs": 53.331682,
+        "functionDiscoveryMs": 47.15106100000003,
+        "programConstructionMs": 42.42510799999991,
+        "totalSetupMs": 1018.0301779999999
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "3/3_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 65,
+      "functionStates": {
+        "PASS": 65
+      },
+      "elapsedMs": 242400.754105,
+      "functionElapsedMs": 238102.86281499997,
+      "setup": {
+        "binaryReadMs": 62.628905999999915,
+        "binaryHashMs": 1.3402240000000347,
+        "binaryOpenMs": 1835.4197579999998,
+        "binaryIdentityMs": 11.267221000000063,
+        "symbolAnalysisMs": 143.96968199999992,
+        "functionDiscoveryMs": 97.98552600000039,
+        "programConstructionMs": 103.45780400000012,
+        "totalSetupMs": 2304.392903
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "4/4_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 80,
+      "functionStates": {
+        "PASS": 80
+      },
+      "elapsedMs": 240138.616913,
+      "functionElapsedMs": 235182.82518299998,
+      "setup": {
+        "binaryReadMs": 3.147425999999996,
+        "binaryHashMs": 1.197449000000006,
+        "binaryOpenMs": 1862.971929,
+        "binaryIdentityMs": 10.28416500000003,
+        "symbolAnalysisMs": 132.1817629999996,
+        "functionDiscoveryMs": 165.93197599999985,
+        "programConstructionMs": 94.27614799999992,
+        "totalSetupMs": 2275.3010729999996
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "5-1/5-1_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 70,
+      "functionStates": {
+        "PASS": 70
+      },
+      "elapsedMs": 157332.04296999998,
+      "functionElapsedMs": 152342.67919999993,
+      "setup": {
+        "binaryReadMs": 7.295202999999901,
+        "binaryHashMs": 4.0349670000000515,
+        "binaryOpenMs": 1877.172914,
+        "binaryIdentityMs": 32.87778800000024,
+        "symbolAnalysisMs": 204.6206219999999,
+        "functionDiscoveryMs": 103.73294900000019,
+        "programConstructionMs": 94.2781600000003,
+        "totalSetupMs": 2330.198409
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "5-23/5-23_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 54,
+      "functionStates": {
+        "PASS": 54
+      },
+      "elapsedMs": 135425.848376,
+      "functionElapsedMs": 130927.58722900001,
+      "setup": {
+        "binaryReadMs": 1.9510510000000068,
+        "binaryHashMs": 1.1053249999999935,
+        "binaryOpenMs": 1819.2153110000002,
+        "binaryIdentityMs": 64.50395000000026,
+        "symbolAnalysisMs": 215.21792800000003,
+        "functionDiscoveryMs": 89.39711500000021,
+        "programConstructionMs": 106.11977300000035,
+        "totalSetupMs": 2302.2837739999995
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "6/6_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 75,
+      "functionStates": {
+        "PASS": 75
+      },
+      "elapsedMs": 200340.5866,
+      "functionElapsedMs": 198159.60247200003,
+      "setup": {
+        "binaryReadMs": 1.6578100000000404,
+        "binaryHashMs": 1.1955429999999296,
+        "binaryOpenMs": 934.176687,
+        "binaryIdentityMs": 16.846022000000175,
+        "symbolAnalysisMs": 73.66773599999988,
+        "functionDiscoveryMs": 39.21049500000004,
+        "programConstructionMs": 39.29577999999992,
+        "totalSetupMs": 1110.453286
+      },
+      "functionDiscoveryComplete": true
+    },
+    {
+      "id": "7/7_gcc_O1_g",
+      "state": "MEASURED",
+      "reason": null,
+      "functionCount": 43,
+      "functionStates": {
+        "PASS": 43
+      },
+      "elapsedMs": 128815.36715,
+      "functionElapsedMs": 124723.96809799997,
+      "setup": {
+        "binaryReadMs": 8.843668000000207,
+        "binaryHashMs": 1.0347300000000814,
+        "binaryOpenMs": 1806.1155119999999,
+        "binaryIdentityMs": 22.000759000000016,
+        "symbolAnalysisMs": 198.61377099999982,
+        "functionDiscoveryMs": 103.20980800000007,
+        "programConstructionMs": 94.92834900000025,
+        "totalSetupMs": 2239.2715559999997
+      },
+      "functionDiscoveryComplete": true
+    }
+  ]
+}

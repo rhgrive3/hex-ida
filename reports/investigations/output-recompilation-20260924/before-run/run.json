@@ -1,0 +1,23 @@
+{
+  "schema": "hex-current-main-harness-run/v1",
+  "label": "current-main",
+  "headSha": "e54c993e2da875465efb5950b20a83824e02e3c2",
+  "sourceIdentity": "c584932a198eb0996eb2a1b4063911cb9c0116b69fb5452cece06e7dbbb84366",
+  "configHash": "aff107b9168079c36042e557eb04d11334584839fb1499666ccf61d6153131b2",
+  "config": {
+    "label": "current-main",
+    "functionTimeoutMs": 10000,
+    "structure": "none",
+    "structureThresholdMs": 250,
+    "productTimeoutMs": 900000,
+    "harnessHash": "9f34ce58a47f16d7f58d4604b66dc84cc5953e194d2f27059022aca04bb99ea0",
+    "caseSelectionHash": "5df0488721206d74c8b7be80298cd5bbb6be8c3e4adb4dea7687fe34a8447f0d",
+    "benchmarkManifestHash": "de5d7726ef6bb18649a0b8cc5e4d261e01873eb7ae2c5734d203fed7c8eef992"
+  },
+  "manifest": {
+    "path": "benchmarks/public/codefuse-arm64/manifest.json"
+  },
+  "denominator": 8,
+  "createdAt": "2026-09-23T16:20:06.018Z",
+  "updatedAt": "2026-09-23T16:25:25.381Z"
+}
