@@ -73,6 +73,8 @@ export function runProductionDeploy({
   linkSync = fs.linkSync,
   unlinkSync = fs.unlinkSync,
   rmSync = fs.rmSync,
+  readdirSync = fs.readdirSync,
+  readSync = fs.readSync,
   randomUUIDImpl = randomUUID,
   snapshotDirectory = repoRoot,
   onCleanupError = (error, details) => console.warn(
@@ -268,16 +270,106 @@ export function runProductionDeploy({
         mkdirSync(handoffAssetsPath, { mode: 0o700 });
 
         const copyTree = (srcDir, dstDir) => {
-          const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+          const entries = readdirSync(srcDir, { withFileTypes: true });
           for (const entry of entries) {
+            const isDir = entry.isDirectory();
+            const isReg = entry.isFile();
+            if (!isDir && !isReg) {
+              // Pre-existing symlink entries stay skipped as today
+              continue;
+            }
+
             const srcChild = resolve(srcDir, entry.name);
             const dstChild = resolve(dstDir, entry.name);
-            if (entry.isDirectory()) {
-              mkdirSync(dstChild, { mode: 0o700 });
-              copyTree(srcChild, dstChild);
-            } else if (entry.isFile()) {
-              const fileData = fs.readFileSync(srcChild);
-              writeFileSync(dstChild, fileData);
+
+            let childLstat;
+            try {
+              childLstat = lstatSync(srcChild);
+            } catch (err) {
+              const mismatchErr = new Error(`Asset child ${srcChild} disappeared or cannot be stated: ${err.message}`, { cause: err });
+              mismatchErr.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+              throw mismatchErr;
+            }
+
+            if (isDir) {
+              if (childLstat.isSymbolicLink() || !childLstat.isDirectory()) {
+                const err = new Error(`Asset directory child ${srcChild} kind mismatch with Dirent`);
+                err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                throw err;
+              }
+              const dirFlags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+              let childDirFd;
+              try {
+                childDirFd = openSync(srcChild, dirFlags);
+              } catch (err) {
+                const openErr = new Error(`Asset directory ${srcChild} failed no-follow open: ${err.message}`, { cause: err });
+                openErr.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                throw openErr;
+              }
+              try {
+                const openedDirStat = statDescriptor(fstatSync, childDirFd);
+                if (!openedDirStat.isDirectory() || !sameIdentity(openedDirStat, childLstat)) {
+                  const err = new Error(`Asset directory child ${srcChild} identity mismatch with lstat`);
+                  err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                  throw err;
+                }
+                mkdirSync(dstChild, { mode: 0o700 });
+                copyTree(srcChild, dstChild);
+                const postRecurseStat = statDescriptor(fstatSync, childDirFd);
+                if (!postRecurseStat.isDirectory() || !sameIdentity(postRecurseStat, openedDirStat)) {
+                  const err = new Error(`Asset directory child ${srcChild} identity changed after recursion`);
+                  err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                  throw err;
+                }
+              } finally {
+                closeSync(childDirFd);
+              }
+            } else if (isReg) {
+              if (childLstat.isSymbolicLink() || !childLstat.isFile()) {
+                const err = new Error(`Asset file child ${srcChild} kind mismatch with Dirent`);
+                err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                throw err;
+              }
+              const fileFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
+              let fileFd;
+              try {
+                fileFd = openSync(srcChild, fileFlags);
+              } catch (err) {
+                const openErr = new Error(`Asset file ${srcChild} failed no-follow open: ${err.message}`, { cause: err });
+                openErr.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                throw openErr;
+              }
+              try {
+                const openedFileStat = statDescriptor(fstatSync, fileFd);
+                if (!openedFileStat.isFile() || !sameIdentity(openedFileStat, childLstat)) {
+                  const err = new Error(`Asset file child ${srcChild} identity mismatch with lstat`);
+                  err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                  throw err;
+                }
+                const chunks = [];
+                const bufSize = 64 * 1024;
+                const buffer = Buffer.alloc(bufSize);
+                while (true) {
+                  const bytesRead = readSync(fileFd, buffer, 0, bufSize, null);
+                  if (bytesRead === 0) break;
+                  chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+                }
+                const fileData = Buffer.concat(chunks);
+                const postReadStat = statDescriptor(fstatSync, fileFd);
+                if (!postReadStat.isFile()
+                    || !sameIdentity(postReadStat, openedFileStat)
+                    || String(postReadStat.size) !== String(openedFileStat.size)
+                    || (openedFileStat.mtimeNs != null && postReadStat.mtimeNs != null
+                        ? String(openedFileStat.mtimeNs) !== String(postReadStat.mtimeNs)
+                        : Number(openedFileStat.mtimeMs) !== Number(postReadStat.mtimeMs))) {
+                  const err = new Error(`Asset file child ${srcChild} changed while reading`);
+                  err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
+                  throw err;
+                }
+                writeFileSync(dstChild, fileData);
+              } finally {
+                closeSync(fileFd);
+              }
             }
           }
         };
