@@ -139,6 +139,8 @@ function pathIsWithin(rootPath, targetPath) {
 
 function sameClassicSourceIdentity(left, right) {
   return left && right
+    && left.dev != null && left.ino != null
+    && right.dev != null && right.ino != null
     && String(left.dev) === String(right.dev)
     && String(left.ino) === String(right.ino);
 }
