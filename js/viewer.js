@@ -574,7 +574,7 @@ export class CodeViewer {
       startRow=this.baseRow+firstLocal;
       endRow=Math.min(this.totalRows,startRow+Math.max(0,count));
     }
-    const rowCount=Number(endRow-startRow);
+    const rowCount=Math.max(0,Number(endRow-startRow));
     this._ensurePool(rowCount);
     if(this.isVariableAsm()) this._renderVariable(startRow,endRow);
     else this._renderFixed(startRow,endRow);
