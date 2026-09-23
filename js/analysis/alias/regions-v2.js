@@ -39,7 +39,7 @@ function reloadAuthorityOptions(ir, options) {
   const memorySsa = options?.canonicalMemorySsa;
   if (memorySsa == null) return options;
   const ssa = options?.ssa;
-  const semanticIrDigest = semanticIrDigestFor(ir);
+  const semanticIrDigest = semanticIrDigestFor(ir, ssa);
   const identity = memorySsa?.identity;
   const scalarSsaDigest = typeof identity?.scalarSsaDigest === 'string' && identity.scalarSsaDigest.trim()
     ? identity.scalarSsaDigest.trim() : null;
