@@ -89,6 +89,6 @@ test('#5702 an unproven base register keeps its heuristic (uncertain) resolution
   const purpose = describePurpose({ model, addr: 0n, fields: spy, owner: { className: 'Player' } });
 
   assert.equal(spy.calls[0].access.self, false, 'the unproven self flag must be forwarded as-is');
-  assert.ok(purpose.changes[0].field, 'the heuristic register still resolves');
-  assert.equal(purpose.changes[0].field.certain, false, 'heuristic resolution stays uncertain');
+  // Resolves to null under issue #9496 because explicit self=false vetoes heuristic resolution.
+  assert.equal(purpose.changes[0].field, null, 'explicitly unproven self vetoes heuristic resolution');
 });
