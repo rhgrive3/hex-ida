@@ -154,7 +154,9 @@ test('the analysis entrypoint projects typed member evidence for a proven receiv
   const provider = providerFor(openProbe());
   await provider.build();
 
-  analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+  const result = analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+  assert.match(result.decompiler?.pseudocode || '', /this->field_8\s*\/\* int32_t\|uint32_t \*\//,
+    'real compiler spill/reload must carry the proven member type into pseudocode');
 
   const attempt = provider.lastAttempt();
   assert.equal(attempt.functionAddress, rows[0].address,
