@@ -521,6 +521,80 @@ test('canonical member type evidence reaches pseudocode as a non-semantic field 
     'the canonical type category should be visible without pretending it is a field name');
 });
 
+test('receiver spill/reload carries typed member projection and reused stack slot fails closed', () => {
+  const positive = createFixture({
+    lines: [
+      'str x0, [sp, #0x10]',
+      'ldr x8, [sp, #0x10]',
+      'ldr w0, [x8, #0x38]',
+      'ret',
+    ],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: positive.opts.addr,
+    functionId: 'func_spilled_typed_member',
+    canonicalValueId: receiverValue(positive.ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'spilled-typed-member-snapshot',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    categoryCandidates: ['int32_t', 'uint32_t'],
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+  positive.opts.cxxEvidence = { receiver, members:[member] };
+  const projected = decompileSemantic(positive.model, positive.opts);
+  assert.match(projected.pseudocode, /this->field_38\s*\/\* int32_t\|uint32_t \*\//);
+
+  const reused = createFixture({
+    lines: [
+      'str x0, [sp, #0x10]',
+      'str x1, [sp, #0x10]',
+      'ldr x8, [sp, #0x10]',
+      'ldr w0, [x8, #0x38]',
+      'ret',
+    ],
+  });
+  const reusedReceiver = createCppReceiverEvidence({
+    functionAddress: reused.opts.addr,
+    functionId: 'func_reused_receiver_slot',
+    canonicalValueId: receiverValue(reused.ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'reused-receiver-slot-snapshot',
+  });
+  const reusedMember = createCppMemberEvidence({
+    functionId: reusedReceiver.functionId,
+    receiverDigest: reusedReceiver.digest,
+    snapshotId: reusedReceiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    categoryCandidates: ['int32_t', 'uint32_t'],
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+  reused.opts.cxxEvidence = { receiver:reusedReceiver, members:[reusedMember] };
+  const failClosed = decompileSemantic(reused.model, reused.opts);
+  assert.doesNotMatch(failClosed.pseudocode, /this->field_38/);
+  assert.doesNotMatch(failClosed.pseudocode, /int32_t\|uint32_t/);
+});
+
 test('enhanced projection preserves canonical C++ member type annotations', () => {
   const { ir, model, opts } = createFixture({
     lines: ['ldr w0, [x0, #0x38]', 'ret'],
