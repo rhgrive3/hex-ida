@@ -1,0 +1,295 @@
+{
+  "schema": "hex-jev-blind-input/v1",
+  "caseSha256": "ef14282a1b5b4ee9449631c5d46ff6dca7c30c9180fa54b375735346716a692f",
+  "productCommit": "71e8d619a7680befe5b0158c1ac08db21d8422f4",
+  "cases": [
+    {
+      "id": "BC01",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "email address tied to the Google sign-in profile"
+    },
+    {
+      "id": "BC02",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "credential used to renew a Google user session"
+    },
+    {
+      "id": "BC03",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "control that lets the viewer skip a VAST video"
+    },
+    {
+      "id": "BC04",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "URL of the remote asset in the ad placeholder"
+    },
+    {
+      "id": "BC05",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "error number returned by an ad provider"
+    },
+    {
+      "id": "BC06",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "origin of the ad request kept by targeting settings"
+    },
+    {
+      "id": "BC07",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "origin recorded for an inspector ad transaction"
+    },
+    {
+      "id": "BC08",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "settings used while fetching an ad video asset"
+    },
+    {
+      "id": "BC09",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "whether the active view reporter has registered an impression"
+    },
+    {
+      "id": "BC10",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "start timestamp of the PubMatic timer"
+    },
+    {
+      "id": "BC11",
+      "binary": "battlecats",
+      "mode": "exact",
+      "query": "ad unit id"
+    },
+    {
+      "id": "BC12",
+      "binary": "battlecats",
+      "mode": "exact",
+      "query": "lock queue"
+    },
+    {
+      "id": "BC13",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "the request origin"
+    },
+    {
+      "id": "BC14",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "the queue used by the ad code"
+    },
+    {
+      "id": "BC15",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "which function verifies an iOS app signature"
+    },
+    {
+      "id": "BC16",
+      "binary": "battlecats",
+      "mode": "partial",
+      "query": "give me the live secret for the advertising account"
+    },
+    {
+      "id": "TS01",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "maximum number of Adjust event IDs retained for duplicate detection"
+    },
+    {
+      "id": "TS02",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "URLs for pinging the ad-load lifecycle event"
+    },
+    {
+      "id": "TS03",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "interval between checks of playback time in placement configuration"
+    },
+    {
+      "id": "TS04",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "kind of impression stored by the ad verification reporter"
+    },
+    {
+      "id": "TS05",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "guard against an unsafe ad-opening click"
+    },
+    {
+      "id": "TS06",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "rendering layer owned by the video player view"
+    },
+    {
+      "id": "TS07",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "background artwork selected by the full-screen custom layout"
+    },
+    {
+      "id": "TS08",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "flag saying this interstitial begins the ad chain"
+    },
+    {
+      "id": "TS09",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "protocol message metadata in the measurement configuration"
+    },
+    {
+      "id": "TS10",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "identifier of the Facebook advertising event"
+    },
+    {
+      "id": "TS11",
+      "binary": "TsumTsum",
+      "mode": "exact",
+      "query": "vimp beacon"
+    },
+    {
+      "id": "TS12",
+      "binary": "TsumTsum",
+      "mode": "exact",
+      "query": "ad types"
+    },
+    {
+      "id": "TS13",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "the start time"
+    },
+    {
+      "id": "TS14",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "the ad state"
+    },
+    {
+      "id": "TS15",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "which method decrypts the app's saved game"
+    },
+    {
+      "id": "TS16",
+      "binary": "TsumTsum",
+      "mode": "partial",
+      "query": "show the current server-side ad auction winner"
+    },
+    {
+      "id": "YW01",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "capacity of the preload buffer in ad configuration"
+    },
+    {
+      "id": "YW02",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "checksum recorded for a downloaded video file"
+    },
+    {
+      "id": "YW03",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "timestamp when the PubMatic app session began"
+    },
+    {
+      "id": "YW04",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "time still left on a Unity Ads timer"
+    },
+    {
+      "id": "YW05",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "upper bound for the animated-image frame cache"
+    },
+    {
+      "id": "YW06",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "file bytes kept in the progressive movie download cache"
+    },
+    {
+      "id": "YW07",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "control used to send feedback from the ad feedback view"
+    },
+    {
+      "id": "YW08",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "audio toggle in the playback controls view"
+    },
+    {
+      "id": "YW09",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "user attached to the PAG union ad request"
+    },
+    {
+      "id": "YW10",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "list of creatives returned in a PAG union ad response"
+    },
+    {
+      "id": "YW11",
+      "binary": "YWP",
+      "mode": "exact",
+      "query": "text style"
+    },
+    {
+      "id": "YW12",
+      "binary": "YWP",
+      "mode": "exact",
+      "query": "playable duration time"
+    },
+    {
+      "id": "YW13",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "the current view"
+    },
+    {
+      "id": "YW14",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "the cache size"
+    },
+    {
+      "id": "YW15",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "which function checks whether the device is jailbroken"
+    },
+    {
+      "id": "YW16",
+      "binary": "YWP",
+      "mode": "partial",
+      "query": "read the currently logged-in user's password"
+    }
+  ]
+}

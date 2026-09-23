@@ -1,0 +1,686 @@
+{
+  "schema": "hex-jev-holdout-summary/v1",
+  "productCommit": "71e8d619a7680befe5b0158c1ac08db21d8422f4",
+  "caseSha256": "ef14282a1b5b4ee9449631c5d46ff6dca7c30c9180fa54b375735346716a692f",
+  "blindResultsSha256": "fba6c62a0d1b17787389eaa19e1bfd1d2c5ceb8712070b79f9fecfa27643180f",
+  "totalCases": 48,
+  "answerableCases": 36,
+  "nonanswerableCases": 12,
+  "arms": {
+    "A_baseline": {
+      "answerableCorrect": 3,
+      "answerableN": 36,
+      "top1Accuracy": 0.08333333333333333,
+      "wilson95": [
+        0.02874861133599338,
+        0.2182669124927263
+      ],
+      "actionCorrect": 10,
+      "actionN": 48,
+      "abstainCount": 35,
+      "abstainRate": 0.7291666666666666,
+      "falseStrongCount": 7,
+      "unsafeConfidentCount": 11,
+      "nonanswerableStrongCount": 4
+    },
+    "B_deterministic_lexical": {
+      "answerableCorrect": 3,
+      "answerableN": 36,
+      "top1Accuracy": 0.08333333333333333,
+      "wilson95": [
+        0.02874861133599338,
+        0.2182669124927263
+      ],
+      "actionCorrect": 10,
+      "actionN": 48,
+      "abstainCount": 35,
+      "abstainRate": 0.7291666666666666,
+      "falseStrongCount": 7,
+      "unsafeConfidentCount": 11,
+      "nonanswerableStrongCount": 4
+    },
+    "C_G28_routed": {
+      "answerableCorrect": 3,
+      "answerableN": 36,
+      "top1Accuracy": 0.08333333333333333,
+      "wilson95": [
+        0.02874861133599338,
+        0.2182669124927263
+      ],
+      "actionCorrect": 10,
+      "actionN": 48,
+      "abstainCount": 35,
+      "abstainRate": 0.7291666666666666,
+      "falseStrongCount": 7,
+      "unsafeConfidentCount": 11,
+      "nonanswerableStrongCount": 4
+    },
+    "D_Jev_force_all": {
+      "answerableCorrect": 3,
+      "answerableN": 36,
+      "top1Accuracy": 0.08333333333333333,
+      "wilson95": [
+        0.02874861133599338,
+        0.2182669124927263
+      ],
+      "actionCorrect": 10,
+      "actionN": 48,
+      "abstainCount": 35,
+      "abstainRate": 0.7291666666666666,
+      "falseStrongCount": 7,
+      "unsafeConfidentCount": 11,
+      "nonanswerableStrongCount": 4
+    }
+  },
+  "routing": {
+    "routedCases": 0,
+    "routedAnswerable": 0,
+    "routedValidAnswerable": 0,
+    "routedChoiceCorrect": 0,
+    "routedChoicePrecision": null,
+    "rescue": 0,
+    "regression": 0,
+    "netRescue": 0,
+    "rescueIds": [],
+    "regressionIds": [],
+    "interventionPrecision": null,
+    "rescuePerAnswerable": 0,
+    "rescuePerRoutedAnswerable": null,
+    "regressionPerAnswerable": 0,
+    "regressionPerRoutedAnswerable": null,
+    "callsPerRescue": 0,
+    "unnecessaryCallsOnDetCorrect": 0
+  },
+  "forceAll": {
+    "rescueVersusB": 0,
+    "regressionVersusB": 0,
+    "netVersusB": 0,
+    "requestedCases": 42
+  },
+  "cost": {
+    "C": {
+      "httpAttempts": 0,
+      "usage": {
+        "responsesWithUsage": 0,
+        "inputTokensReported": 0,
+        "outputTokensReported": 0,
+        "attemptsWithoutUsage": 0
+      },
+      "jevLatency": {
+        "n": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null,
+        "totalMs": 0
+      }
+    },
+    "D": {
+      "httpAttempts": 42,
+      "usage": {
+        "responsesWithUsage": 0,
+        "inputTokensReported": 0,
+        "outputTokensReported": 0,
+        "attemptsWithoutUsage": 42
+      },
+      "jevLatency": {
+        "n": 42,
+        "p50Ms": 642.57,
+        "p95Ms": 817.53,
+        "maxMs": 867.88,
+        "totalMs": 26130.839999999997
+      }
+    },
+    "baseline": {
+      "pinpointLatency": {
+        "n": 48,
+        "p50Ms": 3245.4,
+        "p95Ms": 15477.66,
+        "maxMs": 38569.32,
+        "totalMs": 219393.42999999996
+      }
+    },
+    "usd": null,
+    "usdReason": "No frozen official unit price or invoice; calls and reported tokens are the cost evidence."
+  },
+  "apiErrors": 42,
+  "technicalRetries": 0,
+  "collectionErrors": 0,
+  "slices": {
+    "binary": {
+      "TsumTsum": {
+        "total": 16,
+        "answerable": 12,
+        "A_correct": 2,
+        "B_correct": 2,
+        "C_correct": 2,
+        "D_correct": 2,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 3
+      },
+      "YWP": {
+        "total": 16,
+        "answerable": 12,
+        "A_correct": 1,
+        "B_correct": 1,
+        "C_correct": 1,
+        "D_correct": 1,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 4
+      },
+      "battlecats": {
+        "total": 16,
+        "answerable": 12,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 4
+      }
+    },
+    "family": {
+      "account identity": {
+        "total": 2,
+        "answerable": 2,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "ad chain": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "ad lifecycle": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "ad targeting": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 1,
+        "B_correct": 1,
+        "C_correct": 1,
+        "D_correct": 1,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "ambiguous reference": {
+        "total": 6,
+        "answerable": 0,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      },
+      "audio control": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "buffer capacity": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "click handling": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "download cache": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "error reporting": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "event deduplication": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "event identity": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "feedback control": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "file integrity": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "identifier": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "image cache": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "impression state": {
+        "total": 2,
+        "answerable": 2,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "layout asset": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "measurement metadata": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "network asset": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "out-of-scope": {
+        "total": 6,
+        "answerable": 0,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      },
+      "playable duration": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 1,
+        "B_correct": 1,
+        "C_correct": 1,
+        "D_correct": 1,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "request actor": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "request origin": {
+        "total": 2,
+        "answerable": 2,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "response content": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "session timing": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "synchronization": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "text formatting": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "timer state": {
+        "total": 2,
+        "answerable": 2,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "tracking beacon": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 1,
+        "B_correct": 1,
+        "C_correct": 1,
+        "D_correct": 1,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "video configuration": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "video control": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "video display": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 1
+      },
+      "video timing": {
+        "total": 1,
+        "answerable": 1,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      }
+    },
+    "difficulty": {
+      "ambiguous": {
+        "total": 6,
+        "answerable": 0,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      },
+      "hard-negative": {
+        "total": 22,
+        "answerable": 22,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 5
+      },
+      "lexical-control": {
+        "total": 6,
+        "answerable": 6,
+        "A_correct": 3,
+        "B_correct": 3,
+        "C_correct": 3,
+        "D_correct": 3,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      },
+      "paraphrase": {
+        "total": 8,
+        "answerable": 8,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 0
+      },
+      "unsupported": {
+        "total": 6,
+        "answerable": 0,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      }
+    },
+    "mode": {
+      "exact": {
+        "total": 6,
+        "answerable": 6,
+        "A_correct": 3,
+        "B_correct": 3,
+        "C_correct": 3,
+        "D_correct": 3,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 2
+      },
+      "partial": {
+        "total": 42,
+        "answerable": 30,
+        "A_correct": 0,
+        "B_correct": 0,
+        "C_correct": 0,
+        "D_correct": 0,
+        "routed": 0,
+        "rescue": 0,
+        "regression": 0,
+        "unsafeC": 9
+      }
+    }
+  }
+}

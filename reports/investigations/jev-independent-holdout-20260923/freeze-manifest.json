@@ -1,0 +1,54 @@
+{
+  "schema": "hex-jev-independent-holdout-freeze/v1",
+  "frozenAtUtc": "2026-09-23T13:23:39Z",
+  "productCommit": "71e8d619a7680befe5b0158c1ac08db21d8422f4",
+  "executionCheckout": "/mnt/workspace/.dev-state/agent-work/checkouts/jev-holdout-20260923/product",
+  "executionCheckoutContract": "Detached clean HEAD for product code; evaluation-only files may be added after freeze. The shared primary checkout contains unrelated edits and is not used to execute product code.",
+  "status": "research candidate; no production Jev integration exists",
+  "sourceSha256": {
+    "js/pinpoint.js": "bafa4367606a74c6561b3a7ad761d96f6e1900915fcde48e9f6f03c463b0c463",
+    "js/goals.js": "80798ec951919d60e72e85fa699280d9e90bbbdc01229f6b9fd379a84238424c",
+    "js/pinpoint-jev-eligibility.js": "94a507cee76efc073ae8d2598349c8e5c74608e075273fccca343a28ab7431fd",
+    "reports/investigations/jev-rescue-regression-gap/analyze.mjs": "cc0257b48bf4a4102215da0b58133b829fc1ae8f6526a72324e59f4b84df2a57",
+    "reports/investigations/jev-rescue-regression-gap/evaluate.mjs": "5edf0a167bba99827a277446101fcca84e99b876c72a7f6eccf56dd04fc28438",
+    "reports/investigations/jev-rescue-regression-gap/deterministic-comparison.json": "35c06fd5f90eeeef7d498ed10b50b24dfcbc145f06c5258ffb7414ccb2e2c3ac",
+    "scripts/measure-pinpoint-confidence.mjs": "981162efedc3712cf680d86325744dee9847312626696fc559ef2d6547fee8fd",
+    "tests/fixtures/pinpoint-confidence-queries.json": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160"
+  },
+  "g28": {
+    "id": "G28_strong_only",
+    "spec": "For partial field queries only, call Jev when the frozen baseline P4 verdict is confirmed or likely; a valid label-only choice replaces top-1 preference. No verdict promotion, binary fact creation, or truth-based gating.",
+    "source": "reports/investigations/jev-rescue-regression-gap/analyze.mjs:587",
+    "routing": "partial && (baseline.currentVerdict === confirmed || baseline.currentVerdict === likely); exact, non-field, missing candidate and ambiguous verdict never route",
+    "confidenceThreshold": null,
+    "uniquenessThreshold": null,
+    "candidateLimit": "existing ranked candidates only",
+    "fallback": "Any missing key, timeout, network or HTTP failure, malformed response, model mismatch or invalid candidate preserves exact baseline top-1 and verdict",
+    "abstain": "No explicit Jev abstain decision is wired; baseline ambiguous/none verdict remains unchanged. Jev unique and confidence values are diagnostic only."
+  },
+  "jev": {
+    "endpoint": "https://api.openjev.sh/v1/systemone",
+    "model": "openjev",
+    "parameters": {"timeoutMs": 15000, "concurrency": 3, "temperature": "not set by client", "seed": "not set by client", "maxTokens": "not set by client"},
+    "promptContract": {
+      "state": {"userPhrase": "case query", "queryKind": "case mode", "candidateDescriptionsAreBinaryDerived": true},
+      "pick": "Pick the existing field most likely to be the remembered target of the user phrase. This is a forced ranking preference, not proof. Use only listed candidate IDs.",
+      "unique": "Does the user phrase uniquely identify one of these candidates without additional context?",
+      "candidateDescription": "fieldName only; c0..cN in baseline ranked order"
+    }
+  },
+  "deterministicLexical": {
+    "source": "reports/investigations/jev-rescue-regression-gap/analyze.mjs:519-539; selected parameters in deterministic-comparison.json",
+    "parameters": {"exact": 0, "extra": 0.5, "classMatch": 0, "suffix": 2},
+    "score": "10 * query-token matches in field + 0 * exact + 0.5 * max(0, field-token-count - matches) + 0 * class-token matches + 2 * suffix-match - baseline-rank * 1e-5",
+    "route": "always choose highest score for partial; exact queries retain baseline",
+    "caveat": "Exploratory benchmark-selected comparator, not a deployed production rule."
+  },
+  "evaluationArms": {
+    "A": "unchanged baseline",
+    "B": "frozen deterministic lexical comparator on partial, baseline on exact",
+    "C": "unchanged baseline plus literal G28 strong-only Jev label preference; not a deployed integration",
+    "D": "unchanged baseline plus Jev label preference on all partial rows with candidates; diagnostic force-all"
+  },
+  "routingConflict": "The shipped assessJevEligibility module requires an ambiguous verdict, whereas G28 requires a strong verdict; their intersection is empty. The old deterministic-first illustration uses detOk (ground truth) to decide calls and is not an executable production router. No production-ready combined route is claimed or invented in this evaluation."
+}
