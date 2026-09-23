@@ -223,9 +223,17 @@ function latestReturnStackLoad(ir, ret, returnRegister) {
   return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
 }
 
+function latestReturnInstruction(ir) {
+  const instructions = ir.instructions || [];
+  for (let index = instructions.length - 1; index >= 0; index--) {
+    if (instructions[index].op === 'ret') return instructions[index];
+  }
+  return null;
+}
+
 function reanchorExactStackReturn(result, opts = {}) {
   if (!result?.semanticAst || !result?.ir) return result;
-  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
+  const ret = latestReturnInstruction(result.ir);
   const returnRegister = canonicalScalarReturnRegister(result, opts);
   const found = ret ? latestReturnStackLoad(result.ir, ret, returnRegister) : null;
   if (!found?.load?.loc?.key) return result;
@@ -247,8 +255,34 @@ function reanchorExactStackReturn(result, opts = {}) {
  * statement-level source row; every other source/proof entry is preserved. */
 function reanchorRecoveredReturnSource(result, opts = {}) {
   if (!result?.ir || !result?.cAst) return result;
-  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
+  const ret = latestReturnInstruction(result.ir);
   if (!ret) return result;
+  let stackStoresByKey = null;
+  let storeLookups = 0;
+  const contributingStore = (key, fact) => {
+    if (Number.isNaN(key)) return null; // The original strict key comparison never matches NaN.
+    if (!stackStoresByKey && ++storeLookups <= 2) {
+      return (result.ir.instructions || []).find((candidate) => {
+        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
+        return candidate?.op === 'store' && candidate?.loc?.kind === 'stack'
+          && candidate.loc.key === key && candidate.row != null
+          && definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
+      }) || null;
+    }
+    if (!stackStoresByKey) {
+      stackStoresByKey = new Map();
+      for (const candidate of result.ir.instructions || []) {
+        if (candidate?.op !== 'store' || candidate?.loc?.kind !== 'stack' || candidate.row == null) continue;
+        const stores = stackStoresByKey.get(candidate.loc.key);
+        if (stores) stores.push(candidate);
+        else stackStoresByKey.set(candidate.loc.key, [candidate]);
+      }
+    }
+    return (stackStoresByKey.get(key) || []).find((candidate) => {
+      const definitionId = candidate.memDef?.definitionId ?? candidate.extra?.memoryDefinitionId ?? null;
+      return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
+    }) || null;
+  };
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
@@ -263,15 +297,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
         canonicalMemoryForwardingContextForLoad(fact, inst,
           inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
-        ? (result.ir.instructions || []).find((candidate) => {
-          const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-          return candidate?.op === 'store'
-            && candidate?.loc?.kind === 'stack'
-            && candidate.loc.key === inst.loc.key
-            && candidate.row != null
-            && definitionId != null
-            && fact.contributingDefinitionIds?.includes(String(definitionId));
-        })
+        ? contributingStore(inst.loc.key, fact)
         : null);
       if (!store || store.row == null) continue;
       if (!sourceRows.has(String(store.row))) continue;
@@ -281,15 +307,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
     const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
       canonicalMemoryForwardingContextForLoad(spillFact, load,
         load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
-      ? (result.ir.instructions || []).find((candidate) => {
-        const definitionId = candidate?.memDef?.definitionId ?? candidate?.extra?.memoryDefinitionId ?? null;
-        return candidate?.op === 'store'
-          && candidate?.loc?.kind === 'stack'
-          && candidate.loc.key === load.loc.key
-          && candidate.row != null
-          && definitionId != null
-          && spillFact.contributingDefinitionIds.includes(String(definitionId));
-      })
+      ? contributingStore(load.loc.key, spillFact)
       : null);
     if (!load || !spill) continue;
     const spillRow = String(spill.row);

@@ -314,21 +314,37 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   // `immediateDominators` keeps its published shape: null at the entry and for
   // every unreachable block. Internally the entry dominator of itself, which is
   // how `intersect` terminates.
+  // A dominator precedes its block in reverse postorder, so each block can
+  // reuse its immediate dominator's already-sorted chain via binary insertion,
+  // avoiding repeated ancestor traversal and O(chain log chain) full sorts.
+  const doms = new Map([[entry, [entry]]]);
+  for (const id of rpo) {
+    if (id === entry) continue;
+    const parent = idom.get(id);
+    const parentChain = doms.get(parent);
+    if (!parentChain) fail('semantic-cfg-invalid-dominator-chain');
+    let low = 0;
+    let high = parentChain.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (parentChain[mid] < id) low = mid + 1;
+      else high = mid;
+    }
+    const chain = parentChain.slice();
+    chain.splice(low, 0, id);
+    doms.set(id, chain);
+  }
+
   const idomOut = new Map();
   const dominators = {};
   for (const block of cfg.blocks) {
     const id = block.id;
-    if (!reachable.has(id) || id === entry) { idomOut.set(id, null); dominators[id] = [id]; continue; }
-    const chain = [id];
-    let runner = idom.get(id);
-    let guard = cfg.blocks.length + 2;
-    while (runner != null && runner !== entry) {
-      chain.push(runner);
-      runner = idom.get(runner);
-      if (guard-- <= 0) fail('semantic-cfg-invalid-dominator-chain');
+    if (!reachable.has(id) || id === entry) {
+      idomOut.set(id, null);
+      dominators[id] = [id];
+      continue;
     }
-    chain.push(entry);
-    dominators[id] = chain.sort();
+    dominators[id] = doms.get(id);
     idomOut.set(id, idom.get(id));
   }
 
