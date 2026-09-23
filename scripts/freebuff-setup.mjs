@@ -433,8 +433,38 @@ export function moveDirectoryIfMissing(src, dst, { containmentRoot = DATA_ROOT, 
     throw new Error(`freebuff setup: migration source is not a real directory: ${src}`);
   }
 
-  const stable = openStableDirectory(containmentRoot, path.dirname(dst), { fsImpl });
+  // Bind both parent directories to opened directory identities. Rename itself is
+  // pathname-based in Node, so first move the source leaf to an unpredictable
+  // staging name inside the already-opened source parent, verify its inode there,
+  // and only then publish it into the stable destination parent.
+  const sourceParent = openStableDirectory(path.dirname(src), path.dirname(src), { fsImpl });
+  let stable = null;
+  const stableSrc = path.join(sourceParent.path, path.basename(src));
+  const stage = path.join(sourceParent.path, `.hex-freebuff-migrate-${randomUUID()}`);
+  let staged = false;
+  let published = false;
+
+  const restoreStagedSource = () => {
+    if (!staged) return;
+    try {
+      fsImpl.lstatSync(stableSrc);
+      return;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return;
+    }
+    try {
+      fsImpl.renameSync(stage, stableSrc);
+      staged = false;
+    } catch {}
+  };
+
   try {
+    stable = openStableDirectory(containmentRoot, path.dirname(dst), { fsImpl });
+    const stableSrcEntry = fsImpl.lstatSync(stableSrc);
+    if (!sameDirectoryIdentity(srcEntry, stableSrcEntry)) {
+      throw new Error(`freebuff setup: migration source identity changed before move: ${src}`);
+    }
+
     const actualDst = path.join(stable.path, path.basename(dst));
     try {
       fsImpl.lstatSync(actualDst);
@@ -442,10 +472,48 @@ export function moveDirectoryIfMissing(src, dst, { containmentRoot = DATA_ROOT, 
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
-    fsImpl.renameSync(src, actualDst);
+
+    fsImpl.renameSync(stableSrc, stage);
+    staged = true;
+    const stagedEntry = fsImpl.lstatSync(stage);
+    if (!sameDirectoryIdentity(srcEntry, stagedEntry)) {
+      restoreStagedSource();
+      throw new Error(`freebuff setup: migration source identity changed during move: ${src}`);
+    }
+
+    fsImpl.renameSync(stage, actualDst);
+    staged = false;
+    published = true;
+    const publishedEntry = fsImpl.lstatSync(actualDst);
+    if (!sameDirectoryIdentity(srcEntry, publishedEntry)) {
+      // Do not leave a substituted object at the persistent destination. Move it
+      // back under the stable source parent when possible, then fail closed.
+      try {
+        fsImpl.renameSync(actualDst, stage);
+        staged = true;
+        published = false;
+      } catch {}
+      restoreStagedSource();
+      throw new Error(`freebuff setup: migration source identity changed before publication: ${src}`);
+    }
     return true;
+  } catch (error) {
+    if (published) {
+      const actualDst = path.join(stable.path, path.basename(dst));
+      try {
+        const entry = fsImpl.lstatSync(actualDst);
+        if (sameDirectoryIdentity(srcEntry, entry)) {
+          fsImpl.renameSync(actualDst, stage);
+          staged = true;
+          published = false;
+        }
+      } catch {}
+    }
+    restoreStagedSource();
+    throw error;
   } finally {
-    try { stable.close(); } catch {}
+    try { stable?.close(); } catch {}
+    try { sourceParent.close(); } catch {}
   }
 }
 
