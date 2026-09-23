@@ -35,6 +35,7 @@ class CanonicalSemanticSsaArtifact {
   #semanticIrDigest;
   #scalarSsaDigest;
   #snapshotId;
+  #semanticIrSource;
 
   constructor(payload, binding) {
     for (const key of Object.keys(payload)) {
@@ -50,6 +51,7 @@ class CanonicalSemanticSsaArtifact {
     this.#semanticIrDigest = String(binding.semanticIrDigest);
     this.#scalarSsaDigest = String(binding.scalarSsaDigest);
     this.#snapshotId = binding.snapshotId != null ? String(binding.snapshotId) : null;
+    this.#semanticIrSource = binding.semanticIrSource ?? null;
     Object.setPrototypeOf(this, Object.prototype);
   }
 
@@ -98,6 +100,16 @@ class CanonicalSemanticSsaArtifact {
       return null;
     }
   }
+
+  static bindingForIr(value, ir) {
+    try {
+      if (value === null || typeof value !== 'object' || Array.isArray(value) || !(#producerBrand in value)
+          || value.#semanticIrSource !== ir) return null;
+      return CanonicalSemanticSsaArtifact.binding(value);
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function isCanonicalSemanticSsaProducerArtifact(artifact) {
@@ -114,6 +126,10 @@ export function canonicalSemanticSsaProducerBinding(artifact) {
   return CanonicalSemanticSsaArtifact.binding(artifact);
 }
 
+export function canonicalSemanticSsaProducerBindingForIr(artifact, ir) {
+  return CanonicalSemanticSsaArtifact.bindingForIr(artifact, ir);
+}
+
 export function canonicalSemanticSsaRowMatches(row, artifact) {
   return CanonicalSemanticSsaArtifact.matchesRow(row, artifact);
 }
@@ -127,6 +143,7 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     semanticIrDigest: stableDigest(irInput),
     scalarSsaDigest,
     snapshotId,
+    semanticIrSource: irInput,
   }));
 }
 
