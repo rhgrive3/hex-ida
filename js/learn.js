@@ -690,11 +690,17 @@ export const CHAPTERS = [
 
 const KEY = 'hexviewer.learn.v1';
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 export function loadProgress() {
   try {
     const raw = localStorage.getItem(KEY);
     const p = raw ? JSON.parse(raw) : null;
-    return (p && typeof p === 'object') ? p : {};
+    return isPlainObject(p) ? p : {};
   } catch { return {}; }
 }
 

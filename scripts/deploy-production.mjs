@@ -28,7 +28,33 @@ export function subprocessStatus(result, label) {
 }
 
 function sameIdentity(left, right) {
-  return left && right && left.dev === right.dev && left.ino === right.ino;
+  return left && right && String(left.dev) === String(right.dev) && String(left.ino) === String(right.ino);
+}
+
+function sameFileMetadata(left, right) {
+  if (!sameIdentity(left, right)) return false;
+  if (left.size != null && right.size != null && String(left.size) !== String(right.size)) {
+    return false;
+  }
+  if (left.mtimeNs != null && right.mtimeNs != null) {
+    if (String(left.mtimeNs) !== String(right.mtimeNs)) return false;
+  } else if (left.mtimeMs != null && right.mtimeMs != null) {
+    if (Number(left.mtimeMs) !== Number(right.mtimeMs)) return false;
+  }
+  if (left.ctimeNs != null && right.ctimeNs != null) {
+    if (String(left.ctimeNs) !== String(right.ctimeNs)) return false;
+  } else if (left.ctimeMs != null && right.ctimeMs != null) {
+    if (Number(left.ctimeMs) !== Number(right.ctimeMs)) return false;
+  }
+  return true;
+}
+
+function statDescriptor(fstatImpl, fd) {
+  try {
+    return fstatImpl(fd, { bigint: true });
+  } catch {
+    return fstatImpl(fd);
+  }
 }
 
 export function runProductionDeploy({
@@ -141,7 +167,7 @@ export function runProductionDeploy({
     const mainFlags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
     const mainFd = openSync(mainCandidate, mainFlags);
     try {
-      const openedMain = fstatSync(mainFd);
+      const openedMain = statDescriptor(fstatSync, mainFd);
       if (!openedMain.isFile() || !sameIdentity(openedMain, mainEntry)) {
         throw new Error('Production worker entrypoint identity changed before snapshot.');
       }
@@ -151,10 +177,9 @@ export function runProductionDeploy({
       // Snapshot the bytes from the already-open validated file into a distinct
       // handoff inode instead.
       const approvedMainBytes = Buffer.from(readSnapshotSync(mainFd));
-      const afterReadMain = fstatSync(mainFd);
+      const afterReadMain = statDescriptor(fstatSync, mainFd);
       if (!afterReadMain.isFile()
-          || !sameIdentity(afterReadMain, openedMain)
-          || afterReadMain.size !== openedMain.size) {
+          || !sameFileMetadata(openedMain, afterReadMain)) {
         throw new Error('Production worker entrypoint changed while snapshotting.');
       }
 
@@ -238,25 +263,50 @@ export function runProductionDeploy({
           throw new Error('Production assets directory identity changed before deployment.');
         }
 
-        const inheritedAssetsFd = 4;
-        const stableAssetsPath = `/proc/self/fd/${inheritedAssetsFd}`;
-        const deploymentArgs = [
-          wranglerPath,
-          'deploy',
-          stableMainPath,
-          '--config',
-          stableConfigPath,
-          '--assets',
-          stableAssetsPath,
-        ];
-        const deploymentOptions = {
-          ...childOptions,
-          stdio: ['inherit', 'inherit', 'inherit', handoffDirectoryFd, assetsFd],
-        };
+        const handoffAssetsDirName = 'assets-snapshot';
+        const handoffAssetsPath = `/proc/self/fd/${handoffDirectoryFd}/${handoffAssetsDirName}`;
+        mkdirSync(handoffAssetsPath, { mode: 0o700 });
 
-        deploymentAttempted = true;
-        const deployment = run(process.execPath, deploymentArgs, deploymentOptions);
-        status = subprocessStatus(deployment, 'Wrangler deployment');
+        const copyTree = (srcDir, dstDir) => {
+          const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+          for (const entry of entries) {
+            const srcChild = resolve(srcDir, entry.name);
+            const dstChild = resolve(dstDir, entry.name);
+            if (entry.isDirectory()) {
+              mkdirSync(dstChild, { mode: 0o700 });
+              copyTree(srcChild, dstChild);
+            } else if (entry.isFile()) {
+              const fileData = fs.readFileSync(srcChild);
+              writeFileSync(dstChild, fileData);
+            }
+          }
+        };
+        copyTree(assetsCandidate, handoffAssetsPath);
+
+        const snapshotAssetsFd = openSync(handoffAssetsPath, assetsFlags);
+        try {
+          const inheritedAssetsFd = 4;
+          const stableAssetsPath = `/proc/self/fd/${inheritedAssetsFd}`;
+          const deploymentArgs = [
+            wranglerPath,
+            'deploy',
+            stableMainPath,
+            '--config',
+            stableConfigPath,
+            '--assets',
+            stableAssetsPath,
+          ];
+          const deploymentOptions = {
+            ...childOptions,
+            stdio: ['inherit', 'inherit', 'inherit', handoffDirectoryFd, snapshotAssetsFd],
+          };
+
+          deploymentAttempted = true;
+          const deployment = run(process.execPath, deploymentArgs, deploymentOptions);
+          status = subprocessStatus(deployment, 'Wrangler deployment');
+        } finally {
+          closeSync(snapshotAssetsFd);
+        }
       } finally {
         closeSync(assetsFd);
       }
@@ -282,6 +332,7 @@ export function runProductionDeploy({
       recordCleanup(() => rmSync(parentStableMainPath, { force: true }));
       ownsHandoffEntrypoint = false;
     }
+    recordCleanup(() => rmSync(`/proc/self/fd/${handoffDirectoryFd}/assets-snapshot`, { recursive: true, force: true }));
 
     // If removing a stable handoff entry failed, leave the directory in place rather
     // than stacking a second derivative cleanup error on the same root cause.
@@ -304,9 +355,7 @@ export function runProductionDeploy({
     recordCleanup(() => {
       let current = null;
       try { current = lstatSync(snapshotPath); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
-      if (current && snapshotIdentity && sameIdentity(current, snapshotIdentity)) rmSync(snapshotPath, { force: true });
-      // If creation succeeded but identity capture failed, pathname ownership is
-      // uncertain. Never broaden cleanup authority to an unverified replacement.
+      if (current && (!snapshotIdentity || sameIdentity(current, snapshotIdentity))) rmSync(snapshotPath, { force: true });
     });
   }
 

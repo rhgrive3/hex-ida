@@ -412,7 +412,9 @@ function parseThin(bytes, opts) {
         // field (24). cryptid != 0 marks an encrypted (App Store FairPlay)
         // image: the evidence must reach the descriptor instead of the
         // hardcoded encrypted:false (#4994).
-        requireExactCommandSize(cmdsize, bits === 64 ? 24 : 20, 'LC_ENCRYPTION_INFO');
+        const expectedSize = cmd === LC_ENCRYPTION_INFO_64 ? 24 : 20;
+        const cmdLabel = cmd === LC_ENCRYPTION_INFO_64 ? 'LC_ENCRYPTION_INFO_64' : 'LC_ENCRYPTION_INFO';
+        requireExactCommandSize(cmdsize, expectedSize, cmdLabel);
         const cryptoff = r.u32(p + 8), cryptsize = r.u32(p + 12), cryptid = r.u32(p + 16);
         const cryptEnd = BigInt(cryptoff) + BigInt(cryptsize);
         if (cryptEnd > r.lengthBigInt) {

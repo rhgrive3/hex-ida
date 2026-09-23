@@ -290,9 +290,11 @@ export function outline(cfg) {
 
   let depth = 0;
   for (const n of cfg.nodes) {
+    const isLoopHeader = loopHeaders.has(n.index);
+    const isLoopLatch = loopLatches.has(n.index);
     let marker = '';
-    if (loopHeaders.has(n.index)) marker = 'loop-start';
-    else if (loopLatches.has(n.index)) marker = 'loop-end';
+    if (isLoopHeader) marker = 'loop-start';
+    else if (isLoopLatch) marker = 'loop-end';
     else if (shapeAt.has(n.index)) marker = shapeAt.get(n.index).kind;
     else if (n.isExit) marker = 'exit';
     else if (n.isJoin) marker = 'join';
@@ -304,7 +306,9 @@ export function outline(cfg) {
       succ: n.succ.map((s) => ({ to: s.to, kind: s.kind })),
       isExit: n.isExit,
     });
-    if (marker === 'loop-start' || marker === 'if' || marker === 'if-else') depth = Math.min(depth + 1, 3);
+    if (isLoopHeader && isLoopLatch) {
+      // 1-block self-loop: both header and latch, depth remains balanced
+    } else if (marker === 'loop-start' || marker === 'if' || marker === 'if-else') depth = Math.min(depth + 1, 3);
     else if (marker === 'loop-end' || marker === 'join') depth = Math.max(depth - 1, 0);
   }
   return out;

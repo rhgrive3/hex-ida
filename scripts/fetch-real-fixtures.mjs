@@ -356,9 +356,26 @@ export async function publishFixtureFile(temp, target, {
   onCleanupError = (error, details) => console.warn(`${details.target}: published replacement but could not remove backup: ${error?.message || error}`),
   directoryIdentitySnapshot = null,
   assertDirectoryIdentityImpl = assertFixtureCacheDirectoryIdentity,
+  expectedSourceIdentity = null,
 } = {}) {
   const guard = async () => {
     if (directoryIdentitySnapshot) await assertDirectoryIdentityImpl(directoryIdentitySnapshot);
+    if (expectedSourceIdentity) {
+      let tempEntry;
+      try {
+        tempEntry = await lstatImpl(temp);
+      } catch (error) {
+        const changed = new Error(`fixture source identity changed before publication: ${temp}`);
+        changed.code = 'FIXTURE_SOURCE_IDENTITY_CHANGED';
+        changed.cause = error;
+        throw changed;
+      }
+      if (tempEntry.isSymbolicLink() || !tempEntry.isFile() || !sameFileIdentity(tempEntry, expectedSourceIdentity)) {
+        const changed = new Error(`fixture source identity changed before publication: ${temp}`);
+        changed.code = 'FIXTURE_SOURCE_IDENTITY_CHANGED';
+        throw changed;
+      }
+    }
   };
   try {
     await guard();
@@ -437,6 +454,7 @@ export async function fetchFixture(name, spec, {
   let response = null;
   let output = null;
   let streamError = null;
+  let tempIdentity = null;
 
   try {
     response = await raceWithAbort(
@@ -455,6 +473,14 @@ export async function fetchFixture(name, spec, {
     await assertCacheIdentityImpl(cacheIdentity);
     output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
     output.on('error', (err) => { streamError = streamError || err; });
+    output.once('open', (fd) => {
+      try {
+        const openedStat = fs.fstatSync(fd);
+        tempIdentity = Object.freeze({ dev: String(openedStat.dev), ino: String(openedStat.ino) });
+      } catch (e) {
+        streamError = streamError || e;
+      }
+    });
     let size = 0;
     async function* validateAndHash(source) {
       for await (const chunk of source) {
@@ -469,10 +495,18 @@ export async function fetchFixture(name, spec, {
     const sha256 = hash.digest('hex');
     if (size !== spec.size) throw new Error(`${name}: size mismatch (${size} != ${spec.size})`);
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
+    if (!tempIdentity) {
+      const tempStat = await lstat(temp);
+      if (tempStat.isSymbolicLink() || !tempStat.isFile()) throw new Error(`${name}: temporary fixture is not a regular file`);
+      tempIdentity = Object.freeze({ dev: String(tempStat.dev), ino: String(tempStat.ino) });
+    }
     try {
       await verifyImpl(name, target, spec);
       await assertCacheIdentityImpl(cacheIdentity);
-      await rm(temp, { force: true });
+      const preCleanupStat = await lstat(temp);
+      if (sameFileIdentity(preCleanupStat, tempIdentity)) {
+        await rm(temp, { force: true });
+      }
       console.log(`${name}: downloaded and verified`);
       return;
     } catch (error) {
@@ -483,6 +517,7 @@ export async function fetchFixture(name, spec, {
     await publishImpl(temp, target, {
       directoryIdentitySnapshot:cacheIdentity,
       assertDirectoryIdentityImpl:assertCacheIdentityImpl,
+      expectedSourceIdentity:tempIdentity,
     });
     console.log(`${name}: downloaded and verified`);
   } catch (error) {
@@ -501,11 +536,18 @@ export async function fetchFixture(name, spec, {
     }
     try {
       await assertCacheIdentityImpl(cacheIdentity);
-      await rm(temp, { force:true });
+      if (tempIdentity) {
+        const cleanupStat = await lstat(temp);
+        if (sameFileIdentity(cleanupStat, tempIdentity)) {
+          await rm(temp, { force:true });
+        }
+      } else {
+        await rm(temp, { force:true });
+      }
     } catch (identityError) {
-      if (identityError?.code !== 'FIXTURE_CACHE_IDENTITY_CHANGED') throw identityError;
+      if (identityError?.code !== 'FIXTURE_CACHE_IDENTITY_CHANGED' && identityError?.code !== 'ENOENT') throw identityError;
     }
-    throw abortReason(signal, streamError || error);
+    throw abortReason(signal, error || streamError);
   } finally {
     deadline.clear();
   }

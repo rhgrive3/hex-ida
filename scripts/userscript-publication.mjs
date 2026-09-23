@@ -122,6 +122,17 @@ async function assertRegularPublicationInput(file, expected, io, guard = async (
   await guard();
 }
 
+async function assertStageIdentity(stagePath, expectedIdentity, io, guard = async () => {}) {
+  await guard();
+  const stat = await io.lstat(stagePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`userscript-publication-non-regular-stage:${stagePath}`);
+  const currentIdentity = entryIdentity(stat);
+  if (!currentIdentity || String(currentIdentity.dev) !== String(expectedIdentity.dev) || String(currentIdentity.ino) !== String(expectedIdentity.ino)) {
+    throw new Error(`userscript-publication-stage-identity-changed:${stagePath}`);
+  }
+  await guard();
+}
+
 // Never truncate an existing generated file before the replacement has been
 // written, synced and read back. A directory-sync failure still fails the build.
 export async function writeFileVerified(file, content, { io = fs, containmentRoot } = {}) {
@@ -132,6 +143,7 @@ export async function writeFileVerified(file, content, { io = fs, containmentRoo
   const staged = await stageFile(file, content, io, guard);
   try {
     await guard();
+    await assertStageIdentity(staged.path, staged.identity, io, guard);
     await io.rename(staged.path, file);
     await guard();
     await syncDirectory(directory, io, guard);
@@ -196,6 +208,7 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     for (const [index, record] of records.entries()) {
       await assertRegularPublicationInput(record.file, entries[index].expected, io, guard);
       await guard();
+      await assertStageIdentity(record.temporary, record.temporaryIdentity, io, guard);
       await io.rename(record.temporary, record.file);
       record.temporary = null;
       record.temporaryIdentity = null;

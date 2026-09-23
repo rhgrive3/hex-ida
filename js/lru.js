@@ -25,7 +25,7 @@ export class LRU {
       this.map.delete(this.map.keys().next().value);
     }
   }
-  delete(key) { this.map.delete(key); }
+  delete(key) { return this.map.delete(key); }
   clear() { this.map.clear(); }
   get size() { return this.map.size; }
 }

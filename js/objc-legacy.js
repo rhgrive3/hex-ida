@@ -165,9 +165,10 @@ export function sanitizePointer(v, base, pointerFormat = null) {
   if (format === 2 || format === 6) {
     if (((v >> 63n) & 1n) !== 0n) return null;
     const target = v & 0xfffffffffn;
-    if (format === 6) return base == null ? null : BigInt(base) + target;
     const high8 = (v >> 36n) & 0xffn;
-    return target | (high8 << 56n);
+    const reconstructed = target | (high8 << 56n);
+    if (format === 6) return base == null ? null : BigInt(base) + reconstructed;
+    return reconstructed;
   }
   /* ARM64E chained fixup formats (dyld_chained_ptr_arm64e_*). They share auth /
      bind bit placement with each other, not with format 2/6: bind = bit 62,
