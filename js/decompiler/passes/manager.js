@@ -52,7 +52,20 @@ function isDeepImmutable(value) {
       if ('value' in descriptor) stack.push(descriptor.value);
     }
   }
-  deepImmutableCache.set(value, immutable);
+  if (immutable) {
+    // Every traversed object is itself deep-immutable too. Cache the whole
+    // certified subgraph, not just the entry root: pass state commonly keeps
+    // many frozen wrapper roots that share canonical IR descendants, and
+    // root-only caching makes each wrapper re-walk the same large graph.
+    // `true` is permanent because a fully frozen plain-data graph cannot gain
+    // a mutable descendant.
+    for (const current of seen) deepImmutableCache.set(current, true);
+  } else {
+    // A stale false only causes an unnecessary rollback snapshot, never an
+    // unsafe skip, so retaining the existing root-only negative cache remains
+    // conservative when callers freeze mutable state later.
+    deepImmutableCache.set(value, false);
+  }
   return immutable;
 }
 
