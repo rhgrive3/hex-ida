@@ -143,13 +143,28 @@ function canonicalSortText(value) {
 
 function typedIdentityText(root) {
   const active = new Set();
+  // Shared sub-objects (definition shapes, ranges, metadata) recur thousands of
+  // times in one IR shape. Nothing mutates during this synchronous call, so an
+  // object's text is a pure function of the object: encode it once per call.
+  const memo = new Map();
   const visit = (value) => {
-    if (value != null && typeof value === 'object' && DEEPLY_FROZEN_CACHE.get(value) === true) {
+    if (value != null && typeof value === 'object') {
+      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+        if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+        const cached = FROZEN_IDENTITY_TEXT.get(value);
+        if (cached !== undefined) return cached;
+        const memoized = memo.get(value);
+        if (memoized !== undefined) return memoized;
+        const text = encode(value);
+        memo.set(value, text);
+        if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+        return text;
+      }
       if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
-      const cached = FROZEN_IDENTITY_TEXT.get(value);
-      if (cached !== undefined) return cached;
+      const memoized = memo.get(value);
+      if (memoized !== undefined) return memoized;
       const text = encode(value);
-      if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+      memo.set(value, text);
       return text;
     }
     return encode(value);
@@ -775,4 +790,4 @@ export function canonicalAnalysisIdentity(context = {}) {
   return { identity, valid: true, reason: null };
 }
 
-export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS };
+export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS, fastJsonTextDigest };
