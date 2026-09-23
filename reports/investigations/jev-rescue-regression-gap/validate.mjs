@@ -101,6 +101,17 @@ for (const a of strong.arms) {
   assert.ok(a.newlyBrokenStrong >= 0);
 }
 
+// false-strong accounting is top-correctness accounting, not verdict-label promotion.
+const baselineFalseStrong = matrix.filter((r) => r.strong && !r.baselineCorrect).length;
+const g28FalseStrongAfter = matrix.filter((r) => r.strong && !r.jevCorrect).length;
+assert.equal(baselineFalseStrong, 67);
+assert.equal(g28FalseStrongAfter, 39);
+assert.equal(g28FalseStrongAfter - baselineFalseStrong, -28);
+for (const g of holdout.allGatesFullCorpus) {
+  assert.equal(g.verdictPromotions, 0, `verdict promotions ${g.gateId}`);
+  assert.ok(!('falseStrongDelta' in g), `ambiguous falseStrongDelta removed for ${g.gateId}`);
+}
+
 // no secrets
 for (const file of ['rows.jsonl', 'row-classification.jsonl', 'manifest.json', 'README.md',
   'evaluation-summary.json', 'feature-summary.json', 'rescue-cases.jsonl', 'regression-cases.jsonl']) {
@@ -131,7 +142,7 @@ for (const f of [
   'repeated-call-results.json', 'deterministic-comparison.json',
   'oracle-ceilings.json', 'latency-summary.json', 'evaluation-summary.json',
   'strong-override-arms.json', 'repeat-targets.json',
-  'manifest.json', 'validate.mjs', 'analyze.mjs', 'evaluate.mjs', 'repeat.mjs',
+  'manifest.json', 'validate.mjs', 'analyze.mjs', 'evaluate.mjs', 'repeat.mjs', 'replay.mjs',
 ]) {
   assert.ok(fs.existsSync(path.join(HERE, f)), `missing artifact: ${f}`);
 }
@@ -152,7 +163,14 @@ assert.ok(fullG28);
 assert.equal(fullG28.wrongToCorrect, 29);
 assert.equal(fullG28.correctToWrong, 1);
 assert.equal(fullG28.overallTop1Projected, 310);
-assert.equal(evaluation.verdict?.classification, 'CONDITIONAL_GO');
+assert.equal(evaluation.verdict?.classification, 'RESEARCH_ONLY');
+assert.equal(evaluation.verdict?.falseStrongAccounting?.baselinePartial, 67);
+assert.equal(evaluation.verdict?.falseStrongAccounting?.g28AfterPartial, 39);
+assert.equal(evaluation.verdict?.falseStrongAccounting?.delta, -28);
+assert.equal(evaluation.verdict?.falseStrongAccounting?.verdictPromotions, 0);
+assert.ok(!('overallTop1Projected' in h1), 'cross-binary subset metric must not claim full-corpus overall top1');
+assert.equal(h1.exactPlusEvaluatedPartial, 267, 'explicit exact+evaluated-partial diagnostic');
+assert.match(holdout.protocol.queryFamily, /diagnostic only/i);
 
 // repeated-call: regressions must not be discarded
 const rep = read('repeated-call-results.json');
