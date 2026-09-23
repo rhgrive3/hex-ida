@@ -8,6 +8,7 @@ import { enhanceSemanticDecompilation as enhanceCore } from '../../js/decompiler
 import { recoverHighVariables } from '../../js/decompiler/types/high-variables.js';
 import { inferSemanticTypes } from '../../js/decompiler/type-recovery.js';
 import {
+  createCppMemberEvidence,
   createCppReceiverEvidence,
   createCppClassIdentity,
   createCppVirtualSlotEvidence,
@@ -482,6 +483,125 @@ test('authoritative field name metadata: this->field_38 becomes this->m_health',
   assert.match(code, /this->m_health/);
   // Unknown offset keeps hex field_40 without fabricating fake names
   assert.match(code, /this->field_40/);
+});
+
+test('canonical member type evidence reaches pseudocode as a non-semantic field annotation', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_typed_member',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'typed-member-snapshot',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: 'typed-member-snapshot',
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    categoryCandidates: ['int32_t', 'uint32_t'],
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+
+  opts.cxxEvidence = { receiver, members:[member] };
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /this->field_38\\s*\\/\\* int32_t\\|uint32_t \\*\\//,
+    'the canonical type category should be visible without pretending it is a field name');
+});
+
+test('enhanced projection preserves canonical C++ member type annotations', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_typed_member_pipeline',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'typed-member-pipeline-snapshot',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: 'typed-member-pipeline-snapshot',
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    categoryCandidates: ['int32_t', 'uint32_t'],
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+
+  opts.cxxEvidence = { receiver, members:[member] };
+  const seed = decompileSemantic(model, opts);
+  const enhanced = enhanceCore(seed, model, opts);
+  assert.ok(enhanced);
+  assert.match(enhanced.pseudocode, /this->field_38\\s*\\/\\* int32_t\\|uint32_t \\*\\//);
+});
+
+test('canonical member evidence cannot be replayed onto another receiver', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+
+  const currentReceiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_current_receiver',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'current-receiver-snapshot',
+  });
+  const otherReceiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_other_receiver',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'other-receiver-snapshot',
+  });
+  const replayedMember = createCppMemberEvidence({
+    functionId: otherReceiver.functionId,
+    receiverDigest: otherReceiver.digest,
+    snapshotId: 'other-receiver-snapshot',
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    categoryCandidates: ['int32_t', 'uint32_t'],
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+
+  opts.cxxEvidence = { receiver: currentReceiver, members:[replayedMember] };
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /this->field_38/);
+  assert.doesNotMatch(result.pseudocode, /int32_t\\|uint32_t/,
+    'member evidence bound to another receiver must fail closed at projection time');
 });
 
 test('high variable naming: recoverHighVariables names argument 0 as this with confidence 0.95', () => {
