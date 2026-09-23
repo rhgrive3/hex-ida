@@ -7,6 +7,7 @@ import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import {
   buildSemanticSsa,
   canonicalSemanticSsaProducerBinding,
+  canonicalSemanticSsaProducerBindingForIr,
 } from '../../js/semantics/ssa/index.js';
 
 test('canonical semantic SSA exposes only its already-bound producer digests', () => {
@@ -35,6 +36,12 @@ test('canonical semantic SSA exposes only its already-bound producer digests', (
   assert.equal(binding.functionId, functionId);
   assert.equal(binding.semanticIrDigest, stableDigest(ir));
   assert.equal(binding.scalarSsaDigest, stableDigest(ssa));
+  assert.deepEqual(canonicalSemanticSsaProducerBindingForIr(ssa, ir), binding);
+  assert.equal(
+    canonicalSemanticSsaProducerBindingForIr(ssa, { ...ir }),
+    null,
+    'producer digest authority is bound to the exact Semantic IR object',
+  );
   assert.equal(
     canonicalSemanticSsaProducerBinding({ ...ssa }),
     null,

@@ -1,5 +1,8 @@
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
-import { isCanonicalMemorySsaProducerArtifact } from './build.js';
+import {
+  canonicalMemorySsaProducerMatchesSemanticIr,
+  isCanonicalMemorySsaProducerArtifact,
+} from './build.js';
 
 /*
  * Exact identity forwarding for one narrow case that byte forwarding cannot
@@ -120,7 +123,8 @@ function semanticIrMatches(memorySsa, ir) {
       || String(ir.functionId ?? '') !== String(memorySsa.functionId ?? '')
       || typeof memorySsa.identity?.semanticIrDigest !== 'string'
       || !memorySsa.identity.semanticIrDigest
-      || stableDigest(ir) !== memorySsa.identity.semanticIrDigest) return false;
+      || (!canonicalMemorySsaProducerMatchesSemanticIr(memorySsa, ir)
+        && stableDigest(ir) !== memorySsa.identity.semanticIrDigest)) return false;
   const canonical = memorySsa.canonicalIrIdentity;
   return record(canonical)
     && String(canonical.functionId ?? '') === String(ir.functionId ?? '')
