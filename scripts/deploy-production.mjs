@@ -143,14 +143,39 @@ export function runProductionDeploy({
     try {
       const openedMain = fstatSync(mainFd);
       if (!openedMain.isFile() || !sameIdentity(openedMain, mainEntry)) {
-        throw new Error('Production worker entrypoint identity changed before lock.');
+        throw new Error('Production worker entrypoint identity changed before snapshot.');
       }
+
+      // A hardlink would only stabilize the inode name: in-place writes through
+      // the workspace path would still mutate the bytes Wrangler later reads.
+      // Snapshot the bytes from the already-open validated file into a distinct
+      // handoff inode instead.
+      const approvedMainBytes = Buffer.from(readSnapshotSync(mainFd));
+      const afterReadMain = fstatSync(mainFd);
+      if (!afterReadMain.isFile()
+          || !sameIdentity(afterReadMain, openedMain)
+          || afterReadMain.size !== openedMain.size) {
+        throw new Error('Production worker entrypoint changed while snapshotting.');
+      }
+
       parentStableMainPath = `/proc/self/fd/${handoffDirectoryFd}/${HANDOFF_ENTRY_NAME}`;
-      linkSync(mainCandidate, parentStableMainPath);
+      const stableMainFd = openSync(parentStableMainPath, 'wx', 0o400);
       ownsHandoffEntrypoint = true;
+      try {
+        writeFileSync(stableMainFd, approvedMainBytes);
+      } finally {
+        closeSync(stableMainFd);
+      }
+
       const stableMainEntry = lstatSync(parentStableMainPath);
-      if (stableMainEntry.isSymbolicLink() || !stableMainEntry.isFile() || !sameIdentity(stableMainEntry, openedMain)) {
-        throw new Error('Production worker entrypoint handoff is not the approved inode.');
+      if (stableMainEntry.isSymbolicLink()
+          || !stableMainEntry.isFile()
+          || sameIdentity(stableMainEntry, openedMain)) {
+        throw new Error('Production worker entrypoint handoff is not an independent regular snapshot.');
+      }
+      const stableMainBytes = Buffer.from(readSnapshotSync(parentStableMainPath));
+      if (!stableMainBytes.equals(approvedMainBytes)) {
+        throw new Error('Production worker entrypoint snapshot changed before validation.');
       }
     } finally {
       closeSync(mainFd);
