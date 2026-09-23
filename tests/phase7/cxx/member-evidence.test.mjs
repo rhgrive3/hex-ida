@@ -89,6 +89,8 @@ test('a member record requires a real access, identity, and a bounded offset and
   assert.throws(() => member({ receiverDigest: null }), /cpp-member-receiver-digest-required/);
   assert.throws(() => member({ functionId: '' }), /cpp-member-function-id-required/);
   assert.throws(() => member({ snapshotId: null }), /cpp-member-snapshot-id-required/);
+  assert.throws(() => member({ offsetBytes: null }), /cpp-member-offset-invalid/);
+  assert.throws(() => member({ offsetBytes: undefined }), /cpp-member-offset-invalid/);
   assert.throws(() => member({ offsetBytes: -8n }), /cpp-member-offset-invalid/);
   assert.throws(() => member({ sizeBytes: 65 }), /cpp-member-size-invalid/);
   assert.throws(() => member({ sizeBytes: -1 }), /cpp-member-size-invalid/);
