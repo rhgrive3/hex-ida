@@ -20,13 +20,13 @@ test('#9295 wrapper reconciliation replaces symlink leaves without touching thei
     fs.symlinkSync(victim2, path.join(root, 'freebuff-2'));
 
     const wrote = ensureWrappers(root);
-    assert.equal(wrote, 8);
+    assert.equal(wrote, 12);
     assert.equal(fs.readFileSync(victim1, 'utf8'), 'KEEP\n');
     assert.equal(fs.statSync(victim1).mode & 0o777, victim1Mode);
     assert.equal(fs.readFileSync(victim2, 'utf8'), wrapperScript('2'));
     assert.equal(fs.statSync(victim2).mode & 0o777, victim2Mode);
 
-    for (let n = 1; n <= 8; n += 1) {
+    for (let n = 1; n <= 12; n += 1) {
       const wrapper = path.join(root, `freebuff-${n}`);
       const entry = fs.lstatSync(wrapper);
       assert.equal(entry.isSymbolicLink(), false, `freebuff-${n} must not remain a symlink`);

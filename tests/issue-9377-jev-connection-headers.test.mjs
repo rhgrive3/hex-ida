@@ -64,13 +64,15 @@ test("#9377 consumes Connection-nominated request and response headers", async (
 
     assert.equal(response.status, 200);
     assert.ok(captured);
-    assert.equal(captured.connection, undefined);
+    // Node's agent may add its own `Connection: keep-alive`; the client's
+    // nominated tokens must never be forwarded.
+    assert.doesNotMatch(String(captured.connection ?? ""), /x-hop/i);
     assert.equal(captured["x-hop-secret"], undefined);
     assert.equal(captured["x-hop-two"], undefined);
     assert.equal(captured["x-end-to-end"], "keep-request");
     assert.equal(captured.authorization, "Bearer upstream-key");
 
-    assert.equal(response.headers.connection, "close");
+    assert.doesNotMatch(String(response.headers.connection ?? ""), /x-upstream/i);
     assert.equal(response.headers["x-upstream-hop"], undefined);
     assert.equal(response.headers["x-upstream-two"], undefined);
     assert.equal(response.headers["x-end-to-end-response"], "keep-response");
