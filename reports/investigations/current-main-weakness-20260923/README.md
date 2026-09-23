@@ -157,10 +157,13 @@ Findings:
   on the 16-core box (`load average ≈ 3.9`), and the isolated re-run of the same functions is
   2.3–2.4× faster. Use the *relative* distribution and the isolated tail numbers; not the absolute
   p95/p99 as a single-process latency budget.
-- The per-function watchdog is **not effective**: `--function-timeout-ms 10000` yet the measured max
-  is 149 641 ms with `state=PASS` — **147 of 2258 functions (6.5%) exceed the 10 s watchdog but none
-  is reported as `TIMEOUT`**. The downstream analysis does not honour the abort signal within a
-  function, so every recorded latency above 10 s is worker-observed wall time, not a budgeted value.
+- **`--function-timeout-ms` is a legacy/misnamed best-effort abort request, not a hard timeout.**
+  The worker sends an `AbortSignal` after 10 000 ms, but the downstream analysis can continue when it
+  does not observe that signal. In this run the measured max is 149 641 ms with `state=PASS`, and
+  **147 of 2258 functions (6.5%) exceed 10 s while none is reported as `TIMEOUT`**. Therefore this
+  setting is **not an enforced deadline, watchdog, acceptance gate, or denominator filter**; every
+  recorded latency above 10 s is worker-observed wall time. A future hard deadline would require
+  enforcement at a worker/process boundary and a separate validation run.
 - **CFG/IR structural indicators could not be read at all**: `product.query.cfg` /
   `product.query.semanticIR` returned `cfg-unavailable` for every probed function, so
   `cfgBlocks`/`irValues`/`irInstructions` are `null` and the Part B structural correlations are
