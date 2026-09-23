@@ -84,14 +84,14 @@ jobs:
           node tests/issue-5017-protected-worker-cleanup-ownership.mjs
           node tests/issue-4968-array-key-precision.mjs
           node tests/issue-5016-protected-workers-origin-guard.mjs
-      - name: Diagnostic userscript group 3 - build and syntax
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run userscript:build
-          node --check userscript/hex.user.template.js
-          node --check worker-entry.js
-          node tests/userscript-release-version.mjs
+      - name: Diagnostic userscript group 3a - build
+        run: npm run userscript:build
+      - name: Diagnostic userscript group 3b - template syntax
+        run: node --check userscript/hex.user.template.js
+      - name: Diagnostic userscript group 3c - worker syntax
+        run: node --check worker-entry.js
+      - name: Diagnostic userscript group 3d - release version
+        run: node tests/userscript-release-version.mjs
       - name: Diagnostic embed protocol
         run: node tests/userscript-embed-protocol.mjs
       - name: Diagnostic sanitize shared refs
