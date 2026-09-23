@@ -21,7 +21,7 @@ Old prompts and logs mention `/tmp/claude-0/.../scratchpad/...`. Map it like thi
 
 ## Status by item
 
-Snapshot: main `a5fd5618e` (2026-09-24 02:10 CST). Open PRs: 0. Open issues: #9550, #9534, #9523. These are new infra issues; they have not been triaged yet.
+Snapshot: main `a5fd5618e` (2026-09-24 02:10 CST). Open PRs: 0. Open issues: #9550, #9534, #9523. The user is fixing these.
 
 | Item | State | Evidence / PRs |
 |---|---|---|
@@ -62,7 +62,7 @@ Snapshot: main `a5fd5618e` (2026-09-24 02:10 CST). Open PRs: 0. Open issues: #95
 3. D C++: vtable end detection in `js/rtti.js readVtable`; the root cause of `semantic:false` on OpenTTD methods; `this` typed from vtable membership; rendering of vptr stores and virtual calls; a debug-reference holdout (Ubuntu arm64 `-dbgsym` from ddebs.ubuntu.com, or a clang `--target=aarch64-linux-gnu` + ld.lld build).
 4. F: fix the declarations (locals, fixed-width types, globals/prototypes, pseudo-intrinsic prototypes), then re-measure. Also check gotos/unstructured in the soft-float helpers with general CFG fixes only.
 5. E Jev: shortlist ≤255 → retention → freeze → new binary-disjoint holdout → prospective evaluation → decide canonical or advisory. Do this only once.
-6. Triage and fix open issues #9523, #9534, #9550.
+6. Open issues #9523, #9534, #9550: the user is fixing these. Codex should not touch them.
 7. G 160-case benchmark, H final real-game acceptance, I p50/p95/p99 over multiple runs, J freeze.
 
 ## Coordination
