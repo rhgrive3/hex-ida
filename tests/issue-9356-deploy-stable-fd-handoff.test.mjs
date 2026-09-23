@@ -28,11 +28,20 @@ function publicSnapshotPath(root) {
   return path.join(root, `.wrangler.production-snapshot-${process.pid}-fixed.jsonc`);
 }
 
+function setupFixture(root) {
+  const configPath = path.join(root, 'wrangler.jsonc');
+  fs.writeFileSync(configPath, validA);
+  fs.writeFileSync(path.join(root, 'worker-entry.js'), 'export default {};');
+  const distDir = path.join(root, 'dist');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), 'OK');
+  return { configPath, distDir };
+}
+
 test('#9356 replacement of the old snapshot pathname cannot change Wrangler config bytes', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9356-'));
   try {
-    const configPath = path.join(root, 'wrangler.jsonc');
-    fs.writeFileSync(configPath, validA);
+    const { configPath } = setupFixture(root);
     const snapshotPath = publicSnapshotPath(root);
     let calls = 0;
 
@@ -66,7 +75,7 @@ test('#9356 replacement of the old snapshot pathname cannot change Wrangler conf
     assert.equal(status, 0);
     assert.equal(calls, 2);
     assert.deepEqual(fs.readFileSync(snapshotPath), replacementB, 'cleanup must not delete another actor\'s replacement');
-    assert.deepEqual(fs.readdirSync(root).sort(), [path.basename(snapshotPath), 'wrangler.jsonc'].sort());
+    assert.deepEqual(fs.readdirSync(root).sort(), [path.basename(snapshotPath), 'dist', 'worker-entry.js', 'wrangler.jsonc'].sort());
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -75,8 +84,7 @@ test('#9356 replacement of the old snapshot pathname cannot change Wrangler conf
 test('#9356 Wrangler path-sensitive inputs are derived from the approved config root, not /proc', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9356-root-'));
   try {
-    const configPath = path.join(root, 'wrangler.jsonc');
-    fs.writeFileSync(configPath, validA);
+    const { configPath } = setupFixture(root);
     const calls = [];
     const status = runProductionDeploy({
       configPath,
@@ -87,8 +95,9 @@ test('#9356 Wrangler path-sensitive inputs are derived from the approved config 
     assert.equal(status, 0);
     assert.equal(calls.length, 2);
     const deployArgs = calls[1].args;
-    assert.equal(deployArgs[2], path.join(root, 'worker-entry.js'));
-    assert.deepEqual(deployArgs.slice(-2), ['--assets', path.join(root, 'dist')]);
+    // Under post-#9479 / #9504 contract, entrypoint and assets are snapshot handed off via /proc/self/fd
+    assert.equal(deployArgs[2], '/proc/self/fd/3/worker-entry.js');
+    assert.deepEqual(deployArgs.slice(-2), ['--assets', '/proc/self/fd/4']);
     assert.equal(deployArgs.includes('/proc/self/fd/3/wrangler.jsonc'), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -98,8 +107,7 @@ test('#9356 Wrangler path-sensitive inputs are derived from the approved config 
 test('#9356 the real validator can parse the inherited stable jsonc path', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9356-validator-'));
   try {
-    const configPath = path.join(root, 'wrangler.jsonc');
-    fs.writeFileSync(configPath, validA);
+    const { configPath } = setupFixture(root);
     let calls = 0;
     const status = runProductionDeploy({
       configPath,

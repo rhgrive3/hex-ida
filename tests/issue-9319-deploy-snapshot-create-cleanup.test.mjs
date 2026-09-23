@@ -6,13 +6,22 @@ import test from 'node:test';
 
 import { runProductionDeploy } from '../scripts/deploy-production.mjs';
 
-const validConfig = Buffer.from('{"main":"worker-entry.js","assets":{"run_worker_first":true},"d1_databases":[{"binding":"AUTH_DB","database_name":"hex-auth","database_id":"11111111-2222-3333-4444-555555555555","migrations_dir":"migrations/auth"}]}');
+const validConfig = Buffer.from('{"main":"worker-entry.js","assets":{"directory":"./dist","run_worker_first":true},"d1_databases":[{"binding":"AUTH_DB","database_name":"hex-auth","database_id":"11111111-2222-3333-4444-555555555555","migrations_dir":"migrations/auth"}]}');
+
+function setupFixture(root) {
+  const configPath = path.join(root, 'wrangler.jsonc');
+  fs.writeFileSync(configPath, validConfig);
+  fs.writeFileSync(path.join(root, 'worker-entry.js'), 'export default {};');
+  const distDir = path.join(root, 'dist');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), 'OK');
+  return { configPath, distDir };
+}
 
 test('#9319 partial snapshot write failure removes the file owned by this invocation', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9319-partial-'));
   try {
-    const configPath = path.join(root, 'wrangler.jsonc');
-    fs.writeFileSync(configPath, validConfig);
+    const { configPath } = setupFixture(root);
     let runCalls = 0;
 
     assert.throws(() => runProductionDeploy({
@@ -32,7 +41,7 @@ test('#9319 partial snapshot write failure removes the file owned by this invoca
     }), (error) => error?.code === 'ENOSPC');
 
     assert.equal(runCalls, 0);
-    assert.deepEqual(fs.readdirSync(root), ['wrangler.jsonc']);
+    assert.deepEqual(fs.readdirSync(root).sort(), ['dist', 'worker-entry.js', 'wrangler.jsonc'].sort());
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -41,8 +50,7 @@ test('#9319 partial snapshot write failure removes the file owned by this invoca
 test('#9319 EEXIST never deletes a pre-existing snapshot path', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-9319-eexist-'));
   try {
-    const configPath = path.join(root, 'wrangler.jsonc');
-    fs.writeFileSync(configPath, validConfig);
+    const { configPath } = setupFixture(root);
     const snapshotPath = path.join(
       root,
       `.wrangler.production-snapshot-${process.pid}-already-there.jsonc`,
