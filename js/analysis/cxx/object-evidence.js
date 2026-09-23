@@ -334,7 +334,15 @@ export function createCppMemberEvidence(input = {}) {
   const snapshotId = typeof input.snapshotId === 'string' && input.snapshotId.trim()
     ? input.snapshotId.trim() : fail('cpp-member-snapshot-id-required');
 
+  // A member without a location cannot be binary-grounded, and `nonNegativeBigInt`
+  // returns null rather than throwing for a missing value, so an absent offset
+  // must be rejected here — exactly as `createCppVtableEvidence` does for its own
+  // address. Otherwise the record would carry
+  // `accessProven: true, offsetBytes: null`, which claims a proven access to a
+  // place the record does not name.
+  if (input.offsetBytes == null) fail('cpp-member-offset-invalid', 'offset is required');
   const offsetBytes = nonNegativeBigInt(input.offsetBytes, 'cpp-member-offset-invalid');
+  if (offsetBytes == null) fail('cpp-member-offset-invalid', 'offset is required');
 
   const sizeBytes = Number.isSafeInteger(input.sizeBytes) && input.sizeBytes >= 0 && input.sizeBytes <= 64
     ? input.sizeBytes : fail('cpp-member-size-invalid');

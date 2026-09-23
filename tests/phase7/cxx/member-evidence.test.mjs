@@ -96,6 +96,20 @@ test('a member record requires a real access, identity, and a bounded offset and
   assert.throws(() => member({ sizeBytes: -1 }), /cpp-member-size-invalid/);
 });
 
+/**
+ * The other side of the missing-offset rule: a malformed offset is a location
+ * that was read and rejected rather than an absence, and zero is a real offset.
+ * `nonNegativeBigInt` returns `null` for a missing value, so the contract is only
+ * as strong as the explicit rejection above it.
+ */
+test('a malformed offset fails closed while a zero offset stays valid', () => {
+  assert.throws(() => member({ offsetBytes: '0x38junk' }), /cpp-member-offset-invalid/);
+  assert.throws(() => member({ offsetBytes: -1 }), /cpp-member-offset-invalid/);
+  assert.throws(() => member({ offsetBytes: 1.5 }), /cpp-member-offset-invalid/);
+  assert.equal(member({ offsetBytes: 0 }).offsetBytes, 0n);
+  assert.equal(member({ offsetBytes: '56' }).offsetBytes, 56n);
+});
+
 test('the consumer gate drops a look-alike member record', () => {
   const canonical = member();
   const forged = { ...canonical };

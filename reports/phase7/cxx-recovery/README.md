@@ -454,7 +454,7 @@ Unsupported on purpose (kept explicit, never guessed):
 | 1 — existing recovery audit + real-binary taxonomy | done (this document, `taxonomy.json`) |
 | 2 — canonical vtable / RTTI evidence | done (`rtti-evidence.js`, 23 regressions) |
 | 3 — call-site-scoped virtual dispatch | done (`virtual-dispatch.js`, 13 regressions) |
-| 4 — field / member type propagation | measured; module implemented and covered (23 regressions: 16 `member-types`, 7 `member-evidence`); canonical member evidence now reaches the projection seam; **not** rendered into the decompiler's pseudocode because the measured improvement is a category label, and rendering needs a decompiler re-baseline |
+| 4 — field / member type propagation | measured; module implemented and covered (24 regressions: 16 `member-types`, 8 `member-evidence`); canonical member evidence now reaches the projection seam; **not** rendered into the decompiler's pseudocode because the measured improvement is a category label, and rendering needs a decompiler re-baseline |
 | 5 — wiring the producer into the analysis entrypoint | done in-process (`project.js`, `semantic-function.js` seam, 24 regressions: 19 `projection`, 5 `analysis-seam`); worker-side producer lifecycle still open |
 
 Per the brief: a capability whose improvement cannot be measured is not
@@ -476,7 +476,7 @@ measurement are the deliverable.
 
 - `node tests/check.mjs` (syntax lint, 5473 files) — PASS.
 - `node tests/module-boundaries.mjs` — PASS.
-- `node tests/phase7/run.mjs --group cxx` — PASS (6/481 discovered files, 83 tests: 23 rtti-evidence, 13 virtual-dispatch, 16 member-types, 7 member-evidence, 19 projection, 5 analysis-seam).
+- `node tests/phase7/run.mjs --group cxx` — PASS (6/481 discovered files, 84 tests: 23 rtti-evidence, 13 virtual-dispatch, 16 member-types, 8 member-evidence, 19 projection, 5 analysis-seam).
 - `tests/phase8/cxx-object-decompiler-projection.test.mjs` and
   `tests/phase7/cxx-object-evidence.test.mjs` — PASS (no regression in the
   existing C++ decompiler projection).
