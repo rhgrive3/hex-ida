@@ -9,7 +9,7 @@
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
-import { currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
@@ -964,7 +964,13 @@ function semanticLocalDeclarations(types, body, ctx) {
 
 function isReceiverAlias(val, _rec, ctx) {
   const rec = currentCppReceiver(ctx?.opts || {}, ctx?.ir || null);
-  return rec ? isCppReceiverAlias(val, rec) : false;
+  return rec ? isCppReceiverAlias(val, rec, ctx?.ir || null) : false;
+}
+
+function cppMemberTypeSuffix(base, offset, ctx) {
+  const member = currentCppMember(ctx?.opts || {}, ctx?.ir || null, base, offset);
+  const label = cppMemberTypeLabel(member);
+  return label ? ` /* ${label} */` : '';
 }
 
 export function renderMemoryLocation(loc, inst, ctx) {
@@ -993,7 +999,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
         try { known = ctx.opts.fieldFor?.(addr.baseReg || addr.base?.reg || null, off, inst?.row); } catch { known = null; }
         if (!known) known = objcIvar(ctx, addr.base, off);
         const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
-        return `this->${field}`;
+        return `this->${field}${cppMemberTypeSuffix(addr.base, off, ctx)}`;
       }
     }
     return 'memory_unknown';
@@ -1008,7 +1014,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
     const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
-    return `${baseText}->${field}`;
+    const typeSuffix = isReceiver ? cppMemberTypeSuffix(base, off, ctx) : '';
+    return `${baseText}->${field}${typeSuffix}`;
   }
   return 'memory_unknown';
 }

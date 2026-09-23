@@ -62,7 +62,7 @@ function candidateName(group, index, opts = {}) {
     const explicit = opts.argNames?.[n] || null;
     if (explicit) return { name: explicit, confidence: 0.95, reason: 'explicit argument metadata' };
     const cxxRec = currentCppReceiver(opts, opts.ir);
-    if (n === 0 && cxxRec && group.values.some(value => isCppReceiverAlias(value, cxxRec))) {
+    if (n === 0 && cxxRec && group.values.some(value => isCppReceiverAlias(value, cxxRec, opts.ir))) {
       return { name: 'this', confidence: 0.95, reason: 'proven C++ receiver in canonical ABI argument 0' };
     }
     if (n === 0 && opts.receiverType) return { name: 'self', confidence: 0.92, reason: 'typed receiver in canonical ABI argument 0' };
@@ -84,7 +84,7 @@ function candidateName(group, index, opts = {}) {
     const explicit = opts.argNames?.[n] || null;
     if (explicit) return { name: explicit, confidence: 0.9, reason: 'canonical ABI live-in SSA value' };
     const cxxRec = currentCppReceiver(opts, opts.ir);
-    if (n === 0 && cxxRec && isCppReceiverAlias(v, cxxRec)) {
+    if (n === 0 && cxxRec && isCppReceiverAlias(v, cxxRec, opts.ir)) {
       return { name: 'this', confidence: 0.95, reason: 'proven C++ receiver live-in SSA value' };
     }
     if (n === 0 && opts.receiverType) return { name: 'self', confidence: 0.9, reason: 'typed canonical ABI receiver live-in' };

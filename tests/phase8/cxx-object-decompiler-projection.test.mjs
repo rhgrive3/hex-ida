@@ -10,6 +10,7 @@ import { inferSemanticTypes } from '../../js/decompiler/type-recovery.js';
 import {
   createCppReceiverEvidence,
   createCppClassIdentity,
+  createCppMemberEvidence,
   createCppVirtualSlotEvidence,
 } from '../../js/analysis/cxx/object-evidence.js';
 import { isCppReceiverAlias } from '../../js/decompiler/cxx-evidence.js';
@@ -484,6 +485,200 @@ test('authoritative field name metadata: this->field_38 becomes this->m_health',
   assert.match(code, /this->field_40/);
 });
 
+test('canonical member type evidence annotates receiver field without inventing a field name', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_member_type',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-member-type',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    signedness: null,
+    widthOnly: true,
+    readCount: 1,
+    writeCount: 0,
+    rule: 'word-access',
+  });
+  opts.cxxEvidence = { receiver, members: [member] };
+
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /this->field_38 \/\* int32_t\|uint32_t \*\//);
+});
+
+test('receiver stack spill/reload preserves typed member projection and reused slots fail closed', () => {
+  const positive = createFixture({
+    lines: [
+      'str x0, [sp, #0x10]',
+      'ldr x8, [sp, #0x10]',
+      'ldr w0, [x8, #0x38]',
+      'ret',
+    ],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: positive.opts.addr,
+    functionId: 'func_spilled_receiver_member',
+    canonicalValueId: receiverValue(positive.ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-spilled-receiver-member',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+  positive.opts.cxxEvidence = { receiver, members: [member] };
+  const projected = decompileSemantic(positive.model, positive.opts);
+  assert.ok(projected);
+  assert.match(projected.pseudocode, /this->field_38 \/\* int32_t\|uint32_t \*\//);
+
+  const reused = createFixture({
+    lines: [
+      'str x0, [sp, #0x10]',
+      'str x1, [sp, #0x10]',
+      'ldr x8, [sp, #0x10]',
+      'ldr w0, [x8, #0x38]',
+      'ret',
+    ],
+  });
+  const reusedReceiver = createCppReceiverEvidence({
+    functionAddress: reused.opts.addr,
+    functionId: 'func_reused_receiver_slot',
+    canonicalValueId: receiverValue(reused.ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-reused-receiver-slot',
+  });
+  const reusedMember = createCppMemberEvidence({
+    functionId: reusedReceiver.functionId,
+    receiverDigest: reusedReceiver.digest,
+    snapshotId: reusedReceiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+  reused.opts.cxxEvidence = { receiver: reusedReceiver, members: [reusedMember] };
+  const failClosed = decompileSemantic(reused.model, reused.opts);
+  assert.ok(failClosed);
+  assert.doesNotMatch(failClosed.pseudocode, /this->field_38/);
+  assert.doesNotMatch(failClosed.pseudocode, /\/\* int32_t\|uint32_t \*\//);
+});
+
+test('canonical member type composes with authoritative field name metadata', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_named_member_type',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-named-member-type',
+  });
+  const member = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'float',
+    typeLabel: 'float',
+    readCount: 1,
+    writeCount: 0,
+    rule: 'vector-register-flow',
+  });
+  opts.fieldFor = (_reg, off) => (off === 0x38n ? { name: 'm_health' } : null);
+  opts.cxxEvidence = { receiver, members: [member] };
+
+  const result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /this->m_health \/\* float \*\//);
+});
+
+test('member projection fails closed for forged or ambiguous evidence', () => {
+  const { ir, model, opts } = createFixture({
+    lines: ['ldr w0, [x0, #0x38]', 'ret'],
+  });
+  const receiver = createCppReceiverEvidence({
+    functionAddress: opts.addr,
+    functionId: 'func_member_fail_closed',
+    canonicalValueId: receiverValue(ir).id,
+    receiverRole: 'this',
+    nonStaticProof: { rule: 'proven-vtable-slot' },
+    abiBinding: { architecture: 'arm64', register: 'x0', argumentIndex: 0 },
+    completeness: 'complete',
+    snapshotId: 'snap-member-fail-closed',
+  });
+  const memberA = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    readCount: 1,
+    rule: 'word-access',
+  });
+  const memberB = createCppMemberEvidence({
+    functionId: receiver.functionId,
+    receiverDigest: receiver.digest,
+    snapshotId: receiver.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'float',
+    typeLabel: 'float',
+    readCount: 1,
+    rule: 'vector-register-flow',
+  });
+  opts.cxxEvidence = { receiver, members: [memberA, memberB] };
+  let result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.match(result.pseudocode, /this->field_38/);
+  assert.doesNotMatch(result.pseudocode, /\/\* (?:int32_t\|uint32_t|float) \*\//);
+
+  opts.cxxEvidence = {
+    receiver,
+    members: [{ ...memberA, typeLabel: 'forged' }],
+  };
+  result = decompileSemantic(model, opts);
+  assert.ok(result);
+  assert.doesNotMatch(result.pseudocode, /\/\* forged \*\//);
+});
+
 test('high variable naming: recoverHighVariables names argument 0 as this with confidence 0.95', () => {
   const { ir, opts } = createFixture({
     lines: ['ldr w0, [x0, #0x38]', 'ret'],
@@ -528,13 +723,25 @@ test('pipeline-core projection: enhanceSemanticDecompilation projects this->fiel
     snapshotId: 'snap-12',
   });
 
-  opts.cxxEvidence = { receiver: receiverEvidence };
+  const member = createCppMemberEvidence({
+    functionId: receiverEvidence.functionId,
+    receiverDigest: receiverEvidence.digest,
+    snapshotId: receiverEvidence.snapshotId,
+    offsetBytes: 0x38n,
+    sizeBytes: 4,
+    category: 'int32',
+    typeLabel: 'int32_t|uint32_t',
+    widthOnly: true,
+    readCount: 1,
+    rule: 'word-access',
+  });
+  opts.cxxEvidence = { receiver: receiverEvidence, members: [member] };
   const seed = decompileSemantic(model, opts);
   assert.ok(seed);
 
   const enhanced = enhanceCore(seed, model, opts);
   assert.ok(enhanced);
-  assert.match(enhanced.pseudocode, /this->field_38/);
+  assert.match(enhanced.pseudocode, /this->field_38 \/\* int32_t\|uint32_t \*\//);
 });
 
 

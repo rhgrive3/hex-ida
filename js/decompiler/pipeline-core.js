@@ -12,7 +12,7 @@ import { createProjectionIrObserver, createValidationBatch } from '../core/ident
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
-import { currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
@@ -354,7 +354,7 @@ function abiArgumentLocationForRegister(state, reg) {
 
 function argumentName(v, state) {
   const cxxRec = currentCppReceiver(state.opts, state.ir);
-  if (cxxRec && isCppReceiverAlias(v, cxxRec)) return 'this';
+  if (cxxRec && isCppReceiverAlias(v, cxxRec, state.ir)) return 'this';
   const groupId = state.highVariables?.valueToGroup?.get(v?.id);
   const group = state.highVariables?.groups?.find((g) => g.id === groupId);
   if (group?.name) return group.name;
@@ -410,12 +410,16 @@ function memoryLocation(inst, state) {
     let base = buildValue(loc.base || addr.base, state, { forAddress: true });
     const cxxRec = currentCppReceiver(state.opts, state.ir);
     const baseVal = loc.base || addr.base;
-    if (cxxRec && isCppReceiverAlias(baseVal, cxxRec)) {
+    const isReceiver = Boolean(cxxRec && isCppReceiverAlias(baseVal, cxxRec, state.ir));
+    if (isReceiver) {
       base = expr.variable('this', 64, false, origin(inst));
     }
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
-    const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
+    const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
+    const memberType = cppMemberTypeLabel(member);
+    const text = `${printExpression(access)}${memberType ? ` /* ${memberType} */` : ''}`;
+    const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text };
     (state.fieldLocations ??= new Map()).set(location, { instruction:inst, access });
     return location;
   }
