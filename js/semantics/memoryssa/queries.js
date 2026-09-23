@@ -5,7 +5,11 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { validateMemorySsa } from './validate.js';
-import { isCanonicalMemorySsaProducerArtifact } from './build.js';
+import {
+  canonicalMemorySsaProducerDigest,
+  canonicalMemorySsaProducerMatchesSemanticIr,
+  isCanonicalMemorySsaProducerArtifact,
+} from './build.js';
 import {
   CANONICAL_ACCESS_ISSUER,
   CANONICAL_ALIAS_ISSUERS,
@@ -1215,12 +1219,15 @@ function forwardingStatusFromArtifactFull(memorySsa, options) {
     if (!forwardingObject(options.ir)
         || String(options.ir.functionId ?? '') !== String(artifact.functionId)
         || String(options.ir.contractVersion ?? '') !== String(identity.semanticIrContractVersion)
-        || stableDigest(options.ir) !== String(identity.semanticIrDigest)) {
+        || (!canonicalMemorySsaProducerMatchesSemanticIr(artifact, options.ir)
+          && stableDigest(options.ir) !== String(identity.semanticIrDigest))) {
       throw new ForwardingStop('stale', 'memoryssa-canonical-ir-identity-mismatch');
     }
   }
+  const producerDigest = canonicalMemorySsaProducerDigest(artifact);
   if (typeof artifact.canonicalDigest !== 'string' || !artifact.canonicalDigest.trim()
-      || artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact)) {
+      || (producerDigest !== artifact.canonicalDigest
+        && artifact.canonicalDigest !== canonicalMemorySsaDigest(artifact))) {
     throw new ForwardingStop('stale', 'memoryssa-canonical-digest-mismatch');
   }
   // The artifact's serialized identity is not an authority for itself. Exact
