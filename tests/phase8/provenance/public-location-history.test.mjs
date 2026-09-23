@@ -382,7 +382,9 @@ test('C-AST validation batches repeated public-location consumer checks', () => 
     const seed = { semantic:true, ir:f.ir, types:{ values:new Map(), locations:new Map() },
       lines:Array.from({ length:64 }, () => ({ kind:'stmt', indent:1, text:'old = old;', row:source.row, addr:source.address })),
       warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
-    result = enhanceSemanticDecompilation(seed, f.model, { deterministicTransforms:true });
+    // Force the optional pass budget to expire so this exercises the mandatory
+    // out-of-pass fallback that dominates the FAST tail.
+    result = enhanceSemanticDecompilation(seed, f.model, { decompilerTimeBudgetMs:0 });
   } finally { globalThis.__hexPerfProbe = previousProbe; }
   const locationChecks = probe.obsList.filter(record => String(record.origin || '').includes('sealFacadeLocationHistory'));
   assert.ok(result.cAst?.body?.length);
