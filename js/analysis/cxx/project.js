@@ -65,18 +65,23 @@ function receiverBasePredicate(receiver, ir) {
   const instructions = ir?.instructions;
   if (!Array.isArray(instructions)) return null;
 
+  // Spill/reload propagation is intentionally fail-closed. A stack slot is
+  // accepted as carrying `this` only when every store we can see for that slot
+  // writes a value already proven to alias the receiver. Treating "any historic
+  // receiver store" as sufficient is unsound because compiler stack slots are
+  // routinely reused for unrelated pointers later in the function.
   for (const inst of instructions) {
     if (inst?.op !== 'store') continue;
     const loc = inst.loc ?? null;
     const base = loc?.base ?? inst.addr?.base ?? null;
     if (base?.reg !== 'sp') continue;
     const disp = loc?.disp ?? inst.addr?.disp ?? null;
+    if (disp == null) continue;
     const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
-    if (disp == null || source?.id == null) continue;
     const key = disp.toString();
-    const previous = spilled.get(key);
-    if (previous == null) spilled.set(key, [source.id]);
-    else if (!previous.includes(source.id)) previous.push(source.id);
+    const sources = spilled.get(key) ?? new Set();
+    sources.add(source?.id == null ? null : String(source.id));
+    spilled.set(key, sources);
   }
 
   for (let pass = 0; pass < 6; pass++) {
@@ -96,7 +101,7 @@ function receiverBasePredicate(receiver, ir) {
         const disp = loc?.disp ?? inst.addr?.disp ?? null;
         if (disp == null) continue;
         const sources = spilled.get(disp.toString());
-        if (!sources || !sources.some((id) => aliasIds.has(String(id)))) continue;
+        if (!sources?.size || ![...sources].every((id) => id !== null && aliasIds.has(id))) continue;
       } else {
         continue;
       }
