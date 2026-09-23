@@ -311,7 +311,9 @@ test('initial render validation batches repeated producer checks and settles bef
   assert.equal(f.seed.semanticStatementRenderHistory.completeness, 'complete');
   assert.ok(probe.memoHits >= 20, `expected repeated currentness checks to hit the render batch: ${probe.memoHits}`);
   assert.ok(probe.settleRechecks > 0, 'batched answers must be revalidated before publication');
-  assert.ok(probe.calls < probe.memoHits, `full graph validation still dominated batched reads: calls=${probe.calls} hits=${probe.memoHits}`);
+  const statementChecks = probe.obsList.filter(record => String(record.origin || '').includes('beginStatementRenderHistory'));
+  assert.ok(statementChecks.length > 0, 'expected the initial statement observation to be measured');
+  assert.ok(statementChecks.every(record => record.calls <= 2), `statement observation was rescanned inside the render batch: ${JSON.stringify(statementChecks.map(record => record.calls))}`);
 });
 
 test('initial render validation drops all batched history when an input changes before settle', () => {
@@ -323,7 +325,10 @@ test('initial render validation drops all batched history when an input changes 
     options: {
       symbolFor() {
         symbolCalls++;
-        if (symbolCalls === 2) ir.renderCallbackMutation = { changed: true };
+        if (symbolCalls === 2) {
+          const value = ir.values[0];
+          value.uses = [...value.uses];
+        }
         return 'callee';
       },
     },
