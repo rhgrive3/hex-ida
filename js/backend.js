@@ -954,10 +954,7 @@ export class Backend {
       ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
       : null;
     if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa, requestedLength, readLength, readComplete };
-    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, {
-      riscvIsa, priority: options.priority, signal: options.signal,
-      transferredOwnedBytes: read.transferredOwnedBytes === true,
-    }), options.signal ?? null);
+    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa, priority: options.priority, signal: options.signal }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result, requestedLength, readLength, readComplete };
   }
@@ -982,16 +979,7 @@ export class Backend {
       worker.onmessageerror = fail;
     }
     const id = this._disasmSeq++;
-    // readAtAddress copied these bytes into a dedicated buffer, then transferred
-    // ownership to this realm. Pass that buffer onward without copying it on
-    // the UI thread. Other callers and partial/shared views retain the copy.
-    const copy = decodeContext.transferredOwnedBytes === true
-      && bytes instanceof Uint8Array
-      && bytes.buffer instanceof ArrayBuffer
-      && bytes.byteOffset === 0
-      && bytes.byteLength === bytes.buffer.byteLength
-        ? bytes
-        : bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+    const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const priority = decodeContext.priority || 'current';
     let cleanupSignal = null;
     const promise = new Promise((resolve, reject) => {
