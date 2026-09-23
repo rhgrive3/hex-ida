@@ -26,6 +26,7 @@ import {
 import {
   SEMANTIC_SSA_BUILD_VERSION,
   buildSemanticSsa,
+  canonicalSemanticSsaProducerBinding,
   validateSemanticSsa,
 } from '../ssa/index.js';
 import {
@@ -925,8 +926,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});
   validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});
 
-  const semanticIrDigest = stableDigest(ir);
-  const scalarSsaDigest = stableDigest(ssa);
+  // buildSemanticSsa already computed and authority-bound both digests.
+  // Reuse those exact producer digests instead of serializing and hashing the
+  // same large Semantic IR and Scalar SSA graphs a second time.
+  const ssaBinding = canonicalSemanticSsaProducerBinding(ssa);
+  const semanticIrDigest = ssaBinding?.semanticIrDigest ?? stableDigest(ir);
+  const scalarSsaDigest = ssaBinding?.scalarSsaDigest ?? stableDigest(ssa);
   // A snapshot id is provenance authority for the MemorySSA artifact and for every
   // later staleness check, so it is validated as a primitive token instead of being
   // `String()`-coerced: an Array, a custom `toString()` object, a number or a boolean
