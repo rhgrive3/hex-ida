@@ -56,6 +56,10 @@ test('#9509 detects in-place same-size overwrite across read', async () => {
   try {
     const file = path.join(repo, 'worker.js');
     fs.writeFileSync(file, 'const a = 12345678;\n');
+    // File timestamps have kernel-tick granularity; age the original so the
+    // in-place overwrite below always yields a distinguishable mtime/ctime.
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(file, past, past);
     await assert.rejects(
       () => readStableRepositoryFile('worker.js', {
         rootDir: repo,
