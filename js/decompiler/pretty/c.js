@@ -179,7 +179,13 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'const': return integerText(n.value, n.bits, n.signed);
     case 'float-const': return floatText(n.value, n.bits);
     case 'var': return n.name || 'value';
-    case 'field': return `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
+    case 'field': {
+      const access = `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
+      const label = typeof n.cxxMemberTypeLabel === 'string' ? n.cxxMemberTypeLabel.trim() : '';
+      return label && label.length <= 80 && /^[A-Za-z0-9_\\[\\]| *-]+$/.test(label)
+        ? `${access} /* ${label} */`
+        : access;
+    }
     case 'index': return `${printExpression(n.base, PREC.primary, opts)}[${printExpression(n.index, 0, opts)}]`;
     case 'load': return n.location?.text || n.location?.name || `memory_${String(n.location?.key || 'unknown').replace(/[^A-Za-z0-9_]/g, '_')}`;
     case 'call': return `${n.callee || 'unknown_call'}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
