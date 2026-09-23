@@ -9,7 +9,7 @@
 import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition, mayAliasProvenance } from '../ir.js';
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
-import { currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
+import { currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
@@ -967,6 +967,16 @@ function isReceiverAlias(val, _rec, ctx) {
   return rec ? isCppReceiverAlias(val, rec) : false;
 }
 
+function cppMemberTypeSuffix(member) {
+  if (!member?.typeProven || typeof member.typeLabel !== 'string') return '';
+  const label = member.typeLabel.trim();
+  // Producer labels are presentation hints, never executable syntax. Keep the
+  // projection bounded to the small type vocabulary it issues and fail closed
+  // rather than copying arbitrary text into a C comment.
+  if (!label || label.length > 80 || !/^[A-Za-z0-9_\\[\\]| *-]+$/.test(label)) return '';
+  return ` /* ${label} */`;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) return stackName(ctx, loc);
@@ -993,7 +1003,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
         try { known = ctx.opts.fieldFor?.(addr.baseReg || addr.base?.reg || null, off, inst?.row); } catch { known = null; }
         if (!known) known = objcIvar(ctx, addr.base, off);
         const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
-        return `this->${field}`;
+        const member = currentCppMember(ctx.opts, ctx.ir, addr.base, off);
+        return `this->${field}${cppMemberTypeSuffix(member)}`;
       }
     }
     return 'memory_unknown';
@@ -1008,7 +1019,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
     const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
-    return `${baseText}->${field}`;
+    const member = isReceiver ? currentCppMember(ctx.opts, ctx.ir, base, off) : null;
+    return `${baseText}->${field}${cppMemberTypeSuffix(member)}`;
   }
   return 'memory_unknown';
 }
