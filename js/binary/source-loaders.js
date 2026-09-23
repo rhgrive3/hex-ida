@@ -1,5 +1,6 @@
 import { detectBinary } from './detect.js';
 import { parseELF } from './elf-loader.js';
+import { prefetchELFRanges } from './elf-prefetch.js';
 import { parseMachO } from './macho.js';
 import { parsePE } from './pe.js';
 import { ByteView } from './reader.js';
@@ -70,7 +71,17 @@ export async function parseELFSource(input, opts = {}, _prefix = null, rangeOpti
 
 async function parseELFSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const ranges = withSignal(rangeOptions, opts.signal);
-  const image = await parseSourceRanges(source, parseELF, opts, withInitial(prefix, ranges));
+  let initial = [{ offset: 0n, bytes: prefix }];
+  if (rangeOptions.prefetch !== false && opts.prefetch !== false) {
+    try {
+      const prefetched = await prefetchELFRanges(source, prefix, ranges);
+      if (prefetched.length > 0) initial = prefetched;
+    } catch {
+      // prefetch is best-effort optimization; fall back to normal miss/restart loop
+    }
+  }
+  const rangesWithInitial = { ...ranges, initial };
+  const image = await parseSourceRanges(source, parseELF, opts, rangesWithInitial);
   return withStrings(image, source, opts);
 }
 
