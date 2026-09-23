@@ -43,10 +43,10 @@
     "holdout": "TsumTsum+YWP partial N=110",
     "loo": "leave-one-binary-out x3"
   },
-  "verdict": "CONDITIONAL_GO",
+  "verdict": "RESEARCH_ONLY",
   "selectedGate": "G28_strong_only",
   "artifactHashes": {
-    "README.md": "ab4472087e7584bfac8d3e75475ff790e26cbd94a4f970d4d5eaf442ea482daf",
+    "README.md": "6305a3f444d779b1d3fc1a3df256ab62c250e2c4174296f823281bf64ade17d7",
     "current-main-baseline.json": "7a1ea317eb1e03f23b5fdec0d1207f5f5b0d36d74c09112e9555e036d93e59d9",
     "current-main-measurement.json": "657d9ab90d6bc6c421ae918e5fcba4f6c64a8f1e09c47984ddc4f86436d7225f",
     "row-classification.jsonl": "69e3c84e723a6877e2c53ec657bba18fe2152956f4761b66cbb74ff996abe1af",
@@ -55,24 +55,28 @@
     "feature-matrix.jsonl": "5947a45ad9e68c435d05af7968c8f1f4ff9a75e1133191cbe7099cb1e04be294",
     "feature-summary.json": "7897cf919333c44a1ad22d3715fb31d20a8ac33e85f2062d996e2b5750e28992",
     "gate-candidates.json": "35785cf78b975b8a85c0dd8a292740f85d6dd789164a014432dac7d50b5ec40c",
-    "holdout-results.json": "d6af49f8b05927338df5373edc772d8c975ae17762e0265fd775690788d43ef4",
+    "holdout-results.json": "3da4159b0d828739baad659b3ec5d6714d9233c7aada23a009fcc3df388cabee",
     "repeated-call-results.json": "8bb6cc555209d3eda9e7d8c0402cccbc3db15ab7dadf6398e3718ee3cbc3c6f9",
     "deterministic-comparison.json": "35c06fd5f90eeeef7d498ed10b50b24dfcbc145f06c5258ffb7414ccb2e2c3ac",
     "oracle-ceilings.json": "598c482e3f85ababb7336163f1c7d2d4d7aad52f19a153415d3de845cae78b8f",
     "latency-summary.json": "7ee57c4eb9a40406905fa776ed18eec1b8863c487515896ac9354095131c7a48",
-    "evaluation-summary.json": "2500ea9b860597eb3833471df532a70c399824789dfba0ce4e30f337043b2923",
+    "evaluation-summary.json": "338b1e051042bfb3dc9eb8acbf104a024199d5d4d7e703969ee2a5a342f4bb26",
     "strong-override-arms.json": "688e673adf38d5b368380300ecdad79b43daa81e97dc40ae3f502f2c94312212",
     "repeat-targets.json": "4d7991e32daead3d31ad06de7f1e4ba3ecacafc3bfc124ed75bb6a7281af993d",
-    "analyze.mjs": "81ff8559e75ec06d4cd6dc31fb8fe5ffe4e19f9fc110aea3a399ec08c978fbf3",
+    "analyze.mjs": "77e5264cb2738de503f2e6e21dd435f7da59bf9e2123c9265b5aa85d6f31e708",
     "evaluate.mjs": "5edf0a167bba99827a277446101fcca84e99b876c72a7f6eccf56dd04fc28438",
     "repeat.mjs": "d214b4bea4266522afcb895d62fa5a0e2f5d6c5d576f85749c7a88fb9e9eebab",
-    "validate.mjs": "2ab133d798fd82d15b361937e679fcf4b40478685811477cf201d653d7e60125",
-    "build-readme.mjs": "cea56645a7d08e17db34cbea7026ca12c6c69859c5177bdf4e096ed7f0bbca45"
+    "validate.mjs": "f4992ae9a66613cbc325a036e20337b1ea01d6d5af32f56eef4d0794c5bf3dc6",
+    "build-readme.mjs": "cea56645a7d08e17db34cbea7026ca12c6c69859c5177bdf4e096ed7f0bbca45",
+    "replay.mjs": "947bdd9e9dd39c2da2821e96aa512ad73380b5db0c02faf81599775259ba55ce"
   },
   "limitations": [
     "Fixture-generator and shared SDK families across binaries; not an independent free-form intent holdout",
     "No production integration in this PR",
     "Deterministic lexical screen still beats Jev on raw partial accuracy",
-    "Repeated-call stability cannot separate rescue from regression"
-  ]
+    "Repeated-call stability cannot separate rescue from regression",
+    "This commit does not establish provenance that the gate catalog was frozen before TsumTsum+YWP labels were inspected; cross-binary results are descriptive, not independent validation",
+    "Raw baseline rows and live Jev checkpoints are not committed; replay.mjs reproduces summary metrics from the committed projection only"
+  ],
+  "selectionStatus": "development-selected on BattleCats; cross-binary observed on TsumTsum+YWP; not independently validated"
 }
