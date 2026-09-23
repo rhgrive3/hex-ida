@@ -24,6 +24,7 @@ export { parseOperands, immText, opShort, condInfo, registerRole };
 function shiftText(sh) {
   if (!sh) return '';
   const n = sh.amount;
+  if (n == null && (sh.op === 'lsl' || sh.op === 'lsr' || sh.op === 'asr' || sh.op === 'ror')) return '';
   const times = n ? (isJa() ? '、さらに ' + (2 ** n) + ' 倍して' : ' then ×' + (2 ** n)) : '';
   switch (sh.op) {
     case 'lsl': return isJa()

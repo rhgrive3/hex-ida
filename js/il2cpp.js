@@ -88,7 +88,7 @@ function layoutCandidates(version) {
     {type:100,method:56,label:'24.0/24.1'},
     {type:100,method:52,label:'24.2/24.3'},
     {type:96,method:52,label:'24.4'},
-    {type:92,method:40,label:'24.5'},
+    {type:92,method:40,tokenAt:20,label:'24.5'},
   ];
   return [{type:100,method:56,label:'legacy'}];
 }
@@ -336,7 +336,7 @@ export function parseMetadataAuto(buffer,options={}){
   assertMetadataPreflight(buffer,options);
   const ctx=headerContext(buffer);
   const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
-  const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()];
+  const unique=[...new Map(candidates.reverse().map((x)=>[`${x.type}/${x.method}`,x])).values()].reverse();
   const {res}=parseMetadataCommon(buffer,unique,options);
   const expected=layoutCandidates(ctx.version)[0];
   if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);
@@ -347,7 +347,7 @@ export async function parseMetadataAutoAsync(buffer,options={}){
   assertMetadataPreflight(buffer,options);
   const ctx=headerContext(buffer);
   const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
-  const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()];
+  const unique=[...new Map(candidates.reverse().map((x)=>[`${x.type}/${x.method}`,x])).values()].reverse();
   const {res}=await parseMetadataCommonAsync(buffer,unique,options);
   const expected=layoutCandidates(ctx.version)[0];
   if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);

@@ -219,14 +219,14 @@ export function immShort(op) {
 }
 
 function shiftExpr(sh) {
-  if (!sh) return "";
+  if (!sh || sh.amount == null) return "";
   const n = sh.amount;
   switch (sh.op) {
     case "lsl": return " << " + n;
     case "lsr": return " >> " + n;
     case "asr": return " >>a " + n;
     case "ror": return " ror " + n;
-    default: return n != null ? " << " + n : "";
+    default: return " << " + n;
   }
 }
 
@@ -246,7 +246,7 @@ export function memExpr(m) {
     // A shifted index is evaluated before it is added to the base. Keep that
     // order explicit in the beginner-facing expression (the machine decoder's
     // address semantics are independent of this presentation adapter).
-    const needsGrouping = m.shift && (!EXTEND_OPS.has(m.shift.op) || m.shift.amount != null);
+    const needsGrouping = m.shift && m.shift.amount != null;
     s += " + " + (needsGrouping ? "(" + index + ")" : index);
   } else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
     s += (m.disp.value < 0n ? " - " : " + ") + immShort({ ...m.disp, value: m.disp.value < 0n ? -m.disp.value : m.disp.value });

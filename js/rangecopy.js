@@ -83,15 +83,23 @@ async function buildVariableText(app, region, sel, what, wantAsm) {
   return out.join('\n');
 }
 async function buildFixedText(app, region, sel, what, wantAsm) {
-  const spaced=!app.store.get('hexJoined'), first=Math.floor(sel.start/CHUNK_ROWS), last=Math.floor(sel.end/CHUNK_ROWS), out=[];
+  const spaced=!app.store.get('hexJoined'), isBig=typeof sel.start==='bigint'||typeof sel.end==='bigint';
+  const chunkRows=isBig?BigInt(CHUNK_ROWS):CHUNK_ROWS;
+  const selStart=isBig?BigInt(sel.start):sel.start, selEnd=isBig?BigInt(sel.end):sel.end;
+  const first=isBig?Number(selStart/chunkRows):Math.floor(selStart/chunkRows);
+  const last=isBig?Number(selEnd/chunkRows):Math.floor(selEnd/chunkRows);
+  const out=[];
   const architecture=architectureId(app,region), ctx={ gen:app.symbols.gen, symbolFor:(a)=>app.symbols.nameAt(a) };
   for(let c=first;c<=last;c++){
     if(app.store.get('currentRegion')!==region)throw new Error(t('sel.regionChanged'));
     const entry=await app.backend.fetchChunk(region.id,c,wantAsm);
     if(app.store.get('currentRegion')!==region)throw new Error(t('sel.regionChanged'));
-    const base=c*CHUNK_ROWS, from=Math.max(sel.start,base), to=Math.min(sel.end,base+CHUNK_ROWS-1);
+    const base=isBig?BigInt(c)*chunkRows:c*CHUNK_ROWS;
+    const from=isBig?(selStart>base?selStart:base):Math.max(selStart,base);
+    const chunkEnd=isBig?base+chunkRows-1n:base+CHUNK_ROWS-1;
+    const to=isBig?(selEnd<chunkEnd?selEnd:chunkEnd):Math.min(selEnd,chunkEnd);
     for(let row=from;row<=to;row++){
-      const idx=row-base, off=idx*4, avail=entry.bytes?Math.min(4,entry.bytes.length-off):0;
+      const idx=isBig?Number(row-base):row-base, off=idx*4, avail=entry.bytes?Math.min(4,entry.bytes.length-off):0;
       const hex=avail>0?bytesHex(entry.bytes,off,avail,spaced):'', mn=entry.mn?(entry.mn[idx]||''):'', ops=entry.ops?(entry.ops[idx]||''):'';
       if(what==='address')out.push(addrHex(app.viewer.rowAddress(row)));
       else if(what==='hex')out.push(hex);

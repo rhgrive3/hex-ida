@@ -137,7 +137,7 @@ function sameFileIdentity(a, b) {
   return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
 }
 
-function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
+export function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedSource = path.resolve(source);
   if (!pathIsWithin(resolvedRoot, resolvedSource) || resolvedSource === resolvedRoot) {
@@ -178,12 +178,27 @@ function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
     | (fs.constants.O_NOFOLLOW || 0);
   const parentFd = fsImpl.openSync(parent, directoryFlags);
   let fileFd = null;
-  let closed = false;
+  let fileClosed = false;
+  let parentClosed = false;
   const close = () => {
-    if (closed) return;
-    closed = true;
-    if (fileFd !== null) fsImpl.closeSync(fileFd);
-    fsImpl.closeSync(parentFd);
+    let firstError = null;
+    if (fileFd !== null && !fileClosed) {
+      try {
+        fsImpl.closeSync(fileFd);
+        fileClosed = true;
+      } catch (err) {
+        firstError = err;
+      }
+    }
+    if (!parentClosed) {
+      try {
+        fsImpl.closeSync(parentFd);
+        parentClosed = true;
+      } catch (err) {
+        if (!firstError) firstError = err;
+      }
+    }
+    if (firstError) throw firstError;
   };
   try {
     const openedParent = fsImpl.fstatSync(parentFd);
@@ -897,26 +912,69 @@ export function ensureWrappers(root = ROOT) {
   return wrote;
 }
 
-function ensureMirror() {
+export function ensureMirror({ mirrorRoot = MIRROR_ROOT, fsImpl = fs } = {}) {
   let wrote = 0;
   try {
+    let mirrorRootEntry;
+    try {
+      mirrorRootEntry = fsImpl.lstatSync(mirrorRoot);
+    } catch (e) {
+      if (e?.code === 'ENOENT') {
+        fsImpl.mkdirSync(mirrorRoot, { recursive: true });
+        mirrorRootEntry = fsImpl.lstatSync(mirrorRoot);
+      } else {
+        throw e;
+      }
+    }
+    if (mirrorRootEntry.isSymbolicLink() || !mirrorRootEntry.isDirectory()) {
+      return 0;
+    }
+
     for (const rel of MIRRORED) {
       const src = path.join(ROOT, rel);
-      const dst = path.join(MIRROR_ROOT, rel);
-      const content = fs.readFileSync(src, 'utf8');
+      const dst = path.join(mirrorRoot, rel);
+      const content = fsImpl.readFileSync(src, 'utf8');
+
+      const relDir = path.dirname(rel);
+      let cur = mirrorRoot;
+      let safe = true;
+      for (const part of relDir.split(path.sep)) {
+        if (!part || part === '.') continue;
+        cur = path.join(cur, part);
+        try {
+          const st = fsImpl.lstatSync(cur);
+          if (st.isSymbolicLink() || !st.isDirectory()) {
+            safe = false;
+            break;
+          }
+        } catch (e) {
+          if (e?.code === 'ENOENT') {
+            fsImpl.mkdirSync(cur);
+          } else {
+            safe = false;
+            break;
+          }
+        }
+      }
+      if (!safe) continue;
+
       try {
-        const st = fs.lstatSync(dst);
+        const st = fsImpl.lstatSync(dst);
         if (st.isSymbolicLink()) {
-          fs.rmSync(dst, { force: true });
+          fsImpl.rmSync(dst, { force: true });
         } else if (st.isFile()) {
-          const cur = fs.readFileSync(dst, 'utf8');
-          if (cur === content) continue;
+          const curContent = fsImpl.readFileSync(dst, 'utf8');
+          if (curContent === content) continue;
         }
       } catch {}
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
+
+      const parentDir = path.dirname(dst);
+      const parentSt = fsImpl.lstatSync(parentDir);
+      if (parentSt.isSymbolicLink() || !parentSt.isDirectory()) continue;
+
       const tmp = `${dst}.tmp-${process.pid}-${Date.now()}`;
-      fs.writeFileSync(tmp, content);
-      fs.renameSync(tmp, dst);
+      fsImpl.writeFileSync(tmp, content);
+      fsImpl.renameSync(tmp, dst);
       wrote++;
     }
   } catch {}

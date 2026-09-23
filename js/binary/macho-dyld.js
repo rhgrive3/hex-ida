@@ -148,7 +148,15 @@ function coverageAssign(image, start, end, complete) {
   };
   let wroteAssignment = false;
   for (const interval of list) {
-    if (interval.end <= from || interval.start >= to) { push(interval.start, interval.end, interval.complete); continue; }
+    if (interval.end <= from) {
+      push(interval.start, interval.end, interval.complete);
+      continue;
+    }
+    if (interval.start >= to) {
+      if (!wroteAssignment) { push(from, to, complete); wroteAssignment = true; }
+      push(interval.start, interval.end, interval.complete);
+      continue;
+    }
     if (interval.start < from) push(interval.start, from, interval.complete);
     if (!wroteAssignment) { push(from, to, complete); wroteAssignment = true; }
     if (interval.end > to) push(to, interval.end, interval.complete);

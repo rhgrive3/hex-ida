@@ -477,7 +477,8 @@ export class CodeViewer {
   selectionRange() {
     if (!this.totalRows || this.selAnchor < 0 || this.selFocus < 0) return null;
     const start = bigMin(this.selAnchor, this.selFocus), end = bigMax(this.selAnchor, this.selFocus);
-    const out = { start, end, count:end - start + 1 };
+    const count = typeof start === 'bigint' || typeof end === 'bigint' ? toRowBig(end) - toRowBig(start) + 1n : end - start + 1;
+    const out = { start, end, count };
     if (this.isVariableAsm()) {
       const first = this.variableRows[start], last = this.variableRows[end];
       if (!first || !last) return null;

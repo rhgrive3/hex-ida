@@ -52,7 +52,11 @@ function key(addr) {
     const text = addr.trim();
     if (!text) return '';
     try {
-      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return BigInt(text).toString();
+      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+        const negative = text.startsWith('-');
+        const parsed = BigInt(negative ? text.slice(1) : text);
+        return (negative ? -parsed : parsed).toString();
+      }
     } catch { /* fall through: not an address */ }
     return '';
   }
