@@ -97,10 +97,11 @@
   },
   "missingJev": 0,
   "verdict": {
-    "classification": "CONDITIONAL_GO",
-    "predicate": "G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.",
-    "holdout": {
-      "split": "development=battlecats; holdout=TsumTsum+YWP",
+    "classification": "RESEARCH_ONLY",
+    "candidatePredicate": "G28_strong_only: apply label-only Jev preference only when baseline P4 verdict is strong (confirmed|likely) on partial queries; fail-closed to baseline on any API error; never change verdict labels; never mint binary facts.",
+    "interpretation": "G28 was selected on BattleCats development data and then observed on the TsumTsum+YWP cross-binary split. This commit does not provide provenance proving the gate catalog was fixed before holdout labels were inspected, and the fixture/SDK families are shared. Treat the split as descriptive evidence, not independent validation.",
+    "holdoutObserved": {
+      "split": "development=battlecats; observed=TsumTsum+YWP",
       "selectedOn": "development with maxRegression<=1",
       "gateId": "G28_strong_only",
       "rescue": 14,
@@ -109,7 +110,7 @@
       "partialCorrectAfter": 38,
       "partialBaseline": 24
     },
-    "fullCorpus": {
+    "fullCorpusDescriptive": {
       "gateId": "G28_strong_only",
       "rescue": 29,
       "regression": 1,
@@ -119,12 +120,20 @@
       "partialAfter": 81,
       "partialBaseline": 53
     },
+    "falseStrongAccounting": {
+      "baselinePartial": 67,
+      "g28AfterPartial": 39,
+      "delta": -28,
+      "corrected": 29,
+      "newlyBroken": 1,
+      "verdictPromotions": 0
+    },
     "zeroRegression": {
-      "primarySelectionHoldout": {
+      "primarySelectionObserved": {
         "gateId": "G9_ambiguous_and_same_class_or_cov",
         "rescue": 6,
         "regression": 1,
-        "note": "Dev-selected maxReg=0 gate does NOT stay at 0 on holdout"
+        "note": "Dev-selected maxReg=0 gate does NOT stay at 0 on the cross-binary observed split"
       },
       "fullCorpusPositiveRescueWithZeroReg": false,
       "bestNearZero": {
@@ -134,19 +143,25 @@
       }
     },
     "reasons": [
-      "Holdout-positive narrow predicate (G28): 14 rescues, 0 regressions on TsumTsum+YWP",
-      "Full corpus 29 rescues / 1 regression; top1 282->310 (66.2%->72.8%); partial 53->81 (27.0%->41.3%)",
-      "No catalog gate achieves positive rescue with 0 full-corpus regression",
-      "Repeated calls: regressions are 7/7 choice-stable (consistency cannot filter them)",
-      "Deterministic lexical screen still beats Jev overall (103/4 vs 46/7); Jev-only overlap rescue = 6",
-      "Fixture generator and shared SDK families remain a holdout contamination risk \u2014 not an independent NL intent holdout",
-      "Verdict policy / binary facts unchanged; preference-only; fail-closed baseline fallback"
+      "Cross-binary observed result for G28 is 14 rescues / 0 regressions on TsumTsum+YWP, after development selection on BattleCats.",
+      "Full corpus descriptive result is 29 rescues / 1 regression; top1 282->310; partial 53->81.",
+      "No catalog gate achieves positive rescue with 0 full-corpus regression.",
+      "Repeated calls show the regression choices are stable, so consistency does not filter them.",
+      "The deterministic lexical screen still beats Jev overall on this generated corpus.",
+      "Fixture-generator/shared-SDK structure and missing pre-inspection provenance prevent treating this as an independent validation."
     ],
     "notGoFor": [
-      "force-all partial rerank (7 regressions)",
-      "ambiguous-only as production default (6 regressions on full)",
+      "production integration before an independent free-form intent holdout",
+      "force-all partial rerank",
+      "ambiguous-only as a production default",
       "verdict promotion or evidence minting from Jev"
     ],
-    "recommendation": "CONDITIONAL_GO for G28_strong_only-style strong-verdict-gated label preference as the only measured candidate; treat broader partial/ambiguous Jev as RESEARCH_ONLY. Requires independent free-form intent holdout before production merge. This PR itself is measurement-only and does not integrate production."
+    "recommendation": "RESEARCH_ONLY. Preserve G28_strong_only as the leading candidate and evaluate it once, unchanged, on a newly collected independent free-form intent holdout before reconsidering any production merge."
+  },
+  "reproducibility": {
+    "committedProjectionReplay": "node reports/investigations/jev-rescue-regression-gap/replay.mjs",
+    "rawBaselineRowsCommitted": false,
+    "rawLiveCheckpointCommitted": false,
+    "scope": "The committed projection can replay baseline/force-all/G28 summary metrics; raw live API responses and the 3.7 MB baseline rows remain external evidence and are not independently replayable from this PR alone."
   }
 }
