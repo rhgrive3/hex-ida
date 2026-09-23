@@ -49,8 +49,7 @@ function effectiveStandardInputPath(inputPath, repoRoot, { realpathSync = fs.rea
     }
     return relative.replaceAll('\\', '/');
   } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
-    throw error;
+    throw new Error(`standard graph cannot establish source identity for ${inputPath}`, { cause: error });
   }
 }
 
