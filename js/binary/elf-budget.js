@@ -5,7 +5,11 @@ export const ELF_METADATA_LIMITS = Object.freeze({
   stringBytes: 16 * 1024 * 1024,
   operations: 2_000_000,
   estimatedHeapBytes: 96 * 1024 * 1024,
-  wallClockMs: 5_000,
+  // Wall-clock stops made parse output depend on host speed (OpenMW lost
+  // symbols/types on loaded hosts). Work is strictly bounded by the deterministic
+  // count/byte/operation limits above; a wall-clock stop applies only when a
+  // caller explicitly requests an opt-in wallClockMs.
+  wallClockMs: Infinity,
 });
 
 function metadataOf(image) {
@@ -13,7 +17,11 @@ function metadataOf(image) {
   return image.metadata.elfMetadata ||= { complete:true, reasons:[] };
 }
 
-function metadataLimit(value, fallback) {
+function metadataLimit(key, value, fallback) {
+  if (key === 'wallClockMs') {
+    if (value === Infinity) return Infinity;
+    return typeof value === 'number' && (value === Infinity || (Number.isSafeInteger(value) && value >= 0)) ? value : fallback;
+  }
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
@@ -34,7 +42,7 @@ export function createELFMetadataBudget(image, options = {}) {
   const overrides = options.limits || options.metadataLimits || {};
   const limits = { ...ELF_METADATA_LIMITS, ...overrides };
   for (const key of Object.keys(ELF_METADATA_LIMITS)) {
-    limits[key] = metadataLimit(limits[key], ELF_METADATA_LIMITS[key]);
+    limits[key] = metadataLimit(key, limits[key], ELF_METADATA_LIMITS[key]);
   }
   const signal = options.signal || null;
   const started = Date.now();

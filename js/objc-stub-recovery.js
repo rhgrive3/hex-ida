@@ -160,6 +160,22 @@
       if (!code.length) break;
       relBase += BigInt(code.length);
     }
+    if (out.length >= maxStubs) {
+      budget.markTruncated?.('stubs-count-max');
+    }
+    const truncated = !!budget.truncated || out.length >= maxStubs;
+    Object.defineProperty(out, 'truncated', {
+      value: truncated,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    Object.defineProperty(out, 'truncationReason', {
+      value: truncated ? (budget.truncationReason || 'supplemental-budget-exhausted') : null,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
     return out;
   }
 
