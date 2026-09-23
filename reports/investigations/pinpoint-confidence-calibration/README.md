@@ -168,36 +168,113 @@ adopted as the production policy (field path only; location/function unchanged).
 - P4 allows `metadata + structural` 2-group likely while rejecting `structural + dataflow` (DSDA) and `dataflow + metadata` (`view frame`).
 - P4 restores 55 correct-strong verdicts without adding a single false-strong verdict anywhere (Exact 0/230, Partial 67/196, DSDA ambiguous).
 
-## Phase 3 & 4 — Finite Probe Catalog & Oracle Probe Ceiling
+## Phase 3 & 4 (v2) — Finite Probe Catalog & Oracle Probe Ceiling (final P4 baseline)
 
-### Finite Probe Catalog
-Catalog of 4,635 candidate probe evaluations across 4 production-backed families:
-- `accessor_getter_verify`: 894 evaluated, 183 useful (20.5%)
-- `class_local_method_inspect`: 1,746 evaluated, 326 useful (18.7%)
-- `shape_evidence`: 1,252 evaluated, 224 useful (17.9%)
-- `setter_verify`: 743 evaluated, 109 useful (14.7%)
-- Overall useful rate: **18.2%** (842 / 4,635).
+> Everything below is the **v2 re-measurement** (exhaustive subset search; production prior / ordering / provenance replay), fail-closed bound to `final-baseline.json`:
+> `finalBaselineSha 4ce9459d2f51163e20abb005e222bd93d88771e7` · `confidencePolicySha d626611dd11e05d22c4e26dfbf8868162a26766e` · `queriesSha256 d24150d2…98160` · `measurementGitHead 4d2c77028…` · budgets `analyze ≤ 12, probes ≤ 6, scan ≤ 2` · `baselineArtifactBound: true`.
+> Run: **426/426 queries, 52.1 min wall, 0 harness errors, 0 invariant violations** (10-invariant suite + real-binary replay parity + independent brute-force subset verification + fast-vs-reference replay equality on every synthetic subset and sampled real-binary subsets).
 
-### Oracle Comparison Table
+### Finite Probe Catalog (v2)
 
-| Metric | Baseline | Oracle B (Budget-matched) | Oracle A (Unbounded) | Gap (Oracle B - Baseline) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Top-1 Accuracy** | 282 / 426 (66.2%) | **316 / 426 (74.2%)** | **316 / 426 (74.2%)** | **+34 (+8.0%pt)** |
-| **Correct Strong** | 156 (36.6%) | 188 (44.1%) | 188 (44.1%) | +32 (+7.5%pt) |
-| **False Strong** | 67 (15.7%) | 54 (12.7%) | 56 (13.1%) | -13 (-3.0%pt) |
-| **Analyze Calls** | 2,938 (6.90/q) | 3,312 (7.77/q) | 3,480 (8.17/q) | +374 calls |
+7,720 candidate probe evaluations across 7 production-backed families:
 
-### Query Failure Taxonomy (426 Queries)
-- `PROBE-RESOLVABLE`: **156 (36.6%)** — Already resolved in baseline.
-- `BUDGET-RESOLVABLE`: **32 (7.5%)** — Rescued to correct strong within 12 analyze calls.
-- `ONLY-UNBOUNDED-RESOLVABLE`: **0 (0.0%)** — No query required >12 analyze calls to be rescued.
-- `INTENT-AMBIGUOUS`: **156 (36.6%)** — Multiple legitimate binary fields match query words (e.g. `_waitTime` vs `_totalWaitTime`); binary probes cannot resolve user intent.
-- `ANALYSIS-UNSUPPORTED`: **72 (16.9%)** — Requires whole-program / cross-class semantic analysis outside local probes.
-- `EVIDENCE-ABSENT`: **10 (2.3%)** — No differential binary evidence exists.
+| Family | Evaluated | Useful | Selectable | Decisive |
+| :-- | --: | --: | --: | --: |
+| `class_local_method_inspect` | 1,746 | 186 | 560 | 166 |
+| `scan_access_sites` | 1,252 | 28 | 131 | 22 |
+| `shape_evidence` | 1,252 | 0 | 0 | 0 |
+| `compare_constant_behavior` | 894 | 0 | 0 | 0 |
+| `value_update_rmw` | 939 | 0 | 0 | 0 |
+| `accessor_getter_verify` | 894 | 44 | 176 | 44 |
+| `setter_verify` | 743 | 9 | 43 | 9 |
+| **Total** | **7,720** | **267 (3.46%)** | **910** | **241 (3.12%)** |
 
-### Answers to Strategic Questions (Q1–Q5)
-1. **Q1 (Recoverable by probe selection)**: **34 queries** (+8.0%pt Top-1).
-2. **Q2 (Recoverable under production budget)**: **34 queries** (100% of all probe-recoverable queries).
-3. **Q3 (Unbounded theoretical ceiling)**: **316 / 426 (74.2%)**. Unbounded budget yields 0 additional queries over budget-matched oracle.
-4. **Q4 (Dominant remaining failure mode)**: **Intent Ambiguity (156 queries, 36.6%)**, followed by Analysis-Unsupported (72 queries, 16.9%).
-5. **Q5 (Value of Jev)**: **Gap is moderate (+8.0%pt)**, and capped by a firm static probe ceiling at **74.2%**. Moving beyond 74.2% requires Intent Disambiguation (UI/dialogue) or whole-program analysis, not merely scheduler intelligence.
+- Zero-cost / baseline-duplicate probes are excluded as no-ops (`selectable = 0`): for every evaluated candidate the production baseline already carries `shape_evidence`, `value_update_rmw`, and `compare_constant_behavior` evidence, so those probes cannot change any verdict (Problem G exclusion).
+- The effective families `class_local_method_inspect` + `accessor_getter_verify` + `scan_access_sites` carry **258/267 (96.6%)** of all useful probes; overall probe precision is low (7,453 useless vs 267 useful), so **selection quality, not budget, is the scarce resource**.
+
+### Oracle Comparison Table (v2 — budget arm ≡ unbounded arm)
+
+| Metric | Baseline (P4 production) | Oracle B (budget ≤ 12/6/2) | Oracle A (unbounded) | Gap (B − baseline) |
+| :-- | --: | --: | --: | --: |
+| **Top-1 accuracy** | 282 / 426 (66.2%) | **294 / 426 (69.0%)** | **294 / 426 (69.0%)** | **+12 (+2.8%pt)** |
+| **Correct strong** | 211 | **230** | **230** | **+19 (+4.5%pt)** |
+| **False strong** | 67 | **37** | **37** | **−30 (−7.0%pt)** |
+| Ambiguous | 148 | 159 | 159 | +11 |
+| Oracle sequence cost | — | 61 analyze + 5 scan total (0.155/q) | 61 analyze + 5 scan total (0.155/q) | +66 calls |
+| Budget exhaustions | — | **0 / 426** | 0 / 426 | — |
+| Max budget usage (probes/analyze/scan) | — | **3 / 3 / 1** (≤ 6/12/2) | 3 / 3 / 1 | — |
+
+Objective (lexicographic): false-strong ↓ → top-1 ↑ → correct-strong ↑ → cost ↓ → probe count ↓. Oracle A never strictly beats Oracle B (`queriesWhereUnboundedStrictlyBeatsBudget = 0` → **budgetLoss = 0**; `aStrictlyBetterThanB = 0` rows).
+
+### Phase 7 — Metrics
+
+**Accuracy & ranking**
+
+| Metric | Baseline | Oracle B | Oracle A | Δ (B − baseline) |
+| :-- | --: | --: | --: | --: |
+| Top-1 | 282 (66.2%) | 294 (69.0%) | 294 (69.0%) | +12 |
+| Correct strong | 211 | 230 | 230 | +19 |
+| False strong | 67 | 37 | 37 | −30 |
+
+**Cost**
+
+- Baseline analyze: 2,938 total, mean 6.897/query (median 5, p95 16, max 30).
+- Oracle add-on: **+61 analyze, +5 scan across all 426 queries (mean 0.155/query)**; probe cost mean 0.838 (median/p95 = 1).
+- Cost-to-first-decisive: mean 0.117/query, **max 1 probe** (p95 = 1); wall-time-to-first-decisive max 3,710 ms (mean 40.5 ms).
+- Budget exhaustions: **0**; useful-probe rate 3.46% (267/7,720), decisive rate 3.12% (241/7,720).
+
+**Confidence**
+
+| Verdict aggregate | Baseline | Oracle B | Oracle A |
+| :-- | --: | --: | --: |
+| Correct strong | 211 | **230** (+19 gained) | 230 |
+| False strong | 67 | **37** (−30 prevented) | 37 |
+| Ambiguous | 148 | 159 | 159 |
+
+**Scheduler gap (the Jev-bound number)**
+
+| Transition | Top-1 | Correct strong | False strong ↓ |
+| :-- | --: | --: | --: |
+| Baseline → Oracle B | +12 | +19 | −30 |
+| Oracle B → Oracle A | 0 | 0 | 0 |
+
+- `queriesWhereUnboundedStrictlyBeatsBudget = 0` → every oracle gain is reachable inside the production budget (max usage 3/3/1 of 6/12/2).
+- `unsupportedAnalysisCeiling = 0`; ambiguity ceiling: intent-underspecified 84, lexically-ambiguous-but-binary-resolvable 50, lexical-ambiguous total 242.
+
+### Phase 8 — Failure Taxonomy (426 queries)
+
+| Class | Count | Share | Definition (harness `category`) |
+| :-- | --: | --: | :-- |
+| `ALREADY_RESOLVED` | 211 | 49.5% | top-1 correct and strong in the production baseline |
+| `INTENT_UNDERSPECIFIED` | 84 | 19.7% | multiple candidates naturally fit the words and available probes cannot separate them |
+| `CONFIDENCE_POLICY_LIMIT` | 62 | 14.6% | truth already ranks first but no probe subset reaches a strong verdict under the confidence policy |
+| `LEXICALLY_AMBIGUOUS_BUT_BINARY_RESOLVABLE` | 50 | 11.7% | lexically ambiguous, but binary probes expose separating evidence (residual gap is ranking/confidence) |
+| `BUDGET_RESOLVABLE` | 19 | 4.5% | resolved to top-1 correct strong within the production budget |
+
+Cross-sections: lexical `AMBIGUOUS` 242 / `UNIQUE` 184; intent analysis `INTENT_UNDERSPECIFIED` 156 / `BINARY_DISTINGUISHABLE` 86 / n.a. 184. The 19 `BUDGET_RESOLVABLE` rows are exactly the +19 correct-strong gained by Oracle B (probe selection captures them 100% within budget).
+
+### Answers to Strategic Questions (Q1–Q10)
+
+1. **Q1 — Probe-recoverable at baseline (top-1):** **+12 queries (+2.8%pt)**; correct-strong +19; false-strong −30 — all gains sit inside probe selection's control.
+2. **Q2 — Recoverable within the production budget:** **100%** — Oracle B captures all of Oracle A (budgetLoss = 0, exhaustions = 0, max usage 3/3/1 of 6/12/2).
+3. **Q3 — Unbounded theoretical ceiling:** top-1 **294/426 (69.0%)**, correct-strong **230**, false-strong **37** — identical to the budget arm.
+4. **Q4 — Dominant remaining failure mode:** `INTENT_UNDERSPECIFIED` **84 (19.7%)** (largest of the 196 unresolved), then `CONFIDENCE_POLICY_LIMIT` 62, then `LEXICALLY_AMBIGUOUS_BUT_BINARY_RESOLVABLE` 50; lexical ambiguity overall 242/426 (56.8%).
+5. **Q5 — Value of Jev:** real but bounded: a **+12 / +19 / −30** scheduler gap, fully budget-capturable, capped by the static probe ceiling at **69.0% top-1**. Beyond that needs intent disambiguation (UI/dialogue) or confidence-policy work — not scheduler intelligence.
+6. **Q6 — Ordering / first-decisive efficiency:** every decisive rescue fires at **probe #1** (cost-to-first-decisive max = 1, p95 = 1; mean 0.117/query) → a family-ordered scheduler (`class_local_method_inspect` → `accessor_getter_verify` → `scan_access_sites`) captures the value; deep search is unnecessary.
+7. **Q7 — Confidence-policy ceiling:** **62 rows (14.6%)** are policy-gated (truth already rank-1, no subset reaches strong) → Phase-2-policy iteration, explicitly out of Jev's scope.
+8. **Q8 — Budget elasticity:** **zero** — relaxing to unbounded buys 0 rows (`strictA = 0`); the production budget has ~4× headroom versus oracle usage (3 probes vs cap 6, 3 analyze vs cap 12).
+9. **Q9 — Cost of the ceiling:** the oracle adds only **61 analyze + 5 scan calls total (0.155/query)**; with useful-probe precision at 3.46%, **selection quality dominates cost** — the ceiling is nearly free once probes are chosen correctly.
+10. **Q10 — Verdict (numeric gate below):** **GO** for Jev/OpenJev as the next implementation. This measurement-only task ends here — **no Jev code in this change**. Scope = capture the +12/+19/−30 gap within ≤12/≤6/≤2; intent 84 + policy 62 are separate tracks with separate owners.
+
+### Verdict — Jev / OpenJev: **GO**
+
+| Criterion (pre-registered) | Threshold | Measured | Gate |
+| :-- | :-- | :-- | :-- |
+| Correct-strong gain (B − baseline) | ≥ +10 | **+19** | PASS |
+| False-strong reduction | ≥ −10 (safety non-regression) | **−30** | PASS |
+| Unbounded strictly beats budget | = 0 rows | **0** | PASS |
+| Budget exhaustions | = 0 | **0** | PASS |
+| Harness errors / invariant violations | 0 / 0 | **0 / 0** | PASS |
+| Final-baseline binding | exact SHAs, fail-closed | bound = true, SHAs match | PASS |
+
+Conditions (scope, not blockers): (a) restrict scheduling to the effective families (96.6% of useful probes); (b) stay within 12/6/2 — measured max 3/3/1; (c) track `INTENT_UNDERSPECIFIED` (84) and `CONFIDENCE_POLICY_LIMIT` (62) outside Jev. **This task stops at the confirmed baseline + ceiling; Jev/OpenJev is not implemented here.**

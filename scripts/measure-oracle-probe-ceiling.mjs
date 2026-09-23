@@ -656,12 +656,14 @@ export async function executeProbe(probe, replay, truthMatches, baselineOutcome,
  * Exhaustive optimal subset search (Problems A/F).
  *
  * Enumerates EVERY feasible probe subset by DFS (exhaustive — Problem A).
- * The canonical subset DFS visits each applied-probe set exactly once, so no
- * memo is required for correctness: outcomes are deterministic functions of
- * the incremental per-candidate evidence (keysMap/itemsMap), and branches
- * whose evidence is fully subsumed are pruned because only cost would grow.
- * The returned state is therefore at least as good as any heuristic under
- * the shared lexicographic objective — no feasible subset is skipped.
+ * Every applied-probe subset is reached through its canonical include-path
+ * (exclude-only prefixes may re-visit the same evidence state at deeper
+ * indices — that costs redundant evaluations, never correctness: outcomes
+ * are deterministic functions of the incremental per-candidate evidence
+ * (keysMap/itemsMap)), and branches whose evidence is fully subsumed are
+ * pruned because only cost would grow. The returned state is therefore at
+ * least as good as any heuristic under the shared lexicographic objective —
+ * no feasible subset is skipped.
  * Oracle B passes the production budgets; Oracle A passes Infinity
  * constraints over the same probes, so A's feasible set is a superset of
  * B's.  verifySearchOptimal() cross-checks this search against an

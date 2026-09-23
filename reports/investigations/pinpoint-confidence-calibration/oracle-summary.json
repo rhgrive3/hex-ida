@@ -1,60 +1,292 @@
 {
-  "schema": "hex-pinpoint-oracle-ceiling/v1",
+  "schema": "hex-pinpoint-oracle-ceiling/v2",
   "metadata": {
     "totalQueries": 426,
     "exactQueries": 230,
     "partialQueries": 196,
+    "analyzedQueries": 426,
+    "harnessErrorQueries": 0,
     "productionAnalyzeBudget": 12,
-    "productionProbeBudget": 6
+    "productionProbeBudget": 6,
+    "productionScanBudget": 2,
+    "finalBaselineSha": "4ce9459d2f51163e20abb005e222bd93d88771e7",
+    "baselineArtifactBound": true,
+    "confidencePolicySha": "d626611dd11e05d22c4e26dfbf8868162a26766e",
+    "queriesSha256": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160",
+    "measurementGitHead": "4d2c77028de06f0448262fe3cd65b7c976a5f982",
+    "objective": [
+      "1. falseStrong == 0 preferred (minimize false-strong)",
+      "2. top1 correct maximized",
+      "3. correct-strong maximized",
+      "4. cost (analyze calls + scan passes) minimized",
+      "5. probe count minimized"
+    ],
+    "wallClockMs": 3128172
   },
-  "top1Accuracy": {
-    "baseline": 282,
-    "oracleB": 316,
-    "oracleA": 316,
-    "top1GainB": 34,
-    "top1GainA": 34
+  "accuracyRanking": {
+    "top1": {
+      "baseline": 282,
+      "oracleB": 294,
+      "oracleA": 294
+    },
+    "top4Recall": {
+      "baseline": 383,
+      "oracleB": 384,
+      "oracleA": 384
+    },
+    "top8Recall": {
+      "baseline": 415,
+      "oracleB": 415,
+      "oracleA": 415
+    },
+    "rankGainB": {
+      "n": 426,
+      "mean": 0.033,
+      "median": 0,
+      "p50": 0,
+      "p95": 0,
+      "max": 4
+    },
+    "rankGainA": {
+      "n": 426,
+      "mean": 0.033,
+      "median": 0,
+      "p50": 0,
+      "p95": 0,
+      "max": 4
+    },
+    "meanRankGain": {
+      "oracleB": 0.033,
+      "oracleA": 0.033
+    },
+    "medianRankGain": {
+      "oracleB": 0,
+      "oracleA": 0
+    },
+    "rescued": {
+      "byOracleB": 19,
+      "byOracleAOnly": 0,
+      "total": 19
+    }
   },
   "confidence": {
-    "baselineCorrectStrong": 156,
-    "oracleBCorrectStrong": 188,
-    "oracleACorrectStrong": 188,
-    "baselineFalseStrong": 67,
-    "oracleBFalseStrong": 54,
-    "oracleAFalseStrong": 56
+    "correctStrong": {
+      "baseline": 211,
+      "oracleB": 230,
+      "oracleA": 230
+    },
+    "falseStrong": {
+      "baseline": 67,
+      "oracleB": 37,
+      "oracleA": 37
+    },
+    "ambiguous": {
+      "baseline": 148,
+      "oracleB": 159,
+      "oracleA": 159
+    },
+    "falseStrongPreventedB": 30,
+    "falseStrongPreventedA": 30,
+    "correctStrongGainedB": 19,
+    "correctStrongGainedA": 19
   },
-  "classificationCounts": {
-    "PROBE-RESOLVABLE": 156,
-    "BUDGET-RESOLVABLE": 32,
-    "ONLY-UNBOUNDED-RESOLVABLE": 0,
-    "INTENT-AMBIGUOUS": 156,
-    "EVIDENCE-ABSENT": 10,
-    "ANALYSIS-UNSUPPORTED": 72
+  "cost": {
+    "totalBaselineAnalyzeCalls": 2938,
+    "perQueryBaselineAnalyze": {
+      "n": 426,
+      "mean": 6.897,
+      "median": 5,
+      "p50": 5,
+      "p95": 16,
+      "max": 30
+    },
+    "probesEvaluated": 7720,
+    "probeCost": {
+      "n": 7720,
+      "mean": 0.838,
+      "median": 1,
+      "p50": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "totalOracleBAnalyzeCalls": 61,
+    "totalOracleBScanPasses": 5,
+    "totalOracleAAnalyzeCalls": 61,
+    "totalQueryCostOracleB": {
+      "n": 426,
+      "mean": 7.052,
+      "median": 5,
+      "p50": 5,
+      "p95": 17,
+      "max": 31
+    },
+    "totalQueryCostOracleA": {
+      "n": 426,
+      "mean": 7.052,
+      "median": 5,
+      "p50": 5,
+      "p95": 17,
+      "max": 31
+    },
+    "budgetExhaustions": {
+      "count": 0,
+      "rate": 0
+    },
+    "uselessProbes": 7453,
+    "usefulProbes": 267,
+    "usefulRate": 0.0346,
+    "decisiveRate": 0.0312,
+    "costToFirstDecisive": {
+      "n": 426,
+      "mean": 0.117,
+      "median": 0,
+      "p50": 0,
+      "p95": 1,
+      "max": 1
+    },
+    "timeToFirstDecisiveMs": {
+      "n": 426,
+      "mean": 40.538,
+      "median": 0,
+      "p50": 0,
+      "p95": 48,
+      "max": 3710
+    }
+  },
+  "schedulerGap": {
+    "baselineToOracleB": {
+      "top1": 12,
+      "correctStrong": 19,
+      "falseStrongReduction": 30
+    },
+    "oracleBToOracleA": {
+      "top1": 0,
+      "correctStrong": 0,
+      "falseStrongReduction": 0
+    },
+    "budgetLoss": {
+      "queriesWhereUnboundedStrictlyBeatsBudget": 0,
+      "objective": [
+        "1. falseStrong == 0 preferred (minimize false-strong)",
+        "2. top1 correct maximized",
+        "3. correct-strong maximized",
+        "4. cost (analyze calls + scan passes) minimized",
+        "5. probe count minimized"
+      ]
+    },
+    "unsupportedAnalysisCeiling": 0,
+    "ambiguityCeiling": {
+      "intentUnderspecified": 84,
+      "lexicallyAmbiguousButBinaryResolvable": 50,
+      "lexicalAmbiguousTotal": 242
+    }
+  },
+  "taxonomy": {
+    "CONFIDENCE_POLICY_LIMIT": 62,
+    "ALREADY_RESOLVED": 211,
+    "BUDGET_RESOLVABLE": 19,
+    "INTENT_UNDERSPECIFIED": 84,
+    "LEXICALLY_AMBIGUOUS_BUT_BINARY_RESOLVABLE": 50
+  },
+  "intentBreakdown": {
+    "lexicalUnique": 184,
+    "lexicalAmbiguous": 242,
+    "binaryDistinguishable": 86,
+    "binaryIndistinguishable": 0,
+    "intentUnderspecified": 156
   },
   "probeStatistics": {
-    "totalProbesEvaluated": 4635,
-    "usefulProbesCount": 842,
-    "usefulRate": "0.1817",
+    "totalProbesEvaluated": 7720,
+    "usefulProbesCount": 267,
+    "usefulRate": 0.0346,
+    "decisiveProbesCount": 241,
+    "decisiveRate": 0.0312,
+    "selectableProbesCount": 910,
+    "noopDuplicates": 6810,
+    "failedProbes": 0,
+    "timedOutProbes": 0,
     "byFamily": {
       "shape_evidence": {
         "total": 1252,
-        "useful": 224,
-        "usefulRate": "0.1789"
+        "useful": 0,
+        "decisive": 0,
+        "selectable": 0,
+        "noop": 1252,
+        "failed": 0,
+        "timedOut": 0
+      },
+      "scan_access_sites": {
+        "total": 1252,
+        "useful": 28,
+        "decisive": 22,
+        "selectable": 131,
+        "noop": 1121,
+        "failed": 0,
+        "timedOut": 0
       },
       "accessor_getter_verify": {
         "total": 894,
-        "useful": 183,
-        "usefulRate": "0.2047"
+        "useful": 44,
+        "decisive": 44,
+        "selectable": 176,
+        "noop": 718,
+        "failed": 0,
+        "timedOut": 0
       },
       "setter_verify": {
         "total": 743,
-        "useful": 109,
-        "usefulRate": "0.1467"
+        "useful": 9,
+        "decisive": 9,
+        "selectable": 43,
+        "noop": 700,
+        "failed": 0,
+        "timedOut": 0
       },
       "class_local_method_inspect": {
         "total": 1746,
-        "useful": 326,
-        "usefulRate": "0.1867"
+        "useful": 186,
+        "decisive": 166,
+        "selectable": 560,
+        "noop": 1186,
+        "failed": 0,
+        "timedOut": 0
+      },
+      "value_update_rmw": {
+        "total": 939,
+        "useful": 0,
+        "decisive": 0,
+        "selectable": 0,
+        "noop": 939,
+        "failed": 0,
+        "timedOut": 0
+      },
+      "compare_constant_behavior": {
+        "total": 894,
+        "useful": 0,
+        "decisive": 0,
+        "selectable": 0,
+        "noop": 894,
+        "failed": 0,
+        "timedOut": 0
       }
     }
-  }
+  },
+  "search": {
+    "cap": 20,
+    "maxSelectableObserved": 23,
+    "atCapQueries": 1,
+    "enumeratedTotalB": 942032,
+    "enumeratedTotalA": 8041260,
+    "prunedTotal": 256252,
+    "mode": "exhaustive-subset-enumeration"
+  },
+  "invariants": {
+    "objectiveViolations": [],
+    "objectiveViolationCount": 0,
+    "replayParity": "enforced per query (prior/order/verdict/margin mismatch throws)",
+    "emptyProbeSequenceIsBaseline": true,
+    "budgetedOracleNeverWorseThanBaseline": true,
+    "unboundedOracleNeverWorseThanBudgeted": true
+  },
+  "harnessErrors": []
 }
