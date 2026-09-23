@@ -245,12 +245,14 @@ export async function verify(name, path, spec, {
     throw error;
   }
 
+  let digest = null;
+  let primaryError = null;
   try {
     const opened = await handle.stat();
     if (!opened.isFile() || !sameFileIdentity(info, opened) || opened.size !== info.size) {
       throw invalidFixture(`${name}: fixture identity changed before hashing`);
     }
-    const digest = await digestHandleImpl(handle);
+    digest = await digestHandleImpl(handle);
     if (digest.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${digest.size} != ${spec.size})`);
     if (digest.sha256 !== spec.sha256) throw invalidFixture(`${name}: SHA-256 mismatch`);
 
@@ -266,10 +268,26 @@ export async function verify(name, path, spec, {
     if (current.isSymbolicLink?.() || !current.isFile() || !sameFileIdentity(opened, current)) {
       throw invalidFixture(`${name}: fixture identity changed during hashing`);
     }
-    return digest;
-  } finally {
-    await handle.close();
+  } catch (error) {
+    primaryError = error;
   }
+
+  let closeError = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+
+  if (primaryError) {
+    if (closeError) {
+      primaryError.cleanupError = closeError;
+      if (primaryError.cause == null) primaryError.cause = closeError;
+    }
+    throw primaryError;
+  }
+  if (closeError) throw closeError;
+  return digest;
 }
 
 export async function releaseBody(response) {
