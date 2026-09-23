@@ -82,6 +82,22 @@ class CanonicalSemanticSsaArtifact {
   static matchesRow(row, producer) {
     return CanonicalSemanticSsaRow.matchesProducer(row, producer);
   }
+
+  static binding(value) {
+    try {
+      if (value === null || typeof value !== 'object' || Array.isArray(value) || !(#producerBrand in value)) {
+        return null;
+      }
+      return Object.freeze({
+        functionId: value.#functionId,
+        semanticIrDigest: value.#semanticIrDigest,
+        scalarSsaDigest: value.#scalarSsaDigest,
+        snapshotId: value.#snapshotId,
+      });
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function isCanonicalSemanticSsaProducerArtifact(artifact) {
@@ -92,6 +108,10 @@ export function canonicalSemanticSsaProducerMatches(artifact, binding) {
   if (!binding || typeof binding !== 'object') return false;
   if (binding.functionId == null || binding.semanticIrDigest == null) return false;
   return CanonicalSemanticSsaArtifact.matches(artifact, binding);
+}
+
+export function canonicalSemanticSsaProducerBinding(artifact) {
+  return CanonicalSemanticSsaArtifact.binding(artifact);
 }
 
 export function canonicalSemanticSsaRowMatches(row, artifact) {
