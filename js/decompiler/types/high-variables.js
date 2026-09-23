@@ -49,9 +49,9 @@ function argIndex(v, opts = {}) {
   return m ? Number(m[1]) : null;
 }
 function isArg(v) { return argIndex(v) != null; }
-function addressTaken(v, ir) {
+function addressTaken(v, stackAddressBaseIds) {
   return (v?.uses || []).some((u) => u?.op === 'store' && u?.addr?.base?.id === v.id)
-    || (ir?.instructions || []).some((i) => i?.addr?.base?.id === v?.id && i?.addr?.stack);
+    || stackAddressBaseIds.has(v?.id);
 }
 function phiSensitive(v) { return v?.def?.op === 'phi' || (v?.uses || []).some((u) => u?.op === 'phi'); }
 
@@ -102,6 +102,14 @@ function candidateName(group, index, opts = {}) {
 
 export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
   const values = (ir?.values || []).filter((v) => v && v.kind !== 'const' && v.reg !== 'nzcv');
+  // addressTaken() is evaluated once per SSA value. Build the exact set of
+  // stack-address base identities once instead of rescanning every instruction
+  // for every value.
+  const stackAddressBaseIds = new Set();
+  for (const inst of ir?.instructions || []) {
+    const address = inst?.addr;
+    if (address?.stack) stackAddressBaseIds.add(address?.base?.id);
+  }
   const types = recoveredTypes?.values || new Map();
   const groups = [];
   const byKey = new Map();
@@ -109,7 +117,7 @@ export function recoverHighVariables(ir, recoveredTypes, opts = {}) {
 
   for (const v of values) {
     const t = types.get?.(v.id) || null;
-    const unsafe = addressTaken(v, ir) || phiSensitive(v);
+    const unsafe = addressTaken(v, stackAddressBaseIds) || phiSensitive(v);
     const origin = v.def?.op === 'mov' && v.def?.args?.[0]?.value ? v.def.args[0].value : null;
     const originGroup = origin ? valueToGroup.get(origin.id) : null;
     // Register allocation is not source-variable identity: unrelated SSA values that
