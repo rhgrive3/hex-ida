@@ -358,8 +358,13 @@ export async function publishFixtureFile(temp, target, {
   assertDirectoryIdentityImpl = assertFixtureCacheDirectoryIdentity,
   expectedSourceIdentity = null,
 } = {}) {
-  const guard = async () => {
+  // Pre-publication guard: the cache directory and the validated source leaf
+  // must both still be the admitted objects before `temp` is consumed.
+  const guardDirectory = async () => {
     if (directoryIdentitySnapshot) await assertDirectoryIdentityImpl(directoryIdentitySnapshot);
+  };
+  const guardSource = async () => {
+    await guardDirectory();
     if (expectedSourceIdentity) {
       let tempEntry;
       try {
@@ -377,8 +382,20 @@ export async function publishFixtureFile(temp, target, {
       }
     }
   };
+  // Post-publication / recovery guard: `temp` has been consumed (or is not
+  // being published), so only the directory and the backup object we created
+  // remain meaningful invariants.
+  const guardBackup = async (backup, backupIdentity) => {
+    await guardDirectory();
+    const backupEntry = await lstatImpl(backup);
+    if (backupEntry.isSymbolicLink() || !backupEntry.isFile() || !sameFileIdentity(backupEntry, backupIdentity)) {
+      const changed = new Error(`fixture replacement backup identity changed: ${backup}`);
+      changed.code = 'FIXTURE_BACKUP_IDENTITY_CHANGED';
+      throw changed;
+    }
+  };
   try {
-    await guard();
+    await guardSource();
     await renameImpl(temp, target);
     return;
   } catch (error) {
@@ -388,7 +405,7 @@ export async function publishFixtureFile(temp, target, {
 
     let targetEntry;
     try {
-      await guard();
+      await guardSource();
       targetEntry = await lstatImpl(target);
     } catch (statError) {
       if (statError?.code === 'ENOENT') throw error;
@@ -397,14 +414,14 @@ export async function publishFixtureFile(temp, target, {
     if (targetEntry.isSymbolicLink() || !targetEntry.isFile()) throw error;
 
     const backup = `${target}.replace-backup-${process.pid}-${randomUUIDImpl()}`;
-    await guard();
+    await guardSource();
     await renameImpl(target, backup);
     try {
-      await guard();
+      await guardSource();
       await renameImpl(temp, target);
     } catch (replacementError) {
       try {
-        await guard();
+        await guardBackup(backup, targetEntry);
         await renameImpl(backup, target);
       } catch (restoreError) {
         throw new AggregateError([replacementError, restoreError], `fixture replacement recovery required: ${target}`);
@@ -413,7 +430,7 @@ export async function publishFixtureFile(temp, target, {
     }
 
     try {
-      await guard();
+      await guardBackup(backup, targetEntry);
       await rmImpl(backup, { force: true });
     } catch (cleanupError) {
       onCleanupError?.(cleanupError, { backup, target });
