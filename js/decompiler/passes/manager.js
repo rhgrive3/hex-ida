@@ -75,7 +75,10 @@ function capturePassState(state) {
   while (pending.length) {
     const value = pending.pop();
     if (value === null || typeof value !== 'object' || seen.has(value)) continue;
-    if (isDeepImmutable(value)) continue;
+    // Deep immutability requires a frozen root. Most pass-owned rollback state
+    // is mutable, so reject it here instead of allocating/traversing the deep
+    // checker only to discover the same fact.
+    if (Object.isFrozen(value) && isDeepImmutable(value)) continue;
     seen.add(value);
     const proto = Object.getPrototypeOf(value);
     const map = value instanceof Map, set = value instanceof Set, date = value instanceof Date;
