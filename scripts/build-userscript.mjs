@@ -2,7 +2,8 @@ import { build, transform } from 'esbuild';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm, realpath, stat } from 'node:fs/promises';
+import { access, readFile, mkdir, open, rm, realpath, stat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
@@ -136,6 +137,12 @@ function pathIsWithin(rootPath, targetPath) {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
+function sameClassicSourceIdentity(left, right) {
+  return left && right
+    && String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino);
+}
+
 export async function resolveClassicSource(path, {
   rootDir = root,
   realpathImpl = realpath,
@@ -149,13 +156,34 @@ export async function resolveClassicSource(path, {
   }
   const sourceStat = await statImpl(realSource);
   if (!sourceStat.isFile()) throw new Error(`Classic worker source is not a regular file: ${normalized}`);
-  return { normalized, realSource };
+  return { normalized, realSource, sourceStat };
 }
 
 export async function collectClassic(path, sources, options = {}) {
-  const { normalized, realSource } = await resolveClassicSource(path, options);
+  const { normalized, realSource, sourceStat } = await resolveClassicSource(path, options);
   if (sources.has(normalized)) return;
-  const source = await (options.readFileImpl ?? readFile)(realSource, 'utf8');
+
+  const openImpl = options.openImpl ?? open;
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0);
+  let handle;
+  try {
+    handle = await openImpl(realSource, flags);
+  } catch (error) {
+    throw new Error(`Classic worker source identity could not be established: ${normalized}`, { cause: error });
+  }
+
+  let source;
+  try {
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || !sameClassicSourceIdentity(sourceStat, openedStat)) {
+      throw new Error(`Classic worker source identity changed before read: ${normalized}`);
+    }
+    const readHandleImpl = options.readHandleImpl ?? ((fileHandle) => fileHandle.readFile({ encoding: 'utf8' }));
+    source = await readHandleImpl(handle, normalized);
+  } finally {
+    await handle.close();
+  }
+
   sources.set(normalized, source);
   for (const dependency of parseImports(source, normalized)) await collectClassic(dependency, sources, options);
 }
