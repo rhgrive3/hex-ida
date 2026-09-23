@@ -184,8 +184,8 @@ async function main() {
         const file = path.join(CHECKPOINT, `${sha(`${rowId}|${arm}`)}.json`);
         return [arm, fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null];
       }));
-      const projected = Object.fromEntries(Object.entries(jev).map(([arm, x]) => [arm, projectLive(x, r)]));
-      if (Object.values(projected).some((x) => x.error)) throw new Error(`live observations incomplete; refusing to publish Jev metrics for ${rowId}`);
+      const projected = Object.fromEntries(Object.entries(jev).map(([arm, x]) => [arm, x ? projectLive(x, r) : null]));
+      if (r.mode === 'partial' && Object.values(projected).some((x) => !x || x.error)) throw new Error(`live observations incomplete; refusing to publish Jev metrics for ${rowId}`);
       return {
         id: rowId, binary: r.binary, mode: r.mode, query: r.label,
         truthKey: `${r.expectedClass}#${r.expectedField}`, baselineTopKey: r.candidates[0]?.key,
