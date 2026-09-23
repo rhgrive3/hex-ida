@@ -3,22 +3,35 @@
  * Current-main weakness measurement runner (parent process).
  *
  * Runs the production analysis path over a selected set of codefuse-arm64
- * manifest cases with one child process per case, a per-function watchdog, and
- * per-case/per-function durable receipts. Resumable: completed cases with the
- * same head/config identity are skipped. Measurement-only; no production code.
+ * manifest cases with one child process per case, a real hard watchdog at the
+ * process boundary, and per-case/per-function durable receipts.
+ *
+ * Watchdog semantics:
+ *   - The child worker reports progress ({ type: 'function-start', address, startedAt }
+ *     and { type: 'function-end' }).
+ *   - The parent enforces a hard watchdog: if a function exceeds
+ *     functionTimeoutMs + functionTimeoutGraceMs (default 2000 ms), the parent
+ *     SIGKILLs the child worker.
+ *   - The timed-out function is recorded as TIMEOUT with hard: true and elapsedMs.
+ *   - The parent respawns the child to continue remaining functions (skipping completed
+ *     and timed-out functions).
+ *   - The worker also uses an internal AbortController as a soft stage; any function
+ *     whose measured elapsedMs > functionTimeoutMs is recorded as TIMEOUT (never PASS).
  *
  * Usage:
  *   node reports/investigations/current-main-weakness-20260923/harness/measure-functions.mjs \
  *     --output reports/investigations/current-main-weakness-20260923/measurements/run-a \
- *     --limit 16 --workers 8 --function-timeout-ms 10000 --structure slow
+ *     --limit 16 --workers 8 --function-timeout-ms 10000 --function-timeout-grace-ms 2000 --structure slow
  */
 import { spawn } from 'node:child_process';
+import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest, verifyInputs } from '../../../../tools/validation/public-benchmark/manifest.mjs';
 import {
   CASE_SCHEMA,
+  FUNCTION_SCHEMA,
   HARNESS_REPO_ROOT,
   RUN_SCHEMA,
   SUMMARY_SCHEMA,
@@ -30,6 +43,7 @@ import {
   optionValue,
   optionValues,
   readJson,
+  receiptFileName,
   sha256,
 } from './lib.mjs';
 
@@ -37,27 +51,222 @@ const WORKER_PATH = fileURLToPath(new URL('./case-worker.mjs', import.meta.url))
 const DEFAULT_OUTPUT = 'reports/investigations/current-main-weakness-20260923/measurements/run';
 const REPO_ROOT = HARNESS_REPO_ROOT;
 
-function spawnCase({ binary, caseId, outDir, receiptDir, sourceIdentity, configHash, headSha, functionTimeoutMs, structure, structureThresholdMs }) {
+export function runCaseWithWatchdog({
+  binary,
+  caseId,
+  outDir,
+  receiptDir,
+  sourceIdentity,
+  configHash,
+  headSha,
+  functionTimeoutMs,
+  functionTimeoutGraceMs = 2000,
+  structure,
+  structureThresholdMs,
+  workerPath = WORKER_PATH,
+  spawnFn = spawn,
+}) {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [
-      WORKER_PATH,
-      '--case-id', caseId,
-      '--binary', binary,
-      '--out', outDir,
-      '--receipt-dir', receiptDir,
-      '--source-id', sourceIdentity,
-      '--config-hash', configHash,
-      '--head', headSha,
-      '--function-timeout-ms', String(functionTimeoutMs),
-      '--structure', structure,
-      '--structure-threshold-ms', String(structureThresholdMs),
-      '--inflight', path.join(receiptDir, 'inflight.json'),
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-4000); });
-    child.once('error', error => resolve({ code: null, signal: null, error, stderr }));
-    child.once('close', (code, signal) => resolve({ code, signal, error: null, stderr }));
+    fs.mkdirSync(receiptDir, { recursive: true });
+    const inflightFile = path.join(receiptDir, 'inflight.json');
+    let restarts = 0;
+    const maxRestarts = 10000;
+    let finalCode = null;
+    let finalSignal = null;
+    let finalError = null;
+    let finalStderr = '';
+
+    function step() {
+      let child;
+      let activeFunction = null;
+      let watchdogTimer = null;
+      let stderrAccum = '';
+
+      function clearWatchdog() {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+      }
+
+      function resetWatchdog(fnInfo) {
+        clearWatchdog();
+        activeFunction = fnInfo;
+        const totalTimeout = functionTimeoutMs + functionTimeoutGraceMs;
+        watchdogTimer = setTimeout(() => {
+          if (!activeFunction) return;
+          const timedOutFn = activeFunction;
+          const elapsedMs = performance.now() - timedOutFn.startedTime;
+          // Record receipt as TIMEOUT with hard: true
+          const receipt = {
+            schema: FUNCTION_SCHEMA,
+            caseId,
+            address: timedOutFn.address,
+            index: timedOutFn.index ?? null,
+            name: null,
+            end: null,
+            sizeBytes: null,
+            state: 'TIMEOUT',
+            hard: true,
+            completeness: null,
+            reason: 'function-watchdog-timeout-hard',
+            projection: null,
+            unknownInstructions: null,
+            coverageMode: null,
+            structured: null,
+            warnings: null,
+            evidence: null,
+            semantic: null,
+            signature: null,
+            elapsedMs,
+            structure: null,
+            pseudocodeChars: null,
+            nonEmptyLines: null,
+            gotos: null,
+            pseudocode: null,
+          };
+          atomicWriteJson(path.join(receiptDir, receiptFileName(timedOutFn.address)), receipt);
+          fs.rmSync(inflightFile, { force: true });
+
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+        }, totalTimeout);
+      }
+
+      try {
+        child = spawnFn(process.execPath, [
+          workerPath,
+          '--case-id', caseId,
+          '--binary', binary,
+          '--out', outDir,
+          '--receipt-dir', receiptDir,
+          '--source-id', sourceIdentity,
+          '--config-hash', configHash,
+          '--head', headSha,
+          '--function-timeout-ms', String(functionTimeoutMs),
+          '--structure', structure,
+          '--structure-threshold-ms', String(structureThresholdMs),
+          '--inflight', inflightFile,
+        ], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      } catch (err) {
+        return resolve({ code: null, signal: null, error: err, stderr: '' });
+      }
+
+      child.stderr?.on('data', chunk => {
+        stderrAccum = `${stderrAccum}${chunk}`.slice(-4000);
+        finalStderr = `${finalStderr}${chunk}`.slice(-4000);
+      });
+
+      function handleProgress(msg) {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'function-start') {
+          resetWatchdog({
+            address: String(msg.address),
+            index: msg.index,
+            startedTime: performance.now(),
+          });
+        } else if (msg.type === 'function-end') {
+          clearWatchdog();
+          activeFunction = null;
+        }
+      }
+
+      child.on('message', handleProgress);
+
+      if (child.stdout) {
+        const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+        rl.on('line', line => {
+          if (!line.startsWith('{')) return;
+          try {
+            const parsed = JSON.parse(line);
+            handleProgress(parsed);
+          } catch {}
+        });
+      }
+
+      child.once('error', error => {
+        clearWatchdog();
+        finalError = error;
+      });
+
+      child.once('close', (code, signal) => {
+        clearWatchdog();
+        finalCode = code;
+        finalSignal = signal;
+
+        // Check if killed by our watchdog or child crashed/signal while in-flight
+        const inflight = readJson(inflightFile);
+        const wasKilled = signal === 'SIGKILL' || (code === null && signal != null) || activeFunction != null;
+        if (wasKilled && (activeFunction || inflight?.address)) {
+          const address = activeFunction?.address ?? inflight?.address;
+          const index = activeFunction?.index ?? inflight?.index ?? null;
+          const startedTime = activeFunction?.startedTime ?? performance.now() - (functionTimeoutMs + functionTimeoutGraceMs);
+          const elapsedMs = performance.now() - startedTime;
+          const receiptPath = path.join(receiptDir, receiptFileName(address));
+          const existingReceipt = readJson(receiptPath);
+          if (!existingReceipt) {
+            const receipt = {
+              schema: FUNCTION_SCHEMA,
+              caseId,
+              address: String(address),
+              index,
+              name: inflight?.name ?? null,
+              end: null,
+              sizeBytes: null,
+              state: 'TIMEOUT',
+              hard: true,
+              completeness: null,
+              reason: 'function-watchdog-timeout-hard',
+              projection: null,
+              unknownInstructions: null,
+              coverageMode: null,
+              structured: null,
+              warnings: null,
+              evidence: null,
+              semantic: null,
+              signature: null,
+              elapsedMs,
+              structure: null,
+              pseudocodeChars: null,
+              nonEmptyLines: null,
+              gotos: null,
+              pseudocode: null,
+            };
+            atomicWriteJson(receiptPath, receipt);
+          }
+          fs.rmSync(inflightFile, { force: true });
+          restarts++;
+          if (restarts < maxRestarts) {
+            return step();
+          }
+        }
+
+        // If case record was written and complete, resolve
+        const caseRecordPath = path.join(outDir, 'cases', caseFileName(caseId));
+        const record = readJson(caseRecordPath);
+        if (record?.schema === CASE_SCHEMA && record.state === 'MEASURED') {
+          return resolve({ code, signal, error: null, stderr: finalStderr });
+        }
+
+        // If there are still unprocessed functions or worker exited prematurely after watchdog kills
+        if (restarts > 0) {
+          // Check if we can resume worker or if worker finished
+          if (record?.schema === CASE_SCHEMA) {
+            return resolve({ code, signal, error: null, stderr: finalStderr });
+          }
+        }
+
+        resolve({ code, signal, error: finalError, stderr: finalStderr });
+      });
+    }
+
+    step();
   });
+}
+
+function spawnCase(opts) {
+  return runCaseWithWatchdog(opts);
 }
 
 function summarizeCase(record) {
@@ -86,6 +295,7 @@ export async function measureCurrentMain({
   const limit = Number(optionValue(args, '--limit', '0'));
   const productTimeoutMs = Number(optionValue(args, '--product-timeout-ms', '900000'));
   const functionTimeoutMs = Number(optionValue(args, '--function-timeout-ms', '10000'));
+  const functionTimeoutGraceMs = Number(optionValue(args, '--function-timeout-grace-ms', '2000'));
   const structure = optionValue(args, '--structure', 'slow');
   const structureThresholdMs = Number(optionValue(args, '--structure-threshold-ms', '250'));
   const requestedCaseIds = optionValues(args, '--case-id');
@@ -118,7 +328,7 @@ export async function measureCurrentMain({
   const benchmarkManifestHash = sha256(manifestBytes);
 
   const config = {
-    label, functionTimeoutMs, structure, structureThresholdMs, productTimeoutMs,
+    label, functionTimeoutMs, functionTimeoutGraceMs, structure, structureThresholdMs, productTimeoutMs,
     harnessHash, caseSelectionHash, benchmarkManifestHash,
   };
   const configHash = configDigest(config);
@@ -167,7 +377,7 @@ export async function measureCurrentMain({
         spawnCaseFn({
           binary: input.path, caseId: manifestCase.id, outDir: outputDir, receiptDir,
           sourceIdentity: source.identity, configHash, headSha: source.head,
-          functionTimeoutMs, structure, structureThresholdMs,
+          functionTimeoutMs, functionTimeoutGraceMs, structure, structureThresholdMs,
         }),
         new Promise(resolve => setTimeout(() => resolve({ code: null, signal: 'product-timeout', error: null, stderr: '' }), productTimeoutMs)),
       ]);

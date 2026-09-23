@@ -40,6 +40,7 @@ function persistHardFailure(receiptDir, marker, state, reason, elapsedMs) {
   const functionResult = timeoutFunctionResult(marker, state, reason);
   return writeReceipt(receiptDir, marker, fn, {
     state,
+    hard:true,
     reason,
     elapsedMs,
     resultDigest:sha256(stableJson(functionResult)),
@@ -56,7 +57,7 @@ export async function runFreshCase({
   configHash,
   functionTimeoutMs = 10000,
   setupTimeoutMs = 60000,
-  watchdogGraceMs = 1000,
+  watchdogGraceMs = 2000,
   retryStates = [],
   subjectPath = SUBJECT_PATH,
   spawnChild = spawn,
@@ -194,7 +195,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       binary, out, caseId, receiptDir, sourceIdentity, configHash,
       functionTimeoutMs:Number(optionValue(args, '--function-timeout-ms', '10000')),
       setupTimeoutMs:Number(optionValue(args, '--setup-timeout-ms', '60000')),
-      watchdogGraceMs:Number(optionValue(args, '--watchdog-grace-ms', '1000')),
+      watchdogGraceMs:Number(optionValue(args, '--watchdog-grace-ms', '2000')),
       retryStates:optionValues(args, '--retry-state'),
     });
     process.exitCode = result.row.state === 'CRASH' || result.row.state === 'TIMEOUT' || result.row.state === 'ERROR' ? 1 : result.row.state === 'UNSUPPORTED' ? 2 : 0;

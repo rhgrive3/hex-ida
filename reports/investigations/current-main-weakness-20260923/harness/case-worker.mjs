@@ -3,11 +3,17 @@
  * One-case measurement worker (child process).
  *
  * Opens one binary once through the read-only production host, decompiles every
- * discovered function with a per-function watchdog, and persists one receipt
- * after each function. `status.reason`, `status.completeness`, the public
- * coverage/projection fields, and (optionally) CFG/IR structure of the
- * decompiled result are recorded; the stock public-benchmark subject does not
- * publish those, which is exactly why this measurement lane exists.
+ * discovered function with per-function progress reporting and soft timeout,
+ * and persists one receipt after each function.
+ *
+ * Timeout semantics:
+ *   - Emits progress events ({ type: 'function-start' }, { type: 'function-end' })
+ *     via IPC and stdout for parent watchdog monitoring.
+ *   - Runs an in-process AbortController timer (soft timeout).
+ *   - Enforces invariant: any function whose measured elapsedMs exceeds
+ *     functionTimeoutMs is never recorded as PASS (marked TIMEOUT).
+ *   - If the parent watchdog fires (SIGKILL), the parent writes the hard TIMEOUT receipt
+ *     and respawns the worker.
  *
  * The worker never rewrites an existing receipt for a different identity.
  */
@@ -128,11 +134,18 @@ async function main() {
       if (inflightFile) {
         atomicWriteJson(inflightFile, { caseId, address, index, name: fn.name ?? null, startedAt: new Date().toISOString() });
       }
+      const fnStarted = performance.now();
+      const startedAtIso = new Date().toISOString();
+      const progressStart = JSON.stringify({ type: 'function-start', address, index, startedAt: startedAtIso });
+      try {
+        if (process.send) process.send({ type: 'function-start', address, index, startedAt: startedAtIso });
+      } catch {}
+      process.stdout.write(`${progressStart}\n`);
+
       const controller = new AbortController();
       const timeoutError = new Error('function-timeout');
       timeoutError.name = 'AbortError';
       const timer = setTimeout(() => controller.abort(timeoutError), functionTimeoutMs);
-      const fnStarted = performance.now();
       const base = {
         schema: FUNCTION_SCHEMA, caseId, address, index,
         name: fn.name ?? null,
@@ -183,6 +196,15 @@ async function main() {
         if (inflightFile) fs.rmSync(inflightFile, { force: true });
       }
       row.elapsedMs = performance.now() - fnStarted;
+      if (row.elapsedMs > functionTimeoutMs && row.state === 'PASS') {
+        row.state = 'TIMEOUT';
+        row.reason = row.reason ?? 'function-timeout-elapsed-exceeded';
+      }
+      const progressEnd = JSON.stringify({ type: 'function-end', address, index, elapsedMs: row.elapsedMs, state: row.state });
+      try {
+        if (process.send) process.send({ type: 'function-end', address, index, elapsedMs: row.elapsedMs, state: row.state });
+      } catch {}
+      process.stdout.write(`${progressEnd}\n`);
       const wantStructure = structureMode === 'all' || (structureMode === 'slow' && row.elapsedMs >= structureThresholdMs);
       if (wantStructure && row.state !== 'TIMEOUT' && row.state !== 'CRASH') {
         const snapshotAfter = await product.query.snapshot();

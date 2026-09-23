@@ -76,6 +76,7 @@ export function writeReceipt(receiptDir, identity, fn, result) {
     functionName:fn.name ?? null,
     functionEnd:fn.end == null ? null : String(fn.end),
     state:String(result.state),
+    hard:result.hard === true ? true : undefined,
     completeness:result.completeness ?? null,
     reason:result.reason ?? null,
     elapsedMs:Number(result.elapsedMs ?? 0),
