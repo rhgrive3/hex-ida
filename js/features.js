@@ -127,8 +127,10 @@ export function featureLabelOf(id) {
 /** 文字列 1 本が、どの機能の手がかりになるか。当てはまらなければ空。 */
 export function classifyString(text) {
   if (typeof text !== 'string') return [];
-  const s = text;
-  if (s.length < 3) return [];
+  const s = text.trim();
+  if (!s) return [];
+  const hasJapanese = /[ぁ-んァ-ヶ一-龥]/.test(s);
+  if (s.length < 3 && !(s.length >= 2 && hasJapanese)) return [];
   const out = [];
   for (const f of FEATURES) {
     if (f.re.test(s)) out.push({ id: f.id, weak: !!f.weak });
