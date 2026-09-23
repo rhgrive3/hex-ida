@@ -1,4 +1,5 @@
 import {
+  isCanonicalCppMemberEvidence,
   isCanonicalCppReceiverEvidence,
   isCanonicalCppVirtualSlotEvidence,
 } from '../analysis/cxx/object-evidence.js';
@@ -102,5 +103,36 @@ export function currentCppVirtualSlot(opts = {}, ir = null, inst = null, callRec
     if (slot.callSiteId != null && sameId(slot.callSiteId, inst.id)) return true;
     return slot.callSiteAddress != null && inst.address != null
       && sameAddress(slot.callSiteAddress, inst.address);
+  }) ?? null;
+}
+
+
+/**
+ * Returns canonical member evidence for a field access through the current
+ * proven C++ receiver.
+ *
+ * This is deliberately a presentation-side lookup only. It never infers a
+ * field, type, or receiver: all three must already have been issued by the C++
+ * evidence producer. A member is accepted only when it is bound to the exact
+ * receiver digest/function being rendered and the access base is an alias of
+ * that receiver. That keeps a valid member record from being replayed onto an
+ * unrelated pointer that happens to use the same byte offset.
+ */
+export function currentCppMember(opts = {}, ir = null, base = null, offset = null) {
+  if (!ir || !base || offset == null) return null;
+  const receiver = currentCppReceiver(opts, ir);
+  if (!receiver || !isCppReceiverAlias(base, receiver)) return null;
+
+  let wanted;
+  try { wanted = BigInt(offset); } catch { return null; }
+
+  const source = opts?.cxxEvidence?.members;
+  const members = Array.isArray(source) ? source
+    : source instanceof Map ? [...source.values()] : [];
+  return members.find((member) => {
+    if (!isCanonicalCppMemberEvidence(member) || member.accessProven !== true) return false;
+    if (member.receiverDigest !== receiver.digest) return false;
+    if (!sameId(member.functionId, receiver.functionId)) return false;
+    try { return BigInt(member.offsetBytes) === wanted; } catch { return false; }
   }) ?? null;
 }
