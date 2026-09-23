@@ -6,7 +6,7 @@ export const BUDGET = Object.freeze({ maxProbeCount: 6, maxAnalyzeCalls: 6, maxE
 export const STOP = Object.freeze({
   NEXT_PROBE: 'NEXT_PROBE', RESOLVED: 'STOP_RESOLVED',
   AMBIGUOUS: 'STOP_AMBIGUOUS', BUDGET: 'STOP_BUDGET',
-  NO_USEFUL: 'STOP_NO_USEFUL_PROBE',
+  NO_USEFUL: 'STOP_NO_USEFUL_PROBE', TIMEOUT: 'STOP_TIMEOUT',
 });
 export const strong = (verdict) => verdict === 'confirmed' || verdict === 'likely';
 export const queryId = (row) => `${row.binary}|${row.mode}|${row.label}`;
@@ -110,11 +110,27 @@ export function costOf(sequence) {
     elapsedMs: sequence.reduce((n, p) => n + p.elapsedMs, 0),
   };
 }
+
+function estimatedCostOf(sequence) {
+  return {
+    probes: sequence.length,
+    calls: sequence.reduce((n, p) => n + (p.estimatedAnalyzeCalls ?? (p.family === 'scan-access' ? 1 : 1)), 0),
+    elapsedMs: sequence.reduce((n, p) => n + (p.estimatedElapsedMs ?? 0), 0),
+  };
+}
+
 export function withinBudget(sequence, budget = BUDGET) {
   const c = costOf(sequence);
   return c.probes <= budget.maxProbeCount && c.calls <= budget.maxAnalyzeCalls
     && c.elapsedMs <= budget.maxElapsedMs;
 }
+
+function withinEstimatedBudget(sequence, budget = BUDGET) {
+  const c = estimatedCostOf(sequence);
+  return c.probes <= budget.maxProbeCount && c.calls <= budget.maxAnalyzeCalls
+    && c.elapsedMs <= budget.maxElapsedMs;
+}
+
 export function evaluateSequence(row, sequence, budget = null) {
   if (budget && !withinBudget(sequence, budget)) throw new Error('sequence exceeds budget');
   const state = productionReplay(row, sequence);
@@ -130,7 +146,6 @@ export function evaluateSequence(row, sequence, budget = null) {
 function scoreProbe(probe, row, state, kind, rates, sequence) {
   const rank = state.candidates.findIndex((c) => c.key === probe.candidateId);
   const c = state.candidates[rank];
-  const top = state.candidates[0];
   const familyRate = rates[probe.family] ?? 0;
   const gap = c && !c.fusion.groups.includes('dataflow') ? 1 : 0;
   const near = rank <= 1 ? 1 : rank <= 4 ? 0.5 : 0.1;
@@ -162,19 +177,27 @@ export function runHeuristic(row, probes, kind, rates = {}, budget = BUDGET) {
   while (remaining.length) {
     const state = productionReplay(row, sequence);
     if (strong(state.verdict)) { stopReason = STOP.RESOLVED; break; }
-    const affordable = remaining.filter((p) => withinBudget([...sequence, p], budget));
+    const affordable = remaining.filter((p) => withinEstimatedBudget([...sequence, p], budget));
     if (!affordable.length) { stopReason = STOP.BUDGET; break; }
     affordable.sort((a, b) => scoreProbe(b, row, state, kind, rates, sequence) - scoreProbe(a, row, state, kind, rates, sequence)
       || a.probeId.localeCompare(b.probeId));
     const next = affordable[0];
     if (!next) { stopReason = STOP.NO_USEFUL; break; }
+    const remainingElapsedMs = Math.max(0, budget.maxElapsedMs - costOf(sequence).elapsedMs);
+    if (Number.isFinite(next.elapsedMs) && next.elapsedMs > remainingElapsedMs) {
+      sequence.push({ ...next, timedOut: true, observations: [], actualElapsedMs: next.elapsedMs, elapsedMs: remainingElapsedMs });
+      decisions.push({ action: STOP.NEXT_PROBE, probeId: next.probeId });
+      decisions.push({ action: STOP.TIMEOUT, probeId: next.probeId, chargedElapsedMs: remainingElapsedMs });
+      stopReason = STOP.TIMEOUT;
+      break;
+    }
     decisions.push({ action: STOP.NEXT_PROBE, probeId: next.probeId });
     sequence.push(next);
     remaining = remaining.filter((p) => p.probeId !== next.probeId);
     if (sequence.length >= budget.maxProbeCount) { stopReason = STOP.BUDGET; break; }
   }
   if (strong(productionReplay(row, sequence).verdict)) stopReason = STOP.RESOLVED;
-  else if (!remaining.length) stopReason = STOP.NO_USEFUL;
+  else if (stopReason !== STOP.TIMEOUT && !remaining.length) stopReason = STOP.NO_USEFUL;
   decisions.push({ action: stopReason });
   return { ...evaluateSequence(row, sequence, budget), scheduler: kind, stopReason, decisions };
 }
