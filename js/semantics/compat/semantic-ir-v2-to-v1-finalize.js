@@ -26,21 +26,39 @@ function samePublicState(inst, source, destination) {
 }
 
 
-function valueFeedsAddressOrCall(projected, root) {
+function buildAddressOrCallFlowIndex(projected) {
+  const terminal = new Set();
+  const moves = new Map();
+  for (const inst of projected.instructions || []) {
+    for (const value of [inst.addr?.base, inst.addr?.index, inst.loc?.base, inst.returnTargetValue]) {
+      if (value) terminal.add(value);
+    }
+    const args = inst.args || [];
+    if (inst.op === V1_OP.CALL) {
+      for (const arg of args) if (arg?.value) terminal.add(arg.value);
+      continue;
+    }
+    if (inst.op !== V1_OP.MOV || !inst.dst) continue;
+    for (const arg of args) {
+      const source = arg?.value;
+      if (!source) continue;
+      let outputs = moves.get(source);
+      if (!outputs) { outputs = []; moves.set(source, outputs); }
+      outputs.push(inst.dst);
+    }
+  }
+  return { terminal, moves };
+}
+
+function valueFeedsAddressOrCall(index, root) {
   const queue = [root];
   const seen = new Set();
-  while (queue.length) {
-    const value = queue.shift();
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const value = queue[cursor];
     if (!value || seen.has(value.id)) continue;
     seen.add(value.id);
-    for (const inst of projected.instructions) {
-      if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
-      if (inst.returnTargetValue === value) return true;
-      const consumes = (inst.args || []).some((arg) => arg?.value === value);
-      if (!consumes) continue;
-      if (inst.op === V1_OP.CALL) return true;
-      if (inst.op === V1_OP.MOV && inst.dst) queue.push(inst.dst);
-    }
+    if (index.terminal.has(value)) return true;
+    for (const output of index.moves.get(value) || []) queue.push(output);
   }
   return false;
 }
@@ -90,6 +108,11 @@ function stateAliasLineage(before, aliases, aliasEvents) {
 function compactProjectedState(projected, observer = null) {
   const aliases = new Map();
   const aliasEvents = new Map();
+  let addressOrCallFlowIndex = null;
+  const feedsAddressOrCall = (root) => {
+    addressOrCallFlowIndex ||= buildAddressOrCallFlowIndex(projected);
+    return valueFeedsAddressOrCall(addressOrCallFlowIndex, root);
+  };
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.MOV || !inst.dst || inst.args?.length !== 1) continue;
     const rawSource = inst.args[0]?.value;
@@ -101,7 +124,7 @@ function compactProjectedState(projected, observer = null) {
     if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
       const provenExactLoadSource = source.compatDerived === 'exact-state-write-source' && source.def?.op === V1_OP.LOAD;
-      if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {
+      if (provenExactLoadSource || feedsAddressOrCall(shadow)) {
         const before = observer && stateIdentity(shadow);
         aliases.set(shadow.id, source);
         if (source.stateKey == null && shadow.stateKey != null) {
