@@ -199,11 +199,11 @@ export function partitionDigest(root = ROOT, partition, {
         }
         throw error;
       }
-      if (!pathIsWithin(allowedRealRoot, realTarget)) {
-        throw new Error(`accuracy cache key: selected input escapes repository while hashing: ${relative}`);
-      }
       const targetStat = fsImpl.statSync(fullPath);
       if (targetStat.isFile()) {
+        if (!pathIsWithin(allowedRealRoot, realTarget)) {
+          throw new Error(`accuracy cache key: selected input escapes repository while hashing: ${relative}`);
+        }
         hash.update(readBoundRegularFile(realTarget, targetStat, allowedRealRoot, fsImpl));
       }
       const finalLink = fsImpl.lstatSync(fullPath);
