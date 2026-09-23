@@ -27,7 +27,7 @@ for (const [name, bad] of malformedValues) {
     assert.equal(out.status, 'unsupported');
     assert.equal(out.expression.kind, EXPR_KIND.UNKNOWN_SEMANTIC);
     assert.equal(out.semanticUnknowns, 1);
-    assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'non-canonical-constant-value'));
+    assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'unsafe-or-invalid-constant-literal'));
     assert.equal(out.completeness.translation, 'unsupported');
     assert.equal(evaluateExpr(out.expression).status, EVAL_STATUS.UNKNOWN);
   });
@@ -38,7 +38,7 @@ for (const [name, bad] of malformedValues) {
     assert.equal(out.status, 'unsupported');
     assert.equal(out.expression.kind, EXPR_KIND.UNKNOWN_SEMANTIC);
     assert.equal(out.semanticUnknowns, 1);
-    assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'non-canonical-constant-value'));
+    assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'unsafe-or-invalid-constant-literal'));
     assert.equal(out.completeness.translation, 'unsupported');
     assert.equal(evaluateExpr(out.expression).status, EVAL_STATUS.UNKNOWN);
   });
@@ -80,7 +80,7 @@ test('#4692 malformed constant inside a comparison does not become exact', () =>
   );
   assert.equal(out.status, 'unsupported');
   assert.equal(out.expression.kind, EXPR_KIND.COMPARE);
-  assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'non-canonical-constant-value'));
+  assert.ok(out.unsupportedEntities.some((entity) => entity.reason === 'unsafe-or-invalid-constant-literal'));
   assert.ok(out.semanticUnknowns >= 1);
   assert.equal(evaluateExpr(out.expression).status, EVAL_STATUS.UNKNOWN);
 });
