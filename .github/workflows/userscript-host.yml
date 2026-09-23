@@ -103,6 +103,14 @@ jobs:
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+      - name: Upload focused release-version diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-version-focused
+          path: /tmp/release-version-focused.out
+          if-no-files-found: error
+          retention-days: 1
       - name: Diagnostic embed protocol
         run: node tests/userscript-embed-protocol.mjs
       - name: Diagnostic sanitize shared refs
