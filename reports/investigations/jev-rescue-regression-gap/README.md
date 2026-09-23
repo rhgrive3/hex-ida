@@ -13,7 +13,7 @@ Scope: investigation, measurement and design only. **No production Jev integrati
 | 5 | Descriptive full-corpus top1 after that gate | **310/426 (72.8%)** vs baseline **282/426 (66.2%)** (+28). This reuses the measured corpus and is not a prospective production estimate. |
 | 6 | partial after that gate | **81/196 (41.3%)** vs baseline **53/196 (27.0%)** (+28). |
 | 7 | Jev-specific improvement demonstrated | Force-all Jev-only rescues missed by the best deterministic screen: **6**. Under det-first + G28 fill: **5** rows where det fails and gate+Jev succeed (see [`deterministic-comparison.json`](./deterministic-comparison.json)). Deterministic still beats Jev overall (103/4 vs 46/7). |
-| 8 | strong wrong top1 safe rescuable by Jev | Strong-wrong **partial** baselines are part of the 67 false-strong rows overall; on partial, arm F (diagnostic truth oracle) corrects **29** with 0 regressions. Production-safe **G28** corrects the same **29** with **1** full-corpus regression (the confirmed `config service` row); on holdout **14 / 0**. No verdict promotion is performed. |
+| 8 | strong wrong top1 rescuable by Jev | Strong-wrong **partial** baselines are part of the 67 false-strong rows overall; on partial, arm F (diagnostic truth oracle) corrects **29** with 0 regressions. Exploratory **G28** corrects the same **29** with **1** full-corpus regression (the confirmed `config service` row); its TsumTsum+YWP **14 / 0** result is post-hoc. No verdict promotion is performed. |
 | 9 | Production? | **RESEARCH_ONLY.** Keep `G28_strong_only` as the leading candidate, but do not integrate it into production until it is evaluated once, unchanged, on a newly collected independent free-form intent holdout. Force-all and ambiguous-only remain **NO_GO** for production (7 and 6 regressions). This PR does not integrate production. |
 
 ## Comparison table (required)
@@ -25,7 +25,7 @@ Scope: investigation, measurement and design only. **No production Jev integrati
 | Ambiguous-only | 293 / 70 | 17 | 6 | 11 | 105 | 105 | 0 |
 | Best zero-regression gate (`G9_…`) — development | — | 5 | 0 | 5 | 37 | 37 | 0 |
 | Same G9 — cross-binary observed split (Tsum+YWP) | — | 6 | 1 | 5 | 42 | 42 | 0 |
-| Development-selected `G28_strong_only` — cross-binary observed split | — | 14 | 0 | 14 | 52 | 52 | 0 |
+| Post-hoc `G28_strong_only` — cross-binary observed split | — | 14 | 0 | 14 | 52 | 52 | 0 |
 | G28 — full corpus descriptive | 310 / 81 | 29 | 1 | 28 | 91 | 91 | 0 |
 | Deterministic comparator (BattleCats-selected lexical grid) | 381 / 152 | 103 | 4 | 99 | 196 | 0 | 0 |
 | Oracle (truth choice on force-all partial) | 426 / 196 | 143 | 0 | 143 | 196 | 196 | 0 |
@@ -118,7 +118,7 @@ Pareto front and full tables: [`holdout-results.json`](./holdout-results.json), 
 | F_strong_wrong_only *(truth oracle diagnostic)* | 67 | 29 | 0 | 0 | 29 |
 | G_never_break_strong_correct *(truth oracle diagnostic)* | 172 | 46 | 6 | 0 | 29 |
 
-Arms F/G use fixture truth to *define* the arm and are diagnostic upper bounds only. Production-safe arms are A–E plus G28 (verdict-strong, truth-free). Measured answer: **strong is not automatically right** (67 false-strong exist) and **Jev is not automatically right on strong** (1 confirmed regression); the useful middle is “strong-wrong majority rescue with rare strong-correct break,” which is exactly G28’s 29/1.
+Arms F/G use fixture truth to *define* the arm and are diagnostic upper bounds only. A–E and G28 use production-observable predicates, but **G28 is not production-validated** because it was created post-hoc. Measured answer: **strong is not automatically right** (67 false-strong exist) and **Jev is not automatically right on strong** (1 confirmed regression); G28’s 29/1 is an exploratory signal to retest on a fresh frozen holdout.
 
 ## 6. Repeated-call stability (Phase 8)
 
