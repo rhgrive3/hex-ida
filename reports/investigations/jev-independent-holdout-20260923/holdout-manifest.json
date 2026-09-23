@@ -1,0 +1,39 @@
+{
+  "schema": "hex-jev-independent-holdout-manifest/v1",
+  "lockedAtUtc": "2026-09-23T14:18:00Z",
+  "productCommit": "71e8d619a7680befe5b0158c1ac08db21d8422f4",
+  "holdoutCasesSha256": "ef14282a1b5b4ee9449631c5d46ff6dca7c30c9180fa54b375735346716a692f",
+  "binariesSha256": {
+    "battlecats": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13",
+    "TsumTsum": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3",
+    "YWP": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6"
+  },
+  "totalCases": 48,
+  "composition": {
+    "byBinary": {
+      "battlecats": 16,
+      "TsumTsum": 16,
+      "YWP": 16
+    },
+    "byDifficulty": {
+      "hard-negative": 22,
+      "paraphrase": 8,
+      "lexical-control": 6,
+      "ambiguous": 6,
+      "unsupported": 6
+    },
+    "byMode": {
+      "partial": 42,
+      "exact": 6
+    }
+  },
+  "auditSummary": {
+    "realMetadataVerified": "36/36 answerable gold targets exist in Mach-O binary ObjC metadata",
+    "exactQueryOverlap": 0,
+    "exactGoldOverlap": 0,
+    "classSharingCases": 7,
+    "caseIndependent": true,
+    "binaryIndependent": false,
+    "limitations": "Cases share historical binaries (battlecats, TsumTsum, YWP). Binary-level cross-distribution generalization unproven."
+  }
+}

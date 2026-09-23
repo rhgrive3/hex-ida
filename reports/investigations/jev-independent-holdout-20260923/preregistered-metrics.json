@@ -1,0 +1,33 @@
+{
+  "schema": "hex-jev-independent-holdout-preregistration/v1",
+  "registeredAtUtc": "2026-09-23T13:29:00Z",
+  "freezeManifest": "freeze-manifest.json",
+  "arms": ["A_baseline", "B_deterministic_lexical", "C_G28_routed", "D_Jev_force_all"],
+  "denominators": {
+    "answerable": "Cases with a single externally specified (class, ivar) identity and independently supportable intent.",
+    "nonanswerable": "Ambiguous, unsupported or insufficient-evidence cases whose gold action is abstain; no top-1 candidate is counted as correct.",
+    "all": "Every locked holdout case, including parse failures, no-candidate cases and API failures. No case is dropped after results are observed."
+  },
+  "scoring": {
+    "top1Accuracy": "For answerable cases only, exact className and fieldName equality to the frozen gold identity. Missing candidate, parse failure and API failure are wrong unless fallback preserves a correct baseline.",
+    "actionAccuracy": "For answerable cases, exact top-1 identity and strong verdict; for nonanswerable cases, ambiguous/none/no-candidate verdict. This is reported separately because top-1 and verdict have different authority.",
+    "abstain": "Observed verdict is ambiguous or none, or no candidate is returned. The selected top-1 is retained in raw results but is not treated as a strong answer.",
+    "falseStrong": "Answerable case with a strong (confirmed/likely) verdict and incorrect top-1.",
+    "unsafeConfident": "Any falseStrong plus nonanswerable case with a strong verdict.",
+    "routedCases": "Cases for which C sends an actual HTTP request to OpenJev; an error remains routed and contributes to call and latency costs.",
+    "routedChoicePrecision": "Among routed answerable cases with a valid Jev choice, fraction selecting gold; also report intervention precision = rescues/(rescues+regressions), undefined if denominator zero.",
+    "rescue": "B is wrong on an answerable case and C is correct on that same case.",
+    "regression": "B is correct on an answerable case and C is wrong on that same case.",
+    "netRescue": "rescue - regression; C versus B is the primary comparison, including cases where B and C differ by policy construction.",
+    "routingRescueRate": "rescue / all answerable cases and rescue / routed answerable cases, both reported.",
+    "routingRegressionRate": "regression / all answerable cases and regression / routed answerable cases, both reported.",
+    "callsPerRescue": "C total Jev HTTP attempts / rescue; infinity if rescue=0 and attempts>0; zero if both are zero.",
+    "latency": "Wall clock baseline Pinpoint latency per query; Jev HTTP elapsed time per attempt; C critical-path overhead equals Jev duration on routed rows because candidate choice depends on its result. Report p50/p95/max and aggregate seconds.",
+    "usage": "Sum API-reported input_tokens and output_tokens; missing usage is explicitly counted, not imputed. USD cost only if a public official unit price or actual invoice is available before result analysis; otherwise cost is calls and tokens with USD unknown.",
+    "forceAll": "D is diagnostic. Its accuracy, new regressions versus B, unsafe confident decisions, call count and latency are reported even if unfavorable.",
+    "pairedUncertainty": "Report Wilson 95% intervals for each answerable accuracy and exact paired rescue/regression counts; no significance threshold is used to promote production."
+  },
+  "failureTaxonomy": ["deterministic rescue possible", "Jev only rescue", "Jev broke correct result", "routing mistake", "threshold mistake", "ambiguity or insufficient evidence", "ground-truth uncertainty", "model inconsistency", "input or data quality"],
+  "runPolicy": "One Pinpoint execution per case, one Jev label request per partial case for D. C reuses the same Jev response only where its frozen G28 predicate routes; this shares a single frozen API decision across C and D, avoiding an artificial model stochasticity difference. No success-conditioned rerun. Only recorded transport/HTTP 429/5xx/timeouts may receive a same-body technical retry before truth is opened; no malformed/semantic retry.",
+  "analysisOrder": "Freeze source, lock case list/gold and scoring, record holdout hashes, execute and checkpoint blind predictions, then join gold and classify failures. No prompt, parameter, threshold, routing or case change after the holdout manifest is locked."
+}
