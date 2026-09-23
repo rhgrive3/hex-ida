@@ -973,7 +973,7 @@ function cppMemberTypeSuffix(member) {
   // Producer labels are presentation hints, never executable syntax. Keep the
   // projection bounded to the small type vocabulary it issues and fail closed
   // rather than copying arbitrary text into a C comment.
-  if (!label || label.length > 80 || !/^[A-Za-z0-9_\\[\\]| *-]+$/.test(label)) return '';
+  if (!label || label.length > 80 || !/^[A-Za-z0-9_\[\]| *-]+$/.test(label)) return '';
   return ` /* ${label} */`;
 }
 
