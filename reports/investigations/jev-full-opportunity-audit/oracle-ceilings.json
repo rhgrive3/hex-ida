@@ -1,0 +1,192 @@
+{
+  "schema": "hex-jev-oracle-ceilings/v1",
+  "denominator": 426,
+  "candidateOracle": {
+    "present": 426,
+    "upperBoundCorrect": 426,
+    "candidateGenerationGainCeilingOnThisCorpus": 0
+  },
+  "currentRecordedEvidence": {
+    "observedCorrect": 282,
+    "noCapturedDifferentialWrong": 22,
+    "metadataOrWeakDifferentialWrong": 122,
+    "robustTruthDifferentialWrong": 0,
+    "note": "A diagnostic of recorded evidence, not a mathematical ceiling on future semantic evidence."
+  },
+  "rememberedNameOracle": {
+    "arbitraryTruthChoiceCorrect": 426,
+    "note": "Requires oracle knowledge of hidden unique-name label; not deployable."
+  },
+  "confidenceOracle": {
+    "correctStrongUpperBoundIfTopCorrectnessKnown": 282,
+    "currentCorrectStrong": 211,
+    "abstentionGap": 71,
+    "currentFalseStrong": 67
+  },
+  "currentProbeCatalog": {
+    "focusedN": 61,
+    "baselineCorrect": 19,
+    "eligibleWrong": 42,
+    "deterministicH6Correct": 21,
+    "budgetOracleCorrect": 21,
+    "unboundedOracleCorrect": 21,
+    "deterministicVsBudgetOracleResolvedGap": 0,
+    "budget": {
+      "probes": 6,
+      "analyzeCalls": 6,
+      "elapsedMs": 1000
+    },
+    "caveat": "H6 was post-hoc; same catalog and budget, not an independent holdout."
+  },
+  "broaderEvidencePlanning": {
+    "schema": "hex-jev-broader-scheduler-summary/v1",
+    "source": {
+      "comparisonSha256": "df5fe59fb72f8a685ce816502323046589280366ca816ad8a15268ef056b6f0b",
+      "schedulerPr": 9464,
+      "schedulerHead": "f035af71dd183c25d36af7d1eebe413ecfd4bb04",
+      "corpusSha256": "81a7b1f016340b92d59278b2e768d27e0acd44b28b4e2a4d7482666c84e646dd",
+      "transitionsSha256": "135abcf25c37de45951fd2e8b8b1da197463193bb9b27313cb8d09a7421a6972"
+    },
+    "denominator": 426,
+    "focusedCount": 105,
+    "eligibleWrongBaseline": 76,
+    "budget": {
+      "maxProbeCount": 6,
+      "maxAnalyzeCalls": 6,
+      "maxElapsedMs": 1000
+    },
+    "selectedHeuristic": "H6",
+    "baseline": {
+      "total": 105,
+      "top1Correct": 29,
+      "correctStrong": 0,
+      "falseStrong": 0,
+      "ambiguous": 105,
+      "resolved": 0,
+      "wrongToCorrect": 0,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {},
+      "averageProbes": 0,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 0,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "heuristic": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 56,
+      "stopReasons": {
+        "STOP_BUDGET": 56,
+        "STOP_NO_USEFUL_PROBE": 47,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 4.171428571428572,
+      "p50Probes": 6,
+      "p95Probes": 6,
+      "totalAnalyzeCalls": 438,
+      "p50AnalyzeCalls": 6,
+      "p95AnalyzeCalls": 6,
+      "p50ElapsedMs": 9.35,
+      "p95ElapsedMs": 39.16
+    },
+    "budgetOracle": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {
+        "STOP_NO_USEFUL_PROBE": 103,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 0.01904761904761905,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 2,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "unboundedOracle": {
+      "total": 105,
+      "top1Correct": 31,
+      "correctStrong": 2,
+      "falseStrong": 0,
+      "ambiguous": 103,
+      "resolved": 2,
+      "wrongToCorrect": 2,
+      "correctToWrong": 0,
+      "falseStrongPrevented": 0,
+      "newFalseStrong": 0,
+      "budgetExhaustion": 0,
+      "stopReasons": {
+        "STOP_NO_USEFUL_PROBE": 103,
+        "STOP_RESOLVED": 2
+      },
+      "averageProbes": 0.01904761904761905,
+      "p50Probes": 0,
+      "p95Probes": 0,
+      "totalAnalyzeCalls": 2,
+      "p50AnalyzeCalls": 0,
+      "p95AnalyzeCalls": 0,
+      "p50ElapsedMs": 0,
+      "p95ElapsedMs": 0
+    },
+    "gap": {
+      "oracleBResolvedMinusHeuristicResolved": 0,
+      "all426PercentagePoints": 0,
+      "oracleBWrongToCorrectMinusHeuristic": 0
+    },
+    "probeStatistics": {
+      "catalogProbes": 3545,
+      "independentlyExecuted": 2131,
+      "usefulRate": 0.03003284842796809,
+      "uselessRate": 0.969967151572032,
+      "decisiveRate": 0.0018770530267480056,
+      "selectedUsefulRate": 0.07077625570776255,
+      "timeToFirstDecisiveP50Ms": 7.07,
+      "timeToFirstDecisiveP95Ms": 7.720000000000001,
+      "callsToFirstDecisiveP50": 2,
+      "probesToFirstDecisiveP50": 2
+    },
+    "classificationCounts": {
+      "ALREADY_CORRECT": 29,
+      "HEURISTIC_RESOLVED": 2,
+      "ORACLE_ONLY_RESOLVED": 0,
+      "ONLY_UNBOUNDED_RESOLVED": 0,
+      "BINARY_EVIDENCE_INSUFFICIENT": 6,
+      "ANALYSIS_PRIMITIVE_MISSING": 51,
+      "INTENT_UNDERSPECIFIED": 0,
+      "CONFIDENCE_ONLY": 0,
+      "OTHER": 17
+    }
+  },
+  "sourceRefs": {
+    "calibration": "reports/investigations/pinpoint-confidence-plan-a/current-main-p4/oracle-ceiling.json",
+    "probeAuditPr": 9464,
+    "probeAuditResultCommit": "64096f5cb04c300a6bc7f412d7030896bc48d067",
+    "schedulerReverifiedAt": "f035af71dd183c25d36af7d1eebe413ecfd4bb04"
+  }
+}

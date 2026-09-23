@@ -1,0 +1,3593 @@
+{
+  "schema": "hex-jev-failure-taxonomy/v1",
+  "denominator": 426,
+  "byBinary": {
+    "battlecats": {
+      "N": 206,
+      "correctTop1": 149,
+      "wrongTop1": 57
+    },
+    "TsumTsum": {
+      "N": 120,
+      "correctTop1": 76,
+      "wrongTop1": 44
+    },
+    "YWP": {
+      "N": 100,
+      "correctTop1": 57,
+      "wrongTop1": 43
+    }
+  },
+  "queryModes": {
+    "exact": 230,
+    "partialRemembered": 196,
+    "freeFormIntentMeasured": 0,
+    "locationHeldOut": 1
+  },
+  "primaryCounts": {
+    "confidence-too-weak": 71,
+    "correct-strong": 211,
+    "ranking-wrong-strong": 67,
+    "ranking-wrong-ambiguous": 77
+  },
+  "overlappingObservedTags": {
+    "ranking-failure": 144,
+    "false-strong": 67,
+    "correct-but-ambiguous": 71,
+    "same-class-ambiguity": 21,
+    "same-field-name-across-classes": 6,
+    "literal-alternative": 53,
+    "truth-on-lexical-recall-lane": 54,
+    "truth-higher-fusion-but-lower-rank": 5,
+    "same-evidence-code-sequence": 18,
+    "truth-without-dataflow-group": 113
+  },
+  "unmeasuredCauses": [
+    "query interpretation as user intent",
+    "cross-function semantics",
+    "unnamed-field role",
+    "type/class recovery as causal ranking blocker",
+    "unsupported/parser/lifter/extent among these field queries"
+  ],
+  "externalFailureStudies": {
+    "location": "DSDA mobj_t.health, one holdout row, wrong top1/ambiguous under P4",
+    "unsupportedExtent": "reports/investigations/unsupported-semantics: 320/320 DT_INIT/DT_FINI extent gaps; binary-grounded deterministic follow-up",
+    "functionDiscovery": "reports/investigations/function-discovery: 172 IDA-only rows, 170 confirmed structural and 2 probable structural"
+  },
+  "rows": [
+    {
+      "id": "battlecats|exact|f callbacks",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|default tracker",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|background timer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|attribution timer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|response callback",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|migration invoked callback",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|button state",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|conversion",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|date provider",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|was created from background session",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|test block accumulate data chunk count",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|should initiate offset query",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|connector errors",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|dest url",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|app lovin max empty delegate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|registered callbacks",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ad mob empty delegate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|super component",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|in memory cache size limit",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|main html asset alias",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|sum logged events",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|upload bandwidth moving average",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|last impression times",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|should fill with color",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|bypass validation",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|rating enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|current ad index",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|encrypted cpm",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is intro card enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ad candidates",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|in memory cache write failure logged",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|viewable seconds",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|asset url",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|disc write serial queue",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|told delegate to log impression",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|fillup",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|minimum size",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|child views",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|image loaded",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|video currently shown to user",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|right meter",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|cached sequence evaluation timestamps",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|lifetime count",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|cancellation date ia 5 string",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|odc group client",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|global scope",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|freeride engagement start uptime",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|touch event gesture recognizer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|has playback ended",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|click confirming view",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|overlay view observers",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|presentation error url strings",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|orientation landscape",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|native ad validator url",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is jailbroken",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|analytics logging enabled",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|images",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|nonclickable asset names",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|update scroll status scheduler",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|rendering serially",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|asset loading player item refresh interval",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|presenter source",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|visited render i ds",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|cached content type",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|done button handler",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|sdk core observers",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|mediation app open ad",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|for main frame only",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|interstitial zone id to smash delegate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|dynamic source id",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|reflection name",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|l urls",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|start duration",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|current consent",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|got response",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|publisher",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is controller initializing",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|creative types list",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ad media view",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is load candidate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|skan settings",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ad network",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|rewarded",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|init counter",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is banner capped",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is auto refresh enabled",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|interstitial demand sources",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|demand sources collection",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|versioned flow",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|provider settings",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|omid session",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|transparency data",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|plugin code",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|companion creatives",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|is video completed",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|rendered bids",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|mimes",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|instl view",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|mraid state",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|load time orientation",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ar session",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|next session",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|should send non behavioural",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|state factory",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|info reader",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|presenting animated",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|references",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|focus change count listener",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ad loader factory",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|logger level reader",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|block queue",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|ads context storage",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|should trigger init completed eventp",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|china iso alpha 2 code",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|user defaults keys",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|session depth counter",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "battlecats|exact|did enter background callback",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|screen orientation lock",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|$ lazy storage $ image view",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|exact|pan starting location",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|deduplication ids",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|info block",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|wait time",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|store url",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|expiration date",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|token operation",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|refresh handler",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|background session",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "battlecats|partial|retry interval",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|will disappear",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|force view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|browser clicked",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|did appear",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|html asset",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|event time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "battlecats|partial|companion view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|action button",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|options view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|text color",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|has audio",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|and browse",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|store manager",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|playable zip",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|pause button",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|info button",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|current time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|conversion info",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|end timestamp",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|stitching token",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|collection enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|view event",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|view frame",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|gesture direction",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|user initiated",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|network info",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|confirming view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|since boot",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "battlecats|partial|choices view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|media content",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|url parameters",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|output volume",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|current route",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|custom close",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|interface orientations",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|view updates",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|interface orientation",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|source name",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|ping triggers",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|preferences configuration",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|asset viewability",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|session service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|monitored view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|resource buffer",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|buffer update",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|store page",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|auction results",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|from cache",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|server data",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|reported availability",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|data writer",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|network service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "battlecats|partial|config service",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|close button",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|directory path",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|status bar",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|root view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|when done",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "battlecats|partial|user paying",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|video events",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|view received",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|unit delegate",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|for event",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|server url",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|learn more",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|info dictionary",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|known location",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "battlecats|partial|gateway enabled",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|show service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|sheet storage",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|state subject",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-higher-fusion-but-lower-rank",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|message sender",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|info update",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "battlecats|partial|type detail",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|action url",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "battlecats|partial|body text",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-higher-fusion-but-lower-rank",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "battlecats|partial|did change",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|indicator",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|expandable presenter",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|custom one point five click implemented by publisher",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|app store url patterns",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|close button image",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|has ended render timing",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|result identifier",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|loaded ad network response info",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|ad exposure began",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|source url",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|sdk core observers",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|injection time",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|root trailing space constraint",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|m auto retry after wakeup",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|ad timing logger",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|aliases",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|product vc",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|app store dictionary",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|is auction enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|demand source id to bn delegate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|force close timeout",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|current session depth",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|ad network",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|server base url",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|is running",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|js interface handler",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|fullscreen ad delegate",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|sound enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|next index",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|idfa string",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|viewability calculator",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|timeout callback",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|web player",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|is ads gateway enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|internal status",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|unique int id generator",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|normalizer",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|load tasks state storage",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|request impression configuration",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|total ram memory",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|interests",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|wait acquired",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|default flags by sdk name",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|tcf client",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|user engagement timer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|time to live millis",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|waiting for att status",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|cost currency",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|file extension",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|content padding",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|cache debug map",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|ended",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|viewable impression block",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|saved dynamic height",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|playing before seeked",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|should clip",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|dsl controller did appear",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|dispatch timer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|display unix timestamp",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|exact|is get from server",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|error code",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|status bar",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|view frame",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|user initiated",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|network info",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|since boot",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|choices view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|media content",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|output volume",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|current route",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|interface orientations",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|view updates",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|source name",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|ping triggers",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|orientation change",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|preferences configuration",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|asset viewability",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|monitored view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|resource buffer",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|playback state",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|link url",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|tracking tokens",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|background task",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|info update",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|action url",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|body text",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-higher-fusion-but-lower-rank",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|did change",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|auction results",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|from cache",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|reported availability",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|data writer",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|network service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|root view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|when done",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|view received",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|info block",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|for event",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|unit strategy",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|clock event",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|full cache",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|session state",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|screen state",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|gateway enabled",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|show service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|state subject",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-higher-fusion-but-lower-rank",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|message sender",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|options view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|end timestamp",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|collection enabled",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|view event",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|retry interval",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|logged impression",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|pause button",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|playable zip",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|info button",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|current time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|and browse",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|did appear",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|event time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "TsumTsum|partial|new count",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|exact|text field",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|start location",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|update link block",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|interstitial ad did click callback",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|trackers by type",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|blocks",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|is javascript ad control initialized",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|gameplay icon view",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|custom layout",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|user specified sound state",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|omsdk factory",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|call to action title",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|search ad reporter",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|default ad frame",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|last touch begin timestamp",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|forced ad orientation",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|settings update observers",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|signals need update",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|server request",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|event logger ready",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|ad sequence",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|location access allowed",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|symbol name",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|upload progress",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|pending count",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|control pan gesture",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|playable url",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "exact-query",
+        "ranking-failure",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "YWP|exact|pagx 2 val yes",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|paga 0 ptr void",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|interact slide threshold",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|video type",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|after delay",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|auto reverse animation",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|start interpolator",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|if send click",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|image timer",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|playable backup enable",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|loaded cancel block",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|origin dic",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|user context",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|old center",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|result info",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|pag fail nil name",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|parse completion dic",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|has notify for anchor",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|total length",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|storage block list provider",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|web app failure code",
+      "primary": "correct-strong",
+      "tags": [
+        "exact-query"
+      ]
+    },
+    {
+      "id": "YWP|exact|transaction history reader",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|exact|current statep",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "exact-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|partial|server url",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|browser clicked",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|partial|event time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "YWP|partial|options view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|and browse",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|button delay",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|view array",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|current time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|network items",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|partial|session state",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "YWP|partial|user agent",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|conversion info",
+      "primary": "confidence-too-weak",
+      "tags": [
+        "partial-remembered-query",
+        "correct-but-ambiguous"
+      ]
+    },
+    {
+      "id": "YWP|partial|view event",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|gesture direction",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|network info",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|since boot",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity"
+      ]
+    },
+    {
+      "id": "YWP|partial|media content",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|output volume",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "YWP|partial|custom close",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|interface orientations",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|player view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|wait time",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|asset viewability",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|monitored view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|buffer update",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|state change",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "YWP|partial|learn more",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|reachability status",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "YWP|partial|body part",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|mask view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|open url",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|request time",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|logo image",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|endcard direct",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|state timer",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|default view",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|load finish",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "YWP|partial|duration time",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence"
+      ]
+    },
+    {
+      "id": "YWP|partial|delay time",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|preload cache",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|render start",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure"
+      ]
+    },
+    {
+      "id": "YWP|partial|bar info",
+      "primary": "correct-strong",
+      "tags": [
+        "partial-remembered-query"
+      ]
+    },
+    {
+      "id": "YWP|partial|star view",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|first page",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|event timer",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-class-ambiguity",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|animation time",
+      "primary": "ranking-wrong-strong",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "truth-without-dataflow-group",
+        "false-strong"
+      ]
+    },
+    {
+      "id": "YWP|partial|back button",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|report click",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-field-name-across-classes",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|show service",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "same-evidence-code-sequence",
+        "truth-without-dataflow-group"
+      ]
+    },
+    {
+      "id": "YWP|partial|state subject",
+      "primary": "ranking-wrong-ambiguous",
+      "tags": [
+        "partial-remembered-query",
+        "ranking-failure",
+        "literal-alternative",
+        "truth-on-lexical-recall-lane",
+        "truth-higher-fusion-but-lower-rank",
+        "truth-without-dataflow-group"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+diff --git a/scripts/compare-pinpoint-jev-schedulers.mjs b/scripts/compare-pinpoint-jev-schedulers.mjs
+index 162aaae86..8255bc1c1 100644
+--- a/scripts/compare-pinpoint-jev-schedulers.mjs
++++ b/scripts/compare-pinpoint-jev-schedulers.mjs
+@@ -12 +12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+-const OUT = path.join(ROOT, 'reports/investigations/pinpoint-jev-probe-audit-20260923');
++const OUT = path.resolve(process.env.HEX_JEV_BROADER_OUT || path.join(ROOT, 'reports/investigations/pinpoint-jev-probe-audit-20260923'));
+@@ -16 +16 @@ const transitions = readJsonl('probe-transitions.jsonl');
+-if (corpus.length !== 61) throw new Error(`expected 61 focused rows, got ${corpus.length}`);
++if (corpus.length !== 105) throw new Error(`expected 105 ambiguous partial rows, got ${corpus.length}`);
+diff --git a/scripts/measure-pinpoint-jev-probes.mjs b/scripts/measure-pinpoint-jev-probes.mjs
+index 4f2bea1d9..c997fb471 100644
+--- a/scripts/measure-pinpoint-jev-probes.mjs
++++ b/scripts/measure-pinpoint-jev-probes.mjs
+@@ -17 +17 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+-const OUT = path.resolve(ROOT, 'reports/investigations/pinpoint-jev-probe-audit-20260923');
++const OUT = path.resolve(process.env.HEX_JEV_BROADER_OUT || path.join(ROOT, 'reports/investigations/pinpoint-jev-probe-audit-20260923'));
+@@ -58 +58,5 @@ const eligibility = baseline.map((r) => {
+-const eligible = eligibility.filter((x) => x.decision.eligible);
++// Broader audit: every currently ambiguous partial field row with a complete
++// two-or-more-candidate lattice, independent of the old Jev predicate.
++const eligible = eligibility.filter((x) => x.row.mode === 'partial'
++  && x.row.currentVerdict === 'ambiguous' && x.row.candidatePresent
++  && x.row.candidateCount >= 2 && !x.row.error);

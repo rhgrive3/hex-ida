@@ -1,0 +1,81 @@
+{
+  "schema": "hex-jev-broader-scheduler-summary/v1",
+  "source": {
+    "schedulerPr": 9464,
+    "schedulerHead": "f035af71dd183c25d36af7d1eebe413ecfd4bb04",
+    "comparisonSha256": "df5fe59fb72f8a685ce816502323046589280366ca816ad8a15268ef056b6f0b",
+    "corpusSha256": "81a7b1f016340b92d59278b2e768d27e0acd44b28b4e2a4d7482666c84e646dd",
+    "transitionsSha256": "135abcf25c37de45951fd2e8b8b1da197463193bb9b27313cb8d09a7421a6972"
+  },
+  "denominator": 426,
+  "focusedCount": 105,
+  "eligibleWrongBaseline": 76,
+  "selection": "partial + ambiguous + candidatePresent + candidateCount>=2 + no error",
+  "budget": { "maxProbeCount": 6, "maxAnalyzeCalls": 6, "maxElapsedMs": 1000 },
+  "selectedHeuristic": "H6",
+  "baseline": { "top1Correct": 29, "resolved": 0, "ambiguous": 105 },
+  "heuristic": {
+    "top1Correct": 31,
+    "resolved": 2,
+    "wrongToCorrect": 2,
+    "correctToWrong": 0,
+    "falseStrong": 0,
+    "ambiguous": 103,
+    "totalAnalyzeCalls": 438,
+    "p50AnalyzeCalls": 6,
+    "p95AnalyzeCalls": 6,
+    "p50ElapsedMs": 9.35,
+    "p95ElapsedMs": 39.16
+  },
+  "budgetOracle": {
+    "top1Correct": 31,
+    "resolved": 2,
+    "wrongToCorrect": 2,
+    "falseStrong": 0,
+    "ambiguous": 103,
+    "totalAnalyzeCalls": 2
+  },
+  "unboundedOracle": {
+    "top1Correct": 31,
+    "resolved": 2,
+    "wrongToCorrect": 2,
+    "falseStrong": 0,
+    "ambiguous": 103,
+    "totalAnalyzeCalls": 2
+  },
+  "gap": {
+    "budgetOracleResolvedMinusHeuristicResolved": 0,
+    "unboundedOracleResolvedMinusHeuristicResolved": 0,
+    "all426PercentagePoints": 0,
+    "budgetOracleWrongToCorrectMinusHeuristic": 0
+  },
+  "probeStatistics": {
+    "catalogProbes": 3545,
+    "independentlyExecuted": 2131,
+    "usefulRate": 0.03003284842796809,
+    "decisiveRate": 0.0018770530267480056,
+    "selectedUsefulRate": 0.07077625570776255,
+    "timeToFirstDecisiveP50Ms": 7.07,
+    "timeToFirstDecisiveP95Ms": 7.72,
+    "callsToFirstDecisiveP50": 2,
+    "probesToFirstDecisiveP50": 2
+  },
+  "classificationCounts": {
+    "ALREADY_CORRECT": 29,
+    "HEURISTIC_RESOLVED": 2,
+    "ORACLE_ONLY_RESOLVED": 0,
+    "ONLY_UNBOUNDED_RESOLVED": 0,
+    "BINARY_EVIDENCE_INSUFFICIENT": 6,
+    "ANALYSIS_PRIMITIVE_MISSING": 51,
+    "INTENT_UNDERSPECIFIED": 0,
+    "CONFIDENCE_ONLY": 0,
+    "OTHER": 17
+  },
+  "invariants": {
+    "emptySequenceParity": true,
+    "budgetZeroParity": true,
+    "oracleAAtLeastB": true,
+    "oracleBAtLeastEachHeuristic": true,
+    "budgetsHonored": true
+  }
+}

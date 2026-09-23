@@ -1,0 +1,77 @@
+{
+  "schema": "hex-jev-full-opportunity-manifest/v1",
+  "producedAt": "2026-09-23T03:17:34.151Z",
+  "productCommit": "09dfcb283f721b6598f34675a8a42480147d5752",
+  "productTree": "0e6e5f9e14b3e2b8d8877b5c01ea1358b76fa8bd",
+  "reportBaseCommitAtGeneration": "6afa3d470866311ca3086f87a487d41a12b5cd50",
+  "queryFixture": {
+    "path": "tests/fixtures/pinpoint-confidence-queries.json",
+    "rows": 426,
+    "sha256": "d24150d2366e2617432dff2a1542834eab6e5f456b61456bd87e8620ece98160"
+  },
+  "binaryFixtures": {
+    "battlecats": {
+      "bytes": 28153072,
+      "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13"
+    },
+    "TsumTsum": {
+      "bytes": 45994784,
+      "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3"
+    },
+    "YWP": {
+      "bytes": 63455952,
+      "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6"
+    }
+  },
+  "currentMainMeasurement": {
+    "source": "persistent evidence/current-main/measurement.json",
+    "sha256": "fe93ae6e7f9e147df85fcba9a9cb45d660a5194c46aa48ff25f3d75653d96e31",
+    "sourceRows": "persistent evidence/current-main/rows.jsonl",
+    "sourceRowsSha256": "70ba00f89fa95cb96bb648b44630a901bdc9bb052f8a027a82f8a93446c220f9"
+  },
+  "cxxFixture": {
+    "binarySha256": "65c65e1cdf061201229894b1eca341d76db9554f192bd20328cb896bc8c52d06",
+    "sourceSha256": "17da3b0670a7885459168fa2e33c45a00ef5da3e69401ffb9c5758c9e278928f",
+    "target": "aarch64-unknown-linux-gnu",
+    "optimization": "-O0",
+    "toolchain": {
+      "clang": "Ubuntu clang version 14.0.0-1ubuntu1.1",
+      "linker": "Ubuntu LLD 14.0.0 (compatible with GNU linkers)",
+      "disassembler": "Ubuntu LLVM version 14.0.0"
+    }
+  },
+  "liveContract": {
+    "endpoint": "https://api.openjev.sh/v1/systemone",
+    "model": "openjev",
+    "probeStatus": 200,
+    "modelsStatus": 200,
+    "secretStored": false
+  },
+  "relatedPrHeadsAtReview": {
+    "probeAudit9464": "f035af71dd183c25d36af7d1eebe413ecfd4bb04",
+    "cxxMember9469": "e91f1214a0179fbeef30b359fb4a69498c18ab3e"
+  },
+  "artifactHashes": {
+    "failure-taxonomy.json": "55c38959f8e4912ad87431d00fb1ee691124248d3aa4041ebaa537d8b0cc3682",
+    "use-case-matrix.json": "d1c7e741cb77a903396f73379e87988c15c38f6bf0b0ad3539127bc56e9a7ecf",
+    "evaluation-summary.json": "134e249309a47e6d6ce7f02e952ce48e4042527dacb894434cb25e0735618c89",
+    "oracle-ceilings.json": "c577ebbd00d56e620f2b62e731b518b1cd5833b1fbad0653221d07548a265828",
+    "latency-summary.json": "43c1ceba390ab133ed3377ae3ed869b697886fd59de42431dcd9ce5923492b75",
+    "broader-scheduler-summary.json": "2b0af4a957bcc2482be7f976eafd8239b0235e1b8294dd972d623370adbe2412",
+    "rows.jsonl": "097088067a189a3d109968aec81cd2f63338ab233626911d31b0ec64bdba9644",
+    "deterministic-screen.json": "dc86b27f60ea45e4eb1092c6b0ffd5b784d9c7637b0bfc962c10d2afa9038306",
+    "field-role-results.json": "43447489472b18e121d4e62e4a6bcc1574071e934c8caa1d87536f4c80505067",
+    "field-role-cases.json": "1eca5ef9081d6fd14e3073ede58f148cbd35f580480991bd0923b334afbe428c",
+    "evaluate.mjs": "d3cd687710786e6409078984ba45799e0875ad5298d64900ac1dd8178bdf6e23",
+    "deterministic-screen.mjs": "26785a1738443d92f4a62d15d3204aab56aa34d8ae9cb090ebb92029b7485bc3",
+    "field-role-screen.mjs": "7015e712f29a06c9f7977dd64aeef52236a846dc5e0d7bf86013255ca4c86a39",
+    "build-report.mjs": "76422b3314caf7effe8a25a4ba438f103d6cd9e87cb51ef8b5e424fad99fa55b",
+    "validate.mjs": "fb559545e9ee2d834e4b353fdabe0a7d9c921c2b0d476e298abcf2589ea43ff0",
+    "broader-probe.patch": "4db2c4b1c4ceaba1e5db423463c3b5b24693e9a5273d9edef5d578ceaac5bb5d"
+  },
+  "limitations": [
+    "No independent free-form intent or unnamed-field real-game ground truth",
+    "No production Jev integration or safe strong-verdict gain",
+    "Evidence-planning oracle is complete only for the 105-row ambiguous-partial catalog; 39 wrong-but-strong rows are outside the fail-closed scheduler predicate"
+  ]
+}

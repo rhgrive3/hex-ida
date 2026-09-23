@@ -1,0 +1,67 @@
+{
+  "schema": "hex-jev-latency-summary/v1",
+  "endpoint": "https://api.openjev.sh/v1/systemone",
+  "model": "openjev",
+  "observedCalls": 588,
+  "concurrency": 3,
+  "requestTimeoutMs": 15000,
+  "byArm": {
+    "label": {
+      "N": 196,
+      "p50Ms": 533.66,
+      "p95Ms": 781.08,
+      "p99Ms": 1191.92,
+      "maxMs": 1673.57,
+      "failures": 0,
+      "uniqueP50": 0.24,
+      "uniqueP95": 0.43
+    },
+    "class": {
+      "N": 196,
+      "p50Ms": 541.66,
+      "p95Ms": 801.25,
+      "p99Ms": 1200.8,
+      "maxMs": 1607.35,
+      "failures": 0,
+      "uniqueP50": 0.23,
+      "uniqueP95": 0.43
+    },
+    "evidence": {
+      "N": 196,
+      "p50Ms": 547.66,
+      "p95Ms": 787.79,
+      "p99Ms": 1061.07,
+      "maxMs": 1537.35,
+      "failures": 0,
+      "uniqueP50": 0.24,
+      "uniqueP95": 0.43
+    }
+  },
+  "overall": {
+    "p50Ms": 541.66,
+    "p95Ms": 787.79,
+    "p99Ms": 1061.07,
+    "timeoutCount": 0,
+    "malformedCount": 0,
+    "apiUnavailableCount": 0,
+    "rateLimitCount": 0
+  },
+  "repeatedQuery": {
+    "N": 20,
+    "sameChoice": 19,
+    "changedIds": [
+      "battlecats|partial|background session|evidence"
+    ]
+  },
+  "fieldRole": {
+    "p50": 513.17,
+    "p95": 593.4,
+    "p99": 593.4
+  },
+  "failurePolicy": "Timeout, non-200, malformed response, model mismatch, invalid candidate, or missing probability returns baseline index 0; no score or verdict promotion.",
+  "risk": {
+    "privacy": "class, field and evidence summaries leave device in every live call",
+    "cache": "Exact state+model+binary/evidence version could be reused; no production cache measured",
+    "retry": "No retry was needed in this run; retry benefit and 429 recovery remain unmeasured"
+  }
+}
