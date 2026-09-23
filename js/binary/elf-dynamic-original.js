@@ -466,73 +466,109 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
   return { dtPltgot, jumpSlots };
 }
 
+// Exhaustive uniqueness scanning reads every executable file byte. That is
+// cheap for small images, but in source-backed parsing it turns an optional
+// function seed into whole-.text metadata reads (and a failed open once the
+// metadata budget is exceeded). Above this bound only the GOT-anchored
+// candidate is verified.
+const AAELF64_PLT_RESOLVER_SCAN_LIMIT_BYTES = 1n << 20n;
+
 function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
   const dynamic = dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComplete);
   if (!dynamic) return null;
   const expectedBytes = AAELF64_PLT_RESOLVER_BYTES
     + AAELF64_PLT_THUNK_BYTES * BigInt(dynamic.jumpSlots.length);
   const jumpSlotSet = new Set(dynamic.jumpSlots.map((address) => address.toString()));
-  const matches = new Map();
 
-  // PT_LOAD is the runtime authority. We inspect every aligned address in its
-  // file-backed executable span, rather than promoting the segment/section
-  // boundary itself to a function start.
+  const structurallyMatches = (address) => {
+    if (!executableELFRange(image, address, expectedBytes)
+      || !mappedELFFileSpanForVa(image, address, expectedBytes)) return false;
+    const resolver = decodeAarch64PltResolver(r, image, address);
+    if (!resolver || resolver.gotSlot !== dynamic.dtPltgot + 16n
+      || resolver.addTarget !== resolver.gotSlot
+      || jumpSlotSet.has(resolver.gotSlot.toString())) return false;
+    for (let i = 0; i < dynamic.jumpSlots.length; i++) {
+      const thunkAddress = address + AAELF64_PLT_RESOLVER_BYTES
+        + AAELF64_PLT_THUNK_BYTES * BigInt(i);
+      const thunk = decodeAarch64PltTail(r, image, thunkAddress);
+      if (!thunk || thunk.gotSlot !== thunk.addTarget || thunk.gotSlot !== dynamic.jumpSlots[i]) return false;
+    }
+    return true;
+  };
+
+  const executableSegments = [];
+  let executableFileBytes = 0n;
   for (const segment of image.segments || []) {
     if (segment?.source !== 'PT_LOAD' || segment?.perms?.execute !== true) continue;
     const fileSize = BigInt(segment.fileSize ?? 0n);
     if (fileSize < expectedBytes || fileSize > BigInt(Number.MAX_SAFE_INTEGER)) continue;
     const fileOffset = BigInt(segment.fileOffset ?? 0n);
     if (fileOffset > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+    executableSegments.push({ segment, fileSize, fileOffset });
+    executableFileBytes += fileSize;
+  }
+
+  if (executableFileBytes > AAELF64_PLT_RESOLVER_SCAN_LIMIT_BYTES) {
+    // Lazy-binding GOT slots are initialised with the PLT0 address. Every
+    // R_AARCH64_JUMP_SLOT slot must name the same file-backed value, and that
+    // value must pass the full structural proof; any disagreement fails closed.
+    let anchor = null;
+    for (const slot of dynamic.jumpSlots) {
+      const span = mappedELFFileSpanForVa(image, slot, 8n);
+      if (!span) return null;
+      const value = r.u64(span.start);
+      if (anchor == null) anchor = value;
+      else if (value !== anchor) return null;
+    }
+    if (anchor == null || anchor === 0n || (anchor & 3n) !== 0n) return null;
+    return structurallyMatches(anchor) ? { address: anchor, gotAnchored: true } : null;
+  }
+
+  // PT_LOAD is the runtime authority. We inspect every aligned address in its
+  // file-backed executable span, rather than promoting the segment/section
+  // boundary itself to a function start.
+  const matches = new Map();
+  const needed = Number(expectedBytes);
+  for (const { segment, fileSize, fileOffset } of executableSegments) {
     const firstDelta = (4n - (BigInt(segment.address) & 3n)) & 3n;
     const first = Number(fileOffset + firstDelta);
     const fileEnd = Number(fileOffset + fileSize);
-    const needed = Number(expectedBytes);
     for (let p = first; p + needed <= fileEnd; p += 4) {
       if (r.u32(p) !== AARCH64_STP_X16_X30_PRE) continue;
       const address = BigInt(segment.address) + BigInt(p - Number(fileOffset));
-      if (!executableELFRange(image, address, expectedBytes)
-        || !mappedELFFileSpanForVa(image, address, expectedBytes)) continue;
-      const resolver = decodeAarch64PltResolver(r, image, address);
-      if (!resolver || resolver.gotSlot !== dynamic.dtPltgot + 16n
-        || resolver.addTarget !== resolver.gotSlot
-        || jumpSlotSet.has(resolver.gotSlot.toString())) continue;
-
-      let complete = true;
-      for (let i = 0; i < dynamic.jumpSlots.length; i++) {
-        const thunkAddress = address + AAELF64_PLT_RESOLVER_BYTES
-          + AAELF64_PLT_THUNK_BYTES * BigInt(i);
-        const thunk = decodeAarch64PltTail(r, image, thunkAddress);
-        if (!thunk || thunk.gotSlot !== thunk.addTarget || thunk.gotSlot !== dynamic.jumpSlots[i]) {
-          complete = false;
-          break;
-        }
-      }
-      if (complete) matches.set(address.toString(), address);
+      if (!structurallyMatches(address)) continue;
+      matches.set(address.toString(), address);
       if (matches.size > 1) return null;
     }
   }
-  return matches.size === 1 ? matches.values().next().value : null;
+  return matches.size === 1 ? { address: matches.values().next().value, gotAnchored: false } : null;
 }
 
 function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
-  const address = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
-  if (address == null) return;
+  const match = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
+  if (match == null) return;
+  const { address, gotAnchored } = match;
   // The finder proves the full 32-byte PLT0 extent: STP head, GOT-linked
   // resolver tail (DT_PLTGOT+16), 3x NOP padding, ordered R_AARCH64_JUMP_SLOT
-  // thunks immediately following, unique match in executable PT_LOADs, and
-  // file-backed bytes. That is exact-extent authority for these 32 bytes
-  // only — never for the following thunks, never from section names.
+  // thunks immediately following, a single candidate (unique executable
+  // PT_LOAD match, or for large images the one address every lazy GOT slot is
+  // initialised with), and file-backed bytes. That is exact-extent authority
+  // for these 32 bytes only — never for the following thunks, never from
+  // section names.
   image.functions.push(functionSeed(address, {
     size: AAELF64_PLT_RESOLVER_BYTES,
     source: 'elf-plt-structure',
     confidence: 0.95,
     kind: 'stub',
     exactFunctionStart: true,
-    functionStartEvidence: 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, resolver/thunk instruction structure, 32-byte NOP-padded extent, and unique executable PT_LOAD match',
+    functionStartEvidence: gotAnchored
+      ? 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots whose file-backed initial values all name this address, resolver/thunk instruction structure, 32-byte NOP-padded extent, and file-backed executable PT_LOAD bytes'
+      : 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, resolver/thunk instruction structure, 32-byte NOP-padded extent, and unique executable PT_LOAD match',
   }));
   image.metadata.aarch64PltResolver = {
     address,
     source: 'elf-plt-structure',
+    ...(gotAnchored ? { candidate: 'got-initial-value' } : {}),
   };
 }
 
