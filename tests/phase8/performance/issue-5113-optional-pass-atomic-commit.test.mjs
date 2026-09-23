@@ -236,3 +236,23 @@ test('#5113 immutable certification caches shared frozen descendants, not only w
   // rollback capture of the mutable state itself.
   assert.ok(descriptorReads < 1000, `shared frozen graph was repeatedly rescanned: ${descriptorReads}`);
 });
+
+
+test('#5113 frozen Map is still mutable through internal slots and must roll back', () => {
+  const memo = new Map([['real', 'v']]);
+  Object.freeze(memo);
+  const manager = new PassManager([{
+    name: 'frozen-map-corruptor',
+    required: false,
+    run(state) {
+      state.memo.set('forged', 'x');
+      throw new Error('map internal-slot mutation');
+    },
+  }]);
+
+  const state = manager.run({ memo });
+  assert.equal(Object.isFrozen(state.memo), true);
+  assert.equal(state.memo.has('real'), true);
+  assert.equal(state.memo.has('forged'), false, 'Object.freeze(Map) must not bypass rollback capture');
+  assert.equal(state.passMetrics[0].ok, false);
+});
