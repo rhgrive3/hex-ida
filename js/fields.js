@@ -263,7 +263,7 @@ export class FieldIndex {
   }
 
   resolveAccess(access, className) {
-    if (!access) return null;
+    if (!access || access.self === false) return null;
     /*
      * 位置変数ごしのアクセス（いまの Objective-C の普通の形）。
      * ここはクラス名が分からなくても解ける — 変数そのものがクラスを名乗っている。
