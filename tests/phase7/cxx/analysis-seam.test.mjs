@@ -154,7 +154,8 @@ test('the analysis entrypoint projects typed member evidence for a proven receiv
   const provider = providerFor(openProbe());
   await provider.build();
 
-  analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+  const result = analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+  assert.ok(result.decompiler?.pseudocode, 'typed projection must decompile');
 
   const attempt = provider.lastAttempt();
   assert.equal(attempt.functionAddress, rows[0].address,
@@ -185,6 +186,8 @@ test('the analysis entrypoint projects typed member evidence for a proven receiv
   const typed = projection.members.filter((member) => member.typeProven);
   assert.equal(typed.length >= 1, true);
   for (const member of typed) assert.match(member.typeLabel, /int32_t/);
+  assert.match(result.decompiler.pseudocode, /this->field_[0-9A-Fa-f]+ \/\* int32_t\|uint32_t \*\//,
+    'canonical member type evidence must survive the full producer -> provider -> pseudocode chain');
 });
 
 test('a free function never receives a receiver from the same provider', { skip }, async () => {
