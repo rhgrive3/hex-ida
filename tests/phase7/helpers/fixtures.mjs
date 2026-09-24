@@ -193,17 +193,12 @@ export class FunctionFixture {
     const nodeId = `node_${id}`;
     let inputs = [];
     if (conditional) {
-      // #8809 sync: canonical Semantic IR (post-#4585 hardening) validates a
-      // conditional-branch as exactly one condition input and exactly two
-      // targets. Synthesize the predicate entry value and its compare node in
-      // the same shape tests/semantic-v2/issue-4585 fixes as canonical, so
-      // corpus fixtures reach the assertions they are about.
+      // A conditional branch reads one predicate value and names exactly two
+      // targets. Keep synthetic conditions as unconstrained entry predicates;
+      // a compare node would need real operands and an output value, which
+      // these control-flow fixtures do not model.
       const conditionId = `${nodeId}:condition`;
       this.#value(conditionId, null, { kind: 'predicate', widthBits: 1 }, null);
-      this.#push({
-        id: `${nodeId}:compare`, kind: 'compare', blockId, inputs: [conditionId], outputs: [],
-        operator: 'eq', attributes: {}, origin: origin(`${nodeId}:compare`),
-      });
       inputs = [conditionId];
     }
     this.#push({
