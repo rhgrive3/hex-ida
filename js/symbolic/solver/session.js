@@ -42,7 +42,7 @@ function makeAbortController() {
     abort(abortReason = undefined) {
       if (aborted) return;
       aborted = true;
-      reason = arguments.length === 0 ? defaultAbortReason() : abortReason;
+      reason = abortReason === undefined ? defaultAbortReason() : abortReason;
       try {
         for (const [listener, once] of listeners) {
           if (once) listeners.delete(listener);
