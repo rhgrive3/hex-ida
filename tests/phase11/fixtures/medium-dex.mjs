@@ -53,19 +53,37 @@ export function dexMethod(words = [0x000e], options = {}) {
 
 export function buildDex(options = {}) {
   const fields = options.fields ?? [{ classType:'LTest;', type:'I', name:'x' }];
-  const methods = options.methods ?? [{ classType:'LTest;', name:'foo', returnType:'V', params:[], flags:9, words:[0x000e] }];
-  const classNames = options.classNames ?? ['LTest;'];
-  const typeNames = [...new Set([...classNames, ...fields.flatMap(f => [f.classType, f.type]), ...methods.flatMap(m => [m.classType, m.returnType, ...(m.params ?? [])])])].sort();
+  const inputMethods = options.methods ?? [{ classType:'LTest;', name:'foo', returnType:'V', params:[], flags:9, words:[0x000e] }];
+  // class_defs are ordered by class type index (descriptor order) unless rawOrder.
+  const classNames = options.rawOrder === true ? (options.classNames ?? ['LTest;']) : [...(options.classNames ?? ['LTest;'])].sort();
+  const typeNames = [...new Set([...classNames, ...fields.flatMap(f => [f.classType, f.type]), ...inputMethods.flatMap(m => [m.classType, m.returnType, ...(m.params ?? [])])])].sort();
   const shorty = m => [m.returnType, ...(m.params ?? [])].map(t => /^[L[]/.test(t) ? 'L' : t).join('');
-  const strings = [...new Set([...typeNames, ...fields.map(f => f.name), ...methods.flatMap(m => [m.name, m.shorty ?? shorty(m)]), ...(options.strings ?? [])])].sort();
+  const strings = [...new Set([...typeNames, ...fields.map(f => f.name), ...inputMethods.flatMap(m => [m.name, m.shorty ?? shorty(m)]), ...(options.strings ?? [])])].sort();
   const si = s => strings.indexOf(s), ti = s => typeNames.indexOf(s);
+  // DEX requires method_ids sorted by (class, name, proto). Sort a copy; an
+  // already-sorted input keeps its indices.
+  const cmpList = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
+  // `rawOrder` keeps input order (one proto per method) for tests that build
+  // deliberately mis-ordered identity tables.
+  const raw = options.rawOrder === true;
+  const methods = raw ? inputMethods.slice() : inputMethods.map((m, i) => ({ m, i })).sort((a, b) =>
+    (ti(a.m.classType) - ti(b.m.classType)) || (si(a.m.name) - si(b.m.name))
+    || cmpList([ti(a.m.returnType), ...(a.m.params ?? []).map(ti)], [ti(b.m.returnType), ...(b.m.params ?? []).map(ti)]) || (a.i - b.i)).map(({ m }) => m);
   const data = new Uint8Array(65536), v = new DataView(data.buffer), maps = [[0,1,0]], layout = {};
   let pos = 0x70;
   const align = () => { pos = Math.ceil(pos / 4) * 4; };
   const emit = a => { const p = pos; data.set(a, pos); pos += a.length; return p; };
   const reserve = (name, type, count, width, header) => { if (!count) return 0; align(); const p = pos; pos += count * width; v.setUint32(header,count,true); v.setUint32(header+4,p,true); maps.push([type,count,p]); layout[name]=p; return p; };
   reserve('strings',1,strings.length,4,56); reserve('types',2,typeNames.length,4,64);
-  reserve('protos',3,methods.length,12,72); reserve('fields',4,fields.length,8,80);
+  // DEX requires proto_ids to be unique and sorted by (return type, parameter
+  // type list); methods share one proto per distinct signature.
+  const protoKeyOf = m => [ti(m.returnType), ...(m.params ?? []).map(ti)];
+  const protoKeys = [];
+  for (const m of methods) { const k = protoKeyOf(m); if (raw || !protoKeys.some(x => x.join() === k.join())) protoKeys.push(k); }
+  if (!raw) protoKeys.sort((a, b) => { if (a[0] !== b[0]) return a[0] - b[0]; for (let i = 1; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; });
+  const protoIndexOf = m => raw ? methods.indexOf(m) : protoKeys.findIndex(k => k.join() === protoKeyOf(m).join());
+  const protoOwner = raw ? methods.slice() : protoKeys.map(k => methods.find(m => protoKeyOf(m).join() === k.join()));
+  reserve('protos',3,protoKeys.length,12,72); reserve('fields',4,fields.length,8,80);
   reserve('methods',5,methods.length,8,88); reserve('classes',6,classNames.length,32,96);
   align(); const dataStart = pos;
   const stringStart = pos;
@@ -116,7 +134,8 @@ export function buildDex(options = {}) {
   layout.mapOff=mapOff;layout.maps=maps;layout.dataStart=dataStart;layout.stringsList=strings;layout.typesList=typeNames;
   typeNames.forEach((s,i)=>v.setUint32(layout.types+i*4,si(s),true));
   fields.forEach((f,i)=>{const p=layout.fields+i*8;v.setUint16(p,ti(f.classType),true);v.setUint16(p+2,ti(f.type),true);v.setUint32(p+4,si(f.name),true);});
-  methods.forEach((m,i)=>{let p=layout.protos+i*12;v.setUint32(p,si(m.shorty??shorty(m)),true);v.setUint32(p+4,ti(m.returnType),true);v.setUint32(p+8,paramsOffsets[i],true);p=layout.methods+i*8;v.setUint16(p,ti(m.classType),true);v.setUint16(p+2,i,true);v.setUint32(p+4,si(m.name),true);});
+  protoOwner.forEach((m,i)=>{const p=layout.protos+i*12;v.setUint32(p,si(m.shorty??shorty(m)),true);v.setUint32(p+4,ti(m.returnType),true);v.setUint32(p+8,paramsOffsets[methods.indexOf(m)],true);});
+  methods.forEach((m,i)=>{const p=layout.methods+i*8;v.setUint16(p,ti(m.classType),true);v.setUint16(p+2,protoIndexOf(m),true);v.setUint32(p+4,si(m.name),true);});
   data.set([100,101,120,10,48,51,57,0]);v.setUint32(32,pos,true);v.setUint32(36,0x70,true);v.setUint32(40,0x12345678,true);v.setUint32(52,mapOff,true);v.setUint32(104,pos-dataStart,true);v.setUint32(108,dataStart,true);
   return { bytes:applyDexIntegrity(data.slice(0,pos)), layout };
 }

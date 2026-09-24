@@ -148,11 +148,13 @@ function consumerFixture({ withInterface }) {
   const built = buildDex({
     classNames: ['LTest;'],
     methods: [
-      // invoke-static {v0}, method@1; then invoke-interface {v0, v1},
-      // method@1 (methods[1] = LI;->go(LI;)V); then return-void. 35c format:
-      // AG/op, BBBB, FEDC — A sits in the AG nibble of the first unit.
-      { classType: 'LTest;', name: 'caller', returnType: 'V', params: ['LI;'], flags: 9, words: [0x1071, 0x0001, 0x0000, 0x2072, 0x0001, 0x0010, 0x000e] },
+      // method_ids are sorted by class descriptor, so LI;->go(LI;)V is method@0
+      // and LTest;->caller is method@1.
       { classType: 'LI;', name: 'go', returnType: 'V', params: ['LI;'], defined: false },
+      // invoke-static {v0}, method@0; then invoke-interface {v0, v1},
+      // method@0; then return-void. 35c format:
+      // AG/op, BBBB, FEDC — A sits in the AG nibble of the first unit.
+      { classType: 'LTest;', name: 'caller', returnType: 'V', params: ['LI;'], flags: 9, words: [0x1071, 0x0000, 0x0000, 0x2072, 0x0000, 0x0010, 0x000e] },
     ],
     strings: ['LI;'],
   });
@@ -163,7 +165,7 @@ function consumerFixture({ withInterface }) {
   return applyDexIntegrity(bytes);
 }
 const dispatchImage = parseDex(consumerFixture({ withInterface: true }), { binaryId: 'dispatch' });
-const dispatchFn = liftDexMethod(0, dispatchImage);
+const dispatchFn = liftDexMethod(dispatchImage.methods.findIndex((m) => m.name === 'caller'), dispatchImage);
 const dispatchCall = dispatchFn.bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
 assert.ok(dispatchCall, 'invoke-interface decoded');
 assert.equal(dispatchCall.target, 'LI;->go');
@@ -177,12 +179,12 @@ assert.equal(dispatchCall.unresolved, true);
 const implementsImage = parseDex(consumerFixture({ withInterface: true }), { binaryId: 'implements' });
 const plainImage = parseDex(consumerFixture({ withInterface: false }), { binaryId: 'plain' });
 // With interfaces_off=0 the candidate set is empty — nothing is inherited.
-const plainCall = liftDexMethod(0, plainImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
+const plainCall = liftDexMethod(plainImage.methods.findIndex((m) => m.name === 'caller'), plainImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
 assert.deepEqual(plainCall.interfaceTypes, []);
 assert.equal(plainCall.unresolved, true);
 // The edge set stays module-wide candidate evidence on both images; the
 // unresolved flag never narrows dispatch beyond what the file proves.
-const implementsCall = liftDexMethod(0, implementsImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
+const implementsCall = liftDexMethod(implementsImage.methods.findIndex((m) => m.name === 'caller'), implementsImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
 assert.deepEqual(implementsCall.interfaceTypes, ['LI;']);
 assert.equal(implementsCall.unresolved, true);
 assert.ok(!('enclosingClassImplementsTarget' in implementsCall));
