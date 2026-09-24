@@ -70,7 +70,7 @@ for (const family of ["valignq", "vcompresspd", "vexpandps", "vcvtudq2ps", "vbro
 // the same exact/exact-with-intrinsic totals as before the retention repair.
 assert.equal(
   matrix.exactCount + matrix.exactWithIntrinsicCount,
-  285,
+  292,
   "owner retention must not mint exactness for unbranded rows",
 );
 const provenancePartials = matrix.rows.filter((row) => row.partialReason === PROVENANCE_PARTIAL);
