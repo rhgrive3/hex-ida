@@ -580,7 +580,7 @@ export function extractCppObjectEvidence(context = {}) {
   let canonicalReceiverValueId = null;
   if (ir?.values?.length) {
     // Find entry argument 0 (in AAPCS64 x0, or registered as arg 0)
-    const arg0 = ir.values.find(v => v.kind === 'arg' && (v.reg === 'x0' || v.index === 0));
+    const arg0 = ir.values.find(v => v.kind === 'arg' && (v.reg === 'x0' || v.label === 'x0' || v.index === 0));
     if (arg0) {
       canonicalReceiverValueId = arg0.id;
     }
