@@ -149,7 +149,14 @@ function typedIdentityText(root) {
   const memo = new Map();
   const visit = (value) => {
     if (value != null && typeof value === 'object') {
-      if (DEEPLY_FROZEN_CACHE.get(value) === true) {
+      // Shared canonical metadata is often deep-frozen but reaches this serializer
+      // through mutable wrapper roots, so origin handling may never have certified
+      // it first. Certify frozen candidates lazily here: true is permanent and lets
+      // later identity roots/calls reuse the exact typed text; mutable/shallow-frozen
+      // graphs remain on the per-call memo path.
+      const certifiedFrozen = DEEPLY_FROZEN_CACHE.get(value) === true
+        || (Object.isFrozen(value) && deeplyFrozen(value));
+      if (certifiedFrozen) {
         if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
         const cached = FROZEN_IDENTITY_TEXT.get(value);
         if (cached !== undefined) return cached;
