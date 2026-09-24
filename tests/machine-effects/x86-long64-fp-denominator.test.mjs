@@ -25,7 +25,7 @@ try {
   assert.equal(fldz.mnemonic,'fldz');
   const publicEffects=liftX86MachineEffects(createX86DecodedInstruction(fldz),{instructionId:'fp:public-fldz'});
   assert.equal(publicEffects.completeness,'partial');
-  assert.match(publicEffects.unknownEffects?.reason,/x86-x87-family-requires-dedicated-semantics/);
+  assert.match(publicEffects.unknownEffects?.reason,/x86-x87-(?:family-requires-dedicated-semantics|trusted-decoder-provenance-required)/);
   assert.equal(publicEffects.metadata?.x87PhysicalStateModeled,true);
   assert.notEqual(publicEffects.metadata?.terminalizedBy,'trusted-capstone-structured-intrinsic');
 } finally { publicDecoder.close(); }

@@ -81,7 +81,7 @@ assert.deepEqual(invalidDmb.unknownEffects.categories, ['memory','other']);
 
 const paciasp = ARM64E_ARCHITECTURE.liftExact({
   instructionId:'phase2:paciasp', mnemonic:'paciasp', mode:'arm64e', operands:[],
-});
+}, { featBti:false });
 assert.equal(paciasp.architectureId, 'arm64e');
 assert.equal(paciasp.completeness, 'exact-with-intrinsic');
 assert.ok(paciasp.operations.some((operation) => operation.kind === 'intrinsic' && operation.intrinsicId === 'arm64e.pointer.sign'));
