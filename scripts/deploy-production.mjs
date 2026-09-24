@@ -208,6 +208,13 @@ export function runProductionDeploy({
       closeSync(mainFd);
     }
 
+    // Create every direct handoff entry before removing write permission from
+    // the parent. The asset tree itself can still be populated through this
+    // child directory after the parent is locked.
+    const handoffAssetsDirName = 'assets-snapshot';
+    const handoffAssetsPath = `/proc/self/fd/${handoffDirectoryFd}/${handoffAssetsDirName}`;
+    mkdirSync(handoffAssetsPath, { mode: 0o700 });
+
     // Once locked, ordinary processes with workspace write access cannot swap
     // the config entry. The child receives the directory descriptor directly,
     // so replacing/renaming any ancestor pathname cannot redirect its lookup.
@@ -265,10 +272,6 @@ export function runProductionDeploy({
           throw new Error('Production assets directory identity changed before deployment.');
         }
 
-        const handoffAssetsDirName = 'assets-snapshot';
-        const handoffAssetsPath = `/proc/self/fd/${handoffDirectoryFd}/${handoffAssetsDirName}`;
-        mkdirSync(handoffAssetsPath, { mode: 0o700 });
-
         const copyTree = (srcDir, dstDir) => {
           const entries = readdirSync(srcDir, { withFileTypes: true });
           for (const entry of entries) {
@@ -314,7 +317,7 @@ export function runProductionDeploy({
                   throw err;
                 }
                 mkdirSync(dstChild, { mode: 0o700 });
-                copyTree(srcChild, dstChild);
+                copyTree(`/proc/self/fd/${childDirFd}`, dstChild);
                 const postRecurseStat = statDescriptor(fstatSync, childDirFd);
                 // Recursion enumerates by pathname: the path must still name the
                 // opened directory afterwards, or a swapped-in symlink could have
@@ -363,12 +366,7 @@ export function runProductionDeploy({
                 }
                 const fileData = Buffer.concat(chunks);
                 const postReadStat = statDescriptor(fstatSync, fileFd);
-                if (!postReadStat.isFile()
-                    || !sameIdentity(postReadStat, openedFileStat)
-                    || String(postReadStat.size) !== String(openedFileStat.size)
-                    || (openedFileStat.mtimeNs != null && postReadStat.mtimeNs != null
-                        ? String(openedFileStat.mtimeNs) !== String(postReadStat.mtimeNs)
-                        : Number(openedFileStat.mtimeMs) !== Number(postReadStat.mtimeMs))) {
+                if (!postReadStat.isFile() || !sameFileMetadata(openedFileStat, postReadStat)) {
                   const err = new Error(`Asset file child ${srcChild} changed while reading`);
                   err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
                   throw err;
@@ -380,7 +378,8 @@ export function runProductionDeploy({
             }
           }
         };
-        copyTree(assetsCandidate, handoffAssetsPath);
+        const stableAssetsSourcePath = `/proc/self/fd/${assetsFd}`;
+        copyTree(stableAssetsSourcePath, handoffAssetsPath);
 
         const snapshotAssetsFd = openSync(handoffAssetsPath, assetsFlags);
         try {

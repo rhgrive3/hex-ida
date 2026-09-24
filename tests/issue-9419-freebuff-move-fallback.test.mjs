@@ -19,7 +19,9 @@ test('preferred shared move propagates rename failures instead of authorizing fa
       const io = {
         ...fs,
         renameSync(from, to) {
-          if (from === src) throw Object.assign(new Error('move failed'), { code });
+          if (from === src || (String(from).startsWith('/proc/self/fd/') && path.basename(String(from)) === path.basename(src))) {
+            throw Object.assign(new Error('move failed'), { code });
+          }
           return fs.renameSync(from, to);
         },
       };

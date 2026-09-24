@@ -133,6 +133,24 @@ async function assertStageIdentity(stagePath, expectedIdentity, io, guard = asyn
   await guard();
 }
 
+async function assertBackupIdentity(backupPath, expectedIdentity, io, guard = async () => {}) {
+  await guard();
+  let stat;
+  try {
+    stat = await io.lstat(backupPath);
+  } catch (cause) {
+    const error = new Error(`userscript-publication-backup-identity-changed:${backupPath}`, { cause });
+    error.code = 'USERSCRIPT_PUBLICATION_BACKUP_CHANGED';
+    throw error;
+  }
+  if (!expectedIdentity || !sameEntryIdentity(stat, expectedIdentity)) {
+    const error = new Error(`userscript-publication-backup-identity-changed:${backupPath}`);
+    error.code = 'USERSCRIPT_PUBLICATION_BACKUP_CHANGED';
+    throw error;
+  }
+  await guard();
+}
+
 // Never truncate an existing generated file before the replacement has been
 // written, synced and read back. A directory-sync failure still fails the build.
 export async function writeFileVerified(file, content, { io = fs, containmentRoot } = {}) {
@@ -220,7 +238,7 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     const rollbackErrors = [];
     for (const record of [...records].reverse()) if (record.published) {
       try {
-        await guard();
+        await assertBackupIdentity(record.backup, record.backupIdentity, io, guard);
         await io.rename(record.backup, record.file);
         record.backedUp = false;
         record.backupIdentity = null;
