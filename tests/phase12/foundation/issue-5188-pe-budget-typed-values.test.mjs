@@ -13,9 +13,14 @@ const budget = createPEMetadataBudget(image, {
 assert.equal(budget.limits.records, 250000, 'array-valued limit falls back');
 assert.equal(budget.limits.operations, 2000000, 'boolean limit falls back');
 assert.equal(budget.limits.stringBytes, 16777216, 'string limit falls back');
-for (const value of Object.values(budget.limits)) {
+for (const [key, value] of Object.entries(budget.limits)) {
   assert.equal(typeof value, 'number');
-  assert.ok(Number.isSafeInteger(value) && value > 0);
+  if (key === 'wallClockMs') {
+    // Wall-clock stops are opt-in (deterministic loader budgets, 26119216c).
+    assert.equal(value, Infinity);
+  } else {
+    assert.ok(Number.isSafeInteger(value) && value > 0);
+  }
 }
 
 // A malformed cost rejects the take, stops the budget, and keeps the
