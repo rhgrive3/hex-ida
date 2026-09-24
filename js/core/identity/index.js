@@ -1,4 +1,4 @@
-import { fnv64Text, fnv64Hex } from './fnv64.js';
+import { fnv64TextPair, fnv64Hex } from './fnv64.js';
 
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -108,7 +108,7 @@ export function stableStringify(value) {
 
 export function stableDigest(value) {
   const text = stableStringify(value);
-  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
+  return fnv64TextPair(text);
 }
 
 const FNV_OFFSET_LOW = 0x84222325;
