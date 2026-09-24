@@ -151,6 +151,24 @@ function landingKindOf(instruction) {
   return null;
 }
 
+/*
+ * The landing-pad reconstruction prepends the architectural landing-pad inputs to
+ * the intrinsic's own inputs and appends the landing-pad constant; `inputOrder`
+ * names exactly those inputs. Because the same decoration can legitimately run
+ * once per layer, re-applying it must drop the inputs a previous pass already
+ * prepended instead of stacking a second copy — a stacked copy would repeat a
+ * value identity in one intrinsic node. The marker only reports that this pass
+ * itself rebuilt the operation, so an intrinsic that merely reads the same
+ * architectural state for another reason is never stripped.
+ */
+function reconstructedIntrinsicInputs(operation, preparedInputCount, marker) {
+  const summary = operation.effectSummary;
+  const alreadyDecorated = operation.metadata?.[marker] === true
+    && summary.inputs.length >= preparedInputCount + 1;
+  if (!alreadyDecorated) return summary.inputs;
+  return summary.inputs.slice(preparedInputCount, summary.inputs.length - 1);
+}
+
 function rebuildIntrinsic(operation, guardValue, landing) {
   const summary = operation.effectSummary;
   return createMachineOperation({
@@ -158,7 +176,7 @@ function rebuildIntrinsic(operation, guardValue, landing) {
     ...(operation.id == null ? {} : { id:operation.id }),
     intrinsicId:operation.intrinsicId,
     effectSummary:createIntrinsicEffectSummary({
-      inputs:[guardValue, ...summary.inputs, createBitVectorValue(2, landing.code)],
+      inputs:[guardValue, ...reconstructedIntrinsicInputs(operation, 1, 'guardedPageInput'), createBitVectorValue(2, landing.code)],
       outputs:summary.outputs,
       registersRead:summary.registersRead,
       registersWritten:summary.registersWritten,
@@ -245,8 +263,11 @@ function guardFaultCondition(guardState, landing, sctlrBt = null) {
   };
 }
 
+const ARM64_BTI_PAGE_GUARD_READ_TEMPORARY_ID = 'bti:page-guarded';
+const ARM64_BTI_INCOMING_BTYPE_READ_TEMPORARY_ID = 'bti:incoming-btype';
+
 function guardRead() {
-  const value = createTemporaryValue('bti:page-guarded', createBitVectorValue(1));
+  const value = createTemporaryValue(ARM64_BTI_PAGE_GUARD_READ_TEMPORARY_ID, createBitVectorValue(1));
   return {
     value,
     operation:createMachineOperation({
@@ -259,7 +280,7 @@ function guardRead() {
 }
 
 function incomingBtypeRead() {
-  const value = createTemporaryValue('bti:incoming-btype', createBitVectorValue(2));
+  const value = createTemporaryValue(ARM64_BTI_INCOMING_BTYPE_READ_TEMPORARY_ID, createBitVectorValue(2));
   return {
     value,
     operation:createMachineOperation({
@@ -269,6 +290,40 @@ function incomingBtypeRead() {
       metadata:{ architecture:'arm64', stateKind:'branch-target-identification', purpose:'implicit-landing-compatibility-input' },
     }),
   };
+}
+
+/*
+ * These architectural-state reads exist to feed the reconstructed intrinsic. The
+ * same landing-pad decoration is applied by both the ARM64 effects dispatcher and
+ * the architecture-plugin wrapper, so decoration must be idempotent: splicing a
+ * second read of the same state would publish two MachineEffects outputs with the
+ * same temporary identity, and the Semantic IR lowering correctly rejects that as
+ * a duplicate temporary definition (one bad landing pad used to cost the whole
+ * function its semantic IR). Reuse a read this bundle already carries ahead of the
+ * intrinsic instead; a temporary minted for any other purpose has a different
+ * temporaryId and is never adopted.
+ */
+function existingStateRead(operations, temporaryId, beforeIndex) {
+  for (let index = 0; index < Math.min(beforeIndex, operations.length); index++) {
+    const operation = operations[index];
+    if (operation?.kind !== 'register-read' || operation?.value?.temporaryId !== temporaryId) continue;
+    return { value:operation.value, index };
+  }
+  return null;
+}
+
+function guardReadValueForInsertion(operations, beforeIndex) {
+  const existing = existingStateRead(operations, ARM64_BTI_PAGE_GUARD_READ_TEMPORARY_ID, beforeIndex);
+  if (existing) return { value:existing.value, inserted:false };
+  const read = guardRead();
+  return { value:read.value, inserted:true, operation:read.operation };
+}
+
+function incomingBtypeValueForInsertion(operations, beforeIndex) {
+  const existing = existingStateRead(operations, ARM64_BTI_INCOMING_BTYPE_READ_TEMPORARY_ID, beforeIndex);
+  if (existing) return { value:existing.value, inserted:false };
+  const read = incomingBtypeRead();
+  return { value:read.value, inserted:true, operation:read.operation };
 }
 
 function implicitLandingFaultCondition(guardState, sctlrBt = null) {
@@ -303,9 +358,9 @@ function rebuildIntrinsicWithImplicitLanding(operation, guardValue, btypeValue) 
     ...(operation.id == null ? {} : { id:operation.id }),
     intrinsicId:operation.intrinsicId,
     effectSummary:createIntrinsicEffectSummary({
-      inputs:[guardValue, btypeValue, ...summary.inputs, createBitVectorValue(2, 3)],
+      inputs:[guardValue, btypeValue, ...reconstructedIntrinsicInputs(operation, 2, 'incomingBtypeInput'), createBitVectorValue(2, 3)],
       outputs:summary.outputs,
-      registersRead:[...summary.registersRead, ARM64_BTYPE_REGISTER_ID],
+      registersRead:[...new Set([...summary.registersRead, ARM64_BTYPE_REGISTER_ID])],
       registersWritten:summary.registersWritten,
       memoryRead:summary.memoryRead,
       memoryWrite:summary.memoryWrite,
@@ -432,23 +487,33 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
   }
 
   const operations = bundle.operations.slice();
+  let insertionOffset = 0;
   let guardValue;
   if (guardState.state === 'guarded') {
     guardValue = createBitVectorValue(1, 1);
   } else {
-    const read = guardRead();
-    operations.splice(intrinsicIndex, 0, read.operation);
-    guardValue = read.value;
+    const guard = guardReadValueForInsertion(operations, intrinsicIndex);
+    guardValue = guard.value;
+    if (guard.inserted) {
+      operations.splice(intrinsicIndex + insertionOffset, 0, guard.operation);
+      insertionOffset += 1;
+    }
   }
-  const btypeRead = incomingBtypeRead();
-  operations.splice(intrinsicIndex + (guardState.state === 'guarded' ? 0 : 1), 0, btypeRead.operation);
-  const adjustedIntrinsicIndex = intrinsicIndex + (guardState.state === 'guarded' ? 1 : 2);
+  const btypeRead = incomingBtypeValueForInsertion(operations, intrinsicIndex);
+  if (btypeRead.inserted) {
+    operations.splice(intrinsicIndex + insertionOffset, 0, btypeRead.operation);
+    insertionOffset += 1;
+  }
+  const adjustedIntrinsicIndex = intrinsicIndex + insertionOffset;
   operations[adjustedIntrinsicIndex] = rebuildIntrinsicWithImplicitLanding(operations[adjustedIntrinsicIndex], guardValue, btypeRead.value);
 
   return rebuiltBundle(bundle, {
     operations,
+    // The conditional implicit-landing fault is a rebuild of the same claim, not
+    // an additional one: re-applying this decoration (the dispatcher and the
+    // architecture-plugin wrapper both run it) must not stack a second copy.
     possibleFaults:[
-      ...(bundle.possibleFaults ?? []),
+      ...(bundle.possibleFaults ?? []).filter((item) => item?.kind !== 'branch-target-exception'),
       {
         kind:'branch-target-exception',
         condition:implicitLandingFaultCondition(guardState, sctlrBt),
@@ -549,15 +614,18 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
   }
 
   const operations = bundle.operations.slice();
+  let adjustedIntrinsicIndex = intrinsicIndex;
   let guardValue;
   if (guardState.state === 'guarded') {
     guardValue = createBitVectorValue(1, 1);
   } else {
-    const read = guardRead();
-    operations.splice(intrinsicIndex, 0, read.operation);
-    guardValue = read.value;
+    const guard = guardReadValueForInsertion(operations, intrinsicIndex);
+    guardValue = guard.value;
+    if (guard.inserted) {
+      operations.splice(intrinsicIndex, 0, guard.operation);
+      adjustedIntrinsicIndex += 1;
+    }
   }
-  const adjustedIntrinsicIndex = intrinsicIndex + (guardState.state === 'unknown' ? 1 : 0);
   operations[adjustedIntrinsicIndex] = rebuildIntrinsic(operations[adjustedIntrinsicIndex], guardValue, landing);
   const possibleFaults = [{
     kind:'branch-target-exception',
