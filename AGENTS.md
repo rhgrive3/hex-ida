@@ -21,13 +21,54 @@ When an agent needs a broad test or release-gate run, suppress successful chatte
 - Rely strictly on reactive wakeup notifications from the messaging system. When a background task finishes, the system automatically sends a message to wake you up.
 - Only invoke `manage_task` when explicit operational action is strictly necessary (e.g., cancelling an obsolete command with `kill` or sending required interactive stdin with `send_input`), never for polling or frequent status checking.
 
-## Subagent delegation via `opencode --auto` (Gemini 3.8 Flash High)
+## Subagent delegation
 
-When any agent (Codex, Claude Code, Cursor, etc.) needs to spawn subagents, delegate background research, or parallelize execution:
-- **MUST NOT** use default/ordinary builtin subagents (e.g. built-in Sonnet/Opus subagent spawns).
-- **MUST** execute subagent/delegated tasks using `opencode --auto` with Gemini 3.8 Flash High (`gemini-3.8-flash-high` / `proxlane/gemini-3.8-flash-high`).
-- **Unrestricted API quota:** Treat this API as practically unlimited quota/calls. Parallelize aggressively, delegate repetitive searches, file edits, and independent verification passes to `opencode --auto`.
-- Run commands like `opencode --auto "<task prompt>"` when delegating subagent work.
+These rules apply whenever any agent (Codex, Claude Code, Cursor, etc.) spawns subagents, delegates background research, or parallelizes execution.
+
+- **MUST NOT** use default/ordinary builtin subagents (e.g. built-in Sonnet/Opus subagent spawns), whichever method below is in use.
+- Waiting on subagents follows **Task management and reactive wakeup** above: no polling loops.
+
+### Choosing the method (first matching rule wins)
+
+1. **The user names a method → use that method.** If the user explicitly asks for Cline ("use Cline", "send it to Cline", "use `./cline-<N>`", "use Cline subagents") or Freebuff ("use Freebuff", "send it to Freebuff", "use `./freebuff-<N>`", "use 8 Freebuffs"), use exactly that method with its rules below, as far as possible. Do not substitute `opencode --auto` or another method.
+2. **No method named → default `opencode --auto` with Gemini 3.8 Flash High** (`gemini-3.8-flash-high` / `proxlane/gemini-3.8-flash-high`), e.g. `opencode --auto "<task prompt>"`. Treat this quota as practically unlimited: parallelize aggressively for research, independent review, counterexample search, file edits, and test analysis.
+3. **Default unavailable → Cline or Freebuff.** If the default route does not work (for example the provider returns `No available accounts`, authentication fails, or it gives no response), continue with Cline (`./cline-<N>`) or Freebuff (`./freebuff-<N>`) under their rules below instead of stopping the task. Return to the default when it works again, unless the user named a method.
+
+Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` default.**
+
+### Cline (`./cline-<N>`)
+
+- **Numbers:** use `1`–`8` first. `9` also exists, but it may share an account with another number, so it is **not** an independent extra free quota. Use `9` only when `1`–`8` do not give enough parallelism, when the other numbers' free quota is exhausted, or when the user explicitly allows or asks for `9`.
+- **Model order** (each model has its own daily free quota; switching model continues the work):
+  1. `DeepSeek v4.1 Flash` — reasoning `xhigh` (start here).
+  2. `Muse Spark 1.3 Contributor` — reasoning `xhigh`, when DeepSeek's daily free quota is no longer usable.
+  3. `MiMo 2.6 Flash`, when Muse is no longer usable either.
+- Running out of one model's free quota is **not** a reason to end Cline work. If another model can continue, switch and continue.
+- Cline may stop (quota exhausted, Cline-side stop) **without** returning a clear failure to the parent. When a Cline subagent may have stopped, check its state, produced artifacts, `git diff`, and logs, then hand the remaining work to the next model or another number. Check status only when the task has not come back, has clearly stalled, or you need the result to proceed; never with short-interval `manage_task status` loops.
+
+### Freebuff (`./freebuff-<N>`)
+
+- **Numbers:** `1`–`9`. Independent tasks may run on several numbers in parallel. Do not put several agents on the same file or the same fix area without a plan.
+- **Model by wallet balance:**
+  - Comfortable balance → `DeepSeek v4.1 Flash` — `high`.
+  - Balance including savings down to about 10 → `MiMo 2.6 Flash`. DeepSeek v4.1 Flash costs about 10 even off-peak, so never spend the last ~10 on DeepSeek.
+
+### Common rules for every method
+
+- **The parent agent keeps final responsibility.** Never mark work done on a subagent's claim alone; verify with `git diff`, `git status`, the changed files, test results, CI results, and benchmark results as needed.
+- **Task brief:** include, as far as possible, the goal, the scope, what is allowed, what is forbidden, the required tests, and the completion criteria.
+- **Split work into independent pieces** (implementation, adversarial review, counterexample search, testing, benchmark analysis, a separate issue, …). Do not hand the same problem to several agents for no reason and waste free quota; intentional duplication for independent verification is allowed.
+- **Stopped subagent → hand off, do not restart.** Whether Cline, Freebuff, or OpenCode, collect what exists (completed work, remaining work, changed files, git diff, test status, important findings) and pass it to the next agent, for example:
+
+  ```
+  TASK
+  DONE
+  REMAINING
+  CHANGED FILES
+  TEST STATUS
+  IMPORTANT FINDINGS
+  ```
+- **Quota or model exhaustion does not stop the whole job.** Continue with another model, another number, or another method, as long as it does not contradict the user's explicit choice.
 
 
 <!-- graft:start -->
