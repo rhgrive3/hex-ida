@@ -53,12 +53,18 @@ export function dexMethod(words = [0x000e], options = {}) {
 
 export function buildDex(options = {}) {
   const fields = options.fields ?? [{ classType:'LTest;', type:'I', name:'x' }];
-  const methods = options.methods ?? [{ classType:'LTest;', name:'foo', returnType:'V', params:[], flags:9, words:[0x000e] }];
+  const inputMethods = options.methods ?? [{ classType:'LTest;', name:'foo', returnType:'V', params:[], flags:9, words:[0x000e] }];
   const classNames = options.classNames ?? ['LTest;'];
-  const typeNames = [...new Set([...classNames, ...fields.flatMap(f => [f.classType, f.type]), ...methods.flatMap(m => [m.classType, m.returnType, ...(m.params ?? [])])])].sort();
+  const typeNames = [...new Set([...classNames, ...fields.flatMap(f => [f.classType, f.type]), ...inputMethods.flatMap(m => [m.classType, m.returnType, ...(m.params ?? [])])])].sort();
   const shorty = m => [m.returnType, ...(m.params ?? [])].map(t => /^[L[]/.test(t) ? 'L' : t).join('');
-  const strings = [...new Set([...typeNames, ...fields.map(f => f.name), ...methods.flatMap(m => [m.name, m.shorty ?? shorty(m)]), ...(options.strings ?? [])])].sort();
+  const strings = [...new Set([...typeNames, ...fields.map(f => f.name), ...inputMethods.flatMap(m => [m.name, m.shorty ?? shorty(m)]), ...(options.strings ?? [])])].sort();
   const si = s => strings.indexOf(s), ti = s => typeNames.indexOf(s);
+  // DEX requires method_ids sorted by (class, name, proto). Sort a copy; an
+  // already-sorted input keeps its indices.
+  const cmpList = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
+  const methods = inputMethods.map((m, i) => ({ m, i })).sort((a, b) =>
+    (ti(a.m.classType) - ti(b.m.classType)) || (si(a.m.name) - si(b.m.name))
+    || cmpList([ti(a.m.returnType), ...(a.m.params ?? []).map(ti)], [ti(b.m.returnType), ...(b.m.params ?? []).map(ti)]) || (a.i - b.i)).map(({ m }) => m);
   const data = new Uint8Array(65536), v = new DataView(data.buffer), maps = [[0,1,0]], layout = {};
   let pos = 0x70;
   const align = () => { pos = Math.ceil(pos / 4) * 4; };
