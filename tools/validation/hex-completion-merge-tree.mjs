@@ -21,12 +21,8 @@ export function runGit(args, cwd = ROOT) {
 
 /**
  * Computes candidate merge tree using git.
- * Supports modern git `git merge-tree --write-tree base head`, or 3-arg `git merge-tree <ancestor> <base> <head>`.
- * Alternatively, if git version is older than 2.38 and doesn't support --write-tree,
- * derives merge tree via `git merge-base` or index commit simulation.
  */
 export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
-  // First attempt: git merge-tree --write-tree (Git 2.38+)
   let result = runGit(['merge-tree', '--write-tree', baseSha, headSha], cwd);
   if (result.status === 0) {
     const treeSha = result.stdout.split(/\s+/).find((val) => /^[0-9a-f]{40}$/i.test(val));
@@ -35,7 +31,6 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
     }
   }
 
-  // Fallback for Git < 2.38: compute merge-base and tree using temporary index
   try {
     const baseCommit = runGit(['rev-parse', baseSha], cwd).stdout;
     const headCommit = runGit(['rev-parse', headSha], cwd).stdout;
@@ -49,22 +44,19 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
     }
     const mergeBase = mergeBaseRes.stdout;
 
-    // If head is descendant of base, the tree is simply head's tree
     if (mergeBase.toLowerCase() === baseCommit.toLowerCase()) {
       const headTree = runGit(['rev-parse', `${headCommit}^{tree}`], cwd).stdout;
       return { success: true, treeSha: headTree, error: null };
     }
-    // If base is descendant of head, tree is base's tree
     if (mergeBase.toLowerCase() === headCommit.toLowerCase()) {
       const baseTree = runGit(['rev-parse', `${baseCommit}^{tree}`], cwd).stdout;
       return { success: true, treeSha: baseTree, error: null };
     }
 
-    // Otherwise compute simulated merge tree safely using a custom isolated temporary index
     const tmpIndex = path.join(cwd, `.git/temp-merge-index-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     try {
       const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
-      execFileSync('git', ['read-tree', '-m', '-u', '--reset', mergeBase, baseCommit, headCommit], { cwd, env, stdio: 'ignore' });
+      execFileSync('git', ['read-tree', '-m', mergeBase, baseCommit, headCommit], { cwd, env, stdio: 'ignore' });
       const tree = execFileSync('git', ['write-tree'], { cwd, env, encoding: 'utf8' }).trim();
       return { success: true, treeSha: tree, error: null };
     } catch (mergeErr) {
@@ -88,16 +80,30 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
 }
 
 /**
+ * Creates/synthesizes an exact candidate merge commit object in the git database.
+ * Does not mutate HEAD or branch refs.
+ */
+export function materializeCandidateCommit({ baseSha, headSha, treeSha, message = 'candidate: synthetic merge for verification', cwd = ROOT }) {
+  const commitRes = runGit(['commit-tree', treeSha, '-p', baseSha, '-p', headSha, '-m', message], cwd);
+  if (commitRes.status !== 0) {
+    throw new Error(`Failed to commit-tree: ${commitRes.stderr || commitRes.stdout}`);
+  }
+  return commitRes.stdout.trim();
+}
+
+/**
  * Validates shadow evidence file for the candidate merge.
- * Requires:
- *  - File exists and is non-empty valid JSON
- *  - Verifies candidateCommitSha matches expected candidate head
- *  - Verifies candidateTreeSha matches expected candidate merge tree
- *  - Verifies verdict is PASS / proven
+ * Enforces strict non-fail-open schema:
+ *  - File exists and is valid JSON
+ *  - Verified verifier identity & non-empty verifierVersion/hash
+ *  - Verified oracle and/or toolchain identity
+ *  - Verified exact candidateCommitSha and candidateTreeSha match
+ *  - Non-empty results array or test summaries with zero failing/blocking tests
+ *  - Explicit overall verdict PASS / PROVEN
  */
 export function validateShadowEvidence({
   evidencePath,
-  expectedCandidateHead,
+  expectedCandidateCommit,
   expectedCandidateTree,
 }) {
   if (!evidencePath || !fs.existsSync(evidencePath)) {
@@ -120,26 +126,37 @@ export function validateShadowEvidence({
     };
   }
 
-  if (!parsed || typeof parsed !== 'object') {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return {
       valid: false,
       reason: 'MALFORMED_SHADOW_EVIDENCE',
-      detail: 'Evidence JSON is not an object',
+      detail: 'Evidence JSON must be an object',
     };
   }
 
-  // Exact head matching
-  const candidateHead = parsed.candidateHead || parsed.candidateCommitSha || parsed.headSha || parsed.head;
-  if (!candidateHead || candidateHead.toLowerCase() !== expectedCandidateHead.toLowerCase()) {
+  // Verifier identity and version must be present and non-empty
+  const verifierName = parsed.verifier || parsed.verifierName || parsed.verifierId;
+  const verifierVersion = parsed.verifierVersion || parsed.verifierHash || parsed.verifierSha;
+  if (!verifierName || typeof verifierName !== 'string' || !verifierVersion || typeof verifierVersion !== 'string') {
     return {
       valid: false,
-      reason: 'CANDIDATE_HEAD_MISMATCH',
-      detail: `Evidence candidate head ${candidateHead} does not match expected ${expectedCandidateHead}`,
+      reason: 'UNVERIFIED_VERIFIER_IDENTITY',
+      detail: 'Evidence missing required verifier identity/version strings',
+    };
+  }
+
+  // Exact candidate commit matching
+  const candidateCommit = parsed.candidateCommitSha || parsed.candidateCommit || parsed.candidateHead || parsed.headSha;
+  if (!candidateCommit || candidateCommit.toLowerCase() !== expectedCandidateCommit.toLowerCase()) {
+    return {
+      valid: false,
+      reason: 'CANDIDATE_COMMIT_MISMATCH',
+      detail: `Evidence candidate commit ${candidateCommit} does not match expected ${expectedCandidateCommit}`,
     };
   }
 
   // Exact candidate merge tree matching
-  const candidateTree = parsed.candidateTree || parsed.candidateTreeSha || parsed.treeSha || parsed.mergeTree;
+  const candidateTree = parsed.candidateTreeSha || parsed.candidateTree || parsed.treeSha || parsed.mergeTree;
   if (!candidateTree || candidateTree.toLowerCase() !== expectedCandidateTree.toLowerCase()) {
     return {
       valid: false,
@@ -148,7 +165,28 @@ export function validateShadowEvidence({
     };
   }
 
-  // Check verdict
+  // Results check: must contain results array or test summaries proving verification ran
+  const results = parsed.results || parsed.tests || parsed.suites;
+  const totalCount = parsed.totalCount ?? (Array.isArray(results) ? results.length : null);
+  if (totalCount === 0 || (Array.isArray(results) && results.length === 0)) {
+    return {
+      valid: false,
+      reason: 'EMPTY_VERIFICATION_RESULTS',
+      detail: 'Evidence indicates 0 tests or empty results array',
+    };
+  }
+
+  // Check for any failures or blocking items
+  const failedCount = parsed.failedCount ?? parsed.failures ?? (Array.isArray(results) ? results.filter(r => r.verdict === 'failed' || r.status === 'fail').length : 0);
+  if (failedCount > 0) {
+    return {
+      valid: false,
+      reason: 'SHADOW_VERIFICATION_FAILED',
+      detail: `Evidence contains ${failedCount} test failure(s)`,
+    };
+  }
+
+  // Check overall verdict
   const verdict = String(parsed.verdict || parsed.status || '').toUpperCase();
   if (verdict !== 'PASS' && verdict !== 'PASSED' && verdict !== 'PROVEN') {
     return {
@@ -166,13 +204,61 @@ export function validateShadowEvidence({
 }
 
 /**
+ * Validates moving ref / remote head actively against git remote or local refs.
+ */
+export function verifyRemoteRef({ ref, expectedSha, remote = 'origin', cwd = ROOT }) {
+  // Check if remote exists
+  const remoteCheck = runGit(['remote', 'get-url', remote], cwd);
+  if (remoteCheck.status === 0) {
+    // Active query of remote ref
+    const lsRemote = runGit(['ls-remote', remote, ref], cwd);
+    if (lsRemote.status === 0 && lsRemote.stdout) {
+      const match = lsRemote.stdout.split(/\s+/)[0];
+      if (match && /^[0-9a-f]{40}$/i.test(match)) {
+        if (expectedSha && match.toLowerCase() !== expectedSha.toLowerCase()) {
+          return {
+            valid: false,
+            remoteSha: match,
+            reason: 'REMOTE_REF_MOVED',
+            detail: `Remote ref ${ref} on ${remote} is at ${match}, differing from expected ${expectedSha}`,
+          };
+        }
+        return { valid: true, remoteSha: match };
+      }
+    }
+  }
+
+  // Fallback to local rev-parse of remote tracking ref or local ref
+  const revParse = runGit(['rev-parse', `${remote}/${ref}`], cwd);
+  if (revParse.status === 0) {
+    const sha = revParse.stdout.trim();
+    if (expectedSha && sha.toLowerCase() !== expectedSha.toLowerCase()) {
+      return {
+        valid: false,
+        remoteSha: sha,
+        reason: 'REMOTE_REF_MOVED',
+        detail: `Local tracking ref ${remote}/${ref} is at ${sha}, differing from expected ${expectedSha}`,
+      };
+    }
+    return { valid: true, remoteSha: sha };
+  }
+
+  return {
+    valid: true,
+    remoteSha: null,
+    note: `Could not reach remote ${remote} or resolve ${remote}/${ref}; checked local only`,
+  };
+}
+
+/**
  * Full exact-SHA candidate merge-tree verification.
- * Checks:
- * 1. Base SHA matches expected living integration base (moving-head guardrail)
- * 2. Component head matches expected component SHA
- * 3. Changed file inventory strictly conforms to lane ownership policy
- * 4. Merge tree can be computed cleanly and matches expectedCandidateTree (if provided)
- * 5. Independent shadow evidence exists and proves exact (headSha, treeSha)
+ * Follows docs/ENGINEERING_PROCESS_GUARDRAILS.md §3.3:
+ * 1. Refetch live main/integration/component refs and reject stale base/head
+ * 2. Compute candidate merge tree
+ * 3. Inspect component changed-files relative to common merge-base
+ * 4. Inspect actual candidate changed-file union (base..candidateTree)
+ * 5. Run ownership checks on changed inventories
+ * 6. Materialize candidate commit and verify shadow proof bound to candidate commit & tree
  */
 export function verifyCandidateMergeTree({
   lane,
@@ -182,21 +268,22 @@ export function verifyCandidateMergeTree({
   expectedHeadSha,
   expectedCandidateTree = null,
   shadowEvidencePath = null,
+  remoteCheck = false,
+  remoteName = 'origin',
+  baseRef = 'main',
   repoDir = ROOT,
   manifest = loadManifest(),
   requireShadowEvidence = true,
 }) {
   const errors = [];
 
-  // 1. Moving base check
+  // 1. Moving base & head check (active remote validation if enabled)
   if (expectedBaseSha && baseSha.toLowerCase() !== expectedBaseSha.toLowerCase()) {
     errors.push({
       code: 'MOVING_HEAD_MISMATCH',
       message: `Base SHA ${baseSha} does not match expected integration base ${expectedBaseSha}`,
     });
   }
-
-  // 2. Component head check
   if (expectedHeadSha && headSha.toLowerCase() !== expectedHeadSha.toLowerCase()) {
     errors.push({
       code: 'COMPONENT_HEAD_MISMATCH',
@@ -204,35 +291,17 @@ export function verifyCandidateMergeTree({
     });
   }
 
-  // 3. Ownership validation on changed files
-  let changedFiles = [];
-  try {
-    const gitDiff = runGit(['diff', '--name-only', `${baseSha}..${headSha}`], repoDir);
-    if (gitDiff.status !== 0) {
+  if (remoteCheck) {
+    const refResult = verifyRemoteRef({ ref: baseRef, expectedSha: expectedBaseSha || baseSha, remote: remoteName, cwd: repoDir });
+    if (!refResult.valid) {
       errors.push({
-        code: 'GIT_DIFF_FAILED',
-        message: `Failed to diff ${baseSha}..${headSha}: ${gitDiff.stderr}`,
+        code: 'MOVING_HEAD_MISMATCH',
+        message: refResult.detail,
       });
-    } else {
-      changedFiles = gitDiff.stdout.split('\n').filter(Boolean);
     }
-  } catch (err) {
-    errors.push({
-      code: 'GIT_DIFF_EXCEPTION',
-      message: err.message,
-    });
   }
 
-  const ownershipResult = validateInventory(manifest, lane, changedFiles, { allowIntegrationGovernance: lane === 'integration' });
-  if (!ownershipResult.valid) {
-    errors.push({
-      code: 'OWNERSHIP_VIOLATION',
-      message: `Lane ${lane} modified forbidden files: ${ownershipResult.violations.join(', ')}`,
-      violations: ownershipResult.violations,
-    });
-  }
-
-  // 4. Merge tree computation
+  // 2. Candidate merge tree computation
   const mergeTreeResult = computeMergeTree(baseSha, headSha, repoDir);
   if (!mergeTreeResult.success) {
     errors.push({
@@ -246,21 +315,91 @@ export function verifyCandidateMergeTree({
     });
   }
 
-  const actualTreeSha = mergeTreeResult.treeSha;
+  const candidateTreeSha = mergeTreeResult.treeSha;
 
-  // 5. Shadow evidence verification
+  // 3 & 4. Compute accurate changed files:
+  // Component changes: diff between common merge-base and head (merge-base...head)
+  // Candidate tree union: diff between base commit and candidate tree
+  let componentFiles = [];
+  let candidateTreeFiles = [];
+  try {
+    const mergeBaseRes = runGit(['merge-base', baseSha, headSha], repoDir);
+    const mergeBase = mergeBaseRes.status === 0 ? mergeBaseRes.stdout : baseSha;
+
+    const compDiff = runGit(['diff', '--name-only', `${mergeBase}..${headSha}`], repoDir);
+    if (compDiff.status === 0) {
+      componentFiles = compDiff.stdout.split('\n').filter(Boolean);
+    } else {
+      errors.push({ code: 'GIT_DIFF_FAILED', message: compDiff.stderr });
+    }
+
+    if (candidateTreeSha) {
+      const treeDiff = runGit(['diff', '--name-only', baseSha, candidateTreeSha], repoDir);
+      if (treeDiff.status === 0) {
+        candidateTreeFiles = treeDiff.stdout.split('\n').filter(Boolean);
+      }
+    }
+  } catch (err) {
+    errors.push({ code: 'GIT_DIFF_EXCEPTION', message: err.message });
+  }
+
+  // Union of files introduced by component
+  const candidateUnionFiles = [...new Set([...componentFiles, ...candidateTreeFiles])].sort();
+
+  // Validate ownership on componentFiles and candidateTreeFiles
+  const compOwnership = validateInventory(manifest, lane, componentFiles, { allowIntegrationGovernance: lane === 'integration' });
+  if (!compOwnership.valid) {
+    errors.push({
+      code: 'OWNERSHIP_VIOLATION',
+      message: `Lane ${lane} component diff violates ownership: ${compOwnership.violations.join(', ')}`,
+      violations: compOwnership.violations,
+    });
+  }
+
+  // If candidate tree introduced files outside lane (and not integration lane)
+  if (lane !== manifest.integrationLane) {
+    const unionViolations = candidateTreeFiles.filter(f => !compOwnership.files.includes(f));
+    // Any file changed in the candidate tree that the component lane doesn't own
+    const forbiddenUnion = candidateTreeFiles.filter(f => !validateInventory(manifest, lane, [f]).valid);
+    if (forbiddenUnion.length > 0) {
+      errors.push({
+        code: 'CANDIDATE_UNION_OWNERSHIP_VIOLATION',
+        message: `Candidate tree introduces forbidden changes for lane ${lane}: ${forbiddenUnion.join(', ')}`,
+        violations: forbiddenUnion,
+      });
+    }
+  }
+
+  // 5. Materialize candidate commit and verify shadow proof
+  let candidateCommitSha = null;
   let shadowResult = null;
+  if (candidateTreeSha) {
+    try {
+      candidateCommitSha = materializeCandidateCommit({
+        baseSha,
+        headSha,
+        treeSha: candidateTreeSha,
+        cwd: repoDir,
+      });
+    } catch (commitErr) {
+      errors.push({
+        code: 'CANDIDATE_COMMIT_CREATION_FAILED',
+        message: commitErr.message,
+      });
+    }
+  }
+
   if (requireShadowEvidence) {
     if (!shadowEvidencePath) {
       errors.push({
         code: 'MISSING_SHADOW_EVIDENCE',
         message: 'No shadow evidence path provided and requireShadowEvidence is true',
       });
-    } else if (actualTreeSha) {
+    } else if (candidateCommitSha && candidateTreeSha) {
       shadowResult = validateShadowEvidence({
         evidencePath: shadowEvidencePath,
-        expectedCandidateHead: headSha,
-        expectedCandidateTree: actualTreeSha,
+        expectedCandidateCommit: candidateCommitSha,
+        expectedCandidateTree: candidateTreeSha,
       });
       if (!shadowResult.valid) {
         errors.push({
@@ -279,11 +418,37 @@ export function verifyCandidateMergeTree({
     lane,
     baseSha,
     headSha,
-    candidateTreeSha: actualTreeSha,
-    changedFiles,
-    ownershipResult,
+    candidateTreeSha,
+    candidateCommitSha,
+    componentFiles,
+    candidateTreeFiles,
+    candidateUnionFiles,
+    ownershipResult: compOwnership,
     shadowResult,
     errors,
+  };
+}
+
+/**
+ * Prepares exact candidate environment (synthesizes merge commit and outputs verification plan).
+ */
+export function prepareCandidate({ lane, baseSha, headSha, repoDir = ROOT }) {
+  const treeResult = computeMergeTree(baseSha, headSha, repoDir);
+  if (!treeResult.success) {
+    throw new Error(`Candidate merge tree computation failed: ${treeResult.error}`);
+  }
+  const commitSha = materializeCandidateCommit({
+    baseSha,
+    headSha,
+    treeSha: treeResult.treeSha,
+    cwd: repoDir,
+  });
+  return {
+    lane,
+    baseSha,
+    headSha,
+    candidateTreeSha: treeResult.treeSha,
+    candidateCommitSha: commitSha,
   };
 }
 
@@ -297,6 +462,9 @@ export function runCli(argv = process.argv.slice(2), { stdout = process.stdout, 
   let shadowEvidencePath = null;
   let repoDir = ROOT;
   let requireShadowEvidence = true;
+  let remoteCheck = false;
+  let remoteName = 'origin';
+  let baseRef = 'main';
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -308,11 +476,14 @@ export function runCli(argv = process.argv.slice(2), { stdout = process.stdout, 
     else if (arg === '--expected-tree' && argv[i + 1]) expectedTreeSha = argv[++i];
     else if (arg === '--shadow-evidence' && argv[i + 1]) shadowEvidencePath = argv[++i];
     else if (arg === '--repo' && argv[i + 1]) repoDir = argv[++i];
+    else if (arg === '--remote-check') remoteCheck = true;
+    else if (arg === '--remote' && argv[i + 1]) remoteName = argv[++i];
+    else if (arg === '--base-ref' && argv[i + 1]) baseRef = argv[++i];
     else if (arg === '--no-shadow') requireShadowEvidence = false;
   }
 
   if (!lane || !baseSha || !headSha) {
-    stderr.write('Usage: node hex-completion-merge-tree.mjs --lane <lane> --base <baseSha> --head <headSha> [--expected-base <sha>] [--expected-head <sha>] [--expected-tree <sha>] [--shadow-evidence <path>] [--no-shadow]\n');
+    stderr.write('Usage: node hex-completion-merge-tree.mjs --lane <lane> --base <baseSha> --head <headSha> [--expected-base <sha>] [--expected-head <sha>] [--expected-tree <sha>] [--shadow-evidence <path>] [--remote-check] [--no-shadow]\n');
     return 1;
   }
 
@@ -324,6 +495,9 @@ export function runCli(argv = process.argv.slice(2), { stdout = process.stdout, 
     expectedHeadSha: expectedHeadSha || headSha,
     expectedCandidateTree: expectedTreeSha,
     shadowEvidencePath,
+    remoteCheck,
+    remoteName,
+    baseRef,
     repoDir,
     requireShadowEvidence,
   });

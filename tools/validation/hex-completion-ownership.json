@@ -40,14 +40,17 @@
     "jev": [
       "^js/pinpoint/",
       "^js/pinpoint\\.js$",
+      "^scripts/(run-jev-prospective-eval|verify-jev-binary-holdout)\\.mjs$",
       "^tests/pinpoint/",
       "^tests/pinpoint\\.test\\.mjs$",
+      "^tests/pinpoint-jev-[a-z0-9-]+\\.(test\\.)?mjs$",
       "^reports/investigations/jev-final-decision-20260924/"
     ],
     "perf": [
       "^js/decompiler/phase8/analysis-identity\\.js$",
       "^js/decompiler/passes/manager\\.js$",
       "^js/core/identity/index\\.js$",
+      "^tests/core-identity-performance\\.test\\.mjs$",
       "^tests/phase8/performance/",
       "^tests/performance/analysis-identity"
     ],
@@ -80,6 +83,14 @@
     [
       "deterministic",
       "userscript/hex.user.template.js"
+    ],
+    [
+      "cxx",
+      "js/ir-core.js"
+    ],
+    [
+      "cxx",
+      "js/tools-base.js"
     ],
     [
       "cxx",

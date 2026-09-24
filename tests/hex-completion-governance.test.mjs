@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 import {
   loadManifest,
@@ -13,12 +14,19 @@ import {
 
 import {
   computeMergeTree,
+  materializeCandidateCommit,
   validateShadowEvidence,
   verifyCandidateMergeTree,
+  verifyRemoteRef,
+  prepareCandidate,
 } from '../tools/validation/hex-completion-merge-tree.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEMP_DIR = path.join(ROOT, 'tmp-governance-test-' + Date.now());
+
+function runGit(args, cwd = ROOT) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
 
 test('hex-completion manifest self-consistency and negative self-checks', () => {
   const manifest = loadManifest();
@@ -27,6 +35,23 @@ test('hex-completion manifest self-consistency and negative self-checks', () => 
 
   const selfCheck = runNegativeSelfCheck(manifest);
   assert.equal(selfCheck.valid, true, `Negative self checks failed: ${JSON.stringify(selfCheck.failures)}`);
+});
+
+test('manifest allowlists exact Jev scripts and tests and Perf core identity test', () => {
+  const manifest = loadManifest();
+
+  // Jev exact allowlists
+  assert.equal(permitsFile(manifest, 'jev', 'scripts/run-jev-prospective-eval.mjs'), true);
+  assert.equal(permitsFile(manifest, 'jev', 'scripts/verify-jev-binary-holdout.mjs'), true);
+  assert.equal(permitsFile(manifest, 'jev', 'tests/pinpoint-jev-probe-audit.mjs'), true);
+  assert.equal(permitsFile(manifest, 'jev', 'tests/pinpoint-jev-shortlist.test.mjs'), true);
+
+  // Perf exact allowlist
+  assert.equal(permitsFile(manifest, 'perf', 'tests/core-identity-performance.test.mjs'), true);
+
+  // CXX unowned / integration handoff paths remain rejected
+  assert.equal(permitsFile(manifest, 'cxx', 'js/ir-core.js'), false);
+  assert.equal(permitsFile(manifest, 'cxx', 'js/tools-base.js'), false);
 });
 
 test('generated output is owned exclusively by integration lane', () => {
@@ -77,11 +102,19 @@ test('cross-lane modifications are rejected by default', () => {
   assert.equal(permitsFile(manifest, 'deterministic', 'js/binary/../../secret.js'), false);
 });
 
-test('candidate merge-tree computation works cleanly on git commits', () => {
-  // 58712d348 is living integration head, 2bf303289 is parent
+test('candidate merge-tree computation and synthesis works cleanly on git commits', () => {
   const res = computeMergeTree('2bf303289', '58712d348', ROOT);
   assert.equal(res.success, true);
   assert.match(res.treeSha, /^[0-9a-f]{40}$/i);
+
+  const candidateCommit = materializeCandidateCommit({
+    baseSha: '2bf303289',
+    headSha: '58712d348',
+    treeSha: res.treeSha,
+    message: 'test candidate commit',
+    cwd: ROOT,
+  });
+  assert.match(candidateCommit, /^[0-9a-f]{40}$/i);
 });
 
 test('candidate merge-tree verifier fails closed on moving-base mismatch', () => {
@@ -89,7 +122,7 @@ test('candidate merge-tree verifier fails closed on moving-base mismatch', () =>
   const res = verifyCandidateMergeTree({
     lane: 'deterministic',
     baseSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
-    expectedBaseSha: '0000000000000000000000000000000000000000', // Stale/mismatched base
+    expectedBaseSha: '0000000000000000000000000000000000000000',
     headSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
     expectedHeadSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
     manifest,
@@ -109,7 +142,7 @@ test('candidate merge-tree verifier fails closed on component head mismatch', ()
     baseSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
     expectedBaseSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
     headSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
-    expectedHeadSha: '1111111111111111111111111111111111111111', // Stale/moved component head
+    expectedHeadSha: '1111111111111111111111111111111111111111',
     manifest,
     requireShadowEvidence: false,
     repoDir: ROOT,
@@ -128,7 +161,7 @@ test('candidate merge-tree verifier fails closed on candidate tree mismatch', ()
     expectedBaseSha: '2bf303289d11efe331e26697055be804d24b1d90',
     headSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
     expectedHeadSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
-    expectedCandidateTree: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', // Incorrect expected tree
+    expectedCandidateTree: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
     manifest,
     requireShadowEvidence: false,
     repoDir: ROOT,
@@ -141,8 +174,6 @@ test('candidate merge-tree verifier fails closed on candidate tree mismatch', ()
 
 test('candidate merge-tree verifier fails closed on ownership violation in candidate diff', () => {
   const manifest = loadManifest();
-  // 58712d348 touched reports/hex-completion-20260924/CHECKPOINT.md and MAIN_RECONCILIATION.json
-  // If we claim this was done by lane 'deterministic', it MUST fail with OWNERSHIP_VIOLATION
   const res = verifyCandidateMergeTree({
     lane: 'deterministic',
     baseSha: '2bf303289d11efe331e26697055be804d24b1d90',
@@ -156,20 +187,20 @@ test('candidate merge-tree verifier fails closed on ownership violation in candi
 
   assert.equal(res.valid, false);
   assert.equal(res.verdict, 'BLOCKING');
-  assert.ok(res.errors.some((e) => e.code === 'OWNERSHIP_VIOLATION'));
+  assert.ok(res.errors.some((e) => e.code === 'OWNERSHIP_VIOLATION' || e.code === 'CANDIDATE_UNION_OWNERSHIP_VIOLATION'));
 });
 
-test('candidate merge-tree verifier fails closed on missing, malformed, or mismatched independent shadow evidence', () => {
+test('shadow evidence fails closed on forged, malformed, empty or mismatched data', () => {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-  const dummyHead = '58712d348df3894bb3f137513aa8d7ded4ade925';
+  const dummyCommit = '58712d348df3894bb3f137513aa8d7ded4ade925';
   const dummyTree = 'aabbccddeeff00112233445566778899aabbccdd';
 
   try {
     // 1. Missing evidence file
     const missingRes = validateShadowEvidence({
       evidencePath: path.join(TEMP_DIR, 'non-existent.json'),
-      expectedCandidateHead: dummyHead,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
     assert.equal(missingRes.valid, false);
@@ -180,67 +211,118 @@ test('candidate merge-tree verifier fails closed on missing, malformed, or misma
     fs.writeFileSync(malformedFile, '{ not valid json');
     const malformedRes = validateShadowEvidence({
       evidencePath: malformedFile,
-      expectedCandidateHead: dummyHead,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
     assert.equal(malformedRes.valid, false);
     assert.equal(malformedRes.reason, 'MALFORMED_SHADOW_EVIDENCE');
 
-    // 3. Candidate head mismatch
-    const mismatchedHeadFile = path.join(TEMP_DIR, 'mismatched-head.json');
-    fs.writeFileSync(mismatchedHeadFile, JSON.stringify({
-      candidateHead: '1111111111111111111111111111111111111111',
-      candidateTree: dummyTree,
+    // 3. Forged shadow evidence missing verifier identity/hash
+    const forgedFile = path.join(TEMP_DIR, 'forged-no-verifier.json');
+    fs.writeFileSync(forgedFile, JSON.stringify({
+      candidateCommitSha: dummyCommit,
+      candidateTreeSha: dummyTree,
       verdict: 'PASS',
+      totalCount: 10,
     }));
-    const headRes = validateShadowEvidence({
-      evidencePath: mismatchedHeadFile,
-      expectedCandidateHead: dummyHead,
+    const forgedRes = validateShadowEvidence({
+      evidencePath: forgedFile,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
-    assert.equal(headRes.valid, false);
-    assert.equal(headRes.reason, 'CANDIDATE_HEAD_MISMATCH');
+    assert.equal(forgedRes.valid, false);
+    assert.equal(forgedRes.reason, 'UNVERIFIED_VERIFIER_IDENTITY');
 
-    // 4. Candidate tree mismatch
+    // 4. Candidate commit mismatch
+    const mismatchedCommitFile = path.join(TEMP_DIR, 'mismatched-commit.json');
+    fs.writeFileSync(mismatchedCommitFile, JSON.stringify({
+      verifier: 'hex-shadow-verifier/v1',
+      verifierVersion: 'sha256-abc123',
+      candidateCommitSha: '1111111111111111111111111111111111111111',
+      candidateTreeSha: dummyTree,
+      totalCount: 1,
+      verdict: 'PASS',
+    }));
+    const commitRes = validateShadowEvidence({
+      evidencePath: mismatchedCommitFile,
+      expectedCandidateCommit: dummyCommit,
+      expectedCandidateTree: dummyTree,
+    });
+    assert.equal(commitRes.valid, false);
+    assert.equal(commitRes.reason, 'CANDIDATE_COMMIT_MISMATCH');
+
+    // 5. Candidate tree mismatch
     const mismatchedTreeFile = path.join(TEMP_DIR, 'mismatched-tree.json');
     fs.writeFileSync(mismatchedTreeFile, JSON.stringify({
-      candidateHead: dummyHead,
-      candidateTree: '2222222222222222222222222222222222222222',
+      verifier: 'hex-shadow-verifier/v1',
+      verifierVersion: 'sha256-abc123',
+      candidateCommitSha: dummyCommit,
+      candidateTreeSha: '2222222222222222222222222222222222222222',
+      totalCount: 1,
       verdict: 'PASS',
     }));
     const treeRes = validateShadowEvidence({
       evidencePath: mismatchedTreeFile,
-      expectedCandidateHead: dummyHead,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
     assert.equal(treeRes.valid, false);
     assert.equal(treeRes.reason, 'CANDIDATE_MERGE_TREE_MISMATCH');
 
-    // 5. Non-passing verdict
+    // 6. Empty results
+    const emptyFile = path.join(TEMP_DIR, 'empty-results.json');
+    fs.writeFileSync(emptyFile, JSON.stringify({
+      verifier: 'hex-shadow-verifier/v1',
+      verifierVersion: 'sha256-abc123',
+      candidateCommitSha: dummyCommit,
+      candidateTreeSha: dummyTree,
+      results: [],
+      verdict: 'PASS',
+    }));
+    const emptyRes = validateShadowEvidence({
+      evidencePath: emptyFile,
+      expectedCandidateCommit: dummyCommit,
+      expectedCandidateTree: dummyTree,
+    });
+    assert.equal(emptyRes.valid, false);
+    assert.equal(emptyRes.reason, 'EMPTY_VERIFICATION_RESULTS');
+
+    // 7. Non-passing verdict / test failures
     const nonPassingFile = path.join(TEMP_DIR, 'non-passing.json');
     fs.writeFileSync(nonPassingFile, JSON.stringify({
-      candidateHead: dummyHead,
-      candidateTree: dummyTree,
+      verifier: 'hex-shadow-verifier/v1',
+      verifierVersion: 'sha256-abc123',
+      candidateCommitSha: dummyCommit,
+      candidateTreeSha: dummyTree,
+      totalCount: 5,
+      failedCount: 1,
       verdict: 'FAIL',
     }));
     const verdictRes = validateShadowEvidence({
       evidencePath: nonPassingFile,
-      expectedCandidateHead: dummyHead,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
     assert.equal(verdictRes.valid, false);
     assert.equal(verdictRes.reason, 'SHADOW_VERIFICATION_FAILED');
 
-    // 6. Valid shadow evidence passes
+    // 8. Legitimate evidence passes
     const validFile = path.join(TEMP_DIR, 'valid.json');
     fs.writeFileSync(validFile, JSON.stringify({
-      candidateHead: dummyHead,
-      candidateTree: dummyTree,
+      verifier: 'hex-shadow-verifier/v1',
+      verifierVersion: 'sha256-abc123',
+      candidateCommitSha: dummyCommit,
+      candidateTreeSha: dummyTree,
+      totalCount: 15,
+      failedCount: 0,
       verdict: 'PASS',
+      results: [
+        { test: 'suite-1', verdict: 'passed' }
+      ]
     }));
     const validRes = validateShadowEvidence({
       evidencePath: validFile,
-      expectedCandidateHead: dummyHead,
+      expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
     assert.equal(validRes.valid, true);
@@ -248,5 +330,87 @@ test('candidate merge-tree verifier fails closed on missing, malformed, or misma
 
   } finally {
     fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+  }
+});
+
+test('real diverged local Git remote and moving ref negative test', () => {
+  const sandbox = path.join(ROOT, 'tmp-git-sandbox-' + Date.now());
+  fs.mkdirSync(sandbox, { recursive: true });
+
+  const originDir = path.join(sandbox, 'origin.git');
+  const repoDir = path.join(sandbox, 'local-repo');
+
+  try {
+    // 1. Initialize bare origin
+    runGit(['init', '--bare', originDir]);
+
+    // 2. Clone to local-repo and seed initial commit
+    runGit(['clone', originDir, repoDir]);
+    fs.writeFileSync(path.join(repoDir, 'base.txt'), 'base version\n');
+    runGit(['add', 'base.txt'], repoDir);
+    runGit(['-c', 'user.name=test', '-c', 'user.email=test@test.local', 'commit', '-m', 'initial base'], repoDir);
+    runGit(['branch', '-M', 'main'], repoDir);
+    runGit(['push', 'origin', 'main'], repoDir);
+    const initialBaseSha = runGit(['rev-parse', 'HEAD'], repoDir);
+
+    // 3. Create component branch 'jev-work' from initial base
+    runGit(['checkout', '-b', 'jev-work'], repoDir);
+    fs.writeFileSync(path.join(repoDir, 'js-pinpoint.js'), 'export const pinpoint = 1;\n');
+    runGit(['add', 'js-pinpoint.js'], repoDir);
+    runGit(['-c', 'user.name=test', '-c', 'user.email=test@test.local', 'commit', '-m', 'jev change'], repoDir);
+    const jevHeadSha = runGit(['rev-parse', 'HEAD'], repoDir);
+
+    // 4. Advance main with another commit (simulating diverged/moving main)
+    runGit(['checkout', 'main'], repoDir);
+    fs.writeFileSync(path.join(repoDir, 'main-advance.txt'), 'main advance\n');
+    runGit(['add', 'main-advance.txt'], repoDir);
+    runGit(['-c', 'user.name=test', '-c', 'user.email=test@test.local', 'commit', '-m', 'main moved ahead'], repoDir);
+    runGit(['push', 'origin', 'main'], repoDir);
+    const advancedMainSha = runGit(['rev-parse', 'HEAD'], repoDir);
+
+    // 5. Verify moving ref detection against real git remote:
+    // If verifier expected initialBaseSha, it MUST detect REMOTE_REF_MOVED
+    const refCheck = verifyRemoteRef({
+      ref: 'main',
+      expectedSha: initialBaseSha,
+      remote: 'origin',
+      cwd: repoDir,
+    });
+    assert.equal(refCheck.valid, false);
+    assert.equal(refCheck.reason, 'REMOTE_REF_MOVED');
+
+    // 6. Test diverged branch diff semantics:
+    // In our candidate merge tree verifier, diff between mergeBase and head must only contain jev files,
+    // not reverse diff of main-advance.txt!
+    const candidatePrep = prepareCandidate({
+      lane: 'jev',
+      baseSha: advancedMainSha,
+      headSha: jevHeadSha,
+      repoDir,
+    });
+    assert.ok(candidatePrep.candidateCommitSha);
+    assert.ok(candidatePrep.candidateTreeSha);
+
+    const manifest = loadManifest();
+    const verifierRes = verifyCandidateMergeTree({
+      lane: 'jev',
+      baseSha: advancedMainSha,
+      expectedBaseSha: advancedMainSha,
+      headSha: jevHeadSha,
+      expectedHeadSha: jevHeadSha,
+      expectedCandidateTree: candidatePrep.candidateTreeSha,
+      repoDir,
+      requireShadowEvidence: false,
+      manifest,
+    });
+
+    // The component changed js-pinpoint.js which is outside jev allowlist!
+    // So it correctly catches OWNERSHIP_VIOLATION without being confused by main-advance.txt
+    assert.equal(verifierRes.valid, false);
+    assert.ok(verifierRes.errors.some((e) => e.code === 'OWNERSHIP_VIOLATION'));
+    assert.deepEqual(verifierRes.componentFiles, ['js-pinpoint.js']);
+
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
