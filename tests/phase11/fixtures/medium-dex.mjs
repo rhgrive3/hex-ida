@@ -65,7 +65,15 @@ export function buildDex(options = {}) {
   const emit = a => { const p = pos; data.set(a, pos); pos += a.length; return p; };
   const reserve = (name, type, count, width, header) => { if (!count) return 0; align(); const p = pos; pos += count * width; v.setUint32(header,count,true); v.setUint32(header+4,p,true); maps.push([type,count,p]); layout[name]=p; return p; };
   reserve('strings',1,strings.length,4,56); reserve('types',2,typeNames.length,4,64);
-  reserve('protos',3,methods.length,12,72); reserve('fields',4,fields.length,8,80);
+  // DEX requires proto_ids to be unique and sorted by (return type, parameter
+  // type list); methods share one proto per distinct signature.
+  const protoKeyOf = m => [ti(m.returnType), ...(m.params ?? []).map(ti)];
+  const protoKeys = [];
+  for (const m of methods) { const k = protoKeyOf(m); if (!protoKeys.some(x => x.join() === k.join())) protoKeys.push(k); }
+  protoKeys.sort((a, b) => { if (a[0] !== b[0]) return a[0] - b[0]; for (let i = 1; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; });
+  const protoIndexOf = m => protoKeys.findIndex(k => k.join() === protoKeyOf(m).join());
+  const protoOwner = protoKeys.map(k => methods.find(m => protoKeyOf(m).join() === k.join()));
+  reserve('protos',3,protoKeys.length,12,72); reserve('fields',4,fields.length,8,80);
   reserve('methods',5,methods.length,8,88); reserve('classes',6,classNames.length,32,96);
   align(); const dataStart = pos;
   const stringStart = pos;
@@ -116,7 +124,8 @@ export function buildDex(options = {}) {
   layout.mapOff=mapOff;layout.maps=maps;layout.dataStart=dataStart;layout.stringsList=strings;layout.typesList=typeNames;
   typeNames.forEach((s,i)=>v.setUint32(layout.types+i*4,si(s),true));
   fields.forEach((f,i)=>{const p=layout.fields+i*8;v.setUint16(p,ti(f.classType),true);v.setUint16(p+2,ti(f.type),true);v.setUint32(p+4,si(f.name),true);});
-  methods.forEach((m,i)=>{let p=layout.protos+i*12;v.setUint32(p,si(m.shorty??shorty(m)),true);v.setUint32(p+4,ti(m.returnType),true);v.setUint32(p+8,paramsOffsets[i],true);p=layout.methods+i*8;v.setUint16(p,ti(m.classType),true);v.setUint16(p+2,i,true);v.setUint32(p+4,si(m.name),true);});
+  protoOwner.forEach((m,i)=>{const p=layout.protos+i*12;v.setUint32(p,si(m.shorty??shorty(m)),true);v.setUint32(p+4,ti(m.returnType),true);v.setUint32(p+8,paramsOffsets[methods.indexOf(m)],true);});
+  methods.forEach((m,i)=>{const p=layout.methods+i*8;v.setUint16(p,ti(m.classType),true);v.setUint16(p+2,protoIndexOf(m),true);v.setUint32(p+4,si(m.name),true);});
   data.set([100,101,120,10,48,51,57,0]);v.setUint32(32,pos,true);v.setUint32(36,0x70,true);v.setUint32(40,0x12345678,true);v.setUint32(52,mapOff,true);v.setUint32(104,pos-dataStart,true);v.setUint32(108,dataStart,true);
   return { bytes:applyDexIntegrity(data.slice(0,pos)), layout };
 }
