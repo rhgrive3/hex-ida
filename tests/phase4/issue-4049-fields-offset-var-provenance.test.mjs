@@ -27,10 +27,7 @@ const fields = new FieldIndex({
 
 for (const className of ['C', 'Other']) {
   const hit = fields.resolveAccess({ base: 'x5', indexAddr: 0x2000n, self: false }, className);
-  assert.equal(hit?.name, '_foo', 'offset-variable identity remains useful as a field candidate');
-  assert.equal(hit?.exact, true);
-  assert.equal(hit?.viaOffsetVar, true);
-  assert.equal(hit?.certain, false, `owner ${className} must not substitute for base-object provenance`);
+  assert.equal(hit, null, 'explicit self=false vetoes offset-variable field recovery');
 }
 
 {
