@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm';
 
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
 
 const sourceData = {
   verified: false,
@@ -87,7 +88,9 @@ const persisted = new InvestigationSessionStore().register({
     sourceData: { proof: { result: 'canonical' } },
   }],
 });
-store.restorePersistedConfirmed(persisted.confirmedFindings);
+// #8687: register() does not issue verified authority; the trusted persistence
+// load boundary seals the envelope, so model that boundary here.
+store.restorePersistedConfirmed(sealPersistedConfirmedEnvelope(persisted.confirmedFindings));
 const verified = store.get('ev-4436-verified');
 assert.equal(verified.status, 'verified');
 assert.equal(Object.isFrozen(verified), true);
