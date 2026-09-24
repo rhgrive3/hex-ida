@@ -22,6 +22,12 @@ assert.match(loaderSource, /Number\.isSafeInteger\(manifest\.byteLength\)/, 'man
 assert.match(loaderSource, /fetchBytes\([\s\S]*?manifest\.byteLength\)/, 'the manifest length must reach the runtime reader');
 assert.match(loaderSource, /decompressGzipExact\(compressed, RUNTIME_MAX_PLAINTEXT_BYTES\)/, 'gzip output must carry a plaintext ceiling');
 
+assert.match(
+  loaderSource,
+  /async function fetchBytes[\s\S]*?return await readBoundedBytes\(response,[\s\S]*?finally \{ attempt\.dispose\(\); \}/,
+  'fetchBytes must keep the attempt deadline alive through bounded body consumption (#9586)',
+);
+
 // 2. Content-Length parsing is strict and total.
 assert.equal(parseContentLength('1024'), 1024);
 assert.equal(parseContentLength('0'), 0);
@@ -199,6 +205,45 @@ function streamResponse({ chunks, headers = {}, failAfter = null }) {
     assert.match(String(error?.message), /OVER/, `attempt ${attempt} must reject at the bound`);
   }
   assert.ok(totalEnqueued <= 40 * 3, `stream cancellation must bound consumed chunks, saw ${totalEnqueued}`);
+}
+
+// 14. A 200 response whose body stalls after headers remains covered by the
+//     attempt deadline until the bounded body read settles (#9586).
+{
+  const retained = new Uint8Array(32).fill(0x5a);
+  let abortObserved = false;
+  const attempt = createAttemptDeadline(20);
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(retained);
+      attempt.signal.addEventListener('abort', () => {
+        abortObserved = true;
+        controller.error(attempt.signal.reason || new Error('The network attempt exceeded its deadline.'));
+      }, { once: true });
+    },
+  });
+  const response = {
+    status: 200,
+    headers: { get: () => null },
+    body,
+    async arrayBuffer() { throw new Error('arrayBuffer() must not be used by the bounded reader'); },
+  };
+  try {
+    await assert.rejects(
+      () => readBoundedBytes(response, {
+        maxBytes: 4096,
+        exactBytes: 4096,
+        overBudgetMessage: 'OVER',
+        mismatchMessage: 'MISMATCH',
+      }),
+      /deadline/,
+      'a stalled body must reject when the attempt deadline aborts after headers',
+    );
+  } finally {
+    attempt.dispose();
+  }
+  assert.equal(abortObserved, true, 'the body stream must observe the attempt abort');
+  assert.ok(retained.every((value) => value === 0), 'partial body bytes retained before the stall must be zeroed on deadline rejection');
 }
 
 console.log('issue-8927 secure loader network admission: ok');
