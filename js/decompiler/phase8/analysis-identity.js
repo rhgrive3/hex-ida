@@ -384,6 +384,27 @@ function metadataProjection(value, skip, path, memo) {
 
 function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   if (value == null) return null;
+  if (path === '$.definition.extra' && typeof value === 'object') {
+    const probe = globalThis.__hexPerfProbe;
+    if (probe?.callers instanceof Map) {
+      const bump = (key, amount = 1) => probe.callers.set(key, (probe.callers.get(key) ?? 0) + amount);
+      let keys = [];
+      try { keys = semanticOwnKeys(value).sort(); } catch {}
+      bump(`diag-extra-shape:${keys.join(',') || '(empty)'}`);
+      probe.__hexExtraChildren ??= new WeakSet();
+      for (const key of keys) {
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          const child = descriptor?.value;
+          if (child !== null && typeof child === 'object') {
+            if (probe.__hexExtraChildren.has(child)) bump('diag-extra-direct-child-repeat');
+            else { probe.__hexExtraChildren.add(child); bump('diag-extra-direct-child-unique'); }
+            if (Object.isFrozen(child)) bump('diag-extra-direct-child-frozen');
+          }
+        } catch {}
+      }
+    }
+  }
   // Canonical origins are immutable.  Keep one deterministic reference per
   // unique origin during this walk and hash the complete table once at the end
   // of `irShape`; hashing each large provenance record at every use made loop
