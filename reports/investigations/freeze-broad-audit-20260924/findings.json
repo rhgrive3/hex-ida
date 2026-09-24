@@ -1,0 +1,34 @@
+{
+  "audit": "freeze-broad-audit-20260924",
+  "repository": "rhgrive3/hex-ida",
+  "base_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
+  "audit_date": "2026-09-24",
+  "scope": "Non-algorithmic production risk: CLI/worker lifecycle, termination/cancellation, IPC ordering, stale state reuse, cache invalidation/collision, atomic publish/temp files/rollback, concurrency isolation, abort/timeout propagation, Promise rejection handling, resource cleanup, malformed-input/API validation, session/identity reuse, path handling, serialization boundaries, partial failure, race conditions, retry idempotency, and test/deploy harness correctness.",
+  "provenance": {
+    "reviewed_tree": "main",
+    "reviewed_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
+    "pr": 9566,
+    "pr_base_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
+    "identity_reconciled": true
+  },
+  "entry_schema": {
+    "id": "string (stable finding id)",
+    "severity": "Critical | Major",
+    "component": "string",
+    "file": "path:line",
+    "invariant": "the invariant that is violated",
+    "reproduction": "minimal concrete counterexample / reproducible execution path",
+    "impact": "user-visible impact",
+    "duplicate_status": "unique | duplicate-of (#issue/#pr) | handoff-known",
+    "handoff_overlap": "none | handoff-A..J lane name",
+    "confidence": "high | medium | low"
+  },
+  "counts": {
+    "critical": 0,
+    "major": 0,
+    "rejected_candidates": 6,
+    "duplicates": 4
+  },
+  "freeze_blocker_present": false,
+  "findings": []
+}
