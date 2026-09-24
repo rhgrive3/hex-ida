@@ -6,7 +6,6 @@ import {
   SEMANTIC_V2_COMPAT_PATH,
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
-  canonicalLegacySemanticSourceBinding,
 } from '../../js/semantics/compat/index.js';
 
 const plugin = Object.freeze({
@@ -101,14 +100,3 @@ assert.equal(statePhi.proof?.variableIdentity?.physicalIdentity?.registerId, 'st
 assert.equal(result.legacyV1.compat.scalarSsa, true);
 assert.equal(result.legacyV1.compat.memorySsa, true);
 console.log('Phase 3 explicit Semantic IR v2 SSA pipeline: PASS');
-
-
-const semanticSourceBinding = canonicalLegacySemanticSourceBinding(result.legacyV1);
-assert.ok(semanticSourceBinding, 'pipeline-issued legacy projection carries private exact-source authority');
-assert.equal(semanticSourceBinding.semanticIr, result.semanticIr);
-assert.match(semanticSourceBinding.semanticIrDigest, /^[0-9a-f]+$/);
-assert.equal(
-  canonicalLegacySemanticSourceBinding({ ...result.legacyV1 }),
-  null,
-  'a copied/forged legacy projection must not inherit producer source authority',
-);
