@@ -12,14 +12,14 @@ export function dexDefinitionCodeError(entry) {
 
 // method_ids is a reference table. Only class_data grants definition authority.
 // Do not cache a derived index on caller-owned MUTABLE image objects. A parsed DEX
-// image is deep-frozen by `parseDex`, so its class_data is immutable and the derived
-// definition authority can be reused (memoized out-of-band, keyed on the frozen image
+// image's methods/classes authority tables are deeply frozen by `parseDex`, so the
+// derived definition authority can be reused (memoized out-of-band, keyed on the image
 // in a WeakMap) instead of being rebuilt + full-scanned for every single method decode.
 // Without this, `open()` -> `enumerateMethods()` -> `decodeMethod()` per method rebuilt
 // the whole module authority + re-scanned classes, making ordinary whole-module decode
 // O(N^2) on a valid DEX (#8976). The WeakMap never attaches to the image and is GC'd
-// with it; only deeply immutable images are cached so a mutable caller object is never
-// poisoned and never returns a stale index.
+// with it; only frozen images with deeply immutable definition authority tables are
+// cached, so mutable caller data never returns a stale index.
 const definitionIndexByFrozenImage = new WeakMap();
 
 function isDeepFrozen(value, seen = new WeakSet()) {
@@ -35,7 +35,13 @@ function isDeepFrozen(value, seen = new WeakSet()) {
 }
 
 export function dexMethodDefinitions(image) {
-  const cacheable = image != null && typeof image === 'object' && isDeepFrozen(image);
+  const methods = image != null && typeof image === 'object'
+    ? Object.getOwnPropertyDescriptor(image, 'methods') : null;
+  const classes = image != null && typeof image === 'object'
+    ? Object.getOwnPropertyDescriptor(image, 'classes') : null;
+  const cacheable = image != null && typeof image === 'object' && Object.isFrozen(image)
+    && methods && 'value' in methods && Array.isArray(methods.value) && isDeepFrozen(methods.value)
+    && classes && 'value' in classes && Array.isArray(classes.value) && isDeepFrozen(classes.value);
   if (cacheable) {
     const cached = definitionIndexByFrozenImage.get(image);
     if (cached) return cached;

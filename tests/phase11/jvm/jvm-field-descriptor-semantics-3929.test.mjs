@@ -51,10 +51,12 @@ assert.deepEqual(classifyJvmFieldDescriptor('D'), {
   descriptor: 'D', bits: 64, storageBits: 64, storageByteWidth: 8, category: 2, slots: 2, valueKind: 'double',
 });
 assert.deepEqual(classifyJvmFieldDescriptor('Ljava/lang/String;'), {
-  descriptor: 'Ljava/lang/String;', bits: 64, storageBits: 64, storageByteWidth: 8, category: 1, slots: 1, valueKind: 'reference',
+  descriptor: 'Ljava/lang/String;', bits: 32, storageBits: 32, storageByteWidth: 4, category: 1, slots: 1, valueKind: 'reference',
+  type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
 });
 assert.deepEqual(classifyJvmFieldDescriptor('[[I'), {
-  descriptor: '[[I', bits: 64, storageBits: 64, storageByteWidth: 8, category: 1, slots: 1, valueKind: 'reference',
+  descriptor: '[[I', bits: 32, storageBits: 32, storageByteWidth: 4, category: 1, slots: 1, valueKind: 'reference',
+  type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
 });
 for (const invalid of [
   'V', 'Lfoo.bar;', 'L/foo;', 'Lfoo//bar;', '[V', '[[', `${'['.repeat(256)}I`,
@@ -91,15 +93,23 @@ assert.equal(putDouble.memoryEffects[0].valueCategory, 2);
 
 const getReference = fieldBundle('Ljava/lang/String;', 0xb4);
 assert.equal(getReference.completeness, 'exact');
-assert.deepEqual(getReference.consumedValues, [{ id: 'obj', bits: 64, category: 1, valueKind: 'reference' }]);
-assert.deepEqual(getReference.producedValues, [{ bits: 64, category: 1, valueKind: 'reference', descriptor: 'Ljava/lang/String;' }]);
+assert.deepEqual(getReference.consumedValues, [{
+  id: 'obj', bits: 32, category: 1, valueKind: 'reference',
+  type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
+}]);
+assert.deepEqual(getReference.producedValues, [{
+  bits: 32, category: 1, valueKind: 'reference', descriptor: 'Ljava/lang/String;',
+  type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
+}]);
 assert.equal(getReference.memoryEffects[0].space, 'field');
 
 const putArray = fieldBundle('[I', 0xb5);
 assert.equal(putArray.completeness, 'exact');
 assert.deepEqual(putArray.consumedValues, [
-  { id: 'val', bits: 64, category: 1, valueKind: 'reference', descriptor: '[I' },
-  { id: 'obj', bits: 64, category: 1, valueKind: 'reference' },
+  { id: 'val', bits: 32, category: 1, valueKind: 'reference', descriptor: '[I',
+    type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' } },
+  { id: 'obj', bits: 32, category: 1, valueKind: 'reference',
+    type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' } },
 ]);
 
 const getInt = fieldBundle('I', 0xb2);
@@ -156,11 +166,11 @@ assert.equal(volatileBundle.memoryEffects[0].ordering, 'synchronizes-with');
 
 console.log('jvm field descriptor semantics #3929: PASS');
 
-// #8799: the same storage facts must reach the canonical field effect, and the
-// value/category/stack authority above must stay exactly as #3929 defined it.
-for (const [descriptor, storageBytes] of [['J', 8], ['D', 8], ['F', 4], ['I', 4], ['B', 1], ['Z', 1], ['C', 2], ['S', 2], ['Ljava/lang/String;', 8]]) {
+// #8799: storage facts reach the canonical field effect. #9243 later made
+// object references 32-bit, while primitive stack widths from #3929 remain.
+for (const [descriptor, storageBytes] of [['J', 8], ['D', 8], ['F', 4], ['I', 4], ['B', 1], ['Z', 1], ['C', 2], ['S', 2], ['Ljava/lang/String;', 4]]) {
   const bundle = fieldBundle(descriptor, 0xb2);
   assert.equal(bundle.memoryEffects[0].byteWidth, storageBytes, `${descriptor}: storage width published`);
-  assert.equal(bundle.memoryEffects[0].valueBits === 64, descriptor === 'J' || descriptor === 'D' || descriptor.startsWith('L'),
+  assert.equal(bundle.memoryEffects[0].valueBits === 64, descriptor === 'J' || descriptor === 'D',
     `${descriptor}: value width stays the #3929 fact`);
 }

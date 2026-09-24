@@ -546,6 +546,67 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   });
 }
 
+function parseRawMetadataRootHeader(bytes, view, metadataOffset, metadataSize) {
+  checkedRange(bytes, metadataOffset, metadataSize, 'cil-metadata-root-out-of-bounds');
+  const metadataEnd = metadataOffset + metadataSize;
+  if (readU32(view, metadataOffset, 'cil-metadata-root-truncated') !== 0x424a5342) fail('cil-metadata-signature-invalid');
+  checkedRange(bytes, metadataOffset, 16, 'cil-metadata-root-truncated');
+  const versionLength = readU32(view, metadataOffset + 12, 'cil-metadata-root-truncated');
+  if (versionLength === 0) fail('cil-metadata-version-empty');
+  const versionStart = metadataOffset + 16;
+  if (versionLength > metadataEnd - versionStart) fail('cil-metadata-version-truncated');
+  const runtimeVersion = new TextDecoder('utf-8').decode(bytes.subarray(versionStart, versionStart + versionLength)).replace(/\0+$/, '');
+  if (!runtimeVersion.trim()) fail('cil-metadata-version-empty');
+
+  const flagsOffset = align4(versionStart + versionLength);
+  if (flagsOffset + 4 > metadataEnd) fail('cil-metadata-stream-header-truncated');
+  const streamCount = readU16(view, flagsOffset + 2, 'cil-metadata-stream-header-truncated');
+  if (streamCount === 0) fail('cil-metadata-stream-missing');
+  let streamPos = flagsOffset + 4;
+  const streams = [];
+  const names = new Set();
+  for (let stream = 0; stream < streamCount; stream++) {
+    if (streamPos + 8 > metadataEnd) fail('cil-metadata-stream-header-truncated');
+    const relativeOffset = readU32(view, streamPos, 'cil-metadata-stream-header-truncated');
+    const size = readU32(view, streamPos + 4, 'cil-metadata-stream-header-truncated');
+    streamPos += 8;
+    const nameStart = streamPos;
+    while (streamPos < metadataEnd && bytes[streamPos] !== 0) streamPos++;
+    if (streamPos >= metadataEnd) fail('cil-metadata-stream-name-truncated');
+    if (streamPos === nameStart) fail('cil-metadata-stream-name-empty');
+    const nameBytes = bytes.subarray(nameStart, streamPos);
+    if (nameBytes.some((byte) => byte < 0x21 || byte > 0x7e)) fail('cil-metadata-stream-name-invalid');
+    const name = new TextDecoder('ascii').decode(nameBytes);
+    if (names.has(name)) fail('cil-metadata-stream-name-duplicate');
+    names.add(name);
+    streamPos = align4(streamPos + 1);
+    if (streamPos > metadataEnd) fail('cil-metadata-stream-header-truncated');
+    if (relativeOffset > metadataSize || size > metadataSize - relativeOffset) fail('cil-metadata-stream-out-of-bounds');
+    streams.push({ name, offset: metadataOffset + relativeOffset, size });
+  }
+  return { runtimeVersion, streams };
+}
+
+function findRawMetadataRoot(bytes, view) {
+  let firstStructuralError = null;
+  for (let offset = 0; offset <= bytes.length - 4; offset += 4) {
+    if (bytes[offset] !== 0x42 || bytes[offset + 1] !== 0x53 || bytes[offset + 2] !== 0x4a || bytes[offset + 3] !== 0x42) continue;
+    try {
+      return { offset, ...parseRawMetadataRootHeader(bytes, view, offset, bytes.length - offset) };
+    } catch (error) {
+      // Keep typed errors for callers of the low-level parser when a root
+      // declares a version but is truncated or malformed. A marker with a
+      // zero-length version is not a plausible raw metadata root.
+      if (firstStructuralError == null && offset + 16 <= bytes.length
+          && readU32(view, offset + 12, 'cil-metadata-root-truncated') > 0) {
+        firstStructuralError = error;
+      }
+    }
+  }
+  if (firstStructuralError) throw firstStructuralError;
+  return null;
+}
+
 function exceptionClauseKind(flags) {
   switch (flags) {
     case 0: return 'catch';
@@ -740,12 +801,14 @@ export function probeCil(bytes) {
     }
   }
 
-  // Retain raw metadata-root compatibility for the deliberately minimal
-  // Phase 11 fixture. Real PE images are handled exclusively above.
-  for (let i = 0; i <= u8.length - 4; i += 4) {
-    if (u8[i] === 0x42 && u8[i + 1] === 0x53 && u8[i + 2] === 0x4a && u8[i + 3] === 0x42) {
+  // Retain only structurally valid raw metadata roots for the deliberately
+  // minimal Phase 11 fixture. Real PE images are handled exclusively above.
+  try {
+    if (findRawMetadataRoot(u8, new DataView(u8.buffer, u8.byteOffset, u8.byteLength))) {
       return { supported: true, confidence: 0.9, formatVersion: 'cli-ecma-335', vmSpecEdition: 'clr-v4' };
     }
+  } catch {
+    // A malformed candidate is not authority to classify arbitrary bytes as CIL.
   }
 
   return { supported: false, confidence: 0, reason: 'invalid-signature' };
@@ -770,11 +833,16 @@ export function readCompressedInt(bytes, offset) {
 }
 
 export function parseCil(bytes, options = {}) {
-  const probe = probeCil(bytes);
-  if (!probe.supported) fail('cil-unsupported-binary');
-
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const probe = probeCil(u8);
+  if (!probe.supported) {
+    // The public frontend gates on probeCil. Keep the low-level parser's
+    // precise truncation/descriptor errors for plausible raw roots while a
+    // bare marker (including one with a zero-length version) stays rejected.
+    if (!(u8[0] === 0x4d && u8[1] === 0x5a)) findRawMetadataRoot(u8, view);
+    fail('cil-unsupported-binary');
+  }
 
   const types = [];
   const methods = [];
@@ -795,48 +863,12 @@ export function parseCil(bytes, options = {}) {
     strings = [...metadataInfo.strings];
     runtimeVersion = metadataInfo.runtimeVersion || runtimeVersion;
   } else {
-    for (let i = 0; i <= u8.length - 4; i += 4) {
-      if (u8[i] === 0x42 && u8[i + 1] === 0x53 && u8[i + 2] === 0x4a && u8[i + 3] === 0x42) {
-        bsjbOffset = i;
-        break;
-      }
-    }
-  }
-
-  if (!metadataInfo && bsjbOffset >= 0) {
-    checkedRange(u8, bsjbOffset, 16, 'cil-metadata-root-truncated');
-    const vLen = readU32(view, bsjbOffset + 12, 'cil-metadata-root-truncated');
-    const versionStart = bsjbOffset + 16;
-    checkedRange(u8, versionStart, vLen, 'cil-metadata-version-truncated');
-    const versionEnd = versionStart + vLen;
-    const vBytes = u8.subarray(versionStart, versionEnd);
-    runtimeVersion = new TextDecoder('utf-8').decode(vBytes).replace(/\0+$/, '');
-
-    const flagsOff = align4(versionEnd);
-    checkedRange(u8, flagsOff, 4, 'cil-metadata-stream-header-truncated');
-    const streamCount = readU16(view, flagsOff + 2, 'cil-metadata-stream-header-truncated');
-    const metadataSize = u8.length - bsjbOffset;
-    let sPos = flagsOff + 4;
-    const streams = [];
-    for (let s = 0; s < streamCount; s++) {
-      checkedRange(u8, sPos, 8, 'cil-metadata-stream-header-truncated');
-      const sOffset = readU32(view, sPos, 'cil-metadata-stream-header-truncated');
-      const sSize = readU32(view, sPos + 4, 'cil-metadata-stream-header-truncated');
-      sPos += 8;
-      let sName = '';
-      while (sPos < u8.length && u8[sPos] !== 0) {
-        sName += String.fromCharCode(u8[sPos++]);
-      }
-      if (sPos >= u8.length) fail('cil-metadata-stream-name-truncated');
-      sPos = align4(sPos + 1);
-      if (sPos > u8.length) fail('cil-metadata-stream-header-truncated');
-      if (sOffset > metadataSize || sSize > metadataSize - sOffset) fail('cil-metadata-stream-out-of-bounds');
-      streams.push({ name: sName, offset: bsjbOffset + sOffset, size: sSize });
-    }
-
-    const stringStream = streams.find((st) => st.name === '#Strings');
-    if (stringStream) {
-      strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
+    const rawRoot = findRawMetadataRoot(u8, view);
+    if (rawRoot) {
+      bsjbOffset = rawRoot.offset;
+      runtimeVersion = rawRoot.runtimeVersion || runtimeVersion;
+      const stringStream = rawRoot.streams.find((stream) => stream.name === '#Strings');
+      if (stringStream) strings.push(...parseStringsHeap(u8, stringStream.offset, stringStream.size));
     }
   }
 

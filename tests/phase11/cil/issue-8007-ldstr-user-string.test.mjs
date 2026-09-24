@@ -70,14 +70,15 @@ test('#8007 a valid ldstr resolves its #US literal and preserves it through the 
   assert.equal(a.valueMetadata?.stringRef, 'A', 'the literal must reach the canonical IR value');
   assert.equal(b.valueMetadata?.stringRef, 'B');
 
-  // Distinct literals must not collapse to the same complete projection.
+  // Distinct literals must remain distinguishable even while target pointer
+  // width is unresolved and the CIL projection stays partial (#7775).
   assert.notDeepEqual(
     { ...a, pseudocode: undefined },
     { ...b, pseudocode: undefined },
   );
 
-  assert.equal(a.semanticCompleteness, 'complete');
-  assert.deepEqual(a.unknowns, []);
+  assert.equal(a.semanticCompleteness, 'partial');
+  assert.ok(a.unknowns.some((unknown) => unknown.reason === 'machine-type-unresolved'));
   assert.equal(a.validationSemanticEffect, 'complete');
 });
 

@@ -276,7 +276,7 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
       bytecode:[0x14, 0x2a], // ldnull; ret
       stackType:'object-ref',
       bits:null,
-      machineWidthBits:32,
+      machineWidthBits:null,
     },
   ];
 
@@ -296,7 +296,14 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
     assert.ok(value, 'return input resolves to a Semantic IR value');
     assert.ok(value.definitionNodeId, 'return value retains its defining node');
     assert.ok(value.origin, 'return value retains origin provenance');
-    assert.equal(value.machineType.widthBits, sample.machineWidthBits);
-    assert.equal(lowered.semanticIr.completeness, 'complete');
+    if (sample.machineWidthBits == null) {
+      // Without CLI target-width flags, #7775 leaves native object-reference
+      // width unstated; the reference return remains explicit but partial.
+      assert.ok(lowered.semanticIr.unknowns.some((unknown) => unknown.reason === 'machine-type-unresolved'));
+      assert.equal(lowered.semanticIr.completeness, 'partial');
+    } else {
+      assert.equal(value.machineType.widthBits, sample.machineWidthBits);
+      assert.equal(lowered.semanticIr.completeness, 'complete');
+    }
   }
 });
