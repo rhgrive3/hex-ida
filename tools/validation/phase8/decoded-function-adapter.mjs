@@ -90,6 +90,7 @@ export function decompileDecodedProductFunction(input, options = {}) {
     .map((instruction) => [BigInt(instruction.address).toString(), instruction.row]));
   const decompilerOptions = {
     ir:pipeline.legacyV1,
+    profile:options.profile ?? 'deep',
     abiAdapter,
     decoderSemanticVersion:String(input.decoderSemanticVersion),
     binaryId:String(input.binaryId),
@@ -104,9 +105,11 @@ export function decompileDecodedProductFunction(input, options = {}) {
     // pre-projection IR API. Match the production driver's explicit request
     // for its map even when optimizer stages are not enabled.
     renderProvenance:true,
+    ...(options.renderProvenanceBudget !== undefined ? { renderProvenanceBudget:options.renderProvenanceBudget } : {}),
+    ...(options.renderProvenanceBindingBudget !== undefined ? { renderProvenanceBindingBudget:options.renderProvenanceBindingBudget } : {}),
     decompilerTimeBudgetMs:Number(options.decompilerTimeBudgetMs ?? 5000),
-    ...(options.phase8TimeBudgetMs != null ? { phase8TimeBudgetMs:Number(options.phase8TimeBudgetMs) } : {}),
-    ...(options.phase8WorkBudget != null ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
+    ...(options.phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs:options.phase8TimeBudgetMs == null ? options.phase8TimeBudgetMs : Number(options.phase8TimeBudgetMs) } : {}),
+    ...(options.phase8WorkBudget !== undefined ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
   };
   const raw = decompileSemantic(model, decompilerOptions);
   if (!raw) throw new Error('phase8-measurement-product-decompiler-produced-no-result');

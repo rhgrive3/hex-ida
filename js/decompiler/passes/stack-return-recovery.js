@@ -592,6 +592,7 @@ export function recoverExactStackReturn(result, opts = {}) {
     maxIterations:10,
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
+    deterministic:opts.deterministicTransforms === true,
     maxApplications:512,
   }), opts.renderProvenanceBudget?.maxTransformRecords);
   let committed = committedReturnValue(result, root, ret, opts);

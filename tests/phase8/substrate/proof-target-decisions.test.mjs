@@ -141,7 +141,7 @@ function operatorProjectionFixture(bits, operator, offset = 0, decorations = {})
   const canonical = structuredClone(ir);
   const result = enhanceSemanticDecompilation({ semantic:true, ir, types:null,
     lines:[{ kind:'stmt', indent:0, text:'return pending;', row:ret.row, addr:ret.address }], metrics:{}, ctx:{} }, null,
-  { phase8PrepareProof:true, phase8ProofOnlyRewrites:true, deterministicTransforms:true, decompilerTimeBudgetMs:1000 });
+  { profile:'deep', phase8PrepareProof:true, phase8ProofOnlyRewrites:true, deterministicTransforms:true, decompilerTimeBudgetMs:1000 });
   return { ir, input, zero, target, canonical, result, options:{ identity, abiId:'generic-v1', memory:{addressBits:8},
     targets:[target], timeoutMs:1000, backendTier:'tiered', requireProofOnlyRewrites:true } };
 }
@@ -317,7 +317,7 @@ function booleanProjectionFixture(bits=4, operator='eq', {constant=true,resultBi
   const canonical=structuredClone(ir);
   const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
     lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
-  {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  {profile:'deep',phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
   return {ir,input,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
     timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
 }
@@ -448,7 +448,7 @@ function castProjectionFixture(from=8,to=32,operator='zext',{kind='mov',defer=tr
   const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
     lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
       text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
-  {phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  {profile:'deep',phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
   return {ir,input,operand,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
     timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
 }
@@ -672,7 +672,7 @@ function selectProjectionFixture(bits=4,{constantCondition=false,sameArms=false,
   const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
     lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
       text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
-  {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  {profile:'deep',phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
   return {ir,control,yes,no,predicate,target,store,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
     timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
 }
@@ -711,7 +711,7 @@ test('C4-04 explicit select families preserve canonical branch truth across the 
       // The existing local-candidate query has a 120ms deadline. The BV8
       // equal-arm case can exhaust it; keep that measured unknown in the
       // denominator, never widen the runtime budget or call it an adoption.
-      const deadline=bits===8&&mode==='same-arms'&&candidateStrategy==='local-rewrites'&&report.reason==='deadline';
+      const deadline=bits===8&&mode==='same-arms'&&candidateStrategy==='local-rewrites'&&report.reason==='deadline-exceeded';
       assert.equal(report.status,deadline?'partial':'complete',`${label}: ${report.reason}`);
       assert.equal(report.adopted,deadline?0:1,label);
       assert.deepEqual(report.decisionCoverage,{requested:1,complete:!deadline});
@@ -919,7 +919,7 @@ function bitfieldProjectionFixture(bits=8,mode='extract-unsigned',{keepInput=fal
   const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
     lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
       text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
-    {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+    {profile:'deep',phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
   return {ir,a,b,source,target,store,ret,lsb,width,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
     timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
 }
