@@ -171,3 +171,31 @@ test('canonicalAnalysisIdentity equivalence across diverse shared structures and
     assert.deepEqual(cur, orig);
   }
 });
+
+
+test('definition extra segmented hashing is byte-identical to the baseline identity', () => {
+  const f = fixture('definition-extra-segmented-digest');
+  f.block(0);
+  const left = f.constant(11n, 64);
+  const right = f.constant(7n, 64);
+  f.binary('add', left, right, 64);
+  f.ret();
+  const ir = f.build();
+
+  const shared = Object.freeze({
+    machine: Object.freeze({ widthBits:64, completeness:'complete', flags:Object.freeze([1, 2, 3, 4]) }),
+    proof: Object.freeze({ source:'canonical', exact:true }),
+  });
+  for (const block of ir.blocks) {
+    for (const instruction of block.insts) {
+      instruction.extra = {
+        semanticNodeId: `node-${instruction.row}`,
+        completeness: 'complete',
+        attributes: shared,
+        widthBits: 64,
+      };
+    }
+  }
+
+  assert.deepEqual(current({ ir }), original({ ir }));
+});
