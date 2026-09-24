@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { stableDigest } from '../../js/core/identity/index.js';
-import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
-import { ARM64_ARCHITECTURE } from '../../js/targets/architecture/index.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+import { ARM64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';
 
 test('buildSemanticV2CompatibilityPipeline reuses initialMemorySsa when no pointer-through-stack reload occurs', () => {
   const binaryId = 'test-binary-id';
@@ -32,7 +32,7 @@ test('buildSemanticV2CompatibilityPipeline reuses initialMemorySsa when no point
 });
 
 test('classifySemanticMemoryRegion maintains correct region classification with irIndexFor memoization', async () => {
-  const { classifySemanticMemoryRegion } = await import('../../js/analysis/alias/regions-v2.js');
+  const { classifySemanticMemoryRegion } = await import('../../../js/analysis/alias/regions-v2.js');
   const sampleIr = Object.freeze({
     contractVersion: '1.0.0',
     functionId: 'fn_test_memo_index',
