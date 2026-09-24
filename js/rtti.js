@@ -25,8 +25,35 @@ export function demangleCxx(name){
 function readSpecial(p){const start=p.i,two=p.s.slice(p.i,p.i+2),map={TV:'vtable for {}',TT:'VTT for {}',TI:'typeinfo for {}',TS:'typeinfo name for {}',GV:'guard variable for {}',Th:'thunk to {}'};if(!map[two])return null;if(two==='Th'){p.i++;if(!readNonVirtualCallOffset(p)){p.i=start;return null;}}else p.i+=2;return map[two];}
 function readNonVirtualCallOffset(p){if(p.s[p.i]!=='h')return false;p.i++;if(p.s[p.i]==='n')p.i++;const start=p.i;while(p.i<p.s.length&&/\d/.test(p.s[p.i]))p.i++;if(p.i===start||p.s[start]==='0'&&p.i-start>1||p.s[p.i]!=='_')return false;p.i++;return true;}
 function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return null;const m=/^(.*?)( (?:const|volatile|restrict)(?: (?:const|volatile|restrict))*)$/.exec(out);return m?`${m[1]}(${args})${m[2]}`:`${out}(${args})`;}
-function readName(p,isSub=true){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S')return readSubstitution(p);if(/\d/.test(c||''))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
-function readNested(p,isSub=true){const parts=[];let cvr='',cvMask=0,cvLast=-1;while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){const code=p.s[p.i],rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;if((cvMask&bit)!==0||rank<cvLast)return null;cvMask|=bit;cvLast=rank;cvr={r:' restrict',V:' volatile',K:' const'}[code]+cvr;p.i++;}let currentPrefix='';while(p.i<p.s.length&&p.s[p.i]!=='E'){const c=p.s[p.i];let part=null,isSubst=false;if(/\d/.test(c))part=readSourceName(p,false);else if(c==='S'){part=readSubstitution(p);isSubst=true;}else if(c==='C'){if(p.i+2>p.s.length)return null;p.i+=2;part=parts.at(-1)||'ctor';}else if(c==='D'){if(p.i+2>p.s.length)return null;p.i+=2;part='~'+(parts.at(-1)||'dtor');}else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}else if(c==='I')part=readTemplateArgs(p);else return null;if(!part)return null;parts.push(part);if(part.startsWith('<')){currentPrefix+=part;}else{currentPrefix=currentPrefix?`${currentPrefix}::${part}`:part;}if(!isSubst){if(p.s[p.i]!=='E'){p.subs.push(currentPrefix);}else if(isSub){p.subs.push(currentPrefix);}}}if(p.s[p.i]!=='E'||!parts.length)return null;p.i++;return parts.reduce((a,b)=>b.startsWith('<')?a+b:(a?`${a}::${b}`:b),'')+cvr;}
+function readName(p,isSub=true){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S'){if(two==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;const out=`std::${tail}`;if(isSub)p.subs.push(out);return out;}return readSubstitution(p);}if(/\d/.test(c||''))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
+function readNested(p,isSub=true){
+  const parts=[];
+  let cvr='',cvMask=0,cvLast=-1,currentPrefix='',lastUnqualified=null;
+  while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){
+    const code=p.s[p.i],rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;
+    if((cvMask&bit)!==0||rank<cvLast)return null;
+    cvMask|=bit;cvLast=rank;cvr={r:' restrict',V:' volatile',K:' const'}[code]+cvr;p.i++;
+  }
+  while(p.i<p.s.length&&p.s[p.i]!=='E'){
+    const c=p.s[p.i];let part=null,isSubst=false,updatesName=false;
+    if(/\d/.test(c)){part=readSourceName(p,false);updatesName=true;}
+    else if(c==='S'){part=readSubstitution(p);isSubst=true;updatesName=true;}
+    else if(c==='C'){if(p.i+2>p.s.length)return null;p.i+=2;part=lastUnqualified||'ctor';}
+    else if(c==='D'){if(p.i+2>p.s.length)return null;p.i+=2;part='~'+(lastUnqualified||'dtor');}
+    else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}
+    else if(c==='I')part=readTemplateArgs(p);
+    else return null;
+    if(!part)return null;
+    parts.push(part);
+    if(updatesName)lastUnqualified=part.split('::').at(-1)||lastUnqualified;
+    if(part.startsWith('<'))currentPrefix+=part;
+    else currentPrefix=currentPrefix?`${currentPrefix}::${part}`:part;
+    if(!isSubst){if(p.s[p.i]!=='E')p.subs.push(currentPrefix);else if(isSub)p.subs.push(currentPrefix);}
+  }
+  if(p.s[p.i]!=='E'||!parts.length)return null;
+  p.i++;
+  return parts.reduce((a,b)=>b.startsWith('<')?a+b:(a?`${a}::${b}`:b),'')+cvr;
+}
 function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(isSub)p.subs.push(out);return out;}
 function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return SUBSTITUTIONS[two];}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;return Number.isSafeInteger(n)?(p.subs[n]||null):null;}
 function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
@@ -35,7 +62,34 @@ function readType(p){const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const 
 
 const SWIFT_KIND={C:'class',V:'struct',O:'enum',P:'protocol',F:'func',vg:'getter',vs:'setter',fC:'init',fD:'deinit'};
 const SWIFT_KIND_LENGTHS=[...new Set(Object.keys(SWIFT_KIND).map((k)=>k.length))].sort((a,b)=>b-a);
-export function demangleSwift(name){if(typeof name!=='string'||!name)return null;const s=name.startsWith('_$')?name.slice(1):name;if(!/^(?:\$s|\$S|_T0)/.test(s))return null;const body=s.replace(/^(?:\$s|\$S|_T0)/,'');const parts=[];let i=0,guard=0;while(i<body.length&&guard++<200){const m=/^(\d+)/.exec(body.slice(i));if(m){const len=Number(m[1]);i+=m[1].length;if(!Number.isSafeInteger(len)||len<=0)return null;let word=body.slice(i,i+len);if(word.length!==len)return null;i+=len;if(i===body.length){/*#5253: a length overrun into the tail (e.g. a substitution index read as a word length) can swallow the trailing entity operator; split a kind token off a word that reaches the end of the symbol.*/let split=false;for(const klen of SWIFT_KIND_LENGTHS){const token=word.slice(-klen);if(SWIFT_KIND[token]){const stem=word.slice(0,-klen);if(stem)parts.push(stem);parts.push(`(${SWIFT_KIND[token]})`);split=true;break;}}if(!split)parts.push(word);}else if(word)parts.push(word);continue;}const rest=body.slice(i);let kind=null;for(const klen of SWIFT_KIND_LENGTHS){const token=rest.slice(0,klen);if(SWIFT_KIND[token]){kind=token;i+=klen;break;}}if(kind)parts.push(`(${SWIFT_KIND[kind]})`);else i++;/*#5253: multi-character operators (vg/vs/fC/fD) must be reachable; unmatched operator characters are not words.*/}if(!parts.length)return null;const words=parts.filter(x=>!x.startsWith('(')),kinds=parts.filter(x=>x.startsWith('(')),kind=kinds.length?kinds[kinds.length-1].replace(/[()]/g,''):null;if(!words.length)return null;return words.join('.')+(kind?`   [${kind}]`:'');}
+export function demangleSwift(name){
+  if(typeof name!=='string'||!name)return null;
+  const s=name.startsWith('_$')?name.slice(1):name;
+  if(!/^(?:\$s|\$S|_T0)/.test(s))return null;
+  const body=s.replace(/^(?:\$s|\$S|_T0)/,'');
+  const parts=[];let i=0,guard=0,acceptIdentifiers=true;
+  while(i<body.length&&guard++<200){
+    const m=acceptIdentifiers?/^(\d+)/.exec(body.slice(i)):null;
+    if(m){
+      const len=Number(m[1]);i+=m[1].length;if(!Number.isSafeInteger(len)||len<=0)return null;
+      let word=body.slice(i,i+len);if(word.length!==len)return null;i+=len;
+      if(i===body.length){
+        let split=false;
+        for(const klen of SWIFT_KIND_LENGTHS){const token=word.slice(-klen);if(SWIFT_KIND[token]){const stem=word.slice(0,-klen);if(stem)parts.push(stem);parts.push(`(${SWIFT_KIND[token]})`);split=true;break;}}
+        if(!split)parts.push(word);
+      }else if(word)parts.push(word);
+      continue;
+    }
+    const rest=body.slice(i);let kind=null;
+    for(const klen of SWIFT_KIND_LENGTHS){const token=rest.slice(0,klen);if(SWIFT_KIND[token]){kind=token;i+=klen;break;}}
+    if(kind){parts.push(`(${SWIFT_KIND[kind]})`);continue;}
+    acceptIdentifiers=false;i++;
+  }
+  if(!parts.length)return null;
+  const words=parts.filter(x=>!x.startsWith('(')),kinds=parts.filter(x=>x.startsWith('(')),kind=kinds.length?kinds[kinds.length-1].replace(/[()]/g,''):null;
+  if(!words.length)return null;
+  return words.join('.')+(kind?`   [${kind}]`:'');
+}
 function stripInline(s){return s.replace(/std::__[0-9]+::/g,'std::').replace(/(^|[^\w:])__[0-9]+::/g,'$1std::');}
 function splitArgs(s){const out=[];let depth=0,cur='';for(const ch of s){if(ch==='<'||ch==='(')depth++;if(ch==='>'||ch===')')depth--;if(ch===','&&depth===0){out.push(cur.trim());cur='';continue;}cur+=ch;}if(cur.trim())out.push(cur.trim());return out;}
 function findTemplate(s,from=0){const open=s.indexOf('<',from);if(open<0)return null;let depth=0;for(let i=open;i<s.length;i++){if(s[i]==='<')depth++;else if(s[i]==='>'&&!--depth)return{open,close:i};}return null;}
