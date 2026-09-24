@@ -20,8 +20,8 @@ const CASES = [
   ['I', 32, 4],
   ['J', 64, 8],
   ['D', 64, 8],
-  ['Ljava/lang/String;', 64, 8],
-  ['[I', 64, 8],
+  ['Ljava/lang/String;', 32, 4],
+  ['[I', 32, 4],
 ];
 
 const GET = { static: 0xb2, instance: 0xb4 };
@@ -133,7 +133,7 @@ for (const [descriptor, valueBits, storageBytes] of CASES) {
   for (const descriptor of ['Ljava/lang/String;', '[I', '[[Ljava/lang/Object;']) {
     const ref = classifyJvmFieldDescriptor(descriptor);
     assert.equal(ref.valueKind, 'reference');
-    assert.equal(ref.storageByteWidth, 8, 'reference storage follows the project 64-bit reference model');
+    assert.equal(ref.storageByteWidth, 4, 'reference storage follows the 32-bit managed-heap contract (#9243)');
     assert.equal(ref.bits, ref.storageBits, 'reference value and storage widths agree');
   }
   assert.equal(classifyJvmFieldDescriptor('V'), null, 'void is not a field descriptor');

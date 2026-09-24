@@ -6,10 +6,9 @@ import { CilFrontend } from '../../../js/managed/cil/frontend.js';
 import { lowerVMEffectsToSemanticIr, decompileManagedMethod } from '../../../js/managed/shared/bridge-v2.js';
 
 // #8028: the frontends publish a definite-null fact (`producedValues[].isNull`)
-// for CIL `ldnull` and JVM `aconst_null`, but the bridge silently dropped it:
-// the exact null reference became an ordinary bitvector definition with no
-// null/reference authority while the IR stayed `complete`, and the decompiler
-// fabricated `ldnull(0)`.
+// for CIL `ldnull` and JVM `aconst_null`, and the bridge preserves it. CIL
+// native pointer width remains unknown without target-width flags (#7775), so
+// the null value stays definite while its Semantic IR remains partial.
 
 async function runCil() {
   const { bytes } = buildCil({
@@ -44,8 +43,8 @@ test('#8028 CIL ldnull preserves the null-reference authority through the bridge
   const r = await runCil();
   assert.equal(r.bundleIsNull, true, 'fixture precondition: the frontend publishes isNull');
   assert.equal(r.valueMetadata?.isNull, true, 'the null fact must survive the bridge');
-  assert.equal(r.irCompleteness, 'complete');
-  assert.deepEqual(r.unknowns, []);
+  assert.equal(r.irCompleteness, 'partial');
+  assert.ok(r.unknowns.some((unknown) => unknown.reason === 'machine-type-unresolved'));
 });
 
 test('#8028 the decompiler renders the null reference instead of ldnull(0)', async () => {

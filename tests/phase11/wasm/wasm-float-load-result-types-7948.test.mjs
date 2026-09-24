@@ -65,8 +65,11 @@ for (const entry of cases) {
   }], `${entry.mnemonic}: OOB trap authority must be preserved`);
   assert.equal(result.node.memory.widthBits, entry.byteWidth * 8);
   assert.deepEqual(result.node.metadata.possibleExceptions, result.bundle.possibleExceptions);
-  assert.equal(result.lowered.semanticIr.completeness, 'complete');
-  assert.deepEqual(result.lowered.semanticIr.unknowns, []);
+  assert.equal(result.node.completeness, 'partial',
+    `${entry.mnemonic}: #9155 makes the possible trap authoritative until exceptional control is represented`);
+  assert.equal(result.node.unknown?.reason, 'managed-possible-exception-control-unrepresented');
+  assert.equal(result.lowered.semanticIr.completeness, 'partial');
+  assert.ok(result.lowered.semanticIr.unknowns.some((unknown) => unknown.reason === 'managed-possible-exception-control-unrepresented'));
 }
 
 assert.notDeepEqual(

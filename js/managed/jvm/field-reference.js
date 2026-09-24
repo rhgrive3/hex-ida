@@ -39,10 +39,8 @@ const PRIMITIVE_FIELD_DESCRIPTORS = Object.freeze(Object.assign(Object.create(nu
   D: { bits: 64, storageBits: 64, category: 2, valueKind: 'double' },
 }));
 
-// The project's JVM reference value model is 64-bit (`bits` below, and the
-// shared bridge's canonical field-address entry carries the same width), so a
-// reference field stores exactly that width; no separate HotSpot-style
-// compressed-oop authority is invented here (#8799).
+// The project's JVM reference value model follows the managed-heap contract at
+// 32 bits (#9243); no separate compressed-oop authority is inferred here.
 const JVM_REFERENCE_STORAGE_BITS = 32;
 
 export function classifyJvmFieldDescriptor(descriptor) {
