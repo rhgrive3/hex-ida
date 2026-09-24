@@ -177,7 +177,7 @@ assert.match(userscriptBuildSource, /existingOptionalEntries\(OPTIONAL_BUNDLED_C
 assert.match(userscriptBuildSource, /bundleInlinedClassic\(entry, inlineImports\(entry, sources\)\)/,
   'receiver dynamic ESM dependencies and classic Capstone scripts must be bundled into the protected worker blob');
 const classicBundleStart = userscriptBuildSource.indexOf('async function bundleInlinedClassic(');
-const classicBundleEnd = userscriptBuildSource.indexOf('function protectedImportMetaPlugin()', classicBundleStart);
+const classicBundleEnd = userscriptBuildSource.indexOf('protectedImportMetaPlugin(', classicBundleStart);
 assert.ok(classicBundleStart >= 0 && classicBundleEnd > classicBundleStart,
   'dedicated classic worker bundle must remain a separately inspectable build path');
 const classicBundleSource = userscriptBuildSource.slice(classicBundleStart, classicBundleEnd);
