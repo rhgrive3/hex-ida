@@ -715,6 +715,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   // SET_SEGMENT_AND_OFFSET_ULEB has run, and normal/lazy binds must have set a
   // library ordinal explicitly (issues #5834/#5835/#5832).
   let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
+  const addSegOffset = (delta) => { segOffset = BigInt.asUintN(64, segOffset + BigInt(delta)); };
   let libraryOrdinalSet = source === 'weak-bind';
   let threadedTable = null, threadedTableLimit = 0;
   let sawDone = false;
@@ -871,11 +872,11 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
-    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; locationSet = true; }
-    else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
-    else if (op === 0x90) { bind(); segOffset += ptrSize; }
-    else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
-    else if (op === 0xb0) { bind(); segOffset += ptrSize + BigInt(imm) * ptrSize; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = BigInt.asUintN(64, x.value); locationSet = true; }
+    else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; addSegOffset(x.value); }
+    else if (op === 0x90) { bind(); addSegOffset(ptrSize); }
+    else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; addSegOffset(ptrSize + x.value); }
+    else if (op === 0xb0) { bind(); addSegOffset(ptrSize + BigInt(imm) * ptrSize); }
     else if (op === 0xc0) {
       const a = r.uleb(p, 10, end); p = a.next; const b = r.uleb(p, 10, end); p = b.next;
       if(a.value>BigInt(Number.MAX_SAFE_INTEGER)){fail('bind repeat count exceeds safe integer range');break;}
@@ -883,7 +884,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       const maxBySegment=owner&&step>0n&&segOffset>=0n&&segOffset+ptrSize<=owner.size?Number(((owner.size-segOffset-ptrSize)/step)+1n):0;
       const maxByBudget=Math.min(budget.remaining('operations'),Math.floor(budget.remaining('objects')/2));
       const allowed=Math.max(0,Math.min(repeat,maxBySegment,maxByBudget));
-      for(let i=0;i<allowed;i++){bind();segOffset+=step;}
+      for(let i=0;i<allowed;i++){bind();addSegOffset(step);}
       if(allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
     } else if (op === 0xd0) {
       if (imm === 0) {

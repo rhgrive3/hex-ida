@@ -569,7 +569,7 @@ export class Emulator {
       }
     }
     if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
-    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || /^(ldraa|ldrab)$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
       throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
     }
 
@@ -777,7 +777,7 @@ export class Emulator {
 
     if (/^f/.test(mn) || /^[su]cvtf$/.test(mn)) return this.floatInsn(mn, ops);
 
-    if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldpsw|ldxr|ldaxr|ldar)/.test(mn)) {
+    if (/^(?:ldr(?:b|h|sb|sh|sw)?|ldur(?:b|h|sb|sh|sw)?|ldp|ldnp|ldpsw|ldxr(?:b|h)?|ldaxr(?:b|h)?|ldar(?:b|h)?)$/.test(mn)) {
       return this.loadInsn(mn, ops);
     }
     if (/^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/.test(mn)) {
@@ -984,8 +984,29 @@ export class Emulator {
     this.vRawNumber[op.num] = value;
   }
 
+  fpElementBits(op) {
+    if (!op || op.k !== 'elem') return 0n;
+    const size = op.size === 's' ? 4 : op.size === 'd' ? 8 : null;
+    if (size == null) {
+      throw new EmulatorFault('unsupported-instruction', `scalar floating-point lane ${op.text || '?'} is not modelled`, { operand: op });
+    }
+    const raw = this.fpRaw({ k:'reg', cls:'vec', bits:128, num:op.num, text:`v${op.num}` });
+    const shift = BigInt(op.index * size * 8);
+    return (raw >> shift) & ((1n << BigInt(size * 8)) - 1n);
+  }
+
+  fpOperandBits(op) {
+    return op?.k === 'elem' ? this.fpElementBits(op) : this.fpBits(op);
+  }
+
   fget(op) {
-    if (!op || op.k !== 'reg') return 0;
+    if (!op) return 0;
+    if (op.k === 'elem') {
+      const size = op.size === 's' ? 4 : op.size === 'd' ? 8 : null;
+      if (size == null) throw new EmulatorFault('unsupported-instruction', `scalar floating-point lane ${op.text || '?'} is not modelled`, { operand: op });
+      return bitsToFloat(this.fpElementBits(op), size);
+    }
+    if (op.k !== 'reg') return 0;
     if (op.cls === 'gp' || op.cls === 'sp') {
       const bits = op.bits === 32 ? 32 : 64;
       return Number(BigInt.asIntN(bits,this.get(op.text)));
@@ -1025,6 +1046,15 @@ export class Emulator {
         throw new EmulatorFault('unsupported-instruction', `${mn} has a destination this emulator cannot interpret`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
       }
     }
+    if (ops.some((op) => op?.k === 'elem')) {
+      if (mn !== 'fmul' || ops[2]?.k !== 'elem' || !isFloatReg(ops[0]) || !isFloatReg(ops[1])) {
+        throw new EmulatorFault('unsupported-instruction', `${mn} scalar-by-element form is not modelled`, { mnemonic: mn, operands: ops.map((op) => op?.text || null) });
+      }
+      const laneSize = ops[2].size === 's' ? 4 : ops[2].size === 'd' ? 8 : null;
+      if (laneSize == null || this.fpSize(ops[0]) !== laneSize || this.fpSize(ops[1]) !== laneSize) {
+        throw new EmulatorFault('unsupported-instruction', `${mn} scalar-by-element widths do not match`, { mnemonic: mn, operands: ops.map((op) => op?.text || null) });
+      }
+    }
     const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
     if (mn === 'fmov') {
       if (ops[1]?.k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
@@ -1035,14 +1065,21 @@ export class Emulator {
       return null;
     }
     const arithmetic = FLOAT_ARITHMETIC[mn];
-    if (arithmetic) { this.fset(ops[0], arithmetic(a, b)); return null; }
+    if (arithmetic) {
+      const size = this.fpSize(ops[0]);
+      const raw = scalarFloatArithmeticBits(mn, this.fpOperandBits(ops[1]), ops[2] ? this.fpOperandBits(ops[2]) : 0n, size);
+      this.setFpBits(ops[0], raw);
+      return null;
+    }
     if (mn === 'fmadd' || mn === 'fmsub' || mn === 'fnmadd' || mn === 'fnmsub') {
       const size = this.fpSize(ops[0]);
-      const negateProduct = mn === 'fmsub' || mn === 'fnmsub';
-      const negateResult = mn === 'fnmadd' || mn === 'fnmsub';
-      let raw = fusedMultiplyAddBits(this.fpBits(ops[1]), this.fpBits(ops[2]), this.fpBits(ops[3]), size, negateProduct);
-      if (negateResult) raw ^= size === 4 ? 0x80000000n : 0x8000000000000000n;
-      this.setFpBits(ops[0], raw);
+      const signBit = 1n << BigInt(size * 8 - 1);
+      let aBits = this.fpBits(ops[1]);
+      const bBits = this.fpBits(ops[2]);
+      let cBits = this.fpBits(ops[3]);
+      if (mn === 'fmsub' || mn === 'fnmadd') aBits ^= signBit;
+      if (mn === 'fnmadd' || mn === 'fnmsub') cBits ^= signBit;
+      this.setFpBits(ops[0], fusedMultiplyAddBits(aBits, bBits, cBits, size));
       return null;
     }
     if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
@@ -1092,13 +1129,12 @@ export class Emulator {
     const lhs = this.fpRaw(ops[1]);
     const rhs = unary ? 0n : this.fpRaw(ops[2]);
     const elementMask = (1n << BigInt(shape.elementBytes * 8)) - 1n;
-    const arithmetic = FLOAT_ARITHMETIC[mn];
     let result = 0n;
     for (let index = 0; index < shape.count; index++) {
       const shift = BigInt(index * shape.elementBytes * 8);
-      const a = bitsToFloat((lhs >> shift) & elementMask, shape.elementBytes);
-      const b = unary ? 0 : bitsToFloat((rhs >> shift) & elementMask, shape.elementBytes);
-      result |= floatToBits(arithmetic(a, b), shape.elementBytes) << shift;
+      const aBits = (lhs >> shift) & elementMask;
+      const bBits = unary ? 0n : (rhs >> shift) & elementMask;
+      result |= scalarFloatArithmeticBits(mn, aBits, bBits, shape.elementBytes) << shift;
     }
     this.setFpVectorBits(ops[0], result);
     return null;
@@ -1410,10 +1446,46 @@ function encodeExactFp(coefficient,exponent,size,zeroSign=0) {
   if (fraction>=(1n<<BigInt(f.fracBits))) return (negative?signBit:0n)|(1n<<BigInt(f.fracBits));
   return (negative?signBit:0n)|fraction;
 }
-function fusedMultiplyAddBits(aBits,bBits,cBits,size,negateProduct=false) {
+function isSignalingNaN(decoded,size) {
+  if (decoded?.kind !== 'nan') return false;
+  const quietBit = 1n << BigInt(fpFormat(size).fracBits - 1);
+  return (decoded.frac & quietBit) === 0n;
+}
+function processNaNs(values,size) {
+  for (const value of values) if (isSignalingNaN(value,size)) return quietNaN(value,size);
+  for (const value of values) if (value?.kind === 'nan') return quietNaN(value,size);
+  return null;
+}
+function scalarFloatArithmeticBits(mn,aBits,bBits,size) {
+  const width = BigInt(size * 8), signBit = 1n << (width - 1n), mask = (1n << width) - 1n;
+  const aRaw = BigInt(aBits) & mask, bRaw = BigInt(bBits) & mask;
+  if (mn === 'fneg') return aRaw ^ signBit;
+  if (mn === 'fabs') return aRaw & ~signBit;
+  const a = decodeFp(aRaw,size);
+  if (mn === 'fsqrt') {
+    if (a.kind === 'nan') return quietNaN(a,size);
+    if (a.sign && a.kind !== 'zero') return defaultQuietNaN(size);
+    return floatToBits(Math.sqrt(bitsToFloat(aRaw,size)),size);
+  }
+  const b = decodeFp(bRaw,size);
+  if (mn === 'fmaxnm' || mn === 'fminnm') {
+    if (isSignalingNaN(a,size)) return quietNaN(a,size);
+    if (isSignalingNaN(b,size)) return quietNaN(b,size);
+    if (a.kind === 'nan' && b.kind === 'nan') return quietNaN(a,size);
+    if (a.kind === 'nan') return bRaw;
+    if (b.kind === 'nan') return aRaw;
+  } else {
+    const nan = processNaNs([a,b],size);
+    if (nan != null) return nan;
+  }
+  const arithmetic = FLOAT_ARITHMETIC[mn];
+  return floatToBits(arithmetic(bitsToFloat(aRaw,size),bitsToFloat(bRaw,size)),size);
+}
+function fusedMultiplyAddBits(aBits,bBits,cBits,size) {
   const a=decodeFp(aBits,size), b=decodeFp(bBits,size), c=decodeFp(cBits,size);
-  for (const value of [a,b,c]) if (value.kind==='nan') return quietNaN(value,size);
-  const productSign=a.sign^b.sign^(negateProduct?1:0);
+  const nan = processNaNs([c,a,b],size);
+  if (nan != null) return nan;
+  const productSign=a.sign^b.sign;
   if ((a.kind==='inf'&&b.kind==='zero')||(a.kind==='zero'&&b.kind==='inf')) return defaultQuietNaN(size);
   if (a.kind==='inf'||b.kind==='inf') {
     if (c.kind==='inf'&&c.sign!==productSign) return defaultQuietNaN(size);
@@ -1421,7 +1493,7 @@ function fusedMultiplyAddBits(aBits,bBits,cBits,size,negateProduct=false) {
     return (productSign?signBit:0n)|(all<<BigInt(f.fracBits));
   }
   if (c.kind==='inf') return c.raw;
-  let product=(a.coefficient??0n)*(b.coefficient??0n); if (negateProduct) product=-product;
+  let product=(a.coefficient??0n)*(b.coefficient??0n);
   const productExp=(a.exponent??0)+(b.exponent??0), cc=c.coefficient??0n;
   if (product===0n&&cc===0n) return encodeExactFp(0n,0,size,productSign===c.sign?productSign:0);
   if (product===0n) return encodeExactFp(cc,c.exponent??0,size,c.sign);

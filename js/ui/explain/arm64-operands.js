@@ -44,6 +44,13 @@ function parseImm(text) {
   return { k: "imm", text, value: neg ? -v : v };
 }
 
+function signedMemoryDisplacement(op) {
+  if (!op || op.k !== "imm" || op.value == null || !/^#0x[0-9a-f]+$/i.test(op.text)) return op;
+  const raw = op.value;
+  if (raw < (1n << 63n) || raw > ((1n << 64n) - 1n)) return op;
+  return { ...op, value: BigInt.asIntN(64, raw) };
+}
+
 function parseReg(text) {
   const m = REG_RE.exec(text);
   if (!m) return null;
@@ -93,7 +100,7 @@ function parseMem(text) {
   const mem = { k: "mem", text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
   for (let i = 1; i < parts.length; i++) {
     const p = parts[i];
-    const imm = parseImm(p);
+    const imm = signedMemoryDisplacement(parseImm(p));
     // A second immediate / index register names no valid addressing form:
     // keep the operand rejected instead of rewriting it to another address (#5351).
     if (imm) { if (mem.disp) return null; mem.disp = imm; mem.addressDisp = imm; continue; }
@@ -167,7 +174,7 @@ export function parseOperands(str) {
         mem.index != null || mem.text.endsWith("!")) continue;
     if (next.k === "imm") {
       // 直後が即値で、かつ元の文字列で "]" のあとにコンマが来ていた場合のみ。
-      mem.writebackDisp = next;
+      mem.writebackDisp = signedMemoryDisplacement(next);
       mem.addressDisp = null;
       mem.disp = null;
       mem.mode = "post";
