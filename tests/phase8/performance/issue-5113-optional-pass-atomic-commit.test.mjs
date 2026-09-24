@@ -236,3 +236,38 @@ test('#5113 immutable certification caches shared frozen descendants, not only w
   // rollback capture of the mutable state itself.
   assert.ok(descriptorReads < 1000, `shared frozen graph was repeatedly rescanned: ${descriptorReads}`);
 });
+
+
+test('#5113 immutable certification caches the shared false path without poisoning unrelated frozen siblings', () => {
+  const mutableLeaf = { value: 1 };
+  let shared = mutableLeaf;
+  const chain = [];
+  for (let index = 0; index < 180; index += 1) {
+    shared = Object.freeze({ index, next: shared });
+    chain.push(shared);
+  }
+  const immutableSibling = Object.freeze({ marker: Object.freeze({ ok:true }) });
+  const wrappers = Array.from({ length:80 }, (_, index) => Object.freeze({ index, shared, immutableSibling }));
+  const state = { wrappers, mutable: { value:1 } };
+
+  const original = Object.getOwnPropertyDescriptors;
+  let chainReads = 0;
+  const tracked = new WeakSet(chain);
+  Object.getOwnPropertyDescriptors = function counted(value) {
+    if (tracked.has(value)) chainReads++;
+    return original(value);
+  };
+  try {
+    new PassManager([{
+      name:'successful-noop', required:false,
+      run(s) { s.mutable.value = 2; return s; },
+    }], { timeBudgetMs:1000 }).run(state);
+  } finally {
+    Object.getOwnPropertyDescriptors = original;
+  }
+
+  assert.equal(state.mutable.value, 2);
+  // Root-only false caching re-walks the 180-node shared path for each wrapper.
+  // Caching only the witnessed failing ancestry keeps the path near one walk.
+  assert.ok(chainReads < 500, `shared false path was repeatedly rescanned: ${chainReads}`);
+});
