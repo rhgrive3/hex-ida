@@ -130,11 +130,11 @@ export function ensureSafeDirectory(root, target, { fsImpl = fs } = {}) {
 }
 
 function sameDirectoryIdentity(a, b) {
-  return Boolean(a && b && a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isDirectory() && b.isDirectory() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
 }
 
 function sameFileIdentity(a, b) {
-  return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isFile() && b.isFile() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
 }
 
 function statFileSnapshot(fsImpl, fd) {
