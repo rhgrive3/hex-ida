@@ -591,9 +591,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         };
         memoryReadRegions.push(...callee.memoryReadRegions.map(contextualEffect));
         memoryWriteRegions.push(...callee.memoryWriteRegions.map(contextualEffect));
+        for (const effect of callee.registerEffects) registerEffects.add(effect);
         if (targetProof.nativeTargetFact) {
           for (const input of callee.inputs) readVariables.add(input);
-          for (const effect of callee.registerEffects) registerEffects.add(effect);
           for (const site of callee.allocations) allocations.add(site);
           for (const site of callee.frees) frees.add(site);
           escapes.push(...callee.escapes.map(escape => JSON.parse(stableStringify(escape))));
