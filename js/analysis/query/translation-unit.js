@@ -24,6 +24,10 @@ const KEYWORDS = new Set([
   'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
   'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct',
   'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while',
+  // Language constructs that appear as `name(` in emitted text but are never
+  // declarable identifiers; a fallback prototype for them would not parse.
+  '_Bool', '_Complex', '_Static_assert', '_Alignof', 'alignof', 'asm', '__asm', '__asm__',
+  'true', 'false', 'NULL',
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
 const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
@@ -111,6 +115,28 @@ function signatureDeclaration(signature) {
   const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
   if (!text || !text.includes('(') || !text.endsWith(')')) return null;
   return `${text};`;
+}
+
+/*
+ * A producer-supplied signature line, not a comment/typedef/prelude line.  The
+ * final public text starts with the fixed-width prelude, so the first line of
+ * the pseudocode is not the signature when the producer did not carry one.
+ */
+function looksLikeSignature(text) {
+  const value = String(text ?? '').trim();
+  if (!value || /[;{}]/.test(value)) return false;
+  return /^[A-Za-z_][A-Za-z0-9_\s*]*\b[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*$/.test(value);
+}
+
+function signatureFromText(text) {
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('/*') || line.startsWith('//') || line.startsWith('#')) continue;
+    if (looksLikeSignature(line)) return line;
+    // The signature, when present, precedes the function body.
+    if (line === '{' || line.endsWith('{')) break;
+  }
+  return null;
 }
 
 function instructionList(fn) {
@@ -286,6 +312,17 @@ function unresolvedComment(row) {
   return `/* hex-tu: ${row.kind} ${subject}: ${reason}; no declaration fabricated. */`;
 }
 
+/*
+ * Declaration text that will be emitted before the function bodies.  Aliases
+ * used here need their fixed-width contract emitted ahead of them.
+ */
+function declarationSectionText(declarations) {
+  return declarations
+    .map((row) => row?.declaration ?? row ?? '')
+    .filter((text) => typeof text === 'string' && text.trim())
+    .join('\n');
+}
+
 export function buildCTranslationUnit(functions, options = {}) {
   if (!Array.isArray(functions) || !functions.length) throw new TypeError('translation-unit-functions-required');
   const symbolFor = typeof options.symbolFor === 'function' ? options.symbolFor : () => null;
@@ -301,19 +338,30 @@ export function buildCTranslationUnit(functions, options = {}) {
   const normalizedFunctions = functions.map((fn, index) => {
     const pseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
     if (!pseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
-    const signature = String(fn?.signature ?? pseudocode.split(/\r?\n/, 1)[0] ?? '');
+    const suppliedSignature = String(fn?.signature ?? '');
+    const signature = looksLikeSignature(suppliedSignature)
+      ? suppliedSignature
+      : (signatureFromText(pseudocode) ?? (suppliedSignature || pseudocode.split(/\r?\n/, 1)[0] || ''));
     aliasContractsForText(pseudocode, headers, typeDeclarations);
     headersForText(pseudocode, headers);
     return {
       ...fn, index, address:functionAddress(fn), name:functionName({ ...fn, signature, pseudocode }),
+      // The name the emitted text itself defines.  It can differ from the
+      // evidence name (`_init` symbol vs `void init(void)` text), and a call to
+      // it is a call to this selected definition, never an unresolved callee.
+      renderedName:functionName({ name:null, signature, pseudocode }),
       signature, pseudocode, originalPseudocode:pseudocode,
     };
   });
 
   const selectedByAddress = new Map();
+  const selectedNames = new Set();
   for (const fn of normalizedFunctions) {
     const key = addressKey(fn.address);
     if (key != null) selectedByAddress.set(key, fn);
+    for (const candidate of [fn.name, fn.renderedName]) {
+      if (candidate) selectedNames.add(String(candidate));
+    }
   }
 
   for (const fn of normalizedFunctions) {
@@ -367,7 +415,7 @@ export function buildCTranslationUnit(functions, options = {}) {
     }
 
     for (const name of callLikeCallees(fn.pseudocode)) {
-      if ([...selectedByAddress.values()].some((selected) => String(selected?.name ?? '') === name)) continue;
+      if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
       const fallback = fallbackHelperFor(name);
@@ -437,6 +485,19 @@ export function buildCTranslationUnit(functions, options = {}) {
       certainty:declaration ? 'evidence-backed-nonexact' : 'unresolved', exact:false,
     });
   }).sort(compareAddressThenName);
+
+  /*
+   * Declaration sections (evidence prototypes, and any future
+   * declaration-bearing text) are emitted before the function texts, so an
+   * alias spelling such as `uint64` inside a prototype cannot rely on the
+   * per-function fixed-width prelude that follows it.  Give every alias used by
+   * an emitted declaration its standard fixed-width contract in the prelude.
+   * The definition is the standard spelling the decompiler already maps the
+   * alias to, so a later per-function `typedef __UINT64_TYPE__ uint64;`
+   * repeats an identical type, which C11 allows inside one translation unit.
+   */
+  const declarationAliasText = declarationSectionText([...prototypeMap.values()]);
+  if (declarationAliasText) aliasContractsForText(declarationAliasText, headers, typeDeclarations);
 
   const helpers = [...helperMap.values()].sort((a, b) => a.name.localeCompare(b.name));
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));

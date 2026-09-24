@@ -138,6 +138,20 @@ function nextChar(source, index) {
 }
 
 /*
+ * A C label begins a statement, so the identifier must start a line (or follow
+ * `{`, `}`, `;` or another label).  A colon after an expression is a ternary or
+ * bit-field colon, not a label: `... ? (uint32)x2 : 1` must not classify `x2`
+ * as a label, because a label is never a declarable local.
+ */
+function startsStatement(source, index) {
+  let at = index - 1;
+  while (at >= 0 && (source[at] === ' ' || source[at] === '\t')) at--;
+  if (at < 0) return true;
+  const previous = source[at];
+  return previous === '\n' || previous === '{' || previous === '}' || previous === ';' || previous === ':';
+}
+
+/*
  * One pass over the declaration-bearing source.  For every identifier the pass
  * records how it is used, which is what lets the closure tell an undeclared
  * local from a member name, a label, a cast type or a callee.
@@ -155,7 +169,7 @@ export function scanIdentifierUses(text) {
     const memberName = before === '.' || source.slice(0, start).trimEnd().endsWith('->');
     const memberBase = after === '.' || source.slice(end).startsWith('->');
     const callTarget = after === '(';
-    const label = after === ':';
+    const label = after === ':' && startsStatement(source, start);
     const gotoLabel = previousWord(source, start) === 'goto';
     const castType = before === '(' && after === '*';
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));

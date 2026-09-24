@@ -7,28 +7,45 @@ import { spawnSync } from 'node:child_process';
 import { closeFunctionOutput, fixedWidthPreludeLines } from '../../js/decompiler/c-output-closure.js';
 import { buildCTranslationUnit } from '../../js/analysis/query/translation-unit.js';
 
-function linesOf(text) {
-  return String(text).split('\n').map((textLine, index) => ({
-    kind: index === 0 ? 'sig' : textLine.trim() === '{' || textLine.trim() === '}' ? 'ctrl' : 'stmt',
-    indent: index === 0 ? 0 : 1,
-    text: textLine.trim(),
-  }));
+function linesOf(text, declared = []) {
+  return String(text).split('\n').map((textLine, index) => {
+    const trimmed = textLine.trim();
+    const kind = index === 0 ? 'sig'
+      : (trimmed === '{' || trimmed === '}' ? 'ctrl' : (declared.includes(trimmed) ? 'decl' : 'stmt'));
+    return { kind, indent: index === 0 ? 0 : 1, text: trimmed };
+  });
 }
 
-function resultOf(pseudocode) {
-  return { lines: linesOf(pseudocode), pseudocode };
+function resultOf(pseudocode, declared = []) {
+  return { lines: linesOf(pseudocode, declared), pseudocode };
 }
 
-function clangSyntaxOk(source) {
+function clangSyntax(source, extraArgs) {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hex-output-closure-')), 'case.c');
   fs.writeFileSync(file, `${source}\n`);
   try {
-    const out = spawnSync('/usr/bin/clang', ['-target', 'aarch64-linux-gnu', '-fsyntax-only', '-w', '-x', 'c', file], { encoding: 'utf8', timeout: 30000 });
+    const out = spawnSync('/usr/bin/clang', [...extraArgs, '-fsyntax-only', '-w', '-x', 'c', file], { encoding: 'utf8', timeout: 30000 });
     return { ok: out.status === 0, stderr: String(out.stderr ?? '') };
   } finally {
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   }
 }
+
+/* Single-function text is checked with the campaign's target flags. */
+function clangSyntaxOk(source) {
+  return clangSyntax(source, ['-target', 'aarch64-linux-gnu']);
+}
+
+/* Packaged units include <stdint.h>, so they are checked with the same host
+ * flags the measurement harness (recompile-replay/tu-replay) uses. */
+function clangSyntaxOkHost(source) {
+  return clangSyntax(source, []);
+}
+
+function errorTail(stderr) {
+  return String(stderr).split('\n').filter((line) => line.includes('error')).slice(0, 5).join('\n');
+}
+
 
 test('closure declares emitted locals and defines the fixed-width spelling it uses', () => {
   const result = resultOf('uint64 sample(void)\n{\nlocal_pFFFFFFFFFFFFFFF0 = local_x29;\nreturn local_pFFFFFFFFFFFFFFF0;\n}');
@@ -66,7 +83,63 @@ test('closed function text parses with clang syntax-only', () => {
   const result = resultOf('uint64 sample(void)\n{\nlocal_pFFFFFFFFFFFFFFF0 = local_x29;\nreturn local_pFFFFFFFFFFFFFFF0;\n}');
   closeFunctionOutput(result);
   const checked = clangSyntaxOk(result.pseudocode);
-  assert.equal(checked.ok, true, checked.stderr.split('\n').filter((line) => line.includes('error')).slice(0, 5).join('\n'));
+  assert.equal(checked.ok, true, errorTail(checked.stderr));
+});
+
+test('closure declares a local whose only colon is a ternary colon, not a label', () => {
+  const result = resultOf(
+    'uint32 loop_while(int64 a1)\n{\n  uint64 x3;\n  x2 = 0;\n  x3 = 0x66666667;\n  x2 = (uint32)((uint32)x2 + 1);\n  return (uint32)((uint32)x2 > 0 ? (uint32)x2 : 1);\n}',
+    ['uint64 x3;'],
+  );
+  closeFunctionOutput(result);
+  assert.match(result.pseudocode, /uint64 x2;/);
+  assert.equal(result.pseudocode.match(/\bx3;/g).length, 1);
+  const checked = clangSyntaxOk(result.pseudocode);
+  assert.equal(checked.ok, true, errorTail(checked.stderr));
+});
+
+test('closure still leaves statement labels out of the declaration block', () => {
+  const result = resultOf('void sample(void)\n{\n  goto loc_EA4;\n  loc_EA4:\n  return;\n}');
+  closeFunctionOutput(result);
+  assert.ok(!result.lines.some((line) => line.kind === 'decl' && line.text.includes('loc_EA4')));
+  assert.match(result.pseudocode, /\n\s*loc_EA4:/);
+});
+
+test('translation unit declares alias spellings used by evidence prototypes before the prototypes', () => {
+  const caller = resultOf('uint64 caller(void)\n{\n  return callee();\n}');
+  const callee = resultOf('uint64 callee(void)\n{\n  return 1;\n}');
+  closeFunctionOutput(caller);
+  closeFunctionOutput(callee);
+  const unit = buildCTranslationUnit([
+    { address: 0x100n, name: 'caller', signature: 'uint64 caller(void)', pseudocode: caller.pseudocode, ir: { instructions: [{ op: 'call', target: 0x200n, name: 'callee' }] } },
+    { address: 0x200n, name: 'callee', signature: 'uint64 callee(void)', pseudocode: callee.pseudocode },
+  ]);
+  assert.ok(unit.prototypes.some((row) => row.declaration === 'uint64 callee(void);'));
+  assert.match(unit.source, /typedef [^;]*\buint64;/);
+  assert.ok(unit.source.indexOf('typedef uint64_t uint64;') < unit.source.indexOf('uint64 callee(void);'));
+  const checked = clangSyntaxOkHost(unit.source);
+  assert.equal(checked.ok, true, errorTail(checked.stderr));
+});
+
+test('translation unit never fabricates a prototype for the asm keyword', () => {
+  const unit = buildCTranslationUnit([resultOf('void sample(void)\n{\n  __asm("nop");\n}')].map((result, index) => ({
+    address: 0x100n + BigInt(index), name: 'sample', signature: 'void sample(void)',
+    pseudocode: result.lines.map((line) => `${'    '.repeat(line.indent)}${line.text}`).join('\n'),
+  })));
+  assert.deepEqual(unit.fallbackDeclarations.filter((line) => /\basm\b/.test(line)), []);
+  assert.deepEqual(unit.unresolved.filter((row) => row.subject === '__asm' || row.subject === 'asm'), []);
+});
+
+test('translation unit treats a text-defined name as the selected definition, not an unresolved callee', () => {
+  const result = resultOf('void init(void)\n{\n  return;\n}');
+  closeFunctionOutput(result);
+  const unit = buildCTranslationUnit([{
+    address: 0x200n, name: '_init', signature: 'void init(void)', pseudocode: result.pseudocode,
+  }]);
+  assert.deepEqual(unit.fallbackDeclarations.filter((line) => /\binit\s*\(/.test(line)), []);
+  assert.deepEqual(unit.unresolved.filter((row) => row.subject === 'init'), []);
+  const checked = clangSyntaxOkHost(unit.source);
+  assert.equal(checked.ok, true, errorTail(checked.stderr));
 });
 
 test('translation unit keeps unresolved entries and adds syntax-only fallbacks', () => {
