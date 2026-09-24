@@ -194,10 +194,37 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const offsetToTop=BigInt.asIntN(pointerBytes*8,wordAt(0));
   const typeinfoRaw=wordAt(pointerBytes);
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+BigInt(pointerBytes),opts||{},pointerBytes);
+  const isExactMode=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0;
+  const isExecutable=typeof opts?.isExecutable==='function'
+    ? opts.isExecutable
+    : (typeof opts?.isCodeAddress==='function' ? opts.isCodeAddress : null);
+  const pointerFormat=opts?.pointerFormat??null;
+
   for(let i=2;i<slotLimit+2&&(i+1)*pointerBytes<=bytes.length;i++){
     const raw=wordAt(i*pointerBytes);
+    // Structural vtable end detection (when not running in exact slotCount mode, and not an encoded pointer format):
+    if(!isExactMode && pointerFormat==null){
+      const signedWord=BigInt.asIntN(pointerBytes*8,raw);
+      // Secondary subtable header begins with a negative offset-to-top (typical small negative number)
+      if(signedWord<0n && signedWord > -0x10000000n)break;
+      // Next vtable begins with offset-to-top (0 or negative) followed by typeinfo.
+      if(signedWord<=0n&&(i+2)*pointerBytes<=bytes.length){
+        const nextRaw=wordAt((i+1)*pointerBytes);
+        const nextName=symbols?(symbols.nameAt(nextRaw)||symbols.label(nextRaw)):null;
+        if(nextName&&/^_?_ZTI/.test(nextName))break;
+      }
+      // If a slot points directly to a known typeinfo or typeinfo name symbol (_ZTI or _ZTS), the slot run has ended
+      const directName=symbols?(symbols.nameAt(raw)||symbols.label(raw)):null;
+      if(directName&&/^_?_ZT[IS]/.test(directName))break;
+    }
+
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*pointerBytes),opts||{},pointerBytes);
     const addr=resolved.addr;
+
+    if(!isExactMode&&isExecutable!=null&&addr!=null&&addr!==0n){
+      if(!isExecutable(addr))break;
+    }
+
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
     slots.push({index:i-2,raw,addr,binding:resolved.binding||null,unresolved:!!resolved.unresolved,reason:resolved.reason||null,name:name||null,readable:name?readableName(name):null});
   }

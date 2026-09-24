@@ -191,6 +191,7 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
  */
 function indexFromReport(report) {
   const vtables = [];
+  const vtableClassNames = [];
   const bySlotAddress = new Map();
   let slotCount = 0;
 
@@ -199,6 +200,7 @@ function indexFromReport(report) {
     if (!vtable) continue;
     const vtableIndex = vtables.length;
     vtables.push(vtable);
+    vtableClassNames.push(typeof record.className === 'string' ? record.className : null);
     for (const slot of vtable.slots) {
       if (slot.address == null) continue;
       slotCount++;
@@ -216,6 +218,7 @@ function indexFromReport(report) {
     empty: false,
     report,
     vtables: Object.freeze(vtables),
+    vtableClassNames: Object.freeze(vtableClassNames),
     bySlotAddress,
     slotCount,
   });
@@ -342,6 +345,7 @@ export function createCxxEvidenceProvider(input = {}) {
       // Only the vtables that actually reference this address can prove
       // membership, so a function is never attributed to an unrelated class.
       const vtables = [];
+      const vtableClassNames = [];
       if (functionAddress != null) {
         let key;
         try {
@@ -352,6 +356,7 @@ export function createCxxEvidenceProvider(input = {}) {
         if (key != null) {
           for (const vtableIndex of index.bySlotAddress.get(key) || []) {
             vtables.push(index.vtables[vtableIndex]);
+            vtableClassNames.push(index.vtableClassNames[vtableIndex] ?? null);
           }
         }
       }
@@ -365,6 +370,7 @@ export function createCxxEvidenceProvider(input = {}) {
           rawSymbol,
           ir,
           vtables,
+          vtableClassNames,
           metadata,
           snapshotId,
           architecture,

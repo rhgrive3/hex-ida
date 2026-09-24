@@ -154,7 +154,7 @@ test('the analysis entrypoint projects typed member evidence for a proven receiv
   const provider = providerFor(openProbe());
   await provider.build();
 
-  analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
+  const withProvider = analyzeSemanticFunction({ ...decodedInput(rows, MEMBER), cxxEvidenceProvider: provider });
 
   const attempt = provider.lastAttempt();
   assert.equal(attempt.functionAddress, rows[0].address,
@@ -164,6 +164,8 @@ test('the analysis entrypoint projects typed member evidence for a proven receiv
   assert.equal(projection.receiver.receiverRole, 'this');
   assert.equal(projection.members.length >= 1, true,
     'Player::takeDamage touches at least one member');
+  assert.match(withProvider.decompiler.pseudocode, /this->field_0x[0-9A-F]+/,
+    'proven receiver members render with an explicit hexadecimal offset');
 
   for (const member of projection.members) {
     assert.equal(isCanonicalCppMemberEvidence(member), true);

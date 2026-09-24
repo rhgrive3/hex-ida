@@ -12,7 +12,7 @@ import { createProjectionIrObserver, createValidationBatch } from '../core/ident
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
-import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
@@ -414,7 +414,13 @@ function memoryLocation(inst, state) {
     if (isReceiver) {
       base = expr.variable('this', 64, false, origin(inst));
     }
-    const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
+    const offsetText = off < 0n
+      ? `-0x${(-off).toString(16).toUpperCase()}`
+      : `0x${off.toString(16).toUpperCase()}`;
+    const fallbackName = isReceiver ? `field_${offsetText}` : `field_${off.toString(16).toUpperCase()}`;
+    // Legacy offset labels can look like member names without binary name
+    // evidence. Proven C++ receivers always keep the explicit byte offset.
+    const name = safeIdent(isReceiver ? fallbackName : (known?.name || fallbackName));
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
     const memberType = cppMemberTypeLabel(member);
@@ -1726,6 +1732,40 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
   return null;
 }
 
+function provenVirtualSlotForCall(instruction, state) {
+  if (instruction?.op !== 'call') return null;
+  const temporaryId = instruction.extra?.attributes?.machineControlEffect?.target?.temporaryId;
+  const compatibilityCall = typeof temporaryId === 'string' && /(?:^|:)read-[a-z][0-9]+:/i.test(temporaryId);
+  const receiverArg = instruction.args?.[compatibilityCall ? 0 : 1];
+  const receiver = valueOf(receiverArg) ?? receiverArg ?? null;
+  const slot = currentCppVirtualSlot(state.opts, state.ir, instruction, receiver);
+  return slot?.virtualSlotKnown === true && Number.isSafeInteger(slot.slotIndex) && slot.slotIndex >= 0
+    ? slot : null;
+}
+
+function explicitProvenCppFieldOffsets(text, state) {
+  if (typeof text !== 'string' || !text.includes('this->field_')) return text;
+  const receiver = currentCppReceiver(state.opts, state.ir);
+  const receiverValue = receiver && state.ir.values?.find?.((value) => String(value?.id) === String(receiver.canonicalValueId));
+  if (!receiverValue) return text;
+  const source = state.opts?.cxxEvidence?.members;
+  const members = Array.isArray(source) ? source : source instanceof Map ? [...source.values()] : [];
+  const offsets = new Set();
+  for (const member of members) {
+    let offset;
+    try { offset = BigInt(member?.offsetBytes); } catch { continue; }
+    if (currentCppMember(state.opts, state.ir, receiverValue, offset)?.accessProven === true) {
+      offsets.add(offset.toString());
+    }
+  }
+  if (!offsets.size) return text;
+  return text.replace(/\bthis->field_([0-9A-F]+)\b/g, (spelling, digits) => {
+    let offset;
+    try { offset = BigInt('0x' + digits); } catch { return spelling; }
+    return offsets.has(offset.toString()) ? `this->field_0x${offset.toString(16).toUpperCase()}` : spelling;
+  });
+}
+
 function beginConditionalRegionCopy(result, state) {
   try {
     const original = readSemanticConditionalRegions(result);
@@ -1807,7 +1847,14 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    node.text = explicitProvenCppFieldOffsets(node.text, state);
     const initial = initialStatement || initialControl;
+    const virtualSlot = initialStatement?.instruction
+      ? provenVirtualSlotForCall(initialStatement.instruction, state)
+      : null;
+    if (virtualSlot && node.text.trim() && !/\bvirtual_slot_[0-9]+\b/.test(node.text)) {
+      node.text = `${node.text} /* virtual_slot_${virtualSlot.slotIndex} */`;
+    }
     if (initial && !known && !switched) {
       // This exact line was emitted by the earlier CALL/RET producer. A null
       // expression is intentional: do not manufacture a scalar AST for it.
