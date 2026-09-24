@@ -187,3 +187,34 @@ test('#5054 jsonSafe snapshots each enumerable property value exactly once', () 
   cycle.self = cycle;
   assert.throws(() => jsonSafe(cycle), /identity-cyclic-value/);
 });
+
+test('stableDigest does not return stale results when mutable children or nested arrays of a frozen parent mutate', () => {
+  const child = { count: 1, list: [10, 20] };
+  const frozenParent = Object.freeze({
+    id: 'frozen_parent',
+    child,
+    nestedArray: [{ x: 1 }],
+  });
+
+  const digestBefore = stableDigest(frozenParent);
+  const jsonBefore = jsonSafe(frozenParent);
+  assert.equal(jsonBefore.child.count, 1);
+  assert.equal(jsonBefore.nestedArray[0].x, 1);
+
+  // Mutate mutable child object
+  child.count = 2;
+  const digestAfterChildMutate = stableDigest(frozenParent);
+  const jsonAfterChildMutate = jsonSafe(frozenParent);
+  assert.notEqual(digestAfterChildMutate, digestBefore, 'mutating child of frozen parent must change digest');
+  assert.equal(jsonAfterChildMutate.child.count, 2);
+
+  // Mutate child list array
+  child.list.push(30);
+  const digestAfterListMutate = stableDigest(frozenParent);
+  assert.notEqual(digestAfterListMutate, digestAfterChildMutate, 'mutating child array must change digest');
+
+  // Mutate nested array element
+  frozenParent.nestedArray[0].x = 99;
+  const digestAfterNestedArrayMutate = stableDigest(frozenParent);
+  assert.notEqual(digestAfterNestedArrayMutate, digestAfterListMutate, 'mutating object inside nested array must change digest');
+});
