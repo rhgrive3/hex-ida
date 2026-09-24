@@ -236,6 +236,31 @@ async function testDedicatedCoordinatorCloseSettlesInFlightSend() {
   for (const listener of listeners) listeners({ kind: 'completed' });
 }
 
+async function testDedicatedReleaseRejectsUnconfirmedRemoteGeneration() {
+  let generating = true;
+  const controller = {
+    on() { return () => {}; },
+    observe() { return { state: 'CANCELLED', generating }; },
+    workerConversation() { return { id: 'worker-cid', url: 'https://chatgpt.com/c/worker-cid' }; },
+    isActive() { return false; },
+    result() { return { status: 'CANCELLED' }; },
+  };
+  const coordinator = new DedicatedWorkerCoordinator({ controller, tabNodeId: 'dedicated-release-quiescence' });
+  await coordinator.claim({ runId: 'run-stop', workerId: 'worker-stop' });
+
+  await assert.rejects(
+    coordinator.release({ runId: 'run-stop', workerId: 'worker-stop' }),
+    (error) => error?.code === 'worker-busy',
+    'local cancellation must not make a dedicated Worker reusable while ChatGPT still reports generation',
+  );
+  assert.equal(coordinator.advertisement().claimed, true, 'failed release must preserve the current claim');
+
+  generating = false;
+  const released = await coordinator.release({ runId: 'run-stop', workerId: 'worker-stop' });
+  assert.equal(released.claimed, false, 'release becomes safe only after remote generation is no longer observable');
+  coordinator.close();
+}
+
 async function testRejectedClaimRollsBackBeforeReuse() {
   const calls = [];
   let rejectFirstClaim = true;
@@ -759,6 +784,7 @@ await testClosedPoolSettlesAStuckClaim();
 await testAbortedClaimSettlesBeforeRemoteClaim();
 await testClosedPoolDoesNotResurrectProvisioning();
 await testDedicatedCoordinatorCloseSettlesInFlightSend();
+await testDedicatedReleaseRejectsUnconfirmedRemoteGeneration();
 await testRejectedClaimRollsBackBeforeReuse();
 await testRejectedClaimQuarantinesWhenRollbackFails();
 await testBlockedEmbeddingIsReportedExactly();

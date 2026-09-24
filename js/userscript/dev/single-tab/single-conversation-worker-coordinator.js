@@ -150,11 +150,10 @@ export class SingleConversationWorkerCoordinator {
 
   async release(args = {}) {
     const claim = this.assertClaim(args);
-    if (this.controller.isActive()) {
-      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while it is generating.');
-    }
+    this.assertReleaseQuiescent();
     const pending = this.pendingTerminal;
     if (pending) await pending.promise.catch(() => null);
+    this.assertReleaseQuiescent();
     if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
     if (this.claimed !== claim) return this.advertisement();
     await this.restoreSupervisor();
@@ -163,6 +162,13 @@ export class SingleConversationWorkerCoordinator {
     this.claimed = null;
     this.lastResult = null;
     return this.advertisement();
+  }
+
+  assertReleaseQuiescent() {
+    const observation = this.controller.observe?.() || null;
+    if (this.controller.isActive?.() || observation?.generating) {
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while ChatGPT generation remains observable.');
+    }
   }
 
   waitEvent({ events, runId = null } = {}, { signal } = {}) {
