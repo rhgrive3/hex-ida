@@ -1673,6 +1673,10 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     blocks,
     abiAdapter,
     rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),
+    machineEffectsContext: opts.machineEffectsContext ?? {
+      pacRequested: opts.pacRequested ?? model.pacRequested ?? false,
+      pacEnabled: opts.pacEnabled ?? model.pacEnabled ?? false,
+    },
   }, {
     signal: opts.signal,
     functionReturn: {
