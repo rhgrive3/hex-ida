@@ -380,6 +380,7 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
       decoderAbiContractVersion:instruction.detail.abiContractVersion,
       exactArchitecturalSummary:true,
       priorFailClosedReason:partial.unknownEffects?.reason || null,
+      category:ownerId,
     },
   }, options);
 
@@ -394,6 +395,7 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
     completeness:'exact-with-intrinsic',
     metadata:{
       ...(partial.metadata || {}),
+      category:ownerId,
       terminalizedBy:'trusted-capstone-structured-intrinsic',
       terminalSummaryContractVersion:'x86-trusted-decoder-terminal/v1',
       priorFailClosedReason:partial.unknownEffects?.reason || null,
