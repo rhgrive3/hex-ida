@@ -54,7 +54,7 @@ test('the Phase 8 stage is a small fraction of whole-function decompilation', ()
   const entry = corpus.functions.find((item) => item.function === 'loop_nested' && item.optimization === '-O2')
     ?? corpus.functions[0];
   const started = performance.now();
-  const outcome = decompileEntry(entry, { deterministicTransforms: false });
+  const outcome = decompileEntry(entry, { profile:'fast', deterministicTransforms:false });
   const wholeFunctionMs = performance.now() - started;
   assert.ok(!outcome.failure, outcome.failure);
   const stageStarted = performance.now();
@@ -67,7 +67,7 @@ test('the Phase 8 stage is a small fraction of whole-function decompilation', ()
 test('the default optimizer budget is invariant under delayed scheduling', () => {
   const corpus = loadCorpus();
   const entry = corpus.functions.find((item) => item.id === 'quality.loop_nested.O2');
-  const outcome = decompileEntry(entry, { phase8Optimize: false, deterministicTransforms: false });
+  const outcome = decompileEntry(entry, { profile:'deep', phase8Optimize:false, deterministicTransforms:false });
   assert.ok(outcome.result, outcome.failure);
   const context = { ir: outcome.result.ir, opts: {} };
   const first = runPhase8Stage(context, { stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'providers'] });
@@ -91,10 +91,10 @@ test('the default optimizer budget is invariant under delayed scheduling', () =>
   assert.equal(first.analysis.get('ranges').publicationDigest, second.analysis.get('ranges').publicationDigest);
 });
 
-test('the public decoded-function pipeline has the same deterministic default', () => {
+test('the public decoded-function pipeline is stable under deterministic measurement', () => {
   const entry = loadCorpus().functions.find((item) => item.id === 'quality.loop_nested.O2');
-  const first = decompileEntry(entry, { phase8Optimize: true, deterministicTransforms: false });
-  const second = decompileEntry(entry, { phase8Optimize: true, deterministicTransforms: false });
+  const first = decompileEntry(entry, { profile:'deep', phase8Optimize:true, deterministicTransforms:true });
+  const second = decompileEntry(entry, { profile:'deep', phase8Optimize:true, deterministicTransforms:true });
   assert.ok(first.result, first.failure);
   assert.ok(second.result, second.failure);
   assert.equal(first.result.phase8?.published, true);

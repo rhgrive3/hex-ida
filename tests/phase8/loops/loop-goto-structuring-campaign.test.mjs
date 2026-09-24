@@ -40,7 +40,8 @@ function materialize(f) {
 
 function decompileIr(ir, semanticOpts = {}) {
   const result = decompileSemantic({ name:ir.name, instructions:ir.instructions, calls:[] }, {
-    ir, name:ir.name, returnType:'void', returnsValue:false, ...semanticOpts,
+    ir, name:ir.name, profile:'deep', deterministicTransforms:true,
+    returnType:'void', returnsValue:false, ...semanticOpts,
   });
   assert.ok(result, 'fixture must produce semantic output');
   return { ir, result };
@@ -252,7 +253,7 @@ test('irreducible, side-entry, malformed-PHI, unknown-control, and multi-exit ca
 
   const sideEntryIr = materialize(selfLatchAfterTerminalReturn({ sideEntry:true }));
   const sideEntryPreds = sideEntryIr.blocks.flatMap((block, index) => block.succ.includes(3) ? [index] : []);
-  const sideEntryPhiPreds = sideEntryIr.blocks[3].phis[0].def.incoming.map(({ from }) => from).sort((a, b) => a - b);
+  const sideEntryPhiPreds = sideEntryIr.blocks[3].phis[0].incoming.map(({ from }) => from).sort((a, b) => a - b);
   assert.deepEqual(sideEntryPreds, [1, 3, 5], 'side-entry fixture must keep both external predecessors reachable');
   assert.deepEqual(sideEntryPhiPreds, sideEntryPreds, 'side-entry PHI must exactly match loop-header predecessors');
   assert.ok(decompileIr(sideEntryIr).result.pseudocode.includes('goto'),

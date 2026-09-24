@@ -210,8 +210,32 @@ function compilerCallingConvention(entry, toolchain) {
   return profiles[0].slice('-mabi='.length);
 }
 
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true, toolchain = FROZEN_TOOLCHAIN } = {}) {
+export function decompileEntry(entry, {
+  decompilerTimeBudgetMs = 20000,
+  index = 0,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+  profile = 'deep',
+  phase8TimeBudgetMs,
+  phase8WorkBudget,
+  renderProvenanceBudget,
+  renderProvenanceBindingBudget,
+  toolchain = FROZEN_TOOLCHAIN,
+} = {}) {
   const baseAddress = 0x100000n + BigInt(index) * 0x10000n;
+  // Corpus observations are proof-oriented measurements. Keep the profile
+  // explicit so the interactive default's wall-clock and render caps cannot
+  // turn host load into a missing-measurement result.
+  const decompilerOptions = {
+    profile,
+    decompilerTimeBudgetMs,
+    deterministicTransforms,
+    phase8Optimize,
+    ...(phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs } : {}),
+    ...(phase8WorkBudget !== undefined ? { phase8WorkBudget } : {}),
+    ...(renderProvenanceBudget !== undefined ? { renderProvenanceBudget } : {}),
+    ...(renderProvenanceBindingBudget !== undefined ? { renderProvenanceBindingBudget } : {}),
+  };
   try {
     if (entry.architectureId === 'arm64') {
       if (entry.representation !== 'assembly') return { id:entry.id, failure:'arm64 corpus entry is not frozen assembly' };
@@ -223,9 +247,7 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
         addr:model.instructions[0].address,
         rowOfAddress:(address) => rowOfAddress.get(address?.toString()) ?? null,
         abiAdapter:ABI_ADAPTER,
-        decompilerTimeBudgetMs,
-        deterministicTransforms,
-        phase8Optimize,
+        ...decompilerOptions,
       });
       return { id:entry.id, result };
     }
@@ -243,7 +265,7 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
       sliceId:`${entry.architectureId}:${entry.optimization}`,
       dataEndianness:'little',
       instructionEndianness:'little',
-    }, { decompilerTimeBudgetMs, deterministicTransforms, phase8Optimize });
+    }, decompilerOptions);
     return { id:entry.id, result };
   } catch (error) {
     return { id:entry.id, failure:error?.message || String(error) };
@@ -313,8 +335,25 @@ export function observationOf(entry, outcome) {
   };
 }
 
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000, deterministicTransforms = true, phase8Optimize = true } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize, toolchain:corpus.toolchain ?? null })));
+export function observeCorpus({
+  corpus = loadCorpus(),
+  decompilerTimeBudgetMs = 20000,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+  profile = 'deep',
+  phase8TimeBudgetMs,
+  phase8WorkBudget,
+} = {}) {
+  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, {
+    decompilerTimeBudgetMs,
+    index,
+    deterministicTransforms,
+    phase8Optimize,
+    profile,
+    ...(phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs } : {}),
+    ...(phase8WorkBudget !== undefined ? { phase8WorkBudget } : {}),
+    toolchain:corpus.toolchain ?? null,
+  })));
 }
 
 export { closeSessions };

@@ -330,8 +330,11 @@ const selectRules = [{
 }, {
   name: 'select-bool-materialize', phase: 'select',
   match: (n) => n?.kind === 'select' && n.condition?.bits === 1 && isConst(n.whenTrue, 1) && isConst(n.whenFalse, 0) ? {} : null,
-  precondition: (n) => sameWidthDomain(n, n.condition),
-  rewrite: (n) => n.condition, proof: proof('conditional-identity', 'cond ? 1 : 0'), cost,
+  precondition: (n) => widthOf(n) != null && sameWidthDomain(n, n.whenTrue, n.whenFalse),
+  rewrite: (n) => widthOf(n) === widthOf(n.condition)
+    ? n.condition : expr.unary('zext', n.condition, widthOf(n), false, n.source),
+  proof: (before) => ({ kind:'conditional-identity', detail:widthOf(before) === widthOf(before.condition)
+    ? 'cond ? 1 : 0' : 'zero-extend cond for cond ? 1 : 0' }), cost,
 }, {
   name: 'select-bool-invert', phase: 'select',
   match: (n) => n?.kind === 'select' && isConst(n.whenTrue, 0) && isConst(n.whenFalse, 1) ? {} : null,

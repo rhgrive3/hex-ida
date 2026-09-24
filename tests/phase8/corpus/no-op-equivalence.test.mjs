@@ -132,7 +132,7 @@ test('the final projection is proof-carrying and actually cuts over on this corp
 
 test('the interactive path runs only the canonical-facts stage', () => {
   const entry = loadCorpus().functions.find((item) => item.id === 'quality.loop_nested.O2');
-  const interactive = decompileEntry(entry, { phase8Optimize:false });
+  const interactive = decompileEntry(entry, { profile:'fast', phase8Optimize:false });
   assert.ok(interactive.result, interactive.failure);
   assert.deepEqual([...interactive.result.phase8.enabledStages], ['canonical-facts']);
   assert.equal(interactive.result.phase8.transformCount, 0);

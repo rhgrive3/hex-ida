@@ -141,10 +141,10 @@ test('suppression validation rejects semantic deletion claims and invented curre
   assert.ok(validateRenderProvenance(original, { snapshotId:'stale' }).reasons.includes('stale-snapshot'));
 });
 
-test('faithful CFG fallback records only its selected emission, not the abandoned structured attempt', () => {
+test('structured CFG emission records only its actual semantic suppressions', () => {
   const f = fixture({ fork:true });
-  assert.equal(f.seed.coverage.mode, 'linear');
-  assert.equal(f.seed.ctx.suppressed.length, 3, 'legacy diagnostics are preserved');
+  assert.equal(f.seed.coverage.mode, 'structured');
+  assert.equal(f.seed.ctx.suppressed.length, 2, 'only the two calls in the selected emission are reported');
   const records = readSemanticSuppressionHistory(f.seed).records;
   assert.equal(records.length, 2, 'each actually omitted call in the final emission occurs once');
   assert.equal(new Set(records.map(record => record.targets[0])).size, 2);

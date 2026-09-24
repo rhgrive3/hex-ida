@@ -82,7 +82,12 @@ const ORIGIN_KINDS = Object.freeze(['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUs
  * exact shapes with no evidence fails closed as provenance loss.
  */
 function structuralRole(kind, text) {
-  if (kind === 'sig') return true;
+  // Semantic-local declarations are presentation scaffolding emitted from the
+  // recovered local table. They have no source instruction of their own; the
+  // reads and writes that make them live remain represented by sourced
+  // statement entities. Treating the declaration line as a semantic claim
+  // would report provenance loss for every recovered local.
+  if (kind === 'sig' || kind === 'decl') return true;
   if (kind === 'ctrl') {
     const value = String(text ?? '').trim();
     return value === '{' || value === '}'

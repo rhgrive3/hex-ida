@@ -1329,6 +1329,7 @@ test('the product decompiler reaches the canonical loop projection and honors it
       addr: model.instructions[0].address,
       rowOfAddress: (address) => rowOfAddress.get(address?.toString()) ?? null,
       abiAdapter: semanticAbiAdapter(AAPCS64_ABI),
+      profile:'deep',
       decompilerTimeBudgetMs: 20000,
       deterministicTransforms: true,
       phase8Optimize: true,

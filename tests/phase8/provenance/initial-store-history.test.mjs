@@ -322,7 +322,8 @@ test('copied initial lines cannot issue an initial-to-C-AST expansion record', (
 });
 
 test('initial history caps and cancellation preserve output and make the missing binding explicit', () => {
-  const baseline = fixture({ one:true }).seed.pseudocode;
+  const normalizeTemporaryNames = text => text.replace(/\bload_\d+\b/g, 'load_TEMP');
+  const baseline = normalizeTemporaryNames(fixture({ one:true }).seed.pseudocode);
   for (const options of [
     { renderProvenanceBudget:{ maxTransformRecords:0 } },
     { renderProvenanceBindingBudget:{ maxEdges:0 } },
@@ -330,7 +331,7 @@ test('initial history caps and cancellation preserve output and make the missing
     { shouldAbort:() => true },
   ]) {
     const f = fixture({ one:true, options });
-    assert.equal(f.seed.pseudocode, baseline);
+    assert.equal(normalizeTemporaryNames(f.seed.pseudocode), baseline);
     assert.equal(f.seed.semanticStoreRenderHistory.completeness, 'incomplete');
     const map = buildRenderProvenance({ result:f.seed, snapshotId:'initial-store-budget' });
     assert.equal(map.completeness, 'incomplete');

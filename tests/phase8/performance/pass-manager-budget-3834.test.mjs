@@ -117,8 +117,10 @@ test('PassManager malformed pass-local time budgets use the bounded default befo
     assert.equal(cappedObserved, 7);
 
     let zeroObserved = null;
-    new PassManager([{ name: 'zero', budget: { timeBudgetMs: 0 }, run(state, budget) { zeroObserved = budget.timeBudgetMs; return state; } }]).run({});
-    assert.equal(zeroObserved, 0);
+    const zeroState = new PassManager([{ name: 'zero', budget: { timeBudgetMs: 0 }, run(state, budget) { zeroObserved = budget.timeBudgetMs; return state; } }]).run({});
+    assert.equal(zeroObserved, null);
+    assert.equal(zeroState.passMetrics[0]?.skipped, true);
+    assert.equal(zeroState.passMetrics[0]?.reason, 'snapshot-deadline');
 
     let positiveObserved = null;
     new PassManager([{ name: 'positive', budget: { timeBudgetMs: 7.5 }, run(state, budget) { positiveObserved = budget.timeBudgetMs; return state; } }]).run({});
