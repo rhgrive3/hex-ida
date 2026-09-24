@@ -390,7 +390,11 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
       && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
     if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
-      projected = applyPhase8Projection(projected, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true });
+      projected = applyPhase8Projection(projected, interactiveStage.analysis, {
+        ...opts,
+        preserveInitialSpelling:true,
+        analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
+      });
     }
     if (shouldDemandStructuring(projected, opts)) {
       const structuringBudget = {
@@ -404,7 +408,8 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         structuringBudget,
       );
       if (structuringStage.ledger?.published === true && structuringStage.analysis) {
-        projected = applyStructuredControlProjection(projected, structuringStage.analysis, structuredControlProjectionOptions(model, opts));
+        projected = applyStructuredControlProjection(projected, structuringStage.analysis,
+          structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
       }
     }
     return projected;
@@ -440,12 +445,16 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   // The region plan binds the actual prepared producer object. Adding stage
   // metadata must not replace that endpoint before its owned projection runs.
   if (opts.phase8RegionErasurePlan) {
-    const projected = applyPhase8Projection(result, stage.analysis, opts);
+    const projected = applyPhase8Projection(result, stage.analysis, {
+      ...opts,
+      analysisIdentityBinding:stage.analysisIdentityBinding,
+    });
     return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
   }
-  updated = applyPhase8Projection(updated, stage.analysis, opts);
+  const projectionOpts = { ...opts, analysisIdentityBinding:stage.analysisIdentityBinding };
+  updated = applyPhase8Projection(updated, stage.analysis, projectionOpts);
   if (allowsStructuredControlProjection(opts)) {
-    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, opts));
+    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, projectionOpts));
   }
   return updated;
 }
