@@ -92,7 +92,10 @@ for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINIT
   assert.ok(budget.remainingStringBytes >= 0);
   for (const key of Object.keys(MACHO_METADATA_LIMITS)) {
     const remaining = budget.remaining(key);
-    assert.ok(Number.isFinite(remaining) && remaining >= 0, `remaining(${key}) must stay finite and non-negative for ${String(bad)}`);
+    // An unbounded default (the wall clock is opt-in since the deterministic
+    // budget change) stays unbounded; every other limit stays finite.
+    const unbounded = MACHO_METADATA_LIMITS[key] === Infinity;
+    assert.ok((unbounded ? remaining === Infinity : Number.isFinite(remaining)) && remaining >= 0, `remaining(${key}) must stay finite and non-negative for ${String(bad)}`);
   }
 }
 
