@@ -1,3 +1,4 @@
+import { stableStringify } from '../../../../core/identity/index.js';
 import {
   createBitVectorValue,
   createIntrinsicEffectSummary,
@@ -151,6 +152,25 @@ function landingKindOf(instruction) {
   return null;
 }
 
+/* Canonical-input dedupe for intrinsic inputs. A re-decorated bundle already
+ * carries the guard-state inputs, so the rebuild must not list one input value
+ * twice. Identity alone is not enough: the landing-pad kind is minted fresh on
+ * every rebuild, so the same operand would be published twice by content and
+ * metadata.inputOrder would then describe fewer inputs than the summary lists.
+ * Order is preserved, which keeps inputOrder positional for owned inputs. */
+function uniqueInputs(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    if (value == null) continue;
+    const key = stableStringify(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
 function rebuildIntrinsic(operation, guardValue, landing) {
   const summary = operation.effectSummary;
   return createMachineOperation({
@@ -158,7 +178,7 @@ function rebuildIntrinsic(operation, guardValue, landing) {
     ...(operation.id == null ? {} : { id:operation.id }),
     intrinsicId:operation.intrinsicId,
     effectSummary:createIntrinsicEffectSummary({
-      inputs:[guardValue, ...summary.inputs, createBitVectorValue(2, landing.code)],
+      inputs:uniqueInputs([guardValue, ...summary.inputs, createBitVectorValue(2, landing.code)]),
       outputs:summary.outputs,
       registersRead:summary.registersRead,
       registersWritten:summary.registersWritten,
@@ -303,7 +323,7 @@ function rebuildIntrinsicWithImplicitLanding(operation, guardValue, btypeValue) 
     ...(operation.id == null ? {} : { id:operation.id }),
     intrinsicId:operation.intrinsicId,
     effectSummary:createIntrinsicEffectSummary({
-      inputs:[guardValue, btypeValue, ...summary.inputs, createBitVectorValue(2, 3)],
+      inputs:uniqueInputs([guardValue, btypeValue, ...summary.inputs, createBitVectorValue(2, 3)]),
       outputs:summary.outputs,
       registersRead:[...summary.registersRead, ARM64_BTYPE_REGISTER_ID],
       registersWritten:summary.registersWritten,
@@ -362,7 +382,12 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
       operations:bundle.operations,
       possibleFaults:bundle.possibleFaults,
       completeness:'partial',
-      unknownEffects:{ categories:['control','faults'], reason:'bti-feature-unknown' },
+      // A BTI landing-pad check cannot change the instruction's intra-procedural
+      // control effect (it falls through; an incompatible target raises the
+      // Branch Target Exception out of band). Only the fault surface is unknown,
+      // so publishing `control` here made the Semantic IR contradict the proven
+      // fallthrough edge of the block it sits in (#BTI-guard-state).
+      unknownEffects:{ categories:['faults'], reason:'bti-feature-unknown' },
       metadata:{
         btiGuardedPage:guardState,
         btiCheck:'unknown-feat-bti',
@@ -432,23 +457,28 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
   }
 
   const operations = bundle.operations.slice();
+  // Locate the landing-pad intrinsic by identity: a reused read (below) is not
+  // inserted, so any index arithmetic over the pre-decoration array would name
+  // the wrong operation.
+  const intrinsicOperation = operations[intrinsicIndex];
   let guardValue;
   if (guardState.state === 'guarded') {
     guardValue = createBitVectorValue(1, 1);
   } else {
-    const read = guardRead();
-    operations.splice(intrinsicIndex, 0, read.operation);
-    guardValue = read.value;
+    guardValue = reuseOrCreateStateRead(operations, ARM64_BTI_PAGE_GUARD_STATE_ID, intrinsicIndex, guardRead, bundle);
   }
-  const btypeRead = incomingBtypeRead();
-  operations.splice(intrinsicIndex + (guardState.state === 'guarded' ? 0 : 1), 0, btypeRead.operation);
-  const adjustedIntrinsicIndex = intrinsicIndex + (guardState.state === 'guarded' ? 1 : 2);
-  operations[adjustedIntrinsicIndex] = rebuildIntrinsicWithImplicitLanding(operations[adjustedIntrinsicIndex], guardValue, btypeRead.value);
+  const btypeValue = reuseOrCreateStateRead(operations, ARM64_BTYPE_REGISTER_ID, operations.indexOf(intrinsicOperation), incomingBtypeRead, bundle);
+  operations[operations.indexOf(intrinsicOperation)] = rebuildIntrinsicWithImplicitLanding(intrinsicOperation, guardValue, btypeValue);
 
   return rebuiltBundle(bundle, {
     operations,
+    // Re-decoration must not stack one implicit landing-pad fault per
+    // decoration: this instruction owns exactly one, and the fresh condition
+    // below supersedes the one an earlier decoration computed from the same
+    // context. Unrelated faults are preserved.
     possibleFaults:[
-      ...(bundle.possibleFaults ?? []),
+      ...(bundle.possibleFaults ?? []).filter((fault) =>
+        !(fault?.kind === 'branch-target-exception' && fault?.condition?.kind === 'and')),
       {
         kind:'branch-target-exception',
         condition:implicitLandingFaultCondition(guardState, sctlrBt),
@@ -464,7 +494,9 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
     ],
     completeness:guardState.conflict ? 'partial' : bundle.completeness,
     unknownEffects:guardState.conflict
-      ? { categories:['control','faults'], reason:'bti-mapped-page-guarded-state-conflict', detail:{ conflictReason:guardState.conflictReason } }
+      // The conditional Branch Target Exception above states the fault; the
+      // instruction still falls through, so `control` is not unknown.
+      ? { categories:['faults'], reason:'bti-mapped-page-guarded-state-conflict', detail:{ conflictReason:guardState.conflictReason } }
       : bundle.unknownEffects,
     metadata:{
       btiGuardedPage:guardState,
@@ -474,6 +506,35 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
       ...(sctlrBt != null ? { sctlrBt } : {}),
     },
   });
+}
+
+/*
+ * Read-or-reuse the guarded-page / incoming-BTYPE state read for a bundle.
+ *
+ * One instruction bundle can be decorated more than once: the effect dispatcher
+ * applies this decorator to every family result, and the ARM64 architecture
+ * plugin (js/targets/architecture/index.js) applies it again to the bundle the
+ * dispatcher returned. Every application used to mint a fresh read, so a single
+ * bundle defined `temporary:bti:page-guarded` (and `temporary:bti:incoming-btype`)
+ * twice. The compatibility lowering reads two definitions of one temporary
+ * identity as a fail-closed conflict
+ * (semantic-ir-lowering-duplicate-temporary-definition) and refuses the whole
+ * function, which silently removed the semantic route for every BTI-hardened
+ * function. Reuse the read that already observes that architectural state
+ * instead: the projection then carries exactly one definition per temporary
+ * identity however often decoration runs, and state that was never read is
+ * still read rather than assumed.
+ */
+function reuseOrCreateStateRead(operations, registerId, insertIndex, create, bundle) {
+  for (const operation of bundle?.operations ?? []) {
+    if (operation?.kind !== 'register-read') continue;
+    if (operation?.register?.registerId !== registerId) continue;
+    if (operation?.value == null) continue;
+    return operation.value;
+  }
+  const read = create();
+  operations.splice(insertIndex, 0, read.operation);
+  return read.value;
 }
 
 function hasBtypeWrite(bundle) {
@@ -549,16 +610,16 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
   }
 
   const operations = bundle.operations.slice();
+  // See reuseOrCreateStateRead(): a second decoration of the same bundle must
+  // not define one temporary identity twice.
+  const intrinsicOperation = operations[intrinsicIndex];
   let guardValue;
   if (guardState.state === 'guarded') {
     guardValue = createBitVectorValue(1, 1);
   } else {
-    const read = guardRead();
-    operations.splice(intrinsicIndex, 0, read.operation);
-    guardValue = read.value;
+    guardValue = reuseOrCreateStateRead(operations, ARM64_BTI_PAGE_GUARD_STATE_ID, intrinsicIndex, guardRead, bundle);
   }
-  const adjustedIntrinsicIndex = intrinsicIndex + (guardState.state === 'unknown' ? 1 : 0);
-  operations[adjustedIntrinsicIndex] = rebuildIntrinsic(operations[adjustedIntrinsicIndex], guardValue, landing);
+  operations[operations.indexOf(intrinsicOperation)] = rebuildIntrinsic(intrinsicOperation, guardValue, landing);
   const possibleFaults = [{
     kind:'branch-target-exception',
     condition:guardFaultCondition(guardState, landing),
@@ -587,7 +648,13 @@ export function decorateArm64BtiGuardedPageEffects(instruction, bundle, context 
     possibleFaults,
     completeness:'partial',
     unknownEffects:{
-      categories:['control','faults'],
+      // An unresolved page-guard state makes the conditional Branch Target
+      // Exception (published above) unproven; the guard check itself never
+      // redirects control inside the function, so the block's proven
+      // fallthrough/branch edge stays the control projection. Declaring
+      // `control` unknown here contradicted that edge and made the Semantic IR
+      // pipeline reject the whole function.
+      categories:['faults'],
       reason:guardState.conflict ? 'bti-mapped-page-guarded-state-conflict' : 'bti-mapped-page-guarded-state-unresolved',
       detail:{ loaderPolicy:guardState.loaderPolicy, ...(guardState.conflictReason ? { conflictReason:guardState.conflictReason } : {}) },
     },
