@@ -84,26 +84,27 @@ test('a returned state delta preserves unchanged roots and frozen observations',
   assert.deepEqual(state.passMetrics.map(row => row.ok), [true, false]);
 });
 
-test('failed optional passes restore plain array and object fast paths faithfully', () => {
-  const arr = [10, 20, 30];
-  const obj = { a: 1, b: 2 };
-  const state = { arr, obj, opts: { deterministicTransforms: true } };
+test('array capture does not invoke index getters and restores non-writable elements', () => {
+  let getterReads = 0;
+  const getter = () => { getterReads += 1; return 10; };
+  const accessorArray = [10, 20];
+  Object.defineProperty(accessorArray, '0', { get: getter, enumerable: true, configurable: true });
+  const readonlyArray = [30, 40];
+  Object.defineProperty(readonlyArray, '0', { value: 30, writable: false, enumerable: true, configurable: true });
+  const state = { accessorArray, readonlyArray, opts: { deterministicTransforms: true } };
   new PassManager([{
-    name: 'mutate-plain-records',
+    name: 'mutate-array-tail',
     run(s) {
-      s.arr.push(40);
-      s.arr[0] = 999;
-      s.obj.a = 888;
-      s.obj.c = 3;
-      delete s.obj.b;
+      s.accessorArray[1] = 21;
+      s.readonlyArray[1] = 41;
       throw new Error('rollback');
     },
   }]).run(state);
-  assert.equal(state.arr, arr);
-  assert.equal(state.arr.length, 3);
-  assert.deepEqual(state.arr, [10, 20, 30]);
-  assert.equal(state.obj, obj);
-  assert.deepEqual(state.obj, { a: 1, b: 2 });
+  assert.equal(getterReads, 0);
+  assert.equal(Object.getOwnPropertyDescriptor(accessorArray, '0').get, getter);
+  assert.equal(accessorArray[1], 20);
+  assert.equal(Object.getOwnPropertyDescriptor(readonlyArray, '0').writable, false);
+  assert.deepEqual(readonlyArray, [30, 40]);
   assert.equal(state.passMetrics[0].ok, false);
 });
 
