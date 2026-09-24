@@ -4,11 +4,17 @@ import { AIRuntime } from '../../../js/ai/runtime.js';
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { createTurnSnapshot } from '../../../js/ai/control/snapshot.js';
 import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
 
 function deferred() { let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve}; }
 function seed(stores, id, address=0x1000n) {
-  const all=stores.evidenceStore.ingestPlan({best:{address},candidates:[{address,name:id,score:10,sources:['test'],evidence:[`source-${id}`],verification:{verified:true}}]});
-  const proof=all.find(e=>e.status==='verified');
+  const proofId=`proof-${id}`;
+  const sourceBinding=stores.proposalStore.currentEvidenceBinding();
+  stores.evidenceStore.restorePersistedConfirmed(sealPersistedConfirmedEnvelope([{
+    id:proofId,kind:'observation',status:'verified',sourceTool:'test-deterministic-verifier',sourceBinding,
+    sourceData:{candidate:id,address:address.toString(),proof:'fixture'},
+  }]));
+  const proof=stores.evidenceStore.get(proofId);
   stores.hypothesisStore.upsert({id:`h-${id}`,claim:`claim ${id}`,supportEvidenceIds:[proof.id]});
   stores.proposalStore.create({id:`p-${id}`,kind:'comment',target:{address:address.toString()},before:'',after:id,evidenceIds:[proof.id]});
   return proof.id;
@@ -26,6 +32,9 @@ test('#6004 explicit initial injection is honored once, and persisted findings h
   const injected=new EvidenceStore();const runtime=new AIRuntime({evidenceStore:injected,planner:false});
   const a=runtime.storesFor({id:'A'},'bin');assert.equal(a.evidenceStore,injected);const id=seed(a,'A');
   const persisted=new InvestigationSessionStore().register({id:'restored',confirmedFindings:a.evidenceStore.byStatus('verified'),hypotheses:a.hypothesisStore.all()});
+  // Model the trusted persistence load boundary; register() alone cannot mint
+  // verified evidence authority from an arbitrary in-memory record array.
+  sealPersistedConfirmedEnvelope(persisted.confirmedFindings);
   await runtime.releaseSession('A');
   const b=runtime.storesFor({id:'B'},'bin');assert.equal(b.evidenceStore.has(id),false);
   const restored=runtime.storesFor(persisted,'bin');assert.equal(restored.evidenceStore.get(id).status,'verified');
