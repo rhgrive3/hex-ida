@@ -1,8 +1,9 @@
 # Freeze broad audit — 2026-09-24
 
 Pre-freeze audit of **`rhgrive3/hex-ida`** for **non-algorithmic production
-risk**. Base revision: `main` @ `a5fd5618e`
-(`perf(elf): prefetch dynamic metadata ranges … (#9551)`).
+risk**. Reviewed tree: `main` @ `9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36`.
+This is the exact PR base commit for #9566; the audit artifacts are pinned to
+that tree rather than the earlier handoff shorthand.
 
 **Result: 0 confirmed Critical, 0 confirmed Major, 0 freeze blockers.**
 "A finding" here requires a concrete, reproducible execution path — not a
