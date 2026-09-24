@@ -73,6 +73,7 @@ export async function readResolvedRepositorySource({ normalized, realSource, sou
   } catch (error) {
     throw new Error(`${sourceLabel} identity could not be established: ${normalized}`, { cause: error });
   }
+  let primaryError = null;
   try {
     const openedStat = await statHandle(handle);
     if (!openedStat.isFile() || !sameFileIdentity(sourceStat, openedStat)) {
@@ -86,8 +87,15 @@ export async function readResolvedRepositorySource({ normalized, realSource, sou
       throw new Error(`${sourceLabel} changed during read: ${normalized}`);
     }
     return result;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (closeError) {
+      if (primaryError === null) throw closeError;
+    }
   }
 }
 
