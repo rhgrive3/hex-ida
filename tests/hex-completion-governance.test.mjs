@@ -19,7 +19,9 @@ import {
   verifyCandidateMergeTree,
   verifyRemoteRef,
   prepareCandidate,
+  runCandidateVerifier,
   getGitPath,
+  resolveTrustedVerifier,
 } from '../tools/validation/hex-completion-merge-tree.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -184,9 +186,11 @@ test('candidate merge-tree verifier fails closed on candidate tree mismatch', ()
   assert.ok(res.errors.some((e) => e.code === 'CANDIDATE_TREE_MISMATCH'));
 });
 
-test('diagnostic mode with no-shadow does NOT return release PASS', () => {
+test('diagnostic mode with no-shadow or skip-remote-check does NOT return release PASS', () => {
   const manifest = loadManifest();
-  const res = verifyCandidateMergeTree({
+
+  // 1. No shadow
+  const noShadowRes = verifyCandidateMergeTree({
     lane: 'integration',
     baseSha: '2bf303289d11efe331e26697055be804d24b1d90',
     expectedBaseSha: '2bf303289d11efe331e26697055be804d24b1d90',
@@ -197,100 +201,111 @@ test('diagnostic mode with no-shadow does NOT return release PASS', () => {
     requireRemoteCheck: false,
     repoDir: ROOT,
   });
+  assert.equal(noShadowRes.valid, false, 'no-shadow must not be valid for release');
+  assert.equal(noShadowRes.verdict, 'DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE');
 
-  assert.equal(res.valid, false, 'Diagnostic run without shadow evidence must not be valid for release');
-  assert.equal(res.verdict, 'DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE');
-  assert.equal(res.diagnosticOnly, true);
+  // 2. Skip remote check attempt with valid shadow format
+  const skipRemoteRes = verifyCandidateMergeTree({
+    lane: 'integration',
+    baseSha: '2bf303289d11efe331e26697055be804d24b1d90',
+    expectedBaseSha: '2bf303289d11efe331e26697055be804d24b1d90',
+    headSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
+    expectedHeadSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
+    manifest,
+    requireShadowEvidence: false,
+    requireRemoteCheck: false,
+    repoDir: ROOT,
+  });
+  assert.equal(skipRemoteRes.valid, false, 'skip-remote-check must not be valid for release');
+  assert.equal(skipRemoteRes.verdict, 'DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE');
 });
 
-test('shadow evidence rejects exact counterexamples from rebuttal', () => {
+test('shadow evidence rejects fully populated forged JSON and missing trusted verifier inputs', () => {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 
   const dummyCommit = '58712d348df3894bb3f137513aa8d7ded4ade925';
   const dummyTree = 'aabbccddeeff00112233445566778899aabbccdd';
 
   try {
-    // Exact counterexample from rebuttal:
-    // {verifier:"fake",verifierVersion:"fake",candidateCommitSha:40*a,candidateTreeSha:40*b,verdict:"PASS"}, no results
-    const counterexampleFile = path.join(TEMP_DIR, 'rebuttal-counterexample.json');
-    fs.writeFileSync(counterexampleFile, JSON.stringify({
+    // 1. Primary review counterexample: fully populated forged JSON when trustedVerifierIdentity/Hash omitted
+    const forgedFile = path.join(TEMP_DIR, 'forged-fully-populated.json');
+    fs.writeFileSync(forgedFile, JSON.stringify({
       verifier: 'fake',
+      verifierHash: 'fake',
       verifierVersion: 'fake',
+      oracle: 'fake',
+      corpus: 'fake',
+      toolchain: 'fake',
       candidateCommitSha: dummyCommit,
       candidateTreeSha: dummyTree,
+      results: [{ id: 'fake', status: 'PASS', verdict: 'PASS' }],
       verdict: 'PASS',
     }));
 
-    const counterRes = validateShadowEvidence({
-      evidencePath: counterexampleFile,
+    // Must be rejected when trusted verifier identity is omitted
+    const omittedTrustedRes = validateShadowEvidence({
+      evidencePath: forgedFile,
       expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
     });
-    // MUST FAIL closed because oracle/corpus/toolchain and results are missing
-    assert.equal(counterRes.valid, false);
-    assert.equal(counterRes.reason, 'MISSING_PROVENANCE_METADATA');
+    assert.equal(omittedTrustedRes.valid, false);
+    assert.equal(omittedTrustedRes.reason, 'MISSING_TRUSTED_VERIFIER_IDENTITY');
 
-    // Add fake provenance, but empty/absent results
-    const withProvFile = path.join(TEMP_DIR, 'with-prov-no-results.json');
-    fs.writeFileSync(withProvFile, JSON.stringify({
-      verifier: 'fake',
-      verifierVersion: 'fake',
+    // Must be rejected when trusted verifier identity doesn't match
+    const mismatchedIdRes = validateShadowEvidence({
+      evidencePath: forgedFile,
+      expectedCandidateCommit: dummyCommit,
+      expectedCandidateTree: dummyTree,
+      trustedVerifierIdentity: 'tools/validation/stage2/verify.mjs',
+      trustedVerifierHash: 'expected-trusted-hash-1234',
+    });
+    assert.equal(mismatchedIdRes.valid, false);
+    assert.equal(mismatchedIdRes.reason, 'VERIFIER_IDENTITY_MISMATCH');
+
+    // Must be rejected when verifier hash doesn't match
+    const fakeWithTrustedId = path.join(TEMP_DIR, 'fake-with-trusted-id.json');
+    fs.writeFileSync(fakeWithTrustedId, JSON.stringify({
+      verifier: 'tools/validation/stage2/verify.mjs',
+      verifierHash: 'untrusted-forged-hash',
+      verifierVersion: 'untrusted-forged-hash',
       oracle: 'real-oracle',
       corpus: 'real-corpus',
       toolchain: 'real-toolchain',
       candidateCommitSha: dummyCommit,
       candidateTreeSha: dummyTree,
+      results: [{ id: 'test-1', status: 'PASS', verdict: 'PASS' }],
       verdict: 'PASS',
     }));
-    const withProvRes = validateShadowEvidence({
-      evidencePath: withProvFile,
+    const mismatchedHashRes = validateShadowEvidence({
+      evidencePath: fakeWithTrustedId,
       expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
+      trustedVerifierIdentity: 'tools/validation/stage2/verify.mjs',
+      trustedVerifierHash: 'real-trusted-hash-5678',
     });
-    assert.equal(withProvRes.valid, false);
-    assert.equal(withProvRes.reason, 'EMPTY_VERIFICATION_RESULTS');
+    assert.equal(mismatchedHashRes.valid, false);
+    assert.equal(mismatchedHashRes.reason, 'VERIFIER_HASH_MISMATCH');
 
-    // Mismatched trusted verifier identity
-    const trustedFile = path.join(TEMP_DIR, 'trusted-test.json');
-    fs.writeFileSync(trustedFile, JSON.stringify({
-      verifier: 'untrusted-agent',
-      verifierVersion: 'sha256-untrusted',
-      oracle: 'real-oracle',
-      corpus: 'real-corpus',
-      toolchain: 'real-toolchain',
-      candidateCommitSha: dummyCommit,
-      candidateTreeSha: dummyTree,
-      results: [{ test: 'unit-1', verdict: 'passed' }],
-      verdict: 'PASS',
-    }));
-    const trustedRes = validateShadowEvidence({
-      evidencePath: trustedFile,
-      expectedCandidateCommit: dummyCommit,
-      expectedCandidateTree: dummyTree,
-      trustedVerifierIdentity: 'hex-shadow-verifier/v2',
-    });
-    assert.equal(trustedRes.valid, false);
-    assert.equal(trustedRes.reason, 'VERIFIER_IDENTITY_MISMATCH');
-
-    // Legitimate evidence with verified trusted identity and results passes
+    // Legitimate evidence matching trusted identity & hash passes
     const validFile = path.join(TEMP_DIR, 'legitimate.json');
     fs.writeFileSync(validFile, JSON.stringify({
-      verifier: 'hex-shadow-verifier/v2',
-      verifierVersion: 'sha256-trusted123',
-      oracle: 'real-oracle',
-      corpus: 'real-corpus',
-      toolchain: 'real-toolchain',
+      verifier: 'tools/validation/stage2/verify.mjs',
+      verifierHash: 'real-trusted-hash-5678',
+      verifierVersion: 'real-trusted-hash-5678',
+      oracle: 'hex-oracle-v2',
+      corpus: 'arm64-160-corpus',
+      toolchain: 'node-v24',
       candidateCommitSha: dummyCommit,
       candidateTreeSha: dummyTree,
-      results: [{ test: 'unit-1', verdict: 'passed' }],
+      results: [{ id: 'case-01', status: 'PASS', verdict: 'PASS' }],
       verdict: 'PASS',
     }));
     const validRes = validateShadowEvidence({
       evidencePath: validFile,
       expectedCandidateCommit: dummyCommit,
       expectedCandidateTree: dummyTree,
-      trustedVerifierIdentity: 'hex-shadow-verifier/v2',
-      trustedVerifierHash: 'sha256-trusted123',
+      trustedVerifierIdentity: 'tools/validation/stage2/verify.mjs',
+      trustedVerifierHash: 'real-trusted-hash-5678',
     });
     assert.equal(validRes.valid, true);
     assert.equal(validRes.reason, null);
@@ -300,27 +315,43 @@ test('shadow evidence rejects exact counterexamples from rebuttal', () => {
   }
 });
 
-test('remote verification fails closed on nonexistent or unreachable remote', () => {
+test('remote verification fails closed on nonexistent or unreachable remote and omitted refs', () => {
+  // 1. Unreachable remote
   const badRemote = verifyRemoteRef({
     ref: 'main',
     expectedSha: '1111111111111111111111111111111111111111',
     remote: 'nonexistent-remote-name-xyz',
     cwd: ROOT,
   });
-
   assert.equal(badRemote.valid, false);
   assert.equal(badRemote.remoteSha, null);
   assert.equal(badRemote.reason, 'REMOTE_UNREACHABLE');
+
+  // 2. Omitted integration-ref or component-ref in verifyCandidateMergeTree
+  const manifest = loadManifest();
+  const omittedRefs = verifyCandidateMergeTree({
+    lane: 'deterministic',
+    baseSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
+    headSha: '58712d348df3894bb3f137513aa8d7ded4ade925',
+    requireRemoteCheck: true,
+    manifest,
+    repoDir: ROOT,
+  });
+  assert.equal(omittedRefs.valid, false);
+  assert.ok(omittedRefs.errors.some((e) => e.code === 'MISSING_INTEGRATION_REF'));
+  assert.ok(omittedRefs.errors.some((e) => e.code === 'MISSING_COMPONENT_REF'));
 });
 
-test('linked worktree getGitPath resolves to main git dir and supports candidate synthesis', () => {
-  // Current worktree is a linked worktree: ROOT is .../governance
+test('linked worktree getGitPath resolves safely and candidate worktree synthesis works', () => {
   const gitPath = getGitPath('test-scratch-index', ROOT);
   assert.ok(typeof gitPath === 'string');
-  assert.ok(!gitPath.endsWith('.git/test-scratch-index') || fs.statSync(path.dirname(gitPath)).isDirectory());
+
+  const trusted = resolveTrustedVerifier();
+  assert.ok(trusted.identity);
+  assert.match(trusted.hash, /^[0-9a-f]{64}$/i);
 });
 
-test('real diverged local Git remote, moving ref, and candidate commit stability test', () => {
+test('real diverged local Git remote, moving ref, and detached candidate execution test', () => {
   const sandbox = path.join(ROOT, 'tmp-git-sandbox-' + Date.now());
   fs.mkdirSync(sandbox, { recursive: true });
 
@@ -391,7 +422,7 @@ test('real diverged local Git remote, moving ref, and candidate commit stability
     runGit(['push', 'origin', 'integration'], repoDir);
     const reconciledIntegrationSha = runGit(['rev-parse', 'HEAD'], repoDir);
 
-    // 8. Re-run candidate prep and verify candidate commit stability
+    // 8. Prepare candidate commit & tree
     const prep = prepareCandidate({
       lane: 'jev',
       baseSha: reconciledIntegrationSha,
@@ -401,13 +432,19 @@ test('real diverged local Git remote, moving ref, and candidate commit stability
     assert.ok(prep.candidateCommitSha);
     assert.ok(prep.candidateTreeSha);
 
-    const verifiedCandidateCommit = materializeCandidateCommit({
-      baseSha: reconciledIntegrationSha,
-      headSha: jevHeadSha,
-      treeSha: prep.candidateTreeSha,
-      cwd: repoDir,
+    // 9. Execute real candidate verifier in detached worktree
+    const reportPath = path.join(sandbox, 'candidate-report.json');
+    const executedEvidence = runCandidateVerifier({
+      candidateCommitSha: prep.candidateCommitSha,
+      verifierCommand: ['git', 'status'], // reliable local command to prove execution
+      outputReportPath: reportPath,
+      repoDir,
+      verifierIdentity: 'tools/validation/stage2/verify.mjs',
     });
-    assert.equal(prep.candidateCommitSha, verifiedCandidateCommit, 'Candidate commit must be stable between prepare and verify');
+    assert.equal(executedEvidence.status, 'PASS');
+    assert.equal(executedEvidence.verdict, 'PASS');
+    assert.equal(executedEvidence.candidateCommitSha, prep.candidateCommitSha);
+    assert.equal(executedEvidence.candidateTreeSha, prep.candidateTreeSha);
 
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });

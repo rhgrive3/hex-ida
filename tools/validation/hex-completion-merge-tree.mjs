@@ -7,6 +7,8 @@ import { loadManifest, validateInventory } from './hex-completion-ownership.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+export const CANONICAL_VERIFIER_SCRIPT = 'tools/validation/stage2/verify.mjs';
+
 export function runGit(args, cwd = ROOT, envOverride = {}) {
   try {
     const stdout = execFileSync('git', args, {
@@ -40,8 +42,6 @@ export function getGitPath(subpath, cwd = ROOT) {
 
 /**
  * Computes candidate merge tree using git.
- * Supports modern git `git merge-tree --write-tree base head`.
- * Fallback computes merge tree via temporary index in a safe git-path location.
  */
 export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
   let result = runGit(['merge-tree', '--write-tree', baseSha, headSha], cwd);
@@ -74,7 +74,6 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
       return { success: true, treeSha: baseTree, error: null };
     }
 
-    // Allocate temporary index in the proper git directory (handles linked worktree where .git is a file)
     const tmpIndex = getGitPath(`temp-merge-index-${Date.now()}-${Math.random().toString(36).slice(2)}`, cwd);
     try {
       const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
@@ -103,7 +102,6 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
 
 /**
  * Creates/synthesizes a deterministic exact candidate merge commit object.
- * Uses fixed author/committer identities and timestamps so candidateCommitSha is perfectly stable.
  */
 export function materializeCandidateCommit({
   baseSha,
@@ -139,10 +137,22 @@ export function hashFile(filePath) {
 }
 
 /**
+ * Resolves trusted verifier identity and content hash from path or defaults.
+ */
+export function resolveTrustedVerifier(scriptPath = CANONICAL_VERIFIER_SCRIPT, cwd = ROOT) {
+  const fullPath = path.isAbsolute(scriptPath) ? scriptPath : path.join(cwd, scriptPath);
+  const hash = hashFile(fullPath);
+  return {
+    identity: scriptPath,
+    hash: hash || 'unresolvable-verifier-hash',
+  };
+}
+
+/**
  * Validates shadow evidence file for the candidate merge.
- * Must strictly fail closed:
- *  - File exists and is valid JSON object
- *  - Verifier identity and version/hash must match trustedVerifier
+ * Release validation MANDATES:
+ *  - trustedVerifierIdentity and trustedVerifierHash must be explicitly provided
+ *  - Verifier identity & hash must strictly match
  *  - Oracle, corpus, and toolchain must be present and non-empty
  *  - Exact candidateCommitSha and candidateTreeSha must match
  *  - Non-empty actual results array (each result must have an id/name and pass status)
@@ -153,14 +163,30 @@ export function validateShadowEvidence({
   evidencePath,
   expectedCandidateCommit,
   expectedCandidateTree,
-  trustedVerifierIdentity = null,
-  trustedVerifierHash = null,
+  trustedVerifierIdentity,
+  trustedVerifierHash,
 }) {
   if (!evidencePath || !fs.existsSync(evidencePath)) {
     return {
       valid: false,
       reason: 'MISSING_SHADOW_EVIDENCE',
       detail: `Evidence file not found: ${evidencePath}`,
+    };
+  }
+
+  // Release gate mandates trusted verifier inputs
+  if (!trustedVerifierIdentity || typeof trustedVerifierIdentity !== 'string') {
+    return {
+      valid: false,
+      reason: 'MISSING_TRUSTED_VERIFIER_IDENTITY',
+      detail: 'Release verification requires explicit trustedVerifierIdentity',
+    };
+  }
+  if (!trustedVerifierHash || typeof trustedVerifierHash !== 'string') {
+    return {
+      valid: false,
+      reason: 'MISSING_TRUSTED_VERIFIER_HASH',
+      detail: 'Release verification requires explicit trustedVerifierHash',
     };
   }
 
@@ -194,18 +220,18 @@ export function validateShadowEvidence({
       detail: 'Evidence missing required verifier identity/hash strings',
     };
   }
-  if (trustedVerifierIdentity && verifierId !== trustedVerifierIdentity) {
+  if (verifierId !== trustedVerifierIdentity) {
     return {
       valid: false,
       reason: 'VERIFIER_IDENTITY_MISMATCH',
-      detail: `Verifier identity ${verifierId} does not match trusted ${trustedVerifierIdentity}`,
+      detail: `Verifier identity '${verifierId}' does not match trusted '${trustedVerifierIdentity}'`,
     };
   }
-  if (trustedVerifierHash && verifierHash !== trustedVerifierHash) {
+  if (verifierHash !== trustedVerifierHash) {
     return {
       valid: false,
       reason: 'VERIFIER_HASH_MISMATCH',
-      detail: `Verifier hash ${verifierHash} does not match trusted ${trustedVerifierHash}`,
+      detail: `Verifier hash '${verifierHash}' does not match trusted '${trustedVerifierHash}'`,
     };
   }
 
@@ -360,14 +386,16 @@ export function verifyRemoteRef({
 /**
  * Full exact-SHA candidate merge-tree verification.
  * Follows docs/ENGINEERING_PROCESS_GUARDRAILS.md §3.3 & §7:
- * 1. Refetches and verifies live main, live integration, and live component refs against remotes (fails closed if unreachable).
- * 2. Proves living integration base contains live main (ancestor check).
- * 3. Proves component head matches live component ref.
- * 4. Computes candidate merge tree.
- * 5. Inspects component changed-files relative to common merge-base (fails closed on merge-base failure).
- * 6. Inspects actual candidate changed-file union (base..candidateTree, fails closed on diff error).
- * 7. Runs ownership checks on changed inventories.
- * 8. Materializes deterministic candidate commit and verifies shadow proof bound to candidate commit & tree.
+ * Release requirements:
+ * 1. Remote check is mandatory for release PASS. If remoteCheck is skipped, verdict is DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE.
+ * 2. Mandatory live mainRef, integrationRef, and componentRef verification against live remote.
+ * 3. Proves living integration base contains live main (ancestor check).
+ * 4. Proves component head matches live component ref.
+ * 5. Computes candidate merge tree.
+ * 6. Inspects component changed-files relative to common merge-base.
+ * 7. Inspects actual candidate changed-file union (base..candidateTree).
+ * 8. Runs ownership checks on changed inventories.
+ * 9. Materializes deterministic candidate commit and verifies shadow proof bound to candidate commit & tree.
  */
 export function verifyCandidateMergeTree({
   lane,
@@ -392,9 +420,22 @@ export function verifyCandidateMergeTree({
 }) {
   const errors = [];
 
-  // 1. Remote validation
+  // For release, remote check and all refs are strictly required
   if (requireRemoteCheck) {
-    // 1a. Check live main
+    if (!integrationRef) {
+      errors.push({
+        code: 'MISSING_INTEGRATION_REF',
+        message: 'Release verification requires explicit --integration-ref',
+      });
+    }
+    if (!componentRef) {
+      errors.push({
+        code: 'MISSING_COMPONENT_REF',
+        message: 'Release verification requires explicit --component-ref',
+      });
+    }
+
+    // Check live main
     const mainCheck = verifyRemoteRef({ ref: mainRef, expectedSha: expectedMainSha, remote: remoteName, cwd: repoDir, fetchFirst: true });
     if (!mainCheck.valid) {
       errors.push({
@@ -403,7 +444,7 @@ export function verifyCandidateMergeTree({
       });
     } else {
       const liveMainSha = mainCheck.remoteSha;
-      // 1b. Verify integration base contains live main
+      // Verify integration base contains live main
       const isAncestor = runGit(['merge-base', '--is-ancestor', liveMainSha, baseSha], repoDir);
       if (isAncestor.status !== 0) {
         errors.push({
@@ -413,7 +454,7 @@ export function verifyCandidateMergeTree({
       }
     }
 
-    // 1c. Check live integration ref if provided
+    // Check live integration ref
     if (integrationRef) {
       const intCheck = verifyRemoteRef({ ref: integrationRef, expectedSha: expectedBaseSha || baseSha, remote: remoteName, cwd: repoDir, fetchFirst: true });
       if (!intCheck.valid) {
@@ -424,7 +465,7 @@ export function verifyCandidateMergeTree({
       }
     }
 
-    // 1d. Check live component ref if provided
+    // Check live component ref
     if (componentRef) {
       const compCheck = verifyRemoteRef({ ref: componentRef, expectedSha: expectedHeadSha || headSha, remote: remoteName, cwd: repoDir, fetchFirst: true });
       if (!compCheck.valid) {
@@ -575,15 +616,16 @@ export function verifyCandidateMergeTree({
     }
   }
 
+  const isReleaseEligible = requireRemoteCheck && requireShadowEvidence;
   let verdict = 'BLOCKING';
   if (errors.length === 0) {
-    verdict = requireShadowEvidence ? 'PASS' : 'DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE';
+    verdict = isReleaseEligible ? 'PASS' : 'DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE';
   }
 
   return {
     verdict,
-    valid: errors.length === 0 && requireShadowEvidence,
-    diagnosticOnly: !requireShadowEvidence,
+    valid: errors.length === 0 && isReleaseEligible,
+    diagnosticOnly: !isReleaseEligible,
     lane,
     baseSha,
     headSha,
@@ -619,6 +661,77 @@ export function prepareCandidate({ lane, baseSha, headSha, repoDir = ROOT }) {
     candidateTreeSha: treeResult.treeSha,
     candidateCommitSha: commitSha,
   };
+}
+
+/**
+ * Runs an actual verification command in a detached candidate worktree.
+ * Creates detached worktree at candidateCommitSha, executes command, collects structured output,
+ * cleans up worktree, and returns validated report.
+ */
+export function runCandidateVerifier({
+  candidateCommitSha,
+  verifierCommand = ['npm', 'test'],
+  outputReportPath = null,
+  worktreeDir = null,
+  repoDir = ROOT,
+  oracle = 'hex-independent-runner',
+  corpus = 'production-corpus',
+  toolchain = 'node-' + process.version,
+  verifierIdentity = 'candidate-verifier/runner',
+}) {
+  const scratchDir = worktreeDir || path.join(getGitPath('scratch-candidate-wt', repoDir), `cand-${Date.now()}`);
+  fs.mkdirSync(path.dirname(scratchDir), { recursive: true });
+
+  const addWt = runGit(['worktree', 'add', '--detach', scratchDir, candidateCommitSha], repoDir);
+  if (addWt.status !== 0) {
+    throw new Error(`Failed to create detached candidate worktree at ${scratchDir}: ${addWt.stderr || addWt.stdout}`);
+  }
+
+  let testStatus = 0;
+  let stdout = '';
+  let stderr = '';
+  try {
+    const [cmd, ...args] = verifierCommand;
+    stdout = execFileSync(cmd, args, { cwd: scratchDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    testStatus = err.status ?? 1;
+    stdout = (err.stdout ?? '').toString();
+    stderr = (err.stderr ?? '').toString();
+  } finally {
+    runGit(['worktree', 'remove', '--force', scratchDir], repoDir);
+  }
+
+  const verifierHash = crypto.createHash('sha256').update(String(verifierCommand.join(' '))).digest('hex');
+  const treeSha = runGit(['rev-parse', `${candidateCommitSha}^{tree}`], repoDir).stdout;
+
+  const evidence = {
+    schemaVersion: 'hex-shadow-evidence/v2',
+    verifier: verifierIdentity,
+    verifierVersion: verifierHash,
+    oracle,
+    corpus,
+    toolchain,
+    candidateCommitSha,
+    candidateTreeSha: treeSha,
+    status: testStatus === 0 ? 'PASS' : 'FAIL',
+    verdict: testStatus === 0 ? 'PASS' : 'BLOCKING',
+    results: [
+      {
+        id: verifierCommand.join(' '),
+        status: testStatus === 0 ? 'PASS' : 'FAIL',
+        verdict: testStatus === 0 ? 'PASS' : 'FAIL',
+        exitCode: testStatus,
+      },
+    ],
+    timestamp: new Date().toISOString(),
+  };
+
+  if (outputReportPath) {
+    fs.mkdirSync(path.dirname(outputReportPath), { recursive: true });
+    fs.writeFileSync(outputReportPath, JSON.stringify(evidence, null, 2) + '\n');
+  }
+
+  return evidence;
 }
 
 export function runCli(argv = process.argv.slice(2), { stdout = process.stdout, stderr = process.stderr } = {}) {
@@ -664,7 +777,7 @@ export function runCli(argv = process.argv.slice(2), { stdout = process.stdout, 
   }
 
   if (!lane || !baseSha || !headSha) {
-    stderr.write('Usage: node hex-completion-merge-tree.mjs --lane <lane> --base <baseSha> --head <headSha> [--expected-base <sha>] [--expected-head <sha>] [--expected-tree <sha>] [--candidate-commit <sha>] [--shadow-evidence <path>] [--trusted-verifier <id>] [--trusted-verifier-hash <hash>] [--main-ref <ref>] [--expected-main <sha>] [--integration-ref <ref>] [--component-ref <ref>] [--skip-remote-check] [--no-shadow]\n');
+    stderr.write('Usage: node hex-completion-merge-tree.mjs --lane <lane> --base <baseSha> --head <headSha> [--expected-base <sha>] [--expected-head <sha>] [--expected-tree <sha>] [--candidate-commit <sha>] [--shadow-evidence <path>] --trusted-verifier <id> --trusted-verifier-hash <hash> [--main-ref <ref>] [--expected-main <sha>] --integration-ref <ref> --component-ref <ref> [--skip-remote-check] [--no-shadow]\n');
     return 1;
   }
 
