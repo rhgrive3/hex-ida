@@ -7,6 +7,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { canonicalLegacySemanticSourceBinding } from '../../semantics/compat/index.js';
 
 const REQUIRED_FIELDS = Object.freeze([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
@@ -497,6 +498,25 @@ function memoryLocationShape(location, memo, digests) {
   return shape;
 }
 
+const CANONICAL_ATTRIBUTE_SKIP = new Set(['attributes']);
+
+function producerBoundExtraShape(definition, memo, digests) {
+  const source = digests?.semanticSource;
+  const extra = definition?.extra;
+  if (!source || extra == null || typeof extra !== 'object' || Array.isArray(extra)) return null;
+  const nodeId = token(extra.semanticNodeId ?? definition.semanticNodeId);
+  if (nodeId == null) return null;
+  const node = source.nodes.get(nodeId);
+  if (!node) return null;
+  const attributes = ownDataProperty(extra, 'attributes');
+  if (!attributes.present || attributes.malformed || attributes.value !== node.attributes) return null;
+  const remainder = metadataProjection(extra, CANONICAL_ATTRIBUTE_SKIP, '$.definition.extra', memo);
+  return {
+    nodeId,
+    remainderDigest: remainder == null ? null : semanticDigest(remainder, memo, digests, '$.definition.extra.remainder'),
+  };
+}
+
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
   if (definition == null || typeof definition !== 'object') return null;
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
@@ -517,7 +537,13 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
   shape.conditionValueId = token(definition.conditionValue?.id);
   shape.selectorValueId = token(definition.selectorValue?.id);
   if (Object.hasOwn(definition, 'returnTargetValue')) shape.returnTargetValueId = token(definition.returnTargetValue?.id);
-  shape.extraDigest = semanticDigest(definition.extra, memo, digests, '$.definition.extra');
+  const producerExtra = producerBoundExtraShape(definition, memo, digests);
+  if (producerExtra) {
+    shape.extraDigest = producerExtra.remainderDigest;
+    shape.canonicalAttributesNodeId = producerExtra.nodeId;
+  } else {
+    shape.extraDigest = semanticDigest(definition.extra, memo, digests, '$.definition.extra');
+  }
   shape.originDigest = semanticDigest(definition.origin, memo, digests, '$.definition.origin', true);
   shape.location = memoryLocationShape(definition.loc, memo, digests);
   shape.memoryUse = memoryNodeShape(definition.memUse, memo, digests);
@@ -587,7 +613,265 @@ function irShape(ir) {
     digests.originRefs = new WeakMap();
     digests.originValues = [];
     const definitionCache = new WeakMap();
-    const shape = semanticObject(ir, new Set(), DERIVED_IR_KEYS, '$', memo);
+    const semanticBinding = canonicalLegacySemanticSourceBinding(ir);
+    if (semanticBinding?.semanticIr && typeof semanticBinding.semanticIrDigest === 'string') {
+      const nodes = new Map();
+      let unique = true;
+      for (const node of semanticBinding.semanticIr.nodes ?? []) {
+        const id = token(node?.id);
+        if (id == null || nodes.has(id)) { unique = false; break; }
+        nodes.set(id, node);
+      }
+      if (unique && nodes.size === (semanticBinding.semanticIr.nodes ?? []).length) {
+        digests.semanticSource = Object.freeze({
+          digest: semanticBinding.semanticIrDigest,
+          nodes,
+        });
+      }
+    }
+    const shape = semanticObject(ir, new Set(), DERIVED_IR_KEYS, '
+    shape.entry = token(ir.entry);
+    shape.originDigest = semanticDigest(ir.origin, memo, digests, '$.origin', true);
+    shape.blocks = Array.isArray(ir.blocks)
+      ? ir.blocks.map((block) => blockShape(block, memo, digests, definitionCache))
+        .sort((left, right) => String(left.index).localeCompare(String(right.index))) : [];
+    shape.values = Array.isArray(ir.values)
+      ? ir.values.map((value) => valueShape(value, memo, digests, definitionCache))
+        .sort((left, right) => String(left.id).localeCompare(String(right.id))) : [];
+    // Some canonical IR producers expose a flat instruction table in addition
+    // to block-local `insts`. It is semantic input, not derived bookkeeping:
+    // omitting it lets an in-place instruction mutation reuse a stale product.
+    shape.instructions = ir.instructions == null
+      ? null
+      : Array.isArray(ir.instructions)
+        ? ir.instructions.map((instruction) => instructionShape(instruction, memo, digests, definitionCache))
+        : semanticObject(ir.instructions, new Set(), NO_SKIPPED_KEYS, '$.instructions', memo);
+    // Loop/back-edge facts are canonical upstream inputs to widening.  Keep
+    // their scalar shape when present, while avoiding Maps/Sets used only as
+    // derived lookup caches in graph products.
+    shape.backEdges = Array.isArray(ir.backEdges)
+      ? ir.backEdges.map((edge) => semanticObject(edge, new Set(), NO_SKIPPED_KEYS, '$.backEdge', memo)) : [];
+    shape.loops = Array.isArray(ir.loops)
+      ? ir.loops.map((loop) => semanticObject(loop, new Set(), NO_SKIPPED_KEYS, '$.loop', memo)) : [];
+    try {
+      shape.originTableDigest = `origin-table:${fastFrozenOriginDigest(digests.originValues)}`;
+    } catch {
+      return null;
+    }
+    return shape;
+  } catch {
+    return null;
+  }
+}
+
+const IDENTITY_SOURCE_KEYS = Object.freeze(['analysisIdentity', 'identity', 'artifactIdentity']);
+
+function ownDataProperty(source, key) {
+  if (source == null || typeof source !== 'object') return { present: false, value: undefined, malformed: false };
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor == null) return { present: false, value: undefined, malformed: false };
+    if (!('value' in descriptor) || !descriptor.enumerable) {
+      return { present: true, value: undefined, malformed: true };
+    }
+    return { present: true, value: descriptor.value, malformed: false };
+  } catch {
+    return { present: true, value: undefined, malformed: true };
+  }
+}
+
+function identitySourceEntries(context, ir) {
+  return [context, ir].flatMap((source) => IDENTITY_SOURCE_KEYS.map((key) => ({
+    source,
+    key,
+    ...ownDataProperty(source, key),
+  })));
+}
+
+function unsupportedIdentityMetadata(entries) {
+  return entries.some((entry) => {
+    if (entry.malformed) return true;
+    if (!entry.present || entry.value == null) return false;
+    try {
+      // Validate the complete candidate, including unknown metadata, before
+      // reading any identity field. This rejects symbols, hidden descriptors,
+      // accessors, cycles, and non-finite values instead of silently ignoring
+      // them at the identity boundary.
+      typedIdentityText(entry.value);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
+
+function sourceIdentity(entries) {
+  return entries.find((entry) => !entry.malformed && entry.value != null)?.value ?? null;
+}
+
+function explicitlyMissingIdentity(entries) {
+  return entries.some((entry) => entry.present && entry.value == null);
+}
+
+function field(candidate, ...names) {
+  for (const name of names) {
+    const property = ownDataProperty(candidate, name);
+    if (property.malformed) return null;
+    const value = token(property.value);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function hasMalformedIdentityFields(candidate) {
+  if (candidate == null) return false;
+  if (typeof candidate !== 'object' || Array.isArray(candidate)) return true;
+  const aliases = [
+    ['binaryId'], ['functionId'], ['snapshotId'], ['semanticIrId', 'semanticIRId'],
+    ['ssaId'], ['analyzerVersion', 'semanticSchemaVersion'],
+  ];
+  try {
+    for (const names of aliases) {
+      for (const name of names) {
+        const property = ownDataProperty(candidate, name);
+        if (!property.present) continue;
+        if (property.malformed) return true;
+        const raw = property.value;
+        if (raw == null || token(raw) == null) return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function sameKnownSourceFields(identity, source) {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
+  for (const name of REQUIRED_FIELDS) {
+    const observed = field(source, name, name === 'semanticIrId' ? 'semanticIRId' : name);
+    if (observed != null && observed !== identity[name]) return false;
+  }
+  return true;
+}
+
+function shapeBinding(source) {
+  return field(source, 'semanticIrShapeDigest', 'semanticIRShapeDigest', 'irShapeDigest', 'canonicalIrDigest', 'shapeDigest');
+}
+
+function sourceIsBoundToShape(source, identity, shapeDigest, shape) {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
+  const explicitBinding = shapeBinding(source);
+  if (explicitBinding != null) return explicitBinding === shapeDigest;
+  const suppliedSemantic = field(source, 'semanticIrId', 'semanticIRId');
+  const suppliedSsa = field(source, 'ssaId');
+  // Partial identity metadata is useful (for example a loader can know the
+  // binary and snapshot before SSA exists).  Once a caller supplies semantic
+  // or SSA IDs, however, accepting an arbitrary string would let a result from
+  // another IR be laundered into this one.  The fallback IDs are deliberately
+  // shape-bound and provide the deterministic proof when no upstream digest is
+  // available.
+  if (suppliedSemantic != null) {
+    const expectedSemantic = `semantic-ir:${stableDigest({
+      snapshotId: identity.snapshotId,
+      functionId: identity.functionId,
+      shapeDigest,
+    })}`;
+    if (suppliedSemantic !== expectedSemantic) return false;
+  }
+  if (suppliedSsa != null) {
+    const expectedSemantic = suppliedSemantic ?? `semantic-ir:${stableDigest({
+      snapshotId: identity.snapshotId,
+      functionId: identity.functionId,
+      shapeDigest,
+    })}`;
+    const expectedSsa = `ssa:${ssaIdentityDigest(expectedSemantic, shape.values)}`;
+    if (suppliedSsa !== expectedSsa) return false;
+  }
+  return true;
+}
+
+function ssaIdentityDigest(semanticIrId, values) {
+  try { return fastJsonGraphDigest({ semanticIrId, values }); }
+  catch { return null; }
+}
+
+export function isValidatedAnalysisIdentity(identity) {
+  if (identity == null || typeof identity !== 'object' || Array.isArray(identity)) return false;
+  return REQUIRED_FIELDS.every((name) => {
+    const property = ownDataProperty(identity, name);
+    return !property.malformed && typeof property.value === 'string' && property.value.trim().length > 0;
+  });
+}
+
+export function analysisIdentityMatches(observed, expected) {
+  if (!isValidatedAnalysisIdentity(observed) || !isValidatedAnalysisIdentity(expected)) return false;
+  return REQUIRED_FIELDS.every((name) => observed[name] === expected[name]);
+}
+
+/**
+ * Resolve a validated identity from canonical IR metadata.  Existing fixtures
+ * often carry no binary loader IDs, so the fallback is a deterministic digest
+ * of the IR shape, never a wall-clock or architecture-name guess.
+ */
+export function canonicalAnalysisIdentity(context = {}) {
+  const seededCfg = context?.analysis?.get?.('cfg') ?? null;
+  const seededSsa = context?.analysis?.get?.('ssa') ?? null;
+  const seededOrigins = context?.analysis?.get?.('origins') ?? null;
+  const ir = context?.ir ?? (seededCfg != null || seededSsa != null ? {
+    blocks: seededCfg?.blocks ?? [],
+    entry: seededCfg?.entry ?? null,
+    values: seededSsa?.values ?? [],
+    origin: seededOrigins?.functionOrigin ?? null,
+  } : null);
+  const sourceEntries = identitySourceEntries(context, ir);
+  if (unsupportedIdentityMetadata(sourceEntries)) {
+    return { identity: null, valid: false, reason: 'analysis identity is malformed' };
+  }
+  const source = sourceIdentity(sourceEntries);
+  if (explicitlyMissingIdentity(sourceEntries)) return { identity: null, valid: false, reason: 'analysis identity is null' };
+  if (source != null && (typeof source !== 'object' || Array.isArray(source))) {
+    return { identity: null, valid: false, reason: 'analysis identity is malformed' };
+  }
+  const irAnalysisIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'analysisIdentity')?.value;
+  const irIdentity = sourceEntries.find((entry) => entry.source === ir && entry.key === 'identity')?.value;
+  const irSourceIdentity = irAnalysisIdentity ?? irIdentity ?? null;
+  if (hasMalformedIdentityFields(source)
+      || hasMalformedIdentityFields(irSourceIdentity)) {
+    return { identity: null, valid: false, reason: 'analysis identity is malformed' };
+  }
+  const shape = irShape(ir);
+  if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
+  // `shape` is the acyclic plain projection assembled above. Use the same
+  // width-preserving typed serializer as canonical origins; malformed values
+  // fail closed instead of falling back to a lossy alternate representation.
+  let shapeDigest;
+  try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
+  catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
+  const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
+  const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
+  const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;
+  const semanticIrId = field(source, 'semanticIrId', 'semanticIRId') ?? field(ir, 'semanticIrId', 'semanticIRId')
+    ?? `semantic-ir:${stableDigest({ snapshotId, functionId, shapeDigest })}`;
+  const computedSsaDigest = ssaIdentityDigest(semanticIrId, shape.values);
+  if (computedSsaDigest == null) return { identity: null, valid: false, reason: 'canonical SSA identity is unavailable' };
+  const ssaId = field(source, 'ssaId') ?? field(ir, 'ssaId')
+    ?? `ssa:${computedSsaDigest}`;
+  const analyzerVersion = field(source, 'analyzerVersion', 'semanticSchemaVersion')
+    ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion') ?? 'phase8-analysis-v1';
+  const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });
+  if (!isValidatedAnalysisIdentity(identity)) return { identity: null, valid: false, reason: 'analysis identity fields are invalid' };
+  if (!sameKnownSourceFields(identity, source) || !sameKnownSourceFields(identity, irSourceIdentity)
+      || !sourceIsBoundToShape(source, identity, shapeDigest, shape)
+      || !sourceIsBoundToShape(irSourceIdentity, identity, shapeDigest, shape)) {
+    return { identity: null, valid: false, reason: 'analysis identity is stale for the Semantic IR' };
+  }
+  return { identity, valid: true, reason: null };
+}
+
+export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS, fastJsonTextDigest };
+, memo);
+    if (digests.semanticSource) shape.canonicalSemanticIrDigest = digests.semanticSource.digest;
     shape.entry = token(ir.entry);
     shape.originDigest = semanticDigest(ir.origin, memo, digests, '$.origin', true);
     shape.blocks = Array.isArray(ir.blocks)
