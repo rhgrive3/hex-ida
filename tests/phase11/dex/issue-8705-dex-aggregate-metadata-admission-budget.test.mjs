@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseDex, DEX_METADATA_ADMISSION_BUDGET } from '../../../js/managed/dex/parser.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 // #8705 — parseDex() charged nothing for aggregate metadata retention: an
 // ordinary unique-`method_ids` image (no aliasing, no contract violation)
@@ -65,7 +66,7 @@ function buildMethodIdsDex(n) {
   v.setUint32(32, pos, true); v.setUint32(36, 0x70, true); v.setUint32(40, 0x12345678, true);
   v.setUint32(52, maps[maps.length - 1][2], true);
   v.setUint32(104, pos - dataStart, true); v.setUint32(108, dataStart, true);
-  return data.slice(0, pos);
+  return applyDexIntegrity(data.slice(0, pos));
 }
 
 // The budget must reject this shape, and the default must sit far below the
@@ -113,7 +114,7 @@ assert.deepEqual(legit.classes, []);
   const v = new DataView(bytes.buffer);
   const nameOff = v.getUint32(v.getUint32(60, true) + 2 * 4, true);
   bytes[nameOff + 1] = 0xff; // invalid lead byte inside the first name string
-  assert.throws(() => parseDex(bytes, { binaryId: 'issue-8705-mutf8' }),
+  assert.throws(() => parseDex(applyDexIntegrity(bytes), { binaryId: 'issue-8705-mutf8' }),
     (error) => error.message === 'dex-malformed-string-data');
 }
 
@@ -124,7 +125,7 @@ assert.deepEqual(legit.classes, []);
   const v = new DataView(bytes.buffer);
   const stringIdsOff = v.getUint32(60, true);
   v.setUint32(stringIdsOff + 3 * 4, v.getUint32(stringIdsOff + 2 * 4, true), true);
-  assert.throws(() => parseDex(bytes, { binaryId: 'issue-8705-alias' }),
+  assert.throws(() => parseDex(applyDexIntegrity(bytes), { binaryId: 'issue-8705-alias' }),
     (error) => error.message === 'dex-string-ids-order-invalid');
 }
 
