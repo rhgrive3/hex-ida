@@ -5,6 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { runProductionDeploy } from '../scripts/deploy-production.mjs';
 
+function stableLeafMatches(target, original) {
+  return target === original
+    || (String(target).startsWith('/proc/self/fd/') && path.basename(String(target)) === path.basename(original));
+}
+
 function createFixture(prefix = 'deploy-9521-') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const distDir = path.join(root, 'dist');
@@ -56,7 +61,7 @@ test('issue #9521: regular file replaced by absolute external symlink between en
         configPath: path.join(root, 'wrangler.jsonc'),
         run,
         lstatSync(target, opts) {
-          if (target === assetFile && !replaced) {
+          if (stableLeafMatches(target, assetFile) && !replaced) {
             replaced = true;
             fs.unlinkSync(assetFile);
             fs.symlinkSync(secretPath, assetFile);
@@ -108,7 +113,7 @@ test('issue #9521: regular file replaced by relative escaping symlink between en
         configPath: path.join(root, 'wrangler.jsonc'),
         run,
         lstatSync(target, opts) {
-          if (target === assetFile && !replaced) {
+          if (stableLeafMatches(target, assetFile) && !replaced) {
             replaced = true;
             fs.unlinkSync(assetFile);
             fs.symlinkSync(relTarget, assetFile);
@@ -159,7 +164,7 @@ test('issue #9521: regular file replaced by different regular inode between enum
         configPath: path.join(root, 'wrangler.jsonc'),
         run,
         openSync(target, flags, mode) {
-          if (target === assetFile && !replaced) {
+          if (stableLeafMatches(target, assetFile) && !replaced) {
             replaced = true;
             // Atomic replacement by rename of existing file to guarantee different inode
             fs.renameSync(otherFile, assetFile);
@@ -209,7 +214,7 @@ test('issue #9521: nested directory swapped for symlink fails closed', async () 
         configPath: path.join(root, 'wrangler.jsonc'),
         run,
         lstatSync(target, opts) {
-          if (target === subDir && !swapped) {
+          if (stableLeafMatches(target, subDir) && !swapped) {
             swapped = true;
             fs.rmSync(subDir, { recursive: true, force: true });
             fs.symlinkSync(outsideDir, subDir, 'dir');
