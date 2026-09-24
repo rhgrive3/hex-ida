@@ -15,7 +15,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const frozen = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/phase5/corpus/manifest.json'), 'utf8'));
 const categoryMap = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/phase5/verification/manifests/p5-6-category-map.json'), 'utf8'));
 
-function platformFor(target) { return target === 'microsoft-x64-pe' ? 'windows' : 'linux'; }
+function platformFor(target, analysisAbiId) {
+  if (analysisAbiId === 'microsoft-x64') return 'windows';
+  if (analysisAbiId === 'sysv-amd64') return 'linux';
+  return target === 'microsoft-x64-pe' ? 'windows' : 'linux';
+}
 function defaultAbiFor(target) { return target === 'microsoft-x64-pe' ? 'microsoft-x64' : 'sysv-amd64'; }
 function targetId(target) { return typeof target === 'string' ? target : target.id; }
 
@@ -157,7 +161,7 @@ test('P5-6 mandatory 144-tuple compiler corpus traverses the full x86 semantic p
           const binaryId = createBinaryIdFromDigest(fixture.sha256);
           const sliceId = createSliceId({ binaryId, index:0, architecture:'x86_64' });
           const analysisAbiId = mapping.analysisAbiId || defaultAbiFor(fixture.target);
-          const analysis = analyzeDecodedSemanticFunction({ architecture:'x86_64', platform:platformFor(fixture.target), abiId:analysisAbiId, binaryId, sliceId, decoderSemanticVersion:normalized[0].decoderSemanticVersion, instructions:normalized, name:mapping.symbol, completeness:'complete' });
+          const analysis = analyzeDecodedSemanticFunction({ architecture:'x86_64', platform:platformFor(fixture.target, analysisAbiId), abiId:analysisAbiId, binaryId, sliceId, decoderSemanticVersion:normalized[0].decoderSemanticVersion, instructions:normalized, name:mapping.symbol, completeness:'complete' });
           const counts = completenessCounts(analysis.pipeline.machineEffects);
           row.completeness = counts;
           row.pipelineStatus = 'executed';

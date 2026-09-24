@@ -42,7 +42,7 @@ test('extended system ownership never invents exact memory, control, or flag rol
   const bundles = [
     effects('movdiri',[mem(32,{access:'write'}),reg('ecx','read')],{instructionId:'p5-3:movdiri-owner'}),
     effects('xbegin',[],{instructionId:'p5-3:xbegin-owner'}),
-    effects('rdrand',[reg('rax','write')],{instructionId:'p5-3:rdrand-owner'}),
+    effects('pconfig',[],{instructionId:'p5-3:pconfig-owner'}),
   ];
   for (const bundle of bundles) {
     assert.equal(bundle.completeness,'partial');
