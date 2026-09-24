@@ -11,6 +11,24 @@ function entryIdentity(entry) {
   return Object.freeze({ dev:String(entry.dev), ino:String(entry.ino) });
 }
 
+function entrySnapshot(entry) {
+  return Object.freeze({
+    ...entryIdentity(entry),
+    size:String(entry.size),
+    mtimeMs:entry.mtimeMs == null ? null : Number(entry.mtimeMs),
+    ctimeMs:entry.ctimeMs == null ? null : Number(entry.ctimeMs),
+  });
+}
+
+function sameEntrySnapshot(entry, expected) {
+  return Boolean(expected)
+    && String(entry.dev) === String(expected.dev)
+    && String(entry.ino) === String(expected.ino)
+    && String(entry.size) === String(expected.size)
+    && (expected.mtimeMs == null || Number(entry.mtimeMs) === expected.mtimeMs)
+    && (expected.ctimeMs == null || Number(entry.ctimeMs) === expected.ctimeMs);
+}
+
 function sameEntryIdentity(entry, expected, { directory = false } = {}) {
   if (entry.isSymbolicLink()) return false;
   if (directory ? !entry.isDirectory() : !entry.isFile()) return false;
@@ -95,8 +113,17 @@ async function stageFile(file, content, io, guard = async () => {}) {
     await handle.close(); handle = null;
     await guard();
     if (!(await io.readFile(temporary)).equals(bytes)) throw new Error(`userscript-publication-readback:${file}`);
+    const verifiedEntry = await io.lstat(temporary);
+    if (!sameEntryIdentity(verifiedEntry, temporaryIdentity)) {
+      throw new Error(`userscript-publication-stage-identity-changed:${temporary}`);
+    }
+    const snapshot = entrySnapshot(verifiedEntry);
+    // Bind the returned snapshot to the bytes, not just to a pathname stat.
+    if (!(await io.readFile(temporary)).equals(bytes)) throw new Error(`userscript-publication-stage-contents-changed:${temporary}`);
+    const verifiedAgain = await io.lstat(temporary);
+    if (!sameEntrySnapshot(verifiedAgain, snapshot)) throw new Error(`userscript-publication-stage-contents-changed:${temporary}`);
     await guard();
-    return { path:temporary, identity:temporaryIdentity };
+    return { path:temporary, identity:temporaryIdentity, snapshot, bytes };
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     if (temporaryIdentity) await unlinkIfSame(temporary, temporaryIdentity, io).catch(() => {});
@@ -122,14 +149,20 @@ async function assertRegularPublicationInput(file, expected, io, guard = async (
   await guard();
 }
 
-async function assertStageIdentity(stagePath, expectedIdentity, io, guard = async () => {}) {
+async function assertStageIdentity(stagePath, expectedIdentity, expectedSnapshot, expectedBytes, io, guard = async () => {}) {
   await guard();
-  const stat = await io.lstat(stagePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`userscript-publication-non-regular-stage:${stagePath}`);
-  const currentIdentity = entryIdentity(stat);
+  const before = await io.lstat(stagePath);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error(`userscript-publication-non-regular-stage:${stagePath}`);
+  const currentIdentity = entryIdentity(before);
   if (!currentIdentity || String(currentIdentity.dev) !== String(expectedIdentity.dev) || String(currentIdentity.ino) !== String(expectedIdentity.ino)) {
     throw new Error(`userscript-publication-stage-identity-changed:${stagePath}`);
   }
+  if (!sameEntrySnapshot(before, expectedSnapshot)) throw new Error(`userscript-publication-stage-contents-changed:${stagePath}`);
+  await guard();
+  if (!(await io.readFile(stagePath)).equals(expectedBytes)) throw new Error(`userscript-publication-stage-contents-changed:${stagePath}`);
+  await guard();
+  const after = await io.lstat(stagePath);
+  if (!sameEntrySnapshot(after, expectedSnapshot)) throw new Error(`userscript-publication-stage-contents-changed:${stagePath}`);
   await guard();
 }
 
@@ -161,7 +194,7 @@ export async function writeFileVerified(file, content, { io = fs, containmentRoo
   const staged = await stageFile(file, content, io, guard);
   try {
     await guard();
-    await assertStageIdentity(staged.path, staged.identity, io, guard);
+    await assertStageIdentity(staged.path, staged.identity, staged.snapshot, staged.bytes, io, guard);
     await io.rename(staged.path, file);
     await guard();
     await syncDirectory(directory, io, guard);
@@ -204,6 +237,8 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
         backupIdentity:null,
         temporary:null,
         temporaryIdentity:null,
+        temporarySnapshot:null,
+        temporaryBytes:null,
         backedUp:false,
         published:false,
       };
@@ -211,6 +246,8 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
       const staged = await stageFile(file, entry.content, io, guard);
       record.temporary = staged.path;
       record.temporaryIdentity = staged.identity;
+      record.temporarySnapshot = staged.snapshot;
+      record.temporaryBytes = staged.bytes;
       await guard();
       await io.link(file, record.backup);
       // The filesystem mutation has happened. Record that fact before the
@@ -226,10 +263,12 @@ export async function publishUserscriptFiles(entries, { io = fs, containmentRoot
     for (const [index, record] of records.entries()) {
       await assertRegularPublicationInput(record.file, entries[index].expected, io, guard);
       await guard();
-      await assertStageIdentity(record.temporary, record.temporaryIdentity, io, guard);
+      await assertStageIdentity(record.temporary, record.temporaryIdentity, record.temporarySnapshot, record.temporaryBytes, io, guard);
       await io.rename(record.temporary, record.file);
       record.temporary = null;
       record.temporaryIdentity = null;
+      record.temporarySnapshot = null;
+      record.temporaryBytes = null;
       record.published = true;
       await guard();
     }

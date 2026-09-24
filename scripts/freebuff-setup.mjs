@@ -130,11 +130,23 @@ export function ensureSafeDirectory(root, target, { fsImpl = fs } = {}) {
 }
 
 function sameDirectoryIdentity(a, b) {
-  return Boolean(a && b && a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isDirectory() && b.isDirectory() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
 }
 
 function sameFileIdentity(a, b) {
-  return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isFile() && b.isFile() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
+}
+
+function sameLeafSnapshot(a, b) {
+  if (!a || !b) return false;
+  if (String(a.dev) !== String(b.dev) || String(a.ino) !== String(b.ino)) return false;
+  if (String(a.mode) !== String(b.mode) || String(a.size) !== String(b.size)) return false;
+  const sameTime = (nsKey, msKey) => {
+    if (a[nsKey] != null && b[nsKey] != null) return String(a[nsKey]) === String(b[nsKey]);
+    if (a[msKey] != null && b[msKey] != null) return Number(a[msKey]) === Number(b[msKey]);
+    return true;
+  };
+  return sameTime('mtimeNs', 'mtimeMs') && sameTime('ctimeNs', 'ctimeMs');
 }
 
 function statFileSnapshot(fsImpl, fd) {
@@ -440,12 +452,14 @@ export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs, co
   const staged = path.join(parentPath, `.${base}.link-${token}`);
   const backup = path.join(parentPath, `.${base}.backup-${token}`);
   let backedUp = false;
+  let backupSnapshot = null;
   let published = false;
   try {
     fsImpl.symlinkSync(target, staged);
     try {
       fsImpl.lstatSync(actualLinkPath);
       fsImpl.renameSync(actualLinkPath, backup);
+      backupSnapshot = fsImpl.lstatSync(backup, { bigint: true });
       backedUp = true;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -455,7 +469,15 @@ export function replaceWithSymlinkAtomically(linkPath, target, { fsImpl = fs, co
       published = true;
     } catch (error) {
       if (backedUp) {
-        try { fsImpl.renameSync(backup, actualLinkPath); } catch (restoreError) { error.cause = restoreError; }
+        try {
+          const currentBackup = fsImpl.lstatSync(backup, { bigint: true });
+          if (!sameLeafSnapshot(backupSnapshot, currentBackup)) {
+            const restoreError = new Error(`freebuff setup: backup identity changed before rollback: ${linkPath}`);
+            restoreError.code = 'FREEBUFF_BACKUP_IDENTITY_CHANGED';
+            throw restoreError;
+          }
+          fsImpl.renameSync(backup, actualLinkPath);
+        } catch (restoreError) { error.cause = restoreError; }
       }
       throw error;
     }

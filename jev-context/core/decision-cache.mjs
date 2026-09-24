@@ -23,7 +23,9 @@ const MAX_ENTRIES = 20000;
 export function createDecisionCache(options = {}) {
   const filePath = options.path;
   const policyVersion = options.policyVersion || "";
-  const maxEntries = options.maxEntries || MAX_ENTRIES;
+  const maxEntries = Number.isInteger(options.maxEntries) && options.maxEntries > 0
+    ? options.maxEntries
+    : MAX_ENTRIES;
 
   let entries = new Map();
   let loaded = false;
