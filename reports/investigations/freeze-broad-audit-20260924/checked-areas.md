@@ -1,6 +1,9 @@
 # Checked areas — freeze broad audit (2026-09-24)
 
-Repo: `rhgrive3/hex-ida`. Base: `main` @ `a5fd5618e`.
+Repo: `rhgrive3/hex-ida`. Reviewed tree: `main` @ `9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36`.
+This is the exact PR base commit for #9566; all conclusions below are bounded
+to that pinned tree.
+
 Audit-only: no production code was modified. Standard: every finding must show
 entry point → exact code path → violated invariant → minimal counterexample →
 user-visible impact → severity (Critical/Major only) → why existing tests miss it.
