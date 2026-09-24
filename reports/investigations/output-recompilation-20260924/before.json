@@ -1,12 +1,53 @@
 {
-  "cases": 8,
-  "functions": 530,
-  "functionsWithGoto": 131,
-  "totalGoto": 747,
-  "unknownInstructionFunctions": 21,
-  "unstructured": 147,
-  "structured": 383,
-  "rawRecompilation": {
+  "schema": "hex-output-recompilation-measurement/v1",
+  "stage": "before",
+  "baseline": {
+    "headSha": "7dc72cc2ae3a69c129d6a0755d34e5ec5ab4df02",
+    "sourceIdentity": "e51565aaf4286c3aac907c88d052a88abec3a0a1797c290cb887c05eff646f14",
+    "configHash": "a2a74cb06d960b1ca313abf4ddf90d8bc6f9bc9436eddeb15762012104da6b20",
+    "measurementHarnessHash": "e8added3398eee6d47636177c8762ebfe3db4d04594b502933cde5a008865881",
+    "createdAt": "2026-09-24T09:21:05.990Z"
+  },
+  "selection": {
+    "caseIds": [
+      "1/1_gcc_O1_g",
+      "2/2_gcc_O1_g",
+      "3/3_gcc_O1_g",
+      "4/4_gcc_O1_g",
+      "5-1/5-1_gcc_O1_g",
+      "5-23/5-23_gcc_O1_g",
+      "6/6_gcc_O1_g",
+      "7/7_gcc_O1_g"
+    ],
+    "group": "one case per group",
+    "configuration": "gcc_O1_g",
+    "structure": "none"
+  },
+  "denominator": {
+    "cases": 8,
+    "functions": 530,
+    "measuredCases": 8,
+    "timedOutFunctions": 5,
+    "completedFunctions": 525
+  },
+  "functions": {
+    "functionsWithGoto": 126,
+    "totalObservedGotos": 269,
+    "gotoObservationDenominator": 525,
+    "structureModes": {
+      "structured": 383,
+      "linear": 142,
+      "unknown": 5
+    },
+    "unknownInstructionFunctions": 19,
+    "unknownInstructionInstances": 40,
+    "unknownInstructionObservation": {
+      "observed": 410,
+      "missing": 120
+    }
+  },
+  "perFunctionSyntax": {
+    "sampledFunctions": 48,
     "caseStates": {
       "FAIL": 8
     },
@@ -19,33 +60,215 @@
       "unknown-type-name": 8,
       "undeclared-global": 8
     },
-    "diagnosticProbe": {
-      "description": "Diagnostic transformation declaring undeclared locals (local_*, var_*, local_p*) only; NOT a production fix",
-      "sampledFunctions": 48,
-      "syntaxPassed": 8,
-      "syntaxFailed": 40,
-      "nextFailureFamilies": {
-        "undeclared-identifier": 22,
-        "unknown-type-name": 8,
-        "undeclared-global": 10
+    "firstFailureSamples": [
+      {
+        "caseId": "1/1_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 740
+      },
+      {
+        "caseId": "2/2_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 516
+      },
+      {
+        "caseId": "3/3_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 653
+      },
+      {
+        "caseId": "4/4_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 400
+      },
+      {
+        "caseId": "5-1/5-1_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 369
+      },
+      {
+        "caseId": "5-23/5-23_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 313
+      },
+      {
+        "caseId": "6/6_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 1236
+      },
+      {
+        "caseId": "7/7_gcc_O1_g",
+        "family": "undeclared-local",
+        "message": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "errors": 285
       }
-    }
+    ]
   },
-  "tuReplay": {
+  "tuPackaging": {
+    "denominatorFunctions": 525,
     "caseStates": {
-      "FAIL": 1
+      "FAIL": 8
     },
     "rawCaseFamilies": {
-      "undeclared-local": 1
+      "undeclared-local": 8
     },
     "tuCaseFamilies": {
-      "undeclared-local": 1
+      "undeclared-local": 8
     },
+    "rescuedByPackager": 0,
     "unresolvedTotals": {
-      "pseudo-intrinsic": 4,
-      "unresolved-call-sentinel": 1,
-      "unresolved-global": 25,
-      "unresolved-prototype": 74
+      "pseudo-intrinsic": 14,
+      "unresolved-call-sentinel": 8,
+      "unresolved-global": 132,
+      "unresolved-prototype": 547
+    },
+    "cases": [
+      {
+        "caseId": "1/1_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 4,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 21,
+          "unresolved-prototype": 55
+        },
+        "prototypes": 19,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "2/2_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 17,
+          "unresolved-prototype": 48
+        },
+        "prototypes": 17,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "3/3_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 15,
+          "unresolved-prototype": 98
+        },
+        "prototypes": 28,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "4/4_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 13,
+          "unresolved-prototype": 51
+        },
+        "prototypes": 24,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "5-1/5-1_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 1,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 12,
+          "unresolved-prototype": 57
+        },
+        "prototypes": 17,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "5-23/5-23_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 1,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 14,
+          "unresolved-prototype": 40
+        },
+        "prototypes": 20,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "6/6_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 27,
+          "unresolved-prototype": 165
+        },
+        "prototypes": 51,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      },
+      {
+        "caseId": "7/7_gcc_O1_g",
+        "unresolved": {
+          "unresolved-call-sentinel": 1,
+          "unresolved-global": 13,
+          "unresolved-prototype": 33
+        },
+        "prototypes": 19,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-local",
+        "tuFirstFamily": "undeclared-local"
+      }
+    ]
+  },
+  "timeouts": [
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "address": "5852",
+      "name": null,
+      "reason": "function-watchdog-timeout-hard"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "5364",
+      "name": null,
+      "reason": "function-watchdog-timeout-hard"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "6176",
+      "name": null,
+      "reason": "function-watchdog-timeout-hard"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "9152",
+      "name": null,
+      "reason": "function-watchdog-timeout-hard"
+    },
+    {
+      "caseId": "3/3_gcc_O1_g",
+      "address": "7196",
+      "name": null,
+      "reason": "function-watchdog-timeout-hard"
     }
-  }
+  ],
+  "notes": [
+    "All five watchdog timeouts are retained in the denominator. Their names were not recorded in the pre-fix timeout receipts; case and address identify each timeout.",
+    "Unknown-instruction counts and structure modes cover completed functions only; timeout functions have no completed output."
+  ]
 }
