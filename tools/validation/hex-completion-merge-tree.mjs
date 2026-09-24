@@ -6,6 +6,19 @@ import { execFileSync } from 'node:child_process';
 import { loadManifest, validateInventory } from './hex-completion-ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+export const AGENT_WORK_ROOT = process.env.HEX_AGENT_WORK_ROOT
+  ? path.resolve(process.env.HEX_AGENT_WORK_ROOT)
+  : path.basename(process.env.TMPDIR || '') === 'scratch'
+    ? path.resolve(process.env.TMPDIR, '..')
+    : path.resolve(ROOT, '..', '.hex-agent-work');
+const TASK_ROOT = AGENT_WORK_ROOT;
+const WORKSPACE_ROOT = path.resolve(TASK_ROOT, '../..');
+const CANDIDATE_WORKTREES = path.join(TASK_ROOT, 'checkouts/hex-completion-20260924');
+const CANDIDATE_EVIDENCE = path.join(TASK_ROOT, 'evidence/hex-completion-20260924');
+const RELEASE_VERIFIER_COMMAND = Object.freeze([
+  'node', 'scripts/run-quiet-command.mjs', '--label', 'check', '--', 'npm', 'run', 'check',
+]);
+const RELEASE_VERIFIER_SCRIPT = 'scripts/run-quiet-command.mjs';
 
 export const CANONICAL_VERIFIER_SCRIPT = 'tools/validation/stage2/verify.mjs';
 
@@ -74,7 +87,9 @@ export function computeMergeTree(baseSha, headSha, cwd = ROOT) {
       return { success: true, treeSha: baseTree, error: null };
     }
 
-    const tmpIndex = getGitPath(`temp-merge-index-${Date.now()}-${Math.random().toString(36).slice(2)}`, cwd);
+    const indexScratch = path.join(TASK_ROOT, 'scratch/hex-completion-20260924/governance');
+    fs.mkdirSync(indexScratch, { recursive: true });
+    const tmpIndex = path.join(indexScratch, `merge-index-${crypto.randomUUID()}`);
     try {
       const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
       execFileSync('git', ['read-tree', '-m', mergeBase, baseCommit, headCommit], { cwd, env, stdio: 'ignore' });
@@ -136,6 +151,33 @@ export function hashFile(filePath) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+function hashGitBlob(commitSha, filePath, cwd) {
+  try {
+    const content = execFileSync('git', ['show', `${commitSha}:${filePath}`], {
+      cwd, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function underDirectory(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function requirePersistentPath(parent, candidate, label) {
+  const resolvedParent = fs.realpathSync(parent);
+  const absolute = path.resolve(candidate);
+  if (!underDirectory(resolvedParent, absolute)) throw new Error(`${label} must be inside ${resolvedParent}`);
+  const existingParent = fs.realpathSync(path.dirname(absolute));
+  if (!underDirectory(resolvedParent, existingParent) && existingParent !== resolvedParent) {
+    throw new Error(`${label} parent resolves outside ${resolvedParent}`);
+  }
+  return absolute;
+}
+
 /**
  * Resolves trusted verifier identity and content hash from path or defaults.
  */
@@ -149,7 +191,8 @@ export function resolveTrustedVerifier(scriptPath = CANONICAL_VERIFIER_SCRIPT, c
 }
 
 /**
- * Validates shadow evidence file for the candidate merge.
+ * Checks the receipt schema only. This function does not attest execution;
+ * verifyCandidateMergeTree invokes the fixed candidate check before using it.
  * Release validation MANDATES:
  *  - trustedVerifierIdentity and trustedVerifierHash must be explicitly provided
  *  - Verifier identity & hash must strictly match
@@ -325,8 +368,14 @@ export function verifyRemoteRef({
   cwd = ROOT,
   fetchFirst = false,
 }) {
+  const branch = String(ref || '').replace(/^refs\/heads\//, '');
+  if (!branch || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes('..') || branch.includes('//')
+      || branch.startsWith('/') || branch.endsWith('/')) {
+    return { valid: false, remoteSha: null, reason: 'INVALID_REMOTE_REF', detail: `Invalid branch ref: ${ref}` };
+  }
+  const fullRef = `refs/heads/${branch}`;
   if (fetchFirst) {
-    const fetchRes = runGit(['fetch', '--no-tags', remote, ref], cwd);
+    const fetchRes = runGit(['fetch', '--no-tags', remote, fullRef], cwd);
     if (fetchRes.status !== 0) {
       return {
         valid: false,
@@ -338,7 +387,7 @@ export function verifyRemoteRef({
   }
 
   // Mandatory remote query
-  const lsRemote = runGit(['ls-remote', remote, ref], cwd);
+  const lsRemote = runGit(['ls-remote', '--heads', remote, fullRef], cwd);
   if (lsRemote.status !== 0) {
     return {
       valid: false,
@@ -357,7 +406,8 @@ export function verifyRemoteRef({
     };
   }
 
-  const match = lsRemote.stdout.split(/\s+/)[0];
+  const rows = lsRemote.stdout.split('\n').map((row) => row.trim().split(/\s+/));
+  const match = rows.length === 1 && rows[0][1] === fullRef ? rows[0][0] : null;
   if (!match || !/^[0-9a-f]{40}$/i.test(match)) {
     return {
       valid: false,
@@ -384,7 +434,9 @@ export function verifyRemoteRef({
 }
 
 /**
- * Full exact-SHA candidate merge-tree verification.
+ * Exact-SHA candidate merge-tree and rolling repository check verification.
+ * PASS here is limited to this gate; real-binary and independent-oracle
+ * release evidence is recorded and checked by the integration checkpoint.
  * Follows docs/ENGINEERING_PROCESS_GUARDRAILS.md §3.3 & §7:
  * Release requirements:
  * 1. Remote check is mandatory for release PASS. If remoteCheck is skipped, verdict is DIAGNOSTIC_PASS_NOT_RELEASE_ELIGIBLE.
@@ -422,6 +474,18 @@ export function verifyCandidateMergeTree({
 
   // For release, remote check and all refs are strictly required
   if (requireRemoteCheck) {
+    for (const [label, sha] of [['base', baseSha], ['head', headSha],
+      ['expected-base', expectedBaseSha], ['expected-head', expectedHeadSha]]) {
+      if (!/^[0-9a-f]{40}$/i.test(String(sha || ''))) {
+        errors.push({ code: 'NON_EXACT_RELEASE_SHA', message: `Release requires a full ${label} SHA` });
+      }
+    }
+    if (trustedVerifierIdentity != null || trustedVerifierHash != null) {
+      errors.push({ code: 'CALLER_SUPPLIED_VERIFIER_AUTHORITY', message: 'Release verifier identity and hash are derived from the executed candidate script' });
+    }
+    if (!/^[0-9a-f]{40}$/i.test(String(expectedMainSha || ''))) {
+      errors.push({ code: 'MISSING_EXPECTED_MAIN_SHA', message: 'Release verification requires exact --expected-main SHA' });
+    }
     if (!integrationRef) {
       errors.push({
         code: 'MISSING_INTEGRATION_REF',
@@ -599,20 +663,41 @@ export function verifyCandidateMergeTree({
         code: 'MISSING_SHADOW_EVIDENCE',
         message: 'No shadow evidence path provided and requireShadowEvidence is true',
       });
-    } else if (actualCandidateCommit && candidateTreeSha) {
-      shadowResult = validateShadowEvidence({
-        evidencePath: shadowEvidencePath,
-        expectedCandidateCommit: actualCandidateCommit,
-        expectedCandidateTree: candidateTreeSha,
-        trustedVerifierIdentity,
-        trustedVerifierHash,
-      });
-      if (!shadowResult.valid) {
-        errors.push({
-          code: shadowResult.reason,
-          message: shadowResult.detail,
+    } else if (actualCandidateCommit && candidateTreeSha && errors.length === 0 && requireRemoteCheck) {
+      // A JSON file supplied by the caller is not proof that a verifier ran.
+      // Execute the fixed gate on the detached candidate in this process.
+      try {
+        if (fs.existsSync(shadowEvidencePath)) throw new Error('shadow evidence path already exists');
+        const approvedVerifierHash = hashGitBlob(baseSha, RELEASE_VERIFIER_SCRIPT, repoDir);
+        if (!approvedVerifierHash) throw new Error('approved verifier script absent from integration base');
+        const basePackageHash = hashGitBlob(baseSha, 'package.json', repoDir);
+        const candidatePackageHash = hashGitBlob(actualCandidateCommit, 'package.json', repoDir);
+        if (!basePackageHash || candidatePackageHash !== basePackageHash) {
+          throw new Error('candidate check command differs from approved integration base');
+        }
+        const run = runCandidateVerifier({
+          candidateCommitSha: actualCandidateCommit,
+          verifierCommand: RELEASE_VERIFIER_COMMAND,
+          outputReportPath: shadowEvidencePath,
+          repoDir,
+          verifierIdentity: RELEASE_VERIFIER_SCRIPT,
+          corpus: 'repository-check-suite',
         });
+        if (run.status !== 'PASS') throw new Error(`candidate verifier exited ${run.results?.[0]?.exitCode}`);
+        if (run.verifierVersion !== approvedVerifierHash) throw new Error('candidate verifier script differs from approved integration base');
+        shadowResult = validateShadowEvidence({
+          evidencePath: shadowEvidencePath,
+          expectedCandidateCommit: actualCandidateCommit,
+          expectedCandidateTree: candidateTreeSha,
+          trustedVerifierIdentity: RELEASE_VERIFIER_SCRIPT,
+          trustedVerifierHash: approvedVerifierHash,
+        });
+        if (!shadowResult.valid) throw new Error(`${shadowResult.reason}: ${shadowResult.detail}`);
+      } catch (error) {
+        errors.push({ code: 'CANDIDATE_VERIFIER_FAILED', message: error.message });
       }
+    } else if (errors.length === 0) {
+      errors.push({ code: 'CANDIDATE_VERIFIER_NOT_RUN', message: 'Release verifier requires live remote checks first' });
     }
   }
 
@@ -674,13 +759,21 @@ export function runCandidateVerifier({
   outputReportPath = null,
   worktreeDir = null,
   repoDir = ROOT,
-  oracle = 'hex-independent-runner',
-  corpus = 'production-corpus',
+  oracle = 'candidate-command-exit-status',
+  corpus = 'caller-command',
   toolchain = 'node-' + process.version,
   verifierIdentity = 'candidate-verifier/runner',
 }) {
-  const scratchDir = worktreeDir || path.join(getGitPath('scratch-candidate-wt', repoDir), `cand-${Date.now()}`);
-  fs.mkdirSync(path.dirname(scratchDir), { recursive: true });
+  if (!/^[0-9a-f]{40}$/i.test(String(candidateCommitSha || ''))) throw new Error('candidate commit must be a full SHA');
+  fs.mkdirSync(CANDIDATE_WORKTREES, { recursive: true });
+  if (outputReportPath != null) fs.mkdirSync(CANDIDATE_EVIDENCE, { recursive: true });
+  const scratchDir = requirePersistentPath(CANDIDATE_WORKTREES,
+    worktreeDir || path.join(CANDIDATE_WORKTREES, `candidate-${candidateCommitSha.slice(0, 12)}-${crypto.randomUUID()}`),
+    'candidate worktree');
+  if (fs.existsSync(scratchDir)) throw new Error('candidate worktree path already exists');
+  const reportPath = outputReportPath == null ? null
+    : requirePersistentPath(CANDIDATE_EVIDENCE, outputReportPath, 'candidate evidence');
+  if (reportPath && fs.existsSync(reportPath)) throw new Error('candidate evidence path already exists');
 
   const addWt = runGit(['worktree', 'add', '--detach', scratchDir, candidateCommitSha], repoDir);
   if (addWt.status !== 0) {
@@ -690,7 +783,20 @@ export function runCandidateVerifier({
   let testStatus = 0;
   let stdout = '';
   let stderr = '';
+  let verifierHash = null;
   try {
+    if (verifierCommand.join(' ') === RELEASE_VERIFIER_COMMAND.join(' ')) {
+      const sourceLock = path.join(repoDir, 'package-lock.json');
+      const candidateLock = path.join(scratchDir, 'package-lock.json');
+      if (hashFile(sourceLock) !== hashFile(candidateLock) || !hashFile(sourceLock)) {
+        throw new Error('candidate dependency lock differs from verifier checkout');
+      }
+      const dependencies = fs.realpathSync(path.join(repoDir, 'node_modules'));
+      if (!underDirectory(WORKSPACE_ROOT, dependencies)) throw new Error('dependencies resolve outside persistent workspace');
+      fs.symlinkSync(dependencies, path.join(scratchDir, 'node_modules'), 'dir');
+      verifierHash = hashFile(path.join(scratchDir, RELEASE_VERIFIER_SCRIPT));
+      if (!verifierHash) throw new Error('candidate verifier script is missing');
+    }
     const [cmd, ...args] = verifierCommand;
     stdout = execFileSync(cmd, args, { cwd: scratchDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
@@ -698,14 +804,19 @@ export function runCandidateVerifier({
     stdout = (err.stdout ?? '').toString();
     stderr = (err.stderr ?? '').toString();
   } finally {
-    runGit(['worktree', 'remove', '--force', scratchDir], repoDir);
+    const remove = runGit(['worktree', 'remove', '--force', scratchDir], repoDir);
+    if (remove.status !== 0) {
+      testStatus = 1;
+      stderr += `\nCandidate worktree cleanup failed: ${remove.stderr || remove.stdout}`;
+    }
   }
 
-  const verifierHash = crypto.createHash('sha256').update(String(verifierCommand.join(' '))).digest('hex');
+  verifierHash ||= crypto.createHash('sha256').update(String(verifierCommand.join(' '))).digest('hex');
   const treeSha = runGit(['rev-parse', `${candidateCommitSha}^{tree}`], repoDir).stdout;
 
   const evidence = {
-    schemaVersion: 'hex-shadow-evidence/v2',
+    schemaVersion: 'hex-candidate-check/v1',
+    proofScope: 'candidate-rolling-repository-check',
     verifier: verifierIdentity,
     verifierVersion: verifierHash,
     oracle,
@@ -726,9 +837,13 @@ export function runCandidateVerifier({
     timestamp: new Date().toISOString(),
   };
 
-  if (outputReportPath) {
-    fs.mkdirSync(path.dirname(outputReportPath), { recursive: true });
-    fs.writeFileSync(outputReportPath, JSON.stringify(evidence, null, 2) + '\n');
+  if (reportPath) {
+    const destination = testStatus === 0 ? reportPath : `${reportPath}.failed.log`;
+    if (fs.existsSync(destination) || fs.existsSync(`${destination}.next`)) throw new Error('candidate evidence destination already exists');
+    const content = testStatus === 0 ? JSON.stringify(evidence, null, 2) + '\n'
+      : `exit=${testStatus}\n${stdout}\n${stderr}\n`;
+    fs.writeFileSync(`${destination}.next`, content);
+    fs.renameSync(`${destination}.next`, destination);
   }
 
   return evidence;

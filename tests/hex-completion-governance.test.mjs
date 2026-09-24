@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 import {
   loadManifest,
@@ -22,10 +23,13 @@ import {
   runCandidateVerifier,
   getGitPath,
   resolveTrustedVerifier,
+  AGENT_WORK_ROOT,
 } from '../tools/validation/hex-completion-merge-tree.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TEMP_DIR = path.join(ROOT, 'tmp-governance-test-' + Date.now());
+const TASK_SCRATCH = path.join(AGENT_WORK_ROOT, 'scratch/hex-completion-20260924/governance-tests');
+fs.mkdirSync(TASK_SCRATCH, { recursive: true });
+const TEMP_DIR = path.join(TASK_SCRATCH, 'shadow-' + Date.now());
 
 function runGit(args, cwd = ROOT) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -327,6 +331,10 @@ test('remote verification fails closed on nonexistent or unreachable remote and 
   assert.equal(badRemote.remoteSha, null);
   assert.equal(badRemote.reason, 'REMOTE_UNREACHABLE');
 
+  const unsafeRef = verifyRemoteRef({ ref: '--upload-pack=forged', remote: 'origin', cwd: ROOT });
+  assert.equal(unsafeRef.valid, false);
+  assert.equal(unsafeRef.reason, 'INVALID_REMOTE_REF');
+
   // 2. Omitted integration-ref or component-ref in verifyCandidateMergeTree
   const manifest = loadManifest();
   const omittedRefs = verifyCandidateMergeTree({
@@ -352,7 +360,7 @@ test('linked worktree getGitPath resolves safely and candidate worktree synthesi
 });
 
 test('real diverged local Git remote, moving ref, and detached candidate execution test', () => {
-  const sandbox = path.join(ROOT, 'tmp-git-sandbox-' + Date.now());
+  const sandbox = path.join(TASK_SCRATCH, 'git-' + Date.now());
   fs.mkdirSync(sandbox, { recursive: true });
 
   const originDir = path.join(sandbox, 'origin.git');
@@ -422,6 +430,43 @@ test('real diverged local Git remote, moving ref, and detached candidate executi
     runGit(['push', 'origin', 'integration'], repoDir);
     const reconciledIntegrationSha = runGit(['rev-parse', 'HEAD'], repoDir);
 
+    // A complete-looking JSON receipt with caller-selected verifier identity
+    // cannot stand in for a verifier invocation on the candidate commit.
+    const forgedReleasePath = path.join(sandbox, 'forged-release.json');
+    fs.writeFileSync(forgedReleasePath, JSON.stringify({
+      verifier: 'scripts/run-quiet-command.mjs', verifierVersion: 'forged',
+      oracle: 'forged', corpus: 'forged', toolchain: 'forged',
+      candidateCommitSha: 'a'.repeat(40), candidateTreeSha: 'b'.repeat(40),
+      results: [{ id: 'npm run check', status: 'PASS' }], verdict: 'PASS',
+    }));
+    const forgedRelease = verifyCandidateMergeTree({
+      lane: 'integration', baseSha: reconciledIntegrationSha,
+      expectedBaseSha: reconciledIntegrationSha,
+      headSha: reconciledIntegrationSha, expectedHeadSha: reconciledIntegrationSha,
+      requireRemoteCheck: true, remoteName: 'origin', mainRef: 'main',
+      integrationRef: 'integration', componentRef: 'integration',
+      expectedMainSha: advancedMainSha, requireShadowEvidence: true,
+      shadowEvidencePath: forgedReleasePath,
+      trustedVerifierIdentity: 'scripts/run-quiet-command.mjs',
+      trustedVerifierHash: 'forged', repoDir, manifest,
+    });
+    assert.equal(forgedRelease.valid, false);
+    assert.equal(forgedRelease.verdict, 'BLOCKING');
+    assert.ok(forgedRelease.errors.some((error) => error.code === 'CALLER_SUPPLIED_VERIFIER_AUTHORITY'));
+
+    const outsideEvidence = verifyCandidateMergeTree({
+      lane: 'integration', baseSha: reconciledIntegrationSha,
+      expectedBaseSha: reconciledIntegrationSha,
+      headSha: reconciledIntegrationSha, expectedHeadSha: reconciledIntegrationSha,
+      requireRemoteCheck: true, remoteName: 'origin', mainRef: 'main',
+      integrationRef: 'integration', componentRef: 'integration',
+      expectedMainSha: advancedMainSha, requireShadowEvidence: true,
+      shadowEvidencePath: path.join(sandbox, 'nonexistent-release.json'),
+      repoDir, manifest,
+    });
+    assert.equal(outsideEvidence.valid, false);
+    assert.ok(outsideEvidence.errors.some((error) => error.code === 'CANDIDATE_VERIFIER_FAILED'));
+
     // 8. Prepare candidate commit & tree
     const prep = prepareCandidate({
       lane: 'jev',
@@ -433,11 +478,9 @@ test('real diverged local Git remote, moving ref, and detached candidate executi
     assert.ok(prep.candidateTreeSha);
 
     // 9. Execute real candidate verifier in detached worktree
-    const reportPath = path.join(sandbox, 'candidate-report.json');
     const executedEvidence = runCandidateVerifier({
       candidateCommitSha: prep.candidateCommitSha,
       verifierCommand: ['git', 'status'], // reliable local command to prove execution
-      outputReportPath: reportPath,
       repoDir,
       verifierIdentity: 'tools/validation/stage2/verify.mjs',
     });
@@ -446,6 +489,78 @@ test('real diverged local Git remote, moving ref, and detached candidate executi
     assert.equal(executedEvidence.candidateCommitSha, prep.candidateCommitSha);
     assert.equal(executedEvidence.candidateTreeSha, prep.candidateTreeSha);
 
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('release candidate gate runs the fixed check on the detached candidate', () => {
+  const sandbox = fs.mkdtempSync(path.join(TASK_SCRATCH, 'release-positive-'));
+  const originDir = path.join(sandbox, 'origin.git');
+  const repoDir = path.join(sandbox, 'repo');
+  const reportPath = path.join(AGENT_WORK_ROOT, 'evidence/hex-completion-20260924',
+    `governance-release-positive-${randomUUID()}.json`);
+  try {
+    runGit(['init', '--bare', originDir]);
+    runGit(['clone', originDir, repoDir]);
+    fs.mkdirSync(path.join(repoDir, 'scripts'));
+    fs.mkdirSync(path.join(repoDir, 'node_modules'));
+    fs.copyFileSync(path.join(ROOT, 'scripts/run-quiet-command.mjs'),
+      path.join(repoDir, 'scripts/run-quiet-command.mjs'));
+    fs.writeFileSync(path.join(repoDir, 'package.json'), JSON.stringify({
+      name: 'candidate-gate-fixture', version: '1.0.0',
+      scripts: { check: 'node -p 1' },
+    }) + '\n');
+    fs.writeFileSync(path.join(repoDir, 'package-lock.json'), JSON.stringify({
+      name: 'candidate-gate-fixture', version: '1.0.0', lockfileVersion: 3,
+      requires: true, packages: { '': { name: 'candidate-gate-fixture', version: '1.0.0' } },
+    }) + '\n');
+    runGit(['add', 'scripts', 'package.json', 'package-lock.json'], repoDir);
+    runGit(['-c', 'user.name=test', '-c', 'user.email=test@test.local', 'commit', '-m', 'fixture'], repoDir);
+    runGit(['branch', '-M', 'main'], repoDir);
+    runGit(['push', 'origin', 'main'], repoDir);
+    runGit(['push', 'origin', 'HEAD:integration'], repoDir);
+    const head = runGit(['rev-parse', 'HEAD'], repoDir);
+    const result = verifyCandidateMergeTree({
+      lane: 'integration', baseSha: head, expectedBaseSha: head,
+      headSha: head, expectedHeadSha: head,
+      requireRemoteCheck: true, remoteName: 'origin', mainRef: 'main',
+      integrationRef: 'integration', componentRef: 'integration',
+      expectedMainSha: head, requireShadowEvidence: true,
+      shadowEvidencePath: reportPath, repoDir, manifest: loadManifest(),
+    });
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(result.shadowResult.valid, true);
+    const receipt = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    assert.equal(receipt.candidateCommitSha, result.candidateCommitSha);
+    assert.equal(receipt.candidateTreeSha, result.candidateTreeSha);
+    assert.equal(receipt.results[0].id, 'node scripts/run-quiet-command.mjs --label check -- npm run check');
+
+    // A valid remote and candidate tree still block when the real check fails.
+    const packageFile = path.join(repoDir, 'package.json');
+    const failingPackage = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+    failingPackage.scripts.check = 'node -e "process.exit(1)"';
+    fs.writeFileSync(packageFile, JSON.stringify(failingPackage) + '\n');
+    runGit(['add', 'package.json'], repoDir);
+    runGit(['-c', 'user.name=test', '-c', 'user.email=test@test.local', 'commit', '-m', 'failing check'], repoDir);
+    runGit(['push', 'origin', 'HEAD:main', 'HEAD:integration'], repoDir);
+    const failingHead = runGit(['rev-parse', 'HEAD'], repoDir);
+    const failingReport = path.join(AGENT_WORK_ROOT, 'evidence/hex-completion-20260924',
+      `governance-release-failure-${randomUUID()}.json`);
+    const failed = verifyCandidateMergeTree({
+      lane: 'integration', baseSha: failingHead, expectedBaseSha: failingHead,
+      headSha: failingHead, expectedHeadSha: failingHead,
+      requireRemoteCheck: true, remoteName: 'origin', mainRef: 'main',
+      integrationRef: 'integration', componentRef: 'integration',
+      expectedMainSha: failingHead, requireShadowEvidence: true,
+      shadowEvidencePath: failingReport, repoDir, manifest: loadManifest(),
+    });
+    assert.equal(failed.valid, false);
+    assert.equal(failed.verdict, 'BLOCKING');
+    assert.ok(failed.errors.some((error) => error.code === 'CANDIDATE_VERIFIER_FAILED'));
+    assert.equal(fs.existsSync(failingReport), false, 'failed producer cannot publish PASS evidence');
+    assert.equal(fs.existsSync(`${failingReport}.failed.log`), true);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
