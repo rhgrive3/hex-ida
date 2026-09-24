@@ -32,6 +32,31 @@ export function fnv64Text(text, low = OFFSET_LOW, high = OFFSET_HIGH) {
   return fnv64Hex(low, high);
 }
 
+/**
+ * The canonical 128-bit identity is two FNV-1a-64 hashes over the exact same
+ * UTF-16 text with swapped seeds. Keep both states in one character loop so a
+ * large canonical JSON string is read once, while preserving byte-for-byte the
+ * historical concatenated result.
+ */
+export function fnv64TextPair(text) {
+  let aLow = OFFSET_LOW; let aHigh = OFFSET_HIGH;
+  let bLow = OFFSET_HIGH; let bHigh = OFFSET_LOW;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+
+    aLow ^= code;
+    const aCarry = ((aLow >>> 16) * 0x1b3 + (((aLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    aHigh = (Math.imul(aHigh, 0x1b3) + (aLow << 8) + aCarry) | 0;
+    aLow = Math.imul(aLow, 0x1b3);
+
+    bLow ^= code;
+    const bCarry = ((bLow >>> 16) * 0x1b3 + (((bLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    bHigh = (Math.imul(bHigh, 0x1b3) + (bLow << 8) + bCarry) | 0;
+    bLow = Math.imul(bLow, 0x1b3);
+  }
+  return fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
+}
+
 /** Accepts byte iterables and returns state so chunk boundaries never affect identity. */
 export function fnv64Bytes(bytes, low = OFFSET_LOW, high = OFFSET_HIGH) {
   checkSeed(low, high);
