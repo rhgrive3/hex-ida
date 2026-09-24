@@ -70,6 +70,16 @@ Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` de
   ```
 - **Quota or model exhaustion does not stop the whole job.** Continue with another model, another number, or another method, as long as it does not contradict the user's explicit choice.
 
+### Parent supervision — Codex and Claude Code only
+
+This subsection applies **only when Codex or Claude Code is the parent coordinating subagents**. OpenCode, Cline, and Freebuff subagents should follow their own task brief; they do not inherit the parent's duty to supervise other lanes.
+
+- **Resume from durable state.** Read the latest session, checkpoint, lane prompts, runner scripts, logs, and worktree state before launching anything. Keep a persistent roster of the authorized lanes, each lane's runner or task ID, worktree, evidence path, completion marker, and current owner. Do not create extra lanes when the user has limited the set.
+- **Actually launch and watch.** Start each authorized unfinished lane once, using the method selected above. Confirm that the runner started. Attach a completion or exit wakeup (the tool's reactive task notification, a wait on the child process, or an event-driven watcher for a detached runner's terminal marker). A detached launch without a wakeup is not supervision. Never clear a lease or restart a lane until its prior process is confirmed dead.
+- **No frequent polling.** While lanes run, do useful parent work. Do not repeatedly query `manage_task status`, process lists, logs, or pool leases. A specific dependency, a credible stall, or a completion/exit notification may justify a check. If a runner cannot send a notification, use a watcher that wakes on completion or a meaningful stall threshold, not a short-interval status loop.
+- **One batch on each wakeup.** When any lane finishes, exits, or stalls, inspect its result and take **one combined status snapshot of every other active lane**: runner alive, terminal marker, recent progress, artifacts, and lease/account state where relevant. This catches silently stopped Cline/Freebuff/OpenCode work without separate repeated checks. Hand off unfinished work with the common handoff fields above, then relaunch an authorized replacement and watch it.
+- **Parent verifies and integrates.** Check changed files, tests, CI, and evidence before accepting a lane. Update the persistent roster and integrate verified results; keep the remaining lanes watched until they finish or have an explicit blocker.
+
 
 <!-- graft:start -->
 ## Graft — repo context graph
