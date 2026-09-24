@@ -13,6 +13,7 @@ import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-val
 import { applyStructuredControlProjection } from './phase8/structured-control-projection.js';
 import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import { createQueryGuard } from '../symbolic/memory/query-state.js';
+import { createValidationBatch } from '../core/identity/live-data.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -383,6 +384,17 @@ function structuredControlProjectionOptions(model, opts) {
   return { ...opts, addressOfRow:(row) => addressByRow.get(row) ?? null };
 }
 
+function validatedPhase8Projection(result, analysis, opts) {
+  const validation = createValidationBatch();
+  let projected = result;
+  validation.run(() => { projected = applyPhase8Projection(result, analysis, opts); });
+  // Projection only reads canonical IR/currentness and writes new output objects.
+  // If any memoized answer changed before the synchronous projection finished,
+  // discard the whole projection rather than publishing a result built from a
+  // stale predecessor. No currentness answer survives this call.
+  return validation.settle() === 0 ? projected : result;
+}
+
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
@@ -390,7 +402,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
       && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
     if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
-      projected = applyPhase8Projection(projected, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true });
+      projected = validatedPhase8Projection(projected, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true });
     }
     if (shouldDemandStructuring(projected, opts)) {
       const structuringBudget = {
