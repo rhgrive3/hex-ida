@@ -117,6 +117,19 @@ export function buildCfg(model, opts) {
     if (term.isReturn) { node.isExit = true; continue; }
 
     if (term.isCall && term.branchTarget != null) {
+      // `markTailCalls` (js/blocks-base.js) classifies a `b` that leaves the
+      // function as a tail call. A tail call never returns here, so it has no
+      // local fallthrough: the block exits the function. Giving it a `fall`
+      // successor fabricated a path onto the physically next block that the
+      // Semantic IR control projection cannot explain, so every function whose
+      // body contains a tail call lost its semantic IR to
+      // `semantic-ssa-control-flow-mismatch`. Use the same proven-exit
+      // representation as the out-of-function direct branch below.
+      if (term.isTailCall === true) {
+        node.succ.push({ to: -1, kind: EDGE.JUMP, target: term.branchTarget, outside: true });
+        node.isExit = true;
+        continue;
+      }
       if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
       continue;
     }
