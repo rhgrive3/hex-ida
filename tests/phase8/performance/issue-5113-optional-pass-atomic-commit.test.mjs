@@ -271,3 +271,26 @@ test('#5113 immutable certification caches the shared false path without poisoni
   // Caching only the witnessed failing ancestry keeps the path near one walk.
   assert.ok(chainReads < 500, `shared false path was repeatedly rescanned: ${chainReads}`);
 });
+
+
+test('#5113 optional pass never starts after rollback snapshot exhausts its deadline', () => {
+  const graph = Array.from({ length: 40000 }, (_, index) => ({ index, value:index + 1 }));
+  let ran = false;
+  const manager = new PassManager([{
+    name:'snapshot-too-large',
+    required:false,
+    run(state) {
+      ran = true;
+      state.corrupted = true;
+      return state;
+    },
+  }], { timeBudgetMs:2 });
+
+  const state = manager.run({ graph });
+  assert.equal(ran, false, 'optional pass must not start without a complete rollback pre-image inside budget');
+  assert.equal(state.corrupted, undefined);
+  assert.equal(state.degraded, true);
+  assert.ok(state.passMetrics[0]?.skipped, JSON.stringify(state.passMetrics[0]));
+  assert.ok(['deadline', 'snapshot-deadline'].includes(state.passMetrics[0]?.reason),
+    `unexpected skip reason: ${state.passMetrics[0]?.reason}`);
+});
