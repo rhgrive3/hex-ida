@@ -491,6 +491,7 @@ function accessSize(base, ops) {
     return total > 0 ? total : null;
   }
   const reg = ops.find((o) => o.k === 'reg');
+  if (base === 'ldpsw') return 8; // two 4-byte words in memory
   const w = reg && reg.bits ? reg.bits / 8 : 8;
   if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp') return w * 2;
   return w;
