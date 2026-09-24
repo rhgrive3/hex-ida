@@ -103,6 +103,8 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
   const required = kind === 'parent'
     ? ['js/userscript/dev/parent-worker-runtime.js', 'js/userscript/dev/parent-rpc.js', 'js/userscript/dev/bootstrap-host.js']
     : ['js/ai/dev/supervisor/dev-supervisor-v0.js', 'js/ai/dev/ui/settings.js', 'js/ai/dev/ui/engine-router.js', 'js/ai/dev/ui/controls.js'];
+  const policyPath = (value) => caseInsensitive ? String(value).toLowerCase() : String(value);
+  const requiredByPolicyPath = new Map(required.map((requiredPath) => [policyPath(requiredPath), requiredPath]));
   const realpathSync = options?.realpathSync ?? fs.realpathSync;
   let realRoot;
   try {
@@ -126,6 +128,10 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
       if (!effective || effective === '..' || effective.startsWith('../') || path.isAbsolute(effective)) {
         throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
       }
+      const requiredPath = requiredByPolicyPath.get(policyPath(normalized));
+      if (requiredPath && policyPath(normalizeInputPath(effective, repoRoot, { caseInsensitive })) !== policyPath(requiredPath)) {
+        throw new Error(`${kind} bundle required anchor ${requiredPath} resolves to ${effective}`);
+      }
       continue;
     }
     const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
@@ -138,6 +144,11 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
     const relative = path.relative(realRoot, realInput);
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
+    }
+    const requiredPath = requiredByPolicyPath.get(policyPath(normalized));
+    const effective = relative.replaceAll('\\', '/');
+    if (requiredPath && policyPath(effective) !== policyPath(requiredPath)) {
+      throw new Error(`${kind} bundle required anchor ${requiredPath} resolves to ${effective}`);
     }
   }
 }
