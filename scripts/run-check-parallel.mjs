@@ -374,11 +374,14 @@ export function shellInvocation(command, { env = process.env, platform = process
 
 // npm prepends node_modules/.bin to PATH for scripts. Mirror that here so a
 // shell-invoked step resolves local binaries exactly like the serial gate.
-function shellEnvironment({ env = process.env, platform = process.platform } = {}) {
-  if (platform === 'win32') return env;
+export function shellEnvironment({ env = process.env, platform = process.platform } = {}) {
   const binDirectory = path.join(root, 'node_modules', '.bin');
-  const pathValue = env.PATH ?? '';
-  return { ...env, PATH: pathValue ? `${binDirectory}${path.delimiter}${pathValue}` : binDirectory };
+  const pathKey = platform === 'win32'
+    ? (Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH')
+    : 'PATH';
+  const pathValue = env[pathKey] ?? '';
+  const delimiter = platform === 'win32' ? path.win32.delimiter : path.delimiter;
+  return { ...env, [pathKey]: pathValue ? `${binDirectory}${delimiter}${pathValue}` : binDirectory };
 }
 
 function poolSize(stepCount) {

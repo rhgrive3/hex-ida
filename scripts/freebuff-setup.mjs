@@ -130,11 +130,11 @@ export function ensureSafeDirectory(root, target, { fsImpl = fs } = {}) {
 }
 
 function sameDirectoryIdentity(a, b) {
-  return Boolean(a && b && a.isDirectory() && b.isDirectory() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isDirectory() && b.isDirectory() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
 }
 
 function sameFileIdentity(a, b) {
-  return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
+  return Boolean(a && b && a.isFile() && b.isFile() && String(a.dev) === String(b.dev) && String(a.ino) === String(b.ino));
 }
 
 function statFileSnapshot(fsImpl, fd) {
@@ -344,23 +344,71 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
     if (stableSource) {
       const sourceBeforeCopy = stableSource.snapshot();
       const stagedCopy = path.join(path.dirname(actualDst), `.${path.basename(actualDst)}.migration-${randomUUID()}`);
-      let stagedCreated = false;
+      const stageFlags = fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0);
+      let stageFd = null;
+      let openedStage = null;
       try {
-        fsImpl.copyFileSync(actualSrc, stagedCopy, fs.constants.COPYFILE_EXCL);
-        stagedCreated = true;
+        stageFd = fsImpl.openSync(stagedCopy, stageFlags, 0o600);
+        openedStage = statFileSnapshot(fsImpl, stageFd);
+        if (!openedStage.isFile()) throw new Error(`freebuff setup: staged migration copy is not a real file: ${dst}`);
+        const stableStagePath = `/proc/self/fd/${stageFd}`;
+        const viaStageHandle = fsImpl.statSync(stableStagePath);
+        if (!sameFileIdentity(openedStage, viaStageHandle)) {
+          throw new Error(`freebuff setup: stable staged migration handle unavailable: ${dst}`);
+        }
+
+        fsImpl.copyFileSync(actualSrc, stableStagePath);
         const sourceAfterCopy = stableSource.snapshot();
         if (!sameFileSnapshot(sourceBeforeCopy, sourceAfterCopy)) {
           throw new Error(`freebuff setup: migration source changed during copy: ${src}`);
         }
+
+        let currentStage;
+        try { currentStage = fsImpl.lstatSync(stagedCopy); }
+        catch (error) {
+          throw new Error(`freebuff setup: staged migration copy changed before publication: ${dst}`, { cause: error });
+        }
+        if (!sameFileIdentity(openedStage, currentStage)) {
+          throw new Error(`freebuff setup: staged migration copy changed before publication: ${dst}`);
+        }
+
+        const stageBeforeVerify = statFileSnapshot(fsImpl, stageFd);
+        const sourceBytes = Buffer.from(fsImpl.readFileSync(actualSrc));
+        const stageBytes = Buffer.from(fsImpl.readFileSync(stableStagePath));
+        const sourceAfterVerify = stableSource.snapshot();
+        const stageAfterVerify = statFileSnapshot(fsImpl, stageFd);
+        if (!sameFileSnapshot(sourceBeforeCopy, sourceAfterVerify)
+            || !sameFileSnapshot(stageBeforeVerify, stageAfterVerify)
+            || !stageBytes.equals(sourceBytes)) {
+          throw new Error(`freebuff setup: staged migration bytes do not match stable source: ${src}`);
+        }
+
+        let publishedEntry = null;
         try {
-          fsImpl.copyFileSync(stagedCopy, actualDst, fs.constants.COPYFILE_EXCL);
+          fsImpl.copyFileSync(stableStagePath, actualDst, fs.constants.COPYFILE_EXCL);
+          publishedEntry = fsImpl.lstatSync(actualDst);
         } catch (error) {
           if (error?.code === 'EEXIST') return false;
           throw error;
         }
+
+        const stageAfterPublish = statFileSnapshot(fsImpl, stageFd);
+        if (!sameFileSnapshot(stageAfterVerify, stageAfterPublish)) {
+          try {
+            const currentDestination = fsImpl.lstatSync(actualDst);
+            if (publishedEntry && sameFileIdentity(publishedEntry, currentDestination)) fsImpl.unlinkSync(actualDst);
+          } catch {}
+          throw new Error(`freebuff setup: staged migration copy changed during publication: ${dst}`);
+        }
       } finally {
-        if (stagedCreated) {
-          try { fsImpl.unlinkSync(stagedCopy); } catch {}
+        if (openedStage) {
+          try {
+            const currentStage = fsImpl.lstatSync(stagedCopy);
+            if (sameFileIdentity(openedStage, currentStage)) fsImpl.unlinkSync(stagedCopy);
+          } catch {}
+        }
+        if (stageFd !== null) {
+          try { fsImpl.closeSync(stageFd); } catch {}
         }
       }
     } else {
