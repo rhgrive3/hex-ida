@@ -1880,6 +1880,28 @@ function rmwOperand(rmw, ctx) {
   return null;
 }
 
+const compoundAdmissionCache = new WeakMap();
+/**
+ * The compound-spelling admission the initial emitter itself uses for a store:
+ * the read/modify/write proof for this exact store, no select in the update
+ * chain, and a direct non-reversed qualifying update whose defining instruction
+ * is the arithmetic itself (a MOV/copy between the computed value and the
+ * store keeps the plain assignment spelling). The C AST store renderer consults
+ * this same authority so display spelling and initial history can never drift:
+ * re-deriving compound eligibility from the collapsed expression alone would
+ * spell compound assignments the initial renderer refused.
+ */
+export function readSemanticStoreCompoundAdmission(ir, store) {
+  if (!ir || !store) return null;
+  let entries = compoundAdmissionCache.get(ir);
+  if (!entries) { entries = readModifyWrite(ir); compoundAdmissionCache.set(ir, entries); }
+  const rmw = entries.find((entry) => entry.store === store || entry.store?.id === store?.id);
+  if (!rmw) return null;
+  if ((rmw.chain || []).some((x) => x.op === OP.SEL)) return null;
+  const upd = rmwOperand(rmw, null);
+  return upd && !upd.reversed ? upd : null;
+}
+
 function statementForStore(inst, ctx) {
   const lhs = renderMemoryLocation(inst.loc, inst, ctx);
   const rmw = ctx.rmwByStore.get(inst.id);

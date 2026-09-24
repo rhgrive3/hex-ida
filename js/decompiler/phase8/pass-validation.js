@@ -163,6 +163,63 @@ function targetExclusionReason(target, guard) {
   return null;
 }
 
+/**
+ * Prepare asynchronously; commit/projection remain in the existing Phase 8 runner.
+ *
+ * Completeness means the execution-relevant memory model of this very program
+ * was admitted by the same rules the symbolic execution applies. The request
+ * loop below can reject every requested target syntactically and skip the
+ * execution walk (the documented no-op shortcut); that shortcut must not turn
+ * an unresolved address, an address-space mismatch or unknown memory
+ * qualifiers into a clean `complete` audit row. This static admission mirrors
+ * `translateMemoryAccess` check-for-check, in the same order, so the reported
+ * reason is the first divergence the execution itself would reach.
+ */
+function programMemoryAdmissionReason(ir, identity, endian = 'little') {
+  let instructions = ir?.instructions;
+  if (!Array.isArray(instructions)) {
+    instructions = [];
+    for (const block of ir?.blocks ?? []) {
+      if (!Array.isArray(block?.insts)) return 'unresolved-memory-address';
+      instructions.push(...block.insts);
+    }
+  }
+  for (const inst of instructions) {
+    if (inst == null || (inst.op !== 'load' && inst.op !== 'store')) continue;
+    const descriptor = inst.extra?.memoryAccess;
+    const size = inst.loc?.size ?? inst.addr?.size ?? inst.extra?.size;
+    if (![1, 2, 4, 8].includes(size)) return 'unsupported-access-width';
+    for (const width of [inst.loc?.size, inst.addr?.size, inst.extra?.size]) {
+      if (width != null && width !== size) return 'memory-width-mismatch';
+    }
+    for (const bits of [inst.addr?.widthBits, inst.extra?.widthBits, descriptor?.widthBits]) {
+      if (bits != null && bits !== size * 8) return 'memory-width-mismatch';
+    }
+    for (const space of [inst.loc?.addressSpace, inst.addr?.addressSpace, descriptor?.addressSpace]) {
+      if (space != null && space !== identity.addressSpace) return 'address-space-mismatch';
+    }
+    const canonicalAddressId = descriptor?.addressExpr?.valueId;
+    if (!canonicalAddressId && (inst.addr?.precise === false || inst.extra?.addressPrecise === false)) {
+      return 'unresolved-memory-address';
+    }
+    if (descriptor) {
+      if (descriptor.volatility === true) return 'volatile-barrier';
+      if (descriptor.atomic === true) return 'atomic-barrier';
+      if (descriptor.volatility !== false || descriptor.atomic !== false
+          || descriptor.ordering != null && !['unknown', 'none'].includes(descriptor.ordering)) {
+        return 'unknown-memory-qualifiers';
+      }
+      if (descriptor.endian !== endian) return 'memory-endian-mismatch';
+    }
+    if (canonicalAddressId == null) {
+      const absolute = inst.loc?.kind === 'global' && inst.loc.address != null;
+      const relative = Boolean(inst.addr?.base) && !inst.addr.index && inst.addr.disp != null;
+      if (!absolute && !relative) return 'unresolved-memory-address';
+    }
+  }
+  return null;
+}
+
 /** Prepare asynchronously; commit/projection remain in the existing Phase 8 runner. */
 export async function preparePhase8RewritePlan(ir, options = {}) {
   let guard, submitted;
@@ -210,6 +267,11 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     // intentionally outside the pure query vocabulary). No proof capability
     // is issued because the plan has no entries.
     if (selected.length === 0) {
+      // Fail closed before claiming an auditable no-op: without this, a program
+      // whose memory model the execution would refuse is reported `complete`
+      // simply because no target survived the syntactic filter.
+      const memoryReason = programMemoryAdmissionReason(ir, guard.identity, submitted.memory?.endian ?? 'little');
+      if (memoryReason) return reject(memoryReason);
       const binding = Object.freeze({ identity:guard.identity, abiId:submitted.abiId,
         passId:PROOF_REWRITE_PASS.id, passVersion:PROOF_REWRITE_PASS.version,
         transformKind:'solver-scalar', preconditions:EMPTY,

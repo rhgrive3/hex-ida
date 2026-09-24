@@ -13,10 +13,17 @@ import { identity } from '../helpers/proof-fixtures.mjs';
 
 const records = map => map.ledger.filter(record => record.rule === 'render-initial-compound-store');
 
-function fixture({ bits = 32, op = 'add', one = false, reversed = false, different = false, stack = false, select = false, memoryOperand = false, mbaOperand = false, fork = false, proofMemory = false, options = {} } = {}) {
+function fixture({ bits = 32, op = 'add', one = false, reversed = false, different = false, stack = false, select = false, memoryOperand = false, mbaOperand = false, fork = false, proofMemory = false, probeLoad = false, options = {} } = {}) {
   const f = irFixture('initial_store_history'); f.block(0);
   const location = stack ? { locKind:'stack', locKey:'stack:16', disp:16 } : { locKind:'global', locKey:'global:32768' };
   const load = f.load(bits, location);
+  // An independent load with no self-store barrier after it. Since 77d047275
+  // (#9420) the RMW load above is an ordered materialization, so its location
+  // name is resolved at emit time rather than during the canonical expression
+  // build; this probe is the load the builder still resolves through
+  // `symbolFor`, which is what a fake-clock deadline test needs to model a slow
+  // symbol callback inside the mandatory builder.
+  const probe = probeLoad ? f.load(bits, { locKind:'global', locKey:'global:32800' }) : null;
   let operand;
   if (mbaOperand) {
     const left = f.opaque(bits), right = f.opaque(bits); left.reg = 'x1'; right.reg = 'x2';
@@ -46,7 +53,7 @@ function fixture({ bits = 32, op = 'add', one = false, reversed = false, differe
   const seed = decompileSemantic(model, opts);
   const canonical = structuredClone(ir), roots = Object.entries(ir);
   const line = seed.lines.find(line => line.kind === 'stmt' && line.row === store.row);
-  return { seed, line, model, opts, ir, canonical, roots, load, operand, sum, value, store, unrelated, ret };
+  return { seed, line, model, opts, ir, canonical, roots, load, probe, operand, sum, value, store, unrelated, ret };
 }
 
 function assertCanonical(f) {
@@ -88,7 +95,10 @@ test('render-only spelling retention refuses copied and changed store emitters',
 });
 
 test('deadline fallback retains the actual cached builder history without running an optional rewrite', () => {
-  const f = fixture({ one:true });
+  // probeLoad keeps a non-ordered load in the program: the RMW load itself is
+  // an ordered materialization since 77d047275 (#9420), so only the probe is
+  // resolved through `symbolFor` while the mandatory expression builder runs.
+  const f = fixture({ one:true, probeLoad:true });
   const clock = Object.getOwnPropertyDescriptor(globalThis, 'performance');
   let now = 0;
   Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => now } });

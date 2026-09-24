@@ -29,7 +29,7 @@ import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
   readSemanticConditionalRegions, readSemanticLocalDeclaration,
-  readSemanticOrderedMaterializations } from './semantic-core.js';
+  readSemanticOrderedMaterializations, readSemanticStoreCompoundAdmission } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -1504,7 +1504,13 @@ function compoundStoreLeftOperand(node, location, store, state) {
   // The named observation was taken earlier in the machine program; it may only
   // stand in for the store's own read when nothing could have rewritten it.
   const ordered = state.orderedMaterializations.get(node.ssaId);
-  return observationReachesStore(ordered.definition, store, state);
+  if (!observationReachesStore(ordered.definition, store, state)) return false;
+  // The initial emitter is the spelling authority. Its read/modify/write
+  // admission also rejects a MOV/copy between the computed value and the store
+  // and reversed operand orders; the collapsed expression cannot see those, so
+  // without this check the C AST would spell compound assignments the initial
+  // renderer refused (and its provenance history disagrees with the display).
+  return readSemanticStoreCompoundAdmission(state.ir, store) != null;
 }
 function sameLocationRmwOperand(expression, location, ops, side = 'any') {
   if (side === 'left') return readsSameLocation(expression.left, location) ? expression.right : null;
