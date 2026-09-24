@@ -429,6 +429,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
 
     if (!outcome.committed) {
+      console.log("NOT COMMITTED:", pass.descriptor.id, "stopReason:", outcome.stopReason, "budget:", budget);
       const reason = outcome.stopReason ?? 'unknown';
       // A missing declared input is not a failure: it is an honest unsupported
       // answer for that pass, and the rest of the set may still be meaningful.
