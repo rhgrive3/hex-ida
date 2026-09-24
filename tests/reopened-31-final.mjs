@@ -139,7 +139,9 @@ function compatIR(lines) {
   const post=model(['bl #0x730001000','ldr w8, [x0, #0x20]','add w8, w8, #1','str w8, [x0, #0x20]','ret']);
   const pu=findValueUpdates(post).find(u=>u.store?.row===3);
   assert.ok(!pu?.location?.self);
-  assert.equal(fields.resolveAccess({base:'x0',disp:32n,self:pu?.location?.self===true},'Player').certain,false);
+  // #9496: an access proven not to be `self` is vetoed outright (null), which is
+  // stricter than the old uncertain hit.
+  assert.equal(fields.resolveAccess({base:'x0',disp:32n,self:pu?.location?.self===true},'Player'),null);
 }
 
 // #833 — GPR<->FP and FP<->FP FMOV preserve raw IEEE bits.
