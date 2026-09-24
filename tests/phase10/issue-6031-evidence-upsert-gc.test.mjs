@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../../js/ai/evidence.js';
 import { InvestigationSessionStore } from '../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../js/ai/session-core/persisted-confirmed.js';
 
 // Same ID upsert must not accumulate unreferenced payloads.
 {
@@ -61,12 +62,14 @@ import { InvestigationSessionStore } from '../../js/ai/session-core/index.js';
     const store = new EvidenceStore();
     store.add({ id: 'a', kind: 'observation', sourceTool: 'test', sourceData: { v: 'a0' } });
     store.add({ id: 'b', kind: 'observation', sourceTool: 'test', sourceData: { v: 'b0' } });
-    store.restorePersistedConfirmed(new InvestigationSessionStore().register({
+    // #8687: register() normalizes but does not issue verified authority; the
+    // trusted persistence load boundary seals the envelope. Model that boundary.
+    store.restorePersistedConfirmed(sealPersistedConfirmedEnvelope(new InvestigationSessionStore().register({
       id: 'issue-6031-persisted',
       confirmedFindings: [
         { id: 'a', kind: 'observation', status: 'verified', sourceTool: 'test', sourceData: { v: 'verified' } },
       ],
-    }).confirmedFindings);
+    }).confirmedFindings));
     const verifiedSourceId = store.get('a').sourceRef.evidenceSourceId;
     assert.deepEqual(store.sourceDataFor('a'), { v: 'verified' });
 
