@@ -39,12 +39,35 @@ export function isSolverFailure(result) {
   return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
-const MODEL_IMMUTABLE = 'SolverResult model is an immutable published snapshot';
+const MODEL_IMMUTABLE = 'SolverResult model is a read-only immutable published snapshot';
+const READONLY_MODEL_MAPS = new WeakSet();
 
 class ImmutableSolverModelMap extends Map {
   set() { throw new TypeError(MODEL_IMMUTABLE); }
   delete() { throw new TypeError(MODEL_IMMUTABLE); }
   clear() { throw new TypeError(MODEL_IMMUTABLE); }
+}
+
+function readonlyMap(entries) {
+  const target = new ImmutableSolverModelMap();
+  for (const [key, value] of entries) Map.prototype.set.call(target, key, value);
+  Object.freeze(target);
+  let proxy;
+  proxy = new Proxy(target, {
+    get(map, key) {
+      if (key === 'set' || key === 'delete' || key === 'clear') return () => { throw new TypeError(MODEL_IMMUTABLE); };
+      if (key === 'valueOf') return () => proxy;
+      if (key === 'forEach') return (callback, thisArg) => Map.prototype.forEach.call(map,
+        (value, entryKey) => callback.call(thisArg, value, entryKey, proxy));
+      const value = Reflect.get(map, key, map);
+      return typeof value === 'function' ? value.bind(map) : value;
+    },
+    set() { throw new TypeError(MODEL_IMMUTABLE); },
+    defineProperty() { throw new TypeError(MODEL_IMMUTABLE); },
+    deleteProperty() { throw new TypeError(MODEL_IMMUTABLE); },
+  });
+  READONLY_MODEL_MAPS.add(proxy);
+  return proxy;
 }
 
 function isPlainModelObject(value) {
@@ -76,23 +99,38 @@ function immutableModelValue(value, depth, counter, ancestors) {
   ancestors.add(value);
   try {
     if (value instanceof Map) {
-      const copy = new ImmutableSolverModelMap();
-      for (const [key, entryValue] of value) {
+      const entries = [];
+      const iterator = READONLY_MODEL_MAPS.has(value) ? value.entries() : Map.prototype.entries.call(value);
+      for (const [key, entryValue] of iterator) {
         if (key !== null && typeof key === 'object') throw new TypeError('provider-model-object-map-key');
-        Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter, ancestors));
+        entries.push([key, immutableModelValue(entryValue, depth + 1, counter, ancestors)]);
       }
-      return Object.freeze(copy);
+      return readonlyMap(entries);
     }
     if (Array.isArray(value)) {
-      const copy = [];
-      for (const element of value) copy.push(immutableModelValue(element, depth + 1, counter, ancestors));
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || Reflect.ownKeys(descriptors).some((key) =>
+        key !== 'length' && (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length))) {
+        throw new TypeError('provider-model-invalid-array');
+      }
+      const copy = new Array(length);
+      for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) throw new TypeError('provider-model-invalid-array');
+        copy[index] = immutableModelValue(descriptor.value, depth + 1, counter, ancestors);
+      }
       return Object.freeze(copy);
     }
     if (isPlainModelObject(value)) {
       const copy = {};
-      for (const key of Object.keys(value)) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string') throw new TypeError('provider-model-symbol-key');
+        const descriptor = descriptors[key];
+        if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) throw new TypeError('provider-model-accessor-or-hidden-field');
         Object.defineProperty(copy, key, {
-          value: immutableModelValue(value[key], depth + 1, counter, ancestors),
+          value: immutableModelValue(descriptor.value, depth + 1, counter, ancestors),
           enumerable: true,
           writable: false,
           configurable: false,
@@ -173,9 +211,9 @@ export function createSolverResult({
     cancelled: lifecycle?.cancelled === true,
     stale: lifecycle?.stale === true,
     disposed: lifecycle?.disposed === true,
-    budgetExceeded: lifecycle?.budgetExceeded === true || modelLimitReason != null,
+    budgetExceeded: lifecycle?.budgetExceeded === true || modelLimitReason != null || status === SOLVER_STATUS.RESOURCE_LIMIT,
     late: lifecycle?.late === true,
-    publishable: lifecycle?.publishable !== false &&
+    publishable: (status === SOLVER_STATUS.SAT || status === SOLVER_STATUS.UNSAT) && lifecycle?.publishable !== false &&
       lifecycle?.timedOut !== true &&
       lifecycle?.cancelled !== true &&
       lifecycle?.stale !== true &&
@@ -184,21 +222,46 @@ export function createSolverResult({
       modelLimitReason == null,
   });
 
+  const normalizedStats = normalizeSolverStats(stats);
   return Object.freeze({
     status,
     model: normalizedModel,
     reason: reason ? String(reason) : (modelLimitReason ? `provider-model-${modelLimitReason}` : null),
     stats: Object.freeze({
-      ...stats,
-      solveTimeMs: Number(stats.solveTimeMs) || 0,
-      nodesEvaluated: Number(stats.nodesEvaluated) || 0,
-      memoryBytesDelta: Number(stats.memoryBytesDelta) || 0,
+      ...normalizedStats,
+      solveTimeMs: Number(normalizedStats.solveTimeMs) || 0,
+      nodesEvaluated: Number(normalizedStats.nodesEvaluated) || 0,
+      memoryBytesDelta: Number(normalizedStats.memoryBytesDelta) || 0,
     }),
     backend: normalizedBackend,
     backendVersion: normalizedBackendVersion,
     queryHash: normalizedQueryHash,
     lifecycle: normalizedLifecycle,
   });
+}
+
+function normalizeSolverStats(stats) {
+  if (stats == null) return {};
+  if (!isPlainModelObject(stats)) throw new TypeError('provider-stats-must-be-plain-data');
+  const normalized = immutableModelValue(stats, 0, { nodes: 0 }, new WeakSet());
+  return normalized;
+}
+
+/** Convert a published result to data that can cross structured-clone Worker APIs. */
+export function solverResultToTransport(result) {
+  const model = result?.model instanceof Map
+    ? Object.fromEntries(result.model.entries())
+    : result?.model ?? null;
+  return {
+    status: result.status,
+    model,
+    reason: result.reason,
+    stats: result.stats,
+    backend: result.backend,
+    backendVersion: result.backendVersion,
+    queryHash: result.queryHash,
+    lifecycle: result.lifecycle,
+  };
 }
 
 export function isValidSolverResult(result, { query = null, backend = null } = {}) {

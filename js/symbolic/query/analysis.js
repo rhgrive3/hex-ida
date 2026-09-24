@@ -108,7 +108,15 @@ export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
     if(data.op!==OP.CBR || !['cbz','cbnz','tbz','tbnz'].includes(extra.kind)
         || args.length!==1) throw new QueryFailure('unsupported-branch-input');
     const target=queryRecord(args[0],guard).value;
-    const memoryLimits={workItems:Math.min(65536,guard.limits.workItems),allocationUnits:Math.min(32768,guard.limits.allocationUnits)};
+    const metrics=guard.metrics();
+    // Byte-memory owns a nested guard. Reserve its allowance from the query's
+    // remaining budget while keeping room for the final pure-target scan.
+    // A fixed 65K reservation could not execute even modest CFGs whose
+    // expression validation legitimately needs more than 65K work items.
+    const memoryLimits={
+      workItems:Math.min(90000,Math.max(0,guard.limits.workItems-metrics.workItems-8192)),
+      allocationUnits:Math.min(32768,Math.max(0,guard.limits.allocationUnits-metrics.allocationUnits-8192)),
+    };
     guard.take('workItems',memoryLimits.workItems);guard.take('allocationUnits',memoryLimits.allocationUnits);
     const timeoutMs=Math.max(0,Math.floor(guard.remainingMilliseconds()));
     const execution=symbolicExecute(ir,{captureValues:true,captureBranchTargets:true,timeoutMs,

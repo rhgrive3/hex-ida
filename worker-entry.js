@@ -90,7 +90,11 @@ export class RuntimeBootstrap extends DurableObject {
 export default {
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
-    if (url.pathname.includes('%')) {
+    // The protected runtime route deliberately checks method and origin before
+    // decoding its opaque build identifier. Keep the generic private-path
+    // prefilter off that route so malformed bytes receive its stable 400 only
+    // after the route's authorization boundary.
+    if (!url.pathname.startsWith('/_runtime/') && url.pathname.includes('%')) {
       let decoded; try { decoded = decodeURIComponent(url.pathname); } catch { return new Response('Not Found', { status: 404 }); }
       if (decoded !== url.pathname && (isPrivatePath(decoded) || /^\/(?:admin|auth|_privileged|api\/(?:admin|auth))(?:\/|$)/.test(decoded))) return new Response('Not Found', { status: 404, headers: securityHeaders() });
     }

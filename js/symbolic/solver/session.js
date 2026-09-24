@@ -58,27 +58,85 @@ function makeAbortController() {
   };
 }
 
+const DEFAULT_SESSION_TIMEOUT_MS = 5000;
+
+function isValidTimeoutMs(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function safeOptionData(value, name) {
+  if (value == null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${name} must be an options object`);
+  let descriptors;
+  try { descriptors = Object.getOwnPropertyDescriptors(value); }
+  catch { throw new TypeError(`${name} must be plain data`); }
+  const snapshot = {};
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== 'string') throw new TypeError(`${name} cannot contain symbol keys`);
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new TypeError(`${name}.${key} cannot be an accessor`);
+    }
+    if (!descriptor.enumerable) throw new TypeError(`${name}.${key} must be enumerable data`);
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function queryHashHint(query) {
+  if (query == null || typeof query !== 'object') return null;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(query, 'queryHash');
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') && typeof descriptor.value === 'string'
+      ? descriptor.value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function providerResultData(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('provider result must be a plain object');
+  let descriptors;
+  try { descriptors = Object.getOwnPropertyDescriptors(value); }
+  catch { throw new TypeError('provider result is unreadable'); }
+  const snapshot = {};
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== 'string') throw new TypeError('provider result contains a symbol field');
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new TypeError(`provider result field '${key}' is an accessor`);
+    }
+    if (!descriptor.enumerable) throw new TypeError(`provider result field '${key}' is not enumerable`);
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function providerDataField(value, key) {
+  if (value == null || typeof value !== 'object') return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function safeReason(value, fallback) {
   return value == null || value === '' ? fallback : String(value);
 }
 
-const DEFAULT_SESSION_TIMEOUT_MS = 5000;
-
-function isValidTimeoutMs(value) {
-  // Zero is reserved as the explicit no-host-timeout sentinel used by the
-  // worker's internal session. Every other accepted duration must be a
-  // non-negative safe integer so caller input cannot disable the host timer
-  // with a negative or otherwise non-duration value (#4432).
-  return typeof value === 'number'
-    && Number.isFinite(value)
-    && Number.isSafeInteger(value)
-    && value >= 0;
-}
-
 export class SolverSession {
   constructor(backend, options = {}) {
+    const capturedOptions = safeOptionData(options, 'session options');
+    if (Object.hasOwn(capturedOptions, 'timeoutMs') && capturedOptions.timeoutMs !== undefined &&
+        !isValidTimeoutMs(capturedOptions.timeoutMs)) {
+      throw new TypeError('timeoutMs must be a primitive non-negative safe integer');
+    }
+    if (capturedOptions.timeoutMs === undefined) delete capturedOptions.timeoutMs;
     this.backend = backend;
-    this.options = Object.freeze({ ...options });
+    this.options = Object.freeze(capturedOptions);
     this.state = SESSION_STATE.ACTIVE;
     this.currentQueryToken = 0;
     this._inFlight = new Map();
@@ -89,12 +147,13 @@ export class SolverSession {
   isCancelled() { return this.state === SESSION_STATE.CANCELLED; }
   isTerminated() { return this.state === SESSION_STATE.TERMINATED; }
 
-  _result(status, reason, lifecycle = {}) {
+  _result(status, reason, lifecycle = {}, queryHash = null) {
     return createSolverResult({
       status,
       reason,
       backend: this.backend?.id || 'unknown',
       backendVersion: this.backend?.version || '0.0.0',
+      queryHash,
       lifecycle: { publishable: false, ...lifecycle },
     });
   }
@@ -107,19 +166,17 @@ export class SolverSession {
         stale: true,
         cancelled: true,
         late: true,
-      }));
+      }, record.queryHash));
       try { this._onStale(record.token); } catch { /* provider cleanup is best effort */ }
     }
   }
 
   async check(query, options = {}) {
-    if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true });
-    if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true });
-    if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true });
-    const externalSignal = options.signal;
-    // Abort-signal compatibility is input validation. Require both listener
-    // methods before any query lifecycle side effect so malformed shapes never
-    // publish an in-flight record (#5395).
+    if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true }, queryHashHint(query));
+    if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true }, queryHashHint(query));
+    if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true }, queryHashHint(query));
+    const optionValues = safeOptionData(options, 'query options');
+    const externalSignal = optionValues.signal;
     if (externalSignal != null && (
       typeof externalSignal !== 'object' ||
       typeof externalSignal.addEventListener !== 'function' ||
@@ -127,22 +184,28 @@ export class SolverSession {
     )) {
       throw new TypeError('external signal must be AbortSignal-compatible');
     }
-    if (externalSignal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true });
+    if (externalSignal?.aborted) {
+      return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true }, queryHashHint(query));
+    }
 
+    const requestedTimeoutMs = optionValues.timeoutMs;
+    if (requestedTimeoutMs !== undefined && !isValidTimeoutMs(requestedTimeoutMs)) {
+      return this._result(SOLVER_STATUS.INVALID_QUERY,
+        'invalid-budget:timeoutMs must be a primitive non-negative safe integer', {}, null);
+    }
+    const timeoutMs = requestedTimeoutMs === undefined
+      ? (this.options.timeoutMs === undefined ? DEFAULT_SESSION_TIMEOUT_MS : this.options.timeoutMs)
+      : requestedTimeoutMs;
+    const queryHash = queryHashHint(query);
+
+    // Input validation above has no lifecycle side effects. Only a validated
+    // query budget may invalidate an earlier in-flight request or consume a token.
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
     const controller = makeAbortController();
-    const sessionTimeoutMs = isValidTimeoutMs(this.options.timeoutMs)
-      ? this.options.timeoutMs
-      : DEFAULT_SESSION_TIMEOUT_MS;
-    const requestedTimeoutMs = options.timeoutMs;
-    const timeoutMs = requestedTimeoutMs == null
-      ? sessionTimeoutMs
-      : isValidTimeoutMs(requestedTimeoutMs)
-        ? requestedTimeoutMs
-        : sessionTimeoutMs;
     const record = {
       token,
+      queryHash,
       controller,
       stale: false,
       timedOut: false,
@@ -158,42 +221,33 @@ export class SolverSession {
 
     const settle = (rawResult) => {
       if (record.settled) return;
-
-      // #8975: canonicalize while the lifecycle is still live. JavaScript runs
-      // this synchronously, so timeout/cancel cannot interleave; only after a
-      // canonical terminal result exists do we clear the timer and in-flight
-      // authority. A canonicalization failure therefore cannot orphan a query.
-      let result = rawResult;
-      if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
-        result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
-      }
-
+      let result;
+      const rawStatus = providerDataField(rawResult, 'status');
+      const rawReason = providerDataField(rawResult, 'reason');
       if (record.timedOut) {
-        result = this._result(SOLVER_STATUS.TIMEOUT, safeReason(result.reason, 'query timed out'), {
-          timedOut: true,
-          late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-        });
+        result = this._result(SOLVER_STATUS.TIMEOUT,
+          safeReason(rawReason, `query execution timed out after ${timeoutMs}ms`),
+          { timedOut: true, late: rawStatus === SOLVER_STATUS.SAT || rawStatus === SOLVER_STATUS.UNSAT },
+          record.queryHash);
       } else if (record.cancelled || record.disposed || record.stale || token !== this.currentQueryToken) {
-        result = this._result(
-          SOLVER_STATUS.CANCELLED,
-          record.disposed ? 'session-disposed-during-execution' : record.stale || token !== this.currentQueryToken
+        const stale = record.stale || token !== this.currentQueryToken;
+        result = this._result(SOLVER_STATUS.CANCELLED,
+          record.disposed ? 'session-disposed-during-execution' : stale
             ? 'stale-query-token-discarded'
             : 'session-cancelled-during-execution',
-          {
-            cancelled: true,
-            stale: record.stale || token !== this.currentQueryToken,
-            disposed: record.disposed,
-            late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-          }
-        );
+          { cancelled: true, stale, disposed: record.disposed,
+            late: rawStatus === SOLVER_STATUS.SAT || rawStatus === SOLVER_STATUS.UNSAT },
+          record.queryHash);
       } else {
         try {
-          result = createSolverResult({
-            ...result,
-            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-          });
+          const data = providerResultData(rawResult);
+          if (!Object.values(SOLVER_STATUS).includes(data.status)) {
+            result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result', {}, record.queryHash);
+          } else {
+            result = createSolverResult(data);
+          }
         } catch {
-          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-result-normalization-failed', {}, record.queryHash);
         }
       }
 
@@ -215,10 +269,8 @@ export class SolverSession {
         this.state = SESSION_STATE.CANCELLED;
         try { controller.abort(); } catch { /* best effort */ }
         Promise.resolve(this._onCancel()).catch(() => {});
-        settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }));
+        settle(this._result(SOLVER_STATUS.CANCELLED, 'query-signal-aborted', { cancelled: true }, record.queryHash));
       };
-      // Subscribe before publishing the record. A hostile/custom EventTarget may
-      // throw from listener setup even when its method shape is callable.
       record.removeExternalAbort = () => externalSignal.removeEventListener('abort', onAbort);
       try {
         externalSignal.addEventListener('abort', onAbort, { once: true });
@@ -242,15 +294,17 @@ export class SolverSession {
         this._terminationReason = 'timeout';
         try { controller.abort(); } catch { /* best effort */ }
         Promise.resolve(this._onTimeout(token)).catch(() => {});
-        settle(this._result(SOLVER_STATUS.TIMEOUT, `query execution timed out after ${timeoutMs}ms`, { timedOut: true }));
+        settle(this._result(SOLVER_STATUS.TIMEOUT, `query execution timed out after ${timeoutMs}ms`,
+          { timedOut: true }, record.queryHash));
       }, timeoutMs);
     }
 
     Promise.resolve()
-      .then(() => record.settled ? undefined : this._executeCheck(query, { ...options, signal: controller.signal }, token, controller.signal))
+      .then(() => record.settled ? undefined : this._executeCheck(query,
+        { ...optionValues, timeoutMs, signal: controller.signal }, token, controller.signal))
       .then((result) => { if (!record.settled) settle(result); })
       .catch((error) => {
-        if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure'));
+        if (!record.settled) settle(this._result(SOLVER_STATUS.PROVIDER_FAILURE, error?.message || 'provider-failure', {}, record.queryHash));
       });
 
     return promise;
@@ -264,7 +318,8 @@ export class SolverSession {
     for (const record of [...this._inFlight.values()]) {
       record.cancelled = true;
       try { record.controller.abort(); } catch { /* best effort */ }
-      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-cancelled-during-execution', { cancelled: true }));
+      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-cancelled-during-execution',
+        { cancelled: true }, record.queryHash));
     }
     await this._onCancel();
   }
@@ -277,7 +332,8 @@ export class SolverSession {
     for (const record of [...this._inFlight.values()]) {
       record.disposed = true;
       try { record.controller.abort(); } catch { /* best effort */ }
-      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-disposed-during-execution', { disposed: true, cancelled: true }));
+      record.settle(this._result(SOLVER_STATUS.CANCELLED, 'session-disposed-during-execution',
+        { disposed: true, cancelled: true }, record.queryHash));
     }
     await this._onDispose(wasTerminated);
   }
