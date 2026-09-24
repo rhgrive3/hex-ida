@@ -1255,7 +1255,7 @@ function buildValueRaw(v, state, flags = {}) {
 }
 
 function rewriteAll(state, budget) {
-  const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
+  const engine = new RewriteEngine(DEFAULT_RULES, { ...budget, timeBudgetMs: Math.max(0, budget.timeBudgetMs), nodeBudget: Math.min(4096, budget.nodeBudget), onBudgetExceeded(reason) { if (reason === 'work-budget') { state.transformWorkBudgetExceeded = true; if (state.rewriteStats) state.rewriteStats.budgetExceeded = true; } } });
   state.expressions = new Map();
   state.expressionProofs = new Map();
   state.rewriteProof = [];
@@ -2001,7 +2001,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
     { name: 'c-ast', run(s) { s.cAst = validatedCAstFromLines(result, s); return s; } },
     { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
-  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 250), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
+  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs ?? opts.transformSafetyCeilingMs ?? 250), deadline: opts.transformDeadline, deadlineReason: opts.transformDeadlineReason, clock: opts.transformClock, nodeBudget: Number(opts.decompilerNodeBudget ?? 12000), maxIterations: Number(opts.decompilerIterationCap ?? 16) });
   const advanced = manager.run(state);
   // Budgets are a degradation boundary, not a validity boundary. If a large function
   // exhausts the optional pass budget, finish the mandatory representation layers

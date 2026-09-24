@@ -30,8 +30,9 @@ function buildSimpleFixture() {
 test('resolveDecompilerProfile: resolves presets and falls back gracefully', () => {
   const fast = resolveDecompilerProfile('fast');
   assert.equal(fast.name, 'fast');
-  assert.equal(fast.decompilerTimeBudgetMs, 30);
-  assert.equal(fast.phase8TimeBudgetMs, 30);
+  assert.equal(fast.decompilerTimeBudgetMs, null);
+  assert.equal(fast.transformSafetyCeilingMs, 2000);
+  assert.equal(fast.phase8TimeBudgetMs, null);
   assert.equal(fast.phase8WorkBudget, 10000);
   assert.deepEqual(fast.renderProvenanceBudget, { maxTransformRecords: 128 });
   assert.deepEqual(fast.renderProvenanceBindingBudget, { maxConsumers: 256 });
@@ -57,8 +58,11 @@ test('resolveDecompilerProfile: resolves presets and falls back gracefully', () 
 test('applyDecompilerProfile: applies defaults while respecting caller explicit overrides', () => {
   // Fast profile application
   const fastOpts = applyDecompilerProfile({ profile: 'fast' });
-  assert.equal(fastOpts.decompilerTimeBudgetMs, 30);
-  assert.equal(fastOpts.phase8TimeBudgetMs, 30);
+  assert.equal(fastOpts.decompilerTimeBudgetMs, null);
+  assert.equal(fastOpts.transformSafetyCeilingMs, 2000);
+  assert.ok(Number.isFinite(fastOpts.transformDeadline));
+  assert.equal(fastOpts.transformDeadlineReason, 'transform-safety-ceiling');
+  assert.equal(fastOpts.phase8TimeBudgetMs, null);
   assert.equal(fastOpts.phase8WorkBudget, 10000);
   assert.deepEqual(fastOpts.renderProvenanceBudget, { maxTransformRecords: 128 });
   assert.deepEqual(fastOpts.renderProvenanceBindingBudget, { maxConsumers: 256 });
@@ -70,13 +74,14 @@ test('applyDecompilerProfile: applies defaults while respecting caller explicit 
     renderProvenanceBudget: { maxTransformRecords: 64 },
   });
   assert.equal(overridden.decompilerTimeBudgetMs, 50, 'explicit time budget must override preset');
-  assert.equal(overridden.phase8TimeBudgetMs, 30, 'unspecified property must inherit from fast preset');
+  assert.equal(overridden.phase8TimeBudgetMs, null, 'unspecified property must inherit from fast preset');
   assert.deepEqual(overridden.renderProvenanceBudget, { maxTransformRecords: 64 }, 'explicit provenance budget must override preset');
 
   // Default options inherit fast preset
   const defaultOpts = applyDecompilerProfile({});
-  assert.equal(defaultOpts.decompilerTimeBudgetMs, 30);
-  assert.equal(defaultOpts.phase8TimeBudgetMs, 30);
+  assert.equal(defaultOpts.decompilerTimeBudgetMs, null);
+  assert.equal(defaultOpts.transformSafetyCeilingMs, 2000);
+  assert.equal(defaultOpts.phase8TimeBudgetMs, null);
   assert.equal(defaultOpts.phase8WorkBudget, 10000);
   assert.deepEqual(defaultOpts.renderProvenanceBudget, { maxTransformRecords: 128 });
   assert.deepEqual(defaultOpts.renderProvenanceBindingBudget, { maxConsumers: 256 });
