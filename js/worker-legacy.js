@@ -540,8 +540,12 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
    * バイナリを読んで自分で名前を作る（詳しくは objcStubNames）。
    */
   try {
-    for (const s of await objcStubNames(slice, entries, requestId)) {
+    const stubRecovered = await objcStubNames(slice, entries, requestId);
+    for (const s of stubRecovered) {
       entries.push({ addr: s.addr, name: s.name, kind: 1 });
+    }
+    if (stubRecovered?.truncated) {
+      capped = true;
     }
   } catch { /* 読めなければ名前を足さないだけ */ }
 

@@ -17,17 +17,46 @@
     SUPPLEMENTAL_NAMES: 80_000,
     SUPPLEMENTAL_STRING_BYTES: 8 * MiB,
     SUPPLEMENTAL_OPERATIONS: 2_000_000,
-    SUPPLEMENTAL_WALL_MS: 3000,
-    createSupplementalBudget() {
-      const start = Date.now();
+    // Wall-clock stops made parse output depend on host speed. Work is strictly
+    // bounded by the deterministic count/byte/operation limits; a wall-clock
+    // stop applies only when an explicit wallClockMs limit is provided.
+    SUPPLEMENTAL_WALL_MS: Infinity,
+    createSupplementalBudget(options = {}) {
+      const limits = options?.limits || options || {};
+      const now = typeof limits.now === 'function' ? limits.now : Date.now;
+      const start = now();
+      const maxWallMs = limits.maxWallMs !== undefined && typeof limits.maxWallMs === 'number' && limits.maxWallMs >= 0
+        ? limits.maxWallMs
+        : Infinity;
       const used = { read:0, resident:0, regions:0, names:0, strings:0, operations:0 };
+      let truncated = false;
+      let truncationReason = null;
+      const markTruncated = (reason) => {
+        truncated = true;
+        if (!truncationReason) truncationReason = reason;
+      };
+      const checkWall = () => {
+        if (Number.isFinite(maxWallMs) && now() - start > maxWallMs) {
+          markTruncated('budget:wall-clock');
+          return false;
+        }
+        return true;
+      };
       const take = (key, amount, limit) => {
         if (typeof amount !== 'number') return false;
         const n = amount;
-        if (!Number.isFinite(n) || n < 0 || Date.now() - start > 3000 || used[key] + n > limit) return false;
+        if (!Number.isFinite(n) || n < 0) return false;
+        if (!checkWall()) return false;
+        if (used[key] + n > limit) {
+          markTruncated(`budget:${key}`);
+          return false;
+        }
         used[key] += n; return true;
       };
       return {
+        get truncated() { return truncated; },
+        get truncationReason() { return truncationReason; },
+        markTruncated,
         takeRead:(n)=>take('read',n,32*MiB), takeResident:(n)=>take('resident',n,8*MiB),
         /*
          * Release must be as strict as take. Only a finite positive primitive
@@ -36,7 +65,7 @@
         releaseResident(n){ if(typeof n!=='number'||!Number.isFinite(n)||n<=0) return; used.resident=Math.max(0,used.resident-n); },
         takeRegion:(n=1)=>take('regions',n,128), takeName:(n=1)=>take('names',n,80_000),
         takeString:(n)=>take('strings',n,8*MiB), takeOperation:(n=1)=>take('operations',n,2_000_000),
-        expired:()=>Date.now()-start>3000, snapshot:()=>({...used,elapsedMs:Date.now()-start}),
+        expired:()=>!checkWall(), snapshot:()=>({...used,elapsedMs:now()-start,truncated,truncationReason}),
       };
     },
     functionAuxLimit(requested) {
