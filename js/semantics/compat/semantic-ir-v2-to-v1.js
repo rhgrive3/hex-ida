@@ -23,6 +23,25 @@ const stateTransitions = new WeakMap();
 const expectedStateTransitions = new WeakMap();
 const expectedStateNormalizations = new WeakMap();
 
+// Reuse only the composed write-list identity, never a match result. Internal
+// transition/range histories publish frozen arrays, so their contents cannot
+// change between validation calls. Stable list identity lets the existing
+// synchronous validation batch recognize repeated exact write sets instead of
+// missing on a freshly allocated spread array every time.
+const composedFrozenWriteLists = new WeakMap();
+function combinedWriteList(writes, following) {
+  if (!Array.isArray(writes) || !Array.isArray(following)) return null;
+  if (!Object.isFrozen(writes) || !Object.isFrozen(following)) return [...writes, ...following];
+  let perFollowing = composedFrozenWriteLists.get(writes);
+  if (!perFollowing) composedFrozenWriteLists.set(writes, perFollowing = new WeakMap());
+  let combined = perFollowing.get(following);
+  if (!combined) {
+    combined = Object.freeze([...writes, ...following]);
+    perFollowing.set(following, combined);
+  }
+  return combined;
+}
+
 // Producer identity only, not a currentness or semantic-equivalence claim.
 export function isIssuedSemanticProjection(projected) {
   return expectedStateTransitions.has(projected);
@@ -66,7 +85,7 @@ export function observeProjectedOperationData(projected, transitions) {
       && own(roots[0], flatIndex) === instruction)
     && (writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
       : captured.matchesThroughWrites(writes) || observedRangeAnnotationsMatch(projected,
-        { matchesThroughWrites:ranges => captured.matchesThroughWrites([...writes, ...ranges]) }));
+        { matchesThroughWrites:ranges => captured.matchesThroughWrites(combinedWriteList(writes, ranges)) }));
   // The ordinary predicate remains strict even if a caller passes arguments.
   // The separate method is only a pure-data comparison, never write authority.
   const workItems = captured.metrics.nodes + captured.metrics.edges + roots.length
