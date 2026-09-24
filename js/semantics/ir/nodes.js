@@ -201,7 +201,10 @@ export function createSemanticNode(input) {
     if (arity === 'output') fail('semantic-ir-node-output-arity');
   }
   if (kind === 'binary') {
-    if (out.operator == null) fail('semantic-ir-invalid-operator');
+    // A binary node without an operator is only representable as an explicit,
+    // fail-closed partial with unknown detail (an unresolved managed spelling,
+    // #8767). Complete binary nodes must always name a canonical operator.
+    if (out.operator == null && (out.completeness === 'complete' || out.unknown == null)) fail('semantic-ir-invalid-operator');
     if (out.completeness === 'complete' && (out.operator === 'div' || out.operator === 'rem' || out.operator === 'smod' || out.operator === 'umod')) {
       fail('semantic-ir-invalid-operator');
     }
