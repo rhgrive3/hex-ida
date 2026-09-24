@@ -275,6 +275,76 @@ function fastJsonGraphDigest(value) {
   return fastJsonTextDigest(typedIdentityText(value));
 }
 
+// Fresh Phase 8 stages never compare artifacts across different IR objects.
+// Their shape is an acyclic projection that deliberately shares definition
+// objects between block/instruction/value views. Canonical identity expands the
+// same shared definition text at every reference because it must remain
+// content-equivalent across clones. A stage-local identity is private to one
+// exact IR object, so encode repeated object references as small deterministic
+// back-references instead. Direct/cross-run callers continue to use the
+// canonical serializer below.
+function typedStageIdentityText(root) {
+  const active = new Set();
+  const ids = new Map();
+  let nextId = 0;
+
+  const visit = (value) => {
+    if (value === null) return 'null;';
+    switch (typeof value) {
+      case 'undefined': return 'undefined;';
+      case 'function':
+      case 'symbol':
+        throw new TypeError('identity-invalid-semantic-metadata');
+      case 'string': return `string:${value.length}:${value};`;
+      case 'boolean': return value ? 'boolean:1;' : 'boolean:0;';
+      case 'number':
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        return `number:${Object.is(value, -0) ? '-0' : String(value)};`;
+      case 'bigint': return `bigint:${value};`;
+      default: break;
+    }
+
+    if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+    if (ids.has(value)) return `reference:${ids.get(value)};`;
+    const id = nextId++;
+    ids.set(value, id);
+    active.add(value);
+    try {
+      const keys = semanticOwnKeys(value);
+      if (Array.isArray(value)) {
+        const ownKeys = new Set(keys);
+        let items = '';
+        for (let index = 0; index < value.length; index += 1) {
+          const key = String(index);
+          items += ownKeys.has(key) ? visit(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+        }
+        const extras = keys.filter((key) => !arrayIndexKey(key)).sort();
+        const properties = extras.length === 0 ? '' : `properties:${extras.length}{${extras.map((key) => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          return `key:${key.length}:${key};${visit(descriptor.value)}`;
+        }).join('')}}`;
+        return `node:${id};array:${value.length}[${items}]${properties}`;
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError('identity-unsupported-stage-shape');
+      }
+      const sortedKeys = keys.sort();
+      return `node:${id};object:${sortedKeys.length}{${sortedKeys.map((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return `key:${key.length}:${key};${visit(descriptor.value)}`;
+      }).join('')}}`;
+    } finally {
+      active.delete(value);
+    }
+  };
+  return visit(root);
+}
+
+function fastStageGraphDigest(value) {
+  return fastJsonTextDigest(typedStageIdentityText(value));
+}
+
 /**
  * Convert the parts of the IR that affect scalar semantics to a deterministic
  * acyclic value.  Definitions contain back references (`dst`) and values keep
@@ -772,7 +842,7 @@ export function analysisIdentityMatches(observed, expected) {
  * often carry no binary loader IDs, so the fallback is a deterministic digest
  * of the IR shape, never a wall-clock or architecture-name guess.
  */
-export function canonicalAnalysisIdentity(context = {}) {
+export function canonicalAnalysisIdentity(context = {}, options = {}) {
   const seededCfg = context?.analysis?.get?.('cfg') ?? null;
   const seededSsa = context?.analysis?.get?.('ssa') ?? null;
   const seededOrigins = context?.analysis?.get?.('origins') ?? null;
@@ -803,20 +873,31 @@ export function canonicalAnalysisIdentity(context = {}) {
   // `shape` is the acyclic plain projection assembled above. Use the same
   // width-preserving typed serializer as canonical origins; malformed values
   // fail closed instead of falling back to a lossy alternate representation.
+  const stageLocal = options?.stageLocal === true;
+  // Explicit/caller-issued semantic/SSA identities participate in the canonical
+  // cross-object contract. Never reinterpret them with the stage-local spelling.
+  if (stageLocal && (source != null || irSourceIdentity != null
+      || field(ir, 'semanticIrId', 'semanticIRId') != null || field(ir, 'ssaId') != null
+      || field(ir, 'analyzerVersion', 'semanticSchemaVersion') != null)) {
+    return canonicalAnalysisIdentity(context);
+  }
   let shapeDigest;
-  try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
+  try { shapeDigest = `shape:${stageLocal ? fastStageGraphDigest(shape) : fastJsonGraphDigest(shape)}`; }
   catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
   const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
   const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
   const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;
   const semanticIrId = field(source, 'semanticIrId', 'semanticIRId') ?? field(ir, 'semanticIrId', 'semanticIRId')
     ?? `semantic-ir:${stableDigest({ snapshotId, functionId, shapeDigest })}`;
-  const computedSsaDigest = ssaIdentityDigest(semanticIrId, shape.values);
+  const computedSsaDigest = stageLocal
+    ? fastJsonTextDigest(`stage-ssa:${semanticIrId}:${shapeDigest}`)
+    : ssaIdentityDigest(semanticIrId, shape.values);
   if (computedSsaDigest == null) return { identity: null, valid: false, reason: 'canonical SSA identity is unavailable' };
   const ssaId = field(source, 'ssaId') ?? field(ir, 'ssaId')
     ?? `ssa:${computedSsaDigest}`;
   const analyzerVersion = field(source, 'analyzerVersion', 'semanticSchemaVersion')
-    ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion') ?? 'phase8-analysis-v1';
+    ?? field(ir, 'analyzerVersion', 'semanticSchemaVersion')
+    ?? (stageLocal ? 'phase8-stage-local-v1' : 'phase8-analysis-v1');
   const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });
   if (!isValidatedAnalysisIdentity(identity)) return { identity: null, valid: false, reason: 'analysis identity fields are invalid' };
   if (!sameKnownSourceFields(identity, source) || !sameKnownSourceFields(identity, irSourceIdentity)
@@ -825,6 +906,10 @@ export function canonicalAnalysisIdentity(context = {}) {
     return { identity: null, valid: false, reason: 'analysis identity is stale for the Semantic IR' };
   }
   return { identity, valid: true, reason: null };
+}
+
+export function stageAnalysisIdentity(context = {}) {
+  return canonicalAnalysisIdentity(context, { stageLocal:true });
 }
 
 export { REQUIRED_FIELDS as ANALYSIS_IDENTITY_FIELDS, fastJsonTextDigest };
