@@ -524,9 +524,15 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
     const addressExpr = arm64AddressOffset(addressing.addressExpr, BigInt(i * strideBytes));
     const access = accessFor({ ctx, addressExpr, widthBits });
     faults.push(...possibleFaults(isLoad?'read':'write', { alignment:faultAlignment(widthBits), addressExpr, accessIndex:i, tagChecked:isTagChecked(addressing) }));
+    const laneDisplacement = addressing.metadata?.addressDisplacement != null
+      ? (BigInt(addressing.metadata.addressDisplacement) + BigInt(i * strideBytes)).toString()
+      : null;
+    const laneAddressing = laneDisplacement != null
+      ? Object.freeze({ ...addressing.metadata, addressDisplacement: laneDisplacement })
+      : addressing.metadata;
     const metadata = {
       architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes,
-      accessOrder:i, signed, addressing:addressing.metadata, ...(nonTemporal ? { nonTemporal:true } : {}),
+      accessOrder:i, signed, addressing:laneAddressing, ...(nonTemporal ? { nonTemporal:true } : {}),
     };
     if (isLoad) {
       const raw = arm64Temporary(`load.raw.${i}`, widthBits);
