@@ -93,12 +93,15 @@ export class SolverRegistry {
   }
 }
 
-export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true } = {}) {
+export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true, backendTier = 'tiered' } = {}) {
   const registry = new SolverRegistry({ allowNonExactDefault: false });
+  if (!['exhaustive', 'tiered'].includes(backendTier)) throw new TypeError('backendTier must be exhaustive or tiered');
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
-  const backend = canUseWorker
-    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined, maxBvWidth: 64 })
-    : new TieredBvBackend();
+  const backend = backendTier === 'exhaustive'
+    ? new ExhaustiveBvBackend()
+    : canUseWorker
+      ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined, maxBvWidth: 64 })
+      : new TieredBvBackend();
   registry.registerBackend(backend);
   return registry;
 }

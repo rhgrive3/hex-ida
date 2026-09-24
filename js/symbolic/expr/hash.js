@@ -44,7 +44,7 @@ export function computeStructuralHash(node) {
       // Fresh symbols are independent variables even when they share a name;
       // the solver binds them by symbolId, so structural identity must agree
       // with solver binding identity (#3246).
-      canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
+      canonicalRep = `SYM:${sortStr}:${JSON.stringify([node.symbolId ?? null, node.name])}`;
       break;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -82,7 +82,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.CAST:
-      canonicalRep = `CAST:${node.op}:${sortStr}(${computeStructuralHash(node.arg)})`;
+      canonicalRep = `CAST:${node.op}:${node.targetWidth ?? ""}:${sortStr}(${computeStructuralHash(node.arg)})`;
       break;
 
     default:
@@ -209,7 +209,7 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
           canonicalRep = `CONST:${sortStr}:${typeof node.value === 'bigint' ? `0x${node.value.toString(16)}` : String(node.value)}`;
           break;
         case EXPR_KIND.FRESH_SYMBOL:
-          canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
+          canonicalRep = `SYM:${sortStr}:${JSON.stringify([node.symbolId ?? null, node.name])}`;
           break;
         case EXPR_KIND.UNKNOWN_SEMANTIC:
           if (!boundedAcyclicValue(node.detail)) return Object.freeze({ ok: false, reason: 'malformed-unknown-detail', nodeCount });
@@ -223,7 +223,7 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
         case EXPR_KIND.ITE: canonicalRep = `ITE:${sortStr}(${childHashes.join(',')})`; break;
         case EXPR_KIND.EXTRACT: canonicalRep = `EXTRACT:${sortStr}[${node.high}:${node.low}](${childHashes[0]})`; break;
         case EXPR_KIND.CONCAT: canonicalRep = `CONCAT:${sortStr}(${childHashes.join(',')})`; break;
-        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}(${childHashes[0]})`; break;
+        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${node.targetWidth ?? ""}:${sortStr}(${childHashes[0]})`; break;
         default: canonicalRep = `GENERIC:${node.kind}:${sortStr}`;
       }
       hashes.set(node, sha256Hex(canonicalRep));
@@ -247,7 +247,7 @@ export function structuralEquals(a, b) {
     case EXPR_KIND.FRESH_SYMBOL:
       // Structural identity equals solver binding identity: symbolId first,
       // name-only comparison only for legacy nodes without a symbolId.
-      if (a.symbolId != null || b.symbolId != null) return a.symbolId === b.symbolId;
+      if (a.symbolId != null || b.symbolId != null) return a.symbolId === b.symbolId && a.name === b.name;
       return a.name === b.name;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
