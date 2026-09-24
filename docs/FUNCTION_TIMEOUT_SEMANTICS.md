@@ -28,3 +28,14 @@ The timeout model is a two-tier watchdog:
 
 3. **Machine-Readable Case Output:**
    - Case records and summaries accurately reflect all function states, including hard and soft timeouts, without losing intermediate progress or corrupting schema contracts.
+
+## Product-Facing Timeout and Budget Semantics
+
+Outside benchmark harnesses with process-boundary supervision:
+- **`product.query.decompile` (and underlying `decompile()`):**
+  - All timeouts and cancellation signals (`options.signal`, `options.decompilerTimeBudgetMs`, `options.phase8TimeBudgetMs`) are **best-effort (cooperative)**.
+  - In-process passes check deadlines and abort signals at loop, phase, or pass boundaries. CPU-bound or uncooperative work within an atomic step cannot be forcefully interrupted without a process boundary.
+- **CLI and Single-Process Tools:**
+  - Tools running in a single Node.js process without a supervisor watchdog (such as `tools/validation/public-benchmark/profile-fresh.mjs`) use cooperative in-process abort (`AbortController`). While they coerce any completion exceeding `functionTimeoutMs` from `PASS` to `TIMEOUT`, they cannot forcibly preempt hung synchronous CPU execution.
+  - Multi-process harnesses (`run-fresh-case.mjs`, `measure-functions.mjs`) provide the authoritative hard watchdog tier via `SIGKILL` supervision.
+
