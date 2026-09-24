@@ -564,43 +564,76 @@ export function runPhase8Vertical(context = {}, budget = {}) {
  */
 export function runPhase8Stage(context = {}, options = {}) {
   const stages = options.stages ?? INTERACTIVE_STAGES;
-  const started = clock();
-  const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
-  const explicitDeadline = options.timeBudgetMs != null;
-  const parsedTimeBudget = explicitDeadline && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
+  const readClock = typeof options.clock === 'function' ? options.clock
+    : typeof context.opts?.transformClock === 'function' ? context.opts.transformClock : clock;
+  const started = readClock();
+  const external = typeof options.shouldAbort === 'function' ? options.shouldAbort
+    : typeof context.opts?.shouldAbort === 'function' ? context.opts.shouldAbort : null;
+  const explicitTimeBudget = options.timeBudgetMs != null;
+  const parsedTimeBudget = explicitTimeBudget && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
   // Invalid explicit deadlines fail closed as an immediate cancellation. A
   // NaN deadline would otherwise never compare true and silently disable the
   // caller's requested resource bound.
-  const timeBudgetMs = explicitDeadline && Number.isFinite(parsedTimeBudget)
-    ? Math.max(0, parsedTimeBudget) : explicitDeadline ? 0 : null;
-  const deadline = explicitDeadline ? started + timeBudgetMs : null;
+  const timeBudgetMs = explicitTimeBudget && Number.isFinite(parsedTimeBudget)
+    ? Math.max(0, parsedTimeBudget) : explicitTimeBudget ? 0 : null;
+  const inheritedDeadline = options.deadline ?? context.opts?.transformDeadline ?? null;
+  const validInheritedDeadline = typeof inheritedDeadline === 'number' && Number.isFinite(inheritedDeadline)
+    ? inheritedDeadline : null;
+  const localDeadline = explicitTimeBudget ? started + timeBudgetMs : null;
+  const deadline = localDeadline == null ? validInheritedDeadline
+    : validInheritedDeadline == null ? localDeadline : Math.min(localDeadline, validInheritedDeadline);
+  const hasDeadline = deadline != null;
+  const deadlineReason = explicitTimeBudget && (validInheritedDeadline == null || localDeadline <= validInheritedDeadline)
+    ? 'phase8-time-budget'
+    : validInheritedDeadline != null
+      ? options.deadlineReason ?? context.opts?.transformDeadlineReason ?? 'transform-safety-ceiling'
+      : null;
   const parsedWorkBudget = options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET;
   const maxWorkItems = Number.isSafeInteger(parsedWorkBudget) && parsedWorkBudget >= 0
     ? parsedWorkBudget : 0;
   let workChecks = 0;
+  let workBudgetExceeded = false;
+  let deadlineExceeded = false;
+  let externalAbort = false;
   const budget = {
     timeBudgetMs,
     deadline,
-    deterministic: !explicitDeadline,
+    deterministic: !hasDeadline,
     maxWorkItems,
     budgetClass: options.budgetClass ?? 'interactive',
     shouldAbort: () => {
       if (external != null) {
         try {
-          if (external() === true) return true;
+          if (external() === true) { externalAbort = true; return true; }
         } catch {
+          externalAbort = true;
           return true;
         }
       }
-      if (workChecks >= maxWorkItems) return true;
+      if (hasDeadline && readClock() >= deadline) { deadlineExceeded = true; return true; }
+      if (workChecks >= maxWorkItems) { workBudgetExceeded = true; return true; }
       workChecks += 1;
-      return explicitDeadline && clock() >= deadline;
+      return false;
     },
   };
-  PUBLICATION_DEADLINES.set(budget, () => explicitDeadline && clock() >= deadline);
+  PUBLICATION_DEADLINES.set(budget, () => {
+    if (!hasDeadline || readClock() < deadline) return false;
+    deadlineExceeded = true;
+    return true;
+  });
   try {
     const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
-    return { ...outcome, elapsedMs: clock() - started };
+    const stopReason = workBudgetExceeded ? 'transform-work-budget'
+      : deadlineExceeded ? deadlineReason : null;
+    let ledger = outcome.ledger;
+    if (stopReason && ledger?.published === false) {
+      ledger = { ...ledger, stopReason };
+      ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
+      ledger = Object.freeze(ledger);
+    }
+    return { ...outcome, ledger,
+      budget: Object.freeze({ maxWorkItems, workChecks, workBudgetExceeded, deadlineExceeded, externalAbort, stopReason }),
+      elapsedMs: readClock() - started };
   } finally {
     PUBLICATION_DEADLINES.delete(budget);
   }
