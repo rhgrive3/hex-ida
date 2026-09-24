@@ -46,13 +46,15 @@ test('known direct callee can use explicit prototype evidence and marks exactnes
   assert.equal(unit.prototypes[0].exact, true);
 });
 
-test('unknown/unresolved call gets no fake exact or variadic prototype and uncertainty is explicit', () => {
+test('unknown/unresolved call keeps an explicit unresolved entry and a syntax-only fallback prototype', () => {
   const unit = buildCTranslationUnit([fn('uint64 sample(void)\n{\n  return mystery();\n}', {
     ir:{ instructions:[call(0x444n, 'mystery')] },
   })]);
   assert.equal(unit.prototypes.length, 0);
   assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-prototype' && row.subject === 'mystery'));
-  assert.doesNotMatch(unit.source, /extern\s+.*mystery|mystery\s*\(\.\.\.\)/);
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t mystery();')));
+  assert.match(unit.source, /uint64_t mystery\(\);/);
+  assert.doesNotMatch(unit.source, /mystery\s*\(\.\.\.\)/);
 });
 
 test('known global data reference gets an evidence-backed declaration using the rendered identifier', () => {
@@ -64,21 +66,25 @@ test('known global data reference gets an evidence-backed declaration using the 
   assert.ok(unit.source.indexOf('extern uint64_t global_4000;') < unit.source.indexOf('uint64_t sample(void)'));
 });
 
-test('insufficient global type evidence stays unresolved instead of guessing uint64_t', () => {
+test('insufficient global type evidence stays unresolved with an explicit byte-array syntax fallback', () => {
   const unit = buildCTranslationUnit([fn('uint64_t sample(void)\n{\n  return global_5000;\n}')]);
   assert.equal(unit.globals[0].declaration, null);
   assert.equal(unit.globals[0].certainty, 'unresolved');
   assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-global' && row.subject === 'global_5000'));
   assert.doesNotMatch(unit.source, /extern\s+uint64_t\s+global_5000/);
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('extern uint8_t global_5000[];')));
 });
 
-test('unknown_call and pseudo intrinsics are not converted into fictional external helpers', () => {
+test('unknown_call and pseudo intrinsics keep their unresolved entries plus syntax-only fallback prototypes', () => {
   const unit = buildCTranslationUnit([fn('uint64 sample(void)\n{\n  return phi(unknown_call(1), bit_extract(2, 0, 1));\n}')]);
   assert.deepEqual(unit.helpers.map((row) => [row.name, row.kind]), [
     ['bit_extract', 'pseudo-intrinsic'], ['phi', 'pseudo-intrinsic'], ['unknown_call', 'unresolved-call-sentinel'],
   ]);
   assert.ok(unit.helpers.every((row) => row.declaration === null && row.external === false));
-  assert.doesNotMatch(unit.source, /extern[^\n]*(?:unknown_call|phi|bit_extract)/);
+  assert.ok(unit.unresolved.some((row) => row.kind === 'pseudo-intrinsic' && row.subject === 'phi'));
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t phi();')));
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t unknown_call();')));
+  assert.match(unit.source, /uint64_t phi\(\);/);
 });
 
 test('duplicate declarations are emitted once and order is deterministic', () => {

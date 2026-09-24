@@ -3,10 +3,12 @@
  *
  * This is deliberately additive.  Function-scoped decompile() keeps returning
  * the same pseudocode presentation; callers that want a C translation unit opt
- * into this packager.  Declarations are emitted only from evidence supplied by
- * the decompiler/analysis layers.  Missing evidence stays explicit and no fake
- * old-style/variadic prototype, scalar global type, or runtime helper is made up
- * just to silence a compiler.
+ * into this packager.  Evidence-backed declarations keep their evidence kind;
+ * names with no usable evidence also get an explicit syntax-only fallback
+ * (extern byte-array globals, unspecified-arity callee/pseudo-intrinsic
+ * prototypes) so the packaged source parses.  Every fallback keeps its
+ * unresolved entry: the unit stays `partial` and the missing evidence stays
+ * named in `unresolved`.
  */
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -17,6 +19,16 @@ const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
 ]));
 
 const C_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const KEYWORDS = new Set([
+  'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double',
+  'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
+  'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct',
+  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while',
+  // Language constructs that appear as `name(` in emitted text but are never
+  // declarable identifiers; a fallback prototype for them would not parse.
+  '_Bool', '_Complex', '_Static_assert', '_Alignof', 'alignof', 'asm', '__asm', '__asm__',
+  'true', 'false', 'NULL',
+]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
 const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
 
@@ -83,6 +95,7 @@ function aliasContractsForText(text, headers, declarations) {
   const source = declarationBearingText(text);
   for (const [alias, standard] of FIXED_WIDTH_ALIASES) {
     if (!new RegExp(`\\b${alias}\\b`).test(source)) continue;
+    if (new RegExp(`typedef\\s+[^;]*\\b${alias}\\s*;`).test(source)) continue;
     headers.add('<stdint.h>');
     declarations.add(`typedef ${standard} ${alias};`);
   }
@@ -102,6 +115,28 @@ function signatureDeclaration(signature) {
   const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
   if (!text || !text.includes('(') || !text.endsWith(')')) return null;
   return `${text};`;
+}
+
+/*
+ * A producer-supplied signature line, not a comment/typedef/prelude line.  The
+ * final public text starts with the fixed-width prelude, so the first line of
+ * the pseudocode is not the signature when the producer did not carry one.
+ */
+function looksLikeSignature(text) {
+  const value = String(text ?? '').trim();
+  if (!value || /[;{}]/.test(value)) return false;
+  return /^[A-Za-z_][A-Za-z0-9_\s*]*\b[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*$/.test(value);
+}
+
+function signatureFromText(text) {
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('/*') || line.startsWith('//') || line.startsWith('#')) continue;
+    if (looksLikeSignature(line)) return line;
+    // The signature, when present, precedes the function body.
+    if (line === '{' || line.endsWith('{')) break;
+  }
+  return null;
 }
 
 function instructionList(fn) {
@@ -206,17 +241,58 @@ function globalRecords(fn, symbolFor) {
   return [...records.values()];
 }
 
-function pseudoRequirements(source) {
+function selectedFnName(fn) {
+  return String(fn?.name ?? functionName(fn) ?? '');
+}
+
+function globalAddressForName(globalMap, name) {
+  for (const [key, row] of globalMap) {
+    if (row?.names?.has?.(name) || row?.renderedNames?.has?.(name)) return key;
+  }
+  return null;
+}
+
+function callLikeCallees(source) {
   const names = new Set();
   for (const match of declarationBearingText(source).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
     const name = match[1];
-    if (name === 'unknown_call' || PSEUDO_INTRINSIC.test(name)) names.add(name);
+    if (!C_IDENTIFIER.test(name)) continue;
+    if (KEYWORDS.has(name)) continue;
+    names.add(name);
+  }
+  return [...names];
+}
+
+function globalLikeNames(source) {
+  const names = new Set();
+  for (const match of declarationBearingText(source).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    const name = match[1];
+    if (!C_IDENTIFIER.test(name)) continue;
+    if (KEYWORDS.has(name)) continue;
+    if (/^global_/.test(name)) names.add(name);
   }
   return [...names];
 }
 
 function unresolved(kind, subject, reason, extra = {}) {
   return Object.freeze({ kind, subject, reason, declaration:null, ...extra });
+}
+
+function fallbackPrototypeFor(name) {
+  if (!C_IDENTIFIER.test(String(name ?? ''))) return null;
+  if (String(name).startsWith('global_')) return null;
+  return `uint64_t ${name}(); /* hex-tu-fallback: unresolved prototype evidence unavailable; syntax-only fallback. */`;
+}
+
+function fallbackGlobalFor(name) {
+  if (!C_IDENTIFIER.test(String(name ?? ''))) return null;
+  return `extern uint8_t ${name}[]; /* hex-tu-fallback: global type evidence unavailable; byte-array fallback. */`;
+}
+
+function fallbackHelperFor(name) {
+  if (!C_IDENTIFIER.test(String(name ?? ''))) return null;
+  if (name === 'unknown_call') return 'uint64_t unknown_call(); /* hex-tu-fallback: unresolved call sentinel; syntax-only fallback. */';
+  return `uint64_t ${name}(); /* hex-tu-fallback: helper without evidence-backed declaration; syntax-only fallback. */`;
 }
 
 function compareAddressThenName(a, b) {
@@ -236,11 +312,24 @@ function unresolvedComment(row) {
   return `/* hex-tu: ${row.kind} ${subject}: ${reason}; no declaration fabricated. */`;
 }
 
+/*
+ * Declaration text that will be emitted before the function bodies.  Aliases
+ * used here need their fixed-width contract emitted ahead of them.
+ */
+function declarationSectionText(declarations) {
+  return declarations
+    .map((row) => row?.declaration ?? row ?? '')
+    .filter((text) => typeof text === 'string' && text.trim())
+    .join('\n');
+}
+
 export function buildCTranslationUnit(functions, options = {}) {
   if (!Array.isArray(functions) || !functions.length) throw new TypeError('translation-unit-functions-required');
   const symbolFor = typeof options.symbolFor === 'function' ? options.symbolFor : () => null;
   const headers = new Set();
   const typeDeclarations = new Set();
+  const fallbackDeclarations = [];
+  const fallbackNames = new Set();
   const prototypeMap = new Map();
   const globalMap = new Map();
   const helperMap = new Map();
@@ -249,19 +338,30 @@ export function buildCTranslationUnit(functions, options = {}) {
   const normalizedFunctions = functions.map((fn, index) => {
     const pseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
     if (!pseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
-    const signature = String(fn?.signature ?? pseudocode.split(/\r?\n/, 1)[0] ?? '');
+    const suppliedSignature = String(fn?.signature ?? '');
+    const signature = looksLikeSignature(suppliedSignature)
+      ? suppliedSignature
+      : (signatureFromText(pseudocode) ?? (suppliedSignature || pseudocode.split(/\r?\n/, 1)[0] || ''));
     aliasContractsForText(pseudocode, headers, typeDeclarations);
     headersForText(pseudocode, headers);
     return {
       ...fn, index, address:functionAddress(fn), name:functionName({ ...fn, signature, pseudocode }),
+      // The name the emitted text itself defines.  It can differ from the
+      // evidence name (`_init` symbol vs `void init(void)` text), and a call to
+      // it is a call to this selected definition, never an unresolved callee.
+      renderedName:functionName({ name:null, signature, pseudocode }),
       signature, pseudocode, originalPseudocode:pseudocode,
     };
   });
 
   const selectedByAddress = new Map();
+  const selectedNames = new Set();
   for (const fn of normalizedFunctions) {
     const key = addressKey(fn.address);
     if (key != null) selectedByAddress.set(key, fn);
+    for (const candidate of [fn.name, fn.renderedName]) {
+      if (candidate) selectedNames.add(String(candidate));
+    }
   }
 
   for (const fn of normalizedFunctions) {
@@ -282,6 +382,12 @@ export function buildCTranslationUnit(functions, options = {}) {
         evidence = declaration ? 'selected-function-definition-signature' : null;
       }
       if (!declaration) {
+        const fallback = fallbackPrototypeFor(name);
+        if (fallback && !fallbackNames.has(name)) {
+          fallbackNames.add(name);
+          fallbackDeclarations.push(fallback);
+          headersForText('uint64_t', headers);
+        }
         unresolvedRows.push(unresolved('unresolved-prototype', name, 'prototype-evidence-unavailable', { address:addressText(call.target) }));
         continue;
       }
@@ -308,14 +414,40 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
 
-    for (const name of pseudoRequirements(fn.pseudocode)) {
+    for (const name of callLikeCallees(fn.pseudocode)) {
+      if (selectedNames.has(name)) continue;
+      if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
+      const fallback = fallbackHelperFor(name);
+      if (fallback && !fallbackNames.has(name)) {
+        fallbackNames.add(name);
+        fallbackDeclarations.push(fallback);
+        headersForText('uint64_t uint8_t', headers);
+      }
       if (name === 'unknown_call') {
         helperMap.set(name, Object.freeze({ name, kind:'unresolved-call-sentinel', declaration:null, external:false, requires:'callee-resolution' }));
         unresolvedRows.push(unresolved('unresolved-call-sentinel', name, 'callee-resolution-required'));
-      } else {
+      } else if (PSEUDO_INTRINSIC.test(name)) {
         helperMap.set(name, Object.freeze({ name, kind:'pseudo-intrinsic', declaration:null, external:false, requires:'lowering' }));
         unresolvedRows.push(unresolved('pseudo-intrinsic', name, 'semantic-lowering-required'));
+      } else {
+        helperMap.set(name, Object.freeze({ name, kind:'unresolved-callee', declaration:null, external:false, requires:'callee-resolution' }));
+        unresolvedRows.push(unresolved('unresolved-callee', name, 'callee-declaration-unavailable'));
+      }
+    }
+
+    for (const name of globalLikeNames(fn.pseudocode)) {
+      const address = globalAddressForName(globalMap, name);
+      if (address == null) {
+        const fallback = fallbackGlobalFor(name);
+        if (fallback && !fallbackNames.has(name)) {
+          fallbackNames.add(name);
+          fallbackDeclarations.push(fallback);
+          headersForText('uint8_t', headers);
+        }
+        if (!unresolvedRows.some((row) => row.kind === 'unresolved-global' && row.subject === name)) {
+          unresolvedRows.push(unresolved('unresolved-global', name, 'global-type-evidence-unavailable', {}));
+        }
       }
     }
   }
@@ -333,11 +465,20 @@ export function buildCTranslationUnit(functions, options = {}) {
     const types = [...row.types].sort();
     let declaration = null;
     let reason = null;
+    let fallback = null;
     if (renderedNames.length > 1) reason = 'conflicting-rendered-global-identifiers';
     else if (types.length === 1 && C_IDENTIFIER.test(name)) declaration = `extern ${types[0]} ${name};`;
     else reason = types.length > 1 ? 'conflicting-global-type-evidence' : 'global-type-evidence-unavailable';
     if (declaration) headersForText(declaration, headers);
-    else unresolvedRows.push(unresolved('unresolved-global', name, reason, { address:addressText(row.address) }));
+    else {
+      unresolvedRows.push(unresolved('unresolved-global', name, reason, { address:addressText(row.address) }));
+      fallback = reason === 'global-type-evidence-unavailable' ? fallbackGlobalFor(name) : null;
+      if (fallback && !fallbackNames.has(name)) {
+        fallbackNames.add(name);
+        fallbackDeclarations.push(fallback);
+        headersForText('uint8_t', headers);
+      }
+    }
     return Object.freeze({
       name, address:addressText(row.address), declaration, type:types.length === 1 ? types[0] : null,
       size:[...row.sizes].sort((a, b) => a - b)[0] ?? null, provenance:[...row.provenance].sort(),
@@ -345,10 +486,24 @@ export function buildCTranslationUnit(functions, options = {}) {
     });
   }).sort(compareAddressThenName);
 
+  /*
+   * Declaration sections (evidence prototypes, and any future
+   * declaration-bearing text) are emitted before the function texts, so an
+   * alias spelling such as `uint64` inside a prototype cannot rely on the
+   * per-function fixed-width prelude that follows it.  Give every alias used by
+   * an emitted declaration its standard fixed-width contract in the prelude.
+   * The definition is the standard spelling the decompiler already maps the
+   * alias to, so a later per-function `typedef __UINT64_TYPE__ uint64;`
+   * repeats an identical type, which C11 allows inside one translation unit.
+   */
+  const declarationAliasText = declarationSectionText([...prototypeMap.values()]);
+  if (declarationAliasText) aliasContractsForText(declarationAliasText, headers, typeDeclarations);
+
   const helpers = [...helperMap.values()].sort((a, b) => a.name.localeCompare(b.name));
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));
   const includes = [...headers].sort();
   const typeDecls = [...typeDeclarations].sort();
+  const fallbacks = fallbackDeclarations.slice().sort();
   const orderedFunctions = normalizedFunctions.slice().sort((a, b) => compareAddressThenName(a, b) || a.index - b.index);
 
   const sections = [];
@@ -358,11 +513,13 @@ export function buildCTranslationUnit(functions, options = {}) {
   if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
   const declaredGlobals = globals.filter((row) => row.declaration);
   if (declaredGlobals.length) sections.push(declaredGlobals.map((row) => row.declaration).join('\n'));
+  if (fallbacks.length) sections.push(`/* hex-tu-fallback-declarations: syntax-only fallbacks for evidence-missing externals; unresolved entries below stay explicit. */\n${fallbacks.join('\n')}`);
   if (unresolvedList.length) sections.push(unresolvedList.map(unresolvedComment).join('\n'));
   sections.push(orderedFunctions.map((fn) => fn.pseudocode.trim()).join('\n\n'));
 
   return Object.freeze({
     schema:'c-translation-unit/v1', includes:Object.freeze(includes), typeDeclarations:Object.freeze(typeDecls),
+    fallbackDeclarations:Object.freeze(fallbacks),
     prototypes:Object.freeze(prototypes), globals:Object.freeze(globals), helpers:Object.freeze(helpers), unresolved:Object.freeze(unresolvedList),
     functions:Object.freeze(orderedFunctions.map((fn) => Object.freeze({
       functionId:fn.functionId ?? null, address:addressText(fn.address), name:fn.name,
