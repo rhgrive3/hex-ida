@@ -62,7 +62,10 @@ export function buildDex(options = {}) {
   // DEX requires method_ids sorted by (class, name, proto). Sort a copy; an
   // already-sorted input keeps its indices.
   const cmpList = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
-  const methods = inputMethods.map((m, i) => ({ m, i })).sort((a, b) =>
+  // `rawOrder` keeps input order (one proto per method) for tests that build
+  // deliberately mis-ordered identity tables.
+  const raw = options.rawOrder === true;
+  const methods = raw ? inputMethods.slice() : inputMethods.map((m, i) => ({ m, i })).sort((a, b) =>
     (ti(a.m.classType) - ti(b.m.classType)) || (si(a.m.name) - si(b.m.name))
     || cmpList([ti(a.m.returnType), ...(a.m.params ?? []).map(ti)], [ti(b.m.returnType), ...(b.m.params ?? []).map(ti)]) || (a.i - b.i)).map(({ m }) => m);
   const data = new Uint8Array(65536), v = new DataView(data.buffer), maps = [[0,1,0]], layout = {};
@@ -75,10 +78,10 @@ export function buildDex(options = {}) {
   // type list); methods share one proto per distinct signature.
   const protoKeyOf = m => [ti(m.returnType), ...(m.params ?? []).map(ti)];
   const protoKeys = [];
-  for (const m of methods) { const k = protoKeyOf(m); if (!protoKeys.some(x => x.join() === k.join())) protoKeys.push(k); }
-  protoKeys.sort((a, b) => { if (a[0] !== b[0]) return a[0] - b[0]; for (let i = 1; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; });
-  const protoIndexOf = m => protoKeys.findIndex(k => k.join() === protoKeyOf(m).join());
-  const protoOwner = protoKeys.map(k => methods.find(m => protoKeyOf(m).join() === k.join()));
+  for (const m of methods) { const k = protoKeyOf(m); if (raw || !protoKeys.some(x => x.join() === k.join())) protoKeys.push(k); }
+  if (!raw) protoKeys.sort((a, b) => { if (a[0] !== b[0]) return a[0] - b[0]; for (let i = 1; i < Math.max(a.length, b.length); i++) { if (i >= a.length) return -1; if (i >= b.length) return 1; if (a[i] !== b[i]) return a[i] - b[i]; } return 0; });
+  const protoIndexOf = m => raw ? methods.indexOf(m) : protoKeys.findIndex(k => k.join() === protoKeyOf(m).join());
+  const protoOwner = raw ? methods.slice() : protoKeys.map(k => methods.find(m => protoKeyOf(m).join() === k.join()));
   reserve('protos',3,protoKeys.length,12,72); reserve('fields',4,fields.length,8,80);
   reserve('methods',5,methods.length,8,88); reserve('classes',6,classNames.length,32,96);
   align(); const dataStart = pos;
