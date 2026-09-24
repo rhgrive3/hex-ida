@@ -493,6 +493,8 @@ function declaredExactArgument(argument) {
 }
 
 function bindDeclaredScalarReturns(ir, input, options) {
+  const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
+  if (!prototype) return ir;
   const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
   if (!adapter || !declaredValuesObservable(ir)
     || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
