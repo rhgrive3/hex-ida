@@ -323,6 +323,11 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const receiverAuthorized = hasReceiverRevalidatedX86Row(provenanceSource);
 
   const family = String(instruction.instructionFamily || '').toLowerCase();
+  // Decoder metadata cannot authorize interrupt delivery. The dedicated INT
+  // lifter must validate its byte/operand evidence and declare the delivery
+  // state and accesses itself; a failed lift remains partial even for a
+  // receiver-revalidated row.
+  if (family === 'int') return partial;
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 

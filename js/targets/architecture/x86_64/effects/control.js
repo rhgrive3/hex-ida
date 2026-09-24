@@ -60,6 +60,7 @@ const DESCRIPTOR_STATE = 'sys:x86.descriptor-table-state';
 const CET_STATE = 'sys:x86.CET-state';
 const SHADOW_STACK_STATE = 'sys:x86.shadow-stack-state';
 const INTERRUPTIBILITY_STATE = 'sys:x86.interruptibility-state';
+const INTERRUPT_DELIVERY_CONTRACT = 'x86-long64-interrupt-delivery/v1';
 
 function trapEffect(ctx, family, featureMetadata) {
   if (family === 'ud2' || family === 'ud0' || family === 'ud1') {
@@ -87,18 +88,32 @@ function trapEffect(ctx, family, featureMetadata) {
     });
   }
   if (family === 'int') {
-    const vector = ctx.operands[0]?.type === 'immediate' ? Number(ctx.operands[0].value) : 0;
+    const vector = Number(ctx.operands[0].value);
     const vectorVal = ctx.constant(8, BigInt(vector));
+    const nextRip = ctx.constant(64, BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length));
+    const rspOperand = x86RegisterOperand('rsp');
+    const rflagsOperand = x86RegisterOperand('rflags');
+    const rsp = rspOperand ? ctx.readRegister(rspOperand) : null;
+    const rflags = rflagsOperand ? ctx.readRegister(rflagsOperand) : null;
+    if (!rsp || !rflags) {
+      return ctx.partial('x86-int-delivery-visible-state-unmodelled', ['control','faults','registers','memory','flags','other'], {
+        controlEffect:{ kind:'unknown', reason:'x86-int-delivery-visible-state-unmodelled' },
+      });
+    }
     const target = Object.freeze({
-      kind:'indirect',
-      source:`architectural interrupt delivery vector 0x${vector.toString(16).padStart(2,'0')} via IDTR/IDT gate`,
+      kind:'x86-interrupt-delivery-target',
+      contract:INTERRUPT_DELIVERY_CONTRACT,
+      vector,
+      source:'IDT handler or environment-selected virtualization exit from the declared delivery state',
     });
-    ctx.intrinsic('x86.control.interrupt-delivery', [vectorVal], [], {
+    // Match the system-instruction intrinsic contract: hidden architectural
+    // state is declared through registersRead and memory scopes, while the
+    // transfer target stays symbolic until IDT/TSS state is available.
+    ctx.intrinsic('x86.control.interrupt-delivery', [vectorVal, nextRip, rsp, rflags], [], {
       registersRead:[
-        'rsp',
-        'rflags',
-        'sys:x86.IDTR',
-        'sys:x86.TR',
+        'rsp', 'rflags',
+        'sys:x86.CS', 'sys:x86.SS', 'sys:x86.CPL',
+        'sys:x86.IDTR', 'sys:x86.GDTR', 'sys:x86.LDTR', 'sys:x86.TR', 'sys:x86.TSS',
         DESCRIPTOR_STATE,
         SEGMENT_STATE,
         CET_STATE,
@@ -107,8 +122,8 @@ function trapEffect(ctx, family, featureMetadata) {
         EXECUTION_ENV,
       ],
       registersWritten:[
-        'rsp',
-        'rflags',
+        'rsp', 'rflags',
+        'sys:x86.CS', 'sys:x86.SS', 'sys:x86.CPL',
         SEGMENT_STATE,
         'sys:x86.SSP',
         CET_STATE,
@@ -120,16 +135,22 @@ function trapEffect(ctx, family, featureMetadata) {
         scope:'all',
         spaces:['memory'],
         detail:{
-          kind:'interrupt-delivery-memory-read',
-          description:'IDT gate descriptor fetch (16 bytes), TSS descriptor/stack pointers fetch if privilege transition or IST',
+          kind:'x86-interrupt-delivery-reads',
+          contract:INTERRUPT_DELIVERY_CONTRACT,
+          vector,
+          dependencies:['IDTR/IDT gate','selected GDT/LDT code descriptor','TR/TSS stack state','conditional CET shadow-stack state'],
+          scopeMeaning:'conservative because addresses and conditional accesses depend on the declared architectural state',
         },
       },
       memoryWrite:{
         scope:'all',
         spaces:['memory'],
         detail:{
-          kind:'interrupt-delivery-stack-push',
-          description:'architectural interrupt frame push (SS, RSP, RFLAGS, CS, RIP, optional error code) and supervisor shadow stack pushes if CET active',
+          kind:'x86-interrupt-delivery-writes',
+          contract:INTERRUPT_DELIVERY_CONTRACT,
+          vector,
+          dependencies:['selected ordinary interrupt frame stack','conditional CET shadow stack'],
+          scopeMeaning:'conservative because stack addresses and writes depend on the declared architectural state',
         },
       },
       controlEffects:[{ kind:'indirect', target }],
@@ -138,10 +159,12 @@ function trapEffect(ctx, family, featureMetadata) {
       metadata:{
         operation:'int',
         vector,
+        deliveryContract:INTERRUPT_DELIVERY_CONTRACT,
+        requiredArchitecturalState:['IDTR/selected IDT gate','GDT/LDT code descriptor','CPL/CS/SS','TR/TSS/IST','RSP/RFLAGS','CET/shadow stack','execution/virtualization environment'],
         exactArchitecturalSummary:true,
         architecture:'x86-64',
         environmentDependent:true,
-        transition:'IDT gate lookup -> privilege/IST check -> stack switch -> push frame (SS, RSP, RFLAGS, CS, RIP) -> new CS:RIP & RFLAGS update',
+        transition:'IDT gate lookup -> DPL/present/type and target descriptor checks -> privilege/IST stack selection -> frame/shadow-stack writes -> new CS:RIP, RSP and RFLAGS, or architectural fault/intercept',
       },
     });
 
@@ -154,6 +177,9 @@ function trapEffect(ctx, family, featureMetadata) {
         { kind:'stack-segment', condition:{ kind:'x86-int-stack-fault', vector }, detail:{ fault:'#SS(0)' } },
         { kind:'page-fault', condition:{ kind:'x86-int-delivery-page-fault', vector }, detail:{ fault:'#PF' } },
         { kind:'alignment-check', condition:{ kind:'x86-int-delivery-alignment-fault', vector }, detail:{ fault:'#AC(0)' } },
+        { kind:'invalid-tss', condition:{ kind:'x86-int-tss-or-stack-selector-fault', vector }, detail:{ fault:'#TS(selector)' } },
+        { kind:'control-protection', condition:{ kind:'x86-int-cet-delivery-fault', vector }, detail:{ fault:'#CP' } },
+        { kind:'double-fault', condition:{ kind:'x86-int-fault-delivery-escalation', vector }, detail:{ fault:'#DF' } },
       ],
       metadata:{
         ...featureMetadata,
@@ -162,6 +188,7 @@ function trapEffect(ctx, family, featureMetadata) {
         architecturalTrap:false,
         interruptDeliveryModeled:true,
         environmentExact:true,
+        deliveryContract:INTERRUPT_DELIVERY_CONTRACT,
       },
     });
   }

@@ -42,7 +42,7 @@ test('T017 INT witness 238 lifts as exact-with-intrinsic with typed interrupt de
   }
 });
 
-test('T017 negative tests: malformed encoding or operands remain fail-closed', async () => {
+test('T017 negative tests: malformed encoding or operands stay fail-closed', async () => {
   const session = await createCapstoneX86Session();
   try {
     const decoded = session.decode(new Uint8Array([0xcd, 0x80]), 0x400000n);
@@ -67,6 +67,16 @@ test('T017 negative tests: malformed encoding or operands remain fail-closed', a
     assert.equal(mismatchedResult.completeness, 'partial');
     assert.equal(mismatchedResult.controlEffect?.kind, 'unknown');
     assert.equal(mismatchedResult.unknownEffects?.reason, 'x86-int-encoding-unmodelled');
+    const malformedReceiverRow = registerReceiverRevalidatedX86Row(mismatchedInstruction);
+    const terminalizedMismatch = closeTrustedX86Partial(
+      malformedReceiverRow,
+      'control',
+      mismatchedResult,
+      { closureMatrixTerminal:true },
+      malformedReceiverRow,
+    );
+    assert.equal(terminalizedMismatch.completeness, 'partial', 'generic decoder terminalization cannot close malformed INT');
+    assert.equal(terminalizedMismatch.unknownEffects?.reason, 'x86-int-encoding-unmodelled');
 
     // 3. Invalid operand width must fail closed
     const badWidthInstruction = createX86DecodedInstruction({
@@ -86,7 +96,7 @@ test('T017 negative tests: malformed encoding or operands remain fail-closed', a
   }
 });
 
-test('INT delivery models architectural delivery via typed intrinsic without invented target or trap', async () => {
+test('INT delivery declares architectural state and control effects in a typed intrinsic', async () => {
   const session = await createCapstoneX86Session();
   try {
     const bytes = bytesFromX86Long64WitnessHex('26cd00'); // ES: INT 0
@@ -101,14 +111,30 @@ test('INT delivery models architectural delivery via typed intrinsic without inv
     assert.equal(direct.completeness, 'exact-with-intrinsic');
     assert.equal(direct.controlEffect.kind, 'indirect');
     assert.notEqual(direct.controlEffect.kind, 'trap', 'INT must not be modeled as a simple trap');
+    assert.equal(direct.controlEffect.target?.kind, 'x86-interrupt-delivery-target');
+    assert.equal(direct.controlEffect.target?.vector, 0);
+    assert.equal(direct.controlEffect.target?.address, undefined, 'delivery state selects the target');
 
     const intrinsicOp = direct.operations.find((op) => op.kind === 'intrinsic');
     assert.ok(intrinsicOp, 'must carry intrinsic operation');
     assert.equal(intrinsicOp.intrinsicId, 'x86.control.interrupt-delivery');
+    assert.equal(intrinsicOp.effectSummary.inputs.length, 4);
     assert.equal(intrinsicOp.effectSummary.memoryRead.scope, 'all');
+    assert.deepEqual(intrinsicOp.effectSummary.memoryRead.spaces, ['memory']);
     assert.equal(intrinsicOp.effectSummary.memoryWrite.scope, 'all');
+    assert.deepEqual(intrinsicOp.effectSummary.memoryWrite.spaces, ['memory']);
+    assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.IDTR'));
+    assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.CPL'));
+    assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.TR'));
+    assert.ok(intrinsicOp.effectSummary.registersRead.includes('rsp'));
+    assert.ok(intrinsicOp.effectSummary.registersRead.includes('rflags'));
+    assert.ok(intrinsicOp.effectSummary.registersWritten.includes('rsp'));
+    assert.ok(intrinsicOp.effectSummary.registersWritten.includes('rflags'));
+    assert.equal(intrinsicOp.metadata?.deliveryContract, 'x86-long64-interrupt-delivery/v1');
+    assert.deepEqual(intrinsicOp.effectSummary.controlEffects, [direct.controlEffect]);
 
-    // Public / unbranded dispatch also lifts exact-with-intrinsic
+    // The intrinsic keeps unresolved machine state explicit in its read/write summary;
+    // no caller-provided delivery-state object or matrix flag is required.
     const publicResult = liftX86MachineEffects(instruction);
     assert.equal(publicResult.completeness, 'exact-with-intrinsic');
   } finally {

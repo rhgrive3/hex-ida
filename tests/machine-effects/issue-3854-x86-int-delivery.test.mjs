@@ -49,7 +49,10 @@ function assertIntDeliveryIntrinsic(bundle, label) {
   assert.ok(bundle, `${label}:owned`);
   assert.equal(bundle.completeness, 'exact-with-intrinsic', `${label}:completeness`);
   assert.equal(bundle.controlEffect.kind, 'indirect', `${label}:control`);
-  assert.equal(bundle.controlEffect.target?.kind, 'indirect', `${label}:control-target`);
+  assert.equal(bundle.controlEffect.target?.kind, 'x86-interrupt-delivery-target', `${label}:control-target`);
+  assert.equal(bundle.controlEffect.target?.vector, 0x20, `${label}:target-vector`);
+  assert.equal(bundle.controlEffect.target?.contract, 'x86-long64-interrupt-delivery/v1', `${label}:target-contract`);
+  assert.equal(bundle.controlEffect.target?.address, undefined, `${label}:no-invented-address`);
   assert.equal(bundle.unknownEffects, undefined, `${label}:no-unknown-effects`);
 
   assert.equal(bundle.metadata?.operation, 'int', `${label}:operation`);
@@ -61,12 +64,27 @@ function assertIntDeliveryIntrinsic(bundle, label) {
   const intrinsicOp = bundle.operations.find((op) => op.kind === 'intrinsic');
   assert.ok(intrinsicOp, `${label}:has-intrinsic-op`);
   assert.equal(intrinsicOp.intrinsicId, 'x86.control.interrupt-delivery', `${label}:intrinsic-id`);
-  assert.equal(intrinsicOp.effectSummary.memoryRead.scope, 'all', `${label}:memory-read-all`);
-  assert.equal(intrinsicOp.effectSummary.memoryWrite.scope, 'all', `${label}:memory-write-all`);
+  assert.equal(intrinsicOp.metadata?.summaryContractVersion, 'x86-intrinsic-summary/v1', `${label}:intrinsic-contract`);
+  assert.equal(intrinsicOp.metadata?.deliveryContract, 'x86-long64-interrupt-delivery/v1', `${label}:delivery-contract`);
+  assert.equal(intrinsicOp.effectSummary.inputs.length, 4, `${label}:vector-return-rip-rsp-rflags-inputs`);
+  assert.equal(intrinsicOp.effectSummary.inputs[0].value, '32', `${label}:vector-input`);
+  assert.equal(intrinsicOp.effectSummary.memoryRead.scope, 'all', `${label}:declared-memory-read-scope`);
+  assert.deepEqual(intrinsicOp.effectSummary.memoryRead.spaces, ['memory'], `${label}:declared-memory-read-space`);
+  assert.equal(intrinsicOp.effectSummary.memoryRead.detail?.kind, 'x86-interrupt-delivery-reads', `${label}:read-detail`);
+  assert.equal(intrinsicOp.effectSummary.memoryWrite.scope, 'all', `${label}:declared-memory-write-scope`);
+  assert.deepEqual(intrinsicOp.effectSummary.memoryWrite.spaces, ['memory'], `${label}:declared-memory-write-space`);
+  assert.equal(intrinsicOp.effectSummary.memoryWrite.detail?.kind, 'x86-interrupt-delivery-writes', `${label}:write-detail`);
   assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.IDTR'), `${label}:reads-IDTR`);
+  assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.CPL'), `${label}:reads-CPL`);
+  assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.GDTR'), `${label}:reads-GDTR`);
   assert.ok(intrinsicOp.effectSummary.registersRead.includes('sys:x86.TR'), `${label}:reads-TR`);
   assert.ok(intrinsicOp.effectSummary.registersRead.includes('rsp'), `${label}:reads-rsp`);
+  assert.ok(intrinsicOp.effectSummary.registersRead.includes('rflags'), `${label}:reads-rflags`);
   assert.ok(intrinsicOp.effectSummary.registersWritten.includes('rsp'), `${label}:writes-rsp`);
+  assert.ok(intrinsicOp.effectSummary.registersWritten.includes('rflags'), `${label}:writes-rflags`);
+  assert.ok(intrinsicOp.effectSummary.registersWritten.includes('sys:x86.CS'), `${label}:writes-CS`);
+  assert.ok(intrinsicOp.effectSummary.registersWritten.includes('sys:x86.SS'), `${label}:writes-SS`);
+  assert.deepEqual(intrinsicOp.effectSummary.controlEffects, [bundle.controlEffect], `${label}:intrinsic-control-effect`);
 
   assert.equal(
     bundle.possibleFaults.some((fault) => fault?.kind === 'software-interrupt' && fault?.condition?.kind === 'always'),
