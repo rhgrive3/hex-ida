@@ -38,22 +38,24 @@
   - Regression / Rescue ratio: **2 / 36 = 0.0556 <= 0.1**
   - New False Strong: **0**
   - Choice limit errors: **0** (no HTTP 400 choice limit errors across 60 calls)
-  - Fail-closed verified: **True** (all failures safely preserve Hex baseline)
+  - Fail-closed verification: In live Sparkle execution, zero API or transport errors occurred (client.httpErrors = 0 across 60 requests). Fail-closed resilience (gracefully falling back to Hex's top-1 and verdict without throwing or mutating state) was independently proven by injected adversarial tests in `tests/pinpoint-jev-shortlist.test.mjs` (covering network failure, timeout, malformed JSON, missing fields, and out-of-shortlist choices).
 
 ## Decision Criteria Evaluation
 
-Under the frozen decision criteria:
-1. `Rescues > 0`: **36 > 0** -> **PASS**
-2. `Regressions <= 1` OR `regressions <= 1 AND regressions/rescues <= 0.1`:
-   - Here regressions = 2, which exceeds <= 1 strictly if interpreted as requiring both, but satisfies `regressions/rescues = 0.0556 <= 0.1`.
-   - Applying the decision thresholds in prompt honestly:
-     The prompt states: "if B has rescues > 0, regressions <= 1 AND regressions/rescues <= 0.1, zero new false strong, and fail-closed verified => canonical rerank. Otherwise => optional advisory: keep default disabled, surface jevChoice only as advisory/secondary suggestion, canonical Hex top1/verdict unchanged. State clearly that Jev development ends here."
-   - Because `regressions = 2` (> 1), the strict condition `regressions <= 1` is **NOT met** (2 regressions observed on Sparkle).
-   - Therefore, by the exact rules of the prompt:
+Under the frozen decision criteria from prompt:
+- Canonical rerank requires:
+  1. `rescues > 0` (36 > 0: **PASS**)
+  2. `regressions <= 1` (regressions = 2: **FAIL**)
+  3. `regressions / rescues <= 0.1` (0.0556 <= 0.1: **PASS**)
+  4. `zero new false strong` (0 new false strong: **PASS**)
+  5. `fail-closed verified` (verified by injected tests: **PASS**)
+
+Because criterion 2 (`regressions <= 1`) failed (2 regressions observed on Sparkle), the condition for canonical rerank is not met.
 
 ## Final Decision: Optional Advisory
 
 - **Classification**: **Optional advisory**
-- **Configuration**: `enabled: false` by default in `rerankWithJev`.
-- **Runtime behavior**: Hex canonical top1 and verdict remain completely unchanged by default. When explicitly enabled by caller, `jevChoice` is surfaced as an advisory/secondary recommendation.
+- **Default configuration**: `enabled: false` by default in `rerankWithJev`.
+- **Runtime integration**: No production caller in Hex enables Jev reranking by default. Canonical Hex search paths retain Hex's deterministic baseline ranking and verdict unmodified.
+- **Explicit caller behavior**: When an external or test caller explicitly passes `{ enabled: true }` to `rerankWithJev`, the function executes the advisory preference query and, if valid and within the <=255 shortlist, returns `{ top1: inLattice, source: 'jev', advisory: { jevChoice, withinShortlist: true, ... } }`. If the call fails or returns an out-of-shortlist candidate, it fails closed to `{ top1: hexResult.top, source: 'hex', ... }`. Verdict strength is never promoted to strong.
 - **Settlement**: Jev development permanently ends here. No G29/G30 router generations.
