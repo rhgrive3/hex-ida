@@ -469,13 +469,9 @@ export class AnalysisScheduler {
 
   #registerDag(artifactId, dependencyIds) {
     const ids=[...dependencyIds].sort((a,b)=>a.localeCompare(b));
-    // Every referenced dependency has a DAG placeholder. A new artifact with
-    // no placeholder cannot already be the end of a path from a dependency.
-    const hasIncomingPath=this.dag.has(artifactId);
     for (const dependencyId of ids) {
       this.metrics.cycleChecks++;
       if (dependencyId===artifactId) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,artifactId]); }
-      if (!hasIncomingPath) continue;
       const path=this.#pathBetween(dependencyId,artifactId);
       if (path) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,...path]); }
     }
