@@ -18,6 +18,7 @@ import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
 import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
+import { mayAliasProvenance } from '../ir.js';
 import { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 export { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
@@ -28,7 +29,7 @@ import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
   readSemanticConditionalRegions, readSemanticLocalDeclaration,
-  readSemanticOrderedMaterializations } from './semantic-core.js';
+  readSemanticOrderedMaterializations, readSemanticStoreCompoundAdmission } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -1466,6 +1467,51 @@ function expressionFor(v, state) {
 function readsSameLocation(node, location, key = location?.key) {
   return !!node && key != null && node.kind === 'load' && node.location?.key === key;
 }
+/*
+ * The compound-store spelling below is a display selection over one actual
+ * memory observation: the operator operand must be the canonical load of the
+ * location being written. When the initial emitter had to preserve that
+ * observation past a barrier it names the load and the reference carries its
+ * SSA identity (orderedMemoryObservation). A copied name, another SSA value,
+ * another location, or an observation this store cannot legally share (an
+ * aliasing write, call or unknown effect in between) stays an assignment.
+ */
+function observesStoreLocation(node, location, state) {
+  if (!node || location?.key == null) return false;
+  if (node.kind === 'load') return node.location?.key === location.key;
+  if (node.orderedMemoryObservation !== true || !Number.isSafeInteger(node.ssaId)) return false;
+  const ordered = state.orderedMaterializations?.get(node.ssaId);
+  if (!ordered || ordered.name == null || ordered.name !== node.name) return false;
+  if (!ordered.value || ordered.value.def !== ordered.definition) return false;
+  if (ordered.definition?.op !== 'load') return false;
+  return memoryLocation(ordered.definition, state).key === location.key;
+}
+function observationReachesStore(load, store, state) {
+  const insts = state.ir?.blocks?.[store.block]?.insts || state.ir?.instructions || [];
+  const from = insts.indexOf(load), to = insts.indexOf(store);
+  if (from < 0 || to < 0 || from >= to) return false;
+  for (let index = from + 1; index < to; index++) {
+    const inst = insts[index];
+    if (!inst) return false;
+    if (inst.op === 'call' || inst.op === 'unknown' || inst.op === 'clobber') return false;
+    if (inst.op === 'store' && mayAliasProvenance(inst.loc, store.loc)) return false;
+  }
+  return true;
+}
+function compoundStoreLeftOperand(node, location, store, state) {
+  if (!observesStoreLocation(node, location, state)) return false;
+  if (node.kind === 'load') return true;
+  // The named observation was taken earlier in the machine program; it may only
+  // stand in for the store's own read when nothing could have rewritten it.
+  const ordered = state.orderedMaterializations.get(node.ssaId);
+  if (!observationReachesStore(ordered.definition, store, state)) return false;
+  // The initial emitter is the spelling authority. Its read/modify/write
+  // admission also rejects a MOV/copy between the computed value and the store
+  // and reversed operand orders; the collapsed expression cannot see those, so
+  // without this check the C AST would spell compound assignments the initial
+  // renderer refused (and its provenance history disagrees with the display).
+  return readSemanticStoreCompoundAdmission(state.ir, store) != null;
+}
 function sameLocationRmwOperand(expression, location, ops, side = 'any') {
   if (side === 'left') return readsSameLocation(expression.left, location) ? expression.right : null;
   if (readsSameLocation(expression.left, location)) return expression.right;
@@ -1706,7 +1752,7 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
     let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
-    if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
+    if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && compoundStoreLeftOperand(e.left, location, store, state)) {
       const rhs = printExpression(e.right);
       if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
       else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }

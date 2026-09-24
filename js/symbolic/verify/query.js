@@ -450,11 +450,38 @@ function expressionBounds(roots, maxNodes, maxDepth) {
   return { ok: true, nodeCount: uniqueNodes, maxDepth: longestDepth };
 }
 
+// A constraint/assertion entry is either
+//   (a) a canonical expression node, identified by its string `kind`
+//       discriminator. It is strictly cloned (accessors, hidden fields, cyclic
+//       DAGs and malformed child fields are refused before any structural
+//       hashing), or
+//   (b) an opaque payload without an expression discriminator (for example the
+//       legacy `{ id, expression }` constraint descriptors). Opaque payloads
+//       carry module-unknown semantics, so they are never guessed at: they are
+//       snapshotted under the shared metadata budget and bound into the query
+//       identity by their canonical content, which is why two different
+//       payloads can never share one identity (#5643).
+// Unknown shapes (null, arrays, primitives, unreadable or non-plain objects)
+// still fail closed.
+function expressionKindDeclared(value) {
+  if (!plainRecord(value)) return false;
+  const descriptor = ownDescriptors(value, 'query expression').kind;
+  return !!descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') && typeof descriptor.value === 'string';
+}
+
+function normalizeExpressionEntry(value, name) {
+  if (expressionKindDeclared(value)) return cloneExpression(value);
+  if (!isObject(value) || Array.isArray(value)) {
+    throw typeError(`${name} must be an expression node or an opaque payload object`);
+  }
+  return snapshotIdentityData(value, `${name} metadata`);
+}
+
 function normalizeExpressionArray(value, name) {
   if (value == null || value === false) return [];
   const inputs = Array.isArray(value) ? arrayDataValues(value, name) : [value];
   if (inputs.some((entry) => !isObject(entry) || Array.isArray(entry))) throw typeError(`${name}: every constraint must be an expression`);
-  return inputs.map((entry) => cloneExpression(entry));
+  return inputs.map((entry) => normalizeExpressionEntry(entry, name));
 }
 
 function preflightMalformedExpressionMetadata(value, name) {
@@ -516,12 +543,22 @@ function queryDataMap(query, name = 'verification query') {
   return recordDataMap(query, name);
 }
 
+// The hash-material projection for one constraint/assertion entry.
+// A canonical expression clone carries exactly the solver-visible fields its
+// structural hash covers, so the hash alone binds it — and a deep expression
+// DAG never has to be re-serialized by the identity layer (which is recursive
+// and would overflow on the frozen 32768-depth expression ceiling).
+// An opaque payload has no expression semantics at all, so its canonical
+// content is the identity and must be carried by value (#5643).
+function expressionIdentityProjection(entry, hash) {
+  return expressionKindDeclared(entry) ? { hash } : { hash, expression: entry };
+}
+
 function canonicalQueryHashPayload(query, identityLimits = {}) {
   const data = query instanceof Map ? query : queryDataMap(query);
-  const constraints = data.get('constraints');
-  const assertion = data.get('assertion') ?? null;
-  const normalizedConstraints = normalizeExpressionArray(constraints, 'constraints');
-  const normalizedAssertion = assertion ? cloneExpression(assertion) : null;
+  const constraints = normalizeExpressionArray(data.get('constraints'), 'constraints');
+  const assertionInput = data.get('assertion') ?? null;
+  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion');
   const normalizedTargetEntity = normalizeTargetEntity(data.get('targetEntity') ?? null, identityLimits);
   const assumptions = snapshotIdentityData(data.get('assumptions') ?? [], 'assumptions', identityLimits);
   const completeness = snapshotIdentityData(data.get('completeness') ?? createCompleteness(), 'completeness', identityLimits);
@@ -531,14 +568,18 @@ function canonicalQueryHashPayload(query, identityLimits = {}) {
   const translatorVersion = requireIdentityString(data.get('translatorVersion') ?? TRANSLATOR_VERSION, 'translatorVersion');
   const architecture = requireIdentityString(data.get('architecture') ?? 'generic', 'architecture');
   const bitWidth = normalizeBitWidth(data.get('bitWidth') ?? null);
-  const hashes = expressionHashes(normalizedConstraints, normalizedAssertion);
+  const hashes = expressionHashes(constraints, assertion);
   return {
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind: data.get('kind'),
     claimKind: data.get('claimKind'),
     targetEntity: normalizedTargetEntity,
-    constraintHashes: hashes.constraints,
-    assertionHash: hashes.assertion,
+    // The published record and its hash material share one constraint
+    // representation (#5779): every entry carries the structural hash of the
+    // exact entry the record returns, plus that entry itself when it is an
+    // opaque payload whose identity cannot be derived from a structural hash.
+    constraints: constraints.map((entry, index) => expressionIdentityProjection(entry, hashes.constraints[index])),
+    assertion: assertion ? expressionIdentityProjection(assertion, hashes.assertion) : null,
     assumptions,
     completeness,
     requestedOutputs,
@@ -640,8 +681,8 @@ export function validateVerificationQuery(query, options = {}) {
   const assertion = data.get('assertion') ?? null;
   let safeConstraints, safeAssertion;
   try {
-    safeConstraints = constraints.map((expression) => cloneExpression(expression));
-    safeAssertion = assertion ? cloneExpression(assertion) : null;
+    safeConstraints = constraints.map((expression) => normalizeExpressionEntry(expression, 'constraints'));
+    safeAssertion = assertion ? normalizeExpressionEntry(assertion, 'assertion') : null;
   } catch {
     return Object.freeze({ valid: false, reason: 'invalid-verification-query-shape' });
   }
@@ -681,7 +722,7 @@ export function createVerificationQuery(input = {}) {
   const constraints = normalizeExpressionArray(constraintsInput, 'constraints');
   const assertionInput = get('assertion', null);
   preflightMalformedExpressionMetadata(assertionInput, 'assertion');
-  const assertion = assertionInput == null ? null : cloneExpression(assertionInput);
+  const assertion = assertionInput == null ? null : normalizeExpressionEntry(assertionInput, 'assertion');
   const assumptionsInput = get('assumptions', []);
   const requestedOutputsInput = get('requestedOutputs', []);
   const assumptions = snapshotIdentityData(Array.isArray(assumptionsInput) ? assumptionsInput : [], 'assumptions');
