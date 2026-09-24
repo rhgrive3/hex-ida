@@ -241,7 +241,10 @@ export class IframeWorkerPool {
     this.retirement.resolve();
     this.invalidateResultWaiters();
     for (const slot of this.slots.values()) closeSlot(slot);
-    for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
+    for (const waiter of this.waiters) {
+      waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
+      waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
+    }
     this.waiters = [];
     this.leases.clear();
     this.slots.clear();

@@ -551,6 +551,7 @@ export async function fetchFixture(name, spec, {
       try { response.body.destroy?.(); } catch {}
       try { void response.body.cancel?.(); } catch {}
     }
+    let cleanupError = null;
     try {
       await assertCacheIdentityImpl(cacheIdentity);
       if (tempIdentity) {
@@ -562,9 +563,15 @@ export async function fetchFixture(name, spec, {
         await rm(temp, { force:true });
       }
     } catch (identityError) {
-      if (identityError?.code !== 'FIXTURE_CACHE_IDENTITY_CHANGED' && identityError?.code !== 'ENOENT') throw identityError;
+      if (identityError?.code !== 'FIXTURE_CACHE_IDENTITY_CHANGED' && identityError?.code !== 'ENOENT') {
+        cleanupError = identityError;
+      }
     }
-    throw abortReason(signal, error || streamError);
+    const primaryError = abortReason(signal, error || streamError);
+    if (cleanupError && primaryError && typeof primaryError === 'object') {
+      try { Object.defineProperty(primaryError, 'cleanupError', { value: cleanupError, enumerable: false }); } catch {}
+    }
+    throw primaryError;
   } finally {
     deadline.clear();
   }

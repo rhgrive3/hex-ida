@@ -16,6 +16,7 @@ await testAmbiguousClaimFailureCleansUpAndFailsRun();
 await testWaitingHumanResumesSameSupervisorRun();
 await testReleaseWaitsForTerminalSettlement();
 await testClosingSingleTabCoordinatorSettlesInFlightSend();
+await testSingleTabReleaseRejectsUnconfirmedRemoteGeneration();
 await testSupervisorRestoreAcceptsPartialHistoryHydration();
 console.log('Round 2 single-tab Supervisor loop passed');
 
@@ -327,6 +328,33 @@ async function testClosingSingleTabCoordinatorSettlesInFlightSend() {
   );
   finishSend({ status: 'completed' });
   for (const listener of listeners) listeners({ kind: 'completed' });
+}
+
+async function testSingleTabReleaseRejectsUnconfirmedRemoteGeneration() {
+  const supervisor = { id: 'release-supervisor', url: 'https://chatgpt.com/c/release-supervisor' };
+  let generating = true;
+  const controller = {
+    on() { return () => {}; },
+    currentConversation() { return supervisor; },
+    currentUserAnchors() { return [{ id: 'release-anchor', text: 'delegate' }]; },
+    observe() { return { state: 'CANCELLED', generating }; },
+    isActive() { return false; },
+    workerConversation() { return null; },
+  };
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'single-release-quiescence' });
+  await coordinator.claim({ runId: 'release-run', workerId: 'release-worker' });
+
+  await assert.rejects(
+    coordinator.release({ runId: 'release-run', workerId: 'release-worker' }),
+    (error) => error?.code === 'worker-busy',
+    'local cancellation must not clear single-tab ownership while ChatGPT still reports generation',
+  );
+  assert.equal(coordinator.advertisement().claimed, true, 'failed release must keep single-tab ownership intact');
+
+  generating = false;
+  const released = await coordinator.release({ runId: 'release-run', workerId: 'release-worker' });
+  assert.equal(released.claimed, false);
+  coordinator.close();
 }
 
 async function testSupervisorRestoreAcceptsPartialHistoryHydration() {

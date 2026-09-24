@@ -28,6 +28,15 @@ function defaultState() {
   return { ...DEFAULTS, regions: [] };
 }
 
+function invokeListener(fn, state, patch) {
+  try {
+    const result = fn(state, patch);
+    if (result && typeof result.then === 'function') {
+      Promise.resolve(result).catch(() => { /* listener isolation */ });
+    }
+  } catch { /* listener isolation */ }
+}
+
 export class Store {
   constructor() {
     this.state = defaultState();
@@ -44,7 +53,7 @@ export class Store {
     for (const k of keys) {
       if (this.state[k] !== patch[k]) { this.state[k] = patch[k]; changed = true; }
     }
-    if (changed) for (const fn of this.listeners) fn(this.state, patch);
+    if (changed) for (const fn of this.listeners) invokeListener(fn, this.state, patch);
   }
   subscribe(fn) {
     if (typeof fn !== 'function') throw new TypeError('state-listener-invalid');

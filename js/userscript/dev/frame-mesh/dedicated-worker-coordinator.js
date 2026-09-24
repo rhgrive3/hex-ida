@@ -38,7 +38,10 @@ export class DedicatedWorkerCoordinator {
   async result(args={}) { this.assertClaim(args); return this.lastResult || this.withIdentity(this.controller.result()); }
   async release(args={}) {
     this.assertClaim(args);
-    if (this.controller.isActive?.()) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY,'Cannot release a generating dedicated Worker.');
+    const observation=this.controller.observe?.()||null;
+    if(this.controller.isActive?.()||observation?.generating){
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY,'Cannot release a dedicated Worker while ChatGPT generation remains observable.');
+    }
     this.claimed=null; this.lastResult=null; return this.advertisement();
   }
   waitEvent({ events, runId=null }={}, { signal }={}) {

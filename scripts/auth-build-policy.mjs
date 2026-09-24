@@ -37,6 +37,17 @@ function isForbiddenStandardInput(inputPath, { caseInsensitive = false } = {}) {
     || /(?:^|\/)js\/auth\/admin-app\.js$/.test(policyPath);
 }
 
+
+function provenanceForInput(provenance, rawPath, repoRoot, { caseInsensitive = false } = {}) {
+  if (!(provenance instanceof Map)) return null;
+  const normalized = normalizeInputPath(rawPath, repoRoot, { caseInsensitive });
+  const record = provenance.get(normalized);
+  if (!record || typeof record.effectivePath !== 'string' || !/^[0-9a-f]{64}$/.test(String(record.loadedDigest || ''))) {
+    throw new Error(`graph cannot establish bundled source provenance for ${normalized || rawPath}`);
+  }
+  return record;
+}
+
 function effectiveStandardInputPath(inputPath, repoRoot, { realpathSync = fs.realpathSync, platform = process.platform } = {}) {
   if (platform !== process.platform && realpathSync === fs.realpathSync) return null;
   const candidate = path.isAbsolute(inputPath) ? inputPath : path.resolve(repoRoot, inputPath);
@@ -65,7 +76,9 @@ export function assertStandardGraph(metafile, label, options = {}) {
       forbidden.push(inputPath);
       continue;
     }
-    const effective = effectiveStandardInputPath(inputPath, repoRoot, { realpathSync: resolver, platform });
+    const provenance = provenanceForInput(options?.provenance, inputPath, repoRoot, { caseInsensitive });
+    const effective = provenance?.effectivePath
+      ?? effectiveStandardInputPath(inputPath, repoRoot, { realpathSync: resolver, platform });
     if (effective && isForbiddenStandardInput(effective, { caseInsensitive })) {
       forbidden.push(`${inputPath} -> ${effective}`);
     }
@@ -103,9 +116,18 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
   }
 
   // The metafile is the provenance boundary for the whole privileged bundle,
-  // not only for the required anchor files. Every bundled filesystem input must
-  // resolve to a source contained by the canonical repository root.
+  // not only for the required anchor files. When the builder supplies captured
+  // provenance, authorize the exact bytes/path identity that its onLoad hook
+  // handed to esbuild instead of re-resolving a mutable pathname afterwards.
   for (const { rawPath, normalized } of normalizedInputs) {
+    const provenance = provenanceForInput(options?.provenance, rawPath, repoRoot, { caseInsensitive });
+    if (provenance) {
+      const effective = provenance.effectivePath;
+      if (!effective || effective === '..' || effective.startsWith('../') || path.isAbsolute(effective)) {
+        throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
+      }
+      continue;
+    }
     const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
     let realInput;
     try {

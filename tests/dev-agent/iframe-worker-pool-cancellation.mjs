@@ -64,6 +64,28 @@ async function failedRollbackQuarantinesFrame() {
   harness.close();
 }
 
+async function closeRemovesQueuedClaimAbortListener() {
+  const harness = await createHarness();
+  const held = await harness.pool.claim({ taskId: 'hold-slot' });
+  const native = new AbortController();
+  let adds = 0;
+  let removes = 0;
+  const signal = {
+    get aborted() { return native.signal.aborted; },
+    get reason() { return native.signal.reason; },
+    addEventListener(type, listener, options) { adds += 1; native.signal.addEventListener(type, listener, options); },
+    removeEventListener(type, listener, options) { removes += 1; native.signal.removeEventListener(type, listener, options); },
+  };
+  const waiting = harness.pool.claim({ taskId: 'queued-close', signal });
+  await tick();
+  assert.equal(adds, 1, 'queued claim must register one abort listener');
+
+  harness.pool.close();
+  await assert.rejects(waiting, (error) => error?.code === 'transport-failure');
+  assert.equal(removes, 1, 'closing the pool must detach the queued claim abort listener');
+  void held;
+}
+
 /* Aborting a wait cancels the wait and nothing else. The Worker keeps
    generating and the lease keeps owning it, because stop/release/discard is the
    caller's ownership transaction, not a side effect hidden inside the wait. */
@@ -359,6 +381,7 @@ async function waitUntil(predicate, message) {
 await preAbortedFreeSlotNeverClaims();
 await queuedCancellationRollsBackEstablishedClaim();
 await failedRollbackQuarantinesFrame();
+await closeRemovesQueuedClaimAbortListener();
 await abortedWaitCancelsOnlyTheWait();
 await staleWaitCannotSpeakForTheNextOwner();
 await closedPoolCannotSatisfyAnOldWait();

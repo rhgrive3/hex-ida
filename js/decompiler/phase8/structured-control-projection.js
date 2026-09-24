@@ -15,7 +15,7 @@
 
 import { edgeAccountingFailures } from './structuring.js';
 import { LOOP_PROJECTION_CANCELLED, projectNaturalLoops } from './loop-control-projection.js';
-import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
+import { analysisIdentityMatches, boundAnalysisIdentityForIr, canonicalAnalysisIdentity } from './analysis-identity.js';
 import { printProgram } from '../pretty/c.js';
 import { sourceOf, mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
@@ -393,7 +393,8 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
   if (edgeAccountingFailures(result.ir, facts).length > 0) return result;
 
   // Stale artifact verification
-  const currentId = canonicalAnalysisIdentity({ ir: result.ir, analysis });
+  const currentId = boundAnalysisIdentityForIr(opts.analysisIdentityBinding, result.ir)
+    ?? canonicalAnalysisIdentity({ ir: result.ir, analysis });
   if (!currentId.valid) return result;
   const expectedId = opts.analysisIdentity?.identity ?? currentId.identity;
   if (!analysisIdentityMatches(currentId.identity, expectedId)) return result;

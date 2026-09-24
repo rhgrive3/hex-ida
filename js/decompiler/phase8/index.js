@@ -24,7 +24,7 @@ import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGIS
 export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
-import { canonicalAnalysisIdentity } from './analysis-identity.js';
+import { bindAnalysisIdentityToIr, canonicalAnalysisIdentity } from './analysis-identity.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
 import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
@@ -408,8 +408,11 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   // and later runs always re-derive it from the current IR.
   const needsScalarIdentity = passes.some(({ descriptor }) =>
     ['phase8.sccp', 'phase8.gvn', 'phase8.induction'].includes(descriptor.id));
-  const resolvedAnalysisIdentity = needsScalarIdentity
+  const needsProjectionIdentity = enabledStages?.some((stage) =>
+    stage === 'structuring' || stage === 'rendering') === true;
+  const resolvedAnalysisIdentity = needsScalarIdentity || needsProjectionIdentity
     ? canonicalAnalysisIdentity({ ...providerContext, analysis: authoritative }) : null;
+  const analysisIdentityBinding = bindAnalysisIdentityToIr(context.ir, resolvedAnalysisIdentity);
   const passContext = {
     ...providerContext,
     analysis,
@@ -536,7 +539,12 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       analysis: authoritative,
     };
   }
-  return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis: authoritative };
+  return {
+    ledger: Object.freeze(ledger),
+    timings: Object.freeze(timings),
+    analysis: authoritative,
+    analysisIdentityBinding,
+  };
 }
 
 /**
