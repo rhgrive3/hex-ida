@@ -2,8 +2,8 @@ import { build, transform } from 'esbuild';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm } from 'node:fs/promises';
-import { dirname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
+import { access, readFile, mkdir, realpath, rm } from 'node:fs/promises';
+import { dirname, extname, isAbsolute, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
@@ -30,10 +30,79 @@ async function bundleCss() {
   return output.text;
 }
 
-async function bundle(entry, { format = 'iife', rewriteImportMeta = false, globalName, inventory, graph } = {}) {
-  const result = await build({ absWorkingDir: root, entryPoints: [entry], bundle: true, write: false, metafile: true, globalName, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins: rewriteImportMeta ? [protectedImportMetaPlugin()] : [] });
-  if (graph === 'standard') assertStandardGraph(result.metafile, entry);
-  else if (graph) assertPrivilegedGraph(result.metafile, graph);
+function graphLoaderForPath(file) {
+  switch (extname(file).toLowerCase()) {
+    case '.js': case '.mjs': case '.cjs': return 'js';
+    case '.jsx': return 'jsx';
+    case '.ts': case '.mts': case '.cts': return 'ts';
+    case '.tsx': return 'tsx';
+    case '.css': return 'css';
+    case '.json': return 'json';
+    case '.txt': return 'text';
+    default: throw new Error(`Unsupported graph source extension: ${file}`);
+  }
+}
+
+export function boundGraphSourcePlugin({ rootDir = root, rewriteImportMeta = false } = {}) {
+  const resolvedRoot = resolve(rootDir);
+  const provenance = new Map();
+  const realRootPromise = realpath(resolvedRoot);
+  return {
+    provenance,
+    plugin: { name: 'hex-bound-graph-source', setup(api) {
+      api.onLoad({ filter: /.*/, namespace: 'file' }, async (args) => {
+        const absolute = resolve(args.path);
+        if (!pathIsWithin(resolvedRoot, absolute)) return null;
+        const logical = relative(resolvedRoot, absolute).split('\\').join('/');
+        if (!logical || logical === '..' || logical.startsWith('../')) return null;
+        const resolved = await resolveRepositorySource(logical, {
+          rootDir: resolvedRoot,
+          normalizePath,
+          sourceLabel: 'Bundled graph source',
+        });
+        const sourceBytes = await readResolvedRepositorySource(resolved, {
+          sourceLabel: 'Bundled graph source',
+        });
+        const effectivePath = relative(await realRootPromise, resolved.realSource)
+          .split('\\').join('/');
+        if (!effectivePath || effectivePath === '..' || effectivePath.startsWith('../') || isAbsolute(effectivePath)) {
+          throw new Error(`Bundled graph source escapes repository: ${logical}`);
+        }
+        const loader = graphLoaderForPath(absolute);
+        let contents = sourceBytes;
+        if (rewriteImportMeta && loader === 'js') {
+          let text = sourceBytes.toString('utf8');
+          if (text.includes('import.meta.url')) {
+            text = text.replace(/\bimport\.meta\.url\b/g, JSON.stringify(`https://hex.invalid/${logical}`));
+          }
+          contents = text;
+        }
+        const loadedBytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents);
+        const record = Object.freeze({
+          effectivePath,
+          sourceDigest: sha256(sourceBytes),
+          loadedDigest: sha256(loadedBytes),
+        });
+        const previous = provenance.get(logical);
+        if (previous && (previous.effectivePath !== record.effectivePath || previous.loadedDigest !== record.loadedDigest)) {
+          throw new Error(`Bundled graph source changed across loads: ${logical}`);
+        }
+        provenance.set(logical, record);
+        return { contents, loader, resolveDir: dirname(absolute) };
+      });
+    } },
+  };
+}
+
+export async function bundle(entry, { format = 'iife', rewriteImportMeta = false, globalName, inventory, graph, rootDir = root, buildImpl = build } = {}) {
+  const graphBinding = graph ? boundGraphSourcePlugin({ rootDir, rewriteImportMeta }) : null;
+  const plugins = graphBinding
+    ? [graphBinding.plugin]
+    : (rewriteImportMeta ? [protectedImportMetaPlugin({ rootDir })] : []);
+  const result = await buildImpl({ absWorkingDir: rootDir, entryPoints: [entry], bundle: true, write: false, metafile: true, globalName, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins });
+  const policyOptions = graphBinding ? { repoRoot: rootDir, provenance: graphBinding.provenance } : { repoRoot: rootDir };
+  if (graph === 'standard') assertStandardGraph(result.metafile, entry, policyOptions);
+  else if (graph) assertPrivilegedGraph(result.metafile, graph, policyOptions);
   if (inventory) await writeFile(resolve(generated, `${inventory}.metafile.json`), JSON.stringify(result.metafile, null, 2));
   const source = result.outputFiles?.[0]?.contents;
   if (!source) throw new Error(`esbuild produced no output for ${entry}`);
