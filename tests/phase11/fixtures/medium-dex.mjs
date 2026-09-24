@@ -54,7 +54,8 @@ export function dexMethod(words = [0x000e], options = {}) {
 export function buildDex(options = {}) {
   const fields = options.fields ?? [{ classType:'LTest;', type:'I', name:'x' }];
   const inputMethods = options.methods ?? [{ classType:'LTest;', name:'foo', returnType:'V', params:[], flags:9, words:[0x000e] }];
-  const classNames = options.classNames ?? ['LTest;'];
+  // class_defs are ordered by class type index (descriptor order) unless rawOrder.
+  const classNames = options.rawOrder === true ? (options.classNames ?? ['LTest;']) : [...(options.classNames ?? ['LTest;'])].sort();
   const typeNames = [...new Set([...classNames, ...fields.flatMap(f => [f.classType, f.type]), ...inputMethods.flatMap(m => [m.classType, m.returnType, ...(m.params ?? [])])])].sort();
   const shorty = m => [m.returnType, ...(m.params ?? [])].map(t => /^[L[]/.test(t) ? 'L' : t).join('');
   const strings = [...new Set([...typeNames, ...fields.map(f => f.name), ...inputMethods.flatMap(m => [m.name, m.shorty ?? shorty(m)]), ...(options.strings ?? [])])].sort();
