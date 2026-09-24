@@ -351,6 +351,7 @@ for (const boundary of ['digest', 'snapshot', 'cancelled', 'unknown-effects', 's
     if (boundary === 'unknown-effects') {
       bad.status.completeness = 'partial'; bad.status.stopReason = 'evidence-missing';
       bad.unknownCallEffects.push({ callSiteId:'unresolved', reason:'unresolved-target', targetEntityIds:[], evidenceIds:[] });
+      bad.memoryReadRegions.push({ regionKind:'unknown', broad:true, addressSpaces:['memory'], source:'unknown-call-fallback' });
       bad.memoryWriteRegions.push({ regionKind:'unknown', broad:true, addressSpaces:['memory'], source:'unknown-call-fallback' });
       bad.noreturn = 'unknown'; bad.mayThrow = 'unknown';
     }

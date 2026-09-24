@@ -63,14 +63,15 @@ function baseInput(instructions) {
 }
 
 const canonical = (value) => JSON.parse(JSON.stringify(value, (_key, entry) => typeof entry === 'bigint' ? `0x${entry.toString(16)}` : entry));
+const analyzeForPermutation = (input) => analyzeDecodedSemanticFunction(input, { deterministicTransforms: true });
 
 function presentationJoinSource() {
   return readFileSync(new URL('../../js/analysis/semantic-function-base.js', import.meta.url), 'utf8');
 }
 
 test('#5264/#5345 reversed decoded input yields the same analysis as sorted input', () => {
-  const sorted = analyzeDecodedSemanticFunction(baseInput(decodedRows()));
-  const reversed = analyzeDecodedSemanticFunction(baseInput(decodedRows().reverse()));
+  const sorted = analyzeForPermutation(baseInput(decodedRows()));
+  const reversed = analyzeForPermutation(baseInput(decodedRows().reverse()));
   assert.deepEqual(canonical(reversed.decompiler), canonical(sorted.decompiler));
   assert.deepEqual(canonical(reversed.pipeline.cfg), canonical(sorted.pipeline.cfg));
 });
@@ -83,13 +84,13 @@ test('#5264/#5345 fixed-width decoded metadata includes distinct opStr and stays
     ['ret', '', 4],
   ]);
 
-  const canonicalResult = analyzeDecodedSemanticFunction(baseInput(rows));
+  const canonicalResult = analyzeForPermutation(baseInput(rows));
   for (const permutation of [
     [rows[1], rows[2], rows[0]],
     [rows[2], rows[0], rows[1]],
     [...rows].reverse(),
   ]) {
-    const result = analyzeDecodedSemanticFunction(baseInput(permutation));
+    const result = analyzeForPermutation(baseInput(permutation));
     assert.deepEqual(canonical(result.decompiler), canonical(canonicalResult.decompiler));
     assert.deepEqual(canonical(result.pipeline.legacyV1), canonical(canonicalResult.pipeline.legacyV1));
   }
@@ -138,8 +139,8 @@ test('#5264/#5345 variable-length x86 metadata remains order-invariant', async (
       instructions: items,
     });
 
-    const sorted = analyzeDecodedSemanticFunction(input(instructions));
-    const reversed = analyzeDecodedSemanticFunction(input([...instructions].reverse()));
+    const sorted = analyzeForPermutation(input(instructions));
+    const reversed = analyzeForPermutation(input([...instructions].reverse()));
     assert.deepEqual(canonical(reversed.decompiler), canonical(sorted.decompiler));
     assert.deepEqual(canonical(reversed.pipeline.legacyV1), canonical(sorted.pipeline.legacyV1));
   } finally {

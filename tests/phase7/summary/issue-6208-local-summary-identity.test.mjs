@@ -33,6 +33,9 @@ function callerWith({ directCalls = [], indirectCallSets = [] } = {}) {
 test('#6208 a mis-keyed reachable direct callee becomes unknown-call partial, not a solver throw', () => {
   const directCaller = callerWith({ directCalls: [{ callSiteId: 'call_direct', targetEntityIds: ['fn_B'] }] });
   directCaller.unknownCallEffects = [{ callSiteId: 'call_direct', reason: 'summary-missing', targetEntityIds: ['fn_B'] }];
+  directCaller.memoryReadRegions = [...directCaller.memoryReadRegions, {
+    regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback',
+  }];
   directCaller.memoryWriteRegions = [...directCaller.memoryWriteRegions, {
     regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback',
   }];
