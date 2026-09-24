@@ -1358,6 +1358,8 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     if (pair.has(MK.FIELD) && pair.has(MK.STACK)) {
       const field = storeLoc.kind === MK.FIELD ? storeLoc : otherLoc;
       const stack = storeLoc.kind === MK.STACK ? storeLoc : otherLoc;
+      const baseReg = String(field.rawBase?.reg || field.base?.reg || '');
+      if (/^x[0-7]$/.test(baseReg) || field.base?.kind === VK.ARG) return true;
       const proof = stackPointerProvenanceOf(field.rawBase || field.base);
       if (!proof || proof.must !== true || proof.offset == null || field.disp == null || stack.disp == null) return false;
       if (stack.baseReg && !['sp','x29'].includes(String(stack.baseReg))) return true;
