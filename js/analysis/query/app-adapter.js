@@ -1144,11 +1144,13 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
-      const returnsValue = result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue ?? false;
+      // Only positive return evidence is forwarded: `false` would force a void
+      // return, while an absent fact must leave return inference to the IR.
+      const returnsValue = (result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue) === true ? true : undefined;
       let cxxEvidence = options.cxxEvidence ?? null;
       let projectionIr = null;
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
-        try { projectionIr = irFor(result.value.model, { returnsValue }); } catch { projectionIr = null; }
+        try { projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {}); } catch { projectionIr = null; }
         // The C++ producer needs canonical SSA values to bind argument 0 as
         // `this`. Without a compatibility IR it can produce no usable
         // evidence, so leave the per-slice index unbuilt for this function.
@@ -1172,7 +1174,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
-        returnsValue,
+        ...(returnsValue ? { returnsValue } : {}),
         ...(projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
@@ -1196,7 +1198,9 @@ export function createAppAnalysisQueryAdapter(app) {
         const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
         let producer = result.value.decompiler ?? null;
         if (!producer && result.value.model) {
-          const returnsValue = result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue ?? false;
+          // Only positive return evidence is forwarded: `false` would force a void
+          // return, while an absent fact must leave return inference to the IR.
+          const returnsValue = (result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue) === true ? true : undefined;
           let cxxEvidence = options.cxxEvidence ?? null;
           let projectionIr = null;
           if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
@@ -1204,7 +1208,7 @@ export function createAppAnalysisQueryAdapter(app) {
             if (entry) {
               await entry.buildPromise;
               try {
-                projectionIr = irFor(result.value.model, { returnsValue });
+                projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {});
                 cxxEvidence = entry.provider.projectForFunction({
                   functionAddress: address != null ? BigInt(address) : null,
                   functionName: name,
@@ -1218,7 +1222,7 @@ export function createAppAnalysisQueryAdapter(app) {
           producer = decompile(result.value.model, {
             name,
             addr:address,
-            returnsValue,
+            ...(returnsValue ? { returnsValue } : {}),
             ...(projectionIr ? { ir:projectionIr } : {}),
             ...(cxxEvidence ? { cxxEvidence } : {}),
           });
