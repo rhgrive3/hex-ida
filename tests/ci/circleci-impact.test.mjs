@@ -97,6 +97,23 @@ try {
   }
   assert.equal(existsSync(arityGitMarker), false, 'rejected trailing arguments must not invoke git');
 
+  // #9613: repository-state uncertainty must route conservatively instead of
+  // escaping through `set -e` while resolving HEAD.
+  const noHeadRepo = join(root, 'no-head-repo');
+  mkdirSync(noHeadRepo, { recursive: true });
+  git(noHeadRepo, 'init', '-b', 'main');
+  for (const brokenHead of [false, true]) {
+    if (brokenHead) write(join(noHeadRepo, '.git', 'HEAD'), 'ref: refs/heads/missing\n');
+    const result = spawnSync('bash', [router, 'main-and-branch', '^js/'], {
+      cwd: noHeadRepo,
+      encoding: 'utf8',
+      env: { ...process.env, CIRCLE_BRANCH: 'feature' },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), 'true');
+    assert.match(result.stderr, /could not resolve pipeline HEAD; running lane conservatively/);
+  }
+
   // Regression for the A -> B race: remote main is already B while the older
   // A pipeline starts. A must still validate its own first-parent delta.
   assert.equal(route(commitA, 'main', 'main-and-branch', '^js/ai/'), 'true');
