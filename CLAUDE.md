@@ -1,5 +1,7 @@
 ## Done means done
 
+Current Hex completion objective and resume state: read `docs/HEX_COMPLETION_GOAL.md` and `docs/CLAUDE_CODE_HANDOFF_20260925.md` before continuing the campaign.
+
 Not half done. Not done except for the part you decided to skip. And not a report about how it will be done.
 
 Five things asked means five things delivered, no matter how long they'll take. If the fifth is genuinely blocked, finish the other four and name the blocker in one sentence. The specific blocker. Not "this needs more investigation."
