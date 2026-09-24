@@ -13,6 +13,7 @@ import { readProvedRewrites, readProvedInputBindings } from './pass-validation.j
 import { renderProofExpression, sameProofExpression } from './proof-expression.js';
 import {
   analysisIdentityMatches,
+  boundAnalysisIdentityForIr,
   canonicalAnalysisIdentity,
   isValidatedAnalysisIdentity,
 } from './analysis-identity.js';
@@ -619,7 +620,13 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
   }
 }
 
-function boundAnalysisIdentity(result, analysis, supplied) {
+function boundAnalysisIdentity(result, analysis, supplied, exactBinding = null) {
+  const exact = boundAnalysisIdentityForIr(exactBinding, result.ir);
+  if (exact?.valid === true && isValidatedAnalysisIdentity(exact.identity)) {
+    if (supplied == null) return exact;
+    if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return exact;
+    return analysisIdentityMatches(supplied.identity, exact.identity) ? supplied : exact;
+  }
   const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
   if (supplied == null) return canonical;
   if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return canonical;
@@ -1160,7 +1167,12 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   // canonical identity derived from the current Semantic IR. Stale/plain
   // overrides fall back to the canonical result instead of minting snapshot
   // authority for a different IR.
-  const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
+  const resolvedIdentity = boundAnalysisIdentity(
+    result,
+    analysis,
+    opts.analysisIdentity,
+    opts.analysisIdentityBinding,
+  );
   let renderProvenance = buildRenderProvenance({
     result:withLines,
     snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
