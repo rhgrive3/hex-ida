@@ -137,6 +137,27 @@ function sameFileIdentity(a, b) {
   return Boolean(a && b && a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino);
 }
 
+function statFileSnapshot(fsImpl, fd) {
+  try { return fsImpl.fstatSync(fd, { bigint: true }); }
+  catch { return fsImpl.fstatSync(fd); }
+}
+
+function sameFileSnapshot(a, b) {
+  if (!a || !b || !a.isFile() || !b.isFile()) return false;
+  if (String(a.dev) !== String(b.dev) || String(a.ino) !== String(b.ino) || String(a.size) !== String(b.size)) return false;
+  if (a.mtimeNs != null && b.mtimeNs != null) {
+    if (String(a.mtimeNs) !== String(b.mtimeNs)) return false;
+  } else if (a.mtimeMs != null && b.mtimeMs != null && Number(a.mtimeMs) !== Number(b.mtimeMs)) {
+    return false;
+  }
+  if (a.ctimeNs != null && b.ctimeNs != null) {
+    if (String(a.ctimeNs) !== String(b.ctimeNs)) return false;
+  } else if (a.ctimeMs != null && b.ctimeMs != null && Number(a.ctimeMs) !== Number(b.ctimeMs)) {
+    return false;
+  }
+  return true;
+}
+
 export function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedSource = path.resolve(source);
@@ -237,7 +258,7 @@ export function openStableMigrationSource(root, source, { fsImpl = fs } = {}) {
     if (!sameFileIdentity(openedFile, viaFileHandle)) {
       throw new Error(`freebuff setup: stable migration source handle unavailable: ${resolvedSource}`);
     }
-    return { path: stableFile, close };
+    return { fd: fileFd, path: stableFile, snapshot: () => statFileSnapshot(fsImpl, fileFd), close };
   } catch (error) {
     try { close(); } catch {}
     throw error;
@@ -320,11 +341,35 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
         throw new Error(`freebuff setup: migration source is not a real file: ${src}`);
       }
     }
-    try {
-      fsImpl.copyFileSync(actualSrc, actualDst, fs.constants.COPYFILE_EXCL);
-    } catch (error) {
-      if (error?.code === 'EEXIST') return false;
-      throw error;
+    if (stableSource) {
+      const sourceBeforeCopy = stableSource.snapshot();
+      const stagedCopy = path.join(path.dirname(actualDst), `.${path.basename(actualDst)}.migration-${randomUUID()}`);
+      let stagedCreated = false;
+      try {
+        fsImpl.copyFileSync(actualSrc, stagedCopy, fs.constants.COPYFILE_EXCL);
+        stagedCreated = true;
+        const sourceAfterCopy = stableSource.snapshot();
+        if (!sameFileSnapshot(sourceBeforeCopy, sourceAfterCopy)) {
+          throw new Error(`freebuff setup: migration source changed during copy: ${src}`);
+        }
+        try {
+          fsImpl.copyFileSync(stagedCopy, actualDst, fs.constants.COPYFILE_EXCL);
+        } catch (error) {
+          if (error?.code === 'EEXIST') return false;
+          throw error;
+        }
+      } finally {
+        if (stagedCreated) {
+          try { fsImpl.unlinkSync(stagedCopy); } catch {}
+        }
+      }
+    } else {
+      try {
+        fsImpl.copyFileSync(actualSrc, actualDst, fs.constants.COPYFILE_EXCL);
+      } catch (error) {
+        if (error?.code === 'EEXIST') return false;
+        throw error;
+      }
     }
     if (executable) fsImpl.chmodSync(actualDst, 0o755);
     else if (dst.endsWith('.json')) fsImpl.chmodSync(actualDst, 0o600);
