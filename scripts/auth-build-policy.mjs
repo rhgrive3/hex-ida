@@ -134,15 +134,16 @@ export function assertPrivilegedGraph(metafile, kind, options = {}) {
       }
       continue;
     }
-    const candidate = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
+    const pathModule = caseInsensitive ? path.win32 : path;
+    const candidate = pathModule.isAbsolute(rawPath) ? rawPath : pathModule.resolve(repoRoot, rawPath);
     let realInput;
     try {
       realInput = realpathSync(candidate);
     } catch (error) {
       throw new Error(`${kind} bundle cannot establish source identity for ${normalized || rawPath}`, { cause: error });
     }
-    const relative = path.relative(realRoot, realInput);
-    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    const relative = pathModule.relative(realRoot, realInput);
+    if (relative === '..' || relative.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(relative)) {
       throw new Error(`${kind} bundle input escapes repository: ${normalized || rawPath}`);
     }
     const requiredPath = requiredByPolicyPath.get(policyPath(normalized));

@@ -48,5 +48,6 @@ test('issue #9481: source-file close failure does not strand parent directory de
   try { handle.close(); } catch {}
   assert.ok(closedFds.filter(fd => fd === parentFd).length === 1, 'parentFd must not be closed multiple times');
 
+  try { fs.closeSync(fileFd); } catch {}
   fs.rmSync(tmp, { recursive: true, force: true });
 });
