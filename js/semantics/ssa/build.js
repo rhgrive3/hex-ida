@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import {
   SEMANTIC_SSA_BUILD_DEFAULT_BUDGET,
   SEMANTIC_SSA_BUILD_VERSION,
@@ -134,9 +134,98 @@ export function canonicalSemanticSsaRowMatches(row, artifact) {
   return CanonicalSemanticSsaArtifact.matchesRow(row, artifact);
 }
 
+
+function canonicalSemanticSsaDigest(artifact) {
+  let aLow = 0x84222325; let aHigh = 0xcbf29ce4;
+  let bLow = 0xcbf29ce4; let bHigh = 0x84222325;
+  const feed = (text) => {
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      aLow ^= code;
+      let carry = ((aLow >>> 16) * 0x1b3 + (((aLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      aHigh = (Math.imul(aHigh, 0x1b3) + (aLow << 8) + carry) | 0;
+      aLow = Math.imul(aLow, 0x1b3);
+      bLow ^= code;
+      carry = ((bLow >>> 16) * 0x1b3 + (((bLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      bHigh = (Math.imul(bHigh, 0x1b3) + (bLow << 8) + carry) | 0;
+      bLow = Math.imul(bLow, 0x1b3);
+    }
+  };
+  const cachedCanonical = new WeakMap();
+  const canonicalText = (value) => {
+    if (value !== null && typeof value === 'object') {
+      const cached = cachedCanonical.get(value);
+      if (cached !== undefined) return cached;
+      const text = stableStringify(value);
+      cachedCanonical.set(value, text);
+      return text;
+    }
+    return stableStringify(value);
+  };
+  const string = (value) => feed(JSON.stringify(value));
+  const nullableString = (value) => value == null ? feed('null') : string(value);
+  const array = (values, emit) => {
+    feed('[');
+    for (let index = 0; index < values.length; index += 1) {
+      if (index > 0) feed(',');
+      emit(values[index]);
+    }
+    feed(']');
+  };
+  const incoming = (entry) => {
+    feed('{"predecessorBlockId":'); string(entry.predecessorBlockId);
+    feed(',"valueId":'); string(entry.valueId); feed('}');
+  };
+  const definition = (entry) => {
+    feed('{"blockId":'); nullableString(entry.blockId);
+    feed(',"definitionId":'); string(entry.definitionId);
+    feed(',"incoming":'); array(entry.incoming, incoming);
+    feed(',"kind":'); string(entry.kind);
+    feed(',"origin":'); feed(canonicalText(entry.origin));
+    if (Object.hasOwn(entry, 'proof')) { feed(',"proof":'); feed(canonicalText(entry.proof)); }
+    feed(',"sourceEntityId":'); nullableString(entry.sourceEntityId);
+    feed(',"valueId":'); string(entry.valueId);
+    feed(',"variableKey":'); nullableString(entry.variableKey);
+    feed('}');
+  };
+  const use = (entry) => {
+    feed('{"blockId":'); nullableString(entry.blockId);
+    feed(',"origin":'); feed(canonicalText(entry.origin));
+    if (Object.hasOwn(entry, 'proof')) { feed(',"proof":'); feed(canonicalText(entry.proof)); }
+    feed(',"sourceEntityId":'); string(entry.sourceEntityId);
+    feed(',"useId":'); string(entry.useId);
+    feed(',"valueId":'); string(entry.valueId);
+    feed('}');
+  };
+  const useDefLink = (entry) => {
+    feed('{"definitionId":'); string(entry.definitionId);
+    feed(',"useId":'); string(entry.useId);
+    feed(',"valueId":'); string(entry.valueId);
+    feed('}');
+  };
+  const defUseLink = (entry) => {
+    feed('{"definitionId":'); string(entry.definitionId);
+    feed(',"useIds":'); array(entry.useIds, string);
+    feed(',"valueId":'); string(entry.valueId);
+    feed('}');
+  };
+
+  feed('{"contractVersion":'); string(artifact.contractVersion);
+  feed(',"defUseLinks":'); array(artifact.defUseLinks, defUseLink);
+  feed(',"definitions":'); array(artifact.definitions, definition);
+  feed(',"functionId":'); string(artifact.functionId);
+  feed(',"useDefLinks":'); array(artifact.useDefLinks, useDefLink);
+  feed(',"uses":'); array(artifact.uses, use);
+  feed('}');
+
+  const hex = (high, low) => (high >>> 0).toString(16).padStart(8, '0')
+    + (low >>> 0).toString(16).padStart(8, '0');
+  return hex(aHigh, aLow) + hex(bHigh, bLow);
+}
+
 export function buildSemanticSsa(irInput, cfgInput, options = {}) {
   const artifact = buildSemanticSsaCore(irInput, cfgInput, options);
-  const scalarSsaDigest = stableDigest(artifact);
+  const scalarSsaDigest = canonicalSemanticSsaDigest(artifact);
   const snapshotId = options.snapshotId ?? options.identity?.snapshotId ?? null;
   return deepFreeze(new CanonicalSemanticSsaArtifact(artifact, {
     functionId: artifact.functionId,
