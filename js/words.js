@@ -398,7 +398,7 @@ acquire, release,
   function isFpImm(w) { return masked(w, 0x5f201c00) === 0x1e201000; }
   // Fixed-point scalar SCVTF/UCVTF/FCVT* forms use the same conversion family
   // but keep the scale in imm6, so the ordinary scalar mask does not match.
-  function isFpFixedConvert(w) { return masked(w, 0x5f20fc00) === 0x1e00fc00; }
+  function isFpFixedConvert(w) { return masked(w, 0x5f200000) === 0x1e000000; }
   // Advanced-SIMD scalar SCVTF/UCVTF (e.g. scvtf s0, s0).  Ignore the U
   // (signed/unsigned) and precision bits while retaining the opcode family.
   function isSimdScalarIntFloatConvert(w) { return masked(w, 0xdf3ffc00) === 0x5e21d800; }
