@@ -7,6 +7,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { canonicalLegacySemanticSourceBinding } from '../../semantics/compat/index.js';
 
 const REQUIRED_FIELDS = Object.freeze([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
@@ -376,6 +377,23 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   return result;
 }
 
+function fastJsonPlainObjectDigestSkippingRootKeys(value, skip) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('identity-unsupported-semantic-metadata');
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('identity-unsupported-semantic-metadata');
+  }
+  const keys = semanticOwnKeys(value).filter((key) => !skip.has(key)).sort();
+  if (keys.length === 0) return null;
+  const text = `object:${keys.length}{${keys.map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return `key:${key.length}:${key};${typedIdentityText(descriptor.value)}`;
+  }).join('')}}`;
+  return fastJsonTextDigest(text);
+}
+
 function metadataProjection(value, skip, path, memo) {
   if (value == null || typeof value !== 'object') return null;
   const projection = semanticObject(value, new Set(), skip, path, memo);
@@ -497,6 +515,26 @@ function memoryLocationShape(location, memo, digests) {
   return shape;
 }
 
+const CANONICAL_ATTRIBUTE_SKIP = new Set(['attributes']);
+
+function producerBoundExtraShape(definition, digests) {
+  const source = digests?.semanticSource;
+  const extra = definition?.extra;
+  if (!source || extra == null || typeof extra !== 'object' || Array.isArray(extra)) return null;
+  const nodeId = token(extra.semanticNodeId ?? definition.semanticNodeId);
+  if (nodeId == null) return null;
+  const node = source.nodes.get(nodeId);
+  if (!node) return null;
+  const attributes = ownDataProperty(extra, 'attributes');
+  if (!attributes.present || attributes.malformed || attributes.value !== node.attributes) return null;
+  try {
+    const digest = fastJsonPlainObjectDigestSkippingRootKeys(extra, CANONICAL_ATTRIBUTE_SKIP);
+    return { nodeId, remainderDigest:digest == null ? null : `metadata:${digest}` };
+  } catch {
+    return null;
+  }
+}
+
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
   if (definition == null || typeof definition !== 'object') return null;
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
@@ -517,7 +555,13 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
   shape.conditionValueId = token(definition.conditionValue?.id);
   shape.selectorValueId = token(definition.selectorValue?.id);
   if (Object.hasOwn(definition, 'returnTargetValue')) shape.returnTargetValueId = token(definition.returnTargetValue?.id);
-  shape.extraDigest = semanticDigest(definition.extra, memo, digests, '$.definition.extra');
+  const producerExtra = producerBoundExtraShape(definition, digests);
+  if (producerExtra) {
+    shape.extraDigest = producerExtra.remainderDigest;
+    shape.canonicalAttributesNodeId = producerExtra.nodeId;
+  } else {
+    shape.extraDigest = semanticDigest(definition.extra, memo, digests, '$.definition.extra');
+  }
   shape.originDigest = semanticDigest(definition.origin, memo, digests, '$.definition.origin', true);
   shape.location = memoryLocationShape(definition.loc, memo, digests);
   shape.memoryUse = memoryNodeShape(definition.memUse, memo, digests);
@@ -587,7 +631,24 @@ function irShape(ir) {
     digests.originRefs = new WeakMap();
     digests.originValues = [];
     const definitionCache = new WeakMap();
+    const semanticBinding = canonicalLegacySemanticSourceBinding(ir);
+    if (semanticBinding?.semanticIr && typeof semanticBinding.semanticIrDigest === 'string') {
+      const nodes = new Map();
+      let unique = true;
+      for (const node of semanticBinding.semanticIr.nodes ?? []) {
+        const id = token(node?.id);
+        if (id == null || nodes.has(id)) { unique = false; break; }
+        nodes.set(id, node);
+      }
+      if (unique && nodes.size === (semanticBinding.semanticIr.nodes ?? []).length) {
+        digests.semanticSource = Object.freeze({
+          digest: semanticBinding.semanticIrDigest,
+          nodes,
+        });
+      }
+    }
     const shape = semanticObject(ir, new Set(), DERIVED_IR_KEYS, '$', memo);
+    if (digests.semanticSource) shape.canonicalSemanticIrDigest = digests.semanticSource.digest;
     shape.entry = token(ir.entry);
     shape.originDigest = semanticDigest(ir.origin, memo, digests, '$.origin', true);
     shape.blocks = Array.isArray(ir.blocks)
