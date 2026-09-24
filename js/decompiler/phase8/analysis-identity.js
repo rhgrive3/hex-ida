@@ -12,6 +12,36 @@ const REQUIRED_FIELDS = Object.freeze([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
 ]);
 
+class ExactAnalysisIdentityBinding {
+  #ir;
+  #resolved;
+
+  constructor(ir, resolved) {
+    this.#ir = ir;
+    this.#resolved = resolved;
+    Object.freeze(this);
+  }
+
+  static resolve(binding, ir) {
+    try {
+      if (binding == null || typeof binding !== 'object' || !(#ir in binding) || binding.#ir !== ir) return null;
+      return binding.#resolved;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function bindAnalysisIdentityToIr(ir, resolved) {
+  if (ir == null || typeof ir !== 'object' || resolved?.valid !== true
+      || !isValidatedAnalysisIdentity(resolved.identity)) return null;
+  return new ExactAnalysisIdentityBinding(ir, resolved);
+}
+
+export function boundAnalysisIdentityForIr(binding, ir) {
+  return ExactAnalysisIdentityBinding.resolve(binding, ir);
+}
+
 function token(value) {
   if (typeof value === 'string') {
     const text = value.trim();
