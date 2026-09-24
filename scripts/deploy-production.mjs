@@ -57,6 +57,16 @@ function statDescriptor(fstatImpl, fd) {
   }
 }
 
+export function closeDescriptorPreservingPrimary(closeImpl, fd, primaryError = null) {
+  try {
+    closeImpl(fd);
+  } catch (closeError) {
+    if (primaryError === null) throw closeError;
+    return closeError;
+  }
+  return null;
+}
+
 export function runProductionDeploy({
   run = spawnSync,
   args = [],
@@ -266,6 +276,7 @@ export function runProductionDeploy({
 
       const assetsFlags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
       const assetsFd = openSync(assetsCandidate, assetsFlags);
+      let assetsPrimaryError = null;
       try {
         const openedAssets = fstatSync(assetsFd);
         if (!openedAssets.isDirectory() || !sameIdentity(openedAssets, assetsEntry)) {
@@ -309,6 +320,7 @@ export function runProductionDeploy({
                 openErr.code = 'DEPLOY_ASSET_CHILD_CHANGED';
                 throw openErr;
               }
+              let childDirPrimaryError = null;
               try {
                 const openedDirStat = statDescriptor(fstatSync, childDirFd);
                 if (!openedDirStat.isDirectory() || !sameIdentity(openedDirStat, childLstat)) {
@@ -331,8 +343,11 @@ export function runProductionDeploy({
                   err.code = 'DEPLOY_ASSET_CHILD_CHANGED';
                   throw err;
                 }
+              } catch (error) {
+                childDirPrimaryError = error;
+                throw error;
               } finally {
-                closeSync(childDirFd);
+                closeDescriptorPreservingPrimary(closeSync, childDirFd, childDirPrimaryError);
               }
             } else if (isReg) {
               if (childLstat.isSymbolicLink() || !childLstat.isFile()) {
@@ -349,6 +364,7 @@ export function runProductionDeploy({
                 openErr.code = 'DEPLOY_ASSET_CHILD_CHANGED';
                 throw openErr;
               }
+              let filePrimaryError = null;
               try {
                 const openedFileStat = statDescriptor(fstatSync, fileFd);
                 if (!openedFileStat.isFile() || !sameIdentity(openedFileStat, childLstat)) {
@@ -372,8 +388,11 @@ export function runProductionDeploy({
                   throw err;
                 }
                 writeFileSync(dstChild, fileData);
+              } catch (error) {
+                filePrimaryError = error;
+                throw error;
               } finally {
-                closeSync(fileFd);
+                closeDescriptorPreservingPrimary(closeSync, fileFd, filePrimaryError);
               }
             }
           }
@@ -382,6 +401,7 @@ export function runProductionDeploy({
         copyTree(stableAssetsSourcePath, handoffAssetsPath);
 
         const snapshotAssetsFd = openSync(handoffAssetsPath, assetsFlags);
+        let snapshotAssetsPrimaryError = null;
         try {
           const inheritedAssetsFd = 4;
           const stableAssetsPath = `/proc/self/fd/${inheritedAssetsFd}`;
@@ -402,11 +422,17 @@ export function runProductionDeploy({
           deploymentAttempted = true;
           const deployment = run(process.execPath, deploymentArgs, deploymentOptions);
           status = subprocessStatus(deployment, 'Wrangler deployment');
+        } catch (error) {
+          snapshotAssetsPrimaryError = error;
+          throw error;
         } finally {
-          closeSync(snapshotAssetsFd);
+          closeDescriptorPreservingPrimary(closeSync, snapshotAssetsFd, snapshotAssetsPrimaryError);
         }
+      } catch (error) {
+        assetsPrimaryError = error;
+        throw error;
       } finally {
-        closeSync(assetsFd);
+        closeDescriptorPreservingPrimary(closeSync, assetsFd, assetsPrimaryError);
       }
     }
   } catch (error) {
