@@ -1,0 +1,51 @@
+{
+  "cases": 8,
+  "functions": 530,
+  "functionsWithGoto": 131,
+  "totalGoto": 747,
+  "unknownInstructionFunctions": 21,
+  "unstructured": 147,
+  "structured": 383,
+  "rawRecompilation": {
+    "caseStates": {
+      "FAIL": 8
+    },
+    "caseFirstFamilies": {
+      "undeclared-local": 8
+    },
+    "functionFirstFamilies": {
+      "undeclared-local": 10,
+      "undeclared-identifier": 22,
+      "unknown-type-name": 8,
+      "undeclared-global": 8
+    },
+    "diagnosticProbe": {
+      "description": "Diagnostic transformation declaring undeclared locals (local_*, var_*, local_p*) only; NOT a production fix",
+      "sampledFunctions": 48,
+      "syntaxPassed": 8,
+      "syntaxFailed": 40,
+      "nextFailureFamilies": {
+        "undeclared-identifier": 22,
+        "unknown-type-name": 8,
+        "undeclared-global": 10
+      }
+    }
+  },
+  "tuReplay": {
+    "caseStates": {
+      "FAIL": 1
+    },
+    "rawCaseFamilies": {
+      "undeclared-local": 1
+    },
+    "tuCaseFamilies": {
+      "undeclared-local": 1
+    },
+    "unresolvedTotals": {
+      "pseudo-intrinsic": 4,
+      "unresolved-call-sentinel": 1,
+      "unresolved-global": 25,
+      "unresolved-prototype": 74
+    }
+  }
+}

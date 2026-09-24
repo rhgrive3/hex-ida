@@ -1,0 +1,68 @@
+{
+  "schema": "hex-current-main-tu-replay/v1",
+  "runDir": "/mnt/workspace/wt-decl/reports/investigations/output-recompilation-20260924/before-run",
+  "clang": "clang",
+  "clangTimeoutMs": 30000,
+  "chunkLimit": 256,
+  "denominator": {
+    "cases": 1,
+    "functions": 74
+  },
+  "caseStates": {
+    "FAIL": 1
+  },
+  "rawCaseFamilies": {
+    "undeclared-local": 1
+  },
+  "tuCaseFamilies": {
+    "undeclared-local": 1
+  },
+  "comparison": {
+    "rawOk": 0,
+    "tuOk": 0,
+    "rescuedByPackager": 0
+  },
+  "unresolvedTotals": {
+    "pseudo-intrinsic": 4,
+    "unresolved-call-sentinel": 1,
+    "unresolved-global": 25,
+    "unresolved-prototype": 74
+  },
+  "cases": [
+    {
+      "caseId": "1/1_gcc_O1_g",
+      "state": "FAIL",
+      "functions": 74,
+      "discovered": 74,
+      "completeness": "partial",
+      "reason": "translation-unit-evidence-incomplete",
+      "unresolved": {
+        "pseudo-intrinsic": 4,
+        "unresolved-call-sentinel": 1,
+        "unresolved-global": 25,
+        "unresolved-prototype": 74
+      },
+      "includes": 1,
+      "prototypes": 29,
+      "globals": 0,
+      "sourceChars": 36701,
+      "raw": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 788,
+        "warnings": 26,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'"
+      },
+      "tu": {
+        "ok": false,
+        "timedOut": false,
+        "errors": 506,
+        "warnings": 28,
+        "firstFamily": "undeclared-local",
+        "firstMessage": "use of undeclared identifier 'local_pFFFFFFFFFFFFFFF0'",
+        "object": null
+      }
+    }
+  ]
+}
