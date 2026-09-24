@@ -35,7 +35,11 @@ if [[ "$grep_status" -gt 1 ]]; then
 fi
 
 branch="${CIRCLE_BRANCH:-}"
-head="$(git rev-parse HEAD)"
+if ! head="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)"; then
+  echo 'could not resolve pipeline HEAD; running lane conservatively' >&2
+  printf 'true\n'
+  exit 0
+fi
 
 changed_file=""
 cleanup_changed_file() {
