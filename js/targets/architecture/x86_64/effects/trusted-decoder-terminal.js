@@ -323,6 +323,11 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   const receiverAuthorized = hasReceiverRevalidatedX86Row(provenanceSource);
 
   const family = String(instruction.instructionFamily || '').toLowerCase();
+  // Decoder metadata cannot authorize interrupt delivery. The dedicated INT
+  // lifter must validate its byte/operand evidence and declare the delivery
+  // state and accesses itself; a failed lift remains partial even for a
+  // receiver-revalidated row.
+  if (family === 'int') return partial;
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 
@@ -330,8 +335,8 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   // interrupt frames, enclave/VM state, etc.). Empty decoder operands therefore
   // cannot prove `memory:none`. Public/unit projections keep the historical
   // fail-closed partial (#5569); only a byte-revalidated receiver row may close
-  // with a conservative all-memory summary. INT delivery uses the same rule.
-  const implicitMemoryUnproven = (ownerId === 'system' || family === 'int')
+  // with a conservative all-memory summary.
+  const implicitMemoryUnproven = ownerId === 'system'
     && memory.reads.length === 0 && memory.writes.length === 0;
   if (implicitMemoryUnproven && !receiverAuthorized) return partial;
   const conservativeImplicitMemory = implicitMemoryUnproven && receiverAuthorized;

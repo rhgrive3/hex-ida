@@ -54,6 +54,14 @@ function addressRef(value) { return Object.freeze({ kind:'absolute-address', val
 function fallthrough(instruction) { return addressRef(BigInt(instruction.address) + BigInt(instruction.length)); }
 function directTarget(operand) { return operand?.type === 'immediate' ? operand.value : null; }
 
+const EXECUTION_ENV = 'sys:x86.execution-environment';
+const SEGMENT_STATE = 'sys:x86.segment-state';
+const DESCRIPTOR_STATE = 'sys:x86.descriptor-table-state';
+const CET_STATE = 'sys:x86.CET-state';
+const SHADOW_STACK_STATE = 'sys:x86.shadow-stack-state';
+const INTERRUPTIBILITY_STATE = 'sys:x86.interruptibility-state';
+const INTERRUPT_DELIVERY_CONTRACT = 'x86-long64-interrupt-delivery/v1';
+
 function trapEffect(ctx, family, featureMetadata) {
   if (family === 'ud2' || family === 'ud0' || family === 'ud1') {
     return ctx.finish({
@@ -80,22 +88,107 @@ function trapEffect(ctx, family, featureMetadata) {
     });
   }
   if (family === 'int') {
-    const vector = ctx.operands[0]?.type === 'immediate' ? Number(ctx.operands[0].value) : 0;
-    const reason = 'x86-int-delivery-state-unmodelled';
-    return ctx.partial(reason, ['control','faults','registers','memory','flags'], {
-      family:'control',
-      controlEffect:{ kind:'unknown', reason },
-      detail:{
-        vector,
-        requiredArchitecturalState:['idtr-idt-gate','cpl','gate-dpl-present-type','target-selector-rip','privilege-transition-stack'],
-        possibleOutcomes:['handler-delivery','#GP','#NP','#SS'],
+    const vector = Number(ctx.operands[0].value);
+    const vectorVal = ctx.constant(8, BigInt(vector));
+    const nextRip = ctx.constant(64, BigInt(ctx.instruction.address) + BigInt(ctx.instruction.length));
+    const rspOperand = x86RegisterOperand('rsp');
+    const rflagsOperand = x86RegisterOperand('rflags');
+    const rsp = rspOperand ? ctx.readRegister(rspOperand) : null;
+    const rflags = rflagsOperand ? ctx.readRegister(rflagsOperand) : null;
+    if (!rsp || !rflags) {
+      return ctx.partial('x86-int-delivery-visible-state-unmodelled', ['control','faults','registers','memory','flags','other'], {
+        controlEffect:{ kind:'unknown', reason:'x86-int-delivery-visible-state-unmodelled' },
+      });
+    }
+    const target = Object.freeze({
+      kind:'x86-interrupt-delivery-target',
+      contract:INTERRUPT_DELIVERY_CONTRACT,
+      vector,
+      source:'IDT handler or environment-selected virtualization exit from the declared delivery state',
+    });
+    // Match the system-instruction intrinsic contract: hidden architectural
+    // state is declared through registersRead and memory scopes, while the
+    // transfer target stays symbolic until IDT/TSS state is available.
+    ctx.intrinsic('x86.control.interrupt-delivery', [vectorVal, nextRip, rsp, rflags], [], {
+      registersRead:[
+        'rsp', 'rflags',
+        'sys:x86.CS', 'sys:x86.SS', 'sys:x86.CPL',
+        'sys:x86.IDTR', 'sys:x86.GDTR', 'sys:x86.LDTR', 'sys:x86.TR', 'sys:x86.TSS',
+        DESCRIPTOR_STATE,
+        SEGMENT_STATE,
+        CET_STATE,
+        SHADOW_STACK_STATE,
+        INTERRUPTIBILITY_STATE,
+        EXECUTION_ENV,
+      ],
+      registersWritten:[
+        'rsp', 'rflags',
+        'sys:x86.CS', 'sys:x86.SS', 'sys:x86.CPL',
+        SEGMENT_STATE,
+        'sys:x86.SSP',
+        CET_STATE,
+        SHADOW_STACK_STATE,
+        INTERRUPTIBILITY_STATE,
+        EXECUTION_ENV,
+      ],
+      memoryRead:{
+        scope:'all',
+        spaces:['memory'],
+        detail:{
+          kind:'x86-interrupt-delivery-reads',
+          contract:INTERRUPT_DELIVERY_CONTRACT,
+          vector,
+          dependencies:['IDTR/IDT gate','selected GDT/LDT code descriptor','TR/TSS stack state','conditional CET shadow-stack state'],
+          scopeMeaning:'conservative because addresses and conditional accesses depend on the declared architectural state',
+        },
       },
+      memoryWrite:{
+        scope:'all',
+        spaces:['memory'],
+        detail:{
+          kind:'x86-interrupt-delivery-writes',
+          contract:INTERRUPT_DELIVERY_CONTRACT,
+          vector,
+          dependencies:['selected ordinary interrupt frame stack','conditional CET shadow stack'],
+          scopeMeaning:'conservative because stack addresses and writes depend on the declared architectural state',
+        },
+      },
+      controlEffects:[{ kind:'indirect', target }],
+      determinism:'input-dependent',
+      symbolicDetail:'summary-only',
+      metadata:{
+        operation:'int',
+        vector,
+        deliveryContract:INTERRUPT_DELIVERY_CONTRACT,
+        requiredArchitecturalState:['IDTR/selected IDT gate','GDT/LDT code descriptor','CPL/CS/SS','TR/TSS/IST','RSP/RFLAGS','CET/shadow stack','execution/virtualization environment'],
+        exactArchitecturalSummary:true,
+        architecture:'x86-64',
+        environmentDependent:true,
+        transition:'IDT gate lookup -> DPL/present/type and target descriptor checks -> privilege/IST stack selection -> frame/shadow-stack writes -> new CS:RIP, RSP and RFLAGS, or architectural fault/intercept',
+      },
+    });
+
+    return ctx.finish({
+      family:'control',
+      controlEffect:{ kind:'indirect', target },
+      possibleFaults:[
+        { kind:'general-protection', condition:{ kind:'x86-int-gate-dpl-or-limit-fault', vector }, detail:{ fault:'#GP(vector*8+2+ext)' } },
+        { kind:'segment-not-present', condition:{ kind:'x86-int-gate-present-fault', vector }, detail:{ fault:'#NP(vector*8+2+ext)' } },
+        { kind:'stack-segment', condition:{ kind:'x86-int-stack-fault', vector }, detail:{ fault:'#SS(0)' } },
+        { kind:'page-fault', condition:{ kind:'x86-int-delivery-page-fault', vector }, detail:{ fault:'#PF' } },
+        { kind:'alignment-check', condition:{ kind:'x86-int-delivery-alignment-fault', vector }, detail:{ fault:'#AC(0)' } },
+        { kind:'invalid-tss', condition:{ kind:'x86-int-tss-or-stack-selector-fault', vector }, detail:{ fault:'#TS(selector)' } },
+        { kind:'control-protection', condition:{ kind:'x86-int-cet-delivery-fault', vector }, detail:{ fault:'#CP' } },
+        { kind:'double-fault', condition:{ kind:'x86-int-fault-delivery-escalation', vector }, detail:{ fault:'#DF' } },
+      ],
       metadata:{
         ...featureMetadata,
         operation:'int',
         vector,
         architecturalTrap:false,
-        interruptDeliveryModeled:false,
+        interruptDeliveryModeled:true,
+        environmentExact:true,
+        deliveryContract:INTERRUPT_DELIVERY_CONTRACT,
       },
     });
   }
