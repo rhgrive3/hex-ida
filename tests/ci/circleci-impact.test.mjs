@@ -97,6 +97,33 @@ try {
   }
   assert.equal(existsSync(arityGitMarker), false, 'rejected trailing arguments must not invoke git');
 
+  // #9613: unresolved pipeline HEAD is repository uncertainty, not a caller
+  // configuration error. Run conservatively instead of escaping through set -e.
+  for (const [name, prepare] of [
+    ['unborn', (cwd) => git(cwd, 'init', '-b', 'main')],
+    ['missing-ref', (cwd) => {
+      git(cwd, 'init', '-b', 'main');
+      git(cwd, 'config', 'user.name', 'CircleCI Router Test');
+      git(cwd, 'config', 'user.email', 'router-test@example.invalid');
+      write(join(cwd, 'README.md'), 'committed\n');
+      git(cwd, 'add', '.');
+      git(cwd, 'commit', '-m', 'committed head');
+      writeFileSync(join(cwd, '.git', 'HEAD'), 'ref: refs/heads/missing\n');
+    }],
+  ]) {
+    const uncertainRepo = join(root, `head-${name}`);
+    mkdirSync(uncertainRepo, { recursive: true });
+    prepare(uncertainRepo);
+    const result = spawnSync('bash', [router, 'main-and-branch', '^js/ai/'], {
+      cwd: uncertainRepo,
+      encoding: 'utf8',
+      env: { ...process.env, CIRCLE_BRANCH: 'feature' },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), 'true');
+    assert.match(result.stderr, /could not resolve pipeline HEAD; running lane conservatively/);
+  }
+
   // Regression for the A -> B race: remote main is already B while the older
   // A pipeline starts. A must still validate its own first-parent delta.
   assert.equal(route(commitA, 'main', 'main-and-branch', '^js/ai/'), 'true');
