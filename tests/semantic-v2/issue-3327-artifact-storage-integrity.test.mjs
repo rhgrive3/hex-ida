@@ -12,6 +12,7 @@ const validRecord = () => ({
   runtimeSnapshotId: null,
   canonicalConfigHash: 'hash',
   payloadChecksum: 'sum',
+  optionsHash: 'options-hash',
   payloadSize: 0,
   versions: {
     loader: '1',
@@ -37,6 +38,7 @@ for (const [field, value] of [
   ['binaryId', '   '],
   ['canonicalConfigHash', '\thash'],
   ['payloadChecksum', 'sum\n'],
+  ['optionsHash', ' options-hash '],
 ]) {
   const record = validRecord();
   record[field] = value;

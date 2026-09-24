@@ -105,8 +105,18 @@ for (const mutation of ['memory', 'nondeterminism', 'extra-input']) test(`an int
   if (mutation === 'memory') source.intrinsic.memoryWrite = { scope: 'all', addressSpaces: ['memory'] };
   else if (mutation === 'nondeterminism') source.intrinsic.determinism = 'nondeterministic';
   else {
-    const originalRight = ir.nodes.find(n => n.outputs.includes(source.inputs[1])).inputs[0];
-    source.inputs.push(originalRight); source.intrinsic.inputs.push(originalRight);
+    source.operator = 'custom-add-with-carry';
+    const extraVal = {
+      id: 'val_extra_input',
+      kind: 'entry',
+      machineType: { kind: 'bitvector', widthBits: 32 },
+      sourceEntityId: 'fn',
+      variableKey: null,
+      origin: source.origin,
+    };
+    ir.values.push(extraVal);
+    source.inputs.push(extraVal.id);
+    source.intrinsic.inputs.push(extraVal.id);
   }
   const projected = projectSemanticIrV2ToLegacyV1(ir);
   const arithmetic = projected.instructions.find(i => i.sourceEntityId === source.id);

@@ -1,4 +1,5 @@
 import { jsonSafe, stableDigest } from '../../core/identity/index.js';
+import { canonicalMemoryAccessQualifiers } from '../memory-access-provider.js';
 
 /*
  * MemorySSA forwarding is allowed to consume only evidence emitted by the
@@ -24,50 +25,20 @@ export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 /**
  * Module-owned ordinary-access provider for the canonical Semantic IR path.
  *
- * The callback implementation itself is the capability. Callers may pass this
- * exact function to MemorySSA, but cannot register or substitute their own
- * callback. The provider derives every claim from producer-independent,
- * architecture-neutral signals on the current descriptor: the presence of a
- * canonical memory descriptor, the producer's own `bundleCompleteness === 'exact'`
- * attestation, and the generic access qualifiers below. It intentionally does
- * not branch on any architecture, ABI, family, or register/flag name — the
- * concrete target capability stays with the architecture adapter that produced
- * the machine-effects bundle, and this generic layer binds it to the exact
- * module-owned issuer/version/source instead of re-deriving it from target data.
+ * Target adapters derive qualifiers from the current canonical descriptor.
+ * This private wrapper owns proof authority; the adapter result alone is not
+ * a proof. Callers cannot register or substitute a provider callback.
  */
 function canonicalSemanticAccessProvider(descriptor) {
-  const memory = descriptor?.memory;
-  const machineEffects = descriptor?.node?.attributes?.machineEffects;
-  // Carried through as opaque evidence values only; never used to branch.
-  const architectureId = machineEffects?.architectureId;
-  const family = machineEffects?.bundleMetadata?.family;
-  const bundleCompleteness = machineEffects?.bundleCompleteness;
-  if (!memory || bundleCompleteness !== 'exact') return null;
-  if (typeof descriptor?.node?.id !== 'string' || descriptor.node.id.length === 0) return null;
-  if (typeof memory.widthBits !== 'number' || !Number.isSafeInteger(memory.widthBits)
-      || memory.widthBits <= 0 || memory.widthBits % 8 !== 0) return null;
-  if (typeof memory.endian !== 'string' || memory.endian.length === 0) return null;
-  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
-  if (memory.atomic === true || memory.volatility === true) return null;
+  const qualifiers = canonicalMemoryAccessQualifiers(descriptor);
+  if (!qualifiers) return null;
   return Object.freeze({
+    ...qualifiers,
     kind: 'canonical-memory-access-qualifiers',
     issuer: Object.freeze({
       type: 'canonical-memory-access-provider',
       id: CANONICAL_ACCESS_ISSUER,
       version: MEMORY_SSA_PROOF_VERSION,
-    }),
-    sourceEntityId: descriptor.node.id,
-    architectureId,
-    family,
-    widthBits: memory.widthBits,
-    endian: memory.endian,
-    volatility: false,
-    atomic: false,
-    ordering: 'unknown',
-    evidence: Object.freeze({
-      operationKind: machineEffects.operationKind ?? null,
-      machineFamily: family,
-      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
     }),
   });
 }

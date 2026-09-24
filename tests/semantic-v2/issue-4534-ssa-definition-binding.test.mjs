@@ -21,15 +21,19 @@ function origin(id, producedId = null) {
 
 function irFor(blocks) {
   const nodes = blocks.flatMap(({ id: blockId, nodeIds }) => nodeIds.map((id) => ({
-    id, kind: 'copy', blockId, inputs: [], outputs: [], origin: origin(id),
+    id, kind: 'const', blockId, inputs: [], outputs: [`val:${id}`], attributes: { value: 0 }, origin: origin(id),
   })));
+  const values = nodes.map((node) => ({
+    id: node.outputs[0], kind: 'definition', machineType: bit64, definitionNodeId: node.id,
+    sourceEntityId: `entity:${node.id}`, origin: origin(node.id),
+  }));
   return {
     schemaVersion: 2,
     contractVersion: '2.0.0',
     functionId: 'function_issue_4534',
     entryBlockId: 'b0',
     blocks: blocks.map(({ id, nodeIds }) => ({ id, nodeIds, origin: origin(`block:${id}`) })),
-    values: [],
+    values,
     nodes,
     completeness: 'complete',
     unknowns: [],
