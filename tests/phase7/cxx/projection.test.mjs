@@ -23,6 +23,8 @@ import {
 } from '../../../js/analysis/cxx/project.js';
 import {
   createCppVirtualSlotEvidence,
+  createCppVtableEvidence,
+  extractCppObjectEvidence,
   isCanonicalCppMemberEvidence,
   isCanonicalCppReceiverEvidence,
   isCanonicalCppVirtualSlotEvidence,
@@ -159,6 +161,41 @@ test('a proven virtual member projects a canonical receiver and its vtable slots
     assert.equal(slot.exactTargetKnown, false);
     assert.equal(slot.exactTargetAddress, null);
   }
+});
+
+test('an unnamed function gets a receiver type only from unique vtable membership', async () => {
+  const probe = await rttiProbe();
+  const provider = providerFor(probe);
+  await provider.build();
+  const address = symbolAddress(probe, '_ZN6Player10takeDamageEi');
+  const projection = provider.projectForFunction({
+    functionId: 'fn:stripped-player-slot',
+    functionAddress: address,
+    functionName: null,
+    rawSymbol: null,
+    ir: receiverIr(),
+  });
+  assert.ok(projection, 'slot membership proves a non-static receiver without a function symbol');
+  assert.equal(projection.receiver.classIdentity.className, 'Player');
+  assert.equal(projection.receiver.nonStaticProof.source, 'vtable-membership');
+});
+
+test('an address shared by unrelated vtables stays untyped', () => {
+  const sharedAddress = 0x12345678n;
+  const vtables = ['A', 'B'].map((_, index) => createCppVtableEvidence({
+    vtableAddress: BigInt(0x2000 + index * 0x100),
+    pointerBytes: 8,
+    slots: [{ index: 0, address: sharedAddress }],
+  }));
+  const report = extractCppObjectEvidence({
+    functionId: 'fn:folded',
+    functionAddress: sharedAddress,
+    ir: receiverIr(),
+    vtables,
+    vtableClassNames: ['A', 'B'],
+  });
+  assert.equal(report.receiver.classIdentity.kind, 'anonymous');
+  assert.equal(report.receiver.classIdentity.className, null);
 });
 
 test('a constructor projects evidence from symbol syntax without a vtable slot', async () => {

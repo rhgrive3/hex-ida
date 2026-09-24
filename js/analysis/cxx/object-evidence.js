@@ -471,6 +471,7 @@ export function extractCppObjectEvidence(context = {}) {
     rawSymbol = null,
     ir = null,
     vtables = [],
+    vtableClassNames = [],
     metadata = {},
     snapshotId = 'snapshot_default',
     architecture = 'arm64',
@@ -479,7 +480,10 @@ export function extractCppObjectEvidence(context = {}) {
   // 1. Symbol and membership analysis
   const symInfo = analyzeFunctionSymbol(functionName || rawSymbol, rawSymbol || functionName);
 
-  if (!symInfo.isCxx || symInfo.isFreeFunction) {
+  const hasVtableMembership = functionAddress != null && vtables.some((vt) =>
+    vt.slots?.some((slot) => !slot.unresolved && slot.address === BigInt(functionAddress)));
+
+  if ((!symInfo.isCxx || symInfo.isFreeFunction) && !hasVtableMembership) {
     return deepFreeze({
       schema: 'cpp-object-evidence-report/v1',
       functionId,
@@ -554,12 +558,21 @@ export function extractCppObjectEvidence(context = {}) {
   }
 
   // 3. Resolve Class Identity
+  const candidateClassNames = [...new Set(vtableClassNames.filter((name) => typeof name === 'string' && name.trim()))];
+  // For an unnamed function, vtable membership is enough to prove `this`, but
+  // it names the receiver only when every owning table agrees. An address shared
+  // by unrelated classes (for example after identical code folding) stays
+  // anonymous unless the symbol itself supplies the member's class.
+  const vtableClassName = vtableClassNames.length > 0 &&
+    vtableClassNames.every((name) => typeof name === 'string' && name.trim()) &&
+    candidateClassNames.length === 1 ? candidateClassNames[0] : null;
+  const className = symInfo.className || vtableClassName;
   const classIdentity = createCppClassIdentity({
-    kind: symInfo.className ? 'named' : 'anonymous',
-    className: symInfo.className || null,
+    kind: className ? 'named' : 'anonymous',
+    className: className || null,
     vtableAddress: vtables[0]?.vtableAddress ?? null,
     offsetToTop: vtables[0]?.offsetToTop ?? 0n,
-    isAnonymous: !symInfo.className,
+    isAnonymous: !className,
   });
 
   // Fail closed if secondary vtable (offsetToTop !== 0)
