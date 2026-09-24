@@ -31,7 +31,7 @@ function nestedRecord(value) {
 }
 
 function aggregateBoolean(parameter, key) {
-  const owners = [parameter];
+  const owners = parameter ? [parameter] : [];
   if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
   if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
   if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
