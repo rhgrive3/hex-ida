@@ -1,0 +1,636 @@
+{
+  "schema": "hex-jev-binary-holdout-retention/v1",
+  "evaluatedAtUtc": "2026-09-24T00:22:33.661Z",
+  "caseSha256": "cfc02268c791e8a2c80c09157979da8a7f601034d16c494dcf72f22219d11460",
+  "binarySha256": "60a36f4e862efadfef1d3b3db89be5d1f7457e5a5ac35ef1265ae7ffcda1ed28",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "total": 62,
+  "answerable": 50,
+  "abstain": 12,
+  "goldInLattice": 49,
+  "goldInShortlist": 49,
+  "latticePresentRetention": 1,
+  "allAnswerableRetention": 0.98,
+  "rows": [
+    {
+      "id": "SP01",
+      "answerable": true,
+      "candidateCount": 38,
+      "verdict": "ambiguous",
+      "goldRank": 14,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 38
+    },
+    {
+      "id": "SP02",
+      "answerable": true,
+      "candidateCount": 23,
+      "verdict": "ambiguous",
+      "goldRank": 22,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 23
+    },
+    {
+      "id": "SP03",
+      "answerable": true,
+      "candidateCount": 189,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 189
+    },
+    {
+      "id": "SP04",
+      "answerable": true,
+      "candidateCount": 200,
+      "verdict": "ambiguous",
+      "goldRank": 36,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 200
+    },
+    {
+      "id": "SP05",
+      "answerable": true,
+      "candidateCount": 93,
+      "verdict": "ambiguous",
+      "goldRank": 71,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 93
+    },
+    {
+      "id": "SP06",
+      "answerable": true,
+      "candidateCount": 229,
+      "verdict": "ambiguous",
+      "goldRank": 2,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 229
+    },
+    {
+      "id": "SP07",
+      "answerable": true,
+      "candidateCount": 160,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 160
+    },
+    {
+      "id": "SP08",
+      "answerable": true,
+      "candidateCount": 212,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 212
+    },
+    {
+      "id": "SP09",
+      "answerable": true,
+      "candidateCount": 229,
+      "verdict": "ambiguous",
+      "goldRank": 34,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 229
+    },
+    {
+      "id": "SP10",
+      "answerable": true,
+      "candidateCount": 165,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 165
+    },
+    {
+      "id": "SP11",
+      "answerable": true,
+      "candidateCount": 219,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 219
+    },
+    {
+      "id": "SP12",
+      "answerable": true,
+      "candidateCount": 213,
+      "verdict": "ambiguous",
+      "goldRank": 16,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 213
+    },
+    {
+      "id": "SP13",
+      "answerable": true,
+      "candidateCount": 211,
+      "verdict": "ambiguous",
+      "goldRank": 36,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 211
+    },
+    {
+      "id": "SP14",
+      "answerable": true,
+      "candidateCount": 167,
+      "verdict": "ambiguous",
+      "goldRank": 14,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 167
+    },
+    {
+      "id": "SP15",
+      "answerable": true,
+      "candidateCount": 146,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 146
+    },
+    {
+      "id": "SP16",
+      "answerable": true,
+      "candidateCount": 48,
+      "verdict": "ambiguous",
+      "goldRank": 7,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 48
+    },
+    {
+      "id": "SP17",
+      "answerable": true,
+      "candidateCount": 176,
+      "verdict": "ambiguous",
+      "goldRank": 41,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 176
+    },
+    {
+      "id": "SP18",
+      "answerable": true,
+      "candidateCount": 63,
+      "verdict": "ambiguous",
+      "goldRank": 38,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 63
+    },
+    {
+      "id": "SP19",
+      "answerable": true,
+      "candidateCount": 9,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 9
+    },
+    {
+      "id": "SP20",
+      "answerable": true,
+      "candidateCount": 23,
+      "verdict": "ambiguous",
+      "goldRank": 13,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 23
+    },
+    {
+      "id": "SP21",
+      "answerable": true,
+      "candidateCount": 250,
+      "verdict": "ambiguous",
+      "goldRank": 37,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 250
+    },
+    {
+      "id": "SP22",
+      "answerable": true,
+      "candidateCount": 47,
+      "verdict": "ambiguous",
+      "goldRank": 7,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 47
+    },
+    {
+      "id": "SP23",
+      "answerable": true,
+      "candidateCount": 226,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": false,
+      "shortlistCount": 226
+    },
+    {
+      "id": "SP24",
+      "answerable": true,
+      "candidateCount": 191,
+      "verdict": "ambiguous",
+      "goldRank": 8,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 191
+    },
+    {
+      "id": "SP25",
+      "answerable": true,
+      "candidateCount": 97,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 97
+    },
+    {
+      "id": "SP26",
+      "answerable": true,
+      "candidateCount": 67,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 67
+    },
+    {
+      "id": "SP27",
+      "answerable": true,
+      "candidateCount": 66,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 66
+    },
+    {
+      "id": "SP28",
+      "answerable": true,
+      "candidateCount": 50,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 50
+    },
+    {
+      "id": "SP29",
+      "answerable": true,
+      "candidateCount": 27,
+      "verdict": "ambiguous",
+      "goldRank": 14,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 27
+    },
+    {
+      "id": "SP30",
+      "answerable": true,
+      "candidateCount": 210,
+      "verdict": "ambiguous",
+      "goldRank": 35,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 210
+    },
+    {
+      "id": "SP31",
+      "answerable": true,
+      "candidateCount": 201,
+      "verdict": "ambiguous",
+      "goldRank": 69,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 201
+    },
+    {
+      "id": "SP32",
+      "answerable": true,
+      "candidateCount": 87,
+      "verdict": "ambiguous",
+      "goldRank": 24,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 87
+    },
+    {
+      "id": "SP33",
+      "answerable": true,
+      "candidateCount": 17,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 17
+    },
+    {
+      "id": "SP34",
+      "answerable": true,
+      "candidateCount": 153,
+      "verdict": "ambiguous",
+      "goldRank": 22,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 153
+    },
+    {
+      "id": "SP35",
+      "answerable": true,
+      "candidateCount": 34,
+      "verdict": "ambiguous",
+      "goldRank": 20,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 34
+    },
+    {
+      "id": "SP36",
+      "answerable": true,
+      "candidateCount": 43,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 43
+    },
+    {
+      "id": "SP37",
+      "answerable": true,
+      "candidateCount": 37,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 37
+    },
+    {
+      "id": "SP38",
+      "answerable": true,
+      "candidateCount": 74,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 74
+    },
+    {
+      "id": "SP39",
+      "answerable": true,
+      "candidateCount": 193,
+      "verdict": "ambiguous",
+      "goldRank": 29,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 193
+    },
+    {
+      "id": "SP40",
+      "answerable": true,
+      "candidateCount": 197,
+      "verdict": "ambiguous",
+      "goldRank": 18,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 197
+    },
+    {
+      "id": "SP41",
+      "answerable": true,
+      "candidateCount": 171,
+      "verdict": "ambiguous",
+      "goldRank": 31,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 171
+    },
+    {
+      "id": "SP42",
+      "answerable": true,
+      "candidateCount": 136,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 136
+    },
+    {
+      "id": "SP43",
+      "answerable": true,
+      "candidateCount": 173,
+      "verdict": "ambiguous",
+      "goldRank": 15,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 173
+    },
+    {
+      "id": "SP44",
+      "answerable": true,
+      "candidateCount": 161,
+      "verdict": "ambiguous",
+      "goldRank": 15,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 161
+    },
+    {
+      "id": "SP45",
+      "answerable": true,
+      "candidateCount": 144,
+      "verdict": "ambiguous",
+      "goldRank": 11,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 144
+    },
+    {
+      "id": "SP46",
+      "answerable": true,
+      "candidateCount": 91,
+      "verdict": "ambiguous",
+      "goldRank": 21,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 91
+    },
+    {
+      "id": "SP47",
+      "answerable": true,
+      "candidateCount": 235,
+      "verdict": "ambiguous",
+      "goldRank": 52,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 235
+    },
+    {
+      "id": "SP48",
+      "answerable": true,
+      "candidateCount": 27,
+      "verdict": "ambiguous",
+      "goldRank": 23,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 27
+    },
+    {
+      "id": "SP49",
+      "answerable": true,
+      "candidateCount": 123,
+      "verdict": "ambiguous",
+      "goldRank": 2,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 123
+    },
+    {
+      "id": "SP50",
+      "answerable": true,
+      "candidateCount": 163,
+      "verdict": "ambiguous",
+      "goldRank": 14,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 163
+    },
+    {
+      "id": "SP51",
+      "answerable": false,
+      "candidateCount": 169,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 169
+    },
+    {
+      "id": "SP52",
+      "answerable": false,
+      "candidateCount": 4,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 4
+    },
+    {
+      "id": "SP53",
+      "answerable": false,
+      "candidateCount": 167,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 167
+    },
+    {
+      "id": "SP54",
+      "answerable": false,
+      "candidateCount": 47,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 47
+    },
+    {
+      "id": "SP55",
+      "answerable": false,
+      "candidateCount": 54,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 54
+    },
+    {
+      "id": "SP56",
+      "answerable": false,
+      "candidateCount": 8,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 8
+    },
+    {
+      "id": "SP57",
+      "answerable": false,
+      "candidateCount": 9,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 9
+    },
+    {
+      "id": "SP58",
+      "answerable": false,
+      "candidateCount": 32,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 32
+    },
+    {
+      "id": "SP59",
+      "answerable": false,
+      "candidateCount": 2,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 2
+    },
+    {
+      "id": "SP60",
+      "answerable": false,
+      "candidateCount": 0,
+      "verdict": "none",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 0
+    },
+    {
+      "id": "SP61",
+      "answerable": false,
+      "candidateCount": 157,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 157
+    },
+    {
+      "id": "SP62",
+      "answerable": false,
+      "candidateCount": 8,
+      "verdict": "likely",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 8
+    }
+  ]
+}

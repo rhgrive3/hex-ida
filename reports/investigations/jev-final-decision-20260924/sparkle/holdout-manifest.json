@@ -1,0 +1,33 @@
+{
+  "schema": "hex-jev-binary-disjoint-holdout/v1",
+  "lockedAtUtc": "2026-09-24T00:22:19.120Z",
+  "caseCount": 62,
+  "answerableCases": 50,
+  "abstainCases": 12,
+  "caseSha256": "cfc02268c791e8a2c80c09157979da8a7f601034d16c494dcf72f22219d11460",
+  "binary": {
+    "name": "Sparkle",
+    "version": "2.x",
+    "architecture": "x86_64",
+    "sha256": "60a36f4e862efadfef1d3b3db89be5d1f7457e5a5ac35ef1265ae7ffcda1ed28",
+    "localPath": "/mnt/workspace/.dev-state/agent-work/cache/hex-completion-20260924/openemu/Sparkle"
+  },
+  "goldAudit": {
+    "source": "Mach-O Objective-C ivar metadata in the Sparkle binary",
+    "metadataPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/jev/sparkle-ivars.json",
+    "classes": 56,
+    "classesWithIvars": 46,
+    "ivars": 291,
+    "verifiedGold": 50,
+    "missingGold": []
+  },
+  "priorEvaluationBinaries": [
+    "battlecats",
+    "TsumTsum",
+    "YWP"
+  ],
+  "exploratoryBinaries": [
+    "OpenEmu"
+  ],
+  "routerFrozenSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173"
+}

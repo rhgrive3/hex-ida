@@ -87,6 +87,123 @@ export function byRecallLane(a, b) {
     || (b.fusion.logOdds - a.fusion.logOdds);
 }
 
+/**
+ * Deterministic <=255 shortlist for external Jev assistance.
+ * Takes the candidates array (budget up to 400), preserves existing Hex score
+ * order with stable tiebreak on candidate key/id/address, and bounds to max (<=255).
+ * The full candidate lattice is NOT pruned; only the Jev request uses the shortlist.
+ */
+export function jevShortlist(candidates, opts = {}) {
+  if (!Array.isArray(candidates) || !candidates.length) return [];
+  const max = Math.max(1, Math.min(255, Number.isSafeInteger(opts?.max) ? opts.max : 64));
+  return candidates.slice().sort((a, b) => {
+    // If candidates have an explicit input index, preserve existing rank order as primary
+    const idxA = Number.isInteger(a?.index) ? a.index : null;
+    const idxB = Number.isInteger(b?.index) ? b.index : null;
+    if (idxA !== null && idxB !== null && idxA !== idxB) return idxA - idxB;
+
+    const scoreA = Number.isFinite(a?.fusion?.logOdds) ? a.fusion.logOdds : (Number.isFinite(a?.score) ? a.score : 0);
+    const scoreB = Number.isFinite(b?.fusion?.logOdds) ? b.fusion.logOdds : (Number.isFinite(b?.score) ? b.score : 0);
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    const laneA = a?.recallLane ? 1 : 0;
+    const laneB = b?.recallLane ? 1 : 0;
+    if (laneA !== laneB) return laneA - laneB;
+    const keyA = String(a?.key ?? a?.id ?? a?.addr ?? a?.fieldName ?? '');
+    const keyB = String(b?.key ?? b?.id ?? b?.addr ?? b?.fieldName ?? '');
+    return keyA.localeCompare(keyB);
+  }).slice(0, max);
+}
+
+/**
+ * Safe optional preference router for Jev assistance.
+ * 
+ * Rules:
+ * - Default disabled: { enabled = false }
+ * - Jev may only express a preference among EXISTING Hex candidates.
+ * - Call Jev only for partial-mode queries when Hex top1 is not strong (verdict !== 'confirmed' && verdict !== 'likely')
+ * - Take Jev's choice only if it is inside the shortlist
+ * - Jev's choice can change top1, but the verdict strength stays at most 'likely/ambiguous' (never promoted to strong by Jev alone)
+ * - Returns { top1, source: 'hex'|'jev', advisory: { jevChoice, withinShortlist } }
+ * - Returns the Hex result unchanged on any error/timeout/malformed/out-of-shortlist response (fail closed).
+ */
+export async function rerankWithJev(query, hexResult, opts = {}) {
+  const fallback = {
+    top1: hexResult?.top ?? null,
+    source: 'hex',
+    advisory: { jevChoice: null, withinShortlist: false },
+    hexResult,
+  };
+
+  if (!opts?.enabled) return fallback;
+  if (!hexResult || !Array.isArray(hexResult.candidates) || hexResult.candidates.length < 2) return fallback;
+
+  // Determine query mode
+  const mode = opts?.mode ?? (typeof query === 'object' ? query?.mode : null) ?? 'partial';
+  if (mode !== 'partial') return fallback;
+
+  // Gate: only call Jev when Hex top1 is not strong
+  const verdict = hexResult.verdict ?? 'none';
+  const isStrong = verdict === 'confirmed' || verdict === 'likely';
+  if (isStrong) return fallback;
+
+  // Shortlist up to 255 candidates
+  const shortlist = jevShortlist(hexResult.candidates, { max: opts?.maxChoices ?? 255 });
+  if (!shortlist.length) return fallback;
+
+  try {
+    const client = opts?.client;
+    if (!client || typeof client.call !== 'function') return fallback;
+
+    const jevResponse = await client.call({
+      query: typeof query === 'string' ? query : (query?.text ?? query?.query ?? ''),
+      mode,
+      candidates: shortlist,
+    });
+
+    if (!jevResponse || typeof jevResponse !== 'object') return fallback;
+
+    const choiceKey = jevResponse.selectedKey ?? null;
+    const choiceIndex = Number.isInteger(jevResponse.choiceIndex) ? jevResponse.choiceIndex : null;
+
+    let chosenCandidate = null;
+    if (choiceIndex !== null && choiceIndex >= 0 && choiceIndex < shortlist.length) {
+      chosenCandidate = shortlist[choiceIndex];
+    } else if (choiceKey !== null) {
+      chosenCandidate = shortlist.find((c) => (c.key ?? c.id) === choiceKey) ?? null;
+    }
+
+    if (!chosenCandidate) {
+      return {
+        ...fallback,
+        advisory: { jevChoice: choiceKey, withinShortlist: false },
+      };
+    }
+
+    // Candidate must belong to existing Hex candidate lattice
+    const inLattice = hexResult.candidates.find((c) => (c.key ?? c.id) === (chosenCandidate.key ?? chosenCandidate.id));
+    if (!inLattice) {
+      return {
+        ...fallback,
+        advisory: { jevChoice: chosenCandidate.key ?? chosenCandidate.id, withinShortlist: false },
+      };
+    }
+
+    return {
+      top1: inLattice,
+      source: 'jev',
+      advisory: {
+        jevChoice: inLattice.key ?? inLattice.id,
+        withinShortlist: true,
+        confidence: jevResponse.confidence ?? null,
+        preference: jevResponse.preference ?? null,
+      },
+      hexResult,
+    };
+  } catch (_err) {
+    return fallback;
+  }
+}
+
 // The public facade accepts only safe, non-negative integer limits. Explicit
 // zero is meaningful; malformed values use the historical default rather than
 // reaching Array#slice coercion or relative-index semantics.

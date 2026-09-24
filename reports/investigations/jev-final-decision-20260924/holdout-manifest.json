@@ -1,0 +1,14 @@
+{
+  "schema": "hex-jev-prospective-holdout-manifest/v1",
+  "lockedAtUtc": "2026-09-23T19:44:38.703Z",
+  "totalCases": 54,
+  "answerableCases": 42,
+  "abstainCases": 12,
+  "caseSha256": "4c76397ede14ef593ebb13d076060fdf7964ad98cc55e6011175fc1973d77545",
+  "binaryAvailabilityAudit": {
+    "fetchRealFixturesChecked": true,
+    "additionalMachoBeyondThreeAvailable": false,
+    "elfCxxRttiPinpointSupported": false,
+    "note": "No additional Mach-O apps with ObjC metadata exist beyond battlecats, TsumTsum, and YWP. OpenTTD/OpenMW ELF C++ RTTI binaries have 0 Objective-C/field metadata and are unsupported by Pinpoint field/location candidate retrieval (candidateCount = 0). Therefore, disjoint class/field/query holdout across the 3 real Mach-O apps is used with 100% independently established binary metadata ground truth and zero overlap."
+  }
+}

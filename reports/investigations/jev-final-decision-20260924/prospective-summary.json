@@ -1,0 +1,52 @@
+{
+  "schema": "hex-jev-prospective-evaluation/v1",
+  "evaluatedAtUtc": "2026-09-23T19:48:54.636Z",
+  "totalCases": 54,
+  "answerableCases": 42,
+  "abstainCases": 12,
+  "apiClientStats": {
+    "callCount": 41,
+    "httpErrors": 1,
+    "http400ChoiceLimitErrors": 0,
+    "p50LatencyMs": 2189.78,
+    "maxLatencyMs": 11210.26
+  },
+  "metrics": {
+    "armA_baseline": {
+      "answerableTop1": 2,
+      "answerableN": 42,
+      "accuracy": 0.047619047619047616,
+      "falseStrongCount": 11,
+      "unsafeConfidentCount": 12
+    },
+    "armB_routed_jev": {
+      "answerableTop1": 14,
+      "answerableN": 42,
+      "accuracy": 0.3333333333333333,
+      "falseStrongCount": 11,
+      "unsafeConfidentCount": 12
+    },
+    "differential": {
+      "rescues": 12,
+      "regressions": 0,
+      "rescueCaseIds": [
+        "PROSP_BC03",
+        "PROSP_BC05",
+        "PROSP_BC06",
+        "PROSP_BC07",
+        "PROSP_BC08",
+        "PROSP_BC10",
+        "PROSP_BC11",
+        "PROSP_BC14",
+        "PROSP_TS04",
+        "PROSP_TS06",
+        "PROSP_TS09",
+        "PROSP_YW05"
+      ],
+      "regressionCaseIds": [],
+      "regressionRescueRatio": 0,
+      "newFalseStrong": 0,
+      "failClosedVerified": true
+    }
+  }
+}
