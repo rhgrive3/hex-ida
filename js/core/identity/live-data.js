@@ -134,26 +134,31 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
 // mutable objects from live checks. This shares observations, not authority.
 export function createProjectionIrObserver() {
   const immutable = new WeakMap();
+  // Frozen own data descriptors cannot change. Cache only their already-
+  // validated [key,value] list inside this observer; descendant currentness is
+  // still tracked by its own records/certificates and mutable objects are never
+  // cached here.
+  const frozenEntries = new WeakMap();
   const data = { eligibility:new WeakMap(), guards:new WeakMap(), certificates:new WeakMap() };
   return Object.freeze({
-    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable),
+    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, null, null, frozenEntries),
     // Complete graph inputs already enumerate their vertices. Visit by distance
     // from those real roots, not by an arbitrary walk around SSA cycles. This
     // observes every field; it is not a caller-provided list of exempt objects.
-    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true),
+    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true, null, null, frozenEntries),
     // Canonical origins are immutable DATA, not transformation authority. Bind
     // each exact issued envelope and certify its data once; mutable IR and
     // unbranded/copy payloads still receive the ordinary full observation.
-    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins'),
+    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', null, null, frozenEntries),
     // Explicit data-only certificates for recursively immutable descriptions.
     // Mutable descendants and frozen cycles remain full live observations.
     // No certificate establishes semantic truth or private producer identity.
-    captureCertifiedDataGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', data),
-    captureCertifiedData:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, data),
+    captureCertifiedDataGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', data, null, frozenEntries),
+    captureCertifiedData:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, data, null, frozenEntries),
   });
 }
 
-function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null) {
+function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null, frozenEntries = null) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
   const records = [], seen = new WeakMap();
   const originCertificates = [], certification = { nodes:0, edges:0, expandedUnits:0 };
@@ -164,6 +169,19 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
   const started = performance.now();
   function check() {
     if (performance.now()-started >= 250 || shouldAbort?.()) throw new TypeError('projection-capture-cancelled-or-deadline');
+  }
+  function entriesFor(value, maxEntries) {
+    if (frozenEntries == null || !Object.isFrozen(value)) return ownDataEntries(value, maxEntries);
+    const cached = frozenEntries.get(value);
+    if (cached !== undefined) {
+      // Preserve the caller's remaining edge budget even when validation was
+      // completed earlier under a larger allowance.
+      if (cached.length > maxEntries) throw new TypeError('data-entry-budget-exceeded');
+      return cached;
+    }
+    const entries = ownDataEntries(value, maxEntries);
+    frozenEntries.set(value, entries);
+    return entries;
   }
   function scalarCost(value) {
     if (value == null || typeof value === 'boolean') return 1;
@@ -191,7 +209,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     if (!Object.isFrozen(value) || active.has(value) || depth > PROJECTION_LIMITS.depth) return null;
     if (data.eligibility.has(value)) return data.eligibility.get(value);
     chargeData({ nodes:1 }); eligibilityNodes++;
-    const entries = ownDataEntries(value, DATA_CERTIFICATION_LIMITS.edges - dataCertification.edges);
+    const entries = entriesFor(value, DATA_CERTIFICATION_LIMITS.edges - dataCertification.edges);
     chargeData({ edges:entries.length }); eligibilityEdges += entries.length;
     active.add(value);
     let height = 1;
@@ -216,7 +234,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       // Reuse each immutable subtree together with its normalization guard.
       // A shared origin-bearing description must not be walked again for each
       // owning record; the exact owner references are still observed outside.
-      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards);
+      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards, frozenEntries);
       chargeData(observed.metrics);
       for (const key of Object.keys(certification)) {
         certification[key] += observed.originCertification?.[key] ?? 0;
@@ -250,7 +268,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     // Cycles remain ordinary live observations, even if some members are frozen.
     seen.set(value, 1);
     const ownFrozen = Object.isFrozen(value);
-    const entries = ownDataEntries(value,PROJECTION_LIMITS.edges-edges);
+    const entries = entriesFor(value,PROJECTION_LIMITS.edges-edges);
     edges += entries.length;
     records.push({value,prototype:Object.getPrototypeOf(value),entries,ownFrozen,arrayLength:Array.isArray(value)?value.length:null});
     let cost = 1, height = 1, stable = immutable != null && Object.isFrozen(value);
@@ -297,7 +315,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
         // ordinary nested capture independently certifies recursive immutable
         // plain data, scalar limits and height. Merely Object.freeze() is not
         // sufficient. No public description registers an observation here.
-        const certificate = captureIrData([value], shouldAbort, immutable);
+        const certificate = captureIrData([value], shouldAbort, immutable, false, null, null, frozenEntries);
         check();
         for (const key of Object.keys(certification)) {
           certification[key] += certificate.metrics[key];
@@ -311,7 +329,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       }
       if (certifyData(value, depth) != null) return 1;
       const ownFrozen = Object.isFrozen(value);
-      const entries = ownDataEntries(value, PROJECTION_LIMITS.edges - edges);
+      const entries = entriesFor(value, PROJECTION_LIMITS.edges - edges);
       edges += entries.length;
       records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries, ownFrozen,
         arrayLength:Array.isArray(value) ? value.length : null });
