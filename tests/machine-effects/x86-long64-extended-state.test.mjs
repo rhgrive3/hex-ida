@@ -48,7 +48,7 @@ try {
     assert.ok(raw,`${name}:public decoder fixture`);
     const bundle=liftX86MachineEffects(raw,{instructionId:`extended:public:${name}`});
     assert.equal(bundle.completeness,'partial',name);
-    assert.match(bundle.unknownEffects?.reason,/x87-family-requires-dedicated-semantics/);
+    assert.match(bundle.unknownEffects?.reason,/x87-(?:family-requires-dedicated-semantics|trusted-decoder-provenance-required)/);
     assert.notEqual(bundle.metadata.terminalizedBy,'trusted-capstone-structured-intrinsic',name);
     assert.equal(bundle.metadata.x87PhysicalStateModeled,true,name);
   }

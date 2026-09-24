@@ -55,7 +55,12 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'vscatterpf1dpd',
   'vscatterpf1dps',
   'vscatterpf1qpd',
-  'vscatterpf1qps'
+  'vscatterpf1qps',
+  'vxorps',
+  'vaddps',
+  'vpaddd',
+  'vpcmpeqd',
+  'vcomiss',
 ]);
 
 export function classifyEvexCategory(name) {
@@ -262,7 +267,7 @@ export function liftEvex(instruction, context, family, provenanceSource = instru
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null,
+      roundingMode: embeddedRoundingOrSae && compare ? null : (embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null),
       suppressAllExceptions: embeddedRoundingOrSae,
       opcodeMap: info.map,
       mandatoryPrefixCode: info.mandatoryPrefixCode,
@@ -291,6 +296,7 @@ export function liftEvex(instruction, context, family, provenanceSource = instru
     possibleFaults: faults,
     metadata: {
       operation: family,
+      category,
       evexPhysicalStateModeled: true,
       maxVlBits: 512,
       activeVectorWidthBits: activeWidth,
@@ -298,7 +304,7 @@ export function liftEvex(instruction, context, family, provenanceSource = instru
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null
+      roundingMode: embeddedRoundingOrSae && compare ? null : (embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null)
     }
   });
 }

@@ -60,15 +60,15 @@ const coverageCorpus = [
   ['arm64:mrs', ARM64_ARCHITECTURE, decoded('mrs', 'x0, tpidr_el0', { ops:[gp(0), sys('tpidr_el0')] })],
   ['arm64:svc', ARM64_ARCHITECTURE, decoded('svc', '#0x80', { ops:[imm(0x80)] })],
   ['arm64:sve', ARM64_ARCHITECTURE, decoded('fadd', 'z0.s, z1.s, z2.s', { ops:[] })],
-  ['arm64e:paciasp', ARM64E_ARCHITECTURE, decoded('paciasp', '', { mode:'arm64e', operands:[] })],
+  ['arm64e:paciasp', ARM64E_ARCHITECTURE, decoded('paciasp', '', { mode:'arm64e', operands:[] }), { featBti:false }],
   ['arm64e:autiasp', ARM64E_ARCHITECTURE, decoded('autiasp', '', { mode:'arm64e', operands:[] })],
   ['arm64e:xpaclri', ARM64E_ARCHITECTURE, decoded('xpaclri', '', { mode:'arm64e', operands:[] })],
   ['arm64:unsupported', ARM64_ARCHITECTURE, decoded('zzfuture')],
 ];
 
 const coverageRecords = [];
-for (const [key, architecture, instruction] of coverageCorpus) {
-  const bundle = architecture.liftExact(instruction);
+for (const [key, architecture, instruction, context] of coverageCorpus) {
+  const bundle = architecture.liftExact(instruction, context);
   const liftResult = bundle ?? { coverage:COVERAGE_STATUS.UNSUPPORTED, bundle:null, reason:'composed-lifter-returned-null' };
   assertNoSilentPreserve({ decodedInstruction:instruction, liftResult, recognized:true });
   coverageRecords.push(createCoverageRecord({
