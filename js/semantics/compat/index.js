@@ -74,6 +74,17 @@ const registerStateContexts = new WeakMap();
 const canonicalStateObligations = new WeakMap();
 const returnFaultBindings = new WeakMap();
 const canonicalFaultObligations = new WeakMap();
+// Private producer association: only a legacy projection issued by this exact
+// compatibility pipeline can recover the canonical Semantic IR source and the
+// digest that was already authority-bound by the SSA producer. Copies/forgeries
+// have no WeakMap entry.
+const legacySemanticSourceBindings = new WeakMap();
+
+export function canonicalLegacySemanticSourceBinding(projected) {
+  return projected != null && typeof projected === 'object'
+    ? legacySemanticSourceBindings.get(projected) ?? null
+    : null;
+}
 export function projectedCanonicalFaultObligations(projected) {
   return canonicalFaultObligations.get(projected) ?? null;
 }
@@ -1062,6 +1073,10 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     memorySsa,
     abiAdapter: input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter,
   });
+  legacySemanticSourceBindings.set(legacyV1, Object.freeze({
+    semanticIr: ir,
+    semanticIrDigest,
+  }));
   const bindingContext = Object.freeze({ binaryId, functionId, snapshotId,
     architecture:architectureId, semanticsVersion:architectureSemanticVersion });
   sealRegisterStateBindings(legacyV1, ir, ssa, bindingContext);
