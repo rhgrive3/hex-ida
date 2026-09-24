@@ -8,6 +8,10 @@ Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, 
 
 When an agent needs a broad test or release-gate run, suppress successful chatter instead of sending thousands of passing lines back into model context.
 
+- Run heavy repository suites, real-game checks, and performance benchmarks on `rhgrive3/actions` GitHub Actions at the **exact pushed Hex commit SHA**. Dispatch independent checks as parallel Actions runs/jobs, with bounded fanout that respects runner limits (`docs/ENGINEERING_PROCESS_GUARDRAILS.md` EP-014). Keep focused local tests local when they are cheap.
+- Use the existing `hex-suite-runner.yml` for broad suites and `hex-lane-{quality,realgames,perf}.yml` or the dedicated exact-SHA workflows for their respective evidence. Run the canonical full gate as one unchanged command, `node scripts/run-quiet-command.mjs --label check -- npm run check`; parallel supplemental commands never replace that gate or an independent verifier.
+- Record the target SHA, workflow/run IDs, conclusions, and validated artifacts. A queued, failed, cancelled, stale-SHA, or missing-artifact run is not passing evidence. Do not run several heavy suites locally when Actions can run them in parallel.
+
 - Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
 - Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
 - Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
