@@ -15,21 +15,45 @@ export const SESSION_STATE = Object.freeze({
   TERMINATED: 'terminated',
 });
 
+function defaultAbortReason() {
+  if (typeof DOMException === 'function') return new DOMException('This operation was aborted', 'AbortError');
+  const error = new Error('This operation was aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
 function makeAbortController() {
   if (typeof AbortController === 'function') return new AbortController();
   let aborted = false;
-  const listeners = new Set();
-  return {
-    signal: {
-      get aborted() { return aborted; },
-      addEventListener(type, listener) { if (type === 'abort') listeners.add(listener); },
-      removeEventListener(type, listener) { if (type === 'abort') listeners.delete(listener); },
+  let reason;
+  const listeners = new Map();
+  const signal = {
+    get aborted() { return aborted; },
+    get reason() { return reason; },
+    throwIfAborted() { if (aborted) throw reason; },
+    addEventListener(type, listener, options = undefined) {
+      if (type !== 'abort' || listener == null || aborted) return;
+      if (!listeners.has(listener)) listeners.set(listener, Boolean(options && typeof options === 'object' && options.once));
     },
-    abort() {
+    removeEventListener(type, listener) { if (type === 'abort') listeners.delete(listener); },
+  };
+  return {
+    signal,
+    abort(abortReason = undefined) {
       if (aborted) return;
       aborted = true;
-      for (const listener of listeners) listener();
-      listeners.clear();
+      reason = arguments.length === 0 ? defaultAbortReason() : abortReason;
+      try {
+        for (const [listener, once] of listeners) {
+          if (once) listeners.delete(listener);
+          try {
+            if (typeof listener === 'function') listener.call(signal);
+            else if (typeof listener?.handleEvent === 'function') listener.handleEvent.call(listener);
+          } catch { /* AbortSignal listener failures are isolated */ }
+        }
+      } finally {
+        listeners.clear();
+      }
     },
   };
 }
