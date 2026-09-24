@@ -2,6 +2,8 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { irFor } from '../../ir.js';
+import { createCxxEvidenceProvider } from '../cxx/project.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -22,6 +24,54 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'renderProvenanceBudget',
   'renderProvenanceBindingBudget',
 ]);
+
+const SLICE_CXX_PROVIDERS = new WeakMap();
+
+function getSliceIdentityKey(app) {
+  const sliceIndex = storeValue(app, 'sliceIndex') ?? 0;
+  const file = app?.backend?.file ?? storeValue(app, 'file');
+  if (file && typeof file === 'object') return file;
+  if (app?.symbols && typeof app.symbols === 'object') return app.symbols;
+  if (app?.backend && typeof app.backend === 'object') return app.backend;
+  if (app && typeof app === 'object') return app;
+  return null;
+}
+
+function ensureCxxEvidenceProviderForApp(app) {
+  const key = getSliceIdentityKey(app);
+  if (!key) return null;
+  let entry = SLICE_CXX_PROVIDERS.get(key);
+  if (!entry) {
+    const symbols = app?.symbols ?? null;
+    const backend = app?.backend ?? null;
+    if (!symbols || !backend) return null;
+    const architecture = architectureOf(app) ?? 'arm64';
+    const pointerBytes = architecture === 'arm64_32' ? 4 : 8;
+    const read = async (addr, len) => {
+      try {
+        const result = await backend.readAt(addr, len);
+        return result?.found ? result.bytes : null;
+      } catch {
+        return null;
+      }
+    };
+    const provider = createCxxEvidenceProvider({
+      symbols,
+      read,
+      pointerBytes,
+      architecture,
+      snapshotId: `slice:${String(storeValue(app, 'sliceIndex') ?? 0)}`,
+      maxClasses: 2500,
+      maxSlots: 128,
+      maxReads: 8192,
+    });
+    // Build index at most once
+    const buildPromise = provider.build().catch(() => null);
+    entry = { provider, buildPromise };
+    SLICE_CXX_PROVIDERS.set(key, entry);
+  }
+  return entry;
+}
 
 export function decompilerOptionsFromQuery(options = {}) {
   if (!options || typeof options !== 'object') return {};
@@ -1088,10 +1138,28 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
+      let cxxEvidence = options.cxxEvidence ?? null;
+      if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
+        const entry = ensureCxxEvidenceProviderForApp(app);
+        if (entry) {
+          await entry.buildPromise;
+          try {
+            const ir = irFor(result.value.model);
+            cxxEvidence = entry.provider.projectForFunction({
+              functionAddress: address != null ? BigInt(address) : null,
+              functionName: address == null ? null : app?.symbols?.nameAt?.(address),
+              ir,
+            });
+          } catch {
+            cxxEvidence = null;
+          }
+        }
+      }
       const projection = decompile(result.value.model, {
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);
     },
@@ -1113,7 +1181,28 @@ export function createAppAnalysisQueryAdapter(app) {
         const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
         let producer = result.value.decompiler ?? null;
         if (!producer && result.value.model) {
-          producer = decompile(result.value.model, { name, addr:address });
+          let cxxEvidence = options.cxxEvidence ?? null;
+          if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
+            const entry = ensureCxxEvidenceProviderForApp(app);
+            if (entry) {
+              await entry.buildPromise;
+              try {
+                const ir = irFor(result.value.model);
+                cxxEvidence = entry.provider.projectForFunction({
+                  functionAddress: address != null ? BigInt(address) : null,
+                  functionName: name,
+                  ir,
+                });
+              } catch {
+                cxxEvidence = null;
+              }
+            }
+          }
+          producer = decompile(result.value.model, {
+            name,
+            addr:address,
+            ...(cxxEvidence ? { cxxEvidence } : {}),
+          });
         }
         producer ??= result.value;
         const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;
