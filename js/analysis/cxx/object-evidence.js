@@ -559,14 +559,15 @@ export function extractCppObjectEvidence(context = {}) {
 
   // 3. Resolve Class Identity
   const candidateClassNames = [...new Set(vtableClassNames.filter((name) => typeof name === 'string' && name.trim()))];
-  // For an unnamed function, vtable membership is enough to prove `this`, but
-  // it names the receiver only when every owning table agrees. An address shared
-  // by unrelated classes (for example after identical code folding) stays
-  // anonymous unless the symbol itself supplies the member's class.
+  // Vtable membership proves `this`, but names its class only when every
+  // owning table agrees. A conflicting symbol cannot settle an address shared
+  // by unrelated classes (for example after identical code folding).
   const vtableClassName = vtableClassNames.length > 0 &&
     vtableClassNames.every((name) => typeof name === 'string' && name.trim()) &&
     candidateClassNames.length === 1 ? candidateClassNames[0] : null;
-  const className = symInfo.className || vtableClassName;
+  const className = vtables.length
+    ? (vtableClassName && (!symInfo.className || symInfo.className === vtableClassName) ? vtableClassName : null)
+    : symInfo.className;
   const classIdentity = createCppClassIdentity({
     kind: className ? 'named' : 'anonymous',
     className: className || null,
@@ -629,8 +630,22 @@ export function extractCppObjectEvidence(context = {}) {
       if (v.def) valueDef.set(v.id, v.def);
     }
 
-    // Trace canonical receiver copies (e.g. MOV x19, x0)
     const receiverAliases = new Set([canonicalReceiverValueId]);
+    const stackStores = new Map();
+    for (const inst of ir.instructions) {
+      if (inst?.op !== 'store') continue;
+      const base = inst.loc?.base ?? inst.addr?.base ?? null;
+      if (base?.reg !== 'sp') continue;
+      const disp = inst.loc?.disp ?? inst.addr?.disp ?? null;
+      if (disp == null) continue;
+      const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
+      const values = stackStores.get(String(disp)) ?? new Set();
+      values.add(source?.id == null ? null : source.id);
+      stackStores.set(String(disp), values);
+    }
+
+    // Stack reloads are aliases only when every visible store to that slot is
+    // already a proven receiver alias, so stack-slot reuse fails closed.
     let changed = true;
     while (changed) {
       changed = false;
@@ -642,24 +657,85 @@ export function extractCppObjectEvidence(context = {}) {
             receiverAliases.add(dst);
             changed = true;
           }
+        } else if (inst.op === 'load' && inst.dst?.id != null) {
+          const base = inst.loc?.base ?? inst.addr?.base ?? null;
+          const disp = inst.loc?.disp ?? inst.addr?.disp ?? null;
+          if (base?.reg !== 'sp' || disp == null || receiverAliases.has(inst.dst.id)) continue;
+          const sources = stackStores.get(String(disp));
+          if (sources?.size && [...sources].every((id) => id != null && receiverAliases.has(id))) {
+            receiverAliases.add(inst.dst.id);
+            changed = true;
+          }
         }
       }
     }
 
+    const instructionIndex = new Map(ir.instructions.map((inst, index) => [String(inst.id), index]));
+    const instructionBlock = new Map();
+    for (let blockIndex = 0; blockIndex < (ir.blocks || []).length; blockIndex++) {
+      const block = ir.blocks[blockIndex];
+      for (const inst of block.insts || block.instructions || []) {
+        const id = typeof inst === 'object' ? inst?.id : inst;
+        if (id != null) instructionBlock.set(String(id), blockIndex);
+      }
+    }
+
+    const resolveLoadDefinition = (value) => {
+      let current = value;
+      const seen = new Set();
+      for (let depth = 0; depth < 8 && current?.id != null; depth++) {
+        const id = String(current.id);
+        if (seen.has(id)) return null;
+        seen.add(id);
+        const def = valueDef.get(current.id) ?? current.def ?? null;
+        if (def?.op === 'load') return def;
+        if (!['mov', 'copy'].includes(def?.op) || def.sub != null) return null;
+        current = def.args?.[0]?.value ?? def.args?.[0] ?? null;
+      }
+      return null;
+    };
+
+    const machineCallTargetRegister = (inst) => {
+      const temporaryId = inst.extra?.attributes?.machineControlEffect?.target?.temporaryId;
+      if (typeof temporaryId !== 'string') return null;
+      return /(?:^|:)read-([a-z][0-9]+):/i.exec(temporaryId)?.[1]?.toLowerCase() ?? null;
+    };
+
+    const reachingCallTarget = (inst, register) => {
+      const callIndex = instructionIndex.get(String(inst.id));
+      const callBlock = instructionBlock.get(String(inst.id));
+      if (callIndex == null || callBlock == null) return null;
+      let bestIndex = -1, best = null, tied = false;
+      for (const value of ir.values || []) {
+        if (value?.reg !== register || value.kind !== 'def' || value.def?.op === 'call') continue;
+        const defIndex = instructionIndex.get(String(value.def?.id));
+        if (defIndex == null || defIndex >= callIndex
+            || instructionBlock.get(String(value.def.id)) !== callBlock) continue;
+        if (defIndex > bestIndex) { bestIndex = defIndex; best = value; tied = false; }
+        else if (defIndex === bestIndex && String(best?.id) !== String(value.id)) tied = true;
+      }
+      return tied ? null : best;
+    };
+
     for (const inst of ir.instructions) {
       if (inst.op !== 'call') continue;
 
-      // Check if target is loaded from memory
-      const targetVal = inst.args?.[0]?.value || inst.args?.[0];
-      const targetDef = targetVal?.id != null ? valueDef.get(targetVal.id) : null;
-      if (!targetDef || targetDef.op !== 'load') continue;
+      // Compatibility call IR keeps the indirect target in the machine
+      // control-effect register and places ABI arguments in `inst.args`.
+      // Synthetic/older call IRs carry the target as arg0 instead.
+      const targetRegister = machineCallTargetRegister(inst);
+      const targetVal = targetRegister
+        ? reachingCallTarget(inst, targetRegister)
+        : (inst.args?.[0]?.value ?? inst.args?.[0] ?? null);
+      const targetDef = resolveLoadDefinition(targetVal);
+      if (!targetDef) continue;
 
       const slotOffset = targetDef.loc?.disp ?? targetDef.addr?.disp;
       if (slotOffset == null) continue;
 
       const vptrVal = targetDef.loc?.base || targetDef.addr?.base;
-      const vptrDef = vptrVal?.id != null ? valueDef.get(vptrVal.id) : null;
-      if (!vptrDef || vptrDef.op !== 'load') continue;
+      const vptrDef = resolveLoadDefinition(vptrVal);
+      if (!vptrDef) continue;
 
       const vptrOffset = vptrDef.loc?.disp ?? vptrDef.addr?.disp ?? 0n;
       if (BigInt(vptrOffset) !== 0n) continue;
@@ -668,7 +744,9 @@ export function extractCppObjectEvidence(context = {}) {
       if (!objVal || !receiverAliases.has(objVal.id)) continue;
 
       // Verify that this call passes the receiver as argument 0
-      const callArg0 = inst.args?.[1]?.value || inst.args?.[1];
+      const callArg0 = targetRegister
+        ? (inst.args?.[0]?.value ?? inst.args?.[0])
+        : (inst.args?.[1]?.value ?? inst.args?.[1]);
       if (callArg0 && !receiverAliases.has(callArg0.id)) continue;
 
       let slotOffsetBigInt;

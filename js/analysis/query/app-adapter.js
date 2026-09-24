@@ -25,28 +25,35 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'renderProvenanceBindingBudget',
 ]);
 
+// Cache by the immutable source object, then by loaded slice index. An entry
+// also records the reader and SymbolIndex identities because either can be
+// replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
 
-function getSliceIdentityKey(app) {
-  const sliceIndex = storeValue(app, 'sliceIndex') ?? 0;
-  const file = app?.backend?.file ?? storeValue(app, 'file');
-  if (file && typeof file === 'object') return file;
-  if (app?.symbols && typeof app.symbols === 'object') return app.symbols;
-  if (app?.backend && typeof app.backend === 'object') return app.backend;
-  if (app && typeof app === 'object') return app;
-  return null;
-}
-
 function ensureCxxEvidenceProviderForApp(app) {
-  const key = getSliceIdentityKey(app);
-  if (!key) return null;
-  let entry = SLICE_CXX_PROVIDERS.get(key);
+  const symbols = app?.symbols ?? null;
+  const backend = app?.backend ?? null;
+  if (!symbols || typeof symbols !== 'object' || !backend || typeof backend.readAt !== 'function') return null;
+  const sliceIndex = storeValue(app, 'sliceIndex') ?? 0;
+  const architecture = architectureOf(app) ?? 'arm64';
+  const pointerBytes = architecture === 'arm64_32' ? 4 : 8;
+  const source = backend.file ?? storeValue(app, 'file');
+  const sourceKey = source && (typeof source === 'object' || typeof source === 'function')
+    ? source
+    : backend;
+  if (!sourceKey || (typeof sourceKey !== 'object' && typeof sourceKey !== 'function')) return null;
+  let slices = SLICE_CXX_PROVIDERS.get(sourceKey);
+  if (!slices) {
+    slices = new Map();
+    SLICE_CXX_PROVIDERS.set(sourceKey, slices);
+  }
+  const sliceKey = String(sliceIndex);
+  const backendGeneration = backend.gen ?? backend.analysisEpoch ?? null;
+  let entry = slices.get(sliceKey);
+  if (entry && (entry.backend !== backend || entry.symbols !== symbols
+    || entry.backendGeneration !== backendGeneration
+    || entry.architecture !== architecture || entry.pointerBytes !== pointerBytes)) entry = null;
   if (!entry) {
-    const symbols = app?.symbols ?? null;
-    const backend = app?.backend ?? null;
-    if (!symbols || !backend) return null;
-    const architecture = architectureOf(app) ?? 'arm64';
-    const pointerBytes = architecture === 'arm64_32' ? 4 : 8;
     const read = async (addr, len) => {
       try {
         const result = await backend.readAt(addr, len);
@@ -60,15 +67,14 @@ function ensureCxxEvidenceProviderForApp(app) {
       read,
       pointerBytes,
       architecture,
-      snapshotId: `slice:${String(storeValue(app, 'sliceIndex') ?? 0)}`,
+      snapshotId: `${typeof backend.binaryId === 'string' && backend.binaryId.trim() ? backend.binaryId : 'binary'}:slice:${sliceKey}`,
       maxClasses: 2500,
       maxSlots: 128,
       maxReads: 8192,
     });
-    // Build index at most once
     const buildPromise = provider.build().catch(() => null);
-    entry = { provider, buildPromise };
-    SLICE_CXX_PROVIDERS.set(key, entry);
+    entry = { provider, buildPromise, backend, symbols, backendGeneration, architecture, pointerBytes };
+    slices.set(sliceKey, entry);
   }
   return entry;
 }
@@ -1139,19 +1145,25 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
       let cxxEvidence = options.cxxEvidence ?? null;
+      let projectionIr = null;
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
-        const entry = ensureCxxEvidenceProviderForApp(app);
-        if (entry) {
-          await entry.buildPromise;
-          try {
-            const ir = irFor(result.value.model);
-            cxxEvidence = entry.provider.projectForFunction({
-              functionAddress: address != null ? BigInt(address) : null,
-              functionName: address == null ? null : app?.symbols?.nameAt?.(address),
-              ir,
-            });
-          } catch {
-            cxxEvidence = null;
+        try { projectionIr = irFor(result.value.model); } catch { projectionIr = null; }
+        // The C++ producer needs canonical SSA values to bind argument 0 as
+        // `this`. Without a compatibility IR it can produce no usable
+        // evidence, so leave the per-slice index unbuilt for this function.
+        if (projectionIr) {
+          const entry = ensureCxxEvidenceProviderForApp(app);
+          if (entry) {
+            await entry.buildPromise;
+            try {
+              cxxEvidence = entry.provider.projectForFunction({
+                functionAddress: address != null ? BigInt(address) : null,
+                functionName: address == null ? null : app?.symbols?.nameAt?.(address),
+                ir:projectionIr,
+              });
+            } catch {
+              cxxEvidence = null;
+            }
           }
         }
       }
@@ -1159,6 +1171,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        ...(projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);

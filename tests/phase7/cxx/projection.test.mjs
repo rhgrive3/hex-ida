@@ -125,7 +125,7 @@ test('a proven virtual member projects a canonical receiver and its vtable slots
   const stats = provider.stats();
   assert.equal(stats.ready, true);
   assert.equal(stats.builds, 1);
-  assert.equal(stats.classes, 5, 'Entity/Actor/Player/Component/Enemy');
+  assert.equal(stats.classes, 6, 'Entity/Actor/Player/Component/Enemy/OpaqueSlot');
   assert.equal(stats.reads > 0, true, 'vtable reads are bounded but non-zero');
 
   const address = symbolAddress(probe, '_ZN6Player10takeDamageEi');
@@ -195,6 +195,24 @@ test('an address shared by unrelated vtables stays untyped', () => {
     vtableClassNames: ['A', 'B'],
   });
   assert.equal(report.receiver.classIdentity.kind, 'anonymous');
+  assert.equal(report.receiver.classIdentity.className, null);
+});
+
+test('a conflicting member symbol cannot type a shared vtable target', () => {
+  const sharedAddress = 0x12345678n;
+  const vtables = ['A', 'B'].map((_, index) => createCppVtableEvidence({
+    vtableAddress: BigInt(0x3000 + index * 0x100),
+    pointerBytes: 8,
+    slots: [{ index: 0, address: sharedAddress }],
+  }));
+  const report = extractCppObjectEvidence({
+    functionId: 'fn:folded-named',
+    functionAddress: sharedAddress,
+    functionName: '_ZNK1A1fEv',
+    ir: receiverIr(),
+    vtables,
+    vtableClassNames: ['A', 'B'],
+  });
   assert.equal(report.receiver.classIdentity.className, null);
 });
 
@@ -475,7 +493,7 @@ test('an anonymous class keeps a null name instead of a fabricated one', async (
   }
   // Every name the producer emits is traceable to RTTI or to a `_ZTV` symbol.
   const names = report.classes.map((record) => record.className).filter(Boolean).sort();
-  assert.deepEqual(names, ['Actor', 'Component', 'Enemy', 'Entity', 'Player']);
+  assert.deepEqual(names, ['Actor', 'Component', 'Enemy', 'Entity', 'OpaqueSlot', 'Player']);
 });
 
 test('without RTTI the name comes from the vtable symbol and no inheritance is claimed', async () => {
@@ -534,7 +552,7 @@ test('build is idempotent and concurrent callers share one index', async () => {
   const [first, second] = await Promise.all([provider.build(), provider.build()]);
   const third = await provider.build();
   assert.equal(provider.stats().builds, 1, 'one build per provider');
-  assert.equal(provider.stats().classes, 5);
+  assert.equal(provider.stats().classes, 6);
   assert.equal(second, first, 'concurrent callers resolve to one index');
   assert.equal(third, first, 'a rebuilt request reuses the resolved index');
 });
