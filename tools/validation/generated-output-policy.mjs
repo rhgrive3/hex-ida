@@ -62,6 +62,7 @@ export function resolveCanonicalGeneratedOutputCommit({
 
 const INTEGRATION_PREFIXES = Object.freeze([
   'dev-agent-hardening/integration/',
+  'integration/hex-completion-20260924',
 ]);
 
 function isValidBranchName(branch) {

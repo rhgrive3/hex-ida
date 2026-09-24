@@ -1,0 +1,137 @@
+{
+  "schema": "hex-completion-ownership/v1",
+  "version": 1,
+  "description": "Hex completion 2026-09-24 lanes, strict boundary ownership, integration generated-output ownership, and fail-closed cross-lane policies.",
+  "integrationLane": "integration",
+  "generatedPaths": [
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "governancePaths": [
+    "tools/validation/hex-completion-ownership.json",
+    "tools/validation/hex-completion-ownership.mjs",
+    "tools/validation/hex-completion-merge-tree.mjs",
+    "tests/hex-completion-governance.test.mjs"
+  ],
+  "lanes": {
+    "deterministic": [
+      "^js/binary/(elf-budget|macho-budget|pe-loader-core)\\.js$",
+      "^js/(worker-budget|worker-legacy|objc-stub-recovery)\\.js$",
+      "^tests/phase4/binary/(deterministic-loader-budgets|worker-supplemental-truncation)\\.test\\.mjs$",
+      "^tests/issue-5188-pe-budget-typed-values\\.mjs$",
+      "^tests/issue-9520[a-z0-9-]*\\.mjs$",
+      "^tests/deterministic/"
+    ],
+    "cxx": [
+      "^js/rtti\\.js$",
+      "^js/analysis/cxx/",
+      "^js/decompiler/(cxx-evidence|pipeline-core)\\.js$",
+      "^tests/phase7/cxx/",
+      "^reports/investigations/cxx-projection-holdout-20260924/"
+    ],
+    "output": [
+      "^js/decompiler/semantic-core\\.js$",
+      "^js/analysis/query/translation-unit\\.js$",
+      "^tests/decompiler/",
+      "^tests/issue-[0-9]+-output-",
+      "^reports/investigations/output-recompilation-20260924/",
+      "^reports/investigations/current-main-weakness-20260923/"
+    ],
+    "jev": [
+      "^js/pinpoint/",
+      "^js/pinpoint\\.js$",
+      "^tests/pinpoint/",
+      "^tests/pinpoint\\.test\\.mjs$",
+      "^reports/investigations/jev-final-decision-20260924/"
+    ],
+    "perf": [
+      "^js/decompiler/phase8/analysis-identity\\.js$",
+      "^js/decompiler/passes/manager\\.js$",
+      "^js/core/identity/index\\.js$",
+      "^tests/phase8/performance/",
+      "^tests/performance/analysis-identity"
+    ],
+    "x86": [
+      "^js/targets/architecture/x86/",
+      "^js/targets/x86/",
+      "^js/architecture/x86/",
+      "^tests/machine-effects/",
+      "^js/targets/architecture/x86_64/"
+    ],
+    "semantic": [
+      "^js/semantics/",
+      "^tests/semantic-v2/"
+    ],
+    "timeout": [
+      "^docs/FUNCTION_TIMEOUT_SEMANTICS\\.md$"
+    ],
+    "integration": [
+      "^userscript/(hex\\.user\\.template\\.js|release-version\\.json)$",
+      "^reports/hex-completion-20260924/",
+      "^tools/validation/hex-completion-",
+      "^tests/hex-completion-"
+    ]
+  },
+  "forbiddenExamples": [
+    [
+      "deterministic",
+      "js/pinpoint.js"
+    ],
+    [
+      "deterministic",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "cxx",
+      "js/decompiler/semantic-core.js"
+    ],
+    [
+      "cxx",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "output",
+      "js/decompiler/pipeline-core.js"
+    ],
+    [
+      "output",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "jev",
+      "js/semantics/ssa/build.js"
+    ],
+    [
+      "jev",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "perf",
+      "js/semantics/memoryssa/build.js"
+    ],
+    [
+      "perf",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "x86",
+      "js/decompiler/phase8/analysis-identity.js"
+    ],
+    [
+      "x86",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "semantic",
+      "js/targets/architecture/x86/decoder.js"
+    ],
+    [
+      "semantic",
+      "userscript/hex.user.template.js"
+    ],
+    [
+      "timeout",
+      "js/binary/elf-budget.js"
+    ]
+  ]
+}
