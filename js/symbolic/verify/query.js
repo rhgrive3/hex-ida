@@ -543,6 +543,17 @@ function queryDataMap(query, name = 'verification query') {
   return recordDataMap(query, name);
 }
 
+// The hash-material projection for one constraint/assertion entry.
+// A canonical expression clone carries exactly the solver-visible fields its
+// structural hash covers, so the hash alone binds it — and a deep expression
+// DAG never has to be re-serialized by the identity layer (which is recursive
+// and would overflow on the frozen 32768-depth expression ceiling).
+// An opaque payload has no expression semantics at all, so its canonical
+// content is the identity and must be carried by value (#5643).
+function expressionIdentityProjection(entry, hash) {
+  return expressionKindDeclared(entry) ? { hash } : { hash, expression: entry };
+}
+
 function canonicalQueryHashPayload(query, identityLimits = {}) {
   const data = query instanceof Map ? query : queryDataMap(query);
   const constraints = normalizeExpressionArray(data.get('constraints'), 'constraints');
@@ -564,10 +575,11 @@ function canonicalQueryHashPayload(query, identityLimits = {}) {
     claimKind: data.get('claimKind'),
     targetEntity: normalizedTargetEntity,
     // The published record and its hash material share one constraint
-    // representation (#5779): every entry carries the exact frozen
-    // expression/opaque payload the record returns next to its structural hash.
-    constraints: constraints.map((entry, index) => ({ hash: hashes.constraints[index], expression: entry })),
-    assertion: assertion ? { hash: hashes.assertion, expression: assertion } : null,
+    // representation (#5779): every entry carries the structural hash of the
+    // exact entry the record returns, plus that entry itself when it is an
+    // opaque payload whose identity cannot be derived from a structural hash.
+    constraints: constraints.map((entry, index) => expressionIdentityProjection(entry, hashes.constraints[index])),
+    assertion: assertion ? expressionIdentityProjection(assertion, hashes.assertion) : null,
     assumptions,
     completeness,
     requestedOutputs,
