@@ -199,6 +199,7 @@ test('End-to-end holdout.stripped.elf _ZNK5Thing6updateEi projects loads at offs
   const binary = fileURLToPath(new URL('./fixtures/cxx-dwarf-holdout/holdout.stripped.elf', import.meta.url));
   const symbol = '_ZNK5Thing6updateEi';
   const product = await openProduct(binary);
+  try {
   assert.ok(!product.unsupported);
   const symbols = product.app.symbols;
   const index = symbols.names.findIndex((name) => name === symbol);
@@ -245,9 +246,11 @@ test('End-to-end holdout.stripped.elf _ZNK5Thing6updateEi projects loads at offs
   const offsets = projection.members.map((m) => m.offsetBytes.toString());
   assert.deepEqual(offsets.sort((a, b) => Number(a) - Number(b)), ['8', '12']);
 
-  // Pseudocode must render field_8 and field_C (12 in hex)
-  assert.match(analyzed.decompiler.pseudocode, /field_8/);
-  assert.match(analyzed.decompiler.pseudocode, /field_C/);
-
-  await product.close();
+  // Pseudocode must render both members: field_8 and field_C (12 in hex),
+  // optionally with the 0x prefix used for proven C++ member offsets.
+  assert.match(analyzed.decompiler.pseudocode, /field_(?:0x)?8\b/);
+  assert.match(analyzed.decompiler.pseudocode, /field_(?:0x)?C\b/);
+  } finally {
+    await product.close();
+  }
 });
