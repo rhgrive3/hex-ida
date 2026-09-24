@@ -272,7 +272,7 @@ export async function runQuietCommand({
   } catch (error) {
     try { log.end(); } catch {}
     try { await logClosed; } catch {}
-    cleanupDirectory();
+    try { cleanupDirectory(); } catch { /* preserve the synchronous launch error */ }
     throw error;
   }
 
