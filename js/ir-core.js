@@ -509,9 +509,24 @@ function sealFacadeStateTransitions(projected, history) {
     // through its exact write chain. No caller can supply or register writes.
     const definitions = projected.instructions.map(inst => ({ source:inst, beforeInputs:[] }));
     const output = observeProjectedOperationData(projected, definitions);
+    // Internal successor histories publish frozen write arrays. Preserve the
+    // exact combined list identity for each frozen successor list so the
+    // downstream validation batch can reuse the same write-scoped answer.
+    // Mutable caller-provided arrays keep the old fresh-concatenation behavior.
+    const combinedFollowing = new WeakMap();
+    const sourceWritesFor = following => {
+      if (!Array.isArray(following)) return null;
+      if (!Object.isFrozen(following)) return [...writes, ...following];
+      let combined = combinedFollowing.get(following);
+      if (!combined) {
+        combined = Object.freeze([...writes, ...following]);
+        combinedFollowing.set(following, combined);
+      }
+      return combined;
+    };
     const isCurrent = Object.freeze(Object.assign(() => source.matchesThroughWrites(writes) && output(), {
       matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
-        && source.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+        && source.matchesThroughWrites(sourceWritesFor(following)) && output.matchesThroughWrites(following),
     }));
     if (!isCurrent()) return;
     const cached = new Map();
