@@ -188,7 +188,7 @@ async function fetchBytes(url, init = {}, expectedBytes = null) {
   try {
     const response = await fetch(url, { ...init, signal: attempt.signal, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
     if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
-    return readBoundedBytes(response, {
+    return await readBoundedBytes(response, {
       maxBytes: RUNTIME_MAX_CIPHERTEXT_BYTES,
       exactBytes: Number.isSafeInteger(expectedBytes) && expectedBytes > 0 ? expectedBytes : null,
       overBudgetMessage: 'The protected runtime exceeded its admission byte budget.',

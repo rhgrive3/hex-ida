@@ -83,10 +83,18 @@ function isDeepImmutable(value) {
   return immutable;
 }
 
-function capturePassState(state) {
+function capturePassState(state, shouldAbort = null) {
   const __t0 = globalThis.__hexPerfProbe ? performance.now() : 0; // PERF-PROBE
   const pending = [state], seen = new Set(), records = [];
+  let checked = 0;
   while (pending.length) {
+    // Snapshot preparation is part of the optional pass budget. It only reads
+    // state, so abandoning an incomplete pre-image is safe: simply do not run
+    // the pass that would have needed rollback.
+    if ((checked++ & 0x7f) === 0 && typeof shouldAbort === 'function' && shouldAbort()) {
+      if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length);
+      return null;
+    }
     const value = pending.pop();
     if (value === null || typeof value !== 'object' || seen.has(value)) continue;
     if (isDeepImmutable(value)) continue;
@@ -211,7 +219,21 @@ export class PassManager {
         // Run synchronously on the real graph; retain descriptors and collection
         // entries so a failure restores pass-owned data in place (including
         // aliases/cycles). This does not roll back external adapter side effects.
-        const restore = capturePassState(state);
+        const restore = capturePassState(state, passBudget.shouldAbort);
+        if (restore == null || passBudget.shouldAbort()) {
+          if (!budgetWarned) state.warnings.push(`Decompiler pass budget exhausted while preparing ${pass.name}; optional pass was skipped.`);
+          budgetWarned = true;
+          state.degraded = true;
+          state.passMetrics.push({
+            name: pass.name,
+            elapsedMs: clock() - start,
+            ok: true,
+            skipped: true,
+            reason: 'snapshot-deadline',
+            degraded: true,
+          });
+          continue;
+        }
         try {
           const result = pass.run(state, passBudget);
           if (result && result !== state) Object.assign(state, result);
