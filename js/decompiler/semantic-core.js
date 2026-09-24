@@ -17,7 +17,7 @@ import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { ownDataEntries } from '../core/identity/live-data.js';
+import { createValidationBatch, ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -209,6 +209,29 @@ export const INITIAL_CONTROL_RENDER_FORMS = Object.freeze([
   'residual-conditional-goto', 'residual-false-goto', 'cfg-label', 'cfg-conditional-goto', 'cfg-false-goto', 'cfg-branch-goto',
 ]);
 const historyCap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+
+function discardInitialRenderValidation(ctx, reason = 'initial-render-validation-stale') {
+  for (const [history, table] of [
+    [ctx.storeRenderHistory, storeRenderLines],
+    [ctx.statementRenderHistory, statementRenderLines],
+    [ctx.controlRenderHistory, controlRenderLines],
+  ]) {
+    for (const event of history.events) if (event?.node) table.delete(event.node);
+    history.events.length = 0;
+    history.edges = 0;
+    history.reasons.add(reason);
+  }
+  if (ctx.conditionalRegionHistory) {
+    ctx.conditionalRegionHistory.events.length = 0;
+    ctx.conditionalRegionHistory.remaining = 0;
+    ctx.conditionalRegionHistory.reasons.add(reason);
+  }
+  const trace = initialValueTraces.get(ctx);
+  if (trace) {
+    trace.roots.length = 0;
+    trace.reasons.add(reason);
+  }
+}
 
 export function readSemanticStatementLineHistory(line, ir) {
   const entry = statementRenderLines.get(line);
@@ -2445,31 +2468,39 @@ export function decompileSemantic(model, rawOpts = {}) {
   const body = [];
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
     terminalProofBudget: { remaining: terminalProofSteps(opts) } };
-  emitRegion(ir.entry || 0, null, body, ctx, state, 1);
-
   const reachable = graph.reachable || new Set();
-  const missing = [...reachable].filter((b) => !state.visited.has(b));
-  let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
-  if (missing.length) {
-    body.length = 0; state.visited.clear(); state.gotos = 0;
-    // Only the selected final emission belongs to the history. Keep legacy
-    // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
-    ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
-    ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
-    ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
-    ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
-    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
-    body.push(...faithfulCfg(ctx, 1));
-    coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
-  }
+  let coverage = null, lines = null;
+  // Initial rendering is synchronous. Reuse exact live-data answers only within
+  // this render transaction, then recheck every reused answer before any
+  // producer history can be published. A changed input discards all histories
+  // created under the batch; emitted pseudocode itself never gains authority
+  // from the memoized answer.
+  const renderValidation = createValidationBatch();
+  renderValidation.run(() => {
+    emitRegion(ir.entry || 0, null, body, ctx, state, 1);
 
-  const lines = [
-    line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr, { source: sourceOf({ address: firstAddr, row: model.instructions?.[0]?.row ?? null, evidence: [{ reason: 'function entry' }] }) }),
-    line('ctrl', 0, '{'),
-  ];
-  for (const l of semanticLocalDeclarations(types, body, ctx)) lines.push(l);
-  for (const l of body) lines.push(l);
-  lines.push(line('ctrl', 0, '}'));
+    const missing = [...reachable].filter((b) => !state.visited.has(b));
+    coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
+    if (missing.length) {
+      body.length = 0; state.visited.clear(); state.gotos = 0;
+      ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
+      ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+      ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+      ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
+      if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
+      body.push(...faithfulCfg(ctx, 1));
+      coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
+    }
+
+    lines = [
+      line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr, { source: sourceOf({ address:firstAddr, row:model.instructions?.[0]?.row ?? null, evidence:[{ reason:'function entry' }] }) }),
+      line('ctrl', 0, '{'),
+    ];
+    for (const l of semanticLocalDeclarations(types, body, ctx)) lines.push(l);
+    for (const l of body) lines.push(l);
+    lines.push(line('ctrl', 0, '}'));
+  });
+  if (renderValidation.settle() > 0) discardInitialRenderValidation(ctx);
 
   const warnings = [...(types.warnings || [])];
   if (state.gotos) warnings.push(`${state.gotos} control-flow edge(s) remain explicit because a safe source structure was not proven.`);
