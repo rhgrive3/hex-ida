@@ -528,8 +528,17 @@ function isZeroVal(v) {
 }
 function unwrapValue(v) {
   let cur = v;
+  const seen = new Set();
   while (cur && cur.def && cur.def.op === OP.MOV && cur.def.args?.length === 1 && cur.def.args[0]?.value) {
-    cur = cur.def.args[0].value;
+    // A cyclic MOV chain carries no forward progress; stop instead of looping
+    // forever and resolve to the values seen so far.
+    if (cur.id != null) {
+      if (seen.has(cur.id)) break;
+      seen.add(cur.id);
+    }
+    const next = cur.def.args[0].value;
+    if (next === cur) break;
+    cur = next;
   }
   return cur || v;
 }
@@ -1872,12 +1881,40 @@ function rmwOperand(rmw, ctx) {
   void ctx;
   const loadValue=rmw.load?.dst;
   const written=valueOf(rmw.store?.args?.[0]);
-  const inst=written?.def;
+  // Width/cast copies sit between the computed arithmetic value and the store
+  // (the apply_damage store is `mov trunc` of the `sub`), so follow the same
+  // one-argument MOV chain the operand comparison below uses. A cyclic chain
+  // cannot reach arithmetic; only exact BIN identity counts.
+  const updateRoot=unwrapValue(written);
+  const inst=updateRoot?.def;
   if (!inst || inst.op !== OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
   const a=valueOf(inst.args?.[0]), b=valueOf(inst.args?.[1]);
   if (sameValue(a,loadValue)) return { op:inst.sub, other:b, reversed:false };
   if (sameValue(b,loadValue)) return { op:inst.sub, other:a, reversed:true };
   return null;
+}
+
+const compoundAdmissionCache = new WeakMap();
+/**
+ * The compound-spelling admission the initial emitter itself uses for a store:
+ * the read/modify/write proof for this exact store, no select in the update
+ * chain, and a direct non-reversed qualifying update reached through only
+ * one-argument MOV copies (a MOV cycle, or any non-MOV step between the
+ * computed arithmetic and the store, keeps the plain assignment spelling).
+ * The C AST store renderer consults
+ * this same authority so display spelling and initial history can never drift:
+ * re-deriving compound eligibility from the collapsed expression alone would
+ * spell compound assignments the initial renderer refused.
+ */
+export function readSemanticStoreCompoundAdmission(ir, store) {
+  if (!ir || !store) return null;
+  let entries = compoundAdmissionCache.get(ir);
+  if (!entries) { entries = readModifyWrite(ir); compoundAdmissionCache.set(ir, entries); }
+  const rmw = entries.find((entry) => entry.store === store || entry.store?.id === store?.id);
+  if (!rmw) return null;
+  if ((rmw.chain || []).some((x) => x.op === OP.SEL)) return null;
+  const upd = rmwOperand(rmw, null);
+  return upd && !upd.reversed ? upd : null;
 }
 
 function statementForStore(inst, ctx) {
