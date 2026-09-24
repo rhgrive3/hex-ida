@@ -13,12 +13,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const REPORT_DIR = path.join(ROOT, 'reports/investigations/jev-final-decision-20260924');
-const EVIDENCE_DIR = '/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/jev';
+const REPORT_DIR = path.resolve(process.env.HEX_JEV_HOLDOUT_DIR
+  ?? path.join(ROOT, 'reports/investigations/jev-final-decision-20260924'));
+const EVIDENCE_DIR = path.resolve(process.env.HEX_JEV_EVIDENCE_DIR
+  ?? '/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/jev');
 const FIXTURES_DIR = '/mnt/workspace/.dev-state/agent-work/cache/pinpoint-jev-probe-audit-20260923/tests';
 const ENDPOINT = 'https://api.openjev.sh/v1/systemone';
 const MODEL = 'openjev';
@@ -167,6 +170,11 @@ async function main() {
   const cases = JSON.parse(casesBytes);
   console.log(`Loaded ${cases.length} hash-verified prospective cases.`);
 
+  if (manifest.routerFrozenSha256
+      && sha256(fs.readFileSync(path.join(ROOT, 'js/pinpoint.js'))) !== manifest.routerFrozenSha256) {
+    throw new Error('Jev router changed after holdout freeze');
+  }
+
   const { openBinary } = await import(path.join(ROOT, 'tests/harness.mjs'));
   const { pinpointField, rerankWithJev } = await import(path.join(ROOT, 'js/pinpoint.js'));
   const { parseGoal } = await import(path.join(ROOT, 'js/goals.js'));
@@ -174,7 +182,15 @@ async function main() {
   const worlds = new Map();
   async function getWorld(binary) {
     if (!worlds.has(binary)) {
-      const p = path.join(FIXTURES_DIR, binary);
+      let p;
+      if (manifest.binary && manifest.binary.localPath && (binary === manifest.binary.name.toLowerCase() || binary === manifest.binary.name || binary === 'sparkle' || binary === 'openemu')) {
+        p = process.env.HEX_JEV_HOLDOUT_BINARY ?? manifest.binary.localPath;
+        if (manifest.binary.sha256 && sha256(fs.readFileSync(p)) !== manifest.binary.sha256) {
+          throw new Error('holdout-binary-hash-mismatch');
+        }
+      } else {
+        p = path.join(FIXTURES_DIR, binary);
+      }
       worlds.set(binary, await openBinary(p, { log: () => {} }));
     }
     return worlds.get(binary);
@@ -209,6 +225,7 @@ async function main() {
     const armA_candidates = hexRes?.candidates ?? [];
 
     // Arm B: Hex + frozen router (Jev enabled)
+    const callCountBefore = client.callCount;
     const startedB = performance.now();
     const armB_rerank = await rerankWithJev(c.query, hexRes, {
       enabled: true,
@@ -220,6 +237,7 @@ async function main() {
 
     const armB_top = armB_rerank.top1;
     const armB_source = armB_rerank.source;
+    const jevCall = client.callCount > callCountBefore ? client.rawCalls.at(-1) : null;
 
     // Evaluate correctness against gold label
     const isGold = !!c.gold;
@@ -239,10 +257,13 @@ async function main() {
     const armB_abstain = armA_abstain;
 
     const armA_falseStrong = isGold && isStrongA && !armA_correct;
-    const armB_falseStrong = armA_falseStrong; // Jev never promotes to strong
+    const armB_falseStrong = isGold && isStrongA && !armB_correct;
 
     const armA_unsafeConfident = isStrongA && (isGold ? !armA_correct : true);
-    const armB_unsafeConfident = armA_unsafeConfident;
+    const armB_unsafeConfident = isStrongA && (isGold ? !armB_correct : true);
+    const errorFailClosed = jevCall?.success === false
+      ? armB_source === 'hex' && armB_top === armA_top
+      : true;
 
     const row = {
       id: c.id,
@@ -255,6 +276,8 @@ async function main() {
       abstainReason: c.abstainReason ?? null,
       verdict: armA_verdict,
       candidateCount: armA_candidates.length,
+      jevCall,
+      errorFailClosed,
       armA: {
         topKey: armA_top?.key ?? null,
         topClass: armA_top?.className ?? null,
@@ -310,17 +333,25 @@ async function main() {
 
   const armA_unsafe = results.filter((r) => r.armA.unsafeConfident).length;
   const armB_unsafe = results.filter((r) => r.armB.unsafeConfident).length;
+  const failedCalls = results.filter((r) => r.jevCall?.success === false);
 
   const summary = {
     schema: 'hex-jev-prospective-evaluation/v1',
     evaluatedAtUtc: new Date().toISOString(),
+    productHeadAtRun: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim(),
+    routerSha256: sha256(fs.readFileSync(path.join(ROOT, 'js/pinpoint.js'))),
+    caseSha256: manifest.caseSha256,
+    binarySha256: manifest.binary?.sha256 ?? null,
+    model: MODEL,
+    nodeVersion: process.version,
     totalCases: results.length,
     answerableCases: answerable.length,
     abstainCases: abstain.length,
     apiClientStats: {
       callCount: client.callCount,
       httpErrors: client.httpErrors,
-      http400ChoiceLimitErrors: 0,
+      http400ChoiceLimitErrors: client.rawCalls.reduce((n, call) =>
+        n + call.attempts.filter((attempt) => attempt.status === 400).length, 0),
       p50LatencyMs: client.latencies.length ? client.latencies.sort((a,b)=>a-b)[Math.floor(client.latencies.length * 0.5)] : null,
       maxLatencyMs: client.latencies.length ? Math.max(...client.latencies) : null,
     },
@@ -346,7 +377,8 @@ async function main() {
         regressionCaseIds: regressionRows,
         regressionRescueRatio: rescues > 0 ? regressions / rescues : null,
         newFalseStrong: armB_falseStrong - armA_falseStrong,
-        failClosedVerified: client.httpErrors === 0 || regressions === 0,
+        failedCallsObserved: failedCalls.length,
+        failClosedObserved: failedCalls.length ? failedCalls.every((row) => row.errorFailClosed) : null,
       },
     },
   };

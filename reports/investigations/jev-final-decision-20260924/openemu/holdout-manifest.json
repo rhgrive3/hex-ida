@@ -1,0 +1,31 @@
+{
+  "schema": "hex-jev-binary-disjoint-holdout/v1",
+  "lockedAtUtc": "2026-09-24T00:05:07.923Z",
+  "caseCount": 48,
+  "answerableCases": 36,
+  "abstainCases": 12,
+  "caseSha256": "e6e40752c2f039cecc4f7054e2f252a66d567e58a90af1315ff2b9534bdd96dd",
+  "binary": {
+    "name": "OpenEmu",
+    "version": "2.4.1",
+    "architecture": "x86_64",
+    "source": "https://github.com/OpenEmu/OpenEmu/releases/download/v2.4.1/OpenEmu_2.4.1.zip",
+    "archiveSha256": "521ca1305c012d38f6f907f50399fefbf4e45a9bb8d9d4063157ffca78b217d4",
+    "archiveMember": "OpenEmu.app/Contents/MacOS/OpenEmu",
+    "sha256": "c09d5852b8bc2e94acb9bec5dd1c8a4a8aa93275421c8bd81ed2ee8904477253",
+    "localPath": "/mnt/workspace/.dev-state/agent-work/cache/hex-completion-20260924/openemu/OpenEmu"
+  },
+  "goldAudit": {
+    "source": "Mach-O Objective-C ivar metadata in the downloaded binary",
+    "classes": 134,
+    "ivars": 559,
+    "verifiedGold": 36,
+    "missingGold": []
+  },
+  "priorEvaluationBinaries": [
+    "battlecats",
+    "TsumTsum",
+    "YWP"
+  ],
+  "routerFrozenSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173"
+}
