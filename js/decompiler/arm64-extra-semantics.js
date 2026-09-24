@@ -1,4 +1,6 @@
 import { sourceOf } from './ast/nodes.js';
+import { closeFunctionOutput } from './c-output-closure.js';
+import { buildRenderProvenance } from './phase8/render-provenance.js';
 
 /* Exact late lowering for ARM64 instructions that the legacy/semantic
  * decompilers still preserve as raw __asm. This is deliberately mnemonic-
@@ -153,5 +155,25 @@ export function lowerArm64RawAssembly(result) {
   if (!lowered) return result;
   result.pseudocode = renderedText(result.lines);
   result.ctx = { ...(result.ctx || {}), exactArm64FallbackLowerings: (result.ctx?.exactArm64FallbackLowerings || 0) + lowered };
-  return result;
+  // Lowering can introduce new names (register destinations, intrinsic calls).
+  // Close the C output again so the newly visible storage is declared too.
+  return closeFunctionOutput(result, {
+    render: renderedText,
+    onLinesChanged: (closed) => {
+      // The line array changed after the facade already published its
+      // index-keyed map; refresh it (keeping the observed snapshot identity)
+      // instead of leaving entity keys bound to the pre-closure indices.
+      const previous = closed.renderProvenance ?? null;
+      if (!previous) return;
+      try {
+        closed.renderProvenance = buildRenderProvenance({
+          result: closed,
+          snapshotId: previous.snapshotId ?? null,
+          budget: previous.budget ?? null,
+        });
+      } catch {
+        closed.renderProvenance = previous;
+      }
+    },
+  });
 }
