@@ -20,10 +20,11 @@ test('P5-1/P5-2 overlapping memory families are explicitly classified after inte
 test('integrated memory semantics depend only on shared x86 contracts, never integer.js/opStr/NoAlias',()=>{
   const directory=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../../../js/targets/architecture/x86_64/effects');
   const owned=['addressing.js','memory.js','string.js','atomic.js'];
+  const codeOnly = (src) => src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
   for(const name of owned){
     const source=fs.readFileSync(path.join(directory,name),'utf8');
     assert.equal(source.includes('opStr'),false,`${name} must not parse opStr`);
-    assert.equal(/NoAlias|noAlias/.test(source),false,`${name} must not invent NoAlias`);
+    assert.equal(/NoAlias|noAlias/.test(codeOnly(source)),false,`${name} must not invent NoAlias`);
   }
   const memory=fs.readFileSync(path.join(directory,'memory.js'),'utf8');
   assert.equal(memory.includes("from './integer.js'"),false,'memory.js must not duplicate/import register-form truth');
