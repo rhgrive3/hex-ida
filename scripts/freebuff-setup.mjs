@@ -372,14 +372,17 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
           throw new Error(`freebuff setup: staged migration copy changed before publication: ${dst}`);
         }
 
+        const stageBeforeVerify = statFileSnapshot(fsImpl, stageFd);
         const sourceBytes = Buffer.from(fsImpl.readFileSync(actualSrc));
         const stageBytes = Buffer.from(fsImpl.readFileSync(stableStagePath));
         const sourceAfterVerify = stableSource.snapshot();
-        if (!sameFileSnapshot(sourceBeforeCopy, sourceAfterVerify) || !stageBytes.equals(sourceBytes)) {
+        const stageAfterVerify = statFileSnapshot(fsImpl, stageFd);
+        if (!sameFileSnapshot(sourceBeforeCopy, sourceAfterVerify)
+            || !sameFileSnapshot(stageBeforeVerify, stageAfterVerify)
+            || !stageBytes.equals(sourceBytes)) {
           throw new Error(`freebuff setup: staged migration bytes do not match stable source: ${src}`);
         }
 
-        const stageBeforePublish = statFileSnapshot(fsImpl, stageFd);
         let publishedEntry = null;
         try {
           fsImpl.copyFileSync(stableStagePath, actualDst, fs.constants.COPYFILE_EXCL);
@@ -390,7 +393,7 @@ export function copyIfMissing(src, dst, executable = false, containmentRoot = nu
         }
 
         const stageAfterPublish = statFileSnapshot(fsImpl, stageFd);
-        if (!sameFileSnapshot(stageBeforePublish, stageAfterPublish)) {
+        if (!sameFileSnapshot(stageAfterVerify, stageAfterPublish)) {
           try {
             const currentDestination = fsImpl.lstatSync(actualDst);
             if (publishedEntry && sameFileIdentity(publishedEntry, currentDestination)) fsImpl.unlinkSync(actualDst);
