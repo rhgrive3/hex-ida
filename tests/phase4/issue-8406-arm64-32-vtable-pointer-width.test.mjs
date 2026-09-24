@@ -67,12 +67,10 @@ test('#8406 negative offset-to-top is the 32-bit signed value', async () => {
 test('#8406 ILP32 never yields a target above the 32-bit address space', async () => {
   const bytes = ilp32Vtable();
   // A genuinely encoded 64-bit value in the first slot pair would be > 4 GiB.
-  // (0x7ffffff0 rather than 0xffffffff: an all-ones ILP32 word is a negative
-  // offset-to-top, which the structural vtable-end detection treats as the end.)
-  new DataView(bytes.buffer).setUint32(8, 0x7ffffff0, true);
+  new DataView(bytes.buffer).setUint32(8, 0xffffffff, true);
   new DataView(bytes.buffer).setUint32(12, 0x0000000f, true);
   const table = await readVtable(readOf(bytes), 0x1000n, null, 2, { pointerSize: 4 });
-  assert.equal(table.slots[0].raw, 0x7ffffff0n, 'slot 0 is one 4-byte component');
+  assert.equal(table.slots[0].raw, 0xffffffffn, 'slot 0 is one 4-byte component');
   assert.equal(table.slots[1].raw, 0x0000000fn, 'slot 1 is the next 4-byte component');
   assert.equal(table.slots.every((slot) => slot.addr == null || slot.addr <= 0xffffffffn), true,
     'no fabricated 64-bit target may survive the ILP32 ceiling');

@@ -205,13 +205,16 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
     // Structural vtable end detection (when not running in exact slotCount mode, and not an encoded pointer format):
     if(!isExactMode && pointerFormat==null){
       const signedWord=BigInt.asIntN(pointerBytes*8,raw);
-      // Secondary subtable header begins with a negative offset-to-top (typical small negative number)
-      if(signedWord<0n && signedWord > -0x10000000n)break;
-      // Next vtable begins with offset-to-top (0 or negative) followed by typeinfo.
-      if(signedWord<=0n&&(i+2)*pointerBytes<=bytes.length){
-        const nextRaw=wordAt((i+1)*pointerBytes);
-        const nextName=symbols?(symbols.nameAt(nextRaw)||symbols.label(nextRaw)):null;
+      // A secondary subtable / next vtable starts with an offset-to-top word
+      // (0 or a small negative number) followed by a typeinfo pointer. A small
+      // negative word alone is not proof: on ILP32 (and in high address
+      // ranges) it can be a real code pointer. Stop only when the next word is
+      // a typeinfo symbol, or when the word is known not to be code.
+      if(signedWord<=0n&&signedWord>-(1n<<BigInt(pointerBytes*8-4))){
+        const nextRaw=(i+2)*pointerBytes<=bytes.length?wordAt((i+1)*pointerBytes):null;
+        const nextName=nextRaw!=null&&symbols?(symbols.nameAt(nextRaw)||symbols.label(nextRaw)):null;
         if(nextName&&/^_?_ZTI/.test(nextName))break;
+        if(signedWord<0n&&isExecutable!=null&&!isExecutable(raw))break;
       }
       // If a slot points directly to a known typeinfo or typeinfo name symbol (_ZTI or _ZTS), the slot run has ended
       const directName=symbols?(symbols.nameAt(raw)||symbols.label(raw)):null;
