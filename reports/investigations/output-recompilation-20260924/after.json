@@ -1,0 +1,275 @@
+{
+  "schema": "hex-output-recompilation-measurement/v1",
+  "stage": "after",
+  "baseline": {
+    "headSha": "66dbd44ab23fd39f9bd8fc22f2f184240c311e53",
+    "sourceIdentity": "3c7f6a741d3204104c35be56bfe8931c490cad528ff637a5b21b9e2b17cdde5d",
+    "configHash": "1dc2233e261c378dccd221dba243c98876a8e837a1074b8d1acee6bb6edfa68d",
+    "measurementHarnessHash": "68aa51e82820cb043dc8f9f731af9a045910d60af4a1b700f306475c8d512076",
+    "createdAt": "2026-09-24T16:54:31.198Z"
+  },
+  "selection": {
+    "caseIds": [
+      "1/1_gcc_O1_g",
+      "2/2_gcc_O1_g",
+      "3/3_gcc_O1_g",
+      "4/4_gcc_O1_g",
+      "5-1/5-1_gcc_O1_g",
+      "5-23/5-23_gcc_O1_g",
+      "6/6_gcc_O1_g",
+      "7/7_gcc_O1_g"
+    ],
+    "group": "one case per group",
+    "configuration": "gcc_O1_g",
+    "structure": "none"
+  },
+  "denominator": {
+    "cases": 8,
+    "functions": 530,
+    "measuredCases": 8,
+    "timedOutFunctions": 3,
+    "completedFunctions": 527
+  },
+  "functions": {
+    "functionsWithGoto": 128,
+    "totalObservedGotos": 273,
+    "gotoObservationDenominator": 527,
+    "structureModes": {
+      "structured": 383,
+      "linear": 144,
+      "unknown": 3
+    },
+    "unknownInstructionFunctions": 19,
+    "unknownInstructionInstances": 40,
+    "unknownInstructionObservation": {
+      "observed": 414,
+      "missing": 116
+    }
+  },
+  "perFunctionSyntax": {
+    "sampledFunctions": 48,
+    "caseStates": {
+      "FAIL": 8
+    },
+    "caseFirstFamilies": {
+      "undeclared-global": 8
+    },
+    "functionFirstFamilies": {
+      "none": 24,
+      "undeclared-global": 24
+    },
+    "firstFailureSamples": [
+      {
+        "caseId": "1/1_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_13FF0'",
+        "errors": 62
+      },
+      {
+        "caseId": "2/2_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_13FF0'",
+        "errors": 49
+      },
+      {
+        "caseId": "3/3_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_13FE8'",
+        "errors": 55
+      },
+      {
+        "caseId": "4/4_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_12FF0'",
+        "errors": 31
+      },
+      {
+        "caseId": "5-1/5-1_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_13FD0'",
+        "errors": 38
+      },
+      {
+        "caseId": "5-23/5-23_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_12015'",
+        "errors": 20
+      },
+      {
+        "caseId": "6/6_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_150C8'",
+        "errors": 55
+      },
+      {
+        "caseId": "7/7_gcc_O1_g",
+        "family": "undeclared-global",
+        "message": "use of undeclared identifier 'global_11FF0'",
+        "errors": 30
+      }
+    ]
+  },
+  "tuPackaging": {
+    "denominatorFunctions": 529,
+    "caseStates": {
+      "FAIL": 8
+    },
+    "rawCaseFamilies": {
+      "undeclared-global": 8
+    },
+    "tuCaseFamilies": {
+      "other:use of undeclared label 'loc_F14'": 1,
+      "undeclared-identifier": 1,
+      "other:redefinition of 'global_struct_access' as different kind of ": 1,
+      "argument-count-mismatch": 1,
+      "other:array type 'uint8_t[]' (aka 'unsigned char[]') is not assign": 2,
+      "other:cannot redeclare builtin function '__atomic_load'": 2
+    },
+    "rescuedByPackager": 0,
+    "unresolvedTotals": {
+      "pseudo-intrinsic": 16,
+      "unresolved-call-sentinel": 8,
+      "unresolved-callee": 99,
+      "unresolved-global": 149,
+      "unresolved-prototype": 590
+    },
+    "cases": [
+      {
+        "caseId": "1/1_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 4,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 7,
+          "unresolved-global": 25,
+          "unresolved-prototype": 74
+        },
+        "prototypes": 29,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:use of undeclared label 'loc_F14'"
+      },
+      {
+        "caseId": "2/2_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 3,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 6,
+          "unresolved-global": 21,
+          "unresolved-prototype": 63
+        },
+        "prototypes": 29,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "undeclared-identifier"
+      },
+      {
+        "caseId": "3/3_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 3,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 9,
+          "unresolved-global": 24,
+          "unresolved-prototype": 107
+        },
+        "prototypes": 36,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:redefinition of 'global_struct_access' as different kind of "
+      },
+      {
+        "caseId": "4/4_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 3,
+          "unresolved-global": 13,
+          "unresolved-prototype": 51
+        },
+        "prototypes": 24,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "argument-count-mismatch"
+      },
+      {
+        "caseId": "5-1/5-1_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 1,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 10,
+          "unresolved-global": 12,
+          "unresolved-prototype": 57
+        },
+        "prototypes": 17,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:array type 'uint8_t[]' (aka 'unsigned char[]') is not assign"
+      },
+      {
+        "caseId": "5-23/5-23_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 1,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 9,
+          "unresolved-global": 14,
+          "unresolved-prototype": 40
+        },
+        "prototypes": 20,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:cannot redeclare builtin function '__atomic_load'"
+      },
+      {
+        "caseId": "6/6_gcc_O1_g",
+        "unresolved": {
+          "pseudo-intrinsic": 2,
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 49,
+          "unresolved-global": 27,
+          "unresolved-prototype": 165
+        },
+        "prototypes": 51,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:cannot redeclare builtin function '__atomic_load'"
+      },
+      {
+        "caseId": "7/7_gcc_O1_g",
+        "unresolved": {
+          "unresolved-call-sentinel": 1,
+          "unresolved-callee": 6,
+          "unresolved-global": 13,
+          "unresolved-prototype": 33
+        },
+        "prototypes": 19,
+        "globals": 0,
+        "rawFirstFamily": "undeclared-global",
+        "tuFirstFamily": "other:array type 'uint8_t[]' (aka 'unsigned char[]') is not assign"
+      }
+    ]
+  },
+  "timeouts": [
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "5364",
+      "name": "test_composite_types",
+      "reason": "function-timeout-elapsed-exceeded"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "6176",
+      "name": "__addtf3",
+      "reason": "function-watchdog-timeout-hard"
+    },
+    {
+      "caseId": "2/2_gcc_O1_g",
+      "address": "9152",
+      "name": "__multf3",
+      "reason": "function-timeout-elapsed-exceeded"
+    }
+  ],
+  "notes": [
+    "Same eight case IDs, watchdog configuration, and replay derivation rules as before.json.",
+    "All watchdog timeouts are retained in the denominator; case and address identify each timeout.",
+    "Unknown-instruction counts and structure modes cover completed functions only; timeout functions have no completed output."
+  ]
+}
