@@ -1,16 +1,16 @@
-# Claude Code 引き継ぎ — Hex 完成作業（2026-09-25 02:12 CST）
+# Claude Code 引き継ぎ — Hex 完成作業（2026-09-25 02:15 CST）
 
 最初に [現在の目標](HEX_COMPLETION_GOAL.md)、`AGENTS.md`、`CLAUDE.md`、`docs/ENGINEERING_PROCESS_GUARDRAILS.md` を読む。2026-09-23 の依頼要約は `git show 8ebdc35b6bd4980beaaf3d731a929205ad6e55b8:reports/handoff-codex-20260924/ORIGINAL_REQUEST.md` で確認できる。旧 Claude セッション `66f00133-4c7e-408c-9061-0c6bcce43b22` と、その `/mnt/workspace/.dev-state/agent-work/checkpoints/hex-completion-20260924/claude/STATUS.md` から継続している。古い `resume.json` は使わない。
 
-## 今すぐ監視する OpenCode
+## OpenCode の最終状態
 
-**実行中の担当を止めず、二重起動しない。** `opencode --auto -m proxlane/gemini-3.8-flash-high run` で起動済み。コマンドは `TMPDIR/TMP/TEMP=/mnt/workspace/.dev-state/agent-work/scratch` で実行する。`/tmp`、`/var/tmp`、`/dev/shm` は使わない。
+02:15 CST の最後の一括確認では、この引き継ぎで新規起動した OpenCode 担当は全員が自然終了し、Codex は止めていない。0 終了でも成果物がない担当は未完了。次の OpenCode 委譲では `TMPDIR/TMP/TEMP=/mnt/workspace/.dev-state/agent-work/scratch` を使い、`/tmp`、`/var/tmp`、`/dev/shm` を使わせない。
 
 | 担当 | worktree | evidence / exit marker | 起動セッション | 状態（記録時） |
 | --- | --- | --- | --- | --- |
-| ARM64 `arm64b` | `/mnt/workspace/.dev-state/agent-work/checkouts/hex-completion-20260924/candidate-arm64-20260925` | `/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/opencode-arm64b/` 内 `runner.log`、`exit-code`、`RESULT.md` | 84963、監視 75994 | 実行中。fba/fbb の重複 BTI 修正を統合する担当 |
+| ARM64 `arm64b` | `/mnt/workspace/.dev-state/agent-work/checkouts/hex-completion-20260924/candidate-arm64-20260925` | `/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/opencode-arm64b/` 内 `runner.log`、`exit-code`、`staged.patch`、`PARENT_HANDOFF.md` | 84963、監視 75994 | 0 終了。BTI source と新規 test の 2 ファイルを stage したが、commit・push・結果ファイル・テスト成功証拠はない。未完了 |
 
-指示全文は `/mnt/workspace/.dev-state/agent-work/checkpoints/hex-completion-20260924/opencode-20260925/arm64b.md`。終了時は結果を検証し、他に稼働中の担当があれば process、exit marker、成果物を一括確認する。短間隔で pool/status を繰り返さない。監視スクリプトは同ディレクトリの `watch.mjs`。起動セッション ID が Claude 側で使えない場合も、exit marker と実際の process を確認してから handoff/relaunch する。OpenCode が 0 終了でも `RESULT.md` なしなら未完了。直前の `arm64` 担当は 0 終了したが読書だけで、修正はしていない。
+ARM64 の残作業と保全済み差分は `opencode-arm64b/PARENT_HANDOFF.md` を参照する。直前の `arm64` 担当は読書だけで終了した。`arm64b` はコミット済み fbb test の一時コピーを `/tmp` に書いたが、証拠に使わず削除した。Claude はそのパスを参照しない。元の test は `git show dc4530733:tests/machine-effects/arm64-bti-landing-pad-decoration-idempotence.test.mjs` で再取得できる。以後の担当を起動したら `AGENTS.md` の親監督規則に従い、終了通知または event watcher を付け、終了時にほかの担当も一括確認する。短間隔の status/pool polling はしない。
 
 ## 完了済み・未統合の修正
 
@@ -23,7 +23,7 @@
 
 ## 統合と CI の現状
 
-- リモート `main` は記録時 `9ac43546d79f5e440096773ad3e30e3bf7cb5251`。この引き継ぎと目標文書の PR merge でさらに進むため、作業再開時に fetch する。
+- リモート `main` は目標・引き継ぎ PR #9640 の merge 時点で `40f4e39a85a2ee2eac5d225639beeb0a14346616`。この状態訂正 PR でさらに進むため、作業再開時に fetch する。
 - living integration worktree `/mnt/workspace/.dev-state/agent-work/checkouts/hex-completion-20260924/integration` は `d3c129a24cbe96bc50f94a7c25fb4b0e3b9e1e5e`。`main` の `142372232` まで clean merge し、生成 userscript を commit、再ビルド差分 0。`9ac43546d` の修正はまだ未統合。リモート PR [#9557](https://github.com/rhgrive3/hex-ida/pull/9557) は draft、リモートヘッドはまだ `a3ad54245b718f1d2f928da3312d76a3277e4c69`。実際の component acceptance は未完了。
 - 正規フル check は未合格。前の `cd5223e4d` 実行ではホスト Git/WebKit の不足を直した後、`independent-oracle-report.test.mjs` が SIGTERM。ログは `/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/integration-20260925/check-cd5223e4d-restored.full.log`。ホスト Git 2.49 と WebKit 依存は復旧済み。重い再実行はローカルでせず Actions を使う。
 - `rhgrive3/actions` の `hex-suite-runner.yml` は `commands` 空欄だと `npm run check` を分割する。**正規 gate の代わりにしない。** exact pushed SHA に対し `-f commands='["node scripts/run-quiet-command.mjs --label check -- npm run check"]'` を指定する。real-game は `hex-realgame-dispatch.yml` を同じ SHA で 2 回、FAST 160 ケースは `hex-ida-fresh-benchmark-dispatch.yml`。独立 verifier は focused C++ test 1 件では代用できない。実行案と訂正は `.../evidence/hex-completion-20260924/opencode-proof2/{PLAN.md,PARENT_REVIEW.md}`。新しい候補 SHA が未 push なので、これらの最終 run はまだ dispatch していない。
@@ -32,7 +32,7 @@
 
 ## Claude Code が次にすること
 
-1. 稼働中の ARM64 担当を監視し、結果・diff・focused test・push 先を検証する。停止したら残作業を記録して別の OpenCode 実行へ引き継ぐ。C 出力のローカル候補も親として検証する。既存 worktree を保全する。
+1. ARM64 の `PARENT_HANDOFF.md` と staged diff を確認し、残作業を新しい OpenCode 実行へ引き継ぐ。C 出力のローカル候補も親として検証する。既存 worktree と evidence を保全する。
 2. 最新 `main` と候補ごとの actual inventory / ownership / merge tree を照合する。CFG、RMW、out2、ARM64、redp7、fastbudget を個別に評価し、広い gate と独立 verifier が通るまで living integration に採用しない。生成物の checkpoint transaction を閉じる。
 3. 最終候補を push して同一 SHA の正規 check、独立 verifier、160 ケース FAST、known-tail、OpenMW/OpenTTD 2 回、C++ holdout を `rhgrive3/actions` で容量内に並列実行する。run ID、aggregate、同一アドレス品質、速度を確認する。
 4. 再取得時に open の重要 Issue があれば解消し、旧依頼の未完条件を満たす。expected-head protection で PR を merge し、最新 `main` の製品・runtime identity を確認して最終報告 commit と freeze を行う。完成と呼ぶ条件は [目標](HEX_COMPLETION_GOAL.md)と工程 guardrails に従う。
