@@ -129,6 +129,21 @@ function sameFileIdentity(left, right) {
     && String(left.ino) === String(right.ino);
 }
 
+function sameFileMutationState(left, right) {
+  if (!sameFileIdentity(left, right) || String(left?.size) !== String(right?.size)) return false;
+  const sameTime = (nsKey, msKey) => {
+    if (left?.[nsKey] != null && right?.[nsKey] != null) return String(left[nsKey]) === String(right[nsKey]);
+    if (left?.[msKey] != null && right?.[msKey] != null) return Number(left[msKey]) === Number(right[msKey]);
+    return true;
+  };
+  return sameTime('mtimeNs', 'mtimeMs') && sameTime('ctimeNs', 'ctimeMs');
+}
+
+function fstatStable(fsImpl, fd) {
+  try { return fsImpl.fstatSync(fd, { bigint: true }); }
+  catch { return fsImpl.fstatSync(fd); }
+}
+
 function readBoundRegularFile(fullPath, expected, allowedRealRoot, fsImpl) {
   const realPath = fsImpl.realpathSync(fullPath);
   if (!pathIsWithin(allowedRealRoot, realPath)) {
@@ -137,14 +152,14 @@ function readBoundRegularFile(fullPath, expected, allowedRealRoot, fsImpl) {
   const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
   const fd = fsImpl.openSync(realPath, flags);
   try {
-    const opened = fsImpl.fstatSync(fd);
-    if (!opened.isFile() || !sameFileIdentity(opened, expected)) {
+    const opened = fstatStable(fsImpl, fd);
+    if (!opened.isFile() || !sameFileIdentity(opened, expected) || String(opened.size) !== String(expected.size)) {
       throw new Error(`accuracy cache key: selected input identity changed before hashing: ${fullPath}`);
     }
     const bytes = fsImpl.readFileSync(fd);
-    const finalOpened = fsImpl.fstatSync(fd);
-    if (!sameFileIdentity(opened, finalOpened) || finalOpened.size !== opened.size) {
-      throw new Error(`accuracy cache key: selected input identity changed during hashing: ${fullPath}`);
+    const finalOpened = fstatStable(fsImpl, fd);
+    if (!sameFileMutationState(opened, finalOpened)) {
+      throw new Error(`accuracy cache key: selected input changed during hashing: ${fullPath}`);
     }
     return bytes;
   } finally {
@@ -218,6 +233,9 @@ export function partitionDigest(root = ROOT, partition, {
       const finalEntry = fsImpl.lstatSync(fullPath);
       if (!finalEntry.isFile() || finalEntry.isSymbolicLink() || !sameFileIdentity(lstat, finalEntry)) {
         throw new Error(`accuracy cache key: selected input identity changed during hashing: ${relative}`);
+      }
+      if (!sameFileMutationState(lstat, finalEntry)) {
+        throw new Error(`accuracy cache key: selected input changed during hashing: ${relative}`);
       }
     } else {
       throw new Error(`selected accuracy input is not a file or symlink: ${relative}`);

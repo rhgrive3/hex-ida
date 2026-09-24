@@ -189,7 +189,7 @@ export async function digestFile(path) {
 export async function digestFixtureHandle(handle) {
   const hash = createHash('sha256');
   let size = 0;
-  const stream = handle.createReadStream({ autoClose: false });
+  const stream = handle.createReadStream({ autoClose: false, start: 0 });
   for await (const chunk of stream) {
     size += chunk.length;
     hash.update(chunk);
@@ -200,6 +200,12 @@ export async function digestFixtureHandle(handle) {
 function sameFileIdentity(left, right) {
   return String(left?.dev) === String(right?.dev)
     && String(left?.ino) === String(right?.ino);
+}
+
+function sameFileContentState(left, right) {
+  return sameFileIdentity(left, right)
+    && String(left?.size) === String(right?.size)
+    && String(left?.mtimeMs) === String(right?.mtimeMs);
 }
 
 class FixtureVerificationError extends Error {
@@ -256,6 +262,18 @@ export async function verify(name, path, spec, {
     if (digest.size !== spec.size) throw invalidFixture(`${name}: size mismatch (${digest.size} != ${spec.size})`);
     if (digest.sha256 !== spec.sha256) throw invalidFixture(`${name}: SHA-256 mismatch`);
 
+    // Hash the same opened object again before authorizing the canonical path.
+    // This is stronger than inode/mtime checks alone: a same-inode, same-size
+    // overwrite after the first digest cannot be accepted as pinned state.
+    const stableDigest = await digestHandleImpl(handle);
+    if (stableDigest.size !== digest.size || stableDigest.sha256 !== digest.sha256) {
+      throw invalidFixture(`${name}: fixture contents changed during hashing`);
+    }
+    const afterDigest = await handle.stat();
+    if (!afterDigest.isFile() || !sameFileContentState(opened, afterDigest)) {
+      throw invalidFixture(`${name}: fixture contents changed during hashing`);
+    }
+
     let current;
     try {
       current = await statImpl(path);
@@ -267,6 +285,9 @@ export async function verify(name, path, spec, {
     }
     if (current.isSymbolicLink?.() || !current.isFile() || !sameFileIdentity(opened, current)) {
       throw invalidFixture(`${name}: fixture identity changed during hashing`);
+    }
+    if (!sameFileContentState(afterDigest, current)) {
+      throw invalidFixture(`${name}: fixture contents changed during hashing`);
     }
   } catch (error) {
     primaryError = error;

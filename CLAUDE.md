@@ -26,6 +26,8 @@ When in doubt, assume it's a question. Answer first. Act when I say go.
 
 For broad tests, do not stream thousands of successful test lines into the model context.
 
+- Run heavy suites, real-game checks, and performance benchmarks on `rhgrive3/actions` GitHub Actions for the exact pushed Hex SHA. Dispatch independent checks in parallel with bounded runner fanout; use `hex-suite-runner.yml`, `hex-lane-{quality,realgames,perf}.yml`, or a dedicated exact-SHA workflow. Record run IDs, conclusions, and validated artifacts. See `AGENTS.md` → "Low-token test execution" for the full rule.
+
 - Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
 - Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
 - Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
