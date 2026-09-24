@@ -79,8 +79,8 @@ const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
  * semantic mutation reuse a stale product.  Arrays have one intrinsic
  * non-enumerable `length` descriptor; all other descriptors are required to be
  * explicit enumerable data. */
-function semanticOwnKeys(value) {
-  const keys = [];
+function semanticOwnEntries(value) {
+  const entries = [];
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
     if (Array.isArray(value) && key === 'length') continue;
@@ -88,9 +88,9 @@ function semanticOwnKeys(value) {
     if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
       throw new TypeError('identity-unsupported-semantic-descriptor');
     }
-    keys.push(key);
+    entries.push([key, descriptor.value]);
   }
-  return keys;
+  return entries;
 }
 
 function arrayIndexKey(key) {
@@ -130,9 +130,8 @@ function deeplyFrozen(value, active = new Set()) {
   active.add(value);
   let result = true;
   try {
-    for (const key of semanticOwnKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor == null || !('value' in descriptor) || !deeplyFrozen(descriptor.value, active)) {
+    for (const [, child] of semanticOwnEntries(value)) {
+      if (!deeplyFrozen(child, active)) {
         result = false;
         break;
       }
@@ -226,44 +225,40 @@ function typedIdentityText(root) {
     if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
     active.add(value);
     try {
-      const keys = semanticOwnKeys(value);
-      const properties = (propertyKeys) => propertyKeys.length === 0 ? '' : `properties:${propertyKeys.length}{${propertyKeys.sort()
-        .map((key) => {
-          const descriptor = Object.getOwnPropertyDescriptor(value, key);
-          return `key:${key.length}:${key};${visit(descriptor.value)}`;
-        }).join('')}}`;
+      const ownEntries = semanticOwnEntries(value);
+      const properties = (entries) => entries.length === 0 ? '' : `properties:${entries.length}{${[...entries]
+        .sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)
+        .map(([key, item]) => `key:${key.length}:${key};${visit(item)}`).join('')}}`;
       if (Array.isArray(value)) {
-        const ownKeys = new Set(keys);
+        const byKey = new Map(ownEntries);
         let items = '';
         for (let index = 0; index < value.length; index += 1) {
           const key = String(index);
-          items += ownKeys.has(key) ? visit(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+          items += byKey.has(key) ? visit(byKey.get(key)) : 'hole;';
         }
-        return `array:${value.length}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
+        return `array:${value.length}[${items}]${properties(ownEntries.filter(([key]) => !arrayIndexKey(key)))}`;
       }
       if (value instanceof Map) {
         const entries = [...value.entries()]
           .map(([key, item]) => `${visit(key)}=>${visit(item)}`)
           .sort();
-        return `map:${entries.length}{${entries.join('')}}${properties(keys)}`;
+        return `map:${entries.length}{${entries.join('')}}${properties(ownEntries)}`;
       }
       if (value instanceof Set) {
         const values = [...value.values()].map(visit).sort();
-        return `set:${values.length}{${values.join('')}}${properties(keys)}`;
+        return `set:${values.length}{${values.join('')}}${properties(ownEntries)}`;
       }
       if (value instanceof Date) {
         const iso = value.toISOString();
-        return `date:${iso.length}:${iso};${properties(keys)}`;
+        return `date:${iso.length}:${iso};${properties(ownEntries)}`;
       }
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) {
         throw new TypeError('identity-unsupported-semantic-metadata');
       }
-      const sortedKeys = keys.sort();
-      return `object:${sortedKeys.length}{${sortedKeys.map((key) => {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        return `key:${key.length}:${key};${visit(descriptor.value)}`;
-      }).join('')}}`;
+      const sortedEntries = ownEntries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
+      return `object:${sortedEntries.length}{${sortedEntries
+        .map(([key, item]) => `key:${key.length}:${key};${visit(item)}`).join('')}}`;
     } finally {
       active.delete(value);
     }
@@ -301,13 +296,12 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   const memoizable = memo != null && skip === NO_SKIPPED_KEYS;
   if (memoizable && memo.has(value)) return memo.get(value);
   seen.add(value);
-  const ownKeys = semanticOwnKeys(value);
-  const semanticProperties = (keys, propertyPath = path) => {
+  const ownEntries = semanticOwnEntries(value);
+  const semanticProperties = (entries, propertyPath = path) => {
     const properties = {};
-    for (const key of keys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    for (const [key, item] of [...entries].sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)) {
       Object.defineProperty(properties, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
+        value: semanticObject(item, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -319,10 +313,9 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   if (Array.isArray(value)) {
     result = [];
     result.length = value.length;
-    for (const key of ownKeys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    for (const [key, item] of ownEntries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)) {
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS,
+        value: semanticObject(item, seen, NO_SKIPPED_KEYS,
           arrayIndexKey(key) ? `${path}[${Number(key)}]` : `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
@@ -339,7 +332,7 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
         ])
         .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
     };
-    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
+    if (ownEntries.length > 0) result.properties = semanticProperties(ownEntries);
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
@@ -347,24 +340,23 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
         .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
         .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
     };
-    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
+    if (ownEntries.length > 0) result.properties = semanticProperties(ownEntries);
   } else if (value instanceof Date) {
     result = { type: 'Date', value: value.toISOString() };
-    if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
+    if (ownEntries.length > 0) result.properties = semanticProperties(ownEntries);
   } else {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError('identity-unsupported-semantic-metadata');
     }
     result = {};
-    for (const key of ownKeys.sort()) {
+    for (const [key, item] of ownEntries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)) {
       if (skip.has(key)) continue;
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       // A skip list describes this known wrapper object only.  Applying it to
       // nested `extra`/metadata objects would silently erase a semantic field
       // whose name happens to be `uses` or `dst`.
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
+        value: semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,
