@@ -67,10 +67,10 @@ for (const family of ["valignq", "vcompresspd", "vexpandps", "vcvtudq2ps", "vbro
 }
 
 // (3) No promotion without the receiver brand: unbranded canonical rows keep
-// the exact/exact-with-intrinsic totals without unbranded provenance promotion.
+// the same exact/exact-with-intrinsic totals as before the retention repair.
 assert.equal(
   matrix.exactCount + matrix.exactWithIntrinsicCount,
-  291,
+  292,
   "owner retention must not mint exactness for unbranded rows",
 );
 const provenancePartials = matrix.rows.filter((row) => row.partialReason === PROVENANCE_PARTIAL);
