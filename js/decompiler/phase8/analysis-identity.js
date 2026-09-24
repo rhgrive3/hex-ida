@@ -160,6 +160,38 @@ function fastJsonTextDigest(text) {
   return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
+function fastPlainObjectGraphDigest(value) {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('identity-unsupported-semantic-metadata');
+  }
+  const keys = semanticOwnKeys(value).sort();
+  let hash0 = 0x811c9dc5;
+  let hash1 = 0x9e3779b9;
+  let hash2 = 0x243f6a88;
+  let hash3 = 0xb7e15162;
+  const feed = (text) => {
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      hash0 = Math.imul(hash0 ^ code, 0x01000193) >>> 0;
+      hash1 = Math.imul(hash1 ^ code, 0x85ebca6b) >>> 0;
+      hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35) >>> 0;
+      hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f) >>> 0;
+    }
+  };
+  feed(`object:${keys.length}{`);
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+      throw new TypeError('identity-unsupported-semantic-descriptor');
+    }
+    feed(`key:${key.length}:${key};`);
+    feed(typedIdentityText(descriptor.value));
+  }
+  feed('}');
+  return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+}
+
 function fastFrozenOriginDigest(value) {
   return fastJsonGraphDigest(value);
 }
@@ -404,7 +436,9 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
     // rejection behavior while avoiding an intermediate semantic copy and the
     // JSON-safe allocation that made large loop functions miss their budget.
     try {
-      const digest = `metadata:${fastJsonGraphDigest(value)}`;
+      const digest = `metadata:${path === '$.definition.extra'
+        ? fastPlainObjectGraphDigest(value)
+        : fastJsonGraphDigest(value)}`;
       digests.set(value, digest);
       return digest;
     } catch {
