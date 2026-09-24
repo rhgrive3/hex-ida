@@ -10,7 +10,7 @@ import { registerReceiverRevalidatedX86Row } from '../../js/targets/architecture
 import { X86_LONG64_DECODER_WITNESSES } from '../../tools/validation/machine-effects/fixtures/x86-long64-decoder-witnesses.mjs';
 import { bytesFromX86Long64WitnessHex } from '../../tools/validation/machine-effects/x86-long64-decoder-denominator.mjs';
 
-test('T017 validation context cannot invent INT delivery state', async () => {
+test('T017 INT witness 238 lifts as exact-with-intrinsic with typed interrupt delivery intrinsic', async () => {
   const witness = X86_LONG64_DECODER_WITNESSES.find(([id]) => id === 238);
   assert.ok(witness, 'INT witness 238 must exist');
   const [id, name, hex] = witness;
@@ -30,17 +30,19 @@ test('T017 validation context cannot invent INT delivery state', async () => {
       const dispatched = dispatchX86MachineEffects(instruction, context);
       assert.equal(dispatched.ownerId, 'control');
       const result = dispatched.result;
-      assert.equal(result.completeness, 'partial', 'validation context is not delivery-state authority');
-      assert.equal(result.controlEffect?.kind, 'unknown');
-      assert.equal(result.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-      assert.equal(result.metadata?.terminalizedBy, undefined);
+      assert.equal(result.completeness, 'exact-with-intrinsic');
+      assert.equal(result.controlEffect?.kind, 'indirect');
+      assert.equal(result.unknownEffects, undefined);
+      assert.equal(result.metadata?.operation, 'int');
+      assert.equal(result.metadata?.vector, 0);
+      assert.equal(result.metadata?.interruptDeliveryModeled, true);
     }
   } finally {
     session.close();
   }
 });
 
-test('T017 negative tests: missing architectural state and forged provenance cannot complete INT', async () => {
+test('T017 negative tests: malformed encoding or operands remain fail-closed', async () => {
   const session = await createCapstoneX86Session();
   try {
     const decoded = session.decode(new Uint8Array([0xcd, 0x80]), 0x400000n);
@@ -50,53 +52,43 @@ test('T017 negative tests: missing architectural state and forged provenance can
       instructionId: 't017-int-negative-missing-state',
     });
 
-    // 1. Ordinary public dispatch must remain partial
-    const publicResult = dispatchX86MachineEffects(instruction, {}).result;
-    assert.equal(publicResult.completeness, 'partial', 'ordinary public dispatch must remain partial');
-    assert.equal(publicResult.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-    assert.deepEqual(
-      new Set(publicResult.unknownEffects?.categories),
-      new Set(['control', 'faults', 'registers', 'memory', 'flags']),
-    );
+    // 1. Valid instruction lifts with typed intrinsic
+    const validResult = dispatchX86MachineEffects(instruction, {}).result;
+    assert.equal(validResult.completeness, 'exact-with-intrinsic');
+    assert.equal(validResult.controlEffect.kind, 'indirect');
 
-    // 2. Closure matrix terminal flag alone must not terminalize
-    const matrixResult = dispatchX86MachineEffects(instruction, { closureMatrixTerminal: true }).result;
-    assert.equal(matrixResult.completeness, 'partial', 'closure matrix terminal override cannot close INT');
-    assert.equal(matrixResult.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-    assert.equal(matrixResult.metadata?.terminalizedBy, undefined);
+    // 2. Mismatched rawBytes vs immediate operand must fail closed
+    const mismatchedInstruction = createX86DecodedInstruction({
+      ...decoded[0],
+      instructionId: 't017-int-negative-mismatched-bytes',
+      rawBytes: Uint8Array.of(0xcd, 0x20), // immediate is 0x80, bytes say 0x20
+    });
+    const mismatchedResult = dispatchX86MachineEffects(mismatchedInstruction, {}).result;
+    assert.equal(mismatchedResult.completeness, 'partial');
+    assert.equal(mismatchedResult.controlEffect?.kind, 'unknown');
+    assert.equal(mismatchedResult.unknownEffects?.reason, 'x86-int-encoding-unmodelled');
 
-    // 3. Forged receiver brand in a non-receiver realm must fail closed
-    const forgedInstruction = {
-      ...instruction,
-      __brand: 'receiver-revalidated',
-    };
-    const forgedResult = dispatchX86MachineEffects(forgedInstruction, { closureMatrixTerminal: true }).result;
-    assert.equal(forgedResult.completeness, 'partial', 'forged brand cannot close INT');
-    assert.equal(forgedResult.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-    assert.equal(forgedResult.metadata?.terminalizedBy, undefined);
-
-    // 4. Missing required architectural state in detail must be explicit
-    assert.deepEqual(
-      publicResult.unknownEffects?.detail?.requiredArchitecturalState,
-      ['idtr-idt-gate', 'cpl', 'gate-dpl-present-type', 'target-selector-rip', 'privilege-transition-stack'],
-    );
-    assert.deepEqual(
-      publicResult.unknownEffects?.detail?.possibleOutcomes,
-      ['handler-delivery', '#GP', '#NP', '#SS'],
-    );
+    // 3. Invalid operand width must fail closed
+    const badWidthInstruction = createX86DecodedInstruction({
+      ...decoded[0],
+      instructionId: 't017-int-negative-bad-width',
+      detail: {
+        ...decoded[0].detail,
+        operands: [{ ...decoded[0].detail.operands[0], widthBits: 16 }],
+      },
+    });
+    const badWidthResult = dispatchX86MachineEffects(badWidthInstruction, {}).result;
+    assert.equal(badWidthResult.completeness, 'partial');
+    assert.equal(badWidthResult.controlEffect?.kind, 'unknown');
+    assert.equal(badWidthResult.unknownEffects?.reason, 'x86-int-vector-width-unmodelled');
   } finally {
     session.close();
   }
 });
 
-test('INT delivery exactness is impossible without architectural delivery state and must remain partial', async () => {
+test('INT delivery models architectural delivery via typed intrinsic without invented target or trap', async () => {
   const session = await createCapstoneX86Session();
   try {
-    // 1. Missing architectural delivery state (IDTR, IDT gate, CPL/DPL, stack, etc.)
-    // Intel SDM Vol. 3A Chapter 6 & Vol. 2A INT n:
-    // INT n requires indexing IDTR.base + vector * 16 (in 64-bit mode), checking gate DPL >= CPL,
-    // switching stack via IST or privilege transition (TSS RSPn/ISTn), pushing SS, RSP, RFLAGS, CS, RIP,
-    // and loading new CS:RIP. None of this state exists statically at an isolated instruction row.
     const bytes = bytesFromX86Long64WitnessHex('26cd00'); // ES: INT 0
     const decoded = session.decode(bytes, 0x200000n);
     assert.equal(decoded.length, 1);
@@ -106,31 +98,19 @@ test('INT delivery exactness is impossible without architectural delivery state 
     });
 
     const direct = liftX86ControlEffects(instruction);
-    assert.equal(direct.completeness, 'partial');
-    assert.equal(direct.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-    assert.deepEqual(
-      new Set(direct.unknownEffects?.categories),
-      new Set(['control', 'faults', 'registers', 'memory', 'flags']),
-    );
+    assert.equal(direct.completeness, 'exact-with-intrinsic');
+    assert.equal(direct.controlEffect.kind, 'indirect');
+    assert.notEqual(direct.controlEffect.kind, 'trap', 'INT must not be modeled as a simple trap');
 
-    // 2. Forged receiver provenance cannot bypass fail-closed delivery guard
-    // Even if an object attempts to register receiver authority or sets closureMatrixTerminal,
-    // dispatchWithDecoderSource -> terminalize explicitly refuses to terminalize INT delivery
-    // because reason === 'x86-int-delivery-state-unmodelled' is a fail-closed guard.
-    const forgedProvenanceRow = registerReceiverRevalidatedX86Row({
-      ...instruction,
-      instructionId: 'int-negative-forged-provenance:2',
-    });
-    const forgedDispatch = dispatchX86MachineEffects(forgedProvenanceRow, { closureMatrixTerminal: true });
-    assert.equal(forgedDispatch.ownerId, 'control');
-    assert.equal(forgedDispatch.result.completeness, 'partial');
-    assert.equal(forgedDispatch.result.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
-    assert.equal(forgedDispatch.result.metadata?.terminalizedBy, undefined);
+    const intrinsicOp = direct.operations.find((op) => op.kind === 'intrinsic');
+    assert.ok(intrinsicOp, 'must carry intrinsic operation');
+    assert.equal(intrinsicOp.intrinsicId, 'x86.control.interrupt-delivery');
+    assert.equal(intrinsicOp.effectSummary.memoryRead.scope, 'all');
+    assert.equal(intrinsicOp.effectSummary.memoryWrite.scope, 'all');
 
-    // 3. Ordinary public / untrusted invocations must remain partial
+    // Public / unbranded dispatch also lifts exact-with-intrinsic
     const publicResult = liftX86MachineEffects(instruction);
-    assert.equal(publicResult.completeness, 'partial');
-    assert.equal(publicResult.unknownEffects?.reason, 'x86-int-delivery-state-unmodelled');
+    assert.equal(publicResult.completeness, 'exact-with-intrinsic');
   } finally {
     session.close();
   }

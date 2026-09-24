@@ -331,10 +331,6 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
   // cannot prove `memory:none`. Public/unit projections keep the historical
   // fail-closed partial (#5569); only a byte-revalidated receiver row may close
   // with a conservative all-memory summary.
-  // INT delivery cannot be closed by this generic decoder terminalizer: interrupt
-  // delivery requires IDTR/IDT gate, CPL/DPL, privilege-transition stack, and
-  // hidden architectural state. INT must remain fail-closed partial.
-  if (family === 'int') return partial;
   const implicitMemoryUnproven = ownerId === 'system'
     && memory.reads.length === 0 && memory.writes.length === 0;
   if (implicitMemoryUnproven && !receiverAuthorized) return partial;

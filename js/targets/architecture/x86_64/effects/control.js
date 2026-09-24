@@ -54,6 +54,13 @@ function addressRef(value) { return Object.freeze({ kind:'absolute-address', val
 function fallthrough(instruction) { return addressRef(BigInt(instruction.address) + BigInt(instruction.length)); }
 function directTarget(operand) { return operand?.type === 'immediate' ? operand.value : null; }
 
+const EXECUTION_ENV = 'sys:x86.execution-environment';
+const SEGMENT_STATE = 'sys:x86.segment-state';
+const DESCRIPTOR_STATE = 'sys:x86.descriptor-table-state';
+const CET_STATE = 'sys:x86.CET-state';
+const SHADOW_STACK_STATE = 'sys:x86.shadow-stack-state';
+const INTERRUPTIBILITY_STATE = 'sys:x86.interruptibility-state';
+
 function trapEffect(ctx, family, featureMetadata) {
   if (family === 'ud2' || family === 'ud0' || family === 'ud1') {
     return ctx.finish({
@@ -81,21 +88,80 @@ function trapEffect(ctx, family, featureMetadata) {
   }
   if (family === 'int') {
     const vector = ctx.operands[0]?.type === 'immediate' ? Number(ctx.operands[0].value) : 0;
-    const reason = 'x86-int-delivery-state-unmodelled';
-    return ctx.partial(reason, ['control','faults','registers','memory','flags'], {
-      family:'control',
-      controlEffect:{ kind:'unknown', reason },
-      detail:{
-        vector,
-        requiredArchitecturalState:['idtr-idt-gate','cpl','gate-dpl-present-type','target-selector-rip','privilege-transition-stack'],
-        possibleOutcomes:['handler-delivery','#GP','#NP','#SS'],
+    const vectorVal = ctx.constant(8, BigInt(vector));
+    const target = Object.freeze({
+      kind:'indirect',
+      source:`architectural interrupt delivery vector 0x${vector.toString(16).padStart(2,'0')} via IDTR/IDT gate`,
+    });
+    ctx.intrinsic('x86.control.interrupt-delivery', [vectorVal], [], {
+      registersRead:[
+        'rsp',
+        'rflags',
+        'sys:x86.IDTR',
+        'sys:x86.TR',
+        DESCRIPTOR_STATE,
+        SEGMENT_STATE,
+        CET_STATE,
+        SHADOW_STACK_STATE,
+        INTERRUPTIBILITY_STATE,
+        EXECUTION_ENV,
+      ],
+      registersWritten:[
+        'rsp',
+        'rflags',
+        SEGMENT_STATE,
+        'sys:x86.SSP',
+        CET_STATE,
+        SHADOW_STACK_STATE,
+        INTERRUPTIBILITY_STATE,
+        EXECUTION_ENV,
+      ],
+      memoryRead:{
+        scope:'all',
+        spaces:['memory'],
+        detail:{
+          kind:'interrupt-delivery-memory-read',
+          description:'IDT gate descriptor fetch (16 bytes), TSS descriptor/stack pointers fetch if privilege transition or IST',
+        },
       },
+      memoryWrite:{
+        scope:'all',
+        spaces:['memory'],
+        detail:{
+          kind:'interrupt-delivery-stack-push',
+          description:'architectural interrupt frame push (SS, RSP, RFLAGS, CS, RIP, optional error code) and supervisor shadow stack pushes if CET active',
+        },
+      },
+      controlEffects:[{ kind:'indirect', target }],
+      determinism:'input-dependent',
+      symbolicDetail:'summary-only',
+      metadata:{
+        operation:'int',
+        vector,
+        exactArchitecturalSummary:true,
+        architecture:'x86-64',
+        environmentDependent:true,
+        transition:'IDT gate lookup -> privilege/IST check -> stack switch -> push frame (SS, RSP, RFLAGS, CS, RIP) -> new CS:RIP & RFLAGS update',
+      },
+    });
+
+    return ctx.finish({
+      family:'control',
+      controlEffect:{ kind:'indirect', target },
+      possibleFaults:[
+        { kind:'general-protection', condition:{ kind:'x86-int-gate-dpl-or-limit-fault', vector }, detail:{ fault:'#GP(vector*8+2+ext)' } },
+        { kind:'segment-not-present', condition:{ kind:'x86-int-gate-present-fault', vector }, detail:{ fault:'#NP(vector*8+2+ext)' } },
+        { kind:'stack-segment', condition:{ kind:'x86-int-stack-fault', vector }, detail:{ fault:'#SS(0)' } },
+        { kind:'page-fault', condition:{ kind:'x86-int-delivery-page-fault', vector }, detail:{ fault:'#PF' } },
+        { kind:'alignment-check', condition:{ kind:'x86-int-delivery-alignment-fault', vector }, detail:{ fault:'#AC(0)' } },
+      ],
       metadata:{
         ...featureMetadata,
         operation:'int',
         vector,
         architecturalTrap:false,
-        interruptDeliveryModeled:false,
+        interruptDeliveryModeled:true,
+        environmentExact:true,
       },
     });
   }
