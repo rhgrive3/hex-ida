@@ -419,6 +419,26 @@ export class AnalysisQueryAPI {
     return this.#query("evidence", snapshot, [query, page], options);
   }
 
+  /**
+   * Decompile a function at a specified address or symbol within the snapshot.
+   *
+   * Execution & Timeout Semantics:
+   * - In-process decompilation is cooperative (best-effort) with respect to options.signal
+   *   and per-pass budgets (e.g. decompilerTimeBudgetMs, phase8TimeBudgetMs).
+   * - CPU-bound or uncooperative analysis passes check signals and budgets at loop/pass
+   *   boundaries; timeout/cancellation does not hard-abort asynchronous native execution mid-pass.
+   * - For hard watchdog enforcement, callers/harnesses must isolate runs at the process
+   *   boundary (e.g. via worker process with SIGKILL watchdog).
+   *
+   * @param {Object} snapshot - Analysis snapshot token.
+   * @param {string|number|bigint} functionId - Function address or identifier.
+   * @param {Object} [options={}] - Query options.
+   * @param {AbortSignal} [options.signal] - Cooperative abort signal (best-effort cancellation).
+   * @param {string} [options.profile] - Decompiler profile preset ('fast' or 'deep').
+   * @param {number} [options.decompilerTimeBudgetMs] - Best-effort cooperative time budget for pass manager in ms.
+   * @param {number} [options.phase8TimeBudgetMs] - Best-effort cooperative time budget for Phase 8 optimization in ms.
+   * @returns {Promise<Object>} Decompilation result DTO.
+   */
   async decompile(snapshot, functionId, options = {}) {
     return this.#query("decompile", snapshot, [functionId], options);
   }
