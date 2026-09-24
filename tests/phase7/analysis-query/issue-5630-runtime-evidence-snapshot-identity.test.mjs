@@ -39,7 +39,7 @@ test('runtime evidence recorded after snapshot() makes that snapshot stale (#563
 
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
-    binaryHash: 'hash-5630',
+    binaryHash: 'bin-5630',
     sliceIdentity: SLICE,
     verdict: 'confirmed',
     kind: 'trace',
@@ -80,7 +80,7 @@ test('4096-cap shift replacement with identical id/kind/verdict/timestamp still 
 
   // Fill the corpus to its cap with records sharing one identity tuple
   // (id/kind/verdict/timestamp identical) but distinct visible payloads.
-  const shared = { binaryHash: 'hash-5630', sliceIdentity: SLICE, verdict: 'confirmed', kind: 'trace', timestamp: '2026-09-09T00:00:00.000Z', sessionId: 'session-cap', function: ADDRESS };
+  const shared = { binaryHash: 'bin-5630', sliceIdentity: SLICE, verdict: 'confirmed', kind: 'trace', timestamp: '2026-09-09T00:00:00.000Z', sessionId: 'session-cap', function: ADDRESS };
   for (let i = 0; i < 4096; i++) {
     platform._recordEvidence(createRuntimeEvidenceRecord({ ...shared, observedState: { returnValue: `filler-${i}` } }));
   }
@@ -124,7 +124,7 @@ test('runtime reset invalidates snapshots taken before the reset (#5630 R1 #8)',
 
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
-    binaryHash: 'hash-5630',
+    binaryHash: 'bin-5630',
     sliceIdentity: SLICE,
     verdict: 'confirmed',
     kind: 'trace',
@@ -169,7 +169,7 @@ test('records outside the binary/slice filter stay invisible to both rows and id
   // Matching binaryHash but wrong sliceIdentity: same fail-closed filtering.
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
-    binaryHash: 'hash-5630',
+    binaryHash: 'bin-5630',
     sliceIdentity: 'slice:7:uuid-x:arm64',
     verdict: 'confirmed',
     kind: 'trace',
@@ -182,7 +182,7 @@ test('records outside the binary/slice filter stay invisible to both rows and id
   // the first test; here as the positive control for this fixture).
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
-    binaryHash: 'hash-5630',
+    binaryHash: 'bin-5630',
     sliceIdentity: SLICE,
     verdict: 'confirmed',
     kind: 'trace',
