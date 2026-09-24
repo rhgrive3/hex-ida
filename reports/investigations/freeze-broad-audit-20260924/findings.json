@@ -1,9 +1,16 @@
 {
   "audit": "freeze-broad-audit-20260924",
   "repository": "rhgrive3/hex-ida",
-  "base_commit": "a5fd5618e",
+  "base_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
   "audit_date": "2026-09-24",
   "scope": "Non-algorithmic production risk: CLI/worker lifecycle, termination/cancellation, IPC ordering, stale state reuse, cache invalidation/collision, atomic publish/temp files/rollback, concurrency isolation, abort/timeout propagation, Promise rejection handling, resource cleanup, malformed-input/API validation, session/identity reuse, path handling, serialization boundaries, partial failure, race conditions, retry idempotency, and test/deploy harness correctness.",
+  "provenance": {
+    "reviewed_tree": "main",
+    "reviewed_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
+    "pr": 9566,
+    "pr_base_commit": "9f3f1d63e8e9c08b4f6200f444e9cb81e773ea36",
+    "identity_reconciled": true
+  },
   "entry_schema": {
     "id": "string (stable finding id)",
     "severity": "Critical | Major",
