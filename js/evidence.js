@@ -415,7 +415,7 @@ export const EVIDENCE = deepFreeze({
 
   'role-topic-name':    { lr: 18,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'role-topic-selector':{ lr: 9,    family: FAMILY.NAME,     kind: 'fact', id: true },
-  'role-topic-string':  { lr: 6,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  'role-topic-string':  { lr: 6,    family: FAMILY.NAMING,   kind: 'fact', id: true },
   'role-topic-class':   { lr: 4,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'role-topic-callee':  { lr: 3,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'role-topic-caller':  { lr: 2.6,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
