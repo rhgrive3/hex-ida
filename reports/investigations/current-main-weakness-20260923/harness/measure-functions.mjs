@@ -76,6 +76,39 @@ export function runCaseWithWatchdog({
     let finalError = null;
     let finalStderr = '';
 
+    function hardTimeoutReceipt(timedOutFn, elapsedMs, name = null) {
+      return {
+        schema: FUNCTION_SCHEMA,
+        caseId,
+        address: timedOutFn.address,
+        index: timedOutFn.index ?? null,
+        name,
+        end: null,
+        sizeBytes: null,
+        state: 'TIMEOUT',
+        hard: true,
+        completeness: null,
+        reason: 'function-watchdog-timeout-hard',
+        projection: null,
+        unknownInstructions: null,
+        coverageMode: null,
+        structured: null,
+        warnings: null,
+        evidence: null,
+        semantic: null,
+        signature: null,
+        elapsedMs,
+        structure: null,
+        pseudocodeChars: null,
+        nonEmptyLines: null,
+        gotos: null,
+        pseudocode: null,
+        sourceIdentity,
+        configHash,
+        headSha,
+      };
+    }
+
     function step() {
       let child;
       let activeFunction = null;
@@ -98,33 +131,7 @@ export function runCaseWithWatchdog({
           const timedOutFn = activeFunction;
           const elapsedMs = performance.now() - timedOutFn.startedTime;
           // Record receipt as TIMEOUT with hard: true
-          const receipt = {
-            schema: FUNCTION_SCHEMA,
-            caseId,
-            address: timedOutFn.address,
-            index: timedOutFn.index ?? null,
-            name: null,
-            end: null,
-            sizeBytes: null,
-            state: 'TIMEOUT',
-            hard: true,
-            completeness: null,
-            reason: 'function-watchdog-timeout-hard',
-            projection: null,
-            unknownInstructions: null,
-            coverageMode: null,
-            structured: null,
-            warnings: null,
-            evidence: null,
-            semantic: null,
-            signature: null,
-            elapsedMs,
-            structure: null,
-            pseudocodeChars: null,
-            nonEmptyLines: null,
-            gotos: null,
-            pseudocode: null,
-          };
+          const receipt = hardTimeoutReceipt(timedOutFn, elapsedMs, readJson(inflightFile)?.name ?? null);
           atomicWriteJson(path.join(receiptDir, receiptFileName(timedOutFn.address)), receipt);
           fs.rmSync(inflightFile, { force: true });
 
@@ -206,33 +213,7 @@ export function runCaseWithWatchdog({
           const receiptPath = path.join(receiptDir, receiptFileName(address));
           const existingReceipt = readJson(receiptPath);
           if (!existingReceipt) {
-            const receipt = {
-              schema: FUNCTION_SCHEMA,
-              caseId,
-              address: String(address),
-              index,
-              name: inflight?.name ?? null,
-              end: null,
-              sizeBytes: null,
-              state: 'TIMEOUT',
-              hard: true,
-              completeness: null,
-              reason: 'function-watchdog-timeout-hard',
-              projection: null,
-              unknownInstructions: null,
-              coverageMode: null,
-              structured: null,
-              warnings: null,
-              evidence: null,
-              semantic: null,
-              signature: null,
-              elapsedMs,
-              structure: null,
-              pseudocodeChars: null,
-              nonEmptyLines: null,
-              gotos: null,
-              pseudocode: null,
-            };
+            const receipt = hardTimeoutReceipt({ address:String(address), index }, elapsedMs, inflight?.name ?? null);
             atomicWriteJson(receiptPath, receipt);
           }
           fs.rmSync(inflightFile, { force: true });
