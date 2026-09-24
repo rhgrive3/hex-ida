@@ -29,27 +29,33 @@ function isDeepImmutable(value) {
   if (cached !== undefined) return cached;
   const stack = [value];
   const seen = new Set();
+  const parent = new WeakMap();
   let immutable = true;
+  let mutableWitness = null;
   while (stack.length) {
     const current = stack.pop();
     if (current === null || typeof current !== 'object' || seen.has(current)) continue;
     seen.add(current);
     const known = deepImmutableCache.get(current);
     if (known === true) continue;
-    if (known === false) { immutable = false; break; }
+    if (known === false) { immutable = false; mutableWitness = current; break; }
     if (current instanceof Map || current instanceof Set || current instanceof Date
         || current instanceof RegExp || current instanceof ArrayBuffer || ArrayBuffer.isView(current)) {
-      immutable = false; break;
+      immutable = false; mutableWitness = current; break;
     }
     const proto = Object.getPrototypeOf(current);
     // Anything the traversal below would not snapshot is also not snapshotted
     // here, so it can be ignored rather than forcing a conservative fallback.
     if (!Array.isArray(current) && proto !== Object.prototype && proto !== null) continue;
-    if (!Object.isFrozen(current)) { immutable = false; break; }
+    if (!Object.isFrozen(current)) { immutable = false; mutableWitness = current; break; }
     const descriptors = Object.getOwnPropertyDescriptors(current);
     for (const key of Reflect.ownKeys(descriptors)) {
       const descriptor = descriptors[key];
-      if ('value' in descriptor) stack.push(descriptor.value);
+      if ('value' in descriptor) {
+        const child = descriptor.value;
+        if (child !== null && typeof child === 'object' && !parent.has(child) && child !== value) parent.set(child, current);
+        stack.push(child);
+      }
     }
   }
   if (immutable) {
@@ -62,8 +68,16 @@ function isDeepImmutable(value) {
     for (const current of seen) deepImmutableCache.set(current, true);
   } else {
     // A stale false only causes an unnecessary rollback snapshot, never an
-    // unsafe skip, so retaining the existing root-only negative cache remains
-    // conservative when callers freeze mutable state later.
+    // unsafe skip. Cache the actual failing path, not unrelated visited
+    // siblings: shared frozen wrappers often converge on the same mutable
+    // descendant, and root-only negative caching makes every wrapper re-walk
+    // that whole path.
+    let current = mutableWitness;
+    while (current !== null && typeof current === 'object') {
+      deepImmutableCache.set(current, false);
+      if (current === value) break;
+      current = parent.get(current) ?? null;
+    }
     deepImmutableCache.set(value, false);
   }
   return immutable;
