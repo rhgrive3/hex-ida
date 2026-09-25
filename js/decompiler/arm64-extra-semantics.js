@@ -38,6 +38,57 @@ function parseImm64(text) {
   try { return BigInt(raw); } catch { return null; }
 }
 
+const A64_ELEMENT_BITS = Object.freeze({ b:8, h:16, s:32, d:64 });
+// The legacy renderer names every general-purpose register `xN` and every
+// SIMD/FP register `vN` regardless of the printed view (`wN`, `sN`, `dN`, …).
+// A late lowering may therefore only publish a destination variable the rest of
+// the function already reads: the printed full-width register, or the SIMD
+// register base name. Every other view stays raw instead of aliasing a second
+// C variable onto the same architectural register.
+const GP_FULL_WIDTH_TEXT = /^x(\d{1,2})$/;
+const SCALAR_FP_TEXT = /^[bhsdq](\d{1,2})$/i;
+const VECTOR_TEXT = /^v(\d{1,2})(?:\.(\d{1,2})([bhsd]))?$/i;
+
+// A64 wide/narrow arrangement pairs shared by the long (widening) forms.
+const WIDE_LOW_SOURCE_ARRANGEMENT = Object.freeze({ '8h':'8b', '4s':'4h', '2d':'2s' });
+const WIDE_HIGH_SOURCE_ARRANGEMENT = Object.freeze({ '8h':'16b', '4s':'8h', '2d':'4s' });
+// ADDV has no 2D form; every arrangement reduces to one scalar element.
+const ADDV_DESTINATION_ELEMENT_BITS = Object.freeze({ '8b':8, '16b':8, '4h':16, '8h':16, '4s':32 });
+const BITWISE_INSERT_ARRANGEMENTS = new Set(['8b','16b']);
+
+function gpFullWidthRegister(text) {
+  const match = GP_FULL_WIDTH_TEXT.exec(String(text || '').trim());
+  if (!match) return null;
+  const number = Number(match[1]);
+  if (!Number.isInteger(number) || number < 0 || number > 30) return null;
+  return { number, name:`x${number}` };
+}
+
+function vectorRegister(text) {
+  const match = VECTOR_TEXT.exec(String(text || '').trim());
+  if (!match) return null;
+  const number = Number(match[1]);
+  if (!Number.isInteger(number) || number < 0 || number > 31) return null;
+  const base = `v${number}`;
+  if (match[2] == null) return { number, name:base, arrangement:null, elementBits:null, widthBits:128 };
+  const element = String(match[3]).toLowerCase();
+  const laneCount = Number(match[2]);
+  const elementBits = A64_ELEMENT_BITS[element];
+  if (!Number.isInteger(laneCount) || laneCount < 1 || !elementBits) return null;
+  const widthBits = laneCount * elementBits;
+  if (widthBits !== 64 && widthBits !== 128) return null;
+  return { number, name:base, arrangement:`${laneCount}${element}`, elementBits, widthBits };
+}
+
+function scalarFpRegister(text) {
+  const match = SCALAR_FP_TEXT.exec(String(text || '').trim());
+  if (!match) return null;
+  const number = Number(match[1]);
+  if (!Number.isInteger(number) || number < 0 || number > 31) return null;
+  const element = String(text).trim()[0].toLowerCase();
+  return { number, name:`v${number}`, elementBits:A64_ELEMENT_BITS[element] };
+}
+
 // In A64 assembly syntax the MOVI <V>.2D immediate is the already-expanded
 // 64-bit value whose every byte is 0x00 or 0xff — the encoding's 8-bit
 // `abcdefgh` field has been unfolded by the disassembler (#5454). Treating the
@@ -127,6 +178,77 @@ function lowerOne(payload) {
         return `${operands[0].split('.')[0]} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
       }
     }
+  }
+
+  // SBFIZ/UBFIZ: bitfield insert. The destination is the full 64-bit view, so
+  // the rendered variable is exactly the register the rest of the function
+  // names. `#<lsb>` and `#<width>` place a sign/zero-extended `width`-bit field
+  // of the source at bit `lsb`.
+  if (mnemonic === 'sbfiz' || mnemonic === 'ubfiz') {
+    if (operands.length !== 4) return null;
+    const dst = gpFullWidthRegister(operands[0]);
+    const src = gpFullWidthRegister(operands[1]);
+    const lsb = parseImm(operands[2]);
+    const fieldWidth = parseImm(operands[3]);
+    if (!dst || !src) return null;
+    if (lsb == null || fieldWidth == null) return null;
+    if (lsb < 0 || fieldWidth < 1 || lsb + fieldWidth > 64) return null;
+    return `${dst.name} = __a64_${mnemonic}_64(${src.name}, ${lsb}, ${fieldWidth});`;
+  }
+
+  // USHLL/USHLL2: widening shift left. `Vd.<wide>` receives the low (USHLL) or
+  // high (USHLL2) half of `Vn` zero-extended to the destination lane width and
+  // shifted left by the immediate. The arrangement pair and the shift range are
+  // validated exactly; anything else stays raw.
+  if (mnemonic === 'ushll' || mnemonic === 'ushll2') {
+    if (operands.length !== 3) return null;
+    const dst = vectorRegister(operands[0]);
+    const src = vectorRegister(operands[1]);
+    const shift = parseImm(operands[2]);
+    if (!dst?.arrangement || !src?.arrangement) return null;
+    const table = mnemonic === 'ushll2' ? WIDE_HIGH_SOURCE_ARRANGEMENT : WIDE_LOW_SOURCE_ARRANGEMENT;
+    if (table[dst.arrangement] !== src.arrangement) return null;
+    if (shift == null || shift < 0 || shift >= dst.elementBits) return null;
+    return `${dst.name} = __a64_${mnemonic}_${dst.arrangement}(${src.name}, ${shift});`;
+  }
+
+  // UADDW/UADDW2: widening add. `Vd.<wide>` and `Vn.<wide>` share the wide
+  // arrangement; the second source is the low (UADDW) or high (UADDW2) half in
+  // the matching narrow arrangement.
+  if (mnemonic === 'uaddw' || mnemonic === 'uaddw2') {
+    if (operands.length !== 3) return null;
+    const dst = vectorRegister(operands[0]);
+    const wide = vectorRegister(operands[1]);
+    const narrow = vectorRegister(operands[2]);
+    if (!dst?.arrangement || !wide?.arrangement || !narrow?.arrangement) return null;
+    if (wide.arrangement !== dst.arrangement) return null;
+    const table = mnemonic === 'uaddw2' ? WIDE_HIGH_SOURCE_ARRANGEMENT : WIDE_LOW_SOURCE_ARRANGEMENT;
+    if (table[dst.arrangement] !== narrow.arrangement) return null;
+    return `${dst.name} = __a64_${mnemonic}_${dst.arrangement}(${wide.name}, ${narrow.name});`;
+  }
+
+  // BIT: bitwise insert if true over whole bytes. `Vd` is both source and
+  // destination; only the 8B/16B arrangements exist.
+  if (mnemonic === 'bit') {
+    if (operands.length !== 3) return null;
+    const dst = vectorRegister(operands[0]);
+    const source = vectorRegister(operands[1]);
+    const mask = vectorRegister(operands[2]);
+    if (!dst?.arrangement || !BITWISE_INSERT_ARRANGEMENTS.has(dst.arrangement)) return null;
+    if (source?.arrangement !== dst.arrangement || mask?.arrangement !== dst.arrangement) return null;
+    return `${dst.name} = __a64_bit_${dst.arrangement}(${dst.name}, ${source.name}, ${mask.name});`;
+  }
+
+  // ADDV: add across vector, reducing every lane into the low element of one
+  // scalar SIMD register. The scalar view is the low bits of the same physical
+  // register the renderer names `vN`.
+  if (mnemonic === 'addv') {
+    if (operands.length !== 2) return null;
+    const dst = scalarFpRegister(operands[0]);
+    const src = vectorRegister(operands[1]);
+    if (!dst || !src?.arrangement) return null;
+    if (ADDV_DESTINATION_ELEMENT_BITS[src.arrangement] !== dst.elementBits) return null;
+    return `${dst.name} = __a64_addv_${src.arrangement}(${src.name});`;
   }
 
   return null;
