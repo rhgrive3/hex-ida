@@ -17,7 +17,7 @@ import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { ownDataEntries } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -402,6 +402,13 @@ export function normalizeSemanticCompatibilityLine(line, ir) {
   }
 }
 
+function initialStoreCaptureFailure(error, phase) {
+  const detail = typeof error?.message === 'string' ? error.message : '';
+  if (/^initial-store-[a-z0-9-]+$/.test(detail)) return detail;
+  if (/^projection-[a-z0-9-]+$/.test(detail)) return `initial-store-${phase}-${detail}`;
+  return `initial-store-${phase}-unavailable`;
+}
+
 function observeStoreSelection(inst, rmw, upd, ctx) {
   const history = ctx.storeRenderHistory;
   if (history.events.length >= history.limit) { history.reasons.add('initial-store-history-budget'); return null; }
@@ -411,10 +418,13 @@ function observeStoreSelection(inst, rmw, upd, ctx) {
     if (history.edges <= 0 || history.consumers <= 0 || position < 0) throw new Error('initial-store-binding-budget');
     // Capture before renderValue can invoke a symbol callback. This is a
     // display selection, not an independent proof of the RMW analysis fact.
-    observation = captureProjectionIrData([inst, rmw, upd]);
+    // These roots enumerate the complete cyclic SSA objects needed by this
+    // store selection. Root-distance graph observation avoids treating nesting
+    // in the cycle as an arbitrary semantic-depth cutoff.
+    observation = ctx.projectionIrObserver.captureGraph([inst, rmw, upd], ctx.opts.shouldAbort);
     history.edges -= observation.metrics.edges;
     if (history.edges < 0) throw new Error('initial-store-binding-budget');
-  } catch { observation = null; history.edges = 0; history.reasons.add('initial-store-observation-unavailable'); }
+  } catch (error) { observation = null; history.edges = 0; history.reasons.add(initialStoreCaptureFailure(error, 'observation')); }
   return Object.freeze({ source, valueId:valueOf(inst.args?.[0])?.id ?? null,
     isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
     && Object.getOwnPropertyDescriptor(instructions, position)?.value === inst && observation?.matches() === true });
@@ -439,14 +449,14 @@ function retainStoreRenderLine(node, inst, rendered, ctx) {
   try {
     if (history.consumers <= 0 || history.edges <= 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
     history.consumers--;
-    const observation = captureProjectionIrData([node], ctx.opts.shouldAbort);
+    const observation = ctx.projectionIrObserver.capture([node], ctx.opts.shouldAbort);
     history.edges -= observation.metrics.edges;
     if (history.edges < 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
     storeRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records,
       spelling:Object.freeze({ form:rendered.form || 'assignment', text:node.text }),
       isCurrent:() => canonical.isCurrent() && observation.matches(),
     }));
-  } catch { history.edges = 0; history.reasons.add('initial-store-binding-unavailable'); }
+  } catch (error) { history.edges = 0; history.reasons.add(initialStoreCaptureFailure(error, 'binding')); }
 }
 
 function bindStoreRenderHistory(result, ctx) {
@@ -2442,6 +2452,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   }
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
+    projectionIrObserver:createProjectionIrObserver({ deterministicTransforms:opts.deterministicTransforms === true }),
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
     storedValueAliases: buildStoredValueAliases(ir),
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
