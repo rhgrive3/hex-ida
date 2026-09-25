@@ -165,8 +165,21 @@ function signatureFromText(text) {
  * re-emits itself.  Anything else (code after a comment, preprocessor lines)
  * would be dropped from the emitted body, so it is not accounted for.
  */
+/* Standard names whose <stdint.h>/<stddef.h> definition the packager adds and
+ * which the Hex prelude defines identically (same compiler builtin). */
+const HEADER_PROVIDED_ALIASES = new Set(['int8_t', 'uint8_t', 'int16_t', 'uint16_t', 'int32_t', 'uint32_t',
+  'int64_t', 'uint64_t', 'intptr_t', 'uintptr_t', 'size_t', 'ptrdiff_t']);
+
+/* An exact prelude line is accounted for only when the packager re-emits an
+ * identical definition of that alias; other prelude aliases stay unaccounted. */
+function isReemittedPreludeDeclaration(text) {
+  if (!isFixedWidthPreludeDeclaration(text)) return false;
+  const alias = /([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$/.exec(text)?.[1];
+  return FIXED_WIDTH_ALIASES.has(alias) || HEADER_PROVIDED_ALIASES.has(alias);
+}
+
 function isAllowedBodyPrefixLine(trimmed) {
-  return !trimmed || skipBodyTrivia(trimmed, 0) === trimmed.length || isFixedWidthPreludeDeclaration(trimmed);
+  return !trimmed || skipBodyTrivia(trimmed, 0) === trimmed.length || isReemittedPreludeDeclaration(trimmed);
 }
 
 /* The same rule over the whole prefix at once, so a comment cannot open on
@@ -179,7 +192,7 @@ function isAccountedBodyPrefix(prefix) {
     if (pos >= prefix.length) return true;
     const lineEnd = prefix.indexOf('\n', pos);
     const end = lineEnd < 0 ? prefix.length : lineEnd;
-    if (!isFixedWidthPreludeDeclaration(prefix.slice(pos, end))) return false;
+    if (!isReemittedPreludeDeclaration(prefix.slice(pos, end))) return false;
     pos = end;
   }
   return true;

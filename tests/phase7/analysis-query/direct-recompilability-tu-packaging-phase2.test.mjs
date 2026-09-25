@@ -260,6 +260,21 @@ test('a dropped prelude typedef still gets the packager alias contract', () => {
   assert.match(unit.source, /typedef uint8_t uint8;/);
 });
 
+test('a standard-name prelude typedef is re-provided by its header', () => {
+  const source = 'typedef __UINT8_TYPE__ uint8_t;\nvoid foo(void)\n{\n  uint8_t x = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.ok(unit.includes.includes('<stdint.h>'));
+});
+
+test('a prelude typedef the packager does not re-emit stays unaccounted', () => {
+  const source = 'typedef unsigned __int128 uint128;\nvoid foo(void)\n{\n  uint128 x = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
 test('a complete brace-on-signature-line body stays eligible', () => {
   const source = 'void foo(void) {\n  return;\n}';
   const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
