@@ -409,16 +409,14 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
       && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
     if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
-      if (interactiveStage.ledger.sourceCompleteness !== 'complete') {
-        projected = attachSourceBoundRenderProvenance(projected, interactiveStage.analysis,
-          interactiveStage.analysisIdentityBinding, opts);
-      } else {
-        projected = applyPhase8Projection(projected, interactiveStage.analysis, {
-          ...opts,
-          preserveInitialSpelling:true,
-          analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
-        });
-      }
+      // Render-only projection keeps the producer's existing spelling and
+      // consumes only current bindings. It can describe available facts even
+      // when the source IR is explicitly partial.
+      projected = applyPhase8Projection(projected, interactiveStage.analysis, {
+        ...opts,
+        preserveInitialSpelling:true,
+        analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
+      });
     }
     if (shouldDemandStructuring(projected, opts)) {
       const structuringBudget = {
@@ -437,7 +435,17 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
           structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
       }
     }
-    return projected;
+    const pipeline = projected.ctx?.decompilerPipeline;
+    return pipeline ? {
+      ...projected,
+      ctx: {
+        ...projected.ctx,
+        decompilerPipeline: {
+          ...pipeline,
+          sourceCompleteness: projected.phase8?.sourceCompleteness ?? 'unknown',
+        },
+      },
+    } : projected;
   }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
@@ -467,6 +475,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         // unpublished/incomplete Phase 8 run or earlier pipeline truncation
         // weakens execution completeness.
         completeness:phase8ExecutionComplete && !priorPipelineTruncated ? 'complete' : 'partial',
+        sourceCompleteness:stage.ledger?.sourceCompleteness ?? 'unknown',
         phase8:stage.ledger,
         phase8Timings:stage.timings,
         phase8ElapsedMs:stage.elapsedMs,

@@ -371,7 +371,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
   const regionErasurePlan = context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
-  const source = sourceKnowledge(context.ir);
+  let source = sourceKnowledge(null);
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan, regionErasurePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
     withheldLedgerBase(status,reason,diagnostics,digest,versions,
@@ -397,7 +397,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   });
   let authoritative;
   try {
-    authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
+    const ir = context.ir;
+    source = sourceKnowledge(ir);
+    authoritative = context.analysis ?? seedAnalysisState(ir, { types: context.types ?? null });
   } catch (error) {
     // Seeding reads upstream facts. If reading them throws, Phase 8 knows
     // nothing about this function and must say so rather than proceeding with a

@@ -36,7 +36,9 @@ test('full symbolic write-cover agrees with independent byte oracle AND finite-d
   }
   const before=compile(traces[l]),after=compile(traces[r]);
   const common={identity,beforeIr:before.ir,afterIr:after.ir,inputs:[{before:before.p,after:after.p},{before:before.q,after:after.q}],
-    preconditions:[],backendTier:'tiered',timeoutMs:5000};
+    // This independent byte oracle checks proof semantics. The query's fixed
+    // work ceilings still apply; runner speed must not change its verdict.
+    preconditions:[],backendTier:'tiered',timeoutMs:5000,deterministic:true};
   const memory={addressBits:2,wrapping:'modular',endian,initialBytes:initial.map((n,i)=>[BigInt(i),n])};
   for(const proofMode of ['symbolic-writes','finite-domain']) {
    const result=await queryMemoryEquivalence({...common,memory:{...memory,proofMode}});queries++;

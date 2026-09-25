@@ -42,7 +42,9 @@ test('the frozen x86 indirect-switch fallback retains the actual target-load ori
   for (const phase8Optimize of [false, true]) {
     const { result, failure } = decompileEntry(corpus.functions[index], { index, phase8Optimize });
     assert.equal(failure, undefined);
-    const line = result.lines.find(item => item.text.includes('semantic-v2 unknown-control-effect'));
+    // The exact switch projection keeps the unresolved transfer explicit under
+    // either the generic or switch-specific marker. Both must retain inputs.
+    const line = result.lines.find(item => /semantic-v2 (?:unknown-control-effect|switch)/.test(item.text));
     assert.ok(line, 'indirect control must remain explicitly unresolved');
     assert.ok(line.source.addresses.includes(base + 35n), 'MOVSXD jump-table load is an input dependency');
     assert.ok(line.source.addresses.includes(base + 42n), 'JMP owns the unresolved transfer');

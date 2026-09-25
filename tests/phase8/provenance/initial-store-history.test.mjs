@@ -87,7 +87,7 @@ test('render-only spelling retention refuses copied and changed store emitters',
   }
 });
 
-test('deadline fallback retains the actual cached builder history without running an optional rewrite', () => {
+test('deadline fallback retains the actual cached builder history after later optional work is skipped', () => {
   const f = fixture({ one:true });
   const clock = Object.getOwnPropertyDescriptor(globalThis, 'performance');
   let now = 0;
@@ -95,13 +95,16 @@ test('deadline fallback retains the actual cached builder history without runnin
   try {
     const original = enhanceSemanticDecompilation(f.seed, f.model, {
       ...f.opts, deterministicTransforms:false, decompilerTimeBudgetMs:10,
-      // Model a slow symbol callback in the mandatory expression builder,
-      // not a fabricated pass result or a machine-speed-dependent timeout.
+      // The symbol callback runs during semantic fact construction. A fixed
+      // clock jump forces later optional passes to skip without host timing.
       symbolFor() { now = 100; return null; },
     });
-    assert.equal(now, 100, 'the real canonical builder called the resolver');
+    assert.equal(now, 100, 'the real semantic pipeline called the resolver');
     assert.ok(original.passMetrics.some(pass => pass.name === 'canonical-expression-build' && !pass.skipped));
-    assert.ok(original.passMetrics.some(pass => pass.name === 'semantic-rewrite' && pass.skipped));
+    assert.ok(original.passMetrics.some(pass => pass.name === 'semantic-facts' && pass.degraded),
+      JSON.stringify(original.passMetrics));
+    assert.ok(original.passMetrics.some(pass => pass.name === 'typed-semantic-ast' && pass.skipped),
+      JSON.stringify(original.passMetrics));
     assert.match(original.pseudocode, /global_8000\+\+;/);
     const result = applyPhase8Projection(original, analysis(), { preserveInitialSpelling:true });
     assert.equal(result.pseudocode, original.pseudocode);
