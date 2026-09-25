@@ -157,13 +157,19 @@ Findings:
   on the 16-core box (`load average ≈ 3.9`), and the isolated re-run of the same functions is
   2.3–2.4× faster. Use the *relative* distribution and the isolated tail numbers; not the absolute
   p95/p99 as a single-process latency budget.
-- **`--function-timeout-ms` is a legacy/misnamed best-effort abort request, not a hard timeout.**
-  The worker sends an `AbortSignal` after 10 000 ms, but the downstream analysis can continue when it
-  does not observe that signal. In this run the measured max is 149 641 ms with `state=PASS`, and
-  **147 of 2258 functions (6.5%) exceed 10 s while none is reported as `TIMEOUT`**. Therefore this
-  setting is **not an enforced deadline, watchdog, acceptance gate, or denominator filter**; every
-  recorded latency above 10 s is worker-observed wall time. A future hard deadline would require
-  enforcement at a worker/process boundary and a separate validation run.
+- **At the time of this Part B run, `--function-timeout-ms` was a best-effort abort request, not a
+  hard timeout.** The worker sent an `AbortSignal` after 10 000 ms, but the downstream analysis could
+  continue when it did not observe that signal. In this run the measured max is 149 641 ms with
+  `state=PASS`, and **147 of 2258 functions (6.5%) exceed 10 s while none is reported as `TIMEOUT`**.
+  The latencies above 10 s are therefore worker-observed wall time, not deadline-filtered, and for
+  that run this setting was **not an enforced deadline, watchdog, acceptance gate, or denominator
+  filter**. The harness in this directory is no longer best-effort at the process boundary:
+  `harness/measure-functions.mjs` + `harness/case-worker.mjs` now `SIGKILL` a child whose function
+  exceeds `functionTimeoutMs + --function-timeout-grace-ms` (default 2000 ms) and record
+  `state:'TIMEOUT', hard:true`, while a late finish is coerced from `PASS` to `TIMEOUT`. See
+  `docs/FUNCTION_TIMEOUT_SEMANTICS.md` for the decision and
+  `tests/issue-function-timeout-hard-watchdog.test.mjs` for the proof. Re-measuring this 32-case
+  sample under the enforced deadline is a separate validation run and was not done here.
 - **CFG/IR structural indicators could not be read at all**: `product.query.cfg` /
   `product.query.semanticIR` returned `cfg-unavailable` for every probed function, so
   `cfgBlocks`/`irValues`/`irInstructions` are `null` and the Part B structural correlations are
