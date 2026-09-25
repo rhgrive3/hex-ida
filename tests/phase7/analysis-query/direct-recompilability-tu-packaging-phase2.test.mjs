@@ -185,6 +185,42 @@ test('type-like words inside comments and strings do not create declarations', (
   assert.ok(!unit.includes.includes('<stdint.h>'));
 });
 
+test('a body with unaccounted code before the signature stays a placeholder', () => {
+  const source = 'goto error;\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.equal(row.emittedPseudocode.includes('__builtin_trap'), true);
+  assert.equal(row.pseudocode, source, 'the recovered body stays available as evidence');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a truncated brace-on-signature-line body stays a placeholder', () => {
+  const source = 'void foo(void) {\n  if (x)\n  {\n    return;\n  }';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.equal(row.emittedPseudocode.includes('__builtin_trap'), true);
+  assert.equal(row.pseudocode, source, 'the recovered body stays available as evidence');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.subject === 'foo' && entry.reason === 'body-extent-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a complete brace-on-signature-line body stays eligible', () => {
+  const source = 'void foo(void) {\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, false, 'complete brace-on-signature-line body must stay faithful');
+  assert.equal(row.emittedPseudocode, 'void foo(void) {\n  return;\n}');
+  assert.equal(row.originalPseudocode, source);
+  assert.ok(unit.source.includes('return;'));
+  assert.doesNotMatch(unit.source, /__builtin_trap/);
+  assert.ok(!unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'));
+});
+
 test('translationUnit is additive: existing decompile presentation remains byte-for-byte unchanged', async () => {
   const pseudocode = 'uint64 sample(void)\n{\n  return 1;\n}';
   const app = {

@@ -139,6 +139,125 @@ function signatureFromText(text) {
   return null;
 }
 
+/*
+ * Sound faithful-body extraction.  The eligible body is exactly the producer
+ * text with only the signature removed, accounting for every non-comment
+ * token.  The previous `original.replace(/^[\s\S]*?\n\s*\{/, '{')` dropped
+ * everything before the first line-leading `{`, silently hiding statements
+ * (`goto`, `if (x)`, typedefs) from the eligibility gates.  Instead:
+ *
+ * 1. locate the signature line the same way signatureFromText does (plus the
+ *    brace-on-signature-line form `ret name(params) {`, whose prefix before
+ *    the brace must itself look like a signature).  Every line before it may
+ *    only be blank/comment/`#`; anything else is `body-prefix-unaccounted`.
+ * 2. the body starts at the `{` ending the signature line, or at the first
+ *    non-blank (whitespace/comment) token after it.  Anything else between
+ *    the signature and that brace is `body-start-unavailable`.
+ * 3. that opening brace must close (string/comment-aware scan) exactly at the
+ *    end of the text (only whitespace/comments after).  A truncated body or
+ *    any trailing code is `body-extent-unaccounted`.
+ */
+function isAllowedBodyPrefixLine(trimmed) {
+  return !trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//') || trimmed.startsWith('#');
+}
+
+function skipBodyTrivia(text, pos) {
+  while (pos < text.length) {
+    const ch = text[pos];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\v' || ch === '\f') { pos++; continue; }
+    if (ch === '/' && text[pos + 1] === '/') {
+      pos += 2;
+      while (pos < text.length && text[pos] !== '\n') pos++;
+      continue;
+    }
+    if (ch === '/' && text[pos + 1] === '*') {
+      const end = text.indexOf('*/', pos + 2);
+      if (end < 0) return text.length;
+      pos = end + 2;
+      continue;
+    }
+    break;
+  }
+  return pos;
+}
+
+function findBodyCloseBrace(text, openIdx) {
+  let depth = 0;
+  let state = 'code';
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (state === 'code') {
+      if (ch === '/' && next === '/') { state = 'line'; i++; continue; }
+      if (ch === '/' && next === '*') { state = 'block'; i++; continue; }
+      if (ch === '"') { state = 'string'; continue; }
+      if (ch === "'") { state = 'char'; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return i;
+        if (depth < 0) return -1;
+      }
+      continue;
+    }
+    if (state === 'line') { if (ch === '\n') state = 'code'; continue; }
+    if (state === 'block') { if (ch === '*' && next === '/') { state = 'code'; i++; } continue; }
+    if (state === 'string') { if (ch === '\\') i++; else if (ch === '"') state = 'code'; continue; }
+    if (state === 'char') { if (ch === '\\') i++; else if (ch === "'") state = 'code'; continue; }
+  }
+  return -1;
+}
+
+function extractFaithfulBodyText(original) {
+  const text = String(original ?? '');
+  const rawLines = text.split(/\r?\n/);
+  const starts = [];
+  let cursor = 0;
+  for (let i = 0; i < rawLines.length; i++) {
+    starts.push(cursor);
+    cursor += rawLines[i].length;
+    if (cursor < text.length && text[cursor] === '\r') cursor++;
+    if (cursor < text.length && text[cursor] === '\n') cursor++;
+  }
+  let sigIdx = -1;
+  let sigBraceInLine = false;
+  for (let i = 0; i < rawLines.length; i++) {
+    const trimmed = rawLines[i].trim();
+    if (isAllowedBodyPrefixLine(trimmed)) continue;
+    if (looksLikeSignature(trimmed)) { sigIdx = i; sigBraceInLine = false; break; }
+    if (trimmed.includes('{')) {
+      const before = trimmed.slice(0, trimmed.indexOf('{')).trim();
+      if (before && looksLikeSignature(before)) { sigIdx = i; sigBraceInLine = true; break; }
+      break;
+    }
+  }
+  if (sigIdx < 0) return { ok:false, reason:'body-start-unavailable' };
+  for (let j = 0; j < sigIdx; j++) {
+    if (!isAllowedBodyPrefixLine(rawLines[j].trim())) return { ok:false, reason:'body-prefix-unaccounted' };
+  }
+  const sigRaw = rawLines[sigIdx];
+  const sigStart = starts[sigIdx];
+  let openOffset = -1;
+  if (sigBraceInLine) {
+    const braceRel = sigRaw.indexOf('{');
+    const closeParen = sigRaw.lastIndexOf(')', braceRel);
+    if (braceRel < 0 || closeParen < 0) return { ok:false, reason:'body-start-unavailable' };
+    if (!/^[\s]*$/.test(sigRaw.slice(closeParen + 1, braceRel))) return { ok:false, reason:'body-start-unavailable' };
+    openOffset = sigStart + braceRel;
+  } else {
+    const closeParen = sigRaw.lastIndexOf(')');
+    if (closeParen < 0) return { ok:false, reason:'body-start-unavailable' };
+    if (sigRaw.slice(closeParen + 1).trim() !== '') return { ok:false, reason:'body-start-unavailable' };
+    const pos = skipBodyTrivia(text, sigStart + sigRaw.length);
+    if (pos >= text.length || text[pos] !== '{') return { ok:false, reason:'body-start-unavailable' };
+    openOffset = pos;
+  }
+  const closeOffset = findBodyCloseBrace(text, openOffset);
+  if (closeOffset < 0) return { ok:false, reason:'body-extent-unaccounted' };
+  if (skipBodyTrivia(text, closeOffset + 1) !== text.length) return { ok:false, reason:'body-extent-unaccounted' };
+  return { ok:true, bodyText:text.slice(openOffset, closeOffset + 1) };
+}
+
 function safeSignatureDeclaration(signature) {
   const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
   const open = text.indexOf('(');
@@ -205,8 +324,15 @@ function hasBalancedBraces(text) {
  *    syntax fallbacks this unit emits for unresolved externals;
  * 5. every `/* arguments unknown *​/` call argument list belongs to a callee
  *    whose only declared arity is unspecified (an unprototyped `()`
- *    fallback), so the call cannot contradict a known arity; and
- * 6. the body's braces balance.
+ *    fallback), so the call cannot contradict a known arity;
+ * 6. the body's braces balance; and
+ * 7. the body is exactly the producer text with only the signature removed:
+ *    lines before the signature line may only be blank/comment/`#`
+ *    (`body-prefix-unaccounted` otherwise), the body starts at the `{`
+ *    ending the signature line or at the first whitespace/comment-skipped
+ *    token after it (`body-start-unavailable` otherwise), and that brace
+ *    closes exactly at the end of the text (only whitespace/comments after;
+ *    `body-extent-unaccounted` for truncated or trailing text).
  *
  * Anything else stays on the syntax-only placeholder with its explicit
  * unresolved entry: the unit keeps `partial` and no binary fact is invented.
@@ -269,7 +395,9 @@ function faithfulBodyEligibility(fn, context) {
   if (!signature) return { eligible:false, reason:'signature-unprovable' };
   const name = String(fn?.renderedName ?? fn?.name ?? '');
   if (!C_IDENTIFIER.test(name)) return { eligible:false, reason:'name-not-c-identifier' };
-  const bodyText = original.replace(/^[\s\S]*?\n\s*\{/, '{');
+  const extracted = extractFaithfulBodyText(original);
+  if (!extracted.ok) return { eligible:false, reason:extracted.reason };
+  const bodyText = extracted.bodyText;
   if (!bodyText.startsWith('{')) return { eligible:false, reason:'body-start-unavailable' };
   if (!hasBalancedBraces(bodyText)) return { eligible:false, reason:'body-braces-unbalanced' };
   const codeText = declarationBearingText(bodyText);
