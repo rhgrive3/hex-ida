@@ -231,6 +231,35 @@ for (const prefix of ['/* note */ goto error;', '#define return exit(1);', 'type
   });
 }
 
+test('an unclosed comment before the signature stays unaccounted', () => {
+  const source = '/* goto error;\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a closed multi-line comment before the signature is accounted for', () => {
+  const source = '/* recovered\n * by hex */\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
+
+test('a lone carriage return cannot hide code inside a line comment', () => {
+  const source = 'void foo(void)\n{\n  // note\r goto error;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-line-ending-unsupported'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a dropped prelude typedef still gets the packager alias contract', () => {
+  const source = 'typedef __UINT8_TYPE__ uint8;\nvoid foo(void)\n{\n  uint8 a = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.match(unit.source, /typedef uint8_t uint8;/);
+});
+
 test('a complete brace-on-signature-line body stays eligible', () => {
   const source = 'void foo(void) {\n  return;\n}';
   const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);

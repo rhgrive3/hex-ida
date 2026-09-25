@@ -93,11 +93,11 @@ function headersForText(text, headers) {
   if (/\bbool\b/.test(source)) headers.add('<stdbool.h>');
 }
 
-function aliasContractsForText(text, headers, declarations) {
+function aliasContractsForText(text, headers, declarations, { ownTypedefsEmitted = true } = {}) {
   const source = declarationBearingText(text);
   for (const [alias, standard] of FIXED_WIDTH_ALIASES) {
     if (!new RegExp(`\\b${alias}\\b`).test(source)) continue;
-    if (new RegExp(`typedef\\s+[^;]*\\b${alias}\\s*;`).test(source)) continue;
+    if (ownTypedefsEmitted && new RegExp(`typedef\\s+[^;]*\\b${alias}\\s*;`).test(source)) continue;
     headers.add('<stdint.h>');
     declarations.add(`typedef ${standard} ${alias};`);
   }
@@ -169,6 +169,22 @@ function isAllowedBodyPrefixLine(trimmed) {
   return !trimmed || skipBodyTrivia(trimmed, 0) === trimmed.length || isFixedWidthPreludeDeclaration(trimmed);
 }
 
+/* The same rule over the whole prefix at once, so a comment cannot open on
+ * one line and hide the lines after it. */
+function isAccountedBodyPrefix(prefix) {
+  let pos = 0;
+  while (pos < prefix.length) {
+    pos = skipBodyTrivia(prefix, pos);
+    if (pos < 0) return false;
+    if (pos >= prefix.length) return true;
+    const lineEnd = prefix.indexOf('\n', pos);
+    const end = lineEnd < 0 ? prefix.length : lineEnd;
+    if (!isFixedWidthPreludeDeclaration(prefix.slice(pos, end))) return false;
+    pos = end;
+  }
+  return true;
+}
+
 function skipBodyTrivia(text, pos) {
   while (pos < text.length) {
     const ch = text[pos];
@@ -180,7 +196,8 @@ function skipBodyTrivia(text, pos) {
     }
     if (ch === '/' && text[pos + 1] === '*') {
       const end = text.indexOf('*/', pos + 2);
-      if (end < 0) return text.length;
+      // An unterminated comment swallows everything after it: not trivia.
+      if (end < 0) return -1;
       pos = end + 2;
       continue;
     }
@@ -218,6 +235,9 @@ function findBodyCloseBrace(text, openIdx) {
 
 function extractFaithfulBodyText(original) {
   const text = String(original ?? '');
+  // C ends a `//` comment at a lone carriage return; the scans here do not,
+  // so such text could hide tokens from the gates.
+  if (/\r(?!\n)/.test(text)) return { ok:false, reason:'body-line-ending-unsupported' };
   const rawLines = text.split(/\r?\n/);
   const starts = [];
   let cursor = 0;
@@ -240,9 +260,7 @@ function extractFaithfulBodyText(original) {
     }
   }
   if (sigIdx < 0) return { ok:false, reason:'body-start-unavailable' };
-  for (let j = 0; j < sigIdx; j++) {
-    if (!isAllowedBodyPrefixLine(rawLines[j].trim())) return { ok:false, reason:'body-prefix-unaccounted' };
-  }
+  if (!isAccountedBodyPrefix(text.slice(0, starts[sigIdx]))) return { ok:false, reason:'body-prefix-unaccounted' };
   const sigRaw = rawLines[sigIdx];
   const sigStart = starts[sigIdx];
   let openOffset = -1;
@@ -702,7 +720,9 @@ export function buildCTranslationUnit(functions, options = {}) {
     const safeSignature = safeSignatureDeclaration(originalSignature);
     const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
     const signature = emittedSignature;
-    aliasContractsForText(originalPseudocode, headers, typeDeclarations);
+    // A function's own typedef lines are never emitted (a faithful body is
+    // the text after its signature), so they cannot stand in for the contract.
+    aliasContractsForText(originalPseudocode, headers, typeDeclarations, { ownTypedefsEmitted:false });
     headersForText(originalPseudocode, headers);
     return {
       ...fn, index, address:functionAddress(fn), name:emittedName,
