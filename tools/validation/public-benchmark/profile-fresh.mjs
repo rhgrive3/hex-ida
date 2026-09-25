@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+/*
+ * Single-process fresh-function profiler.
+ *
+ * Timeout semantics (see docs/FUNCTION_TIMEOUT_SEMANTICS.md): `--function-timeout-ms` is
+ * best-effort in this tool. It runs in one process with no supervisor, so the in-process
+ * AbortController cannot preempt uncooperative CPU-bound work; a function that finishes after the
+ * deadline is always recorded as TIMEOUT and never PASS. For an enforceable per-function deadline
+ * use the supervised runners (`run-fresh.mjs`/`run-fresh-case.mjs`, or the
+ * current-main-weakness measurement harness), which SIGKILL the child worker at
+ * functionTimeoutMs + grace.
+ */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openProduct } from './product-host.mjs';
@@ -9,9 +20,9 @@ function optionValue(args, name, fallback = null) {
   return index < 0 ? fallback : args[index + 1];
 }
 
-export async function profileBinary(binary, { functionLimit = 0, functionTimeoutMs = 30000 } = {}) {
+export async function profileBinary(binary, { functionLimit = 0, functionTimeoutMs = 30000, openProductFn = openProduct } = {}) {
   const started = performance.now();
-  const product = await openProduct(binary);
+  const product = await openProductFn(binary);
   try {
     if (product.unsupported) return { binary, state:'UNSUPPORTED', reason:product.reason, setup:product.profile ?? {}, totalMs:performance.now() - started };
     const snapshotStarted = performance.now();

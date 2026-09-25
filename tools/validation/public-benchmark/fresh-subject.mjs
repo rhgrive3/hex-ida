@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+/*
+ * One-case fresh subject (child process).
+ *
+ * Timeout semantics (docs/FUNCTION_TIMEOUT_SEMANTICS.md): `--function-timeout-ms` is best-effort in
+ * this process. It only aborts where the analysis yields to the event loop (Tier 1 soft abort) and
+ * coerces a late `PASS` to `TIMEOUT`; a synchronous loop past the deadline blocks the timer itself.
+ * The hard, enforceable deadline comes from a supervising parent (`run-fresh-case.mjs`), which
+ * SIGKILLs this process at functionTimeoutMs + watchdogGraceMs. Started directly, this script has no
+ * hard watchdog.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

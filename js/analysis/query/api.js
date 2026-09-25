@@ -427,8 +427,11 @@ export class AnalysisQueryAPI {
    *   and per-pass budgets (e.g. decompilerTimeBudgetMs, phase8TimeBudgetMs).
    * - CPU-bound or uncooperative analysis passes check signals and budgets at loop/pass
    *   boundaries; timeout/cancellation does not hard-abort asynchronous native execution mid-pass.
+   * - A synchronous pass that overruns its budget also blocks the event loop, so the abort timer
+   *   cannot fire until that step returns; no in-process deadline can preempt it.
    * - For hard watchdog enforcement, callers/harnesses must isolate runs at the process
-   *   boundary (e.g. via worker process with SIGKILL watchdog).
+   *   boundary (e.g. via worker process with SIGKILL watchdog); see
+   *   docs/FUNCTION_TIMEOUT_SEMANTICS.md.
    *
    * @param {Object} snapshot - Analysis snapshot token.
    * @param {string|number|bigint} functionId - Function address or identifier.

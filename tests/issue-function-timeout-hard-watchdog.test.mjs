@@ -190,25 +190,97 @@ test('elapsed > functionTimeoutMs is never reported PASS in fresh-subject', asyn
   }
 });
 
-test('elapsed > functionTimeoutMs is never reported PASS in profile-fresh', async () => {
-  // Fake binary runner with custom functions array to test the logic
-  const functions = [];
-  const functionTimeoutMs = 50;
-  const fn = { address: '8192', name: 'slow_profiled' };
+test('profile-fresh best-effort tier: synchronous uncooperative work blocks the deadline timer', async () => {
+  // The product below ignores the abort signal entirely (uncooperative CPU-bound work) and keeps
+  // running past the budget. There is no supervisor in this tool, so the only enforceable outcome
+  // is the post-execution PASS -> TIMEOUT coercion; the work itself is not preempted, and because a
+  // synchronous loop never yields to the event loop, the deadline timer cannot even fire.
+  const observed = { decompileStarted: 0, decompileFinished: 0, closed: 0, signalWasAborted: null };
+  const WORK_MS = 60;
+  const fakeProduct = {
+    sha: 'b'.repeat(64),
+    architecture: 'arm64',
+    endianness: 'little',
+    profile: {},
+    app: { backend: { analysisRouteInfo: () => ({ route: 'test' }) }, symbols: { functionStartsComplete: true } },
+    query: {
+      snapshot: async () => ({ id: 'snap' }),
+      functions: async () => ({ value: [{ address: '8192', name: 'slow_profiled', end: '8208' }], page: { next: null } }),
+      decompile: async (_snapshot, _address, options = {}) => {
+        observed.decompileStarted++;
+        const until = performance.now() + WORK_MS;
+        while (performance.now() < until) {} // synchronous, uncooperative: no await point at all
+        observed.decompileFinished++;
+        observed.signalWasAborted = options.signal?.aborted === true;
+        return { value: { pseudocode: 'int x = 1;' }, status: { completeness: 'complete' } };
+      },
+    },
+    close: async () => { observed.closed++; },
+  };
 
-  // Simulate the profile-fresh decompile loop logic directly
-  const fnStarted = performance.now() - 100; // 100ms ago (> 50ms)
-  const response = { value: { pseudocode: 'int x = 1;' }, status: { completeness: 'complete' } };
-  const elapsedMs = performance.now() - fnStarted;
-  let state = response?.value ? (response?.status?.completeness === 'complete' ? 'PASS' : String(response?.status?.completeness ?? 'UNKNOWN').toUpperCase()) : 'UNSUPPORTED';
-  let reason = response?.status?.reason ?? null;
-  if (elapsedMs > functionTimeoutMs && state === 'PASS') {
-    state = 'TIMEOUT';
-    reason = reason ?? 'function-timeout-elapsed-exceeded';
-  }
-  functions.push({ address: String(fn.address), name: fn.name ?? null, elapsedMs, state, ...(reason ? { reason } : {}) });
+  const result = await profileBinary('unused', {
+    functionTimeoutMs: 10,
+    openProductFn: async () => fakeProduct,
+  });
 
-  assert.equal(functions.length, 1);
-  assert.equal(functions[0].state, 'TIMEOUT');
-  assert.equal(functions[0].reason, 'function-timeout-elapsed-exceeded');
+  assert.equal(observed.decompileStarted, 1);
+  assert.equal(observed.decompileFinished, 1, 'in-process best-effort timeout must not preempt uncooperative work');
+  assert.equal(observed.signalWasAborted, false, 'a synchronous loop past the deadline must not be able to observe an abort');
+  assert.equal(observed.closed, 1);
+  assert.equal(result.state, 'PASS');
+  assert.equal(result.measuredFunctionCount, 1);
+  const fn = result.functions[0];
+  assert.equal(fn.address, '8192');
+  assert.ok(fn.elapsedMs >= WORK_MS, `elapsed ${fn.elapsedMs} must include the uncooperative work`);
+  assert.notEqual(fn.state, 'PASS', 'a function that finishes after the deadline must never be PASS');
+  assert.equal(fn.state, 'TIMEOUT');
+  assert.equal(fn.reason, 'function-timeout-elapsed-exceeded');
+});
+
+test('profile-fresh best-effort tier: async work that yields is cooperatively aborted at the deadline', async () => {
+  // Same tool, cooperative implementation: the awaited work yields to the event loop, so the
+  // deadline abort does fire and the function is recorded TIMEOUT through the AbortError path
+  // rather than through the elapsed coercion.
+  const observed = { decompileStarted: 0, aborted: 0, closed: 0 };
+  const WORK_MS = 60;
+  const fakeProduct = {
+    sha: 'c'.repeat(64),
+    architecture: 'arm64',
+    endianness: 'little',
+    profile: {},
+    app: { backend: { analysisRouteInfo: () => ({ route: 'test' }) }, symbols: { functionStartsComplete: true } },
+    query: {
+      snapshot: async () => ({ id: 'snap' }),
+      functions: async () => ({ value: [{ address: '4096', name: 'yielding', end: '4112' }], page: { next: null } }),
+      decompile: async (_snapshot, _address, options = {}) => {
+        observed.decompileStarted++;
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, WORK_MS);
+          const onAbort = () => {
+            clearTimeout(timer);
+            observed.aborted++;
+            reject(options.signal.reason instanceof Error ? options.signal.reason : Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          };
+          if (options.signal?.aborted) onAbort();
+          else options.signal?.addEventListener('abort', onAbort, { once: true });
+        });
+        return { value: { pseudocode: 'int x = 1;' }, status: { completeness: 'complete' } };
+      },
+    },
+    close: async () => { observed.closed++; },
+  };
+
+  const result = await profileBinary('unused', {
+    functionTimeoutMs: 20,
+    openProductFn: async () => fakeProduct,
+  });
+
+  assert.equal(observed.decompileStarted, 1);
+  assert.equal(observed.aborted, 1, 'cooperative await points must observe the deadline abort');
+  assert.equal(observed.closed, 1);
+  const fn = result.functions[0];
+  assert.equal(fn.address, '4096');
+  assert.notEqual(fn.state, 'PASS');
+  assert.equal(fn.state, 'TIMEOUT');
+  assert.equal(fn.reason, 'profile-function-timeout');
 });

@@ -30,6 +30,14 @@ function timeoutFunctionResult(marker, state, reason) {
     pseudocode:null,
   };
 }
+// Identity of the inflight marker currently observed by the supervisor. A change of this key is a
+// progress event (a function started, or the marker was removed because the function finished).
+function inflightMarkerKey(inflightFile, marker) {
+  if (marker?.functionAddress == null) return null;
+  let mtime = null;
+  try { mtime = fs.statSync(inflightFile).mtimeMs; } catch {}
+  return `${String(marker.functionAddress)}@${mtime}`;
+}
 function persistHardFailure(receiptDir, marker, state, reason, elapsedMs) {
   const fn = {
     address:String(marker.functionAddress),
@@ -86,6 +94,13 @@ export async function runFreshCase({
     firstLaunch = false;
 
     const launchAt = performance.now();
+    // Progress clock for the setup/no-progress budget. It starts at launch, and every observed
+    // inflight-marker transition (function start, function end) restarts it, so the budget only
+    // measures time in which the child made no observable progress. Child *total* age must not be
+    // used here: the gap between two functions is not setup, and using total age aborted whole
+    // cases as `case-setup-timeout` once the child had been alive longer than `setupTimeoutMs`.
+    let progressAt = launchAt;
+    let progressKey = null;
     let stdout = '';
     let stderr = '';
     let closeResolve;
@@ -152,13 +167,18 @@ export async function runFreshCase({
       }
 
       const marker = readJson(inflightFile);
+      const markerKey = inflightMarkerKey(inflightFile, marker);
+      if (markerKey !== progressKey) {
+        progressKey = markerKey;
+        progressAt = performance.now();
+      }
       if (marker?.functionAddress != null) {
         let markerAge = performance.now() - launchAt;
         try { markerAge = Date.now() - fs.statSync(inflightFile).mtimeMs; } catch {}
         if (markerAge > functionTimeoutMs + watchdogGraceMs) {
           killed = { marker, state:'TIMEOUT', reason:'function-watchdog-timeout', elapsedMs:markerAge };
         }
-      } else if (performance.now() - launchAt > setupTimeoutMs) {
+      } else if (performance.now() - progressAt > setupTimeoutMs) {
         killed = { marker:null, state:'TIMEOUT', reason:'case-setup-timeout', elapsedMs:performance.now() - launchAt };
       }
       if (killed) {
