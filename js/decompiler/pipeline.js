@@ -8,6 +8,8 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
+import { canonicalAnalysisIdentity, boundAnalysisIdentityForIr } from './phase8/analysis-identity.js';
+import { buildRenderProvenance } from './phase8/render-provenance.js';
 import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
 import { applyStructuredControlProjection } from './phase8/structured-control-projection.js';
@@ -388,6 +390,18 @@ function structuredControlProjectionOptions(model, opts) {
   return { ...opts, addressOfRow:(row) => addressByRow.get(row) ?? null };
 }
 
+function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding, opts) {
+  const bound = boundAnalysisIdentityForIr(analysisIdentityBinding, result.ir);
+  const identity = bound?.valid === true ? bound : canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  const renderProvenance = buildRenderProvenance({
+    result,
+    snapshotId:identity?.valid === true ? identity.identity.snapshotId : null,
+    budget:opts.renderProvenanceBudget,
+    shouldAbort:opts.shouldAbort,
+  });
+  return { ...result, renderProvenance };
+}
+
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
@@ -395,11 +409,16 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
       && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
     if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
-      projected = applyPhase8Projection(projected, interactiveStage.analysis, {
-        ...opts,
-        preserveInitialSpelling:true,
-        analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
-      });
+      if (interactiveStage.ledger.sourceCompleteness !== 'complete') {
+        projected = attachSourceBoundRenderProvenance(projected, interactiveStage.analysis,
+          interactiveStage.analysisIdentityBinding, opts);
+      } else {
+        projected = applyPhase8Projection(projected, interactiveStage.analysis, {
+          ...opts,
+          preserveInitialSpelling:true,
+          analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
+        });
+      }
     }
     if (shouldDemandStructuring(projected, opts)) {
       const structuringBudget = {
@@ -412,7 +431,8 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         { ir: result.ir, types: result.types, opts },
         structuringBudget,
       );
-      if (structuringStage.ledger?.published === true && structuringStage.analysis) {
+      if (structuringStage.ledger?.published === true && structuringStage.analysis
+          && structuringStage.ledger.sourceCompleteness === 'complete') {
         projected = applyStructuredControlProjection(projected, structuringStage.analysis,
           structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
       }
@@ -430,6 +450,11 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     },
   );
   const priorPipeline = result.ctx?.decompilerPipeline || {};
+  const phase8ExecutionComplete = stage.ledger?.published === true
+    && stage.ledger?.completeness === 'complete';
+  const priorPipelineTruncated = priorPipeline.completeness === 'partial'
+    || priorPipeline.degraded === true
+    || priorPipeline.rewriteStats?.budgetExceeded === true;
   let updated = {
     ...result,
     phase8:stage.ledger,
@@ -437,16 +462,24 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
       ...(result.ctx || {}),
       decompilerPipeline:{
         ...priorPipeline,
-        completeness:stage.ledger?.published === true && stage.ledger?.completeness === 'complete'
-          ? priorPipeline.completeness
-          : 'partial',
+        // Ledger completeness now records pass execution. A source-partial
+        // ledger can therefore preserve a complete pipeline result; only an
+        // unpublished/incomplete Phase 8 run or earlier pipeline truncation
+        // weakens execution completeness.
+        completeness:phase8ExecutionComplete && !priorPipelineTruncated ? 'complete' : 'partial',
         phase8:stage.ledger,
         phase8Timings:stage.timings,
         phase8ElapsedMs:stage.elapsedMs,
       },
     },
   };
-  if (stage.ledger?.published !== true || stage.ledger?.completeness !== 'complete' || !stage.analysis) return updated;
+  if (!phase8ExecutionComplete || !stage.analysis) return updated;
+  if (stage.ledger.sourceCompleteness !== 'complete') {
+    // The pass set finished, but its seed facts are explicitly non-exhaustive.
+    // Publish provenance for the existing bound lines without adopting new
+    // source projections that could depend on facts missing from that seed.
+    return attachSourceBoundRenderProvenance(updated, stage.analysis, stage.analysisIdentityBinding, opts);
+  }
   // The region plan binds the actual prepared producer object. Adding stage
   // metadata must not replace that endpoint before its owned projection runs.
   if (opts.phase8RegionErasurePlan) {
@@ -567,6 +600,7 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });
     if (!current() || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete'
+      || projected.phase8?.sourceCompleteness !== 'complete'
       || projected.cAst === result.cAst || projected.renderProvenance?.completeness !== 'complete') return fail('condition-projection-withheld');
     const applied = projected.rewriteProof?.filter(record => record.rule === 'project-proved-conditional-predicate'
       && record.evidence?.planId === conditionPlan.planId) ?? [];
@@ -653,7 +687,8 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
       phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
-    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true
+      || projected.phase8?.completeness !== 'complete' || projected.phase8?.sourceCompleteness !== 'complete') return fail('optimizer-withheld');
     const applied = projected.phase8Projection?.transforms.filter(t=>['solver-constant','solver-scalar'].includes(t.kind)) ?? [];
     const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
       if (decision.disposition !== 'selected') return decision;

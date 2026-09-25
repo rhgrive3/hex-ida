@@ -25,7 +25,12 @@ export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { bindAnalysisIdentityToIr, canonicalAnalysisIdentity } from './analysis-identity.js';
-import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
+import {
+  IDENTITY_PASS,
+  IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC,
+  identityPassObservation,
+  runIdentityPass,
+} from './identity-pass.js';
 import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
@@ -263,6 +268,40 @@ function weakestCompleteness(values) {
   ), 'complete');
 }
 
+function inheritedSourcePartialIdentity(result) {
+  return result?.passId === IDENTITY_PASS.id
+    && result.completeness === 'partial'
+    && result.status === 'unchanged'
+    && result.changed === false
+    && result.stopReason === 'source-ir-truncated'
+    && result.transforms.length === 0
+    && result.invalidated.length === 0;
+}
+
+function passExecutionCompleteness(result) {
+  // The identity pass can finish normally while honestly reporting that its
+  // input facts were source-partial. That inherited knowledge limit belongs in
+  // sourceCompleteness; it does not mean the registered pass missed its fixed
+  // point over the facts it received.
+  return inheritedSourcePartialIdentity(result) ? 'complete' : result.completeness;
+}
+
+function sourceKnowledge(ir) {
+  if (ir == null) {
+    return Object.freeze({
+      sourceCompleteness: 'unknown',
+      sourceStopReason: null,
+      sourceDiagnostics: Object.freeze([]),
+    });
+  }
+  const truncated = ir.truncated === true;
+  return Object.freeze({
+    sourceCompleteness: truncated ? 'partial' : 'complete',
+    sourceStopReason: truncated ? 'source-ir-truncated' : null,
+    sourceDiagnostics: Object.freeze(truncated ? [IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC] : []),
+  });
+}
+
 function aborted(budget) {
   try { return typeof budget?.shouldAbort === 'function' && budget.shouldAbort() === true; }
   // A cancellation predicate that throws is treated as cancelled, never as
@@ -279,7 +318,7 @@ function clock() {
  * result that is simply absent is indistinguishable from a Phase 8 that never
  * ran, and "unknown stays explicit" is a non-negotiable principle.
  */
-function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null) {
+function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null, source = null) {
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -294,6 +333,9 @@ function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysi
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze({}),
+    sourceCompleteness: source?.sourceCompleteness ?? 'unknown',
+    sourceStopReason: source?.sourceStopReason ?? null,
+    sourceDiagnostics: Object.freeze([...(source?.sourceDiagnostics ?? [])]),
     // The state is unchanged, so before and after are the same snapshot. Saying
     // so explicitly is what lets a consumer prove nothing was committed.
     analysisVersions: analysisVersions == null ? null : Object.freeze({ before: analysisVersions, after: analysisVersions }),
@@ -329,10 +371,11 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
   const regionErasurePlan = context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
+  const source = sourceKnowledge(context.ir);
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan, regionErasurePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
     withheldLedgerBase(status,reason,diagnostics,digest,versions,
-      rewriteCoverage(rewriteRegistry(),passes,[],false,reason));
+      rewriteCoverage(rewriteRegistry(),passes,[],false,reason), source);
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -472,7 +515,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     const providerPartial = pass.descriptor.id === 'phase8.providers'
       && outcome.result.status === 'changed'
       && outcome.result.completeness === 'partial';
-    if (!providerPartial && (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded')) {
+    const inheritedSourcePartial = inheritedSourcePartialIdentity(outcome.result);
+    if (!providerPartial && !inheritedSourcePartial
+      && (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded')) {
       return {
         ledger: withheldLedger('cancelled', `pass-incomplete:${pass.descriptor.id}`, [{
           severity: 'warning',
@@ -496,7 +541,10 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     registryDigest,
     status: 'published',
     published: true,
-    completeness: weakestCompleteness(results.map((result) => result.completeness)),
+    // Ledger completeness is execution completeness: every pass reached its
+    // fixed point over its input. Source knowledge has its own explicit fields.
+    completeness: weakestCompleteness(results.map(passExecutionCompleteness)),
+    ...source,
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
