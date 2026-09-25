@@ -209,6 +209,28 @@ test('a truncated brace-on-signature-line body stays a placeholder', () => {
     JSON.stringify(unit.unresolved));
 });
 
+test('the exact fixed-width prelude before the signature is accounted for', () => {
+  const source = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n'
+    + 'typedef __INT32_TYPE__ int32;\nint32 foo(int32 a)\n{\n  return a;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'int32 foo(int32 a)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.ok(unit.source.includes('return a;'));
+  assert.doesNotMatch(unit.source, /__builtin_trap/);
+});
+
+for (const prefix of ['/* note */ goto error;', '#define return exit(1);', 'typedef __INT64_TYPE__ int32;']) {
+  test(`prefix ${JSON.stringify(prefix)} before the signature stays unaccounted`, () => {
+    const source = `${prefix}\nint32 foo(int32 a)\n{\n  return a;\n}`;
+    const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'int32 foo(int32 a)' })]);
+    const row = unit.functions[0];
+    assert.equal(row.syntaxOnly, true);
+    assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+      && entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+      JSON.stringify(unit.unresolved));
+  });
+}
+
 test('a complete brace-on-signature-line body stays eligible', () => {
   const source = 'void foo(void) {\n  return;\n}';
   const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);

@@ -11,6 +11,8 @@
  * named in `unresolved`.
  */
 
+import { isFixedWidthPreludeDeclaration } from '../../decompiler/c-output-closure.js';
+
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
   ['int8', 'int8_t'], ['uint8', 'uint8_t'],
   ['int16', 'int16_t'], ['uint16', 'uint16_t'],
@@ -157,8 +159,14 @@ function signatureFromText(text) {
  *    end of the text (only whitespace/comments after).  A truncated body or
  *    any trailing code is `body-extent-unaccounted`.
  */
+/*
+ * Text before the signature is accounted for only when it is blank, only
+ * comments, or an exact line of the fixed-width prelude that the packager
+ * re-emits itself.  Anything else (code after a comment, preprocessor lines)
+ * would be dropped from the emitted body, so it is not accounted for.
+ */
 function isAllowedBodyPrefixLine(trimmed) {
-  return !trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//') || trimmed.startsWith('#');
+  return !trimmed || skipBodyTrivia(trimmed, 0) === trimmed.length || isFixedWidthPreludeDeclaration(trimmed);
 }
 
 function skipBodyTrivia(text, pos) {
