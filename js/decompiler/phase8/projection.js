@@ -1099,7 +1099,10 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     // the rewritten semantic expression that now renders into it. The merged
     // expression source carries the union of every consumed origin across the
     // rewrite chain, which is exactly what reverse navigation must reach.
-    const expressionSource = node?.semantic?.expression
+    // A spelling-preserving projection rewrites nothing, so it also keeps the
+    // producer's statement attribution; consumed dataflow origins stay in the
+    // bound history records.
+    const expressionSource = !(renderOnly && regionPlan == null) && node?.semantic?.expression
       ? sourceOf(node.semantic.expression.source)
       : null;
     const conditionSource = (() => {
