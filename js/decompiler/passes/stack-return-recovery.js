@@ -591,8 +591,13 @@ export function recoverExactStackReturn(result, opts = {}) {
   const engine = new RewriteHistoryJournal(new RewriteEngine(DEFAULT_RULES, {
     maxIterations:10,
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
-    timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
+    timeBudgetMs:Number.isFinite(opts.transformDeadline) ? Math.max(0, opts.transformDeadline - (typeof opts.transformClock === 'function' ? opts.transformClock() : globalThis.performance?.now ? globalThis.performance.now() : Date.now())) : opts.decompilerTimeBudgetMs != null ? Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs) / 4)) : Number(opts.transformSafetyCeilingMs ?? 12),
+    deadline:opts.transformDeadline,
+    deadlineReason:opts.transformDeadlineReason,
     deterministic:opts.deterministicTransforms === true,
+    clock:opts.transformClock,
+    shouldAbort:opts.shouldAbort,
+    onBudgetExceeded(reason) { const mapped = reason === 'work-budget' ? 'transform-work-budget' : reason === 'transform-safety-ceiling' || reason === 'transform-time-budget' || reason === 'deadline' ? opts.transformDeadlineReason || 'transform-time-budget' : null; if (mapped) { result.degraded = true; result.degradationReasons = [...new Set([...(result.degradationReasons || []), mapped])]; result.warnings = [...new Set([...(result.warnings || []), mapped === 'transform-work-budget' ? 'Decompiler rewrite budget reached; output was conservatively degraded.' : 'Decompiler pass budget exhausted before optional transforms; the result was conservatively degraded.'])]; } },
     maxApplications:512,
   }), opts.renderProvenanceBudget?.maxTransformRecords);
   let committed = committedReturnValue(result, root, ret, opts);

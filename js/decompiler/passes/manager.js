@@ -10,6 +10,27 @@ function validTimeBudgetMs(value, fallback) {
     : fallback;
 }
 
+function markDegraded(state, reason = null) {
+  state.degraded = true;
+  if (reason == null) return;
+  const reasons = state.degradationReasons instanceof Set
+    ? state.degradationReasons
+    : (state.degradationReasons = new Set(state.degradationReasons || []));
+  reasons.add(reason);
+}
+
+function publicReason(state, fallback = null) {
+  if (state.transformWorkBudgetExceeded) return 'transform-work-budget';
+  if (state.transformDeadlineReason) return state.transformDeadlineReason;
+  const reasons = state.degradationReasons;
+  if (reasons instanceof Set) {
+    for (const reason of ['transform-safety-ceiling', 'transform-time-budget', 'transform-work-budget']) {
+      if (reasons.has(reason)) return reason;
+    }
+  }
+  return fallback;
+}
+
 // A subtree that is entirely frozen, and holds no collection whose internal
 // slots `Object.freeze` does not protect (Map/Set/Date/RegExp/buffers), cannot
 // be mutated by a pass and so never needs a rollback pre-image. Canonical
@@ -91,10 +112,11 @@ function capturePassState(state, shouldAbort = null) {
     // Snapshot preparation is part of the optional pass budget. It only reads
     // state, so abandoning an incomplete pre-image is safe: simply do not run
     // the pass that would have needed rollback.
-    if ((checked++ & 0x7f) === 0 && typeof shouldAbort === 'function' && shouldAbort()) {
+    if ((checked & 0xfff) === 0 && typeof shouldAbort === 'function' && shouldAbort()) {
       if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length);
       return null;
     }
+    checked++;
     const value = pending.pop();
     if (value === null || typeof value !== 'object' || seen.has(value)) continue;
     if (isDeepImmutable(value)) continue;
@@ -151,27 +173,94 @@ export class PassManager {
     // not the decompiler. Disable only the deadline here; work bounds are
     // untouched, exactly like the rewrite engine's contract.
     const deterministic = state.opts?.deterministicTransforms === true;
-    const totalStart = clock();
+    const externalShouldAbort = typeof state.opts?.shouldAbort === 'function' ? state.opts.shouldAbort : null;
+    const now = typeof this.budget.clock === 'function' ? this.budget.clock : clock;
+    const totalStart = now();
     const totalBudget = Math.max(0, Number(this.budget.timeBudgetMs ?? DEFAULT_PASS_BUDGET.timeBudgetMs));
-    const deadline = deterministic ? Infinity : totalStart + totalBudget;
+    const configuredDeadline = this.budget.deadline == null ? NaN : Number(this.budget.deadline);
+    const deadline = deterministic ? Infinity
+      : Number.isFinite(configuredDeadline) ? Math.min(configuredDeadline, totalStart + totalBudget)
+        : totalStart + totalBudget;
+    const deadlineReason = this.budget.deadlineReason || 'transform-time-budget';
     let budgetWarned = false;
+
+    // One run-level cancellation predicate backs both views of the deadline:
+    // the `passBudget.shouldAbort` handed to every pass and the
+    // `opts.shouldAbort` hook that pass bodies already read through
+    // `state.opts` (provenance captures, history observations, idiom walks).
+    // The manager publishes it here so a synchronous pass can observe the
+    // safety ceiling from inside its own loops instead of only being checked
+    // after it returns. The poll counter makes an overrun attributable: a
+    // pass that crossed the deadline without ever polling is reported as
+    // ignoring it, never silently.
+    const deadlinePolls = { calls: 0, reason: null };
+    const pollDeadline = () => {
+      deadlinePolls.calls += 1;
+      // The published hook is called on bounded but tight intervals (per
+      // observed node, per recorded selection), so the clock itself is read
+      // on a bounded sample of those calls: a per-node consumer cannot burn
+      // one clock read per visited node, and the injected-clock determinism
+      // contract sees the same sampling on every host. Detection latency is
+      // capped at 63 hook calls after the deadline is crossed, each a bounded
+      // node/selection check.
+      if ((deadlinePolls.calls & 63) === 1 && !deterministic && now() >= deadline) {
+        deadlinePolls.reason ||= deadlineReason;
+        state.transformDeadlineReason ||= deadlineReason;
+        return true;
+      }
+      if (externalShouldAbort) {
+        try {
+          if (externalShouldAbort() === true) {
+            deadlinePolls.reason ||= 'transform-cancelled';
+            return true;
+          }
+        } catch {
+          deadlinePolls.reason ||= 'transform-cancelled';
+          return true;
+        }
+      }
+      return false;
+    };
+    pollDeadline.__hexTransformDeadlinePredicate = true;
+    const optsTarget = state.opts && typeof state.opts === 'object' ? state.opts : null;
+    const optsAbort = optsTarget && typeof optsTarget.shouldAbort === 'function' ? optsTarget.shouldAbort : null;
+    // Caller precedence: an explicit `opts.shouldAbort` is never replaced. A
+    // predicate published by an earlier manager run over the same options
+    // object is replaced with this run's fresh deadline, and a frozen options
+    // object keeps its own view.
+    if (optsTarget && Object.isExtensible(optsTarget) && optsAbort !== pollDeadline
+        && (optsAbort == null || optsAbort.__hexTransformDeadlinePredicate === true)) {
+      try { optsTarget.shouldAbort = pollDeadline; } catch { /* frozen caller options keep their own view */ }
+    }
+
+    const phase8Reason = state.phase8?.stopReason;
+    if (['transform-safety-ceiling', 'transform-time-budget', 'transform-work-budget', 'phase8-time-budget'].includes(phase8Reason)) {
+      const reason = phase8Reason === 'phase8-time-budget' ? 'transform-time-budget' : phase8Reason;
+      markDegraded(state, reason);
+      const warning = reason === 'transform-work-budget'
+        ? 'Decompiler Phase 8 work budget reached; the phase was conservatively withheld.'
+        : 'Decompiler pass budget exhausted before semantic transforms; optional passes were skipped.';
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+    }
 
     for (const pass of this.passes) {
       let rollbackFailed = false;
-      const start = clock();
+      const start = now();
       const remainingMs = Math.max(0, deadline - start);
       if (remainingMs <= 0 && !pass.required) {
         if (!budgetWarned) state.warnings.push(`Decompiler pass budget exhausted before ${pass.name}; optional passes were skipped.`);
         budgetWarned = true;
-        state.degraded = true;
-        state.passMetrics.push({ name: pass.name, elapsedMs: 0, ok: true, skipped: true, reason: 'deadline', degraded: true });
+        markDegraded(state, deadlineReason);
+        state.transformDeadlineReason ||= deadlineReason;
+        state.passMetrics.push({ name: pass.name, elapsedMs: 0, ok: true, skipped: true, reason: 'deadline', degradationReason: deadlineReason, degraded: true });
         continue;
       }
 
       if (remainingMs <= 0) {
         if (!budgetWarned) state.warnings.push(`Decompiler pass budget exhausted before ${pass.name}; only required finalization may continue.`);
         budgetWarned = true;
-        state.degraded = true;
+        markDegraded(state, deadlineReason);
+        state.transformDeadlineReason ||= deadlineReason;
       }
 
       try {
@@ -181,7 +270,7 @@ export class PassManager {
         // optional pass. Required representation/finalization passes still run so the
         // public result remains structurally valid.
         const passBudget = { ...this.budget, ...(pass.budget || {}) };
-        const passRemaining = Math.max(0, deadline - clock());
+        const passRemaining = remainingMs;
         passBudget.timeBudgetMs = Math.min(
           validTimeBudgetMs(passBudget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs),
           passRemaining,
@@ -195,22 +284,63 @@ export class PassManager {
         const passLocalBudget = pass.budget && pass.budget.timeBudgetMs != null
           ? validTimeBudgetMs(pass.budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs)
           : null;
-        const passStart = clock();
+        const passStart = start;
         const passDeadline = deterministic || passLocalBudget == null
           ? deadline
           : Math.min(deadline, passStart + passLocalBudget);
-        passBudget.remainingTimeMs = Math.max(0, passDeadline - clock());
+        passBudget.remainingTimeMs = Math.max(0, passDeadline - start);
         passBudget.deadline = passDeadline;
         passBudget.degraded = !!state.degraded;
         passBudget.deterministic = deterministic;
-        passBudget.shouldAbort = () => !deterministic && clock() >= passDeadline;
+        let lastAbortReason = null;
+        passBudget.deadlineReason = deadlineReason;
+        passBudget.abortReason = () => lastAbortReason;
+        passBudget.shouldAbort = () => {
+          // Counted against the run-level poll counter so the manager can
+          // tell whether this pass polled the deadline while it ran.
+          deadlinePolls.calls += 1;
+          if (!deterministic && now() >= passDeadline) {
+            lastAbortReason = deadlineReason;
+            state.transformDeadlineReason ||= deadlineReason;
+            return true;
+          }
+          if (externalShouldAbort) {
+            try {
+              if (externalShouldAbort() === true) {
+                lastAbortReason = 'transform-cancelled';
+                return true;
+              }
+            } catch {
+              lastAbortReason = 'transform-cancelled';
+              return true;
+            }
+          }
+          return false;
+        };
 
         if (pass.required) {
+          const pollsBeforeBody = deadlinePolls.calls;
           const result = pass.run(state, passBudget);
           if (result && result !== state) Object.assign(state, result);
-          const elapsedMs = clock() - start;
-          if (clock() >= passDeadline) state.degraded = true;
-          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+          const endedAt = now();
+          const elapsedMs = endedAt - start;
+          const deadlineHit = !deterministic && endedAt >= passDeadline;
+          const overrunMs = deadlineHit ? endedAt - passDeadline : 0;
+          const polledDuringBody = deadlinePolls.calls > pollsBeforeBody;
+          if (deadlineHit) {
+            state.transformDeadlineReason ||= deadlineReason;
+            state.passOverrunMs = Math.max(Number(state.passOverrunMs) || 0, overrunMs);
+            markDegraded(state, deadlineReason);
+            if (!budgetWarned) {
+              state.warnings.push(`Decompiler pass budget exhausted while running ${pass.name}; output was conservatively degraded.`);
+              budgetWarned = true;
+            }
+          }
+          const degradationReason = publicReason(state, lastAbortReason);
+          if (degradationReason) markDegraded(state, degradationReason);
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true,
+            ...(degradationReason ? { degradationReason } : {}), degraded: !!state.degraded,
+            ...(deadlineHit ? { overrunMs: Math.round(overrunMs), polledDeadline: polledDuringBody } : {}) });
           continue;
         }
 
@@ -223,23 +353,44 @@ export class PassManager {
         if (restore == null || passBudget.shouldAbort()) {
           if (!budgetWarned) state.warnings.push(`Decompiler pass budget exhausted while preparing ${pass.name}; optional pass was skipped.`);
           budgetWarned = true;
-          state.degraded = true;
+          const abortReason = lastAbortReason || deadlineReason;
+          if (abortReason === deadlineReason) state.transformDeadlineReason ||= deadlineReason;
+          markDegraded(state, abortReason);
           state.passMetrics.push({
             name: pass.name,
-            elapsedMs: clock() - start,
+            elapsedMs: now() - start,
             ok: true,
             skipped: true,
             reason: 'snapshot-deadline',
+            degradationReason: abortReason,
             degraded: true,
           });
           continue;
         }
         try {
+          const pollsBeforeBody = deadlinePolls.calls;
           const result = pass.run(state, passBudget);
           if (result && result !== state) Object.assign(state, result);
-          const elapsedMs = clock() - start;
-          if (clock() >= passDeadline) state.degraded = true;
-          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+          const endedAt = now();
+          const elapsedMs = endedAt - start;
+          const deadlineHit = !deterministic && endedAt >= passDeadline;
+          const overrunMs = deadlineHit ? endedAt - passDeadline : 0;
+          const polledDuringBody = deadlinePolls.calls > pollsBeforeBody;
+          if (deadlineHit) {
+            state.transformDeadlineReason ||= deadlineReason;
+            state.passOverrunMs = Math.max(Number(state.passOverrunMs) || 0, overrunMs);
+            markDegraded(state, deadlineReason);
+            if (!budgetWarned) {
+              state.warnings.push(`Decompiler pass budget exhausted while running ${pass.name}; output was conservatively degraded.`);
+              budgetWarned = true;
+            }
+          }
+          if (state.transformWorkBudgetExceeded) markDegraded(state, 'transform-work-budget');
+          const degradationReason = publicReason(state, lastAbortReason);
+          if (degradationReason) markDegraded(state, degradationReason);
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true,
+            ...(degradationReason ? { degradationReason } : {}), degraded: !!state.degraded,
+            ...(deadlineHit ? { overrunMs: Math.round(overrunMs), polledDeadline: polledDuringBody } : {}) });
         } catch (error) {
           try { restore(); } catch (rollbackError) {
             // Irreversible descriptor changes cannot be called a recovered
@@ -248,19 +399,20 @@ export class PassManager {
             throw new Error('optional-pass-rollback-failed', { cause:rollbackError });
           }
           state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
-          state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
-          state.degraded = true;
+          state.passMetrics.push({ name: pass.name, elapsedMs: now() - start, ok: false, degraded: true });
+          markDegraded(state, 'transform-pass-failure');
         }
       } catch (error) {
         state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
-        state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
+        state.passMetrics.push({ name: pass.name, elapsedMs: now() - start, ok: false, degraded: true });
         if (pass.required || rollbackFailed) throw error;
-        state.degraded = true;
+        markDegraded(state, 'transform-pass-failure');
       }
     }
     materializeLegacyExactStackValues(state);
-    state.passElapsedMs = clock() - totalStart;
-    state.passDeadlineExceeded = state.passElapsedMs > totalBudget;
+    const endedAt = now();
+    state.passElapsedMs = endedAt - totalStart;
+    state.passDeadlineExceeded = !deterministic && endedAt >= deadline;
     globalThis.__hexPerfProbe?.recordPasses?.(state.passMetrics, state.passElapsedMs); // PERF-PROBE
     return state;
   }
