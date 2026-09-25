@@ -1503,6 +1503,11 @@ function observationReachesStore(load, store, state) {
   }
   return true;
 }
+function observationHasSingleSsaConsumer(observation) {
+  const uses = observation?.value?.uses;
+  if (!Array.isArray(uses)) return false;
+  return uses.filter((use) => use !== observation.definition && !use?.clobbered).length === 1;
+}
 function compoundStoreLeftOperand(node, location, store, state) {
   if (!observesStoreLocation(node, location, state)) return false;
   if (node.kind === 'load') return true;
@@ -1510,6 +1515,12 @@ function compoundStoreLeftOperand(node, location, store, state) {
   // stand in for the store's own read when nothing could have rewritten it.
   const ordered = state.orderedMaterializations.get(node.ssaId);
   if (!observationReachesStore(ordered.definition, store, state)) return false;
+  // Compound spelling subsumes the captured read only if that SSA observation
+  // has no consumer beyond the RMW dependency. With another direct consumer,
+  // the observation is also materialized as its own output assignment; spelling
+  // the store as ++/+= would therefore imply a second memory read that the
+  // machine program never performed.
+  if (!observationHasSingleSsaConsumer(ordered)) return false;
   // The initial emitter is the spelling authority. Its read/modify/write
   // admission also rejects a MOV/copy between the computed value and the store
   // and reversed operand orders; the collapsed expression cannot see those, so
