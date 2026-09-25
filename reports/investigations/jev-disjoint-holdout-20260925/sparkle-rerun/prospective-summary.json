@@ -1,0 +1,86 @@
+{
+  "schema": "hex-jev-prospective-evaluation/v1",
+  "evaluatedAtUtc": "2026-09-25T16:05:00.347Z",
+  "productHeadAtRun": "f24fdca4040304c71d7e1ae74c301a6316f18781",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "caseSha256": "cfc02268c791e8a2c80c09157979da8a7f601034d16c494dcf72f22219d11460",
+  "binarySha256": "60a36f4e862efadfef1d3b3db89be5d1f7457e5a5ac35ef1265ae7ffcda1ed28",
+  "model": "openjev",
+  "nodeVersion": "v24.20.0",
+  "totalCases": 62,
+  "answerableCases": 50,
+  "abstainCases": 12,
+  "apiClientStats": {
+    "callCount": 60,
+    "httpErrors": 0,
+    "http400ChoiceLimitErrors": 0,
+    "p50LatencyMs": 513.71,
+    "maxLatencyMs": 1052.09
+  },
+  "metrics": {
+    "armA_baseline": {
+      "answerableTop1": 6,
+      "answerableN": 50,
+      "accuracy": 0.12,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 1
+    },
+    "armB_routed_jev": {
+      "answerableTop1": 40,
+      "answerableN": 50,
+      "accuracy": 0.8,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 1
+    },
+    "differential": {
+      "rescues": 36,
+      "regressions": 2,
+      "rescueCaseIds": [
+        "SP01",
+        "SP02",
+        "SP04",
+        "SP05",
+        "SP06",
+        "SP09",
+        "SP11",
+        "SP12",
+        "SP13",
+        "SP14",
+        "SP15",
+        "SP16",
+        "SP17",
+        "SP18",
+        "SP19",
+        "SP21",
+        "SP22",
+        "SP24",
+        "SP25",
+        "SP27",
+        "SP28",
+        "SP29",
+        "SP31",
+        "SP32",
+        "SP35",
+        "SP37",
+        "SP38",
+        "SP39",
+        "SP40",
+        "SP43",
+        "SP44",
+        "SP45",
+        "SP46",
+        "SP47",
+        "SP48",
+        "SP50"
+      ],
+      "regressionCaseIds": [
+        "SP08",
+        "SP33"
+      ],
+      "regressionRescueRatio": 0.05555555555555555,
+      "newFalseStrong": 0,
+      "failedCallsObserved": 0,
+      "failClosedObserved": null
+    }
+  }
+}
