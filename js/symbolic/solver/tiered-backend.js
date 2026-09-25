@@ -29,7 +29,7 @@ const DEFAULTS = Object.freeze({
   yieldEvery: 8192,
 });
 const OPTION_NAMES = new Set([
-  'id', 'version', 'timeoutMs', ...Object.keys(DEFAULTS), 'narrowBackend', 'wideBackend', 'exhaustiveBackend', 'bitblastBackend',
+  'id', 'version', 'timeoutMs', 'deterministic', ...Object.keys(DEFAULTS), 'narrowBackend', 'wideBackend', 'exhaustiveBackend', 'bitblastBackend',
 ]);
 const SESSION_OPTION_NAMES = new Set([...OPTION_NAMES, 'signal', 'isCancelled']);
 const CAPABILITY_SORTS = new Set([SORT_KIND.BOOL, SORT_KIND.BV]);
@@ -282,12 +282,13 @@ class TieredSolverSession extends SolverSession {
       'no-exact-tier-eligible', { eligibility, attempts: [], engineBackend: null });
 
     const timeoutMs = options.timeoutMs;
-    const deadline = timeoutMs > 0 ? (globalThis.performance?.now?.() ?? Date.now()) + timeoutMs : Infinity;
+    const deterministic = (options.deterministic === true || this.options.deterministic === true) && timeoutMs > 0;
+    const deadline = !deterministic && timeoutMs > 0 ? (globalThis.performance?.now?.() ?? Date.now()) + timeoutMs : Infinity;
     const attempts = [];
     for (const { role, provider } of selected) {
       if (signal?.aborted) return resultFor(this.backend, querySnapshot.queryHash, SOLVER_STATUS.CANCELLED,
         'exact-tier-agreement-cancelled', { eligibility, attempts, engineBackend: null }, { cancelled: true });
-      if ((globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
+      if (!deterministic && (globalThis.performance?.now?.() ?? Date.now()) >= deadline) return resultFor(this.backend, querySnapshot.queryHash,
         SOLVER_STATUS.TIMEOUT, 'exact-tier-agreement-timeout', { eligibility, attempts, engineBackend: null }, { timedOut: true });
       const captured = this.backend._providerContracts[role];
       if (!sameProviderContract(captured)) return resultFor(this.backend, querySnapshot.queryHash,

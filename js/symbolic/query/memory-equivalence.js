@@ -243,7 +243,9 @@ export async function queryMemoryEquivalence(request={}) {
       ...(hasTerminalControl?{terminalControlSchemaVersion:TERMINAL_CONTROL_SCHEMA}:{}),unmodeledEffects:'rejected',
       obligationHash:computeStructuralHash(obligation)});
     const backend=wide?new TieredBvBackend({maxExprNodes:25000,maxVariables:32768,maxClauses:131072,maxDecisions:8192,maxPropagations:500000}):new ExhaustiveBvBackend({maxAssignments:4096,maxExprNodes:25000});
-    session=backend.createSession({timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())),signal:request.signal});
+    const solverTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 250) : Math.max(1, Math.floor(guard.remainingMilliseconds()));
+    const deterministic = guard.deterministic();
+    session=backend.createSession({timeoutMs:solverTimeoutMs,signal:request.signal,deterministic});
     const nativeCheck=session.check.bind(session);
     session.check=async(...args)=>{guard.take('solverCalls');const result=await nativeCheck(...args);solverNodesEvaluated+=result.stats?.nodesEvaluated??0;return result;};
     // The query identity is JSON-safe data, not a live Expr/IR object graph.
@@ -259,7 +261,7 @@ export async function queryMemoryEquivalence(request={}) {
       preconditions:preconditions.map(expression=>({kind:'bool-expression',hash:computeStructuralHash(expression)})),
     };
     const proof=await verifyBoundedEquivalence({beforeTarget:tautology,afterTarget:obligation,preconditions,correspondence:{inputs:[]},memoryRegions:[],session,
-      options:{proofScope:solverScope,architecture:guard.identity.architecture,timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())),signal:request.signal}});
+      options:{proofScope:solverScope,architecture:guard.identity.architecture,timeoutMs:solverTimeoutMs,signal:request.signal,deterministic}});
     guard.check();
     if(!isExecutionResult(before,guard.identity,beforeIr)||!isExecutionResult(after,guard.identity,afterIr))throw new QueryFailure('stale-execution');
     if(proof.verdict!=='proved'&&proof.verdict!=='refuted')return stopped(proof.reasonCode??'proof-ineligible');

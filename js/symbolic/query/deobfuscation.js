@@ -94,7 +94,8 @@ export async function queryDeobfuscationCandidates(options={}) {
         if(seen.has(digest)) continue;
         guard.take('candidates');guard.take('allocationUnits');seen.add(digest);
         const candidateId=`${proposal.rule}:${digest}`;
-        const remaining=Math.max(0,Math.floor((options.timeoutMs??120)-guard.metrics().wallClock));
+        const timeoutAllowance = options.timeoutMs ?? 120;
+        const remaining = guard.deterministic() ? timeoutAllowance : Math.max(0, Math.floor(timeoutAllowance - guard.metrics().wallClock));
         verificationQueries++;
         const verification=await verifyDeobfuscationCandidate({...options,
           candidateId,beforeValueId:valueId,afterValueId:`${valueId}:candidate:${digest}`,

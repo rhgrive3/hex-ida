@@ -52,7 +52,8 @@ function rememberProducerProjection(result, options) {
     const irRoots = producerIrRoots(result);
     const irObservation = captureRecoveryIrData(result.ir,irRoots,options.shouldAbort);
     producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
-      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
+      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true,
+      deterministicTransforms:options.deterministicTransforms === true});
   } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
   return result;
 }
@@ -65,6 +66,10 @@ export function producerExpressionToken(result, expression) {
 export function producerUsesProofOnlyRewrites(result) {
   const record = producerProjections.get(result?.semanticAst);
   return record?.ir === result?.ir && record?.cAst === result?.cAst && record?.proofOnlyRewrites === true;
+}
+export function producerDeterministicTransforms(result) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst ? record?.deterministicTransforms === true : false;
 }
 export function isProducerProjection(result) {
   try {
@@ -632,7 +637,9 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     // scalar values itself. Only a genuinely empty derivation stays a no-op.
     const explicit = queryArray(submitted.targets ?? []);
     const targets = explicit.length > 0 ? explicit : auto;
-    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,
+      deterministicTransforms: submitted.deterministicTransforms ?? producerDeterministicTransforms(result),
+      identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
     preparedPlan = plan;
     const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
     if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');

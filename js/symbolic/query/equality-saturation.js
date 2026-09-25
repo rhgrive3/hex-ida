@@ -55,13 +55,16 @@ export async function queryEqualitySaturation(options={}) {
       guard.take('candidates');guard.take('allocationUnits');guard.check();
       const candidateId=`egraph:${EQUALITY_RULESET_VERSION}:${choice.digest}`;
       verificationQueries++;
+      const timeoutAllowance = submitted.timeoutMs ?? 250;
+      const verificationTimeoutMs = guard.deterministic() ? timeoutAllowance : Math.max(0, Math.floor(guard.remainingMilliseconds()));
       const verification=await verifyDeobfuscationCandidate({
         before:expression,after:choice.expression,candidateId,beforeValueId:valueId,
         afterValueId:`${valueId}:eqs:${choice.digest}`,identity:guard.identity,
         preconditions,correspondence,memoryObservables:[],effectObservables:[],
+        backendTier:submitted.backendTier,
         signal:submitted.signal,isCancelled:submitted.isCancelled,getCurrentIdentity:submitted.getCurrentIdentity,
-        taintResult:submitted.taintResult,backendTier:submitted.backendTier??'tiered',
-        timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+        taintResult:submitted.taintResult,
+        timeoutMs:verificationTimeoutMs,
       });
       guard.check();
       if(!verification.eligible && /budget|timeout|deadline|cancel|stale/.test(verification.reason??''))throw new QueryFailure(verification.reason);

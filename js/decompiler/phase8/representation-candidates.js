@@ -296,12 +296,14 @@ export async function queryRepresentationCandidates(options = {}) {
     if (E.computeStructuralHash(expression) === afterHash) return result('complete',null,EMPTY,'unchanged');
     guard.take('candidates');
     const candidateId = `representation:${RULESET_DIGEST}:${afterHash}`;
+    const verificationTimeoutMs = guard.deterministic() ? (submitted.timeoutMs ?? 1000)
+      : Math.max(0, Math.floor(guard.remainingMilliseconds()));
     const verification = await verifyDeobfuscationCandidate({before:expression,after,candidateId,
       beforeValueId:submitted.valueId,afterValueId:`${submitted.valueId}:representation:${afterHash}`,
       identity:guard.identity,preconditions:[],correspondence:{inputs:[]},memoryObservables:[],effectObservables:[],
       taintResult:submitted.taintResult,backendTier:submitted.backendTier ?? 'tiered',
       signal:submitted.signal,isCancelled:submitted.isCancelled,getCurrentIdentity:submitted.getCurrentIdentity,
-      timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))});
+      deterministic: guard.deterministic(), timeoutMs:verificationTimeoutMs});
     guard.check();
     if (!verification.eligible && /budget|timeout|deadline|cancel|stale/.test(verification.reason ?? '')) {
       throw new QueryFailure(verification.reason);

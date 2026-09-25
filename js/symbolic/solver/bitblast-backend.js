@@ -55,6 +55,7 @@ function monotonicNow() {
 
 function deadlineFrom(options) {
   const timeoutMs = options?.timeoutMs;
+  if (options?.deterministic === true && typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0) return Infinity;
   return typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0
     ? monotonicNow() + timeoutMs
     : Infinity;
