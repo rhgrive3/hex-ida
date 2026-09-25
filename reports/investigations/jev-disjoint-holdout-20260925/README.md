@@ -11,6 +11,12 @@ Frozen router: `js/pinpoint.js` (`rerankWithJev`), sha256
 router frozen on 2026-09-24, so no router generation (G30+) was evaluated here.
 Model/endpoint: `openjev` at `https://api.openjev.sh/v1/systemone`, node `v24.20.0`.
 
+After these runs the working stack advanced to `3529a70230c9ccdbd9532817de32a5f9a08f98b2`
+(cond integration + Phase 8 partial-source render history). The Jev surface is byte-identical between the
+two heads — `js/pinpoint.js`, `js/pinpoint-jev-eligibility.js`, `jev-context/**`,
+`scripts/run-jev-prospective-eval.mjs` and `scripts/verify-jev-binary-holdout.mjs` are unchanged — so the
+measurements below stay exact-head evidence for `f24fdca40` and remain valid for that unchanged surface.
+
 ## Decision
 
 **Advisory. Jev reranking stays optional and disabled by default (`rerankWithJev({ enabled: false })`).**
