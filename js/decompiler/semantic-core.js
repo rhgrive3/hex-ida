@@ -2513,7 +2513,23 @@ export function decompileSemantic(model, rawOpts = {}) {
   if (coverage.mode === 'linear') warnings.push('Structured CFG proof was incomplete; faithful address/edge mode was used.');
   if (ctx.unknown) warnings.push(`${ctx.unknown} unsupported IR instruction(s) remain as __asm.`);
   if (ctx.unknownCallArities) warnings.push(`${ctx.unknownCallArities} call site(s) have unknown arity; live argument registers were intentionally not guessed.`);
-  if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
+  // `ir.truncated` is the legacy projection of the canonical Semantic IR's
+  // completeness (`semantics/compat/semantic-ir-v2-to-v1.js`), which is not
+  // `complete` for independent reasons: unsupported instructions kept as
+  // `__asm`, call context that cannot be minted, and genuine work/time budget
+  // exhaustion. This layer cannot tell those apart, so it must state only the
+  // truncation it observed and never assert the budget cause it cannot prove
+  // (#8653; see the p8triage evidence for an x86-64 vector-family function that
+  // carries no budget truncation at all).
+  // `ir.truncated` is the legacy projection of the canonical Semantic IR's
+  // completeness (`semantics/compat/semantic-ir-v2-to-v1.js`), which is not
+  // `complete` for independent reasons: unsupported instructions kept as
+  // `__asm`, call context that cannot be minted, and genuine work/time budget
+  // exhaustion. This layer cannot tell those apart, so it must state only the
+  // truncation it observed and never assert the budget cause it cannot prove
+  // (#8653; see the p8triage evidence for an x86-64 vector-family function that
+  // carries no budget truncation at all).
+  if (ir.truncated) warnings.push('Semantic IR is explicitly truncated; the result is partial.');
   // #8887: canonical natural-loop materialization is resource-fenced. When the fence
   // fires the graph keeps its exact dominance/SCC facts but publishes no loops, so
   // this result must say so instead of reading like a loop-free function.
