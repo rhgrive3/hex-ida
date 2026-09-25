@@ -63,6 +63,11 @@ const CONTROL_FLOW_KINDS = new Set([
   'return',
   'unknown',
 ]);
+const SWITCH_TABLES_BY_PARTITION = new WeakMap();
+
+export function switchTablesForPartition(blocks) {
+  return SWITCH_TABLES_BY_PARTITION.get(blocks) ?? Object.freeze([]);
+}
 
 function controlKind(plugin, instruction) {
   try {
@@ -105,16 +110,49 @@ function callPrototypeAuthorityFor(instructions, architecturePlugin, options = {
 export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
   const { instructions: ordered, byAddress } = canonicalDecodedInstructions(instructions);
 
+  let recoveredSwitches = [];
+  try {
+    const candidates = architecturePlugin.resolveSwitchTables?.(
+      ordered,
+      options.memorySegments,
+      instruction => controlKind(architecturePlugin, instruction),
+    );
+    if (Array.isArray(candidates)) recoveredSwitches = candidates;
+  } catch { /* Missing or malformed image evidence leaves indirect flow unknown. */ }
+  const switchByAddress = new Map();
+  for (const candidate of recoveredSwitches) {
+    try {
+      const branchAddress = canonicalInstructionAddress(candidate?.instructionAddress, 'semantic-function-switch-address-invalid');
+      const source = byAddress.get(branchAddress.toString());
+      const targets = Array.isArray(candidate?.targets) ? candidate.targets
+        .map(target => canonicalInstructionAddress(target, 'semantic-function-switch-target-invalid')) : [];
+      const cases = Array.isArray(candidate?.cases) ? candidate.cases : [];
+      if (!source || controlKind(architecturePlugin, source) !== 'branch' || directTarget(architecturePlugin, source) != null
+          || targets.length === 0 || targets.some(target => !byAddress.has(target.toString()))
+          || cases.length === 0 || cases.some(entry => !targets.some(target => target === BigInt(entry?.address)))) continue;
+      const uniqueTargets = [...new Set(targets.map(String))].map(BigInt);
+      if (uniqueTargets.length !== new Set(cases.map(entry => String(entry?.address))).size) continue;
+      switchByAddress.set(branchAddress.toString(), Object.freeze({
+        ...candidate,
+        instructionAddress:branchAddress,
+        targets:Object.freeze(uniqueTargets),
+      }));
+    } catch { /* A malformed resolver result never becomes CFG authority. */ }
+  }
+  recoveredSwitches = [...switchByAddress.values()];
+
   const callPrototypeAuthority = callPrototypeAuthorityFor(ordered, architecturePlugin, options);
   const controlByAddress = new Map();
   for (const instruction of ordered) {
     const address = addressOf(instruction);
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
+    const switchTable = switchByAddress.get(address.toString()) ?? null;
     const callPrototype = kind === 'call' ? callPrototypeAuthority.prototypeForInstruction(instruction) : null;
     controlByAddress.set(address.toString(), {
       kind,
       target,
+      switchTable,
       callPrototype,
       noreturn: kind === 'call' && prototypeNoreturnState(callPrototype) === true,
     });
@@ -126,6 +164,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const control = controlByAddress.get(addressOf(instruction).toString());
     const { kind, target } = control;
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
+    for (const switchTarget of control.switchTable?.targets ?? []) starts.add(switchTarget.toString());
     if (ordered[index + 1] && addressOf(ordered[index + 1]) !== endOf(instruction)) {
       starts.add(addressOf(ordered[index + 1]).toString());
     }
@@ -142,7 +181,13 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       current = { key:keyOf(address), startAddress:address, instructions:[], successors:[] };
       blocks.push(current);
     }
-    current.instructions.push({ decoded:instruction });
+    const switchTable = controlByAddress.get(address.toString()).switchTable;
+    current.instructions.push({
+      decoded:instruction,
+      ...(switchTable ? {
+        switchTable,
+      } : {}),
+    });
   }
 
   const byStart = new Map(blocks.map((block) => [block.startAddress.toString(), block]));
@@ -150,6 +195,14 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const instruction = block.instructions.at(-1).decoded;
     const control = controlByAddress.get(addressOf(instruction).toString());
     const { kind, target } = control;
+    if (control.switchTable) {
+      for (const switchTarget of control.switchTable.targets) {
+        const targetBlock = byStart.get(switchTarget.toString());
+        if (!targetBlock) throw new TypeError('semantic-function-switch-target-block-not-found');
+        block.successors.push({ to:targetBlock.key, kind:'switch-case' });
+      }
+      continue;
+    }
     const targetBlock = target == null ? null : byStart.get(target.toString());
     const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
@@ -163,6 +216,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
+  SWITCH_TABLES_BY_PARTITION.set(blocks, Object.freeze(recoveredSwitches.slice()));
   return blocks;
 }
 
@@ -277,7 +331,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     callPrototype:input.callPrototype ?? null,
     callPrototypeFor:input.callPrototypeFor,
   });
-  const cfgOptions = { callPrototypeAuthority };
+  const cfgOptions = { callPrototypeAuthority, memorySegments:input.memorySegments };
   const blocks = partitionDecodedFunction(orderedInstructions, architecturePlugin, cfgOptions);
   const controlUnknowns = semanticControlUnknowns(blocks, architecturePlugin, cfgOptions);
   const abiAdapter = semanticAbiAdapter(abiPlugin, input, { callPrototypeAuthority });

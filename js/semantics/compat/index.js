@@ -819,6 +819,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         if (bundle.instructionId !== instructionId) fail('semantic-v2-integration-instruction-id-mismatch');
         if (bundle.architectureId !== architectureId) fail('semantic-v2-integration-architecture-id-mismatch');
       }
+      if (item.switchTable) {
+        const tableAddress = canonicalAddress(item.switchTable.instructionAddress);
+        if (BigInt(tableAddress) !== address || bundle.controlEffect.kind !== 'indirect'
+            || !Array.isArray(item.switchTable.targets) || item.switchTable.targets.length === 0) {
+          fail('semantic-v2-integration-invalid-resolved-switch-table');
+        }
+        bundle = createMachineEffectBundle({
+          ...bundle,
+          controlEffect:{
+            ...bundle.controlEffect,
+            targets:item.switchTable.targets.map(target => ({ kind:'absolute-address', value:canonicalAddress(target) })),
+          },
+        }, options.machineEffectsOptions ?? {});
+      }
       if (bundle.controlEffect.kind === 'conditional-branch') {
         const fallthrough = conditionalFallthroughTarget(bundle.controlEffect, bundle.instructionId);
         const fallthroughAddress = targetAddress(fallthrough);

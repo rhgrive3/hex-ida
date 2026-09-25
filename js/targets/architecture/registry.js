@@ -46,6 +46,7 @@ export class ArchitecturePluginV2 {
     this.liftDecodedExact = normalizeArchitectureHook(definition.liftDecodedExact, 'liftDecodedExact');
     this.classifyControlFlow = normalizeArchitectureHook(definition.classifyControlFlow, 'classifyControlFlow', () => null);
     this.directControlTarget = normalizeArchitectureHook(definition.directControlTarget, 'directControlTarget', () => null);
+    this.resolveSwitchTables = normalizeArchitectureHook(definition.resolveSwitchTables, 'resolveSwitchTables');
     this.assemble = normalizeArchitectureHook(definition.assemble, 'assemble');
     this.validateEncoding = normalizeArchitectureHook(definition.validateEncoding, 'validateEncoding');
     this.supportedMemoryEndianness = Object.freeze([...new Set(
