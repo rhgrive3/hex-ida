@@ -1,0 +1,47 @@
+{
+  "schema": "hex-jev-binary-disjoint-holdout/v1",
+  "lockedAtUtc": "2026-09-25T16:01:21.025Z",
+  "caseCount": 72,
+  "answerableCases": 60,
+  "abstainCases": 12,
+  "caseSha256": "7d426b64daf5a098a3d4121569b4884ee1cb8eaf97ba251a47d920de7f59913f",
+  "binary": {
+    "name": "XADMaster",
+    "version": "1.10 (framework bundled in OpenEmu 2.4.1)",
+    "architecture": "x86_64 (used slice; universal binary carries x86_64 + arm64)",
+    "filetype": "MH_DYLIB (Objective-C dynamic library, third-party, not Hex or Sparkle code)",
+    "source": "https://github.com/OpenEmu/OpenEmu/releases/download/v2.4.1/OpenEmu_2.4.1.zip",
+    "archiveSha256": "521ca1305c012d38f6f907f50399fefbf4e45a9bb8d9d4063157ffca78b217d4",
+    "archiveMember": "OpenEmu.app/Contents/Frameworks/XADMaster.framework/Versions/A/XADMaster",
+    "sha256": "e02a74a58463dc26245540011dedf97628580dbdc59ce7c0415338ada00ddc38",
+    "localPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/jevholdout/binaries/XADMaster"
+  },
+  "goldAudit": {
+    "source": "Mach-O Objective-C ivar metadata parsed from the binary by the repository's own ObjC model (js/objc.js via tests/harness.mjs), same path the evaluator builds fields from",
+    "metadataPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/jevholdout/XADMaster-ivars.json",
+    "classes": 231,
+    "classesWithIvars": 157,
+    "ivars": 878,
+    "verifiedGold": 51,
+    "missingGold": ["XA14", "XA16", "XA17", "XA18", "XA37", "XA38", "XA39", "XA42", "XA54"],
+    "shortlistRetainedGold": 50,
+    "goldInLatticeRate": 0.85,
+    "latticePresentRetention": 0.9803921568627451,
+    "allAnswerableRetention": 0.8333333333333334,
+    "maxLatticePresentGoldRank": 203,
+    "verificationEvidence": "shortlist-retention.json (produced by scripts/verify-jev-binary-holdout.mjs before any live Jev/OpenJev API call)",
+    "verificationHead": "f24fdca4040304c71d7e1ae74c301a6316f18781",
+    "verificationNote": "9 of 60 answerable queries have no gold candidate in Hex's 400-candidate lattice, so no rerank of any kind can reach them; they stay in the primary denominator as misses for both arms."
+  },
+  "disjointness": {
+    "priorEvaluationBinaries": ["battlecats", "TsumTsum", "YWP", "OpenEmu", "Sparkle"],
+    "canonicalPriorHoldout": "reports/investigations/jev-final-decision-20260924/sparkle",
+    "exploratoryPriorHoldouts": [
+      "reports/investigations/jev-final-decision-20260924/openemu",
+      "reports/investigations/jev-final-decision-20260924 (54-case same-binary)"
+    ],
+    "classFieldOverlapWithPriorHoldoutGold": 0,
+    "statement": "XADMaster is a distinct Mach-O image from every previously evaluated holdout binary; zero (class, field) pairs in this holdout's gold set appear in the gold sets of the Sparkle, OpenEmu, or 54-case holdouts."
+  },
+  "routerFrozenSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173"
+}

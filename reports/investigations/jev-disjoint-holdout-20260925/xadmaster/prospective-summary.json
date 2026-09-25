@@ -1,0 +1,89 @@
+{
+  "schema": "hex-jev-prospective-evaluation/v1",
+  "evaluatedAtUtc": "2026-09-25T16:03:41.783Z",
+  "productHeadAtRun": "f24fdca4040304c71d7e1ae74c301a6316f18781",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "caseSha256": "7d426b64daf5a098a3d4121569b4884ee1cb8eaf97ba251a47d920de7f59913f",
+  "binarySha256": "e02a74a58463dc26245540011dedf97628580dbdc59ce7c0415338ada00ddc38",
+  "model": "openjev",
+  "nodeVersion": "v24.20.0",
+  "totalCases": 72,
+  "answerableCases": 60,
+  "abstainCases": 12,
+  "apiClientStats": {
+    "callCount": 71,
+    "httpErrors": 0,
+    "http400ChoiceLimitErrors": 0,
+    "p50LatencyMs": 527.62,
+    "maxLatencyMs": 1165.62
+  },
+  "metrics": {
+    "armA_baseline": {
+      "answerableTop1": 4,
+      "answerableN": 60,
+      "accuracy": 0.06666666666666667,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 0
+    },
+    "armB_routed_jev": {
+      "answerableTop1": 43,
+      "answerableN": 60,
+      "accuracy": 0.7166666666666667,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 0
+    },
+    "differential": {
+      "rescues": 40,
+      "regressions": 1,
+      "rescueCaseIds": [
+        "XA02",
+        "XA03",
+        "XA04",
+        "XA05",
+        "XA08",
+        "XA09",
+        "XA11",
+        "XA13",
+        "XA15",
+        "XA19",
+        "XA20",
+        "XA21",
+        "XA22",
+        "XA23",
+        "XA24",
+        "XA26",
+        "XA27",
+        "XA29",
+        "XA30",
+        "XA31",
+        "XA32",
+        "XA33",
+        "XA34",
+        "XA36",
+        "XA41",
+        "XA43",
+        "XA44",
+        "XA45",
+        "XA47",
+        "XA48",
+        "XA50",
+        "XA51",
+        "XA52",
+        "XA53",
+        "XA55",
+        "XA56",
+        "XA57",
+        "XA58",
+        "XA59",
+        "XA60"
+      ],
+      "regressionCaseIds": [
+        "XA40"
+      ],
+      "regressionRescueRatio": 0.025,
+      "newFalseStrong": 0,
+      "failedCallsObserved": 0,
+      "failClosedObserved": null
+    }
+  }
+}
