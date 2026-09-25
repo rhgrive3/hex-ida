@@ -1,17 +1,14 @@
 /**
  * Runs the frozen Phase 8 corpus through the real product decompiler paths.
  *
- * ARM64 keeps the historical public `decompile()` facade over frozen assembly.
- * x86-64/RISC-V64 freeze real machine bytes, decode them with Hex's shipped
- * Capstone artifact, then use the existing target lifter + shared Semantic
- * IR/CFG/SSA/MemorySSA pipeline and the public semantic decompiler facade.
- * No architecture is represented by another architecture's parser or labels.
+ * ARM64 freezes parsed assembly text, while x86-64/RISC-V64 freeze real machine
+ * bytes decoded with Hex's shipped Capstone artifact. All three feed the
+ * existing target lifter + shared Semantic IR/CFG/SSA/MemorySSA pipeline and
+ * public semantic decompiler facade. No architecture is represented by
+ * another architecture's parser or labels.
  */
 
-import { decompile } from '../../../js/decompile.js';
 import { parseOperands } from '../../../js/arm64.js';
-import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
-import { AAPCS64_ABI } from '../../../js/targets/abi/index.js';
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { createRiscv64DecodedInstruction, RISCV64_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
@@ -21,7 +18,6 @@ import { createCapstoneRiscv64Session } from '../../../tests/phase6/helpers/caps
 import { loadCorpus } from './build-corpus.mjs';
 import { decompileDecodedProductFunction } from './decoded-function-adapter.mjs';
 
-const ABI_ADAPTER = semanticAbiAdapter(AAPCS64_ABI);
 const FROZEN_TOOLCHAIN = loadCorpus().toolchain;
 const X86_SESSION = await createCapstoneX86Session();
 const RISCV_SESSION = await createCapstoneRiscv64Session();
@@ -241,14 +237,26 @@ export function decompileEntry(entry, {
       if (entry.representation !== 'assembly') return { id:entry.id, failure:'arm64 corpus entry is not frozen assembly' };
       const model = modelFromAssembly(entry.assembly, entry.function, baseAddress);
       if (!model) return { id:entry.id, failure:'assembly could not be parsed into a function model' };
-      const rowOfAddress = new Map(model.instructions.map((instruction) => [instruction.address.toString(), instruction.row]));
-      const result = decompile(model, {
+      const instructions = model.instructions.map((instruction, instructionIndex) => ({
+        ...instruction,
+        instructionId:`phase8:${entry.id}:${instructionIndex}`,
+        size:4,
+        length:4,
+        mode:'a64',
+      }));
+      const result = decompileDecodedProductFunction({
+        architecture:'arm64',
+        platform:'linux',
+        callingConvention:null,
         name:entry.function,
-        addr:model.instructions[0].address,
-        rowOfAddress:(address) => rowOfAddress.get(address?.toString()) ?? null,
-        abiAdapter:ABI_ADAPTER,
-        ...decompilerOptions,
-      });
+        instructions,
+        decoderSemanticVersion:'arm64-frozen-assembly-parse-v1',
+        mode:'a64',
+        binaryId:`phase8-corpus:${entry.id}`,
+        sliceId:`arm64:${entry.optimization}`,
+        dataEndianness:'little',
+        instructionEndianness:'little',
+      }, decompilerOptions);
       return { id:entry.id, result };
     }
 
