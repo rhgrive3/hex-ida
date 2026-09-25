@@ -418,9 +418,14 @@ function memoryLocation(inst, state) {
     const offsetText = off < 0n
       ? `-0x${(-off).toString(16).toUpperCase()}`
       : `0x${off.toString(16).toUpperCase()}`;
-    const fallbackName = isReceiver ? `field_${offsetText}` : `field_${off.toString(16).toUpperCase()}`;
     // Legacy offset labels can look like member names without binary name
-    // evidence. Proven C++ receivers always keep the explicit byte offset.
+    // evidence. The provenance-recording product route keeps the explicit byte
+    // offset for a proven C++ receiver; the retention route (no render
+    // provenance recorded) keeps the seed's `field_XX` spelling so enhancement
+    // never silently rewrites the initial emitter's line.
+    const receiverOffsetText = state.opts?.renderProvenance === true
+      ? offsetText : off.toString(16).toUpperCase();
+    const fallbackName = isReceiver ? `field_${receiverOffsetText}` : `field_${off.toString(16).toUpperCase()}`;
     const name = safeIdent(isReceiver ? fallbackName : (known?.name || fallbackName));
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
@@ -1790,6 +1795,10 @@ function provenVirtualSlotForCall(instruction, state) {
 }
 
 function explicitProvenCppFieldOffsets(text, state) {
+  // Same route split as memoryLocation: only the provenance-recording product
+  // route re-spells a binary-grounded receiver offset as `field_0x..`; the
+  // retention route keeps the seed's `field_XX` spelling.
+  if (state.opts?.renderProvenance !== true) return text;
   if (typeof text !== 'string' || !text.includes('this->field_')) return text;
   const receiver = currentCppReceiver(state.opts, state.ir);
   const receiverValue = receiver && state.ir.values?.find?.((value) => String(value?.id) === String(receiver.canonicalValueId));
