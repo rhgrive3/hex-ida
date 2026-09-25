@@ -37,16 +37,19 @@ These rules apply whenever any agent (Codex, Claude Code, Cursor, etc.) spawns s
 1. **The user names a method → use that method.** If the user explicitly asks for Cline ("use Cline", "send it to Cline", "use `./cline-<N>`", "use Cline subagents") or Freebuff ("use Freebuff", "send it to Freebuff", "use `./freebuff-<N>`", "use 8 Freebuffs"), use exactly that method with its rules below, as far as possible. Do not substitute `opencode --auto` or another method.
 2. **No method named → default `opencode --auto` with Gemini 3.8 Flash High** (`gemini-3.8-flash-high` / `proxlane/gemini-3.8-flash-high`), e.g. `opencode --auto "<task prompt>"`. Treat this quota as practically unlimited: parallelize aggressively for research, independent review, counterexample search, file edits, and test analysis.
 3. **Default unavailable → Cline or Freebuff.** If the default route does not work (for example the provider returns `No available accounts`, authentication fails, or it gives no response), continue with Cline (`./cline-<N>`) or Freebuff (`./freebuff-<N>`) under their rules below instead of stopping the task. Return to the default when it works again, unless the user named a method.
+4. **OpenCode, Cline and Freebuff all unavailable → Codex GPT-6 Luna at maximum reasoning**, `codex -m gpt-6-luna -c model_reasoning_effort=max` (not the default `gpt-6-sol`). This is the last route, not a shortcut: use it only when every model and every number of the three routes above is unusable. Return to the earlier routes as soon as one of them works again.
 
-Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` default.**
+Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` default > Codex GPT-6 Luna max.**
 
 ### Cline (`./cline-<N>`)
 
 - **Numbers:** use `1`–`8` first. `9` also exists, but it may share an account with another number, so it is **not** an independent extra free quota. Use `9` only when `1`–`8` do not give enough parallelism, when the other numbers' free quota is exhausted, or when the user explicitly allows or asks for `9`.
-- **Model order** (each model has its own daily free quota; switching model continues the work):
-  1. `DeepSeek v4.1 Flash` — reasoning `xhigh` (start here).
-  2. `Muse Spark 1.3 Contributor` — reasoning `xhigh`, when DeepSeek's daily free quota is no longer usable.
-  3. `MiMo 2.6 Flash`, when Muse is no longer usable either.
+- **Model order** (each model has its own daily free quota; switching model continues the work). Always ask for the **highest reasoning level the model offers**; `xhigh` is the highest the CLI flag accepts (`--thinking max` is rejected):
+  1. `DeepSeek v4.1 Flash` (`cline-free/deepseek-v4.1-flash`) — reasoning `xhigh` (start here).
+  2. `Muse Spark 1.3 Contributor` (`cline-free/muse-spark-1.3-contributor`) — reasoning `xhigh`, when DeepSeek's daily free quota is no longer usable.
+  3. `MiMo 2.6 Flash` (`cline-free/mimo-v2.6-flash`), when Muse is no longer usable either.
+  4. `Gemini 3.8 Flash` (`cline-free/gemini-3.8-flash`) — reasoning `xhigh`, when MiMo is no longer usable.
+  5. `Space Bunny Alpha` (`stealth/space-bunny-alpha`, free) — reasoning `xhigh`, when Gemini 3.8 Flash is no longer usable.
 - Running out of one model's free quota is **not** a reason to end Cline work. If another model can continue, switch and continue.
 - Cline may stop (quota exhausted, Cline-side stop) **without** returning a clear failure to the parent. When a Cline subagent may have stopped, check its state, produced artifacts, `git diff`, and logs, then hand the remaining work to the next model or another number. Check status only when the task has not come back, has clearly stalled, or you need the result to proceed; never with short-interval `manage_task status` loops.
 
@@ -56,6 +59,8 @@ Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` de
 - **Model by wallet balance:**
   - Comfortable balance → `DeepSeek v4.1 Flash` — `high`.
   - Balance including savings down to about 10 → `MiMo 2.6 Flash`. DeepSeek v4.1 Flash costs about 10 even off-peak, so never spend the last ~10 on DeepSeek.
+- **`MiMo 2.6 Flash` is always selectable on Freebuff.** It never becomes unavailable, so "no model can be selected" is never a reason to abandon a Freebuff number.
+- **The wallet may be spent**, savings included. Keep the rule above (do not spend the last ~10 on DeepSeek when MiMo does the job), but a non-zero balance is there to be used, not preserved.
 
 ### Common rules for every method
 
