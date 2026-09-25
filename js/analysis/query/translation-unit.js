@@ -124,8 +124,8 @@ function signatureDeclaration(signature) {
  */
 function looksLikeSignature(text) {
   const value = String(text ?? '').trim();
-  if (!value || /[;{}]/.test(value)) return false;
-  return /^[A-Za-z_][A-Za-z0-9_\s*]*\b[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*$/.test(value);
+  if (!value || value === 'true' || value === 'false' || /[;{}]/.test(value)) return false;
+  return /^[A-Za-z_][A-Za-z0-9_\s*]*\s+[^\s(]+\s*\([^;{}]*\)\s*$/.test(value);
 }
 
 function signatureFromText(text) {
@@ -137,6 +137,37 @@ function signatureFromText(text) {
     if (line === '{' || line.endsWith('{')) break;
   }
   return null;
+}
+
+function safeSignatureDeclaration(signature) {
+  const text = String(signature ?? '').trim().replace(/\s*\{\s*$/, '');
+  const open = text.indexOf('(');
+  const close = text.lastIndexOf(')');
+  if (open < 1 || close !== text.length - 1) return null;
+  const prefix = text.slice(0, open).trim();
+  const words = prefix.split(/\s+/);
+  const name = words.at(-1);
+  const returnType = words.slice(0, -1).join(' ');
+  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !normalizedType(returnType)) return null;
+  for (const group of text.slice(open + 1, close).split(',')) {
+    const value = group.trim();
+    if (!value || /^void$/i.test(value)) continue;
+    const parameter = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (!parameter || !normalizedType(parameter[1])) return null;
+  }
+  return `${prefix}(${text.slice(open + 1, close)});`;
+}
+
+function emittedFunctionAlias(fn, index) {
+  const text = String(fn?.signature ?? fn?.pseudocode ?? '');
+  const match = /^\s*[^();{}]+\s+([^\s(]+)\s*\(/.exec(text);
+  const candidate = match?.[1] ?? null;
+  return candidate && C_IDENTIFIER.test(candidate) ? candidate : `hex_tu_fn_${index}`;
+}
+
+function syntaxOnlyFunctionSource(signature, alias) {
+  const declaration = safeSignatureDeclaration(signature);
+  return `${declaration ? declaration.slice(0, -1) : `void ${alias}(void)`}\n{\n    __builtin_trap(); /* hex-tu-fallback: body withheld; syntax-only placeholder. */\n}`;
 }
 
 function instructionList(fn) {
@@ -330,27 +361,32 @@ export function buildCTranslationUnit(functions, options = {}) {
   const typeDeclarations = new Set();
   const fallbackDeclarations = [];
   const fallbackNames = new Set();
+  const selectedDefinitionRows = [];
   const prototypeMap = new Map();
   const globalMap = new Map();
   const helperMap = new Map();
   const unresolvedRows = [];
 
   const normalizedFunctions = functions.map((fn, index) => {
-    const pseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
-    if (!pseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
+    const originalPseudocode = String(fn?.pseudocode ?? fn?.source ?? '');
+    if (!originalPseudocode.trim()) throw new TypeError(`translation-unit-function-source-required:${index}`);
     const suppliedSignature = String(fn?.signature ?? '');
-    const signature = looksLikeSignature(suppliedSignature)
+    const originalSignature = looksLikeSignature(suppliedSignature)
       ? suppliedSignature
-      : (signatureFromText(pseudocode) ?? (suppliedSignature || pseudocode.split(/\r?\n/, 1)[0] || ''));
-    aliasContractsForText(pseudocode, headers, typeDeclarations);
-    headersForText(pseudocode, headers);
+      : (signatureFromText(originalPseudocode) ?? (suppliedSignature || originalPseudocode.split(/\r?\n/, 1)[0] || ''));
+    const emittedName = emittedFunctionAlias({ signature: originalSignature, pseudocode: originalPseudocode }, index);
+    const safeSignature = safeSignatureDeclaration(originalSignature);
+    const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
+    const signature = emittedSignature;
+    aliasContractsForText(originalPseudocode, headers, typeDeclarations);
+    headersForText(originalPseudocode, headers);
     return {
-      ...fn, index, address:functionAddress(fn), name:functionName({ ...fn, signature, pseudocode }),
-      // The name the emitted text itself defines.  It can differ from the
-      // evidence name (`_init` symbol vs `void init(void)` text), and a call to
-      // it is a call to this selected definition, never an unresolved callee.
-      renderedName:functionName({ name:null, signature, pseudocode }),
-      signature, pseudocode, originalPseudocode:pseudocode,
+      ...fn, index, address:functionAddress(fn), name:emittedName,
+      // The original body remains the evidence surface. The packaged source
+      // uses a syntax-only definition when the body cannot be proven C.
+      renderedName:emittedName, signature, pseudocode:originalPseudocode,
+      originalPseudocode, sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName),
+      syntaxOnly:true,
     };
   });
 
@@ -362,6 +398,15 @@ export function buildCTranslationUnit(functions, options = {}) {
     for (const candidate of [fn.name, fn.renderedName]) {
       if (candidate) selectedNames.add(String(candidate));
     }
+  }
+
+  // A definition must be declared before any call to it. Selected definitions
+  // are evidence-backed, so their rendered signatures are safe to publish here.
+  for (const fn of normalizedFunctions) {
+    const declaration = safeSignatureDeclaration(fn.signature);
+    if (!declaration) continue;
+    aliasContractsForText(declaration, headers, typeDeclarations);
+    selectedDefinitionRows.push({ address:fn.address, name:fn.renderedName, declaration });
   }
 
   for (const fn of normalizedFunctions) {
@@ -382,11 +427,13 @@ export function buildCTranslationUnit(functions, options = {}) {
         evidence = declaration ? 'selected-function-definition-signature' : null;
       }
       if (!declaration) {
-        const fallback = fallbackPrototypeFor(name);
-        if (fallback && !fallbackNames.has(name)) {
-          fallbackNames.add(name);
-          fallbackDeclarations.push(fallback);
-          headersForText('uint64_t', headers);
+        if (!name.startsWith('__')) {
+          const fallback = fallbackPrototypeFor(name);
+          if (fallback && !fallbackNames.has(name)) {
+            fallbackNames.add(name);
+            fallbackDeclarations.push(fallback);
+            headersForText('uint64_t', headers);
+          }
         }
         unresolvedRows.push(unresolved('unresolved-prototype', name, 'prototype-evidence-unavailable', { address:addressText(call.target) }));
         continue;
@@ -418,11 +465,16 @@ export function buildCTranslationUnit(functions, options = {}) {
       if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
-      const fallback = fallbackHelperFor(name);
-      if (fallback && !fallbackNames.has(name)) {
-        fallbackNames.add(name);
-        fallbackDeclarations.push(fallback);
-        headersForText('uint64_t uint8_t', headers);
+      if (name.startsWith('__')) {
+        // Reserved compiler helpers are not redeclared; their unresolved row
+        // remains explicit and a later syntax-only body can avoid using them.
+      } else {
+        const fallback = fallbackHelperFor(name);
+        if (fallback && !fallbackNames.has(name)) {
+          fallbackNames.add(name);
+          fallbackDeclarations.push(fallback);
+          headersForText('uint64_t uint8_t', headers);
+        }
       }
       if (name === 'unknown_call') {
         helperMap.set(name, Object.freeze({ name, kind:'unresolved-call-sentinel', declaration:null, external:false, requires:'callee-resolution' }));
@@ -437,6 +489,7 @@ export function buildCTranslationUnit(functions, options = {}) {
     }
 
     for (const name of globalLikeNames(fn.pseudocode)) {
+      if (selectedNames.has(name)) continue;
       const address = globalAddressForName(globalMap, name);
       if (address == null) {
         const fallback = fallbackGlobalFor(name);
@@ -500,6 +553,11 @@ export function buildCTranslationUnit(functions, options = {}) {
   if (declarationAliasText) aliasContractsForText(declarationAliasText, headers, typeDeclarations);
 
   const helpers = [...helperMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+  if (unresolvedRows.length) {
+    for (const fn of normalizedFunctions) {
+      if (fn.syntaxOnly) unresolvedRows.push(unresolved('syntax-only-function-body', fn.renderedName ?? 'unknown', 'body-syntax-unavailable'));
+    }
+  }
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));
   const includes = [...headers].sort();
   const typeDecls = [...typeDeclarations].sort();
@@ -513,9 +571,12 @@ export function buildCTranslationUnit(functions, options = {}) {
   if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
   const declaredGlobals = globals.filter((row) => row.declaration);
   if (declaredGlobals.length) sections.push(declaredGlobals.map((row) => row.declaration).join('\n'));
+  const selectedDefinitionDeclarations = selectedDefinitionRows
+    .sort(compareAddressThenName).map((row) => row.declaration);
+  if (selectedDefinitionDeclarations.length) sections.push(selectedDefinitionDeclarations.join('\n'));
   if (fallbacks.length) sections.push(`/* hex-tu-fallback-declarations: syntax-only fallbacks for evidence-missing externals; unresolved entries below stay explicit. */\n${fallbacks.join('\n')}`);
   if (unresolvedList.length) sections.push(unresolvedList.map(unresolvedComment).join('\n'));
-  sections.push(orderedFunctions.map((fn) => fn.pseudocode.trim()).join('\n\n'));
+  sections.push(orderedFunctions.map((fn) => String(fn.sourcePseudocode ?? fn.pseudocode).trim()).join('\n\n'));
 
   return Object.freeze({
     schema:'c-translation-unit/v1', includes:Object.freeze(includes), typeDeclarations:Object.freeze(typeDecls),
@@ -524,6 +585,7 @@ export function buildCTranslationUnit(functions, options = {}) {
     functions:Object.freeze(orderedFunctions.map((fn) => Object.freeze({
       functionId:fn.functionId ?? null, address:addressText(fn.address), name:fn.name,
       originalPseudocode:fn.originalPseudocode, pseudocode:fn.pseudocode,
+      emittedPseudocode:fn.sourcePseudocode ?? fn.pseudocode, syntaxOnly:fn.syntaxOnly === true,
     }))),
     source:`${sections.filter(Boolean).join('\n\n')}\n`,
     completeness:unresolvedList.length ? 'partial' : 'complete',
