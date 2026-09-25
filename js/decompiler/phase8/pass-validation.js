@@ -15,6 +15,7 @@ import { OP } from '../../ir-base.js';
 import { scalarEffectObligationReason } from '../../semantics/compat/effect-obligations.js';
 import { createTaintModels } from '../../symbolic/taint/models.js';
 import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
+import { isMemoryAccessExclusionReason, memoryAccessExclusionReason } from '../../symbolic/memory/access-identity.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 import { semanticValueIdentity } from '../../symbolic/memory/value-identity.js';
 import { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS } from './contract.js';
@@ -119,7 +120,15 @@ function targetExclusionReason(target, guard) {
     if (def.volatile || def.atomic) return unsupported;
     if (def.extra != null) {
       const extra = queryRecord(def.extra, guard);
-      if (extra.memoryAccess || extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return unsupported;
+      if (extra.memoryAccess) {
+        const location = def.loc == null ? null : queryRecord(def.loc, guard);
+        const address = def.addr == null ? null : queryRecord(def.addr, guard);
+        const memory = queryRecord(extra.memoryAccess, guard, 32);
+        const memoryReason = memoryAccessExclusionReason({ loc:location, addr:address, extra },
+          guard.identity.addressSpace, memory);
+        return memoryReason ?? unsupported;
+      }
+      if (extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return unsupported;
       if (def.op === OP.BIN && extra.negate) return 'untranslated-instruction-view';
     }
     if (def.op === OP.BIN && !TOTAL_BINARY.has(def.sub ?? def.subOp)) return unsupported;
@@ -199,7 +208,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     for (const [index, target] of targets.entries()) {
       const reason = targetExclusionReason(target,guard);
       if (reason == null) { selected.push(target); selectedIndices.push(index); }
-      else if (reason === 'invalid-select-condition') return reject(reason);
+      else if (reason === 'invalid-select-condition' || isMemoryAccessExclusionReason(reason)) return reject(reason);
       else {
         rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason}));
         decisions[index] = Object.freeze({ ...requested[index], disposition:'unsupported',
