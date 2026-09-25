@@ -484,9 +484,17 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   };
   if (!phase8ExecutionComplete || !stage.analysis) return updated;
   if (stage.ledger.sourceCompleteness !== 'complete') {
-    // The pass set finished, but its seed facts are explicitly non-exhaustive.
-    // Publish provenance for the existing bound lines without adopting new
-    // source projections that could depend on facts missing from that seed.
+    // The pass set finished over an explicitly non-exhaustive source. Retain
+    // the producer's spelling while binding current render histories for the
+    // facts that are present. No Phase 8 expression/control rewrite is used.
+    if (opts.renderProvenance === true && opts.phase8PrepareProof !== true
+        && opts.renderProvenanceBudget?.maxTransformRecords !== 0) {
+      return applyPhase8Projection(updated, stage.analysis, {
+        ...opts,
+        preserveInitialSpelling:true,
+        analysisIdentityBinding:stage.analysisIdentityBinding,
+      });
+    }
     return attachSourceBoundRenderProvenance(updated, stage.analysis, stage.analysisIdentityBinding, opts);
   }
   // The region plan binds the actual prepared producer object. Adding stage
