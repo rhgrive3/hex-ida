@@ -418,9 +418,14 @@ function memoryLocation(inst, state) {
     const offsetText = off < 0n
       ? `-0x${(-off).toString(16).toUpperCase()}`
       : `0x${off.toString(16).toUpperCase()}`;
-    const fallbackName = isReceiver ? `field_${offsetText}` : `field_${off.toString(16).toUpperCase()}`;
     // Legacy offset labels can look like member names without binary name
-    // evidence. Proven C++ receivers always keep the explicit byte offset.
+    // evidence. The provenance-recording product route keeps the explicit byte
+    // offset for a proven C++ receiver; the retention route (no render
+    // provenance recorded) keeps the seed's `field_XX` spelling so enhancement
+    // never silently rewrites the initial emitter's line.
+    const receiverOffsetText = state.opts?.renderProvenance === true
+      ? offsetText : off.toString(16).toUpperCase();
+    const fallbackName = isReceiver ? `field_${receiverOffsetText}` : `field_${off.toString(16).toUpperCase()}`;
     const name = safeIdent(isReceiver ? fallbackName : (known?.name || fallbackName));
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
@@ -1498,6 +1503,11 @@ function observationReachesStore(load, store, state) {
   }
   return true;
 }
+function observationHasSingleSsaConsumer(observation) {
+  const uses = observation?.value?.uses;
+  if (!Array.isArray(uses)) return false;
+  return uses.filter((use) => use !== observation.definition && !use?.clobbered).length === 1;
+}
 function compoundStoreLeftOperand(node, location, store, state) {
   if (!observesStoreLocation(node, location, state)) return false;
   if (node.kind === 'load') return true;
@@ -1505,6 +1515,12 @@ function compoundStoreLeftOperand(node, location, store, state) {
   // stand in for the store's own read when nothing could have rewritten it.
   const ordered = state.orderedMaterializations.get(node.ssaId);
   if (!observationReachesStore(ordered.definition, store, state)) return false;
+  // Compound spelling subsumes the captured read only if that SSA observation
+  // has no consumer beyond the RMW dependency. With another direct consumer,
+  // the observation is also materialized as its own output assignment; spelling
+  // the store as ++/+= would therefore imply a second memory read that the
+  // machine program never performed.
+  if (!observationHasSingleSsaConsumer(ordered)) return false;
   // The initial emitter is the spelling authority. Its read/modify/write
   // admission also rejects a MOV/copy between the computed value and the store
   // and reversed operand orders; the collapsed expression cannot see those, so
@@ -1790,6 +1806,10 @@ function provenVirtualSlotForCall(instruction, state) {
 }
 
 function explicitProvenCppFieldOffsets(text, state) {
+  // Same route split as memoryLocation: only the provenance-recording product
+  // route re-spells a binary-grounded receiver offset as `field_0x..`; the
+  // retention route keeps the seed's `field_XX` spelling.
+  if (state.opts?.renderProvenance !== true) return text;
   if (typeof text !== 'string' || !text.includes('this->field_')) return text;
   const receiver = currentCppReceiver(state.opts, state.ir);
   const receiverValue = receiver && state.ir.values?.find?.((value) => String(value?.id) === String(receiver.canonicalValueId));
