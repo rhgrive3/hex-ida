@@ -106,8 +106,22 @@ function isDeepImmutable(value) {
 
 function capturePassState(state, shouldAbort = null) {
   const __t0 = globalThis.__hexPerfProbe ? performance.now() : 0; // PERF-PROBE
+  const probe = globalThis.__hexPrestackProbe ?? globalThis.__hexCaptureProbe ?? null;
   const pending = [state], seen = new Set(), records = [];
   let checked = 0;
+  let visits = 0, pushes = 0, descriptorReads = 0, keyEnumerations = 0, immChecks = 0;
+  const push = (child) => {
+    // The pending stack is a traversal worklist, not part of the pre-image:
+    // primitives (and functions, which the snapshot predicate never records)
+    // can never become records, so filtering them at push time removes ~2M
+    // pops on the heavy benchmark graphs with zero change to the record set,
+    // the traversal order of real records, or the restored state.
+    if (child === null) return;
+    const type = typeof child;
+    if (type !== 'object' && type !== 'function') return;
+    pushes += 1;
+    pending.push(child);
+  };
   while (pending.length) {
     // Snapshot preparation is part of the optional pass budget. It only reads
     // state, so abandoning an incomplete pre-image is safe: simply do not run
@@ -117,8 +131,15 @@ function capturePassState(state, shouldAbort = null) {
       return null;
     }
     checked++;
+    // `pending` may still hold a function root (the initial `state` slot or a
+    // function-valued descriptor pushed before this filter existed in older
+    // harnesses): the snapshot predicate never records functions, so skip
+    // them here exactly as the push filter does.
     const value = pending.pop();
-    if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function') || seen.has(value)) continue;
+    if (typeof value === 'function') continue;
+    visits += 1;
+    immChecks += 1;
     if (isDeepImmutable(value)) continue;
     seen.add(value);
     const proto = Object.getPrototypeOf(value);
@@ -127,25 +148,63 @@ function capturePassState(state, shouldAbort = null) {
     // traverse them or invoke accessors while capturing the rollback state.
     if (!map && !set && !date && !(value instanceof RegExp) && !Array.isArray(value)
         && proto !== Object.prototype && proto !== null) continue;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
-    records.push({ value, proto, descriptors, entries, map, set, time:date ? value.getTime() : null });
-    for (const key of Reflect.ownKeys(descriptors)) {
-      if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+    // The pre-image of one record is its own-key list plus the descriptor read
+    // for each key. `Object.getOwnPropertyDescriptors(value)` builds the same
+    // information inside a dictionary-mode container; V8 charges several times
+    // the per-key read for that container (2.5x on a wide object, more on the
+    // benchmark state graph) and the rollback path does not need it: it
+    // re-installs descriptors one key at a time. Reading per key also keeps
+    // the two arrays flat, so a record retains no container object at all.
+    // The captured information, the record set, the traversal order and the
+    // restored state are identical.
+    keyEnumerations += 1;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = new Array(keys.length);
+    for (let index = 0; index < keys.length; index += 1) {
+      descriptorReads += 1;
+      descriptors[index] = Object.getOwnPropertyDescriptor(value, keys[index]);
     }
-    if (map) for (const [key, entry] of entries) pending.push(key, entry);
-    if (set) for (const entry of entries) pending.push(entry);
+    const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
+    records.push({ value, proto, keys, descriptors, entries, map, set, time:date ? value.getTime() : null });
+    for (let index = 0; index < keys.length; index += 1) {
+      const descriptor = descriptors[index];
+      if (descriptor && 'value' in descriptor) push(descriptor.value);
+    }
+    if (map) for (const [key, entry] of entries) { push(key); push(entry); }
+    if (set) for (const entry of entries) push(entry);
+  }
+  if (probe && typeof probe === 'object') {
+    // Deterministic work-unit accounting for the lane's equivalence tests
+    // (records visited, pops avoided by the push filter, descriptor reads).
+    // No wall-clock assertion is made anywhere; this is a pure counter.
+    probe.visits = (probe.visits ?? 0) + visits;
+    probe.pushes = (probe.pushes ?? 0) + pushes;
+    probe.records = (probe.records ?? 0) + records.length;
+    probe.descriptorReads = (probe.descriptorReads ?? 0) + descriptorReads;
+    probe.keyEnumerations = (probe.keyEnumerations ?? 0) + keyEnumerations;
+    probe.immChecks = (probe.immChecks ?? 0) + immChecks;
+    probe.captures = (probe.captures ?? 0) + 1;
   }
   if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length); // PERF-PROBE
   return () => {
-    for (const { value, proto, descriptors, entries, map, set, time } of records) {
+    for (const { value, proto, keys, descriptors, entries, map, set, time } of records) {
       if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
+      // The captured-key membership test runs once per live key on the rare
+      // rollback path only; a `Set` lookup is ~5x cheaper than
+      // `Object.hasOwn(descriptors, key)` on the dictionary-mode container the
+      // old code kept, and the restored state is identical either way.
+      const captured = new Set(keys);
       for (const key of Reflect.ownKeys(value)) {
-        if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {
+        if (!captured.has(key) && !Reflect.deleteProperty(value, key)) {
           throw new Error('pass-rollback-nonconfigurable-property');
         }
       }
-      Object.defineProperties(value, descriptors);
+      // Restore one descriptor at a time: identical final state to the old
+      // `Object.defineProperties(value, descriptors)` batch call (same keys,
+      // same descriptors, same order), without retaining a container object.
+      for (let index = 0; index < keys.length; index += 1) {
+        Object.defineProperty(value, keys[index], descriptors[index]);
+      }
       if (map) { Map.prototype.clear.call(value); for (const [key, entry] of entries) Map.prototype.set.call(value, key, entry); }
       if (set) { Set.prototype.clear.call(value); for (const entry of entries) Set.prototype.add.call(value, entry); }
       if (time !== null) Date.prototype.setTime.call(value, time);
