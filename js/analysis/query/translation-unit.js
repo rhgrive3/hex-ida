@@ -158,6 +158,181 @@ function safeSignatureDeclaration(signature) {
   return `${prefix}(${text.slice(open + 1, close)});`;
 }
 
+/*
+ * Brace-balance scan over declaration-bearing text.  This is a syntax-only
+ * shape check, never a semantic claim: it rejects bodies whose braces do not
+ * balance, so a textually broken body falls back to the explicit placeholder
+ * instead of being emitted as corrupt C.
+ */
+function hasBalancedBraces(text) {
+  let depth = 0;
+  let state = 'code';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (state === 'code') {
+      if (ch === '/' && next === '/') { state = 'line'; i++; continue; }
+      if (ch === '/' && next === '*') { state = 'block'; i++; continue; }
+      if (ch === '"') { state = 'string'; continue; }
+      if (ch === "'") { state = 'char'; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      if (depth < 0) return false;
+      continue;
+    }
+    if (state === 'line') { if (ch === '\n') state = 'code'; continue; }
+    if (state === 'block') { if (ch === '*' && next === '/') { state = 'code'; i++; } continue; }
+    if (state === 'string') { if (ch === '\\') i++; else if (ch === '"') state = 'code'; continue; }
+    if (state === 'char') { if (ch === '\\') i++; else if (ch === "'") state = 'code'; continue; }
+  }
+  return depth === 0 && state === 'code';
+}
+
+/*
+ * A recovered body is eligible for faithful emission only when all of these
+ * hold, each checked conservatively:
+ *
+ * 1. the producer's signature line yields a safe C declaration (safe C types,
+ *    a C identifier name, and simple parameter spellings);
+ * 2. the name is a legal C identifier (a `$x` placeholder name is not);
+ * 3. no typedef, struct/union/enum, label, statement-macro call, bit-field,
+ *    goto, or `?` placeholder spelling appears that the packager has no
+ *    contract for;
+ * 4. every identifier the body uses is covered by the packager's declared
+ *    contracts: selected definitions, evidence prototypes, evidence globals,
+ *    emitted local declarations, fixed-width aliases, fixed function-like
+ *    operators (sizeof/casts), the asm statement spelling, and the explicit
+ *    syntax fallbacks this unit emits for unresolved externals;
+ * 5. every `/* arguments unknown *​/` call argument list belongs to a callee
+ *    whose only declared arity is unspecified (an unprototyped `()`
+ *    fallback), so the call cannot contradict a known arity; and
+ * 6. the body's braces balance.
+ *
+ * Anything else stays on the syntax-only placeholder with its explicit
+ * unresolved entry: the unit keeps `partial` and no binary fact is invented.
+ */
+const LABEL_STATEMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*$/;
+const FIXED_TYPELIKE_OPERATORS = new Set(['sizeof', 'offsetof', '_Alignof']);
+const ARGUMENTS_UNKNOWN = /\/\*\s*arguments\s+unknown\s*\*\//;
+
+function identifierIsCovered(name, context) {
+  if (context.keywordsLike.has(name)) return true;
+  if (context.selectedNames.has(name)) return true;
+  if (context.prototypeNames.has(name)) return true;
+  if (context.declaredGlobals.has(name)) return true;
+  if (context.declaredLocals.has(name)) return true;
+  if (context.knownAliases.has(name)) return true;
+  if (context.fallbackNames.has(name)) return true;
+  return false;
+}
+
+function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames }) {
+  const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
+  const prototypeNames = new Set();
+  const variadicPrototypes = new Set();
+  for (const row of prototypes) {
+    if (!row?.declaration || !C_IDENTIFIER.test(String(row.name ?? ''))) continue;
+    prototypeNames.add(String(row.name));
+    if (/[ (]\.\.\.\)/.test(String(row.declaration))) variadicPrototypes.add(String(row.name));
+  }
+  const declaredGlobals = new Set();
+  for (const row of globals) {
+    if (row?.declaration && C_IDENTIFIER.test(String(row.name ?? ''))) declaredGlobals.add(String(row.name));
+  }
+  const fallbackNames = new Set();
+  const fallbackArrayGlobals = new Set();
+  for (const declaration of fallbackDeclarations) {
+    const match = /\b(?:uint64_t|uint8_t)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\)|\[\])\s*;/.exec(String(declaration));
+    if (!match) continue;
+    fallbackNames.add(match[1]);
+    if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
+  }
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values()]);
+  const unprototypedFallbacks = new Set();
+  for (const name of fallbackNames) unprototypedFallbacks.add(name);
+  // A selected definition whose recovered signature carries no parameter
+  // spellings is emitted unprototyped; an arity-unknown call to it cannot
+  // contradict that declaration. The caller extends this set with its own
+  // selected unprototyped definitions before the gates run.
+  // Locals are parsed lazily per body in faithfulBodyEligibility; pre-declare
+  // the slot so the context shape is stable.
+  const declaredLocals = new Set();
+  // Selected definitions with a known recovered arity, filled by the caller.
+  const knownAritySelected = new Set();
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, declaredLocals, selectedNames };
+}
+
+function faithfulBodyEligibility(fn, context) {
+  const original = String(fn?.pseudocode ?? fn?.source ?? '');
+  if (!original.trim()) return { eligible:false, reason:'body-empty' };
+  const signature = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+  if (!signature) return { eligible:false, reason:'signature-unprovable' };
+  const name = String(fn?.renderedName ?? fn?.name ?? '');
+  if (!C_IDENTIFIER.test(name)) return { eligible:false, reason:'name-not-c-identifier' };
+  const bodyText = original.replace(/^[\s\S]*?\n\s*\{/, '{');
+  if (!bodyText.startsWith('{')) return { eligible:false, reason:'body-start-unavailable' };
+  if (!hasBalancedBraces(bodyText)) return { eligible:false, reason:'body-braces-unbalanced' };
+  const codeText = declarationBearingText(bodyText);
+  if (/\b(?:typedef|struct|union|enum)\b/.test(codeText)) return { eligible:false, reason:'typelike-declaration-unavailable' };
+  for (const line of bodyText.split(/\r?\n/)) {
+    if (LABEL_STATEMENT.test(line)) return { eligible:false, reason:'label-syntax-unavailable' };
+  }
+  if (/\b[A-Za-z_][A-Za-z0-9_]*\s*\([^;()]*\)\s*\(/.test(codeText)) return { eligible:false, reason:'statement-macro-call-shape' };
+  if (/\b[A-Za-z_][A-Za-z0-9_]*\s+\d+\s*:/.test(codeText)) return { eligible:false, reason:'bitfield-syntax-unavailable' };
+  if (/\bgoto\b/.test(codeText)) return { eligible:false, reason:'goto-syntax-unavailable' };
+  if (/\?\s*=/.test(codeText) || /=\s*\?\b/.test(codeText) || /\(\s*\?\s*[,)]/.test(codeText)) return { eligible:false, reason:'producer-placeholder-expression' };
+  // Local declarations inside the body are part of the body's own evidence;
+  // accept the spellings the producer emits for them and mark them covered.
+  const declaredLocals = context.declaredLocals;
+  declaredLocals.clear();
+  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*[A-Za-z_][A-Za-z0-9_]*\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
+    if (match[2]) declaredLocals.add(match[2]);
+  }
+  // A `/* arguments unknown */` call site has no recovered argument count.
+  // declarationBearingText erases that comment, so an arity-unknown site
+  // becomes an empty argument list; detect it on the raw body (comment
+  // present) and conservatively treat every empty-args call to a callee with
+  // a known arity as an arity-unknown site as well.  Keep the body faithful
+  // only when the callee's declaration cannot contradict that arity: exactly
+  // the unprototyped `()` declarations and the variadic prototypes, whose own
+  // evidence stays explicit either way.
+  const arityUnknownCalls = new Set();
+  for (const match of bodyText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^();]*)\)/g)) {
+    if (ARGUMENTS_UNKNOWN.test(match[2])) arityUnknownCalls.add(match[1]);
+  }
+  for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)/g)) {
+    if (!context.keywordsLike.has(match[1])) arityUnknownCalls.add(match[1]);
+  }
+  for (const callee of arityUnknownCalls) {
+    if (context.unprototypedFallbacks.has(callee)) continue;
+    if (context.prototypeNames.has(callee) && !context.variadicPrototypes.has(callee)) {
+      return { eligible:false, reason:`arity-unknown-call-contradicts-prototype:${callee}` };
+    }
+    if (context.knownAritySelected.has(callee)) {
+      return { eligible:false, reason:`arity-unknown-call-contradicts-selected-signature:${callee}` };
+    }
+  }
+  // A global whose type evidence is missing is declared as a byte array
+  // (`extern uint8_t name[]`).  That contract supports element access,
+  // address-of, and sizeof only: any other usage (scalar read, assignment,
+  // compound update, increment) needs the global's real type, which is
+  // exactly the missing evidence.  Keep such bodies on the placeholder.
+  for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    const name = match[1];
+    if (!context.fallbackArrayGlobals.has(name)) continue;
+    const after = codeText.slice(match.index + name.length);
+    if (/^\s*\[/.test(after)) continue;
+    if (codeText[match.index - 1] === '&') continue;
+    if (/\bsizeof\s*$/.test(codeText.slice(0, match.index))) continue;
+    return { eligible:false, reason:`global-byte-array-fallback-usage-unsupported:${name}` };
+  }
+  for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    const name = match[1];
+    if (!identifierIsCovered(name, context)) return { eligible:false, reason:`uncovered-identifier:${name}` };
+  }
+  return { eligible:true, reason:null, bodyText, signature };
+}
+
 function emittedFunctionAlias(fn, index) {
   const text = String(fn?.signature ?? fn?.pseudocode ?? '');
   const match = /^\s*[^();{}]+\s+([^\s(]+)\s*\(/.exec(text);
@@ -168,6 +343,19 @@ function emittedFunctionAlias(fn, index) {
 function syntaxOnlyFunctionSource(signature, alias) {
   const declaration = safeSignatureDeclaration(signature);
   return `${declaration ? declaration.slice(0, -1) : `void ${alias}(void)`}\n{\n    __builtin_trap(); /* hex-tu-fallback: body withheld; syntax-only placeholder. */\n}`;
+}
+
+/* Unprototyped `()` declarations cannot contradict a call's arity, and the
+ * producer's explicit `/* arguments unknown *​/` call sites may only target
+ * them (or a variadic prototype) without inventing an argument count. */
+function isUnprototypedDeclaration(declaration, name) {
+  if (typeof declaration !== 'string') return false;
+  const open = declaration.indexOf('(');
+  const close = declaration.indexOf(')', open);
+  if (open < 0 || close < 0) return false;
+  const parameters = declaration.slice(open + 1, close).trim();
+  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).test(declaration)
+    && parameters === '';
 }
 
 function instructionList(fn) {
@@ -382,10 +570,13 @@ export function buildCTranslationUnit(functions, options = {}) {
     headersForText(originalPseudocode, headers);
     return {
       ...fn, index, address:functionAddress(fn), name:emittedName,
-      // The original body remains the evidence surface. The packaged source
-      // uses a syntax-only definition when the body cannot be proven C.
+      // The original body remains the evidence surface. The emitted
+      // definition below is chosen between the recovered body (faithful,
+      // syntax-gated) and a syntax-only placeholder; the placeholder is never
+      // counted as a parsed recovered function.
       renderedName:emittedName, signature, pseudocode:originalPseudocode,
-      originalPseudocode, sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName),
+      originalPseudocode, originalSignature,
+      sourcePseudocode:syntaxOnlyFunctionSource(originalSignature, emittedName),
       syntaxOnly:true,
     };
   });
@@ -553,10 +744,49 @@ export function buildCTranslationUnit(functions, options = {}) {
   if (declarationAliasText) aliasContractsForText(declarationAliasText, headers, typeDeclarations);
 
   const helpers = [...helperMap.values()].sort((a, b) => a.name.localeCompare(b.name));
-  if (unresolvedRows.length) {
-    for (const fn of normalizedFunctions) {
-      if (fn.syntaxOnly) unresolvedRows.push(unresolved('syntax-only-function-body', fn.renderedName ?? 'unknown', 'body-syntax-unavailable'));
+
+  /*
+   * Emitted-definition decision point.  A function whose recovered body passes
+   * the conservative syntax gates keeps its real body in the emitted source
+   * (`syntaxOnly:false`).  Everything else keeps the explicit placeholder, and
+   * every placeholder stays recorded as `syntax-only-function-body` so a
+   * placeholder can never be counted as a parsed recovered function.
+   */
+  const eligibilityContext = bodyEligibilityContext({
+    prototypes:prototypeMap.values(), globals:globalMap.values(),
+    fallbackDeclarations, selectedNames,
+  });
+  // A selected definition whose recovered signature carries no parameter
+  // spellings is emitted unprototyped; an arity-unknown call to it cannot
+  // contradict that declaration.  A selected definition with recovered
+  // parameters has a known arity: an arity-unknown call to it must not be
+  // emitted faithfully, because its published declaration would reject the
+  // call.
+  for (const fn of normalizedFunctions) {
+    if (!C_IDENTIFIER.test(String(fn?.renderedName ?? ''))) continue;
+    const declaration = safeSignatureDeclaration(fn?.originalSignature ?? fn?.signature);
+    if (!declaration) continue;
+    if (isUnprototypedDeclaration(declaration, String(fn.renderedName))) {
+      eligibilityContext.unprototypedFallbacks.add(String(fn.renderedName));
+    } else {
+      eligibilityContext.knownAritySelected.add(String(fn.renderedName));
     }
+  }
+  for (const fn of normalizedFunctions) {
+    const verdict = faithfulBodyEligibility(fn, eligibilityContext);
+    if (verdict.eligible) {
+      fn.sourcePseudocode = `${verdict.signature.slice(0, -1)} ${verdict.bodyText}`;
+      fn.syntaxOnly = false;
+    } else {
+      fn.bodyWithheldReason = verdict.reason;
+    }
+  }
+
+  // Every placeholder is explicit regardless of other unresolved rows: a unit
+  // whose only output is placeholders is not a faithful unit and must not
+  // report `complete`.
+  for (const fn of normalizedFunctions) {
+    if (fn.syntaxOnly) unresolvedRows.push(unresolved('syntax-only-function-body', fn.renderedName ?? 'unknown', fn.bodyWithheldReason ?? 'body-syntax-unavailable'));
   }
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));
   const includes = [...headers].sort();
