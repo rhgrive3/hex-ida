@@ -42,6 +42,7 @@ import { successorEdgesOf } from './structuring.js';
 import { readSemanticControlLineHistory, registerSemanticControlLineHistory } from '../semantic-core.js';
 import { mergeSource } from '../ast/nodes.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
+import { carryNodeExpressionHistory } from './line-expression-history.js';
 
 // Version 2 adds refinement of an already-emitted loop construct: break and
 // continue rewrites still run when the upstream renderer already published the
@@ -139,6 +140,7 @@ function copyNodePreservingControlHistory(node, patch, ir) {
   const copy = { ...node, ...patch };
   const history = readSemanticControlLineHistory(node, ir);
   if (history) registerSemanticControlLineHistory(copy, history);
+  carryNodeExpressionHistory(node, copy, ir);
   return copy;
 }
 
