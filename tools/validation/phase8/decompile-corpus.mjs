@@ -9,6 +9,7 @@
  */
 
 import { decompile } from '../../../js/decompile.js';
+import { spawnSync } from 'node:child_process';
 import { parseOperands } from '../../../js/arm64.js';
 import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../../js/targets/abi/index.js';
@@ -18,11 +19,12 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { createCapstoneX86Session } from '../../../tests/phase5/helpers/capstone-session.mjs';
 import { createCapstoneRiscv64Session } from '../../../tests/phase6/helpers/capstone-session.mjs';
 
-import { loadCorpus } from './build-corpus.mjs';
+import { buildCorpus, loadCorpus } from './build-corpus.mjs';
 import { decompileDecodedProductFunction } from './decoded-function-adapter.mjs';
 
 const ABI_ADAPTER = semanticAbiAdapter(AAPCS64_ABI);
-const FROZEN_TOOLCHAIN = loadCorpus().toolchain;
+const FROZEN_CORPUS = loadCorpus();
+const FROZEN_TOOLCHAIN = FROZEN_CORPUS.toolchain;
 const X86_SESSION = await createCapstoneX86Session();
 const RISCV_SESSION = await createCapstoneRiscv64Session();
 let sessionsClosed = false;
@@ -33,6 +35,38 @@ function closeSessions() {
   try { RISCV_SESSION.close(); } catch { /* best effort */ }
 }
 process.once('exit', closeSessions);
+
+let linkedImageEntries;
+function linkedImageEvidenceFor(entry) {
+  if (entry.representation !== 'machine-bytes') return null;
+  if (linkedImageEntries === undefined) {
+    linkedImageEntries = null;
+    const candidates = [...new Set([process.env.CLANG, 'clang', 'clang-18'].filter(Boolean))];
+    for (const clang of candidates) {
+      const version = spawnSync(clang, ['--version'], { encoding:'utf8' });
+      if (version.status !== 0) continue;
+      try {
+        const rebuilt = buildCorpus({ clang, includeMemorySegments:true });
+        if (rebuilt.sourceDigest !== FROZEN_CORPUS.sourceDigest) continue;
+        const frozenX86 = FROZEN_CORPUS.functions.filter(item => item.architectureId === 'x86_64' && item.representation === 'machine-bytes');
+        const rebuiltX86 = rebuilt.functions.filter(item => item.architectureId === 'x86_64' && item.representation === 'machine-bytes');
+        if (frozenX86.length === 0 || frozenX86.length !== rebuiltX86.length) continue;
+        const rebuiltById = new Map(rebuiltX86.map(item => [item.id, item]));
+        if (frozenX86.some(item => {
+          const linked = rebuiltById.get(item.id);
+          return !linked || linked.bytes !== item.bytes || linked.targetTriple !== item.targetTriple
+            || linked.optimization !== item.optimization || !Array.isArray(linked.memorySegments);
+        })) continue;
+        linkedImageEntries = rebuiltById;
+        break;
+      } catch { /* An unavailable or non-matching linked image stays unknown. */ }
+    }
+  }
+  const linked = linkedImageEntries?.get(entry.id);
+  if (!linked || linked.bytes !== entry.bytes || linked.function !== entry.function
+      || linked.targetTriple !== entry.targetTriple || linked.optimization !== entry.optimization) return null;
+  return linked.memorySegments;
+}
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
@@ -261,6 +295,7 @@ export function decompileEntry(entry, {
       instructions:decoded.instructions,
       decoderSemanticVersion:decoded.decoderSemanticVersion,
       mode:decoded.mode,
+      memorySegments:linkedImageEvidenceFor(entry),
       binaryId:`phase8-corpus:${entry.id}`,
       sliceId:`${entry.architectureId}:${entry.optimization}`,
       dataEndianness:'little',

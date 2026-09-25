@@ -228,7 +228,10 @@ const CONTROL_FIELDS_BY_KIND = Object.freeze({
   call: new Set(['kind', 'target', 'fallthrough']),
   return: new Set(['kind', 'target']),
   trap: new Set(['kind', 'reason']),
-  indirect: new Set(['kind', 'target', 'reason']),
+  // An indirect transfer may carry an exact, enumerated successor set only
+  // when a binary-backed resolver proves every table entry. Without targets
+  // it remains the ordinary explicit unknown-control case.
+  indirect: new Set(['kind', 'target', 'targets', 'reason']),
   unknown: new Set(['kind', 'reason']),
 });
 // Canonical registries. Objects produced by the normalizers below are already
