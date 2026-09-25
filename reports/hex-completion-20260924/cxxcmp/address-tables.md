@@ -348,7 +348,7 @@ The independent sidecars prove the same binary build and provide an independentl
 
 ## Analysis checks
 
-`node /mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/cxxcmp/compare-addresses.mjs` — PASS 42, FAIL 0. Checks are structural assertions over the supplied artifacts; they do not execute product tests.
+`node /mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/cxxcmp/compare-addresses.mjs` — PASS 44, FAIL 0. Checks are structural assertions over the supplied artifacts; they do not execute product tests.
 
 - PASS — openmw: baseline and final result each contain the reported 300-class sample
 - PASS — openmw: baseline per-address slot sum equals totals.vtableSlots
@@ -361,6 +361,7 @@ The independent sidecars prove the same binary build and provide an independentl
 - PASS — openmw: both old baseline runs have identical per-address slot and target-address records
 - PASS — openmw: both aa4e runs have identical per-address slot and target-address records
 - PASS — openmw: both 3180 runs have identical per-address slot and target-address records
+- PASS — openmw: both 3180 runs have identical sampled marker and saved decompile records
 - PASS — openmw: aa4e and final 3180 have identical per-address slot and target-address records
 - PASS — openmw: every final resolved target slot is matched to the same old address
 - PASS — openttd: baseline and final result each contain the reported 300-class sample
@@ -374,6 +375,7 @@ The independent sidecars prove the same binary build and provide an independentl
 - PASS — openttd: both old baseline runs have identical per-address slot and target-address records
 - PASS — openttd: both aa4e runs have identical per-address slot and target-address records
 - PASS — openttd: both 3180 runs have identical per-address slot and target-address records
+- PASS — openttd: both 3180 runs have identical sampled marker and saved decompile records
 - PASS — openttd: aa4e and final 3180 have identical per-address slot and target-address records
 - PASS — openttd: every final resolved target slot is matched to the same old address
 - PASS — openmw: old result artifacts bind the expected c34d baseline SHA

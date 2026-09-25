@@ -38,6 +38,9 @@ const addressMap = (j, label) => {
 const stableTableSignature = (j) => [...addressMap(j, 'signature').entries()]
   .sort(([a], [b]) => BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0)
   .map(([address, row]) => [address, row.slots, (row.slotTargets || []).map((t) => [t.index, String(t.address)])]);
+const stableDecompileSignature = (j) => (j.decompiled || []).map((row) => [
+  String(row.address), row.indirectCallMarkers, row.semantic, row.completeness, row.codeChars, row.excerpt,
+]);
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const typeinfoTarget = (name) => /typeinfo|_ZTI|_ZTS|vtable for|_ZTV/i.test(name || '');
 const escapeCell = (value) => String(value ?? '—').replaceAll('|', '\\|').replaceAll('\n', ' ');
@@ -157,6 +160,7 @@ for (const game of games) {
   check(equal(stableTableSignature(loaded.baselineA[game]), stableTableSignature(loaded.baselineB[game])), `${game}: both old baseline runs have identical per-address slot and target-address records`);
   check(equal(stableTableSignature(loaded.aa4eA[game]), stableTableSignature(loaded.aa4eB[game])), `${game}: both aa4e runs have identical per-address slot and target-address records`);
   check(equal(stableTableSignature(loaded.finalA[game]), stableTableSignature(loaded.finalB[game])), `${game}: both 3180 runs have identical per-address slot and target-address records`);
+  check(equal(stableDecompileSignature(loaded.finalA[game]), stableDecompileSignature(loaded.finalB[game])), `${game}: both 3180 runs have identical sampled marker and saved decompile records`);
   check(equal(stableTableSignature(loaded.aa4eA[game]), stableTableSignature(loaded.finalA[game])), `${game}: aa4e and final 3180 have identical per-address slot and target-address records`);
 
   const retainedTargetCount = current.totals.resolvedVtableSlots;
