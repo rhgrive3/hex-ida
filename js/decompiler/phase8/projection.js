@@ -28,10 +28,16 @@ import {
   isRegionErasureBodyRequested,
 } from './conditional-region-erasure.js';
 import { sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
+import {
+  readLineExpressionHistory,
+  refreshLineExpressionHistory,
+  registerNodeExpressionHistory,
+} from './line-expression-history.js';
+
+export { readLineExpressionHistory } from './line-expression-history.js';
 
 export const PHASE8_PROJECTION_VERSION = 4;
 
-const lineExpressionHistories = new WeakMap();
 const controlConsumerSources = new WeakMap();
 // One current snapshot per owned AST, never a chain of previous projections.
 // Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
@@ -245,24 +251,14 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
   }
 }
 
-export function readLineExpressionHistory(line, ir) {
-  const entry = lineExpressionHistories.get(line);
-  return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
-    ? entry.records : null;
-}
-
 // Carry only an already-current private binding through the fixed existing
 // compatibility spelling operation. Arbitrary edits cannot renew a binding.
 export function normalizeProjectedCompatibilityLine(line, ir) {
   const current = readLineExpressionHistory(line, ir);
-  const entry = current ? lineExpressionHistories.get(line) : null;
   const previousText = line?.text;
   normalizeCompatibilityLine(line, ir);
-  if (!entry || previousText === line?.text || !entry.consumers.every(consumer => consumer.isCurrent())) return;
-  try {
-    const observation = observeProjectionData([line]);
-    lineExpressionHistories.set(line, { ...entry, observation });
-  } catch { /* The original invalid observation remains fail-closed. */ }
+  if (!current || previousText === line?.text) return;
+  refreshLineExpressionHistory(line, ir);
 }
 
 function integer(value) {
@@ -1123,12 +1119,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       source,
     };
     const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
-    if (consumers.length && consumers.every(consumer => consumer.isCurrent())) {
-      try {
-        const observation = observeProjectionData([line], opts.shouldAbort);
-        const records = Object.freeze([...new Set(consumers.flatMap(consumer => consumer.records))]);
-        lineExpressionHistories.set(line, { ir:result.ir, consumers, records, observation });
-      } catch { /* No inferred edge when the bounded observation is unavailable. */ }
+    if (consumers.length) {
+      registerNodeExpressionHistory(node, line, result.ir, consumers,
+        consumers.flatMap(consumer => consumer.records), opts.shouldAbort);
     }
     return line;
   });

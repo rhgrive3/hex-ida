@@ -27,6 +27,7 @@ import {
   renderBranchCondition,
 } from '../semantic-core.js';
 import { buildRenderProvenance } from './render-provenance.js';
+import { bindNodeExpressionHistory, carryNodeExpressionHistory } from './line-expression-history.js';
 
 // Version 2 adds the canonical natural-loop projection. The counter is a
 // consumer contract, not decoration: a consumer that understood version 1
@@ -565,10 +566,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       semantic: { op: 'control-render', ir: term.id, expression: null },
     };
 
-    const indentedIfStmts = ifArmStmts.map(n => ({
-      ...n,
-      indent: (n.indent ?? entryIndent) + 1,
-    }));
+    const indentedIfStmts = ifArmStmts.map(n => {
+      const copy = { ...n, indent: (n.indent ?? entryIndent) + 1 };
+      carryNodeExpressionHistory(n, copy, result.ir);
+      return copy;
+    });
 
     let middleNodes = [];
     if (!isOneSided) {
@@ -581,10 +583,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
         source: headerNode.source,
         semantic: { op: 'control-render', ir: term.id, expression: null },
       };
-      const indentedElseStmts = elseArmStmts.map(n => ({
-        ...n,
-        indent: (n.indent ?? entryIndent) + 1,
-      }));
+      const indentedElseStmts = elseArmStmts.map(n => {
+        const copy = { ...n, indent: (n.indent ?? entryIndent) + 1 };
+        carryNodeExpressionHistory(n, copy, result.ir);
+        return copy;
+      });
       middleNodes = [separatorNode, ...indentedElseStmts];
     }
 
@@ -746,15 +749,19 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
   };
 
   const printed = printProgram(newProgram, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
-  const lines = newProgram.body.map((node, index) => ({
-    kind: node.kind,
-    indent: node.indent,
-    text: node.text,
-    row: node.source?.rows?.[0] ?? node.row ?? null,
-    addr: node.source?.addresses?.[0] ?? node.addr ?? null,
-    note: null,
-    source: node.source,
-  }));
+  const lines = newProgram.body.map((node) => {
+    const line = {
+      kind: node.kind,
+      indent: node.indent,
+      text: node.text,
+      row: node.source?.rows?.[0] ?? node.row ?? null,
+      addr: node.source?.addresses?.[0] ?? node.addr ?? null,
+      note: null,
+      source: node.source,
+    };
+    bindNodeExpressionHistory(node, line, result.ir, opts.shouldAbort);
+    return line;
+  });
 
   const updatedResult = {
     ...result,
