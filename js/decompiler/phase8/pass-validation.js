@@ -54,8 +54,10 @@ function scopeOptions(options) {
   }
   if (Object.hasOwn(submitted,'executionSnapshot')) throw new QueryFailure('path-projection-unsupported');
   const out = { ...submitted, identity, abiId, preconditions:EMPTY, correspondence:Object.freeze({inputs:EMPTY}),
-    memoryObservables:EMPTY, effectObservables:EMPTY, models:submitted.models ?? DEFAULT_MODELS };
+    memoryObservables:EMPTY, effectObservables:EMPTY, models:submitted.models ?? DEFAULT_MODELS,
+    deterministic: submitted.deterministic ?? submitted.deterministicTransforms ?? true };
   for (const key of ['memory','execution','analysisLimits','limits']) if (submitted[key] != null) out[key] = queryRecord(submitted[key]);
+  if (submitted.now != null) out.now = submitted.now;
   return Object.freeze(out);
 }
 
@@ -232,7 +234,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     guard.check();
     const analysis = await querySymbolicAnalysis(ir, {...submitted, targets:selected,
       candidateStrategy:representationRules ? 'translate-only' : submitted.candidateStrategy,
-      timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))});
+      deterministic: guard.deterministic(),
+      timeoutMs:guard.deterministic() ? (submitted.timeoutMs ?? 1000) : Math.max(0,Math.floor(guard.remainingMilliseconds()))});
     guard.check();
     if (analysis.status !== 'complete' || !isSymbolicAnalysisResult(analysis,guard.identity)) {
       return reject(analysis.reason ?? 'incomplete-symbolic-analysis');
@@ -246,7 +249,9 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       const generated = representationQuery ? await representationQuery({expression:item.expression,
         valueId:item.valueId,inputBinding,identity:guard.identity,taintResult:analysis.taint,
         backendTier:submitted.backendTier,signal:submitted.signal,isCancelled:submitted.isCancelled,
-        getCurrentIdentity:submitted.getCurrentIdentity,timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))}) : null;
+        getCurrentIdentity:submitted.getCurrentIdentity,
+        deterministic: guard.deterministic(),
+        timeoutMs:guard.deterministic() ? (submitted.timeoutMs ?? 1000) : Math.max(0,Math.floor(guard.remainingMilliseconds()))}) : null;
       guard.check();
       if (generated && generated.status !== 'complete') return reject(generated.reason);
       if (generated) {

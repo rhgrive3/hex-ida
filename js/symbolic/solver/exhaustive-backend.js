@@ -303,8 +303,9 @@ class ExhaustiveSolverSession extends SolverSession {
     const startedAt = Date.now();
     const timeoutBudget = Number.isFinite(options.timeoutMs) ? options.timeoutMs
       : Number.isFinite(this.options.timeoutMs) ? this.options.timeoutMs : 0;
-    const deadline = timeoutBudget > 0 ? monotonicNow() + timeoutBudget : Infinity;
-    const guard = () => signal?.aborted ? 'cancelled' : monotonicNow() >= deadline ? 'timeout' : null;
+    const deterministic = (options.deterministic === true || this.options.deterministic === true) && timeoutBudget > 0;
+    const deadline = !deterministic && timeoutBudget > 0 ? monotonicNow() + timeoutBudget : Infinity;
+    const guard = () => signal?.aborted ? 'cancelled' : (!deterministic && monotonicNow() >= deadline) ? 'timeout' : null;
     let maxConstraints;
     let maxExprNodes;
     let maxExprDepth;

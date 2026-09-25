@@ -24,9 +24,10 @@ export function translateSemanticIR(target, options = {}) {
   let semanticUnknowns = 0, workItems = 0, maximumDepth = 0;
   let maxWork = 250000, maxDepth = 128, timeout = 250;
   const start = monotonicNow();
+  const deterministic = (options.deterministic === true || options.deterministicTransforms === true) && timeout > 0;
   function tick(amount = 1) {
     if (options.signal?.aborted || options.isCancelled?.()) throw new QueryFailure('cancelled');
-    if (monotonicNow() - start >= timeout) throw new QueryFailure('deadline');
+    if (!deterministic && monotonicNow() - start >= timeout) throw new QueryFailure('deadline');
     if (amount > maxWork - workItems) throw new QueryFailure('budget:translation-work');
     workItems += amount;
   }

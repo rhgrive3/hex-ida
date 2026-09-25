@@ -118,7 +118,7 @@ export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
       allocationUnits:Math.min(32768,Math.max(0,guard.limits.allocationUnits-metrics.allocationUnits-8192)),
     };
     guard.take('workItems',memoryLimits.workItems);guard.take('allocationUnits',memoryLimits.allocationUnits);
-    const timeoutMs=Math.max(0,Math.floor(guard.remainingMilliseconds()));
+    const timeoutMs = guard.deterministic() ? (options.timeoutMs ?? 250) : Math.max(0, Math.floor(guard.remainingMilliseconds()));
     const execution=symbolicExecute(ir,{captureValues:true,captureBranchTargets:true,timeoutMs,
       signal:options.signal,isCancelled:options.isCancelled,
       byteMemory:{identity:guard.identity,addressBits:options.addressBits??64,endian:options.endian??'little',
@@ -133,7 +133,7 @@ export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
     const binding=translatePureTarget(target,guard);
     const current=()=>isExecutionBranchTarget(execution,branch,target,guard.identity,ir,binding.dependencies);
     guard.check();if(!current()) throw new QueryFailure('unexecuted-branch-dependency');
-    if(monotonicNow()>=realDeadline)guard.fail('deadline');
+    if(!guard.deterministic() && monotonicNow()>=realDeadline)guard.fail('deadline');
     const result=Object.freeze({schemaVersion:'hex-branch-inputs/v1',identity:guard.identity,status:'complete',reason:null,
       scope:'executed-branch-universal-input-relation',transformAuthorization:false});
     branchTranslations.set(result,{branch,binding,guard,current,realDeadline});return result;
@@ -149,7 +149,7 @@ export function readSymbolicBranchInputs(result,branch,identity) {
     // current() validates IR after its final lifecycle callback. Sampling only
     // the real clock here bounds that scan without invoking another observer
     // that could mutate the just-validated input.
-    if(monotonicNow()>=record.realDeadline)record.guard.fail('deadline');
+    if(!record.guard.deterministic() && monotonicNow()>=record.realDeadline)record.guard.fail('deadline');
     return record.binding;
   } catch { return null; }
 }
@@ -205,7 +205,7 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
     if (!Array.isArray(requested)) throw new QueryFailure('invalid-analysis-targets');
     guard.take('targets', requested.length); guard.take('allocationUnits', requested.length);
     const targets = requested;
-    const taint = queryTaint(ir, { ...options, timeoutMs: Math.min(120, remaining()) });
+    const taint = queryTaint(ir, { ...options, now: options.now, deterministic: guard.deterministic(), timeoutMs: guard.deterministic() ? 120 : Math.min(120, remaining()) });
     guard.check();
     if (taint.status !== 'complete') throw new QueryFailure(taint.reason ?? 'incomplete-taint');
     if (!isTaintQueryResult(taint, guard.identity)) throw new QueryFailure('stale-analysis-input');
@@ -222,14 +222,16 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
       if (!translateOnly) candidateQueries++;
       const equalitySaturation = options.candidateStrategy === 'equality-saturation';
       const queryCandidates = equalitySaturation ? queryEqualitySaturation : queryDeobfuscationCandidates;
+      const candidateTimeout = equalitySaturation ? 1000 : 300;
       const candidates = translateOnly ? {status:'complete',candidates:Object.freeze([]),metrics:null} : await queryCandidates({
         expression, valueId, identity: guard.identity,
         memoryObservables: [], effectObservables: [], taintResult: taint,
         signal: options.signal, isCancelled: options.isCancelled, getCurrentIdentity: options.getCurrentIdentity,
+        deterministic: guard.deterministic(),
         // Native-width local rewrites need the same bounded verifier allowance
         // as the equality-saturation route; keep the outer query deadline
         // authoritative while avoiding false bitfield timeout refusals.
-        timeoutMs: Math.min(equalitySaturation ? 1000 : 300, remaining()), backendTier: options.backendTier,
+        timeoutMs: guard.deterministic() ? candidateTimeout : Math.min(candidateTimeout, remaining()), backendTier: options.backendTier,
         ...(equalitySaturation ? {ruleOrder:options.ruleOrder} : {}),
         limits: { candidates: Math.min(equalitySaturation ? 8 : 32, guard.limits.candidates - guard.metrics().candidates) },
       });

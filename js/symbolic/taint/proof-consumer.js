@@ -96,11 +96,13 @@ export async function verifyDeobfuscationCandidate(candidate={}) {
     // reserves expression validation work, not a fictional enumeration count.
     guard.take('reservedEvaluations',boundedExpressionEvaluationCost(roots,guard)*(wide?4:(2**symbolBits)*4));
     const backend=wide ? new TieredBvBackend({maxExprNodes:4096,maxExprDepth:128,maxVariables:32768,maxClauses:131072,maxDecisions:8192,maxPropagations:500000}) : new ExhaustiveBvBackend({maxAssignments:4096});
-    session=backend.createSession({timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())),signal:candidate.signal});
+    const solverTimeoutMs = guard.deterministic() ? (candidate.timeoutMs ?? 120) : Math.max(1, Math.floor(guard.remainingMilliseconds()));
+    const deterministic = guard.deterministic();
+    session=backend.createSession({timeoutMs:solverTimeoutMs,signal:candidate.signal,deterministic});
     const proof=await verifyBoundedEquivalence({beforeTarget:before,afterTarget:after,
       correspondence:{inputs},preconditions:preconditions.slice(),memoryRegions:[],session,
-      options:{timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())),signal:candidate.signal,architecture:identity.architecture,
-        bitWidth:before.sort.width??null,proofScope:scope}});
+      options:{timeoutMs:solverTimeoutMs,signal:candidate.signal,architecture:identity.architecture,
+        bitWidth:before.sort.width??null,proofScope:scope,deterministic}});
     guard.check();
     if(taintResult && !isTaintQueryResult(taintResult,guard.identity)) return reject('stale-taint');
     if(proof.verdict!=='proved'||!isProvedEvidence(proof.evidence)) return reject(proof.reasonCode??'proof-ineligible',proof);

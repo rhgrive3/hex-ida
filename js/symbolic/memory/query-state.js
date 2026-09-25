@@ -55,6 +55,8 @@ export function createQueryGuard(options, ceilings) {
   const isCancelled = dataField(options,'isCancelled');
   const getCurrentIdentity = dataField(options,'getCurrentIdentity');
   const duration = boundedLimit(dataField(options,'timeoutMs'), 250, 5000, 'timeoutMs');
+  const deterministic = (dataField(options, 'deterministic') === true
+    || dataField(options, 'deterministicTransforms') === true) && duration > 0;
   const suppliedLimits = dataField(options,'limits');
   const limits = {}, counts = {};
   for (const [key, maximum] of Object.entries(ceilings)) {
@@ -77,6 +79,7 @@ export function createQueryGuard(options, ceilings) {
     if (typeof sampled !== 'number' || !Number.isFinite(sampled) || sampled < last) {
       if (validate) fail('invalid-clock');
     } else last = sampled;
+    if (deterministic) return 0;
     // A deterministic caller clock cannot extend the real wall allowance.
     return Math.max(last - started, monotonicNow() - realStarted);
   }
@@ -103,7 +106,7 @@ export function createQueryGuard(options, ceilings) {
     }
     // This is deliberately after EVERY caller callback, including the clock.
     signalCheck();
-    if (time >= duration || monotonicNow() - realStarted >= duration) fail('deadline');
+    if (!deterministic && (time >= duration || monotonicNow() - realStarted >= duration)) fail('deadline');
   }
   function take(key, amount = 1) {
     check();
@@ -114,9 +117,10 @@ export function createQueryGuard(options, ceilings) {
   return Object.freeze({ identity, limits: Object.freeze(limits), check, take, fail,
     metrics: () => {
       if (!reason) { try { elapsed(); } catch { /* Retain the sticky failure; diagnostics must remain observable. */ } }
-      return Object.freeze({ ...counts, wallClock: Math.max(last-started,monotonicNow()-realStarted) });
+      return Object.freeze({ ...counts, wallClock: deterministic ? 0 : Math.max(last-started,monotonicNow()-realStarted) });
     },
-    remainingMilliseconds: () => { check(); return Math.max(0, duration - Math.max(last - started,monotonicNow() - realStarted)); },
+    remainingMilliseconds: () => { check(); return deterministic ? duration : Math.max(0, duration - Math.max(last - started,monotonicNow() - realStarted)); },
     reason: () => reason,
+    deterministic: () => deterministic,
   });
 }

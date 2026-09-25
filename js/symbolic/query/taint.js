@@ -32,10 +32,10 @@ export function queryTaint(ir,inputOptions={}) {
     // All phases share the outer allowance; executor/byte-memory sublimits may
     // narrow it, but must not restart a fresh 250ms clock during preflight.
     const remaining = Math.floor(flow.remainingMilliseconds());
-    const memoryTimeout = Math.min(remaining, boundedLimit(options.memory?.timeoutMs, 250, 5000, 'memory.timeoutMs'));
-    const executionTimeout = Math.min(remaining, boundedLimit(options.execution?.timeoutMs, 250, 5000, 'execution.timeoutMs'));
-    execution=symbolicExecute(ir,{...options.execution,timeoutMs:executionTimeout,memoryObservations:options.memoryObservations??options.execution?.memoryObservations,captureValues:true,signal:options.signal,isCancelled:options.isCancelled,
-      byteMemory:{...options.memory,timeoutMs:memoryTimeout,now:options.now,identity:options.identity,signal:options.signal,isCancelled:options.isCancelled,
+    const memoryTimeout = options.deterministic ? (options.memory?.timeoutMs ?? 250) : Math.min(remaining, boundedLimit(options.memory?.timeoutMs, 250, 5000, 'memory.timeoutMs'));
+    const executionTimeout = options.deterministic ? (options.execution?.timeoutMs ?? 250) : Math.min(remaining, boundedLimit(options.execution?.timeoutMs, 250, 5000, 'execution.timeoutMs'));
+    execution=symbolicExecute(ir,{...options.execution,deterministic:options.deterministic,timeoutMs:executionTimeout,memoryObservations:options.memoryObservations??options.execution?.memoryObservations,captureValues:true,signal:options.signal,isCancelled:options.isCancelled,
+      byteMemory:{...options.memory,deterministic:options.deterministic,timeoutMs:memoryTimeout,now:options.now,identity:options.identity,signal:options.signal,isCancelled:options.isCancelled,
         getCurrentIdentity:options.getCurrentIdentity,labelDomain:flow.labels},_taint:flow});
     flow.check(); checkModel();
     if(execution.status!=='complete' && /budget|deadline|cancel|stale/.test(execution.reason ?? '')) throw new QueryFailure(execution.reason);
