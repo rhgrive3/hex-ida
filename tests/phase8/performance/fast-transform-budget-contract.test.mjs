@@ -86,6 +86,7 @@ test('fast output is invariant under a slow injected clock while below the safet
 test('a synthetic transform that crosses the safety ceiling is degraded and preserves valid output structure', () => {
   {
     let now = 0;
+    const opts = {};
     const state = new PassManager([
       {
         name: 'synthetic-expensive-transform',
@@ -93,12 +94,14 @@ test('a synthetic transform that crosses the safety ceiling is degraded and pres
           innerState.cAst = { kind: 'program', body: [{ kind: 'return', text: 'return 0;' }] };
           now = 2001;
           assert.equal(budget.shouldAbort(), true);
+          assert.equal(innerState.opts.shouldAbort(), true);
           return innerState;
         },
       },
       { name: 'required-finalizer', required: true, run(innerState) { innerState.finalized = true; return innerState; } },
-    ], { timeBudgetMs: 2000, deadlineReason: 'transform-safety-ceiling', clock: () => now }).run({ cAst: { kind: 'program', body: [] } });
+    ], { timeBudgetMs: 2000, deadlineReason: 'transform-safety-ceiling', clock: () => now }).run({ opts, cAst: { kind: 'program', body: [] } });
 
+    assert.equal(Object.hasOwn(opts, 'shouldAbort'), false, 'the pass deadline hook must not leak into mandatory fallback work');
     assert.equal(state.degraded, true);
     assert.ok(state.degradationReasons.has('transform-safety-ceiling'));
     assert.ok(state.passMetrics.some((metric) => metric.degradationReason === 'transform-safety-ceiling'));

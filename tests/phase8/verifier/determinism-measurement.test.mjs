@@ -28,15 +28,18 @@ const sample = {
 };
 
 test('a truncated run and a complete run are different observations', () => {
-  const tight = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: 1 });
-  const generous = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
+  // The new budget contract makes deterministic measurement ignore wall-clock
+  // deadlines. Exercise the explicit production deadline mode for this budget
+  // sensitivity assertion instead.
+  const tight = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: 1, deterministicTransforms:false });
+  const generous = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS, deterministicTransforms:false });
   assert.notDeepEqual(tight, generous,
     'if these were equal the budget would not matter and this whole check would be pointless');
 });
 
 test('comparing runs made at different budgets reports failures that are not transform failures', () => {
-  const tight = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: 1 });
-  const failures = determinismFailures({ corpus: sample, first: tight });
+  const tight = observeCorpus({ corpus: sample, decompilerTimeBudgetMs: 1, deterministicTransforms:false });
+  const failures = determinismFailures({ corpus: sample, first: tight, deterministicTransforms:false });
   assert.ok(failures.length > 0,
     'a mismatched budget must be visible; if it is not, the metric is not comparing what it claims to');
 });
