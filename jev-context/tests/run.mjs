@@ -14,6 +14,7 @@ import { createDecisionCache } from "../core/decision-cache.mjs";
 import { createOpenJevClient } from "../core/openjev.mjs";
 import { classifyAll } from "../core/classifier.mjs";
 import { adapterTests } from "./adapters.mjs";
+import { hookStdinTests } from "./hooks-stdin.mjs";
 
 /**
  * Fixture suite for the pruning engine.
@@ -730,6 +731,7 @@ await test("write-time: a fresh file read, a diff, and a todo list are never dro
 });
 
 await adapterTests(test);
+await hookStdinTests(test);
 
 /* ------------------------------------------------------------------------ main */
 

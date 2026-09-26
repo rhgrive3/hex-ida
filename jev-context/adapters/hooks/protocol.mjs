@@ -3,6 +3,13 @@ import path from "node:path";
 
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
+/**
+ * Maximum raw hook stdin accepted before JSON parsing. The 1 MiB envelope is
+ * intentionally larger than the default 24,000-token classification-state
+ * budget, while bounding the host payload before the parser can materialize it.
+ */
+export const MAX_HOOK_INPUT_BYTES = 1024 * 1024;
+
 function acquireSessionLock(lockPath, { timeoutMs = 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -54,11 +61,34 @@ function releaseSessionLock(lockPath, fd) {
  * through Codex's own supported `model_providers.<id>.base_url`.
  */
 
-/** Reads all of stdin and parses it as a single JSON object. Never throws. */
+/**
+ * Reads a bounded stdin body and parses it as a single JSON object. Invalid JSON
+ * remains a no-op; streams over the byte budget are destroyed and rejected so
+ * adapters can fail open without observing or recording a partial event.
+ */
 export async function readHookInput(stream = process.stdin) {
   const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  const raw = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8").trim();
+  let totalBytes = 0;
+  for await (const chunk of stream) {
+    const chunkBytes = Buffer.byteLength(chunk);
+    const nextTotalBytes = totalBytes + chunkBytes;
+    if (nextTotalBytes > MAX_HOOK_INPUT_BYTES) {
+      try {
+        stream.destroy?.();
+      } catch {
+        /* rejecting the body is still required if a custom stream cannot close */
+      }
+      const error = new Error(
+        `hook stdin is ${nextTotalBytes} bytes; the maximum supported size is ${MAX_HOOK_INPUT_BYTES} bytes`,
+      );
+      error.code = "JEV_HOOK_INPUT_TOO_LARGE";
+      throw error;
+    }
+
+    totalBytes = nextTotalBytes;
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks, totalBytes).toString("utf8").trim();
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
