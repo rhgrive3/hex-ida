@@ -545,7 +545,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
 
 const CONDITION_OPTIMIZATION_OPTIONS = new Set(['conditionalBranch','identity','timeoutMs','signal','isCancelled',
   'getCurrentIdentity','now','addressBits','endian','backendTier','phase8TimeBudgetMs','phase8WorkBudget',
-  'requireProofOnlyRewrites']);
+  'requireProofOnlyRewrites','deterministic','deterministicTransforms']);
 
 // Compose the existing region issuers through the same public optimizer. The
 // request selects one actual branch; it cannot supply a proof or a replacement
@@ -554,7 +554,12 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
   let guard;
   try {
     if (Object.keys(submitted).some(key => !CONDITION_OPTIMIZATION_OPTIONS.has(key))) return fail('unsupported-condition-optimization-option');
-    guard = createQueryGuard(submitted, {}); guard.check();
+    // The public proof optimizer is work-bounded by default: deterministic
+    // transforms remove transform/proof wall-clock deadlines and keep the
+    // deterministic work limits, so a slow host cannot change the proof result.
+    // A caller may still opt into wall-clock budgets with an explicit false.
+    guard = createQueryGuard({ ...submitted,
+      deterministic: submitted.deterministic ?? submitted.deterministicTransforms ?? true }, {}); guard.check();
     if (submitted.phase8TimeBudgetMs != null && (typeof submitted.phase8TimeBudgetMs !== 'number'
       || !Number.isFinite(submitted.phase8TimeBudgetMs) || submitted.phase8TimeBudgetMs < 0)
       || submitted.phase8WorkBudget != null && (!Number.isSafeInteger(submitted.phase8WorkBudget)
@@ -588,6 +593,9 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
     const matches = carrier?.regions.filter(item => item.original.branch === submitted.conditionalBranch) ?? [];
     if (matches.length !== 1) return fail('unbound-conditional-branch');
     const lifecycle = () => ({ identity:guard.identity, timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+      // Carry the requested determinism into each child query, so a held region
+      // plan is revalidated by work limits rather than a wall-clock deadline.
+      deterministic:guard.deterministic(),
       signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
     const structure = prepareConditionalRegionStructure(matches[0].original.record, result.ir, lifecycle());
     if (structure.status !== 'complete') return fail(structure.reason ?? 'condition-structure-unavailable');
@@ -614,7 +622,9 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       // erasure requires the explicit region-rendering authority path.
       phase8RegionErasureBody:false,
       phase8ProofIdentity:guard.identity, phase8ProofOnlyRewrites:proofOnlyRewrites,
-      phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs != null
+        ? Math.min(submitted.phase8TimeBudgetMs, guard.remainingMilliseconds())
+        : guard.deterministic() ? null : Math.min(120, guard.remainingMilliseconds()),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });
     if (!current() || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete'
       || projected.phase8?.sourceCompleteness !== 'complete'
@@ -688,8 +698,13 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     // scalar values itself. Only a genuinely empty derivation stays a no-op.
     const explicit = queryArray(submitted.targets ?? []);
     const targets = explicit.length > 0 ? explicit : auto;
+    // The public proof optimizer is work-bounded by default: deterministic
+    // transforms remove transform/proof wall-clock deadlines and keep the
+    // deterministic work limits, so a slow host cannot change the proof result.
+    // A caller may still opt into wall-clock budgets with an explicit false.
+    const deterministicTransforms = submitted.deterministicTransforms ?? submitted.deterministic ?? true;
     const plan = await preparePhase8RewritePlan(result.ir,{...submitted,
-      deterministicTransforms: submitted.deterministicTransforms ?? producerDeterministicTransforms(result),
+      deterministicTransforms,
       identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
     preparedPlan = plan;
     const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
@@ -702,7 +717,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
       phase8ProofOnlyRewrites:proofOnlyRewrites,
       phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
-      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? (deterministicTransforms === true ? null : 120),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
     if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true
       || projected.phase8?.completeness !== 'complete' || projected.phase8?.sourceCompleteness !== 'complete') return fail('optimizer-withheld');

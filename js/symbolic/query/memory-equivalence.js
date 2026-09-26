@@ -98,7 +98,13 @@ export async function queryMemoryEquivalence(request={}) {
     // accessors must not run merely to construct a failure diagnostic.
     const identity=plainCopy(request.identity);
     const limits=request.limits==null?undefined:plainCopy(request.limits);
-    guard=createQueryGuard({...request,identity,limits,timeoutMs:request.timeoutMs??250},LIMITS);guard.check();
+    // Host-speed independence: this is an exact finite-byte proof query, not a
+    // deadline query. Unless the caller requests a wall-clock allowance with an
+    // explicit `timeoutMs` (or explicitly disables determinism), bound the work
+    // deterministically so a slow host cannot turn a complete proof into a
+    // deadline. An explicit `deterministic`/`deterministicTransforms` wins.
+    const deterministicDefault=request.deterministic ?? request.deterministicTransforms ?? request.timeoutMs == null;
+    guard=createQueryGuard({...request,identity,limits,timeoutMs:request.timeoutMs??250,deterministic:deterministicDefault},LIMITS);guard.check();
     const wide=request.backendTier==='tiered';
     if(request.backendTier!=null && !['exhaustive','tiered'].includes(request.backendTier))throw new QueryFailure('unsupported-backend');
     const beforeIr=request.beforeIr,afterIr=request.afterIr;
@@ -139,13 +145,13 @@ export async function queryMemoryEquivalence(request={}) {
     // This model covers every byte of a finite modular address space. Reject
     // an alternate geometry rather than quietly proving a different machine.
     if(proofMode==='finite-domain'&&geometry.wrapping!=='modular')throw new QueryFailure('finite-proof-requires-modular-address-space');
-    memory=createByteMemory({...geometry,initialBytes,identity:guard.identity,timeoutMs:request.timeoutMs??250,
+    memory=createByteMemory({...geometry,initialBytes,identity:guard.identity,timeoutMs:request.timeoutMs??250,deterministic:guard.deterministic(),
       signal:request.signal,isCancelled:request.isCancelled,getCurrentIdentity:request.getCurrentIdentity,now:request.now,
       limits:memoryLimits});
     const observations=Object.freeze(Array.from({length:domainBytes??0},(_,address)=>Object.freeze({id:`byte:${address}`,address:BigInt(address),size:1})));
-    const execute=ir=>symbolicExecute(ir,{...execution,timeoutMs:request.timeoutMs??250,signal:request.signal,isCancelled:request.isCancelled,
+    const execute=ir=>symbolicExecute(ir,{...execution,timeoutMs:request.timeoutMs??250,deterministic:guard.deterministic(),signal:request.signal,isCancelled:request.isCancelled,
       argumentExpressions,captureValues:true,memoryObservations:observations,
-      byteMemory:{...geometry,initialState:memory,identity:guard.identity,timeoutMs:request.timeoutMs??250,
+      byteMemory:{...geometry,initialState:memory,identity:guard.identity,timeoutMs:request.timeoutMs??250,deterministic:guard.deterministic(),
         signal:request.signal,isCancelled:request.isCancelled,getCurrentIdentity:request.getCurrentIdentity,now:request.now}});
     before=execute(beforeIr);guard.check();
     if(before.status!=='complete'||!isExecutionResult(before,guard.identity,beforeIr))throw new QueryFailure(`before:${before.reason??'incomplete-execution'}`);
