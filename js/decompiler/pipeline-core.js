@@ -786,19 +786,40 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
 
 function selectedValueOrigins(value, state) {
   const pending = [value], seen = new Set(), definitions = new Set(), sources = [], memoryChecks = [];
-  const started = performance.now();
+  const deterministic = state.opts?.deterministicTransforms === true;
+  const readClock = typeof state.opts?.transformClock === 'function' ? state.opts.transformClock
+    : () => globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+  const started = deterministic ? null : readClock();
+  // Bound both unique definitions and queued edge visits. The old 250 ms
+  // escape valve made observed producer histories depend on host load even in
+  // deterministic measurement mode. These structural ceilings are stable and
+  // keep the traversal finite on production inputs too.
+  const maxWorkItems = 8192;
+  let workItems = 0;
   let incomplete = false;
-  while (pending.length && seen.size < 512) {
-    if (performance.now() - started >= 250) { incomplete = true; break; }
+  const enqueue = value => {
+    if (workItems + pending.length >= maxWorkItems) { incomplete = true; return false; }
+    pending.push(value);
+    return true;
+  };
+  const enqueueValues = (values, select = valueOf) => {
+    for (const value of values || []) if (!enqueue(select(value))) return;
+  };
+  while (pending.length && seen.size < 512 && workItems < maxWorkItems) {
+    if (!deterministic && readClock() - started >= 250) { incomplete = true; break; }
     const current = pending.pop();
+    workItems++;
     if (!current || seen.has(current)) continue;
     seen.add(current);
     const definition = current.def;
     sources.push(origin(definition, current));
     if (!definition) continue;
     definitions.add(definition);
-    pending.push(...(definition.args || []).map(valueOf), ...(definition.incoming || []).map(item => item.value),
-      definition.addr?.base, definition.addr?.index, definition.loc?.base);
+    enqueueValues(definition.args);
+    enqueueValues(definition.incoming, item => item?.value);
+    enqueue(definition.addr?.base);
+    enqueue(definition.addr?.index);
+    enqueue(definition.loc?.base);
     if (definition.op === 'load') {
       const fact = definition.memoryForwarding;
       // The observed supplied constant/load origin needs no memory theorem.
@@ -821,7 +842,7 @@ function selectedValueOrigins(value, state) {
         if (matches.length !== 1) { incomplete = true; continue; }
         const store = matches[0];
         definitions.add(store); sources.push(origin(store));
-        pending.push(...(store.args || []).map(valueOf));
+        enqueueValues(store.args);
       }
     }
   }
