@@ -48,7 +48,9 @@ function paramConstantsFixture(m) {
   const types = [{ token: '0x02000001', rid: 1, accessFlags: 0x101 }];
   const methods = Array.from({ length: m }, (_, i) => ({
     rid: i + 1, token: `0x06${String(i + 1).padStart(6, '0')}`,
-    signatureBlobIndex: indexes[0], declaringTypeToken: '0x02000001', accessFlags: 0x06,
+    // ced02c5f requires unique owner/name/signature identities; each
+    // performance-fixture MethodDef therefore needs its own valid name.
+    name: `M${i}`, signatureBlobIndex: indexes[0], declaringTypeToken: '0x02000001', accessFlags: 0x06,
   }));
   const params = Array.from({ length: m }, (_, i) => ({
     rid: i + 1, token: `0x08${String(i + 1).padStart(6, '0')}`,
@@ -132,7 +134,8 @@ test('#8954 enum value__ resolution indexes fields per enum type, no global resc
 });
 
 test('#8954 cached value__ index keeps the unique/flags proof exact', () => {
-  const { heap, indexes } = blobHeap([0x06, 0x11, 0x04], FIELD_I4_SIG, [7, 0, 0, 0]);
+  const FIELD_I8_SIG = [0x06, 0x0a];
+  const { heap, indexes } = blobHeap([0x06, 0x11, 0x04], FIELD_I4_SIG, [7, 0, 0, 0], FIELD_I8_SIG);
   const enumToken = '0x02000001'; // E declares System.Enum; Holder (rid 2) carries the literal
   const extendsTypeRef = { token: '0x01000001', rid: 1, name: 'Enum', namespace: 'System', resolutionScope: { table: 0x23, rid: 1, token: '0x23000001' } };
   const mk = (valueFields) => defs({
@@ -148,17 +151,16 @@ test('#8954 cached value__ index keeps the unique/flags proof exact', () => {
   });
   const good = mk([{ accessFlags: 0x0606, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[1] }]);
   assert.equal(bindCilMetadataTables(good, heap).constants[0].value, 7);
-  // Two value__ rows: not a unique underlying type -> mismatch fails closed.
+  // Two value__ rows do not prove one unique enum underlying type.
   const dup = mk([
     { accessFlags: 0x0606, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[1] },
     { accessFlags: 0x0606, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[1] },
   ]);
   assert.throws(() => bindCilMetadataTables(dup, heap), /cil-constant-type-mismatch/);
-  // A static value__ row (0x10) is excluded by the flags proof, leaving the
-  // one instance candidate — the shared index must apply the same exclusion
-  // the per-row filter did, in both directions.
+  // The static candidate has a distinct signature so the metadata identities
+  // remain unique; flags must exclude it and leave the instance candidate.
   const staticExcluded = mk([
-    { accessFlags: 0x0616, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[1] },
+    { accessFlags: 0x0616, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[3] },
     { accessFlags: 0x0606, name: 'value__', declaringTypeToken: enumToken, signatureBlobIndex: indexes[1] },
   ]);
   assert.equal(bindCilMetadataTables(staticExcluded, heap).constants[0].value, 7);

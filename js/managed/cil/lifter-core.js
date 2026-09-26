@@ -62,7 +62,7 @@ function floatOperandWidths(widthRun, floatRun, count) {
   if (widthRun.length < count || floatRun.length < count) return null;
   const widths = widthRun.slice(widthRun.length - count);
   const floats = floatRun.slice(floatRun.length - count);
-  if (!floats.every((w, i) => w != null && widths[i] != null && widths[i] === w)) return null;
+  if (!floats.every((w, i) => w != null && (widths[i] == null || widths[i] === w))) return null;
   return new Set(floats).size === 1 ? floats : null;
 }
 function floatMachineType(width) {
@@ -107,13 +107,28 @@ function fieldStackValue(fieldType) {
   return value;
 }
 
-function fieldEffectKeys(resolution) {
+function cilFieldStorageByteWidth(fieldType, nativePointerBits) {
+  const primitiveWidths = {
+    boolean:1, i1:1, u1:1, char:2, i2:2, u2:2,
+    i4:4, u4:4, r4:4, i8:8, u8:8, r8:8,
+  };
+  const primitive = fieldType?.primitive;
+  if (Object.hasOwn(primitiveWidths, primitive)) return primitiveWidths[primitive];
+  if ((primitive === 'i' || primitive === 'u') && (nativePointerBits === 32 || nativePointerBits === 64)) {
+    return nativePointerBits / 8;
+  }
+  return null;
+}
+
+function fieldEffectKeys(resolution, nativePointerBits) {
   if (!resolution.complete) return { fieldResolved:false };
+  const byteWidth = cilFieldStorageByteWidth(resolution.fieldType, nativePointerBits);
   return {
     fieldName:resolution.fieldName,
     ...(resolution.declaringType ? { declaringType:resolution.declaringType } : {}),
     fieldType:resolution.fieldType,
     fieldProvenance:resolution.provenance,
+    ...(byteWidth == null ? {} : { byteWidth }),
   };
 }
 
@@ -656,10 +671,16 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               0x5f: 'and', 0x60: 'or', 0x61: 'xor', 0x62: 'shl', 0x63: 'shr',
             };
             mnemonic = names[opcode] || 'binop';
-            const widths = operandWidths(pushWidthRun, 2);
+            const isShift = opcode === 0x62 || opcode === 0x63;
+            const floatCapable = opcode === 0x58 || opcode === 0x59 || opcode === 0x5a || opcode === 0x5b;
+            const floatWindow = pushFloatRun.slice(-2);
+            const hasFloatOperand = floatWindow.some((width) => width != null);
+            const floatKind = floatCapable ? floatOperandWidths(pushWidthRun, pushFloatRun, 2) : null;
+            const widths = hasFloatOperand
+              ? (floatKind == null ? null : floatKind)
+              : operandWidths(pushWidthRun, 2);
             const lhsBits = widths ? widths[0] : null;
             const rhsBits = widths ? widths[1] : null;
-            const isShift = opcode === 0x62 || opcode === 0x63;
             const resultBits = widths
               ? (isShift ? (rhsBits === 32 ? lhsBits : null) : (lhsBits === rhsBits ? lhsBits : null))
               : null;
@@ -675,8 +696,6 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               // are proven same-width IEEE-754 floats, the result keeps float
               // authority instead of collapsing to an integer bitvector (#8924).
               const produced = { bits: resultBits };
-              const floatCapable = opcode === 0x58 || opcode === 0x59 || opcode === 0x5a || opcode === 0x5b;
-              const floatKind = floatCapable ? floatOperandWidths(pushWidthRun, pushFloatRun, 2) : null;
               if (floatKind != null && floatKind[0] === resultBits) produced.type = floatMachineType(resultBits);
               producedValues.push(produced);
             }
@@ -780,7 +799,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               space: 'field',
               token,
               isWrite,
-              ...fieldEffectKeys(field),
+              ...fieldEffectKeys(field, nativePointerBits),
             });
             if (!field.complete) {
               completeness = 'partial';
@@ -836,7 +855,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               token,
               isWrite,
               typeInitialization,
-              ...fieldEffectKeys(field),
+              ...fieldEffectKeys(field, nativePointerBits),
             });
             if (!field.complete) {
               completeness = 'partial';

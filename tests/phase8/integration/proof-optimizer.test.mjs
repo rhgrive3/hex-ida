@@ -21,7 +21,7 @@ function deferredFixture({bits=4,op='xor',defer=true,store=false,mutateOptions=f
  const canonical=structuredClone(ir);
  const seed={semantic:true,ir,types:null,lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({
   kind:'stmt',indent:0,text:inst.op==='ret'?'return old;':'old = value;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}};
- const opts={phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000,...options};
+ const opts={profile:'deep',phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000,...options};
  if(mutateOptions)opts.symbolFor=()=>{opts.phase8ProofOnlyRewrites=!defer;return 'global_value';};
  const result=enhanceSemanticDecompilation(seed,null,opts);
  return {ir,input,target,result,canonical,opts,proof:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
@@ -140,7 +140,8 @@ test('v8 true machine->decompiler entry optimizes an MBA cancellation; no helper
  const raw=lines.map((t,row)=>{const i=t.indexOf(' ');return {row,address:base+BigInt(row*4),mn:i<0?t:t.slice(0,i),ops:i<0?'':t.slice(i+1)};});
  const rowOfAddress=a=>Number((a-base)/4n);
  const model=buildSemanticModel(raw,{startRow:0,endRow:raw.length-1,rowOfAddress});
- const opts={addr:base,name:'cancel_mba',rowOfAddress,beginner:false,returnType:'uint64',decompilerTimeBudgetMs:5000};
+ const opts={addr:base,name:'cancel_mba',rowOfAddress,beginner:false,returnType:'uint64',
+  profile:'deep',deterministicTransforms:true,decompilerTimeBudgetMs:5000};
  const baseline=decompile(model,opts);assert.match(baseline.pseudocode,/\^/);
  const r=await decompileWithProof(model,opts,{identity:{...identity,architecture:'arm64'},abiId:'aapcs64',candidateStrategy:'equality-saturation',timeoutMs:1000});
  assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);

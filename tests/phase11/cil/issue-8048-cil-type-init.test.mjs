@@ -55,6 +55,8 @@ for (const [name, mnemonic] of [['Read', 'ldsfld'], ['Write', 'stsfld']]) {
   assert.deepEqual(bundle.unknownEffects, [
     { category: 'calls', reason: 'cil-type-initialization-unverified' },
   ]);
+  assert.equal(bundle.memoryEffects[0].byteWidth, 4,
+    'the resolved I4 FieldSig proves four-byte storage independently of initializer state');
   assert.deepEqual(bundle.memoryEffects[0].typeInitialization, {
     declaringTypeToken: '0x02000001',
     declaringType: 'Audit.T',

@@ -75,5 +75,9 @@ function decodeBase64URL(value) {
   if (!/^[A-Za-z0-9_-]+$/.test(String(value || ''))) throw new TypeError('invalid-base64url');
   const raw = String(value).replaceAll('-', '+').replaceAll('_', '/');
   const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4));
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  // Reject non-canonical spellings (non-zero unused trailing bits). Otherwise
+  // one signed token has several accepted encodings.
+  if (encodeBase64URL(bytes) !== String(value)) throw new TypeError('non-canonical-base64url');
+  return bytes;
 }

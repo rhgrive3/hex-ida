@@ -17,7 +17,12 @@ export async function runDecompilerTests({ env = process.env } = {}) {
   const childEnv = { ...env, HEX_COMPILER_TRUTH_CONCURRENCY: '1' };
   return runBoundedNodeSuite({
     label: 'decompiler',
-    files: DECOMPILER_ASSERTION_FILES.map((file) => path.join(ROOT, file)),
+    files: [
+      ...DECOMPILER_ASSERTION_FILES.map((file) => path.join(ROOT, file)),
+      path.join(DIRECTORY, 'recompilation-watchdog.test.mjs'),
+      path.join(DIRECTORY, 'output-c-declarations.test.mjs'),
+      path.join(DIRECTORY, 'avoidable-goto-closure.test.mjs'),
+    ],
     cwd: ROOT,
     env: childEnv,
     envName: 'HEX_DECOMPILER_TEST_CONCURRENCY',

@@ -120,7 +120,8 @@ export class RewriteEngine {
   }
 
   rewrite(root, context = {}) {
-    const started = now();
+    const clock = typeof this.budget.clock === 'function' ? this.budget.clock : now;
+    const started = clock();
     /*
      * The wall-clock valve exists so a pathological function cannot hang an
      * interactive iPad session, and that is a real release constraint. But it
@@ -137,20 +138,58 @@ export class RewriteEngine {
      */
     const deterministic = context.deterministicTransforms === true || this.budget.deterministic === true;
     const localDeadline = deterministic ? Infinity : started + Math.max(0, Number(this.budget.timeBudgetMs));
-    const contextDeadline = Number(context.deadline);
+    const rawContextDeadline = context.deadline ?? this.budget.deadline;
+    const contextDeadline = rawContextDeadline == null ? NaN : Number(rawContextDeadline);
     const deadline = !deterministic && Number.isFinite(contextDeadline)
       ? Math.min(localDeadline, contextDeadline)
       : localDeadline;
     const proof = [];
-    const stats = { iterations: 0, applications: 0, budgetExceeded: false, elapsedMs: 0, byRule: {} };
+    const stats = { iterations: 0, applications: 0, budgetExceeded: false,
+      workBudgetExceeded: false, deadlineExceeded: false, externalAbort: false,
+      elapsedMs: 0, byRule: {} };
     const phases = [...new Set(this.rules.map((r) => r.phase))];
     let current = root;
+    let deadlineChecks = 0;
 
-    const overBudget = (candidate = current) => {
-      if (stats.applications >= this.budget.maxApplications) return true;
-      if (nodeCount(candidate, new Set(), this.budget.nodeBudget) > this.budget.nodeBudget) return true;
-      if (now() >= deadline || context.shouldAbort?.()) return true;
-      return false;
+    const markBudgetExceeded = (reason) => {
+      stats.budgetExceeded = true;
+      if (reason === 'work-budget') stats.workBudgetExceeded = true;
+      else if (reason === 'deadline' || reason === 'transform-safety-ceiling'
+          || reason === 'transform-time-budget' || reason === 'phase8-time-budget') stats.deadlineExceeded = true;
+      else if (reason) stats.externalAbort = true;
+      stats.stopReason ||= reason;
+      return true;
+    };
+
+    const abortRequested = () => {
+      try {
+        if (context.shouldAbort?.() === true || this.budget.shouldAbort?.() === true) {
+          const reason = context.abortReason?.() ?? this.budget.abortReason?.()
+            ?? this.budget.deadlineReason ?? 'external-abort';
+          return reason;
+        }
+      } catch {
+        return 'external-abort';
+      }
+      return null;
+    };
+
+    const deadlineFailure = (force = false) => {
+      deadlineChecks++;
+      if (!force && deadlineChecks !== 1 && (deadlineChecks & 0x3f) !== 0) return null;
+      if (clock() >= deadline) return this.budget.deadlineReason || 'deadline';
+      return abortRequested();
+    };
+
+    const budgetFailure = (candidate = current, forceDeadlineCheck = false) => {
+      if (stats.applications >= this.budget.maxApplications
+          || nodeCount(candidate, new Set(), this.budget.nodeBudget) > this.budget.nodeBudget) return 'work-budget';
+      return deadlineFailure(forceDeadlineCheck);
+    };
+
+    const overBudget = (candidate = current, forceDeadlineCheck = false) => {
+      const reason = budgetFailure(candidate, forceDeadlineCheck);
+      return reason ? markBudgetExceeded(reason) : false;
     };
 
     const visitIterative = (rootNode, rules) => {
@@ -188,7 +227,9 @@ export class RewriteEngine {
           return candidateCount > this.budget.nodeBudget;
         };
         for (const rule of rules) {
-          if (overCandidateWork() || now() >= deadline || context.shouldAbort?.()) { stats.budgetExceeded = true; break; }
+          if (overCandidateWork()) { markBudgetExceeded('work-budget'); break; }
+          const deadlineReason = deadlineFailure();
+          if (deadlineReason) { markBudgetExceeded(deadlineReason); break; }
           const match = rule.match(candidate, context);
           if (!match) continue;
           if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
@@ -221,18 +262,42 @@ export class RewriteEngine {
 
     for (const phase of phases) {
       const rules = this.rules.filter((r) => r.phase === phase);
-      let iterations = 0;
-      while (iterations++ < this.budget.maxIterations) {
-        if (overBudget(current)) { stats.budgetExceeded = true; break; }
+      let iterations = 0, fixedPoint = false;
+      while (iterations < this.budget.maxIterations) {
+        // Check once at each fixed-point iteration so a single expensive rule
+        // cannot leave the absolute safety deadline unnoticed until the next
+        // 64-rule poll. The inner rule walk remains sampled to keep ordinary
+        // deadline checks cheap for large rule tables.
+        if (overBudget(current, true)) { stats.budgetExceeded = true; break; }
+        iterations++;
         stats.iterations++;
         const before = structuralKey(current);
         current = visitIterative(current, rules);
         const after = structuralKey(current);
-        if (before === after || stats.budgetExceeded) break;
+        if (before === after) { fixedPoint = true; break; }
+        if (stats.budgetExceeded) break;
       }
       if (stats.budgetExceeded) break;
+      if (!fixedPoint && iterations >= this.budget.maxIterations) {
+        // Preserve the legacy budgetExceeded field for wall-clock/node and
+        // application cutoffs; expose the iteration cutoff through the newer
+        // workBudgetExceeded/stopReason fields consumed by the pipeline.
+        stats.workBudgetExceeded = true;
+        stats.stopReason ||= 'work-budget';
+        break;
+      }
+      if (stats.workBudgetExceeded) break;
     }
-    stats.elapsedMs = now() - started;
+    if (!deterministic && !stats.budgetExceeded) {
+      const finalAbortReason = clock() >= deadline
+        ? this.budget.deadlineReason || 'deadline'
+        : abortRequested();
+      if (finalAbortReason) markBudgetExceeded(finalAbortReason);
+    }
+    stats.elapsedMs = clock() - started;
+    if (stats.stopReason) {
+      try { this.budget.onBudgetExceeded?.(stats.stopReason, stats); } catch { /* reporting cannot change transform output */ }
+    }
     return { root: current, proof, stats };
   }
 }

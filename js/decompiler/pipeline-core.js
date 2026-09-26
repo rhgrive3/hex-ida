@@ -12,12 +12,13 @@ import { createProjectionIrObserver, createValidationBatch } from '../core/ident
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
-import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, isCppReceiverAlias } from './cxx-evidence.js';
+import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
 import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
+import { mayAliasProvenance } from '../ir.js';
 import { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 export { applyDecompilerProfile, resolveDecompilerProfile, DECOMPILER_PROFILES } from './profiles.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
@@ -28,7 +29,7 @@ import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
   readSemanticConditionalRegions, readSemanticLocalDeclaration,
-  readSemanticOrderedMaterializations } from './semantic-core.js';
+  readSemanticOrderedMaterializations, readSemanticStoreCompoundAdmission } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -414,7 +415,18 @@ function memoryLocation(inst, state) {
     if (isReceiver) {
       base = expr.variable('this', 64, false, origin(inst));
     }
-    const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
+    const offsetText = off < 0n
+      ? `-0x${(-off).toString(16).toUpperCase()}`
+      : `0x${off.toString(16).toUpperCase()}`;
+    // Legacy offset labels can look like member names without binary name
+    // evidence. The provenance-recording product route keeps the explicit byte
+    // offset for a proven C++ receiver; the retention route (no render
+    // provenance recorded) keeps the seed's `field_XX` spelling so enhancement
+    // never silently rewrites the initial emitter's line.
+    const receiverOffsetText = state.opts?.renderProvenance === true
+      ? offsetText : off.toString(16).toUpperCase();
+    const fallbackName = isReceiver ? `field_${receiverOffsetText}` : `field_${off.toString(16).toUpperCase()}`;
+    const name = safeIdent(isReceiver ? fallbackName : (known?.name || fallbackName));
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
     const member = isReceiver ? currentCppMember(state.opts, state.ir, baseVal, off) : null;
     const memberType = cppMemberTypeLabel(member);
@@ -774,19 +786,40 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
 
 function selectedValueOrigins(value, state) {
   const pending = [value], seen = new Set(), definitions = new Set(), sources = [], memoryChecks = [];
-  const started = performance.now();
+  const deterministic = state.opts?.deterministicTransforms === true;
+  const readClock = typeof state.opts?.transformClock === 'function' ? state.opts.transformClock
+    : () => globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+  const started = deterministic ? null : readClock();
+  // Bound both unique definitions and queued edge visits. The old 250 ms
+  // escape valve made observed producer histories depend on host load even in
+  // deterministic measurement mode. These structural ceilings are stable and
+  // keep the traversal finite on production inputs too.
+  const maxWorkItems = 8192;
+  let workItems = 0;
   let incomplete = false;
-  while (pending.length && seen.size < 512) {
-    if (performance.now() - started >= 250) { incomplete = true; break; }
+  const enqueue = value => {
+    if (workItems + pending.length >= maxWorkItems) { incomplete = true; return false; }
+    pending.push(value);
+    return true;
+  };
+  const enqueueValues = (values, select = valueOf) => {
+    for (const value of values || []) if (!enqueue(select(value))) return;
+  };
+  while (pending.length && seen.size < 512 && workItems < maxWorkItems) {
+    if (!deterministic && readClock() - started >= 250) { incomplete = true; break; }
     const current = pending.pop();
+    workItems++;
     if (!current || seen.has(current)) continue;
     seen.add(current);
     const definition = current.def;
     sources.push(origin(definition, current));
     if (!definition) continue;
     definitions.add(definition);
-    pending.push(...(definition.args || []).map(valueOf), ...(definition.incoming || []).map(item => item.value),
-      definition.addr?.base, definition.addr?.index, definition.loc?.base);
+    enqueueValues(definition.args);
+    enqueueValues(definition.incoming, item => item?.value);
+    enqueue(definition.addr?.base);
+    enqueue(definition.addr?.index);
+    enqueue(definition.loc?.base);
     if (definition.op === 'load') {
       const fact = definition.memoryForwarding;
       // The observed supplied constant/load origin needs no memory theorem.
@@ -809,7 +842,7 @@ function selectedValueOrigins(value, state) {
         if (matches.length !== 1) { incomplete = true; continue; }
         const store = matches[0];
         definitions.add(store); sources.push(origin(store));
-        pending.push(...(store.args || []).map(valueOf));
+        enqueueValues(store.args);
       }
     }
   }
@@ -1255,7 +1288,7 @@ function buildValueRaw(v, state, flags = {}) {
 }
 
 function rewriteAll(state, budget) {
-  const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
+  const engine = new RewriteEngine(DEFAULT_RULES, { ...budget, timeBudgetMs: Math.max(0, budget.timeBudgetMs), nodeBudget: Math.min(4096, budget.nodeBudget), onBudgetExceeded(reason) { if (reason === 'work-budget') { state.transformWorkBudgetExceeded = true; if (state.rewriteStats) state.rewriteStats.budgetExceeded = true; } } });
   state.expressions = new Map();
   state.expressionProofs = new Map();
   state.rewriteProof = [];
@@ -1459,6 +1492,62 @@ function expressionFor(v, state) {
 // proves only a dependency, not that the outer operator is a compound update.
 function readsSameLocation(node, location, key = location?.key) {
   return !!node && key != null && node.kind === 'load' && node.location?.key === key;
+}
+/*
+ * The compound-store spelling below is a display selection over one actual
+ * memory observation: the operator operand must be the canonical load of the
+ * location being written. When the initial emitter had to preserve that
+ * observation past a barrier it names the load and the reference carries its
+ * SSA identity (orderedMemoryObservation). A copied name, another SSA value,
+ * another location, or an observation this store cannot legally share (an
+ * aliasing write, call or unknown effect in between) stays an assignment.
+ */
+function observesStoreLocation(node, location, state) {
+  if (!node || location?.key == null) return false;
+  if (node.kind === 'load') return node.location?.key === location.key;
+  if (node.orderedMemoryObservation !== true || !Number.isSafeInteger(node.ssaId)) return false;
+  const ordered = state.orderedMaterializations?.get(node.ssaId);
+  if (!ordered || ordered.name == null || ordered.name !== node.name) return false;
+  if (!ordered.value || ordered.value.def !== ordered.definition) return false;
+  if (ordered.definition?.op !== 'load') return false;
+  return memoryLocation(ordered.definition, state).key === location.key;
+}
+function observationReachesStore(load, store, state) {
+  const insts = state.ir?.blocks?.[store.block]?.insts || state.ir?.instructions || [];
+  const from = insts.indexOf(load), to = insts.indexOf(store);
+  if (from < 0 || to < 0 || from >= to) return false;
+  for (let index = from + 1; index < to; index++) {
+    const inst = insts[index];
+    if (!inst) return false;
+    if (inst.op === 'call' || inst.op === 'unknown' || inst.op === 'clobber') return false;
+    if (inst.op === 'store' && mayAliasProvenance(inst.loc, store.loc)) return false;
+  }
+  return true;
+}
+function observationHasSingleSsaConsumer(observation) {
+  const uses = observation?.value?.uses;
+  if (!Array.isArray(uses)) return false;
+  return uses.filter((use) => use !== observation.definition && !use?.clobbered).length === 1;
+}
+function compoundStoreLeftOperand(node, location, store, state) {
+  if (!observesStoreLocation(node, location, state)) return false;
+  if (node.kind === 'load') return true;
+  // The named observation was taken earlier in the machine program; it may only
+  // stand in for the store's own read when nothing could have rewritten it.
+  const ordered = state.orderedMaterializations.get(node.ssaId);
+  if (!observationReachesStore(ordered.definition, store, state)) return false;
+  // Compound spelling subsumes the captured read only if that SSA observation
+  // has no consumer beyond the RMW dependency. With another direct consumer,
+  // the observation is also materialized as its own output assignment; spelling
+  // the store as ++/+= would therefore imply a second memory read that the
+  // machine program never performed.
+  if (!observationHasSingleSsaConsumer(ordered)) return false;
+  // The initial emitter is the spelling authority. Its read/modify/write
+  // admission also rejects a MOV/copy between the computed value and the store
+  // and reversed operand orders; the collapsed expression cannot see those, so
+  // without this check the C AST would spell compound assignments the initial
+  // renderer refused (and its provenance history disagrees with the display).
+  return readSemanticStoreCompoundAdmission(state.ir, store) != null;
 }
 function sameLocationRmwOperand(expression, location, ops, side = 'any') {
   if (side === 'left') return readsSameLocation(expression.left, location) ? expression.right : null;
@@ -1700,7 +1789,7 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
     let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
-    if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
+    if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && compoundStoreLeftOperand(e.left, location, store, state)) {
       const rhs = printExpression(e.right);
       if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
       else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }
@@ -1724,6 +1813,44 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
       initialStatement?.instruction === ret ? initialStatement : null), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
+}
+
+function provenVirtualSlotForCall(instruction, state) {
+  if (instruction?.op !== 'call') return null;
+  const temporaryId = instruction.extra?.attributes?.machineControlEffect?.target?.temporaryId;
+  const compatibilityCall = typeof temporaryId === 'string' && /(?:^|:)read-[a-z][0-9]+:/i.test(temporaryId);
+  const receiverArg = instruction.args?.[compatibilityCall ? 0 : 1];
+  const receiver = valueOf(receiverArg) ?? receiverArg ?? null;
+  const slot = currentCppVirtualSlot(state.opts, state.ir, instruction, receiver);
+  return slot?.virtualSlotKnown === true && Number.isSafeInteger(slot.slotIndex) && slot.slotIndex >= 0
+    ? slot : null;
+}
+
+function explicitProvenCppFieldOffsets(text, state) {
+  // Same route split as memoryLocation: only the provenance-recording product
+  // route re-spells a binary-grounded receiver offset as `field_0x..`; the
+  // retention route keeps the seed's `field_XX` spelling.
+  if (state.opts?.renderProvenance !== true) return text;
+  if (typeof text !== 'string' || !text.includes('this->field_')) return text;
+  const receiver = currentCppReceiver(state.opts, state.ir);
+  const receiverValue = receiver && state.ir.values?.find?.((value) => String(value?.id) === String(receiver.canonicalValueId));
+  if (!receiverValue) return text;
+  const source = state.opts?.cxxEvidence?.members;
+  const members = Array.isArray(source) ? source : source instanceof Map ? [...source.values()] : [];
+  const offsets = new Set();
+  for (const member of members) {
+    let offset;
+    try { offset = BigInt(member?.offsetBytes); } catch { continue; }
+    if (currentCppMember(state.opts, state.ir, receiverValue, offset)?.accessProven === true) {
+      offsets.add(offset.toString());
+    }
+  }
+  if (!offsets.size) return text;
+  return text.replace(/\bthis->field_([0-9A-F]+)\b/g, (spelling, digits) => {
+    let offset;
+    try { offset = BigInt('0x' + digits); } catch { return spelling; }
+    return offsets.has(offset.toString()) ? `this->field_0x${offset.toString(16).toUpperCase()}` : spelling;
+  });
 }
 
 function beginConditionalRegionCopy(result, state) {
@@ -1807,7 +1934,14 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    node.text = explicitProvenCppFieldOffsets(node.text, state);
     const initial = initialStatement || initialControl;
+    const virtualSlot = initialStatement?.instruction
+      ? provenVirtualSlotForCall(initialStatement.instruction, state)
+      : null;
+    if (virtualSlot && node.text.trim() && !/\bvirtual_slot_[0-9]+\b/.test(node.text)) {
+      node.text = `${node.text} /* virtual_slot_${virtualSlot.slotIndex} */`;
+    }
     if (initial && !known && !switched) {
       // This exact line was emitted by the earlier CALL/RET producer. A null
       // expression is intentional: do not manufacture a scalar AST for it.
@@ -2001,7 +2135,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
     { name: 'c-ast', run(s) { s.cAst = validatedCAstFromLines(result, s); return s; } },
     { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
-  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 250), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
+  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs ?? opts.transformSafetyCeilingMs ?? 250), deadline: opts.transformDeadline, deadlineReason: opts.transformDeadlineReason, clock: opts.transformClock, nodeBudget: Number(opts.decompilerNodeBudget ?? 12000), maxIterations: Number(opts.decompilerIterationCap ?? 16) });
   const advanced = manager.run(state);
   // Budgets are a degradation boundary, not a validity boundary. If a large function
   // exhausts the optional pass budget, finish the mandatory representation layers

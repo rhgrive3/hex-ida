@@ -493,6 +493,8 @@ function declaredExactArgument(argument) {
 }
 
 function bindDeclaredScalarReturns(ir, input, options) {
+  const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
+  if (!prototype) return ir;
   const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
   if (!adapter || !declaredValuesObservable(ir)
     || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
@@ -816,6 +818,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         bundle = validateMachineEffectBundle(bundle, options.machineEffectsOptions ?? {});
         if (bundle.instructionId !== instructionId) fail('semantic-v2-integration-instruction-id-mismatch');
         if (bundle.architectureId !== architectureId) fail('semantic-v2-integration-architecture-id-mismatch');
+      }
+      if (item.switchTable) {
+        const tableAddress = canonicalAddress(item.switchTable.instructionAddress);
+        if (BigInt(tableAddress) !== address || bundle.controlEffect.kind !== 'indirect'
+            || !Array.isArray(item.switchTable.targets) || item.switchTable.targets.length === 0) {
+          fail('semantic-v2-integration-invalid-resolved-switch-table');
+        }
+        bundle = createMachineEffectBundle({
+          ...bundle,
+          controlEffect:{
+            ...bundle.controlEffect,
+            targets:item.switchTable.targets.map(target => ({ kind:'absolute-address', value:canonicalAddress(target) })),
+          },
+        }, options.machineEffectsOptions ?? {});
       }
       if (bundle.controlEffect.kind === 'conditional-branch') {
         const fallthrough = conditionalFallthroughTarget(bundle.controlEffect, bundle.instructionId);

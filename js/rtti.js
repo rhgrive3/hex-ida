@@ -248,10 +248,40 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const offsetToTop=BigInt.asIntN(pointerBytes*8,wordAt(0));
   const typeinfoRaw=wordAt(pointerBytes);
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+BigInt(pointerBytes),opts||{},pointerBytes);
+  const isExactMode=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0;
+  const isExecutable=typeof opts?.isExecutable==='function'
+    ? opts.isExecutable
+    : (typeof opts?.isCodeAddress==='function' ? opts.isCodeAddress : null);
+  const pointerFormat=opts?.pointerFormat??null;
+
   for(let i=2;i<slotLimit+2&&(i+1)*pointerBytes<=bytes.length;i++){
     const raw=wordAt(i*pointerBytes);
+    // Structural vtable end detection (when not running in exact slotCount mode, and not an encoded pointer format):
+    if(!isExactMode && pointerFormat==null){
+      const signedWord=BigInt.asIntN(pointerBytes*8,raw);
+      // A secondary subtable / next vtable starts with an offset-to-top word
+      // (0 or a small negative number) followed by a typeinfo pointer. A small
+      // negative word alone is not proof: on ILP32 (and in high address
+      // ranges) it can be a real code pointer. Stop only when the next word is
+      // a typeinfo symbol, or when the word is known not to be code.
+      if(signedWord<=0n&&signedWord>-(1n<<BigInt(pointerBytes*8-4))){
+        const nextRaw=(i+2)*pointerBytes<=bytes.length?wordAt((i+1)*pointerBytes):null;
+        const nextName=nextRaw!=null&&symbols?(symbols.nameAt(nextRaw)||symbols.label(nextRaw)):null;
+        if(nextName&&/^_?_ZTI/.test(nextName))break;
+        if(signedWord<0n&&isExecutable!=null&&!isExecutable(raw))break;
+      }
+      // If a slot points directly to a known typeinfo or typeinfo name symbol (_ZTI or _ZTS), the slot run has ended
+      const directName=symbols?(symbols.nameAt(raw)||symbols.label(raw)):null;
+      if(directName&&/^_?_ZT[IS]/.test(directName))break;
+    }
+
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*pointerBytes),opts||{},pointerBytes);
     const addr=resolved.addr;
+
+    if(!isExactMode&&isExecutable!=null&&addr!=null&&addr!==0n){
+      if(!isExecutable(addr))break;
+    }
+
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
     slots.push({index:i-2,raw,addr,binding:resolved.binding||null,unresolved:!!resolved.unresolved,reason:resolved.reason||null,name:name||null,readable:name?readableName(name):null});
   }

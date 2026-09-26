@@ -2,6 +2,8 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { irFor } from '../../ir.js';
+import { createCxxEvidenceProvider } from '../cxx/project.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -22,6 +24,60 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
   'renderProvenanceBudget',
   'renderProvenanceBindingBudget',
 ]);
+
+// Cache by the immutable source object, then by loaded slice index. An entry
+// also records the reader and SymbolIndex identities because either can be
+// replaced while an app object or source wrapper is reused.
+const SLICE_CXX_PROVIDERS = new WeakMap();
+
+function ensureCxxEvidenceProviderForApp(app) {
+  const symbols = app?.symbols ?? null;
+  const backend = app?.backend ?? null;
+  if (!symbols || typeof symbols !== 'object' || !backend || typeof backend.readAt !== 'function') return null;
+  const sliceIndex = storeValue(app, 'sliceIndex') ?? 0;
+  const architecture = architectureOf(app) ?? 'arm64';
+  const pointerBytes = architecture === 'arm64_32' ? 4 : 8;
+  const source = backend.file ?? storeValue(app, 'file');
+  const sourceKey = source && (typeof source === 'object' || typeof source === 'function')
+    ? source
+    : backend;
+  if (!sourceKey || (typeof sourceKey !== 'object' && typeof sourceKey !== 'function')) return null;
+  let slices = SLICE_CXX_PROVIDERS.get(sourceKey);
+  if (!slices) {
+    slices = new Map();
+    SLICE_CXX_PROVIDERS.set(sourceKey, slices);
+  }
+  const sliceKey = String(sliceIndex);
+  const backendGeneration = backend.gen ?? backend.analysisEpoch ?? null;
+  let entry = slices.get(sliceKey);
+  if (entry && (entry.backend !== backend || entry.symbols !== symbols
+    || entry.backendGeneration !== backendGeneration
+    || entry.architecture !== architecture || entry.pointerBytes !== pointerBytes)) entry = null;
+  if (!entry) {
+    const read = async (addr, len) => {
+      try {
+        const result = await backend.readAt(addr, len);
+        return result?.found ? result.bytes : null;
+      } catch {
+        return null;
+      }
+    };
+    const provider = createCxxEvidenceProvider({
+      symbols,
+      read,
+      pointerBytes,
+      architecture,
+      snapshotId: `${typeof backend.binaryId === 'string' && backend.binaryId.trim() ? backend.binaryId : 'binary'}:slice:${sliceKey}`,
+      maxClasses: 2500,
+      maxSlots: 128,
+      maxReads: 8192,
+    });
+    const buildPromise = provider.build().catch(() => null);
+    entry = { provider, buildPromise, backend, symbols, backendGeneration, architecture, pointerBytes };
+    slices.set(sliceKey, entry);
+  }
+  return entry;
+}
 
 export function decompilerOptionsFromQuery(options = {}) {
   if (!options || typeof options !== 'object') return {};
@@ -1088,10 +1144,39 @@ export function createAppAnalysisQueryAdapter(app) {
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
+      // Only positive return evidence is forwarded: `false` would force a void
+      // return, while an absent fact must leave return inference to the IR.
+      const returnsValue = (result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue) === true ? true : undefined;
+      let cxxEvidence = options.cxxEvidence ?? null;
+      let projectionIr = null;
+      if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
+        try { projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {}); } catch { projectionIr = null; }
+        // The C++ producer needs canonical SSA values to bind argument 0 as
+        // `this`. Without a compatibility IR it can produce no usable
+        // evidence, so leave the per-slice index unbuilt for this function.
+        if (projectionIr) {
+          const entry = ensureCxxEvidenceProviderForApp(app);
+          if (entry) {
+            await entry.buildPromise;
+            try {
+              cxxEvidence = entry.provider.projectForFunction({
+                functionAddress: address != null ? BigInt(address) : null,
+                functionName: address == null ? null : app?.symbols?.nameAt?.(address),
+                ir:projectionIr,
+              });
+            } catch {
+              cxxEvidence = null;
+            }
+          }
+        }
+      }
       const projection = decompile(result.value.model, {
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
+        ...(returnsValue ? { returnsValue } : {}),
+        ...(projectionIr ? { ir:projectionIr } : {}),
+        ...(cxxEvidence ? { cxxEvidence } : {}),
       });
       return publish(projection, result.status?.completeness, functionStatus);
     },
@@ -1113,7 +1198,34 @@ export function createAppAnalysisQueryAdapter(app) {
         const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
         let producer = result.value.decompiler ?? null;
         if (!producer && result.value.model) {
-          producer = decompile(result.value.model, { name, addr:address });
+          // Only positive return evidence is forwarded: `false` would force a void
+          // return, while an absent fact must leave return inference to the IR.
+          const returnsValue = (result.value.setsReturnValue ?? result.value.model?.facts?.setsReturnValue) === true ? true : undefined;
+          let cxxEvidence = options.cxxEvidence ?? null;
+          let projectionIr = null;
+          if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
+            const entry = ensureCxxEvidenceProviderForApp(app);
+            if (entry) {
+              await entry.buildPromise;
+              try {
+                projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {});
+                cxxEvidence = entry.provider.projectForFunction({
+                  functionAddress: address != null ? BigInt(address) : null,
+                  functionName: name,
+                  ir: projectionIr,
+                });
+              } catch {
+                cxxEvidence = null;
+              }
+            }
+          }
+          producer = decompile(result.value.model, {
+            name,
+            addr:address,
+            ...(returnsValue ? { returnsValue } : {}),
+            ...(projectionIr ? { ir:projectionIr } : {}),
+            ...(cxxEvidence ? { cxxEvidence } : {}),
+          });
         }
         producer ??= result.value;
         const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;

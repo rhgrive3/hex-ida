@@ -1,28 +1,26 @@
 /**
  * Runs the frozen Phase 8 corpus through the real product decompiler paths.
  *
- * ARM64 keeps the historical public `decompile()` facade over frozen assembly.
- * x86-64/RISC-V64 freeze real machine bytes, decode them with Hex's shipped
- * Capstone artifact, then use the existing target lifter + shared Semantic
- * IR/CFG/SSA/MemorySSA pipeline and the public semantic decompiler facade.
- * No architecture is represented by another architecture's parser or labels.
+ * ARM64 freezes parsed assembly text, while x86-64/RISC-V64 freeze real machine
+ * bytes decoded with Hex's shipped Capstone artifact. All three feed the
+ * existing target lifter + shared Semantic IR/CFG/SSA/MemorySSA pipeline and
+ * public semantic decompiler facade. No architecture is represented by
+ * another architecture's parser or labels.
  */
 
-import { decompile } from '../../../js/decompile.js';
+import { spawnSync } from 'node:child_process';
 import { parseOperands } from '../../../js/arm64.js';
-import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
-import { AAPCS64_ABI } from '../../../js/targets/abi/index.js';
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { createRiscv64DecodedInstruction, RISCV64_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { createCapstoneX86Session } from '../../../tests/phase5/helpers/capstone-session.mjs';
 import { createCapstoneRiscv64Session } from '../../../tests/phase6/helpers/capstone-session.mjs';
 
-import { loadCorpus } from './build-corpus.mjs';
+import { buildCorpus, loadCorpus } from './build-corpus.mjs';
 import { decompileDecodedProductFunction } from './decoded-function-adapter.mjs';
 
-const ABI_ADAPTER = semanticAbiAdapter(AAPCS64_ABI);
-const FROZEN_TOOLCHAIN = loadCorpus().toolchain;
+const FROZEN_CORPUS = loadCorpus();
+const FROZEN_TOOLCHAIN = FROZEN_CORPUS.toolchain;
 const X86_SESSION = await createCapstoneX86Session();
 const RISCV_SESSION = await createCapstoneRiscv64Session();
 let sessionsClosed = false;
@@ -33,6 +31,38 @@ function closeSessions() {
   try { RISCV_SESSION.close(); } catch { /* best effort */ }
 }
 process.once('exit', closeSessions);
+
+let linkedImageEntries;
+function linkedImageEvidenceFor(entry) {
+  if (entry.representation !== 'machine-bytes') return null;
+  if (linkedImageEntries === undefined) {
+    linkedImageEntries = null;
+    const candidates = [...new Set([process.env.CLANG, 'clang', 'clang-18'].filter(Boolean))];
+    for (const clang of candidates) {
+      const version = spawnSync(clang, ['--version'], { encoding:'utf8' });
+      if (version.status !== 0) continue;
+      try {
+        const rebuilt = buildCorpus({ clang, includeMemorySegments:true });
+        if (rebuilt.sourceDigest !== FROZEN_CORPUS.sourceDigest) continue;
+        const frozenX86 = FROZEN_CORPUS.functions.filter(item => item.architectureId === 'x86_64' && item.representation === 'machine-bytes');
+        const rebuiltX86 = rebuilt.functions.filter(item => item.architectureId === 'x86_64' && item.representation === 'machine-bytes');
+        if (frozenX86.length === 0 || frozenX86.length !== rebuiltX86.length) continue;
+        const rebuiltById = new Map(rebuiltX86.map(item => [item.id, item]));
+        if (frozenX86.some(item => {
+          const linked = rebuiltById.get(item.id);
+          return !linked || linked.bytes !== item.bytes || linked.targetTriple !== item.targetTriple
+            || linked.optimization !== item.optimization || !Array.isArray(linked.memorySegments);
+        })) continue;
+        linkedImageEntries = rebuiltById;
+        break;
+      } catch { /* An unavailable or non-matching linked image stays unknown. */ }
+    }
+  }
+  const linked = linkedImageEntries?.get(entry.id);
+  if (!linked || linked.bytes !== entry.bytes || linked.function !== entry.function
+      || linked.targetTriple !== entry.targetTriple || linked.optimization !== entry.optimization) return null;
+  return linked.memorySegments;
+}
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
@@ -210,23 +240,65 @@ function compilerCallingConvention(entry, toolchain) {
   return profiles[0].slice('-mabi='.length);
 }
 
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 0, deterministicTransforms = true, phase8Optimize = true, toolchain = FROZEN_TOOLCHAIN } = {}) {
+export function decompileEntry(entry, {
+  decompilerTimeBudgetMs = 20000,
+  index = 0,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+  profile = 'deep',
+  phase8TimeBudgetMs,
+  phase8WorkBudget,
+  renderProvenanceBudget,
+  renderProvenanceBindingBudget,
+  decompilerNodeBudget,
+  transformClock,
+  toolchain = FROZEN_TOOLCHAIN,
+} = {}) {
   const baseAddress = 0x100000n + BigInt(index) * 0x10000n;
+  // Corpus observations are proof-oriented measurements. Keep the profile
+  // explicit so the interactive default's wall-clock and render caps cannot
+  // turn host load into a missing-measurement result.
+  // A caller-selected node budget stays explicit; a time allowance is never
+  // reinterpreted as a work cap (deadline tests select production mode).
+  const effectiveNodeBudget = Number.isSafeInteger(decompilerNodeBudget) && decompilerNodeBudget >= 0
+    ? decompilerNodeBudget : null;
+  const decompilerOptions = {
+    profile,
+    decompilerTimeBudgetMs,
+    deterministicTransforms,
+    phase8Optimize,
+    ...(effectiveNodeBudget == null ? {} : { decompilerNodeBudget:effectiveNodeBudget }),
+    ...(typeof transformClock === 'function' ? { transformClock } : {}),
+    ...(phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs } : {}),
+    ...(phase8WorkBudget !== undefined ? { phase8WorkBudget } : {}),
+    ...(renderProvenanceBudget !== undefined ? { renderProvenanceBudget } : {}),
+    ...(renderProvenanceBindingBudget !== undefined ? { renderProvenanceBindingBudget } : {}),
+  };
   try {
     if (entry.architectureId === 'arm64') {
       if (entry.representation !== 'assembly') return { id:entry.id, failure:'arm64 corpus entry is not frozen assembly' };
       const model = modelFromAssembly(entry.assembly, entry.function, baseAddress);
       if (!model) return { id:entry.id, failure:'assembly could not be parsed into a function model' };
-      const rowOfAddress = new Map(model.instructions.map((instruction) => [instruction.address.toString(), instruction.row]));
-      const result = decompile(model, {
+      const instructions = model.instructions.map((instruction, instructionIndex) => ({
+        ...instruction,
+        instructionId:`phase8:${entry.id}:${instructionIndex}`,
+        size:4,
+        length:4,
+        mode:'a64',
+      }));
+      const result = decompileDecodedProductFunction({
+        architecture:'arm64',
+        platform:'linux',
+        callingConvention:null,
         name:entry.function,
-        addr:model.instructions[0].address,
-        rowOfAddress:(address) => rowOfAddress.get(address?.toString()) ?? null,
-        abiAdapter:ABI_ADAPTER,
-        decompilerTimeBudgetMs,
-        deterministicTransforms,
-        phase8Optimize,
-      });
+        instructions,
+        decoderSemanticVersion:'arm64-frozen-assembly-parse-v1',
+        mode:'a64',
+        binaryId:`phase8-corpus:${entry.id}`,
+        sliceId:`arm64:${entry.optimization}`,
+        dataEndianness:'little',
+        instructionEndianness:'little',
+      }, decompilerOptions);
       return { id:entry.id, result };
     }
 
@@ -239,11 +311,12 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 20000, index = 
       instructions:decoded.instructions,
       decoderSemanticVersion:decoded.decoderSemanticVersion,
       mode:decoded.mode,
+      memorySegments:linkedImageEvidenceFor(entry),
       binaryId:`phase8-corpus:${entry.id}`,
       sliceId:`${entry.architectureId}:${entry.optimization}`,
       dataEndianness:'little',
       instructionEndianness:'little',
-    }, { decompilerTimeBudgetMs, deterministicTransforms, phase8Optimize });
+    }, decompilerOptions);
     return { id:entry.id, result };
   } catch (error) {
     return { id:entry.id, failure:error?.message || String(error) };
@@ -288,6 +361,9 @@ export function observationOf(entry, outcome) {
       enabledStages:[...(result.phase8.enabledStages ?? [])],
       published:result.phase8.published,
       completeness:result.phase8.completeness,
+      sourceCompleteness:result.phase8.sourceCompleteness ?? null,
+      sourceStopReason:result.phase8.sourceStopReason ?? null,
+      sourceDiagnostics:[...(result.phase8.sourceDiagnostics ?? [])],
       transformCount:result.phase8.transformCount,
       produced:[...(result.phase8.produced ?? [])],
       invalidated:[...(result.phase8.invalidated ?? [])],
@@ -313,8 +389,25 @@ export function observationOf(entry, outcome) {
   };
 }
 
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 20000, deterministicTransforms = true, phase8Optimize = true } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize, toolchain:corpus.toolchain ?? null })));
+export function observeCorpus({
+  corpus = loadCorpus(),
+  decompilerTimeBudgetMs = 20000,
+  deterministicTransforms = true,
+  phase8Optimize = true,
+  profile = 'deep',
+  phase8TimeBudgetMs,
+  phase8WorkBudget,
+} = {}) {
+  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, {
+    decompilerTimeBudgetMs,
+    index,
+    deterministicTransforms,
+    phase8Optimize,
+    profile,
+    ...(phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs } : {}),
+    ...(phase8WorkBudget !== undefined ? { phase8WorkBudget } : {}),
+    toolchain:corpus.toolchain ?? null,
+  })));
 }
 
 export { closeSessions };

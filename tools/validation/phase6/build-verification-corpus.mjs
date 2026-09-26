@@ -67,7 +67,7 @@ function optimizationFlag(level) {
 }
 
 function targetFlagsFor(target) {
-  if (target.id === 'riscv64-lp64-exec') return ['-fno-pic', '-Wl,-Ttext=0x10000'];
+  if (target.id === 'riscv64-lp64-exec') return ['-fno-pic', '-Wl,--image-base=0x10000'];
   if (target.id === 'riscv64-lp64-pie') return ['-fPIE', '-Wl,-pie'];
   throw new TypeError(`unknown Phase 6 corpus target: ${target.id}`);
 }

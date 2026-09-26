@@ -185,7 +185,7 @@ test('#4602: fixed-arity intrinsics fail closed, real add-with-carry output shap
 test('#4602: the schema table pins input and output cardinality per kind', () => {
   const expected = {
     const: { inputs: [0, 0], outputs: [1, 1] },
-    copy: { inputs: [1, 1], outputs: [1, 1] },
+    copy: { inputs: [1, 1], outputs: [1, null] },
     unary: { inputs: [1, 1], outputs: [1, 1] },
     binary: { inputs: [2, 2], outputs: [1, 1] },
     compare: { inputs: [2, 2], outputs: [1, 1] },

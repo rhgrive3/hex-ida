@@ -45,9 +45,12 @@ const app = {
 };
 
 const runtimePlatform = await runtimePlatformForApp(app);
+// Runtime evidence is bound to the strongest binary witness (backend.binaryId
+// outranks the weak FNV fileInfo.hash), so tag observations with that identity.
+const runtimeBinaryHash = app.backend.binaryId;
 runtimePlatform.evidence.push(
-  { id: ['runtime-array'], binaryHash: fileInfo.hash, sliceIdentity: 'slice:0:slice-uuid-4367:arm64', function: address, verdict: 'confirmed' },
-  { id: 'runtime-valid', binaryHash: fileInfo.hash, sliceIdentity: 'slice:0:slice-uuid-4367:arm64', function: address, verdict: 'confirmed' },
+  { id: ['runtime-array'], binaryHash: runtimeBinaryHash, sliceIdentity: 'slice:0:slice-uuid-4367:arm64', function: address, verdict: 'confirmed' },
+  { id: 'runtime-valid', binaryHash: runtimeBinaryHash, sliceIdentity: 'slice:0:slice-uuid-4367:arm64', function: address, verdict: 'confirmed' },
 );
 
 try {

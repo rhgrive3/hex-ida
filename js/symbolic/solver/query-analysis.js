@@ -35,8 +35,9 @@ function validateExprNode(expr) {
   switch (expr.kind) {
     case EXPR_KIND.CONST:
       if (isBoolSort(expr.sort)) return typeof expr.value === 'boolean' ? null : 'invalid-bool-constant';
-      return typeof expr.value === 'bigint' && expr.value >= 0n && expr.value < (1n << BigInt(expr.sort.width))
-        ? null : 'invalid-bv-constant';
+      if (typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+      return expr.value >= 0n && expr.value < (1n << BigInt(expr.sort.width))
+        ? null : 'non-canonical-bv-constant';
     case EXPR_KIND.FRESH_SYMBOL:
       return typeof expr.name === 'string' && expr.name && typeof (expr.symbolId || expr.name) === 'string' ? null : 'malformed-symbol';
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -101,10 +102,16 @@ export function analyzeSolverExpressions(expressions, { maxExprNodes = 100000, m
         if (invalid) return Object.freeze({ unsupportedReason: invalid, symbols: [], nodeCount, maxDepth, maxBvWidth });
         if (isBvSort(frame.node.sort)) maxBvWidth = Math.max(maxBvWidth, frame.node.sort.width);
         if (frame.node.kind === EXPR_KIND.FRESH_SYMBOL) {
-          const key = String(frame.node.symbolId || frame.node.name);
+          const key = frame.node.symbolId ?? frame.node.name;
+          if (typeof frame.node.name !== 'string' || !frame.node.name || typeof key !== 'string' || !key) {
+            return Object.freeze({ unsupportedReason: 'malformed-symbol', symbols: [], nodeCount, maxDepth, maxBvWidth });
+          }
           const existing = symbols.get(key);
           if (existing && stableDigest(existing.sort) !== stableDigest(frame.node.sort)) {
             return Object.freeze({ unsupportedReason: 'symbol-sort-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth });
+          }
+          if (existing && existing.name !== frame.node.name) {
+            return Object.freeze({ unsupportedReason: 'symbol-identity-conflict', symbols: [], nodeCount, maxDepth, maxBvWidth });
           }
           symbols.set(key, Object.freeze({ key, name: frame.node.name, symbolId: key, sort: frame.node.sort }));
         }

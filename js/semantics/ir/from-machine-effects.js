@@ -1196,7 +1196,36 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         const targetId = resolveControlCondition(effect, control.target);
         if (targetId) targetValueIds.push(targetId);
       }
-      const candidates = configuredTargetBlocks(control.target, 'indirect');
+      const rawTargets = Array.isArray(control.targets) ? control.targets : [];
+      const exactTargetBlocks = rawTargets.map(target => configuredTargetBlocks(target, 'indirect'));
+      const exactTargetSet = rawTargets.length > 0 && targetValueIds.length === 1
+        && exactTargetBlocks.every(matches => matches.length === 1);
+      if (exactTargetSet) {
+        const targets = [...new Set(exactTargetBlocks.map(matches =>
+          ensureControlBlockId(matches[0], 'verified-indirect-table-successor')))];
+        const nodeId = nodeIdFor(effect, 'indirect-switch-control');
+        addNode({
+          id: nodeId,
+          kind: 'switch',
+          blockId,
+          inputs: targetValueIds,
+          targets,
+          attributes: machineAttributes(effect, {
+            machineControlEffect: control,
+            indirectControl: {
+              targetValueIds,
+              targetState: 'exact-table',
+              targetCount: rawTargets.length,
+            },
+          }),
+          sourceEffectIds: [effect.sourceEffectId],
+          origin: effectOrigin(effect, 'verified-indirect-table-control-projection', [nodeId]),
+        });
+        return;
+      }
+      const candidates = rawTargets.length
+        ? unique(exactTargetBlocks.flat())
+        : configuredTargetBlocks(control.target, 'indirect');
       const targetState = candidates.length ? 'candidate' : 'unknown';
       const targets = candidates.length
         ? candidates.map((id) => ensureControlBlockId(id, 'indirect-control-candidate-placeholder'))

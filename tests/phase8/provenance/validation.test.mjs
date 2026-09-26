@@ -28,6 +28,20 @@ test('P8-PROV counterexample: a rendered entity with lost origins is never trust
   assert.ok(validation.counts.provenanceLoss >= 1);
 });
 
+test('P8-PROV source-free local declarations are structural while operations still need origins', () => {
+  const provenance = buildRenderProvenance({ result:{ lines:[
+    { kind:'sig', text:'void f(void)', source:source(1, 1) },
+    { kind:'decl', text:'uint32 local_0;' },
+  ] }, snapshotId:'snapshot:local-declaration' });
+  const declaration = provenance.entities['L1:decl'];
+  assert.ok(declaration);
+  assert.equal(declaration.role, 'structural');
+  assert.equal(declaration.complete, true);
+  assert.deepEqual(declaration.origins, { rows:[], addresses:[], ir:[], ssaRefs:[] });
+  assert.equal(provenance.completeness, 'complete');
+  assert.equal(validateRenderProvenance(provenance, { snapshotId:'snapshot:local-declaration' }).counts.provenanceLoss, 0);
+});
+
 test('P8-PROV a mapping bound to another snapshot is rejected as stale', () => {
   const expression = expr.variable('a1', 64, false, source(1, 1));
   const result = applyPhase8Projection(resultWith(expression), analysis());

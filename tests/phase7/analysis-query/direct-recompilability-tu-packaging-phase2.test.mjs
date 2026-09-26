@@ -46,13 +46,15 @@ test('known direct callee can use explicit prototype evidence and marks exactnes
   assert.equal(unit.prototypes[0].exact, true);
 });
 
-test('unknown/unresolved call gets no fake exact or variadic prototype and uncertainty is explicit', () => {
+test('unknown/unresolved call keeps an explicit unresolved entry and a syntax-only fallback prototype', () => {
   const unit = buildCTranslationUnit([fn('uint64 sample(void)\n{\n  return mystery();\n}', {
     ir:{ instructions:[call(0x444n, 'mystery')] },
   })]);
   assert.equal(unit.prototypes.length, 0);
   assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-prototype' && row.subject === 'mystery'));
-  assert.doesNotMatch(unit.source, /extern\s+.*mystery|mystery\s*\(\.\.\.\)/);
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t mystery();')));
+  assert.match(unit.source, /uint64_t mystery\(\);/);
+  assert.doesNotMatch(unit.source, /mystery\s*\(\.\.\.\)/);
 });
 
 test('known global data reference gets an evidence-backed declaration using the rendered identifier', () => {
@@ -64,21 +66,25 @@ test('known global data reference gets an evidence-backed declaration using the 
   assert.ok(unit.source.indexOf('extern uint64_t global_4000;') < unit.source.indexOf('uint64_t sample(void)'));
 });
 
-test('insufficient global type evidence stays unresolved instead of guessing uint64_t', () => {
+test('insufficient global type evidence stays unresolved with an explicit byte-array syntax fallback', () => {
   const unit = buildCTranslationUnit([fn('uint64_t sample(void)\n{\n  return global_5000;\n}')]);
   assert.equal(unit.globals[0].declaration, null);
   assert.equal(unit.globals[0].certainty, 'unresolved');
   assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-global' && row.subject === 'global_5000'));
   assert.doesNotMatch(unit.source, /extern\s+uint64_t\s+global_5000/);
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('extern uint8_t global_5000[];')));
 });
 
-test('unknown_call and pseudo intrinsics are not converted into fictional external helpers', () => {
+test('unknown_call and pseudo intrinsics keep their unresolved entries plus syntax-only fallback prototypes', () => {
   const unit = buildCTranslationUnit([fn('uint64 sample(void)\n{\n  return phi(unknown_call(1), bit_extract(2, 0, 1));\n}')]);
   assert.deepEqual(unit.helpers.map((row) => [row.name, row.kind]), [
     ['bit_extract', 'pseudo-intrinsic'], ['phi', 'pseudo-intrinsic'], ['unknown_call', 'unresolved-call-sentinel'],
   ]);
   assert.ok(unit.helpers.every((row) => row.declaration === null && row.external === false));
-  assert.doesNotMatch(unit.source, /extern[^\n]*(?:unknown_call|phi|bit_extract)/);
+  assert.ok(unit.unresolved.some((row) => row.kind === 'pseudo-intrinsic' && row.subject === 'phi'));
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t phi();')));
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('uint64_t unknown_call();')));
+  assert.match(unit.source, /uint64_t phi\(\);/);
 });
 
 test('duplicate declarations are emitted once and order is deterministic', () => {
@@ -107,10 +113,178 @@ test('conflicting prototype evidence fails closed', () => {
   assert.ok(unit.unresolved.some((row) => row.reason === 'conflicting-prototype-evidence'));
 });
 
+test('a provably-syntax-safe recovered body keeps its real statements in the emitted source', () => {
+  const source = 'uint64 sample(void)\n{\n  uint64 x;\n  x = 7;\n  return x;\n}';
+  const unit = buildCTranslationUnit([fn(source)]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, false, 'eligible body must not be replaced by a placeholder');
+  assert.equal(row.emittedPseudocode, 'uint64 sample(void) {\n  uint64 x;\n  x = 7;\n  return x;\n}');
+  assert.equal(row.originalPseudocode, source);
+  assert.ok(unit.source.includes('return x;'), 'emitted source must carry the recovered statements');
+  assert.doesNotMatch(unit.source, /__builtin_trap/);
+  // No unresolved evidence was hidden: a fully provable body stays non-partial here.
+  assert.ok(!unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'));
+});
+
+test('a body the gates cannot prove keeps the explicit placeholder and records the withheld reason', () => {
+  const source = 'uint64 sample(void)\n{\n  goto somewhere;\n  return 0;\n}';
+  const unit = buildCTranslationUnit([fn(source)]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.equal(row.emittedPseudocode.includes('__builtin_trap'), true);
+  assert.equal(row.pseudocode, source, 'the recovered body stays available as evidence');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.subject === 'sample' && entry.reason === 'goto-syntax-unavailable'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a producer $x placeholder name is never counted as a recovered faithful function', () => {
+  const source = 'void $x(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source)]);
+  const row = unit.functions[0];
+  assert.equal(row.name, 'hex_tu_fn_0', 'the emitted name is the safe alias, not the producer name');
+  assert.equal(row.syntaxOnly, true, 'the $x signature cannot be proven, so the body stays a placeholder');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'),
+    JSON.stringify(unit.unresolved));
+  assert.ok(!unit.source.includes('$'), 'no producer placeholder name reaches the emitted source');
+});
+
+test('an arity-unknown call is faithful only against an unprototyped callee declaration', () => {
+  // Callee recovered with parameters: its published signature has a known
+  // arity, so the caller body must stay a placeholder.
+  const caller = fn('void caller(void)\n{\n  callee(/* arguments unknown */);\n}', { address:0x100n, name:'caller' });
+  const callee = fn('uint32 callee(int64 a1)\n{\n  return 1;\n}', { address:0x200n, name:'callee' });
+  const unit = buildCTranslationUnit([caller, callee]);
+  const callerRow = unit.functions.find((row) => row.name === 'caller');
+  assert.equal(callerRow.syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.reason?.startsWith('arity-unknown-call-contradicts-selected-signature')),
+    JSON.stringify(unit.unresolved));
+  // Without recovered parameters, the caller body is emitted faithfully.
+  const callee2 = fn('uint32 callee(void)\n{\n  return 1;\n}', { address:0x200n, name:'callee' });
+  const caller2 = fn('void caller(void)\n{\n  callee(1);\n}', { address:0x100n, name:'caller' });
+  const unit2 = buildCTranslationUnit([caller2, callee2]);
+  const callerRow2 = unit2.functions.find((row) => row.name === 'caller');
+  assert.equal(callerRow2.syntaxOnly, false);
+});
+
+test('a missing-type global used as a scalar keeps its body on the placeholder', () => {
+  // No globalEvidence: the packager can only offer a byte-array fallback.
+  const unit = buildCTranslationUnit([fn('void sample(void)\n{\n  global_5000 = 1;\n}')]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.reason?.startsWith('global-byte-array-fallback-usage-unsupported:global_5000')));
+  // The byte-array fallback itself stays explicit in the source.
+  assert.ok(unit.fallbackDeclarations.some((line) => line.startsWith('extern uint8_t global_5000[];')));
+});
+
 test('type-like words inside comments and strings do not create declarations', () => {
   const unit = buildCTranslationUnit([fn('int sample(void)\n{\n  /* uint64 */\n  const char *s = "uint32";\n  return 0;\n}')]);
   assert.deepEqual(unit.typeDeclarations, []);
   assert.ok(!unit.includes.includes('<stdint.h>'));
+});
+
+test('a body with unaccounted code before the signature stays a placeholder', () => {
+  const source = 'goto error;\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.equal(row.emittedPseudocode.includes('__builtin_trap'), true);
+  assert.equal(row.pseudocode, source, 'the recovered body stays available as evidence');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a truncated brace-on-signature-line body stays a placeholder', () => {
+  const source = 'void foo(void) {\n  if (x)\n  {\n    return;\n  }';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, true);
+  assert.equal(row.emittedPseudocode.includes('__builtin_trap'), true);
+  assert.equal(row.pseudocode, source, 'the recovered body stays available as evidence');
+  assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+    && entry.subject === 'foo' && entry.reason === 'body-extent-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('the exact fixed-width prelude before the signature is accounted for', () => {
+  const source = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */\n'
+    + 'typedef __INT32_TYPE__ int32;\nint32 foo(int32 a)\n{\n  return a;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'int32 foo(int32 a)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.ok(unit.source.includes('return a;'));
+  assert.doesNotMatch(unit.source, /__builtin_trap/);
+});
+
+for (const prefix of ['/* note */ goto error;', '#define return exit(1);', 'typedef __INT64_TYPE__ int32;']) {
+  test(`prefix ${JSON.stringify(prefix)} before the signature stays unaccounted`, () => {
+    const source = `${prefix}\nint32 foo(int32 a)\n{\n  return a;\n}`;
+    const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'int32 foo(int32 a)' })]);
+    const row = unit.functions[0];
+    assert.equal(row.syntaxOnly, true);
+    assert.ok(unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'
+      && entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+      JSON.stringify(unit.unresolved));
+  });
+}
+
+test('an unclosed comment before the signature stays unaccounted', () => {
+  const source = '/* goto error;\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a closed multi-line comment before the signature is accounted for', () => {
+  const source = '/* recovered\n * by hex */\nvoid foo(void)\n{\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+});
+
+test('a lone carriage return cannot hide code inside a line comment', () => {
+  const source = 'void foo(void)\n{\n  // note\r goto error;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-line-ending-unsupported'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a dropped prelude typedef still gets the packager alias contract', () => {
+  const source = 'typedef __UINT8_TYPE__ uint8;\nvoid foo(void)\n{\n  uint8 a = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.match(unit.source, /typedef uint8_t uint8;/);
+});
+
+test('a standard-name prelude typedef is re-provided by its header', () => {
+  const source = 'typedef __UINT8_TYPE__ uint8_t;\nvoid foo(void)\n{\n  uint8_t x = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, false, JSON.stringify(unit.unresolved));
+  assert.ok(unit.includes.includes('<stdint.h>'));
+});
+
+test('a prelude typedef the packager does not re-emit stays unaccounted', () => {
+  const source = 'typedef unsigned __int128 uint128;\nvoid foo(void)\n{\n  uint128 x = 1;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  assert.equal(unit.functions[0].syntaxOnly, true);
+  assert.ok(unit.unresolved.some((entry) => entry.subject === 'foo' && entry.reason === 'body-prefix-unaccounted'),
+    JSON.stringify(unit.unresolved));
+});
+
+test('a complete brace-on-signature-line body stays eligible', () => {
+  const source = 'void foo(void) {\n  return;\n}';
+  const unit = buildCTranslationUnit([fn(source, { name:'foo', signature:'void foo(void)' })]);
+  const row = unit.functions[0];
+  assert.equal(row.syntaxOnly, false, 'complete brace-on-signature-line body must stay faithful');
+  assert.equal(row.emittedPseudocode, 'void foo(void) {\n  return;\n}');
+  assert.equal(row.originalPseudocode, source);
+  assert.ok(unit.source.includes('return;'));
+  assert.doesNotMatch(unit.source, /__builtin_trap/);
+  assert.ok(!unit.unresolved.some((entry) => entry.kind === 'syntax-only-function-body'));
 });
 
 test('translationUnit is additive: existing decompile presentation remains byte-for-byte unchanged', async () => {

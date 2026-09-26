@@ -20,6 +20,13 @@
 
 import { createPassDescriptor, createPassResult } from './contract.js';
 
+export const IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC = Object.freeze({
+  severity: 'info',
+  code: 'phase8.identity.source-truncated',
+  message: 'Phase 8 source facts are partial because the Semantic IR was truncated.',
+  reason: 'The canonical Semantic IR that seeded this analysis carries truncated:true, so its facts are not exhaustive (#8653).',
+});
+
 export const IDENTITY_PASS = createPassDescriptor({
   id: 'phase8.identity',
   version: '1.0.0',
@@ -54,23 +61,18 @@ export function runIdentityPass(context = {}) {
   // "present" is not "exhaustive". When the upstream canonical Semantic IR that
   // seeded this analysis was itself budget-truncated (or projected from a
   // partial v2 result), the available facts are only a partial view, and the
-  // identity pass must not mint a `complete` ledger the source never proved
-  // (#8653). Presence of facts is indistinguishable from exhaustive facts only
-  // when the source claimed to be complete.
+  // identity pass must not report those facts as source-complete (#8653).
+  // Presence of facts is indistinguishable from exhaustive facts only
+  // when the source claimed to be complete. The pass result records this source
+  // knowledge state; the vertical ledger separately records whether all passes
+  // reached their fixed points over the facts they received.
   const sourceTruncated = context.ir?.truncated === true;
   return createPassResult({
     descriptor: IDENTITY_PASS,
     status: 'unchanged',
     changed: false,
     completeness: sourceTruncated ? 'partial' : 'complete',
-    diagnostics: sourceTruncated
-      ? [{
-        severity: 'info',
-        code: 'phase8.identity.source-truncated',
-        message: 'Phase 8 identity withheld completeness: the source Semantic IR was truncated.',
-        reason: 'The canonical Semantic IR that seeded this analysis carries truncated:true, so its facts are not exhaustive and a complete ledger cannot be minted from their mere presence (#8653).',
-      }]
-      : [],
+    diagnostics: sourceTruncated ? [IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC] : [],
     transforms: [],
     invalidated: [],
     stopReason: sourceTruncated ? 'source-ir-truncated' : null,

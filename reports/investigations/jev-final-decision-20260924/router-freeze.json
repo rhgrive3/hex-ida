@@ -1,0 +1,15 @@
+{
+  "schema": "hex-jev-router-freeze/v1",
+  "frozenAtUtc": "2026-09-23T19:30:21.720Z",
+  "routerSourceFile": "js/pinpoint.js",
+  "routerFunctionName": "rerankWithJev",
+  "sha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "routerRule": {
+    "defaultEnabled": false,
+    "condition": "Call Jev only for partial-mode queries when Hex top1 is not strong (verdict not in [confirmed, likely]) and candidates >= 2",
+    "shortlistLimit": "<= 255 candidates via jevShortlist",
+    "acceptance": "Take Jev choice only if strictly within shortlist and existing candidates",
+    "verdictPolicy": "Verdict strength is never promoted to strong by Jev alone; returns source: hex|jev",
+    "failureMode": "Fail-closed on any error, timeout, malformed response, or out-of-shortlist choice, returning hexResult unchanged"
+  }
+}

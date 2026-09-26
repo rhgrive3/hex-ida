@@ -55,13 +55,21 @@ export async function queryEqualitySaturation(options={}) {
       guard.take('candidates');guard.take('allocationUnits');guard.check();
       const candidateId=`egraph:${EQUALITY_RULESET_VERSION}:${choice.digest}`;
       verificationQueries++;
+      const timeoutAllowance = submitted.timeoutMs ?? 250;
+      const verificationTimeoutMs = guard.deterministic() ? timeoutAllowance : Math.max(0, Math.floor(guard.remainingMilliseconds()));
       const verification=await verifyDeobfuscationCandidate({
         before:expression,after:choice.expression,candidateId,beforeValueId:valueId,
         afterValueId:`${valueId}:eqs:${choice.digest}`,identity:guard.identity,
         preconditions,correspondence,memoryObservables:[],effectObservables:[],
+        backendTier:submitted.backendTier,
         signal:submitted.signal,isCancelled:submitted.isCancelled,getCurrentIdentity:submitted.getCurrentIdentity,
-        taintResult:submitted.taintResult,backendTier:submitted.backendTier??'tiered',
-        timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+        taintResult:submitted.taintResult,
+        // Forward the query's determinism into the existing proof consumer so a
+        // deterministic request keeps deterministic work limits and no wall-clock
+        // verification deadline. Without this the consumer re-reads a real
+        // monotonic allowance and the candidate batch can time out on a slow host.
+        deterministic:guard.deterministic(),
+        timeoutMs:verificationTimeoutMs,
       });
       guard.check();
       if(!verification.eligible && /budget|timeout|deadline|cancel|stale/.test(verification.reason??''))throw new QueryFailure(verification.reason);

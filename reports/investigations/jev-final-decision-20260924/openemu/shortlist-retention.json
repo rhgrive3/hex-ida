@@ -1,0 +1,496 @@
+{
+  "schema": "hex-jev-binary-holdout-retention/v1",
+  "evaluatedAtUtc": "2026-09-24T00:06:55.518Z",
+  "caseSha256": "e6e40752c2f039cecc4f7054e2f252a66d567e58a90af1315ff2b9534bdd96dd",
+  "binarySha256": "c09d5852b8bc2e94acb9bec5dd1c8a4a8aa93275421c8bd81ed2ee8904477253",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "total": 48,
+  "answerable": 36,
+  "abstain": 12,
+  "goldInLattice": 36,
+  "goldInShortlist": 36,
+  "latticePresentRetention": 1,
+  "allAnswerableRetention": 1,
+  "rows": [
+    {
+      "id": "OE01",
+      "answerable": true,
+      "candidateCount": 69,
+      "verdict": "ambiguous",
+      "goldRank": 23,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 69
+    },
+    {
+      "id": "OE02",
+      "answerable": true,
+      "candidateCount": 254,
+      "verdict": "ambiguous",
+      "goldRank": 66,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 254
+    },
+    {
+      "id": "OE03",
+      "answerable": true,
+      "candidateCount": 352,
+      "verdict": "ambiguous",
+      "goldRank": 119,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE04",
+      "answerable": true,
+      "candidateCount": 235,
+      "verdict": "ambiguous",
+      "goldRank": 5,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 235
+    },
+    {
+      "id": "OE05",
+      "answerable": true,
+      "candidateCount": 258,
+      "verdict": "ambiguous",
+      "goldRank": 12,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE06",
+      "answerable": true,
+      "candidateCount": 201,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 201
+    },
+    {
+      "id": "OE07",
+      "answerable": true,
+      "candidateCount": 52,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 52
+    },
+    {
+      "id": "OE08",
+      "answerable": true,
+      "candidateCount": 175,
+      "verdict": "ambiguous",
+      "goldRank": 16,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 175
+    },
+    {
+      "id": "OE09",
+      "answerable": true,
+      "candidateCount": 38,
+      "verdict": "ambiguous",
+      "goldRank": 24,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 38
+    },
+    {
+      "id": "OE10",
+      "answerable": true,
+      "candidateCount": 170,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 170
+    },
+    {
+      "id": "OE11",
+      "answerable": true,
+      "candidateCount": 106,
+      "verdict": "ambiguous",
+      "goldRank": 45,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 106
+    },
+    {
+      "id": "OE12",
+      "answerable": true,
+      "candidateCount": 54,
+      "verdict": "ambiguous",
+      "goldRank": 11,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 54
+    },
+    {
+      "id": "OE13",
+      "answerable": true,
+      "candidateCount": 277,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE14",
+      "answerable": true,
+      "candidateCount": 76,
+      "verdict": "ambiguous",
+      "goldRank": 36,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 76
+    },
+    {
+      "id": "OE15",
+      "answerable": true,
+      "candidateCount": 196,
+      "verdict": "ambiguous",
+      "goldRank": 71,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 196
+    },
+    {
+      "id": "OE16",
+      "answerable": true,
+      "candidateCount": 182,
+      "verdict": "ambiguous",
+      "goldRank": 2,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 182
+    },
+    {
+      "id": "OE17",
+      "answerable": true,
+      "candidateCount": 35,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 35
+    },
+    {
+      "id": "OE18",
+      "answerable": true,
+      "candidateCount": 35,
+      "verdict": "ambiguous",
+      "goldRank": 5,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 35
+    },
+    {
+      "id": "OE19",
+      "answerable": true,
+      "candidateCount": 227,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 227
+    },
+    {
+      "id": "OE20",
+      "answerable": true,
+      "candidateCount": 115,
+      "verdict": "ambiguous",
+      "goldRank": 5,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 115
+    },
+    {
+      "id": "OE21",
+      "answerable": true,
+      "candidateCount": 81,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 81
+    },
+    {
+      "id": "OE22",
+      "answerable": true,
+      "candidateCount": 172,
+      "verdict": "ambiguous",
+      "goldRank": 16,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 172
+    },
+    {
+      "id": "OE23",
+      "answerable": true,
+      "candidateCount": 140,
+      "verdict": "ambiguous",
+      "goldRank": 1,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 140
+    },
+    {
+      "id": "OE24",
+      "answerable": true,
+      "candidateCount": 400,
+      "verdict": "ambiguous",
+      "goldRank": 22,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE25",
+      "answerable": true,
+      "candidateCount": 400,
+      "verdict": "ambiguous",
+      "goldRank": 93,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE26",
+      "answerable": true,
+      "candidateCount": 37,
+      "verdict": "ambiguous",
+      "goldRank": 29,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 37
+    },
+    {
+      "id": "OE27",
+      "answerable": true,
+      "candidateCount": 219,
+      "verdict": "ambiguous",
+      "goldRank": 92,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 219
+    },
+    {
+      "id": "OE28",
+      "answerable": true,
+      "candidateCount": 52,
+      "verdict": "ambiguous",
+      "goldRank": 28,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 52
+    },
+    {
+      "id": "OE29",
+      "answerable": true,
+      "candidateCount": 138,
+      "verdict": "ambiguous",
+      "goldRank": 65,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 138
+    },
+    {
+      "id": "OE30",
+      "answerable": true,
+      "candidateCount": 340,
+      "verdict": "ambiguous",
+      "goldRank": 28,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE31",
+      "answerable": true,
+      "candidateCount": 399,
+      "verdict": "ambiguous",
+      "goldRank": 3,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE32",
+      "answerable": true,
+      "candidateCount": 291,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE33",
+      "answerable": true,
+      "candidateCount": 169,
+      "verdict": "ambiguous",
+      "goldRank": 69,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 169
+    },
+    {
+      "id": "OE34",
+      "answerable": true,
+      "candidateCount": 192,
+      "verdict": "ambiguous",
+      "goldRank": 38,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 192
+    },
+    {
+      "id": "OE35",
+      "answerable": true,
+      "candidateCount": 138,
+      "verdict": "ambiguous",
+      "goldRank": 4,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 138
+    },
+    {
+      "id": "OE36",
+      "answerable": true,
+      "candidateCount": 203,
+      "verdict": "ambiguous",
+      "goldRank": 176,
+      "goldInLattice": true,
+      "goldInShortlist": true,
+      "shortlistCount": 203
+    },
+    {
+      "id": "OE37",
+      "answerable": false,
+      "candidateCount": 270,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE38",
+      "answerable": false,
+      "candidateCount": 26,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 26
+    },
+    {
+      "id": "OE39",
+      "answerable": false,
+      "candidateCount": 6,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 6
+    },
+    {
+      "id": "OE40",
+      "answerable": false,
+      "candidateCount": 28,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 28
+    },
+    {
+      "id": "OE41",
+      "answerable": false,
+      "candidateCount": 378,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 255
+    },
+    {
+      "id": "OE42",
+      "answerable": false,
+      "candidateCount": 93,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 93
+    },
+    {
+      "id": "OE43",
+      "answerable": false,
+      "candidateCount": 14,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 14
+    },
+    {
+      "id": "OE44",
+      "answerable": false,
+      "candidateCount": 7,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 7
+    },
+    {
+      "id": "OE45",
+      "answerable": false,
+      "candidateCount": 185,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 185
+    },
+    {
+      "id": "OE46",
+      "answerable": false,
+      "candidateCount": 163,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 163
+    },
+    {
+      "id": "OE47",
+      "answerable": false,
+      "candidateCount": 162,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 162
+    },
+    {
+      "id": "OE48",
+      "answerable": false,
+      "candidateCount": 19,
+      "verdict": "ambiguous",
+      "goldRank": null,
+      "goldInLattice": false,
+      "goldInShortlist": null,
+      "shortlistCount": 19
+    }
+  ]
+}

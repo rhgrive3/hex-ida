@@ -91,6 +91,20 @@ test('compare condition still materializes directly with verifier proof', () => 
   assertEquivalent(original, rewritten);
 });
 
+test('one-bit conditions materialize into wider result domains with zero extension', () => {
+  const wide = expr.variable('x', 64, false);
+  const condition = expr.compare('ne', wide, expr.constant(0, 64, false), false);
+  const original = expr.select(condition,
+    expr.constant(1, 64, false), expr.constant(0, 64, false), 64, false);
+  const rewritten = rewrite(original);
+
+  assert.equal(rewritten.kind, 'unary');
+  assert.equal(rewritten.op, 'zext');
+  assert.equal(rewritten.bits, 64);
+  assert.equal(rewritten.arg.bits, 1);
+  assertEquivalent(original, rewritten);
+});
+
 test('x ? 0 : 1 -> !x remains valid for general integer truthiness', () => {
   const wide = expr.variable('x', 64, false);
   const original = expr.select(

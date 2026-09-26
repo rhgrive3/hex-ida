@@ -22,6 +22,9 @@ export async function verifyRuntimeSession(value, signingKey, { now = Date.now()
   // already inside its own try.
   let actual;
   try { actual = decodeBase64URL(parts[1]); } catch { return null; }
+  // One signed session has exactly one accepted spelling: reject signatures
+  // whose unused trailing Base64URL bits are non-zero.
+  if (encodeBase64URL(actual) !== parts[1]) return null;
   const expected = await hmac(parts[0], signingKey, 'sign');
   if (!constantTimeBytes(expected, actual)) return null;
   try {

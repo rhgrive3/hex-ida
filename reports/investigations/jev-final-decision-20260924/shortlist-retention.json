@@ -1,0 +1,49 @@
+{
+  "schema": "hex-jev-shortlist-retention/v1",
+  "generatedAtUtc": "2026-09-24T02:40:00Z",
+  "shortlistRule": "jevShortlist(candidates, { max: K })",
+  "shortlistFunction": "js/pinpoint.js:jevShortlist",
+  "kSelected": 255,
+  "kDefault": 64,
+  "thresholdTarget": ">=99% truth retention on answerable cases whose gold is inside the candidate lattice",
+  "datasets": {
+    "corpus426": {
+      "name": "Historical 426-field corpus (battlecats, TsumTsum, YWP)",
+      "totalRows": 426,
+      "goldPresentInCandidates": 426,
+      "maxGoldRank": 15,
+      "retention": {
+        "K_32": { "retained": 426, "total": 426, "rate": 1.0 },
+        "K_64": { "retained": 426, "total": 426, "rate": 1.0 },
+        "K_128": { "retained": 426, "total": 426, "rate": 1.0 },
+        "K_255": { "retained": 426, "total": 426, "rate": 1.0 }
+      },
+      "comment": "100.0% retention across all tested K values because maximum gold rank across all 426 rows is rank 15."
+    },
+    "holdout9519": {
+      "name": "#9519 independent holdout (48 cases)",
+      "totalCases": 48,
+      "abstainCases": 12,
+      "answerableCases": 36,
+      "goldPresentInCandidateLattice": 18,
+      "goldAbsentFromCandidateLattice": 18,
+      "retentionOfLatticePresent": {
+        "K_32": { "retained": 8, "present": 18, "rate": 0.4444 },
+        "K_64": { "retained": 14, "present": 18, "rate": 0.7778 },
+        "K_128": { "retained": 16, "present": 18, "rate": 0.8889 },
+        "K_255": { "retained": 16, "present": 18, "rate": 0.8889 }
+      },
+      "unretainedCasesAtK255": [
+        { "id": "YW03", "query": "timestamp when the PubMatic app session began", "gold": { "class": "POBAppSessionHandler", "field": "_sessionStartTime" }, "candidateRank": 347 },
+        { "id": "YW05", "query": "upper bound for the animated-image frame cache", "gold": { "class": "PAGUgenFLAnimatedImage", "field": "_frameCacheSizeMaxInternal" }, "candidateRank": 329 }
+      ],
+      "comment": "On #9519, 18/36 answerable cases were not retrieved by Hex's 400-candidate lattice at all. For the 18 cases present in the lattice, K=255 retains 16/18 (88.89%). Setting K=255 maximizes retention while strictly satisfying the hard API constraint (choices <= 255)."
+    }
+  },
+  "shortlistBudgetSelection": {
+    "recommendedProductionMax": 255,
+    "apiHardLimit": 255,
+    "retainedOn426AtMax": "426/426 (100.0%)",
+    "retainedOn9519LatticePresentAtMax": "16/18 (88.9%)"
+  }
+}

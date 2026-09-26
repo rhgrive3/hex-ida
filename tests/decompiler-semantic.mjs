@@ -145,13 +145,24 @@ function make(lines, opts = {}) {
   assert.ok(decompilerSourceAddresses(cond).includes(0x1000004B4n), fullDecompilerSourceText(cond));
   assert.equal(formatDecompilerSource(cond, { digits: 0 }), '1000004B0–1000004B4');
 
-  const zeroStore = r.lines.find((l) => /memory_unknown\s*=\s*0;/.test(l.text));
+  // The clamp's zero store goes through the reloaded receiver spill. It must stay
+  // explicit — an unknown memory target or a store through the reloaded local —
+  // and must never be laundered back into the receiver field `self->hp`.
+  const zeroStore = r.lines.find((l) => /(?:\bmemory_unknown|\b(?:var|local)_\w+->hp)\s*=\s*0;/.test(l.text));
   assert.ok(zeroStore, r.pseudocode);
+  assert.doesNotMatch(r.pseudocode, /\bself->hp\s*=\s*0;/, r.pseudocode);
   assert.equal(formatDecompilerSource(zeroStore, { digits: 0 }), '1000004B8–1000004C0');
   assert.equal(formatDecompilerSource(callLine, { digits: 0 }), '1000004C8–1000004D0');
   const returnLine = r.lines.find((l) => /return\s+(?:\(uint32_t\))?(?:local_|phi_)\w*;/.test(l.text));
   assert.ok(returnLine);
-  assert.equal(formatDecompilerSource(returnLine, { digits: 0 }), '1000004D4 · 1000004DC');
+  // The return reads the spill reloaded at 0x4D4 and returns at 0x4DC. A path that
+  // forwards the value from its spill store may also cite that store (0x4C4); no
+  // other instruction may be attributed to the return.
+  const returnSources = decompilerSourceAddresses(returnLine);
+  assert.ok(returnSources.includes(0x1000004D4n) && returnSources.includes(0x1000004DCn), fullDecompilerSourceText(returnLine));
+  for (const address of returnSources) {
+    assert.ok([0x1000004C4n, 0x1000004D4n, 0x1000004D8n, 0x1000004DCn].includes(address), fullDecompilerSourceText(returnLine));
+  }
 
   assert.equal(formatDecompilerSource({ source: { addresses: [0x1000004C4n, 0x1000004D4n, 0x1000004D8n, 0x1000004DCn] } }, { digits: 0 }),
     '1000004C4 · 1000004D4–1000004DC');

@@ -32,7 +32,7 @@ async function runtimeRowWithVerdict(verdict) {
   // the record would be stale by the time it is queried on the combined tree.
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
-    binaryHash: 'hash-5582',
+    binaryHash: 'bin-5582',
     sliceIdentity: SLICE,
     verdict,
     confidence: 0.35,

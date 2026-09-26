@@ -33,8 +33,9 @@ test('analysis query forwards only decompiler execution profile options', () => 
 test('analysis query fast profile resolves to the production fast budgets', () => {
   const forwarded = decompilerOptionsFromQuery({ profile: 'fast' });
   const resolved = applyDecompilerProfile(forwarded);
-  assert.equal(resolved.decompilerTimeBudgetMs, 30);
-  assert.equal(resolved.phase8TimeBudgetMs, 30);
+  assert.equal(resolved.decompilerTimeBudgetMs, null);
+  assert.equal(resolved.transformSafetyCeilingMs, 2000);
+  assert.equal(resolved.phase8TimeBudgetMs, null);
   assert.equal(resolved.phase8WorkBudget, 10000);
   assert.deepEqual(resolved.renderProvenanceBudget, { maxTransformRecords: 128 });
   assert.deepEqual(resolved.renderProvenanceBindingBudget, { maxConsumers: 256 });
@@ -46,7 +47,7 @@ test('explicit query budgets still override profile defaults', () => {
     phase8TimeBudgetMs: 9,
     phase8WorkBudget: 777,
   }));
-  assert.equal(resolved.decompilerTimeBudgetMs, 30);
+  assert.equal(resolved.decompilerTimeBudgetMs, null);
   assert.equal(resolved.phase8TimeBudgetMs, 9);
   assert.equal(resolved.phase8WorkBudget, 777);
 });

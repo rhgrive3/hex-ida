@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { buildDex } from '../fixtures/medium-dex.mjs';
 import { parseDex } from '../../../js/managed/dex/parser.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 const paramList = (count, last) => [
   ...Array.from({ length: count - 1 }, () => 'I'),
@@ -51,7 +52,7 @@ function aliasAllParamsToFirst(bytes, layout, protoCount) {
     const p = layout.mapOff + 4 + i * 12;
     if (v.getUint16(p, true) === 0x1001) v.setUint32(p + 4, 1, true);
   }
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 // 1. Aliased `parameters_off` materializes once: every proto shares the same
@@ -116,19 +117,19 @@ function aliasAllParamsToFirst(bytes, layout, protoCount) {
   const v = new DataView(corrupted.buffer);
   const wrongShorty = v.getUint32(layout.strings + 4, true); // some other string_data_id
   v.setUint32(layout.protos + 0, (wrongShorty - layout.strings) / 4, true);
-  assert.throws(() => parseDex(corrupted, { binaryId: 'shorty-mismatch' }), /dex-invalid-proto-shorty/);
+  assert.throws(() => parseDex(applyDexIntegrity(corrupted), { binaryId: 'shorty-mismatch' }), /dex-invalid-proto-shorty/);
 
   const { bytes: badTypeBytes, layout: badLayout } = dexWithProtos([paramList(4, 'B')]);
   const bad = Uint8Array.from(badTypeBytes);
   const paramsOff = new DataView(bad.buffer).getUint32(badLayout.protos + 8, true);
   new DataView(bad.buffer).setUint16(paramsOff + 4, 60000, true); // type_idx outside type_ids
-  assert.throws(() => parseDex(bad, { binaryId: 'bad-param-type' }), /dex-invalid-proto-param-type-index/);
+  assert.throws(() => parseDex(applyDexIntegrity(bad), { binaryId: 'bad-param-type' }), /dex-invalid-proto-param-type-index/);
 
   const { bytes: rangeBytes, layout: rangeLayout } = dexWithProtos([paramList(4, 'B')]);
   const truncated = Uint8Array.from(rangeBytes);
   const listOff = new DataView(truncated.buffer).getUint32(rangeLayout.protos + 8, true);
   new DataView(truncated.buffer).setUint32(listOff, 40000, true); // declared size beyond the file
-  assert.throws(() => parseDex(truncated, { binaryId: 'bad-params-range' }), /dex-invalid-proto-params-range/);
+  assert.throws(() => parseDex(applyDexIntegrity(truncated), { binaryId: 'bad-params-range' }), /dex-invalid-proto-params-range/);
 }
 
 // 5. The same interning applies to `class_def_item.interfaces_off` (#7620
@@ -143,7 +144,7 @@ function aliasAllParamsToFirst(bytes, layout, protoCount) {
   const v = new DataView(bytes.buffer);
   const sharedList = v.getUint32(layout.protos + 8, true);
   for (const classIndex of [0, 1]) v.setUint32(layout.classes + classIndex * 32 + 12, sharedList, true);
-  const image = parseDex(bytes, { binaryId: 'shared-interfaces' });
+  const image = parseDex(applyDexIntegrity(bytes), { binaryId: 'shared-interfaces' });
   assert.deepEqual([...image.classes[0].interfaceTypes], interfaceParams);
   assert.deepEqual([...image.classes[1].interfaceTypes], interfaceParams);
   assert.equal(image.classes[0].interfaceTypes, image.classes[1].interfaceTypes,
@@ -158,7 +159,7 @@ function aliasAllParamsToFirst(bytes, layout, protoCount) {
   const pv = new DataView(primitive.bytes.buffer);
   pv.setUint32(primitive.layout.classes + 12, pv.getUint32(primitive.layout.protos + 8, true), true);
   assert.throws(
-    () => parseDex(primitive.bytes, { binaryId: 'primitive-interface' }),
+    () => parseDex(applyDexIntegrity(primitive.bytes), { binaryId: 'primitive-interface' }),
     /dex-invalid-interface-type|dex-invalid-class-definer-type/,
   );
 }
@@ -168,7 +169,7 @@ function aliasAllParamsToFirst(bytes, layout, protoCount) {
   const { bytes, layout } = dexWithProtos([paramList(4, 'B')]);
   const bad = Uint8Array.from(bytes);
   new DataView(bad.buffer).setUint32(layout.mapOff, 0, true); // zero map items
-  assert.throws(() => parseDex(bad, { binaryId: 'bad-map' }), /dex-/);
+  assert.throws(() => parseDex(applyDexIntegrity(bad), { binaryId: 'bad-map' }), (error) => /^dex-/.test(error.message) && !/checksum|signature/.test(error.message));
 }
 
 console.log('ok #8707 aliased DEX type lists are interned and uniquely budgeted');

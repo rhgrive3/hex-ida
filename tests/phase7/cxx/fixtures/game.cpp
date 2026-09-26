@@ -110,6 +110,27 @@ Entity* readTarget(Entity* e) { return e->target; }
 bool isAlive(Player* p) { return p->alive; }
 char readNameChar(Player* p, int index) { return p->name[index]; }
 
+// The implementation label deliberately carries no C++ class syntax. The
+// only binary evidence that ties this function to a class is its unique slot
+// in OpaqueSlot's emitted vtable.
+class OpaqueSlot {
+public:
+  virtual int invoke(int amount) __asm__("opaque_slot_target");
+  virtual int dispatchOther(int amount);
+  int counter;
+};
+
+__attribute__((noinline)) int OpaqueSlot::invoke(int amount) {
+  counter += amount;
+  return counter;
+}
+
+__attribute__((noinline)) int OpaqueSlot::dispatchOther(int amount) {
+  return invoke(amount);
+}
+
+int invokeOpaqueSlot(OpaqueSlot* value) { return value->invoke(3); }
+
 // Virtual-call target evidence: an object of a statically known class whose
 // vtable pointer is stored by its constructor.
 __attribute__((noinline)) int damageOwnedActor(Actor* a) { return a->takeDamage(7); }
@@ -117,6 +138,7 @@ __attribute__((noinline)) int damageOwnedActor(Actor* a) { return a->takeDamage(
 static Player g_player;
 static Actor g_actor;
 static Enemy g_enemy;
+static OpaqueSlot g_opaqueSlot;
 
 extern "C" int _start() {
   int result = 0;
@@ -133,5 +155,7 @@ extern "C" int _start() {
   g_enemy.tick();
   Component* component = &g_enemy;
   component->tick();
+  result += invokeOpaqueSlot(&g_opaqueSlot);
+  result += g_opaqueSlot.dispatchOther(2);
   return result;
 }

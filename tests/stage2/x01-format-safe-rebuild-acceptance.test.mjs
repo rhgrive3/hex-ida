@@ -129,10 +129,15 @@ const canonicalOracle = registerCanonicalIndependentOracleProvider(async ({ outp
 const materialized1 = await materializeRebuildTransaction(tx1, source1, { maxOutputBytes: 1024 });
 assert.equal(materialized1.status, 'materialized');
 
+const conservativeImpactValidators = Object.fromEntries(
+  ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
+    .map((name) => [name, async () => ({ ok: true, status: 'passed' })]),
+);
 const registeredValidation = await validateRebuildTransaction(tx1, materialized1, {
   original: source1,
-  loaderReparse: () => ({ ok: true, format: 'elf', architecture: 'x86_64' }),
+  loaderReparse: () => ({ ok: true, format: 'elf', architecture: 'x86_64', loaderVersion: tx1.loaderVersion, sourceHash: tx1.sourceHash, outputHash: materialized1.outputHash }),
   independentOracle: canonicalOracle,
+  validators: conservativeImpactValidators,
 });
 assert.equal(registeredValidation.status, 'valid');
 assert.equal(registeredValidation.independentDifferential, 'executed');
@@ -327,7 +332,7 @@ if (hostOracle.available) {
   assert.equal(machoLayoutMat.status, 'materialized');
   const machoLayoutVal = await validateRebuildTransaction(machoLayoutTx, machoLayoutMat, {
     original: machoFixtureBytes,
-    loaderReparse: () => ({ ok: true, format: 'macho', architecture: 'x86_64' }),
+    loaderReparse: () => ({ ok: true, format: 'macho', architecture: 'x86_64', loaderVersion: machoLayoutTx.loaderVersion, sourceHash: machoLayoutTx.sourceHash, outputHash: machoLayoutMat.outputHash }),
     independentOracle: independentReader,
     validators: {
       layout: validateFormatSafeMutation,
@@ -352,7 +357,7 @@ if (hostOracle.available) {
   assert.equal(peLayoutMat.status, 'materialized');
   const peLayoutVal = await validateRebuildTransaction(peLayoutTx, peLayoutMat, {
     original: peFixtureBytes,
-    loaderReparse: () => ({ ok: true, format: 'pe', architecture: 'x86' }),
+    loaderReparse: () => ({ ok: true, format: 'pe', architecture: 'x86', loaderVersion: peLayoutTx.loaderVersion, sourceHash: peLayoutTx.sourceHash, outputHash: peLayoutMat.outputHash }),
     independentOracle: independentReader,
     validators: {
       layout: validateFormatSafeMutation,

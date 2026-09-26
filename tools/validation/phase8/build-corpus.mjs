@@ -101,6 +101,7 @@ function elf64SectionHeaders(buffer) {
     sections.push({
       index,
       type:buffer.readUInt32LE(at + 4),
+      flags:buffer.readBigUInt64LE(at + 8),
       address:buffer.readBigUInt64LE(at + 16),
       offset:safeNumber(buffer.readBigUInt64LE(at + 24), 'invalid ELF section offset'),
       size:safeNumber(buffer.readBigUInt64LE(at + 32), 'invalid ELF section size'),
@@ -149,6 +150,48 @@ export function extractElfFunctionBytes(buffer, name) {
     const size = safeNumber(buffer.readBigUInt64LE(at + 16), `function ${name} size is invalid`);
     if (size <= 0 || value + size > section.size) throw new Error(`phase8 corpus: function ${name} has invalid/empty extent`);
     return Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size));
+  }
+  return null;
+}
+
+/**
+ * Extracts one function plus file-backed, allocated, non-executable sections
+ * from its linked image. The section bytes are recorded relative to the
+ * function start so a measurement may rebase code while retaining exact
+ * RIP-relative data references. Executable bytes outside the function remain
+ * unavailable and cannot be used as table contents by the decompiler.
+ */
+export function extractElfFunctionEvidence(buffer, name) {
+  const sections = elf64SectionHeaders(buffer);
+  const elfType = buffer.readUInt16LE(0x10);
+  const symbolTable = sections.find((section) => section.type === 2 && section.entrySize >= 24);
+  if (!symbolTable) throw new Error('phase8 corpus: ELF symbol table missing');
+  const strings = sections[symbolTable.link];
+  if (!strings) throw new Error('phase8 corpus: ELF symbol string table missing');
+  for (let at = symbolTable.offset; at + 24 <= symbolTable.offset + symbolTable.size; at += symbolTable.entrySize) {
+    const nameOffset = buffer.readUInt32LE(at);
+    const info = buffer[at + 4];
+    const sectionIndex = buffer.readUInt16LE(at + 6);
+    if ((info & 0x0f) !== 2) continue;
+    const symbolName = cString(buffer, strings.offset + nameOffset, strings.offset + strings.size);
+    if (symbolName !== name) continue;
+    const section = sections[sectionIndex];
+    if (!section) throw new Error(`phase8 corpus: function ${name} has invalid section index`);
+    const symbolValue = buffer.readBigUInt64LE(at + 8);
+    const sectionRelativeValue = elfType === 1 ? symbolValue : symbolValue - section.address;
+    const value = safeNumber(sectionRelativeValue, `function ${name} offset is invalid`);
+    const size = safeNumber(buffer.readBigUInt64LE(at + 16), `function ${name} size is invalid`);
+    if (size <= 0 || value + size > section.size) throw new Error(`phase8 corpus: function ${name} has invalid/empty extent`);
+    const functionAddress = elfType === 1 ? section.address + symbolValue : symbolValue;
+    const memorySegments = sections
+      .filter((candidate) => candidate.size > 0 && candidate.type !== 8
+        && (candidate.flags & 2n) !== 0n && (candidate.flags & 1n) === 0n
+        && (candidate.flags & 4n) === 0n)
+      .map((candidate) => ({
+        relativeAddress:(candidate.address - functionAddress).toString(),
+        bytes:buffer.subarray(candidate.offset, candidate.offset + candidate.size).toString('hex'),
+      }));
+    return { bytes:Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size)), memorySegments };
   }
   return null;
 }
@@ -208,7 +251,7 @@ function entryId(sourceName, functionName, optimization, architectureId) {
   return architectureId === 'arm64' ? legacy : `${architectureId}.${legacy}`;
 }
 
-export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
+export function buildCorpus({ clang = process.env.CLANG || 'clang', includeMemorySegments = false } = {}) {
   const identity = clangIdentity(clang);
   if (!identity) throw new Error(`phase8 corpus: ${clang} is unavailable; the frozen corpus cannot be rebuilt without it`);
   const sources = fs.readdirSync(SOURCE_DIRECTORY).filter((name) => name.endsWith('.c')).sort();
@@ -248,9 +291,9 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
             const supportObject = compileLinkSupport(clang, architecture, optimization, temporaryDirectory);
             const linked = linkObjects(clang, architecture, optimization, [objectPath, supportObject], linkedPath);
             for (const name of names) {
-              const bytes = extractElfFunctionBytes(linked, name);
-              if (!bytes) throw new Error(`phase8 corpus: function not found in linked ELF: ${architecture.architectureId} ${name} ${optimization}`);
-              functions.push({
+              const evidence = extractElfFunctionEvidence(linked, name);
+              if (!evidence) throw new Error(`phase8 corpus: function not found in linked ELF: ${architecture.architectureId} ${name} ${optimization}`);
+              const entry = {
                 id:entryId(sourceName, name, optimization, architecture.architectureId),
                 source:sourceName,
                 function:name,
@@ -258,8 +301,10 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
                 architectureId:architecture.architectureId,
                 targetTriple:architecture.targetTriple,
                 representation:'machine-bytes',
-                bytes:Buffer.from(bytes).toString('hex'),
-              });
+                bytes:Buffer.from(evidence.bytes).toString('hex'),
+              };
+              if (includeMemorySegments) entry.memorySegments = evidence.memorySegments;
+              functions.push(entry);
             }
           }
         }

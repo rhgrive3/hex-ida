@@ -466,9 +466,17 @@ function laneEffects(instruction, context, mnemonic, ops) {
   const operations = [];
   const canonical = semanticMnemonic(mnemonic);
 
-  if (mnemonic === 'ins' || (mnemonic === 'mov' && dst?.k === 'elem')) {
+  if (mnemonic === 'ins' || (mnemonic === 'mov' && dst?.k === 'elem') || mnemonic === 'fmov') {
     const dstInfo = elementInfo(dst);
     if (!dstInfo) return partial(instruction, context, `${mnemonic}-destination-lane-unavailable`);
+    // FMOV (general) element form: the general-purpose source is inserted into
+    // the addressed element. Only the S (W source, 32-bit) and D (X source,
+    // 64-bit) element forms exist; a lane-to-lane source is INS and any other
+    // element width is unencodable, so both stay explicitly unsupported.
+    if (mnemonic === 'fmov') {
+      if (dstInfo.elementBits !== 32 && dstInfo.elementBits !== 64) return partial(instruction, context, 'fmov-element-width-unavailable');
+      if (gpWidth(src) !== dstInfo.elementBits) return partial(instruction, context, 'fmov-general-source-unavailable');
+    }
     let sourceInfo = null;
     if (src?.k === 'elem') {
       sourceInfo = elementInfo(src);
@@ -1156,7 +1164,11 @@ export function liftArm64SimdEffects(instruction, context = {}) {
     return scalarSimdEffects(instruction, context, mnemonic, ops);
   }
 
-  if (LANE_MNEMONICS.has(mnemonic)) return laneEffects(instruction, context, mnemonic, ops);
+  // FMOV's general-register element form writes one GP register into one vector
+  // lane and therefore shares the lane-move projection below. Scalar FMOV never
+  // reaches this point (no vector operand), and the vector-arrangement FMOV
+  // forms stay explicitly unsupported instead of being re-read as INS.
+  if (LANE_MNEMONICS.has(mnemonic) || (mnemonic === 'fmov' && ops[0]?.k === 'elem')) return laneEffects(instruction, context, mnemonic, ops);
   if (IMMEDIATE_MNEMONICS.has(mnemonic)) return vectorImmediate(instruction, context, mnemonic, ops);
   if (REDUCE_MNEMONICS.has(mnemonic)) return reduction(instruction, context, mnemonic, ops);
   if (NARROW_MNEMONICS.has(mnemonic)) return narrow(instruction, context, mnemonic, ops);

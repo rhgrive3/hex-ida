@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { canonicalAnalysisIdentity } from '../../js/decompiler/phase8/analysis-identity.js';
-import { fixture } from '../phase8/helpers/ir-fixtures.mjs';
+import { canonicalAnalysisIdentity } from '../../../js/decompiler/phase8/analysis-identity.js';
+import { fixture } from '../helpers/ir-fixtures.mjs';
 
 function freezeGraph(value, seen = new Set()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;

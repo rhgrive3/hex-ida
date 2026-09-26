@@ -6,7 +6,7 @@ import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
 import { PROJECTION_LIMITS } from './projection-origin.js';
-import { createProjectionIrObserver } from '../../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch } from '../../core/identity/live-data.js';
 import { children, expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
@@ -28,10 +28,16 @@ import {
   isRegionErasureBodyRequested,
 } from './conditional-region-erasure.js';
 import { sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
+import {
+  readLineExpressionHistory,
+  refreshLineExpressionHistory,
+  registerNodeExpressionHistory,
+} from './line-expression-history.js';
+
+export { readLineExpressionHistory } from './line-expression-history.js';
 
 export const PHASE8_PROJECTION_VERSION = 4;
 
-const lineExpressionHistories = new WeakMap();
 const controlConsumerSources = new WeakMap();
 // One current snapshot per owned AST, never a chain of previous projections.
 // Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
@@ -245,24 +251,14 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
   }
 }
 
-export function readLineExpressionHistory(line, ir) {
-  const entry = lineExpressionHistories.get(line);
-  return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
-    ? entry.records : null;
-}
-
 // Carry only an already-current private binding through the fixed existing
 // compatibility spelling operation. Arbitrary edits cannot renew a binding.
 export function normalizeProjectedCompatibilityLine(line, ir) {
   const current = readLineExpressionHistory(line, ir);
-  const entry = current ? lineExpressionHistories.get(line) : null;
   const previousText = line?.text;
   normalizeCompatibilityLine(line, ir);
-  if (!entry || previousText === line?.text || !entry.consumers.every(consumer => consumer.isCurrent())) return;
-  try {
-    const observation = observeProjectionData([line]);
-    lineExpressionHistories.set(line, { ...entry, observation });
-  } catch { /* The original invalid observation remains fail-closed. */ }
+  if (!current || previousText === line?.text) return;
+  refreshLineExpressionHistory(line, ir);
 }
 
 function integer(value) {
@@ -680,6 +676,24 @@ function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
 }
 
 export function applyPhase8Projection(result, analysis, opts = {}) {
+  // Only the pure render-only path has a stable producer graph for this whole
+  // synchronous section. Proof/region projections retain their existing
+  // per-check freshness boundary because they may intentionally stage writes.
+  if (opts.preserveInitialSpelling !== true || opts.phase8RewritePlan != null
+      || opts.phase8RegionErasurePlan != null) {
+    return applyPhase8ProjectionCore(result, analysis, opts);
+  }
+  // A projection is one synchronous read-only validation section over its
+  // producer inputs. Shared render consumers can ask the same liveness
+  // question many times; reuse each exact answer only within this call, then
+  // revalidate every reused answer before publishing the projection.
+  const validation = createValidationBatch();
+  let projected;
+  validation.run(() => { projected = applyPhase8ProjectionCore(result, analysis, opts); });
+  return validation.settle() === 0 ? projected : result;
+}
+
+function applyPhase8ProjectionCore(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
   const regionCopy = beginRegionProjection(result, opts);
@@ -1099,7 +1113,10 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     // the rewritten semantic expression that now renders into it. The merged
     // expression source carries the union of every consumed origin across the
     // rewrite chain, which is exactly what reverse navigation must reach.
-    const expressionSource = node?.semantic?.expression
+    // A spelling-preserving projection rewrites nothing, so it also keeps the
+    // producer's statement attribution; consumed dataflow origins stay in the
+    // bound history records.
+    const expressionSource = !(renderOnly && regionPlan == null) && node?.semantic?.expression
       ? sourceOf(node.semantic.expression.source)
       : null;
     const conditionSource = (() => {
@@ -1120,12 +1137,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       source,
     };
     const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
-    if (consumers.length && consumers.every(consumer => consumer.isCurrent())) {
-      try {
-        const observation = observeProjectionData([line], opts.shouldAbort);
-        const records = Object.freeze([...new Set(consumers.flatMap(consumer => consumer.records))]);
-        lineExpressionHistories.set(line, { ir:result.ir, consumers, records, observation });
-      } catch { /* No inferred edge when the bounded observation is unavailable. */ }
+    if (consumers.length) {
+      registerNodeExpressionHistory(node, line, result.ir, consumers,
+        consumers.flatMap(consumer => consumer.records), opts.shouldAbort);
     }
     return line;
   });

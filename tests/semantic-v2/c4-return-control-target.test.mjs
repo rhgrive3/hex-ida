@@ -391,20 +391,31 @@ function contractFunction({
   nodeUnknown,
   functionCompleteness = 'complete',
   unknowns = [],
+  nodeInputs = [],
+  nodeOutputs = [],
+  nodeAttributes,
 } = {}) {
+  const isConst = nodeKind === 'const';
+  const effectiveInputs = nodeInputs.length ? nodeInputs : [];
+  const effectiveOutputs = nodeOutputs.length ? nodeOutputs : (isConst ? ['target'] : []);
+  const effectiveAttributes = nodeAttributes ?? (isConst ? { value: '0' } : {});
+  const effectiveValues = isConst && values.length === 1 && values[0].kind === 'entry'
+    ? [{ ...values[0], kind: 'definition', definitionNodeId: 'node' }]
+    : values;
   return {
     schemaVersion: 2,
     contractVersion: '2.0.0',
     functionId: 'c4-return-control-target-contract',
     entryBlockId: 'entry',
     blocks: [{ id: 'entry', nodeIds: ['node'], origin: CONTRACT_ORIGIN }],
-    values,
+    values: effectiveValues,
     nodes: [{
       id: 'node',
       kind: nodeKind,
       blockId: 'entry',
-      inputs: [],
-      outputs: [],
+      inputs: effectiveInputs,
+      outputs: effectiveOutputs,
+      attributes: effectiveAttributes,
       ...(metadata == null ? {} : { metadata }),
       ...(nodeCompleteness === 'complete' ? {} : { completeness: nodeCompleteness }),
       ...(nodeUnknown == null ? {} : { unknown: nodeUnknown }),

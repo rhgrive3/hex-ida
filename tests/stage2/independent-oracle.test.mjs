@@ -62,10 +62,15 @@ const transaction = createRebuildTransaction({
   requireIndependentOracle: true,
 });
 const materialized = await materializeRebuildTransaction(transaction, elfFixture.bytes, { maxOutputBytes: elfFixture.bytes.length });
+const conservativeImpactValidators = Object.fromEntries(
+  ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
+    .map((name) => [name, async () => ({ ok: true, status: 'passed' })]),
+);
 const validation = await validateRebuildTransaction(transaction, materialized, {
   original: elfFixture.bytes,
   loaderReparse: () => ({ ok: true, format: 'elf', architecture: 'x86_64', loaderVersion: transaction.loaderVersion, sourceHash: transaction.sourceHash, outputHash: materialized.outputHash }),
   independentOracle: oracle,
+  validators: conservativeImpactValidators,
 });
 assert.equal(validation.status, 'valid', JSON.stringify(validation.validators));
 assert.equal(validation.independentDifferential, 'executed');

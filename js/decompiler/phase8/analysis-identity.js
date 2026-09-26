@@ -130,9 +130,15 @@ function deeplyFrozen(value, active = new Set()) {
   active.add(value);
   let result = true;
   try {
-    for (const key of semanticOwnKeys(value)) {
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === 'symbol') {
+        result = false;
+        break;
+      }
+      if (Array.isArray(value) && key === 'length') continue;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor == null || !('value' in descriptor) || !deeplyFrozen(descriptor.value, active)) {
+      if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable
+          || !deeplyFrozen(descriptor.value, active)) {
         result = false;
         break;
       }

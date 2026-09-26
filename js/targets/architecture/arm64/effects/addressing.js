@@ -318,24 +318,53 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
 
   const effectiveWithOffset = arm64AddressAdd(baseExpr, offsetExpr);
   const addressExpr = mode === 'post' ? baseExpr : effectiveWithOffset;
-  const wbDisp = writebackDisplacement(mem, mode, addressDisp);
+  const hasWritebackRegister = own(mem, 'writebackReg') || own(mem, 'writebackRegister');
+  if (own(mem, 'writebackReg') && own(mem, 'writebackRegister')) fail('arm64-conflicting-writeback-register-evidence');
+  const rawWritebackRegister = own(mem, 'writebackReg') ? mem.writebackReg : mem.writebackRegister;
+  let writebackRegister = null;
+  let wbDisp = null;
+  if (hasWritebackRegister) {
+    writebackRegister = arm64RegisterOperand(rawWritebackRegister);
+    if (mode !== 'post' || !writebackRegister || writebackRegister.kind !== 'gp'
+        || writebackRegister.bits !== 64 || writebackRegister.num < 0 || writebackRegister.num > 30
+        || rawWritebackRegister?.shift != null || rawWritebackRegister?.extend != null) {
+      fail('arm64-invalid-register-post-index-writeback');
+    }
+    if ((own(mem, 'writebackDisp') && mem.writebackDisp != null)
+        || (own(mem, 'writebackOffset') && mem.writebackOffset != null)) {
+      fail('arm64-conflicting-post-index-writeback');
+    }
+    if (own(mem, 'disp') && mem.disp != null) fail('arm64-conflicting-post-index-writeback');
+    wbDisp = null;
+  } else {
+    wbDisp = writebackDisplacement(mem, mode, addressDisp);
+  }
   const writebackOperations = [];
   let writebackExpr = null;
 
   if (mode !== 'offset') {
-    if (wbDisp == null) fail('arm64-writeback-displacement-required');
-    writebackExpr = arm64AddressAdd(baseExpr, arm64ConstantExpr(wbDisp, 64));
     const wbValue = arm64Temporary(`${prefix}.writeback`, 64);
+    let wbInputs;
+    if (writebackRegister) {
+      const registerRead = createArm64RegisterRead(writebackRegister, `${prefix}.writeback-register`, 64);
+      readOperations.push(registerRead.operation);
+      wbInputs = [baseRead.value, registerRead.value];
+      writebackExpr = arm64AddressAdd(baseExpr, arm64TemporaryExpr(`${prefix}.writeback-register`, 64));
+    } else {
+      if (wbDisp == null) fail('arm64-writeback-displacement-required');
+      wbInputs = [baseRead.value, createBitVectorValue(64, BigInt.asUintN(64, wbDisp))];
+      writebackExpr = arm64AddressAdd(baseExpr, arm64ConstantExpr(wbDisp, 64));
+    }
     writebackOperations.push(createMachineOperation({
       kind: 'value',
       opcode: 'add',
-      inputs: [baseRead.value, createBitVectorValue(64, BigInt.asUintN(64, wbDisp))],
+      inputs: wbInputs,
       outputs: [wbValue],
-      metadata: { architecture: 'arm64', purpose: 'address-writeback', mode },
+      metadata: { architecture: 'arm64', purpose: 'address-writeback', mode, ...(writebackRegister ? { writebackRegister:writebackRegister.physicalId } : {}) },
     }));
     writebackOperations.push(createArm64RegisterWrite(base, wbValue, {
       physicalWidth: 64,
-      metadata: { purpose: 'address-writeback', mode },
+      metadata: { purpose: 'address-writeback', mode, ...(writebackRegister ? { writebackRegister:writebackRegister.physicalId } : {}) },
     }));
   }
 
@@ -343,6 +372,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
     mem,
     base,
     index,
+    writebackRegister,
     mode,
     addressExpr,
     readOperations: Object.freeze(readOperations),
@@ -358,6 +388,7 @@ export function buildArm64EffectiveAddress(decoded, options = {}) {
       ...(index ? { indexRegister: index.physicalId, indexView: index.view, extend: mem.shift?.op || mem.extend?.op || null, shift: mem.shift?.amount ?? mem.extend?.amount ?? 0 } : {}),
       ...(addressDisp != null ? { addressDisplacement: addressDisp.toString() } : {}),
       ...(wbDisp != null ? { writebackDisplacement: wbDisp.toString() } : {}),
+      ...(writebackRegister ? { writebackRegister:writebackRegister.physicalId, writebackKind:'register' } : {}),
     }),
   });
 }

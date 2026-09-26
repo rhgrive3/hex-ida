@@ -17,7 +17,8 @@ const issued = new WeakMap();
 // that); callers that need the body must first obtain this private packet.
 const bodyCapabilityRequests = new WeakSet();
 const LIMITS = Object.freeze({ workItems:32768, allocationUnits:32768 });
-const OPTION_KEYS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','conditionPlan','projection']);
+const OPTION_KEYS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','conditionPlan','projection',
+  'deterministic','deterministicTransforms']);
 const freeze = Object.freeze;
 
 export function readConditionalRegionErasure(plan, ir, identity) {

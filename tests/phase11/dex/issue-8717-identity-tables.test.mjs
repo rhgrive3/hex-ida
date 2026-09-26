@@ -17,7 +17,8 @@ function dataView(bytes) {
 }
 
 function cloneBuilt(options) {
-  const built = buildDex(options);
+  // Emit tables exactly in input order: these cases build mis-ordered tables on purpose.
+  const built = buildDex({ rawOrder: true, ...options });
   return { ...built, bytes: built.bytes.slice() };
 }
 

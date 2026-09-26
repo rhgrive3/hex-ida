@@ -17,7 +17,7 @@ import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { ownDataEntries } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -402,6 +402,13 @@ export function normalizeSemanticCompatibilityLine(line, ir) {
   }
 }
 
+function initialStoreCaptureFailure(error, phase) {
+  const detail = typeof error?.message === 'string' ? error.message : '';
+  if (/^initial-store-[a-z0-9-]+$/.test(detail)) return detail;
+  if (/^projection-[a-z0-9-]+$/.test(detail)) return `initial-store-${phase}-${detail}`;
+  return `initial-store-${phase}-unavailable`;
+}
+
 function observeStoreSelection(inst, rmw, upd, ctx) {
   const history = ctx.storeRenderHistory;
   if (history.events.length >= history.limit) { history.reasons.add('initial-store-history-budget'); return null; }
@@ -411,10 +418,13 @@ function observeStoreSelection(inst, rmw, upd, ctx) {
     if (history.edges <= 0 || history.consumers <= 0 || position < 0) throw new Error('initial-store-binding-budget');
     // Capture before renderValue can invoke a symbol callback. This is a
     // display selection, not an independent proof of the RMW analysis fact.
-    observation = captureProjectionIrData([inst, rmw, upd]);
+    // These roots enumerate the complete cyclic SSA objects needed by this
+    // store selection. Root-distance graph observation avoids treating nesting
+    // in the cycle as an arbitrary semantic-depth cutoff.
+    observation = ctx.projectionIrObserver.captureGraph([inst, rmw, upd], ctx.opts.shouldAbort);
     history.edges -= observation.metrics.edges;
     if (history.edges < 0) throw new Error('initial-store-binding-budget');
-  } catch { observation = null; history.edges = 0; history.reasons.add('initial-store-observation-unavailable'); }
+  } catch (error) { observation = null; history.edges = 0; history.reasons.add(initialStoreCaptureFailure(error, 'observation')); }
   return Object.freeze({ source, valueId:valueOf(inst.args?.[0])?.id ?? null,
     isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
     && Object.getOwnPropertyDescriptor(instructions, position)?.value === inst && observation?.matches() === true });
@@ -439,14 +449,14 @@ function retainStoreRenderLine(node, inst, rendered, ctx) {
   try {
     if (history.consumers <= 0 || history.edges <= 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
     history.consumers--;
-    const observation = captureProjectionIrData([node], ctx.opts.shouldAbort);
+    const observation = ctx.projectionIrObserver.capture([node], ctx.opts.shouldAbort);
     history.edges -= observation.metrics.edges;
     if (history.edges < 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
     storeRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records,
       spelling:Object.freeze({ form:rendered.form || 'assignment', text:node.text }),
       isCurrent:() => canonical.isCurrent() && observation.matches(),
     }));
-  } catch { history.edges = 0; history.reasons.add('initial-store-binding-unavailable'); }
+  } catch (error) { history.edges = 0; history.reasons.add(initialStoreCaptureFailure(error, 'binding')); }
 }
 
 function bindStoreRenderHistory(result, ctx) {
@@ -528,8 +538,17 @@ function isZeroVal(v) {
 }
 function unwrapValue(v) {
   let cur = v;
+  const seen = new Set();
   while (cur && cur.def && cur.def.op === OP.MOV && cur.def.args?.length === 1 && cur.def.args[0]?.value) {
-    cur = cur.def.args[0].value;
+    // A cyclic MOV chain carries no forward progress; stop instead of looping
+    // forever and resolve to the values seen so far.
+    if (cur.id != null) {
+      if (seen.has(cur.id)) break;
+      seen.add(cur.id);
+    }
+    const next = cur.def.args[0].value;
+    if (next === cur) break;
+    cur = next;
   }
   return cur || v;
 }
@@ -1137,6 +1156,12 @@ function callRecord(inst, ctx) {
   const target = inst.extra?.target ?? null;
   const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
   let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
+  // A direct call whose target address has neither a symbol nor a model name must keep
+  // that proven target explicit. Falling through to renderCall's operand fallback would
+  // print the first argument as the callee and drop the only callee identity the IR
+  // holds. Address-form naming matches this module's function-header fallback and the
+  // legacy renderer (`sub_<HEX>`), and leaves genuinely indirect calls untouched.
+  if (!name && target != null) name = `sub_${hex(target)}`;
 
   const values = [];
   for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
@@ -1872,12 +1897,40 @@ function rmwOperand(rmw, ctx) {
   void ctx;
   const loadValue=rmw.load?.dst;
   const written=valueOf(rmw.store?.args?.[0]);
-  const inst=written?.def;
+  // Width/cast copies sit between the computed arithmetic value and the store
+  // (the apply_damage store is `mov trunc` of the `sub`), so follow the same
+  // one-argument MOV chain the operand comparison below uses. A cyclic chain
+  // cannot reach arithmetic; only exact BIN identity counts.
+  const updateRoot=unwrapValue(written);
+  const inst=updateRoot?.def;
   if (!inst || inst.op !== OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
   const a=valueOf(inst.args?.[0]), b=valueOf(inst.args?.[1]);
   if (sameValue(a,loadValue)) return { op:inst.sub, other:b, reversed:false };
   if (sameValue(b,loadValue)) return { op:inst.sub, other:a, reversed:true };
   return null;
+}
+
+const compoundAdmissionCache = new WeakMap();
+/**
+ * The compound-spelling admission the initial emitter itself uses for a store:
+ * the read/modify/write proof for this exact store, no select in the update
+ * chain, and a direct non-reversed qualifying update reached through only
+ * one-argument MOV copies (a MOV cycle, or any non-MOV step between the
+ * computed arithmetic and the store, keeps the plain assignment spelling).
+ * The C AST store renderer consults
+ * this same authority so display spelling and initial history can never drift:
+ * re-deriving compound eligibility from the collapsed expression alone would
+ * spell compound assignments the initial renderer refused.
+ */
+export function readSemanticStoreCompoundAdmission(ir, store) {
+  if (!ir || !store) return null;
+  let entries = compoundAdmissionCache.get(ir);
+  if (!entries) { entries = readModifyWrite(ir); compoundAdmissionCache.set(ir, entries); }
+  const rmw = entries.find((entry) => entry.store === store || entry.store?.id === store?.id);
+  if (!rmw) return null;
+  if ((rmw.chain || []).some((x) => x.op === OP.SEL)) return null;
+  const upd = rmwOperand(rmw, null);
+  return upd && !upd.reversed ? upd : null;
 }
 
 function statementForStore(inst, ctx) {
@@ -2405,6 +2458,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   }
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
+    projectionIrObserver:createProjectionIrObserver({ deterministicTransforms:opts.deterministicTransforms === true }),
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
     storedValueAliases: buildStoredValueAliases(ir),
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
@@ -2476,7 +2530,23 @@ export function decompileSemantic(model, rawOpts = {}) {
   if (coverage.mode === 'linear') warnings.push('Structured CFG proof was incomplete; faithful address/edge mode was used.');
   if (ctx.unknown) warnings.push(`${ctx.unknown} unsupported IR instruction(s) remain as __asm.`);
   if (ctx.unknownCallArities) warnings.push(`${ctx.unknownCallArities} call site(s) have unknown arity; live argument registers were intentionally not guessed.`);
-  if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
+  // `ir.truncated` is the legacy projection of the canonical Semantic IR's
+  // completeness (`semantics/compat/semantic-ir-v2-to-v1.js`), which is not
+  // `complete` for independent reasons: unsupported instructions kept as
+  // `__asm`, call context that cannot be minted, and genuine work/time budget
+  // exhaustion. This layer cannot tell those apart, so it must state only the
+  // truncation it observed and never assert the budget cause it cannot prove
+  // (#8653; see the p8triage evidence for an x86-64 vector-family function that
+  // carries no budget truncation at all).
+  // `ir.truncated` is the legacy projection of the canonical Semantic IR's
+  // completeness (`semantics/compat/semantic-ir-v2-to-v1.js`), which is not
+  // `complete` for independent reasons: unsupported instructions kept as
+  // `__asm`, call context that cannot be minted, and genuine work/time budget
+  // exhaustion. This layer cannot tell those apart, so it must state only the
+  // truncation it observed and never assert the budget cause it cannot prove
+  // (#8653; see the p8triage evidence for an x86-64 vector-family function that
+  // carries no budget truncation at all).
+  if (ir.truncated) warnings.push('Semantic IR is explicitly truncated; the result is partial.');
   // #8887: canonical natural-loop materialization is resource-fenced. When the fence
   // fires the graph keeps its exact dominance/SCC facts but publishes no loops, so
   // this result must say so instead of reading like a loop-free function.

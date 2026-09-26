@@ -18,6 +18,7 @@ import {
 import { ARM64_ATOMIC_EFFECT_MNEMONICS, isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
 import { arm64DecodedEncodingWord } from '../encoding-word.js';
 import { arm64EffectIdentityContext } from './common.js';
+import { isArm64StructureMemoryInstruction, liftArm64StructureMemoryEffects } from './structure-memory.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
   loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldapr','ldaprb','ldaprh','ldapur','ldapurb','ldapurh','ldapursb','ldapursh','ldapursw','ldxr','ldaxr','ldtr']),
@@ -524,9 +525,15 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
     const addressExpr = arm64AddressOffset(addressing.addressExpr, BigInt(i * strideBytes));
     const access = accessFor({ ctx, addressExpr, widthBits });
     faults.push(...possibleFaults(isLoad?'read':'write', { alignment:faultAlignment(widthBits), addressExpr, accessIndex:i, tagChecked:isTagChecked(addressing) }));
+    const laneDisplacement = addressing.metadata?.addressDisplacement != null
+      ? (BigInt(addressing.metadata.addressDisplacement) + BigInt(i * strideBytes)).toString()
+      : null;
+    const laneAddressing = laneDisplacement != null
+      ? Object.freeze({ ...addressing.metadata, addressDisplacement: laneDisplacement })
+      : addressing.metadata;
     const metadata = {
       architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes,
-      accessOrder:i, signed, addressing:addressing.metadata, ...(nonTemporal ? { nonTemporal:true } : {}),
+      accessOrder:i, signed, addressing:laneAddressing, ...(nonTemporal ? { nonTemporal:true } : {}),
     };
     if (isLoad) {
       const raw = arm64Temporary(`load.raw.${i}`, widthBits);
@@ -789,11 +796,13 @@ function prefetch(decoded, context, mnemonic) {
 
 export function isArm64MemoryInstruction(decodedOrMnemonic) {
   const mnemonic = typeof decodedOrMnemonic === 'string' ? decodedOrMnemonic.toLowerCase() : mnemonicOf(decodedOrMnemonic);
-  return ALL_NON_ATOMIC.has(mnemonic) || isArm64AtomicInstruction(mnemonic);
+  return ALL_NON_ATOMIC.has(mnemonic) || isArm64AtomicInstruction(mnemonic)
+    || isArm64StructureMemoryInstruction(mnemonic);
 }
 
 export function liftArm64MemoryEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
+  if (isArm64StructureMemoryInstruction(mnemonic)) return liftArm64StructureMemoryEffects(decoded, context);
   if (isArm64AtomicInstruction(mnemonic)) return liftArm64AtomicEffects(decoded, context);
   if (!ALL_NON_ATOMIC.has(mnemonic)) return null;
   if (PREFETCH_MNEMONICS.has(mnemonic)) return prefetch(decoded, context, mnemonic);

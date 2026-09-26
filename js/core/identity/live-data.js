@@ -126,34 +126,41 @@ const normalizationGuard = (origins, guards) => {
  * only operation is an exact mutation check over the producer-owned objects.
  */
 export function captureProjectionIrData(roots, shouldAbort = null) {
-  return captureIrData(roots, shouldAbort, null);
+  // Projection bindings are evidence about a fixed input graph. Their absolute
+  // PROJECTION_LIMITS below are the safety bound; a wall-clock fallback here
+  // made the same binding complete on a fast host and unavailable on a loaded
+  // one. Keep this convenience entry point work-bounded and deterministic.
+  return captureIrData(roots, shouldAbort, null, false, null, null, true);
 }
 
 // A producer-local observer can reuse data proven recursively immutable during
 // an earlier capture. The cache is private: callers cannot seed it or exempt
 // mutable objects from live checks. This shares observations, not authority.
-export function createProjectionIrObserver() {
+// Captures default to structural work limits because they back persistent
+// history bindings; callers may explicitly request the wall-clock fallback
+// with deterministicTransforms:false for a best-effort observation.
+export function createProjectionIrObserver({ deterministicTransforms = true, transformClock = null } = {}) {
   const immutable = new WeakMap();
   const data = { eligibility:new WeakMap(), guards:new WeakMap(), certificates:new WeakMap() };
   return Object.freeze({
-    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable),
+    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, null, null, deterministicTransforms, transformClock),
     // Complete graph inputs already enumerate their vertices. Visit by distance
     // from those real roots, not by an arbitrary walk around SSA cycles. This
     // observes every field; it is not a caller-provided list of exempt objects.
-    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true),
+    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true, null, null, deterministicTransforms, transformClock),
     // Canonical origins are immutable DATA, not transformation authority. Bind
     // each exact issued envelope and certify its data once; mutable IR and
     // unbranded/copy payloads still receive the ordinary full observation.
-    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins'),
+    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', null, null, deterministicTransforms, transformClock),
     // Explicit data-only certificates for recursively immutable descriptions.
     // Mutable descendants and frozen cycles remain full live observations.
     // No certificate establishes semantic truth or private producer identity.
-    captureCertifiedDataGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', data),
-    captureCertifiedData:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, data),
+    captureCertifiedDataGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', data, null, deterministicTransforms, transformClock),
+    captureCertifiedData:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, data, null, deterministicTransforms, transformClock),
   });
 }
 
-function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null) {
+function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null, deterministic = false, transformClock = null) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
   const records = [], seen = new WeakMap();
   const originCertificates = [], certification = { nodes:0, edges:0, expandedUnits:0 };
@@ -161,9 +168,15 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
   let eligibilityNodes = 0, eligibilityEdges = 0;
   const canonicalOrigins = graph === 'canonical-origins';
   let edges = 0, nodes = 0, expandedUnits = 0;
-  const started = performance.now();
+  // Deterministic measurement uses only the structural bounds below. The
+  // production safety valve remains a wall-clock fallback, never a semantic
+  // input or a substitute for a work budget.
+  const readClock = typeof transformClock === 'function' ? transformClock
+    : () => globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+  const started = readClock();
   function check() {
-    if (performance.now()-started >= 250 || shouldAbort?.()) throw new TypeError('projection-capture-cancelled-or-deadline');
+    if (shouldAbort?.()) throw new TypeError('projection-capture-cancelled');
+    if (!deterministic && readClock() - started >= 250) throw new TypeError('projection-capture-deadline');
   }
   function scalarCost(value) {
     if (value == null || typeof value === 'boolean') return 1;
@@ -216,7 +229,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       // Reuse each immutable subtree together with its normalization guard.
       // A shared origin-bearing description must not be walked again for each
       // owning record; the exact owner references are still observed outside.
-      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards);
+      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards, deterministic, transformClock);
       chargeData(observed.metrics);
       for (const key of Object.keys(certification)) {
         certification[key] += observed.originCertification?.[key] ?? 0;
@@ -297,7 +310,7 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
         // ordinary nested capture independently certifies recursive immutable
         // plain data, scalar limits and height. Merely Object.freeze() is not
         // sufficient. No public description registers an observation here.
-        const certificate = captureIrData([value], shouldAbort, immutable);
+        const certificate = captureIrData([value], shouldAbort, immutable, false, null, null, deterministic, transformClock);
         check();
         for (const key of Object.keys(certification)) {
           certification[key] += certificate.metrics[key];

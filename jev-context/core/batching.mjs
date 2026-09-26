@@ -112,7 +112,10 @@ export function buildBatches(candidates, options) {
   const fairShareBudget = Math.max(1, Math.floor(Math.max(1, maxStateTokens - baseStateTokens) / fairShareCount));
 
   const freshBatch = () => ({ items: [], stateTokens: baseStateTokens });
-  current = freshBatch();
+  // ESM is always strict mode: an undeclared assignment here threw
+  // "current is not defined" on every batching call, which disabled the whole
+  // pruning engine instead of batching items. Declare the accumulator.
+  let current = freshBatch();
 
   for (const candidate of ranked) {
     const headerLine = `--- ${candidate.questionId} [tool=${candidate.item.tool || "unknown"}${

@@ -16,7 +16,7 @@ import { printExpression } from '../pretty/c.js';
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ workItems:262144, allocationUnits:131072 });
 const OPTIONS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now',
-  'addressBits','endian','backendTier']);
+  'addressBits','endian','backendTier','deterministic','deterministicTransforms']);
 
 export function readConditionalRegionCondition(plan, projection, structure, identity) {
   const entry = issued.get(plan);
@@ -69,6 +69,8 @@ export async function prepareConditionalRegionCondition(structure, projection, o
     guard.take('workItems', limits.workItems); guard.take('allocationUnits', limits.allocationUnits);
     const query = querySymbolicBranchInputs(ir, branch, { identity:guard.identity,
       timeoutMs:timeout(), limits, addressBits:submitted.addressBits ?? 64, endian:submitted.endian ?? 'little',
+      // Keep the held input binding valid under deterministic work limits only.
+      deterministic:guard.deterministic(),
       signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
     guard.check();
     const binding = readSymbolicBranchInputs(query, branch, guard.identity);
@@ -102,6 +104,7 @@ export async function prepareConditionalRegionCondition(structure, projection, o
       candidateId:`condition:${afterHash}`, beforeValueId:`condition:${branch.id}`, afterValueId:`display-condition:${branch.id}`,
       identity:guard.identity, preconditions:[], correspondence:{ inputs:[] }, memoryObservables:[], effectObservables:[],
       backendTier:submitted.backendTier ?? 'tiered', timeoutMs:timeout(), signal:submitted.signal,
+      deterministic:guard.deterministic(),
       isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity });
     guard.check();
     if (!isAdoptableCandidate(verification, { identity:guard.identity })) return reject(verification.reason ?? 'condition-not-equivalent');

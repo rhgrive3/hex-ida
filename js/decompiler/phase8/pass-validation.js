@@ -15,6 +15,7 @@ import { OP } from '../../ir-base.js';
 import { scalarEffectObligationReason } from '../../semantics/compat/effect-obligations.js';
 import { createTaintModels } from '../../symbolic/taint/models.js';
 import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
+import { isMemoryAccessExclusionReason, memoryAccessExclusionReason } from '../../symbolic/memory/access-identity.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 import { semanticValueIdentity } from '../../symbolic/memory/value-identity.js';
 import { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS } from './contract.js';
@@ -54,8 +55,10 @@ function scopeOptions(options) {
   }
   if (Object.hasOwn(submitted,'executionSnapshot')) throw new QueryFailure('path-projection-unsupported');
   const out = { ...submitted, identity, abiId, preconditions:EMPTY, correspondence:Object.freeze({inputs:EMPTY}),
-    memoryObservables:EMPTY, effectObservables:EMPTY, models:submitted.models ?? DEFAULT_MODELS };
+    memoryObservables:EMPTY, effectObservables:EMPTY, models:submitted.models ?? DEFAULT_MODELS,
+    deterministic: submitted.deterministic ?? submitted.deterministicTransforms ?? true };
   for (const key of ['memory','execution','analysisLimits','limits']) if (submitted[key] != null) out[key] = queryRecord(submitted[key]);
+  if (submitted.now != null) out.now = submitted.now;
   return Object.freeze(out);
 }
 
@@ -117,7 +120,15 @@ function targetExclusionReason(target, guard) {
     if (def.volatile || def.atomic) return unsupported;
     if (def.extra != null) {
       const extra = queryRecord(def.extra, guard);
-      if (extra.memoryAccess || extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return unsupported;
+      if (extra.memoryAccess) {
+        const location = def.loc == null ? null : queryRecord(def.loc, guard);
+        const address = def.addr == null ? null : queryRecord(def.addr, guard);
+        const memory = queryRecord(extra.memoryAccess, guard, 32);
+        const memoryReason = memoryAccessExclusionReason({ loc:location, addr:address, extra },
+          guard.identity.addressSpace, memory);
+        return memoryReason ?? unsupported;
+      }
+      if (extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return unsupported;
       if (def.op === OP.BIN && extra.negate) return 'untranslated-instruction-view';
     }
     if (def.op === OP.BIN && !TOTAL_BINARY.has(def.sub ?? def.subOp)) return unsupported;
@@ -197,7 +208,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     for (const [index, target] of targets.entries()) {
       const reason = targetExclusionReason(target,guard);
       if (reason == null) { selected.push(target); selectedIndices.push(index); }
-      else if (reason === 'invalid-select-condition') return reject(reason);
+      else if (reason === 'invalid-select-condition' || isMemoryAccessExclusionReason(reason)) return reject(reason);
       else {
         rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason}));
         decisions[index] = Object.freeze({ ...requested[index], disposition:'unsupported',
@@ -232,7 +243,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     guard.check();
     const analysis = await querySymbolicAnalysis(ir, {...submitted, targets:selected,
       candidateStrategy:representationRules ? 'translate-only' : submitted.candidateStrategy,
-      timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))});
+      deterministic: guard.deterministic(),
+      timeoutMs:guard.deterministic() ? (submitted.timeoutMs ?? 1000) : Math.max(0,Math.floor(guard.remainingMilliseconds()))});
     guard.check();
     if (analysis.status !== 'complete' || !isSymbolicAnalysisResult(analysis,guard.identity)) {
       return reject(analysis.reason ?? 'incomplete-symbolic-analysis');
@@ -246,7 +258,9 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       const generated = representationQuery ? await representationQuery({expression:item.expression,
         valueId:item.valueId,inputBinding,identity:guard.identity,taintResult:analysis.taint,
         backendTier:submitted.backendTier,signal:submitted.signal,isCancelled:submitted.isCancelled,
-        getCurrentIdentity:submitted.getCurrentIdentity,timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))}) : null;
+        getCurrentIdentity:submitted.getCurrentIdentity,
+        deterministic: guard.deterministic(),
+        timeoutMs:guard.deterministic() ? (submitted.timeoutMs ?? 1000) : Math.max(0,Math.floor(guard.remainingMilliseconds()))}) : null;
       guard.check();
       if (generated && generated.status !== 'complete') return reject(generated.reason);
       if (generated) {

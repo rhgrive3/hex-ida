@@ -25,7 +25,12 @@ export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { bindAnalysisIdentityToIr, canonicalAnalysisIdentity } from './analysis-identity.js';
-import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
+import {
+  IDENTITY_PASS,
+  IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC,
+  identityPassObservation,
+  runIdentityPass,
+} from './identity-pass.js';
 import { commitAnalysisState, forkAnalysisState, runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
@@ -263,6 +268,40 @@ function weakestCompleteness(values) {
   ), 'complete');
 }
 
+function inheritedSourcePartialIdentity(result) {
+  return result?.passId === IDENTITY_PASS.id
+    && result.completeness === 'partial'
+    && result.status === 'unchanged'
+    && result.changed === false
+    && result.stopReason === 'source-ir-truncated'
+    && result.transforms.length === 0
+    && result.invalidated.length === 0;
+}
+
+function passExecutionCompleteness(result) {
+  // The identity pass can finish normally while honestly reporting that its
+  // input facts were source-partial. That inherited knowledge limit belongs in
+  // sourceCompleteness; it does not mean the registered pass missed its fixed
+  // point over the facts it received.
+  return inheritedSourcePartialIdentity(result) ? 'complete' : result.completeness;
+}
+
+function sourceKnowledge(ir) {
+  if (ir == null) {
+    return Object.freeze({
+      sourceCompleteness: 'unknown',
+      sourceStopReason: null,
+      sourceDiagnostics: Object.freeze([]),
+    });
+  }
+  const truncated = ir.truncated === true;
+  return Object.freeze({
+    sourceCompleteness: truncated ? 'partial' : 'complete',
+    sourceStopReason: truncated ? 'source-ir-truncated' : null,
+    sourceDiagnostics: Object.freeze(truncated ? [IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC] : []),
+  });
+}
+
 function aborted(budget) {
   try { return typeof budget?.shouldAbort === 'function' && budget.shouldAbort() === true; }
   // A cancellation predicate that throws is treated as cancelled, never as
@@ -279,7 +318,7 @@ function clock() {
  * result that is simply absent is indistinguishable from a Phase 8 that never
  * ran, and "unknown stays explicit" is a non-negotiable principle.
  */
-function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null) {
+function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null, source = null) {
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -294,6 +333,9 @@ function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysi
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze({}),
+    sourceCompleteness: source?.sourceCompleteness ?? 'unknown',
+    sourceStopReason: source?.sourceStopReason ?? null,
+    sourceDiagnostics: Object.freeze([...(source?.sourceDiagnostics ?? [])]),
     // The state is unchanged, so before and after are the same snapshot. Saying
     // so explicitly is what lets a consumer prove nothing was committed.
     analysisVersions: analysisVersions == null ? null : Object.freeze({ before: analysisVersions, after: analysisVersions }),
@@ -329,10 +371,11 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
   const regionErasurePlan = context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
+  let source = sourceKnowledge(null);
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan, regionErasurePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
     withheldLedgerBase(status,reason,diagnostics,digest,versions,
-      rewriteCoverage(rewriteRegistry(),passes,[],false,reason));
+      rewriteCoverage(rewriteRegistry(),passes,[],false,reason), source);
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -354,7 +397,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   });
   let authoritative;
   try {
-    authoritative = context.analysis ?? seedAnalysisState(context.ir, { types: context.types ?? null });
+    const ir = context.ir;
+    source = sourceKnowledge(ir);
+    authoritative = context.analysis ?? seedAnalysisState(ir, { types: context.types ?? null });
   } catch (error) {
     // Seeding reads upstream facts. If reading them throws, Phase 8 knows
     // nothing about this function and must say so rather than proceeding with a
@@ -472,7 +517,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     const providerPartial = pass.descriptor.id === 'phase8.providers'
       && outcome.result.status === 'changed'
       && outcome.result.completeness === 'partial';
-    if (!providerPartial && (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded')) {
+    const inheritedSourcePartial = inheritedSourcePartialIdentity(outcome.result);
+    if (!providerPartial && !inheritedSourcePartial
+      && (outcome.result.completeness !== 'complete' || outcome.result.status === 'degraded')) {
       return {
         ledger: withheldLedger('cancelled', `pass-incomplete:${pass.descriptor.id}`, [{
           severity: 'warning',
@@ -496,7 +543,10 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     registryDigest,
     status: 'published',
     published: true,
-    completeness: weakestCompleteness(results.map((result) => result.completeness)),
+    // Ledger completeness is execution completeness: every pass reached its
+    // fixed point over its input. Source knowledge has its own explicit fields.
+    completeness: weakestCompleteness(results.map(passExecutionCompleteness)),
+    ...source,
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
@@ -564,43 +614,76 @@ export function runPhase8Vertical(context = {}, budget = {}) {
  */
 export function runPhase8Stage(context = {}, options = {}) {
   const stages = options.stages ?? INTERACTIVE_STAGES;
-  const started = clock();
-  const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
-  const explicitDeadline = options.timeBudgetMs != null;
-  const parsedTimeBudget = explicitDeadline && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
+  const readClock = typeof options.clock === 'function' ? options.clock
+    : typeof context.opts?.transformClock === 'function' ? context.opts.transformClock : clock;
+  const started = readClock();
+  const external = typeof options.shouldAbort === 'function' ? options.shouldAbort
+    : typeof context.opts?.shouldAbort === 'function' ? context.opts.shouldAbort : null;
+  const explicitTimeBudget = options.timeBudgetMs != null;
+  const parsedTimeBudget = explicitTimeBudget && typeof options.timeBudgetMs === 'number' ? options.timeBudgetMs : null;
   // Invalid explicit deadlines fail closed as an immediate cancellation. A
   // NaN deadline would otherwise never compare true and silently disable the
   // caller's requested resource bound.
-  const timeBudgetMs = explicitDeadline && Number.isFinite(parsedTimeBudget)
-    ? Math.max(0, parsedTimeBudget) : explicitDeadline ? 0 : null;
-  const deadline = explicitDeadline ? started + timeBudgetMs : null;
+  const timeBudgetMs = explicitTimeBudget && Number.isFinite(parsedTimeBudget)
+    ? Math.max(0, parsedTimeBudget) : explicitTimeBudget ? 0 : null;
+  const inheritedDeadline = options.deadline ?? context.opts?.transformDeadline ?? null;
+  const validInheritedDeadline = typeof inheritedDeadline === 'number' && Number.isFinite(inheritedDeadline)
+    ? inheritedDeadline : null;
+  const localDeadline = explicitTimeBudget ? started + timeBudgetMs : null;
+  const deadline = localDeadline == null ? validInheritedDeadline
+    : validInheritedDeadline == null ? localDeadline : Math.min(localDeadline, validInheritedDeadline);
+  const hasDeadline = deadline != null;
+  const deadlineReason = explicitTimeBudget && (validInheritedDeadline == null || localDeadline <= validInheritedDeadline)
+    ? 'phase8-time-budget'
+    : validInheritedDeadline != null
+      ? options.deadlineReason ?? context.opts?.transformDeadlineReason ?? 'transform-safety-ceiling'
+      : null;
   const parsedWorkBudget = options.maxWorkItems ?? options.workBudget ?? PHASE8_DEFAULT_WORK_BUDGET;
   const maxWorkItems = Number.isSafeInteger(parsedWorkBudget) && parsedWorkBudget >= 0
     ? parsedWorkBudget : 0;
   let workChecks = 0;
+  let workBudgetExceeded = false;
+  let deadlineExceeded = false;
+  let externalAbort = false;
   const budget = {
     timeBudgetMs,
     deadline,
-    deterministic: !explicitDeadline,
+    deterministic: !hasDeadline,
     maxWorkItems,
     budgetClass: options.budgetClass ?? 'interactive',
     shouldAbort: () => {
       if (external != null) {
         try {
-          if (external() === true) return true;
+          if (external() === true) { externalAbort = true; return true; }
         } catch {
+          externalAbort = true;
           return true;
         }
       }
-      if (workChecks >= maxWorkItems) return true;
+      if (hasDeadline && readClock() >= deadline) { deadlineExceeded = true; return true; }
+      if (workChecks >= maxWorkItems) { workBudgetExceeded = true; return true; }
       workChecks += 1;
-      return explicitDeadline && clock() >= deadline;
+      return false;
     },
   };
-  PUBLICATION_DEADLINES.set(budget, () => explicitDeadline && clock() >= deadline);
+  PUBLICATION_DEADLINES.set(budget, () => {
+    if (!hasDeadline || readClock() < deadline) return false;
+    deadlineExceeded = true;
+    return true;
+  });
   try {
     const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
-    return { ...outcome, elapsedMs: clock() - started };
+    const stopReason = workBudgetExceeded ? 'transform-work-budget'
+      : deadlineExceeded ? deadlineReason : null;
+    let ledger = outcome.ledger;
+    if (stopReason && ledger?.published === false) {
+      ledger = { ...ledger, stopReason };
+      ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
+      ledger = Object.freeze(ledger);
+    }
+    return { ...outcome, ledger,
+      budget: Object.freeze({ maxWorkItems, workChecks, workBudgetExceeded, deadlineExceeded, externalAbort, stopReason }),
+      elapsedMs: readClock() - started };
   } finally {
     PUBLICATION_DEADLINES.delete(budget);
   }

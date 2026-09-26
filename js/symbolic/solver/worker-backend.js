@@ -5,15 +5,17 @@
  */
 
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
-import { positiveFiniteBudget } from './budget.js';
+import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
-import { TieredBvBackend } from './tiered-backend.js';
-import { SOLVER_STATUS, createSolverResult } from './result.js';
+import { TieredBvBackend, classifyTieredQuery } from './tiered-backend.js';
+import { validateVerificationQuery } from '../verify/query.js';
+import { validateSatModel } from '../verify/validate-model.js';
+import { validateExactModelBindings } from './model-boundary.js';
+import { SOLVER_STATUS, createSolverResult, isValidSolverResult } from './result.js';
 import { SolverSession } from './session.js';
-import { isCanonicalRequestId } from './worker-protocol.js';
+import { isCanonicalRequestId, WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
-export const WORKER_BACKEND_ID = 'hex-exhaustive-bv-worker';
-export const WORKER_BACKEND_VERSION = '1.0.0';
+export { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
 function defaultWorkerFactory() {
   if (typeof globalThis.Worker !== 'function') throw new Error('solver-worker-unavailable');
@@ -48,7 +50,47 @@ class WorkerSolverSession extends SolverSession {
       const pending = this.pending.get(message.requestId);
       if (!pending) return;
       this.pending.delete(message.requestId);
-      pending.resolve(message.result);
+      if (message.token !== pending.token || !isValidSolverResult(message.result, {
+        query: pending.query,
+        backend: this.backend,
+      })) {
+        pending.resolve(createSolverResult({
+          status: SOLVER_STATUS.PROVIDER_FAILURE,
+          reason: 'solver-worker-result-identity-mismatch',
+          backend: this.backend.id,
+          backendVersion: this.backend.version,
+          queryHash: pending.queryHash,
+          lifecycle: { publishable: false },
+        }));
+        return;
+      }
+      if (message.result.status === SOLVER_STATUS.SAT) {
+        const binding = validateExactModelBindings(pending.symbols, message.result.model);
+        const semantic = binding.valid ? validateSatModel(pending.query, message.result.model) : binding;
+        if (!semantic.valid) {
+          pending.resolve(createSolverResult({
+            status: SOLVER_STATUS.PROVIDER_FAILURE,
+            reason: `solver-worker-model-validation-failed:${semantic.reason}`,
+            backend: this.backend.id,
+            backendVersion: this.backend.version,
+            queryHash: pending.queryHash,
+            lifecycle: { publishable: false },
+          }));
+          return;
+        }
+      }
+      try {
+        pending.resolve(createSolverResult(message.result));
+      } catch {
+        pending.resolve(createSolverResult({
+          status: SOLVER_STATUS.PROVIDER_FAILURE,
+          reason: 'solver-worker-result-snapshot-failed',
+          backend: this.backend.id,
+          backendVersion: this.backend.version,
+          queryHash: pending.queryHash,
+          lifecycle: { publishable: false },
+        }));
+      }
     };
     const onError = (event) => {
       const reason = event?.message || 'solver-worker-failure';
@@ -102,20 +144,56 @@ class WorkerSolverSession extends SolverSession {
       });
     }
 
+    const names = ['maxBvWidth', 'maxAssignments', 'exhaustiveMaxBvWidth', 'maxConstraints', 'maxExprNodes', 'maxExprDepth',
+      'maxVariables', 'maxClauses', 'maxDecisions', 'maxPropagations', 'yieldEvery'];
+    let workerOptions;
+    try {
+      workerOptions = Object.fromEntries(names.map((name) => [name,
+        effectivePositiveSafeInteger(options, name, this.options[name], this.backend[name])]));
+    } catch (error) {
+      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY,
+        reason: `invalid-budget:${error.message}`, backend: this.backend.id, backendVersion: this.backend.version,
+        queryHash: null, lifecycle: { publishable: false } });
+    }
+    workerOptions.exhaustiveMaxAssignments = workerOptions.maxAssignments;
+    workerOptions.timeoutMs = 0;
+    const queryValidation = validateVerificationQuery(query, { maxExprNodes: workerOptions.maxExprNodes, maxExprDepth: workerOptions.maxExprDepth });
+    if (!queryValidation.valid) return createSolverResult({ status: queryValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+      reason: queryValidation.reason, backend: this.backend.id, backendVersion: this.backend.version,
+      queryHash: null, lifecycle: { budgetExceeded: queryValidation.limitExceeded === true, publishable: false } });
+    let querySnapshot;
+    try { querySnapshot = structuredClone(query); }
+    catch (error) { return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY,
+      reason: `solver-worker-query-clone-failed:${error?.message || 'uncloneable-query'}`,
+      backend: this.backend.id, backendVersion: this.backend.version, queryHash: null,
+      lifecycle: { publishable: false } }); }
+    const snapshotValidation = validateVerificationQuery(querySnapshot, {
+      maxExprNodes: workerOptions.maxExprNodes, maxExprDepth: workerOptions.maxExprDepth,
+    });
+    if (!snapshotValidation.valid || snapshotValidation.recomputedHash !== queryValidation.recomputedHash) {
+      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY,
+        reason: 'solver-worker-cloned-query-identity-mismatch', backend: this.backend.id,
+        backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
+    }
+    const routeInfo = classifyTieredQuery(querySnapshot, {
+      maxBvWidth: workerOptions.maxBvWidth,
+      maxExprNodes: workerOptions.maxExprNodes,
+      maxExprDepth: workerOptions.maxExprDepth,
+      maxConstraints: workerOptions.maxConstraints,
+      exhaustiveMaxBvWidth: workerOptions.exhaustiveMaxBvWidth,
+      exhaustiveMaxAssignments: workerOptions.maxAssignments,
+    });
+    if (!routeInfo.supported) return createSolverResult({ status: routeInfo.status || SOLVER_STATUS.UNSUPPORTED,
+      reason: routeInfo.reason, backend: this.backend.id, backendVersion: this.backend.version,
+      queryHash: routeInfo.status === SOLVER_STATUS.INVALID_QUERY ? null : querySnapshot.queryHash,
+      lifecycle: { budgetExceeded: routeInfo.status === SOLVER_STATUS.RESOURCE_LIMIT, publishable: false } });
     const requestId = String(++this.requestSequence);
-    const workerOptions = {
-      maxBvWidth: options.maxBvWidth ?? this.backend.maxBvWidth,
-      maxAssignments: options.maxAssignments ?? this.backend.maxAssignments,
-      maxConstraints: options.maxConstraints ?? this.backend.maxConstraints,
-      maxExprNodes: options.maxExprNodes ?? this.backend.maxExprNodes,
-      yieldEvery: options.yieldEvery,
-      timeoutMs: 0,
-    };
     return new Promise((resolve) => {
-      const pending = { resolve };
+      const pending = { resolve, token, query: querySnapshot, queryHash: querySnapshot.queryHash,
+        symbols: routeInfo.analysis.symbols };
       this.pending.set(requestId, pending);
       try {
-        this.worker.postMessage({ type: 'solver-check', requestId, query, options: workerOptions, token });
+        this.worker.postMessage({ type: 'solver-check', requestId, query: querySnapshot, options: workerOptions, token });
       } catch (error) {
         this.pending.delete(requestId);
         resolve(createSolverResult({
@@ -123,7 +201,7 @@ class WorkerSolverSession extends SolverSession {
           reason: error?.message || 'solver-worker-post-failed',
           backend: this.backend.id,
           backendVersion: this.backend.version,
-          queryHash: query?.queryHash || null,
+          queryHash: querySnapshot.queryHash,
           lifecycle: { publishable: false },
         }));
       }
@@ -140,6 +218,7 @@ class WorkerSolverSession extends SolverSession {
         reason: 'solver-worker-terminated',
         backend: this.backend.id,
         backendVersion: this.backend.version,
+        queryHash: pending.queryHash,
         lifecycle: { cancelled: true, disposed: true, late: true, publishable: false },
       }));
     }
@@ -170,21 +249,36 @@ class WorkerSolverSession extends SolverSession {
 }
 
 export class WorkerSolverBackend extends SolverBackend {
-  constructor({
-    id = WORKER_BACKEND_ID,
-    version = WORKER_BACKEND_VERSION,
-    maxBvWidth = 8,
-    maxAssignments = 1 << 20,
-    maxConstraints = 4096,
-    maxExprNodes = 100000,
-    workerFactory = defaultWorkerFactory,
-  } = {}) {
+  constructor(options = {}) {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('worker backend options must be a data object');
+    const descriptors = Object.getOwnPropertyDescriptors(options);
+    const captured = {};
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== 'string' || !Object.hasOwn(descriptors[key], 'value') || !descriptors[key].enumerable) {
+        throw new TypeError('worker backend options must be enumerable own data');
+      }
+      captured[key] = descriptors[key].value;
+    }
+    const option = (name, fallback) => Object.hasOwn(captured, name) ? captured[name] : fallback;
+    const id = option('id', WORKER_BACKEND_ID);
+    const version = option('version', WORKER_BACKEND_VERSION);
+    const workerFactory = option('workerFactory', defaultWorkerFactory);
+    if (typeof workerFactory !== 'function') throw new TypeError('workerFactory must be a function');
+    const maxBvWidth = requirePositiveSafeInteger(option('maxBvWidth', 8), 'maxBvWidth');
+    const maxAssignments = requirePositiveSafeInteger(option('maxAssignments', 1 << 20), 'maxAssignments');
+    const maxConstraints = requirePositiveSafeInteger(option('maxConstraints', 4096), 'maxConstraints');
+    const maxExprNodes = requirePositiveSafeInteger(option('maxExprNodes', 100000), 'maxExprNodes');
+    const maxExprDepth = requirePositiveSafeInteger(option('maxExprDepth', 1024), 'maxExprDepth');
+    const maxClauses = requirePositiveSafeInteger(option('maxClauses', 1600000), 'maxClauses');
+    const maxVariables = requirePositiveSafeInteger(option('maxVariables', 400000), 'maxVariables');
+    const maxDecisions = requirePositiveSafeInteger(option('maxDecisions', 500000), 'maxDecisions');
+    const maxPropagations = requirePositiveSafeInteger(option('maxPropagations', 8000000), 'maxPropagations');
+    const yieldEvery = requirePositiveSafeInteger(option('yieldEvery', 8192), 'yieldEvery');
+    const exhaustiveMaxBvWidth = requirePositiveSafeInteger(option('exhaustiveMaxBvWidth', Math.min(8, maxBvWidth)), 'exhaustiveMaxBvWidth');
+    if (exhaustiveMaxBvWidth > maxBvWidth) throw new TypeError('exhaustiveMaxBvWidth cannot exceed maxBvWidth');
     super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
-    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
-    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
-    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
-    this.workerFactory = workerFactory;
+    Object.assign(this, { maxBvWidth, maxAssignments, maxConstraints, maxExprNodes, maxExprDepth,
+      maxClauses, maxVariables, maxDecisions, maxPropagations, yieldEvery, exhaustiveMaxBvWidth, workerFactory });
   }
 
   baseCapabilities() {
@@ -194,12 +288,20 @@ export class WorkerSolverBackend extends SolverBackend {
           maxAssignments: this.maxAssignments,
           maxConstraints: this.maxConstraints,
           maxExprNodes: this.maxExprNodes,
+          maxExprDepth: this.maxExprDepth,
+          yieldEvery: this.yieldEvery,
         })
       : new TieredBvBackend({
           maxBvWidth: this.maxBvWidth,
           exhaustiveMaxAssignments: this.maxAssignments,
           maxConstraints: this.maxConstraints,
           maxExprNodes: this.maxExprNodes,
+          maxExprDepth: this.maxExprDepth,
+          maxVariables: this.maxVariables,
+          maxClauses: this.maxClauses,
+          maxDecisions: this.maxDecisions,
+          maxPropagations: this.maxPropagations,
+          yieldEvery: this.yieldEvery,
         });
     return {
       ...provider.baseCapabilities(),
@@ -214,6 +316,13 @@ export class WorkerSolverBackend extends SolverBackend {
       maxAssignments: this.maxAssignments,
       maxConstraints: this.maxConstraints,
       maxExprNodes: this.maxExprNodes,
+      maxExprDepth: this.maxExprDepth,
+      maxVariables: this.maxVariables,
+      maxClauses: this.maxClauses,
+      maxDecisions: this.maxDecisions,
+      maxPropagations: this.maxPropagations,
+      yieldEvery: this.yieldEvery,
+      exhaustiveMaxBvWidth: this.exhaustiveMaxBvWidth,
       ...options,
     });
   }

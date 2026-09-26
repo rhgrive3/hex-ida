@@ -1,4 +1,5 @@
 import { projectedMemoryAccessForInstruction } from '../../semantics/compat/semantic-ir-v2-to-v1-memory.js';
+import { memoryAccessExclusionReason } from '../memory/access-identity.js';
 /** Execution-state bridge. Uses the same canonical scalar lowering as the
  * static translator, with already evaluated canonical Expr values. */
 import { lowerScalarInstruction, floatingSemantics, literalExpression } from './scalar.js';
@@ -155,11 +156,9 @@ export function translateMemoryAccess(inst,state,options={}) {
   for(const bits of [inst.addr?.widthBits,inst.extra?.widthBits,descriptor?.widthBits]) {
     if(bits!=null && bits!==size*8) throw new QueryFailure('memory-width-mismatch');
   }
-  for(const space of [inst.loc?.addressSpace,inst.addr?.addressSpace,descriptor?.addressSpace]) {
-    if(space!=null && space!==memory.identity.addressSpace) throw new QueryFailure('address-space-mismatch');
-  }
+  const identityReason = memoryAccessExclusionReason(inst, memory.identity.addressSpace, descriptor);
+  if (identityReason) throw new QueryFailure(identityReason);
   const canonicalAddressId=descriptor?.addressExpr?.valueId;
-  if(!canonicalAddressId && (inst.addr?.precise===false || inst.extra?.addressPrecise===false)) throw new QueryFailure('unresolved-memory-address');
   // Consume the actual v2→v1 descriptor. Unknown qualifiers are not authority for
   // ordinary memory, even when a legacy location key looks precise.
   if(descriptor) {

@@ -8,7 +8,10 @@ export const PE_METADATA_LIMITS = Object.freeze({
   stringBytes: 16 * 1024 * 1024,
   operations: 2_000_000,
   estimatedHeapBytes: 96 * 1024 * 1024,
-  wallClockMs: 5_000,
+  // Wall-clock stops made parse output depend on host speed. Work is strictly
+  // bounded by the deterministic count/byte/operation limits above; a wall-clock
+  // stop applies only when a caller explicitly requests an opt-in wallClockMs.
+  wallClockMs: Infinity,
 });
 
 function markPEPartial(image, reason, warning = null) {
@@ -23,7 +26,11 @@ function markPEPartial(image, reason, warning = null) {
 // participate. JavaScript coercion would otherwise let structured values
 // ('16', ['1'], true) silently shrink analysis coverage or turn the used
 // counters into strings (#5188) — fail closed to the fallback/typed zero.
-function metadataLimit(value, fallback) {
+function metadataLimit(key, value, fallback) {
+  if (key === 'wallClockMs') {
+    if (value === Infinity) return Infinity;
+    return typeof value === 'number' && (value === Infinity || (Number.isSafeInteger(value) && value >= 0)) ? value : fallback;
+  }
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
@@ -34,7 +41,7 @@ function metadataCost(value) {
 function resolveMetadataLimits(overrides = {}) {
   const out = {};
   for (const [key, fallback] of Object.entries(PE_METADATA_LIMITS)) {
-    out[key] = metadataLimit(overrides[key], fallback);
+    out[key] = metadataLimit(key, overrides[key], fallback);
   }
   return out;
 }

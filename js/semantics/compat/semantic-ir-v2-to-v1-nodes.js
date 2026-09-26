@@ -256,6 +256,15 @@ function zeroCondition(valueId, context) {
   if (producer?.kind === 'intrinsic' && producer.operator === 'is-zero' && producer.inputs?.length === 1) {
     return { kind: 'cbz', testedValueId: producer.inputs[0], producer };
   }
+  // AArch64 TBNZ lifts its control condition to the tested bit itself: the
+  // semantic condition value IS `extract-bit(value, bit)`, so the branch is
+  // taken exactly when that value is nonzero. TBZ is already covered above by
+  // its `is-zero(extract-bit(...))` shape. Rendering the very same value as a
+  // `!= 0` predicate is the identity of this node, not an inference about the
+  // producer, so no flag source is assumed here.
+  if (producer?.kind === 'intrinsic' && producer.operator === 'extract-bit' && producer.inputs?.length === 1) {
+    return { kind: 'cbnz', testedValueId: valueId, producer };
+  }
   if (producer?.kind === 'intrinsic' && producer.operator === 'not-bool' && producer.inputs?.length === 1) {
     const nested = context.producerByValueId.get(producer.inputs[0]) ?? null;
     if (nested?.kind === 'intrinsic' && nested.operator === 'is-zero' && nested.inputs?.length === 1) {

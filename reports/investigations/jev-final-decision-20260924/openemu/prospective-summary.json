@@ -1,0 +1,82 @@
+{
+  "schema": "hex-jev-prospective-evaluation/v1",
+  "evaluatedAtUtc": "2026-09-24T00:08:14.537Z",
+  "productHeadAtRun": "4c03010597fade05c8dafa8ddaaaf92c714810a8",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "caseSha256": "e6e40752c2f039cecc4f7054e2f252a66d567e58a90af1315ff2b9534bdd96dd",
+  "binarySha256": "c09d5852b8bc2e94acb9bec5dd1c8a4a8aa93275421c8bd81ed2ee8904477253",
+  "model": "openjev",
+  "nodeVersion": "v24.20.0",
+  "totalCases": 48,
+  "answerableCases": 36,
+  "abstainCases": 12,
+  "apiClientStats": {
+    "callCount": 48,
+    "httpErrors": 0,
+    "http400ChoiceLimitErrors": 0,
+    "p50LatencyMs": 772.91,
+    "maxLatencyMs": 1345.07
+  },
+  "metrics": {
+    "armA_baseline": {
+      "answerableTop1": 3,
+      "answerableN": 36,
+      "accuracy": 0.08333333333333333,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 0
+    },
+    "armB_routed_jev": {
+      "answerableTop1": 35,
+      "answerableN": 36,
+      "accuracy": 0.9722222222222222,
+      "falseStrongCount": 0,
+      "unsafeConfidentCount": 0
+    },
+    "differential": {
+      "rescues": 33,
+      "regressions": 1,
+      "rescueCaseIds": [
+        "OE01",
+        "OE02",
+        "OE03",
+        "OE04",
+        "OE05",
+        "OE06",
+        "OE07",
+        "OE08",
+        "OE09",
+        "OE11",
+        "OE12",
+        "OE14",
+        "OE15",
+        "OE16",
+        "OE17",
+        "OE18",
+        "OE19",
+        "OE20",
+        "OE21",
+        "OE22",
+        "OE24",
+        "OE25",
+        "OE26",
+        "OE27",
+        "OE28",
+        "OE29",
+        "OE30",
+        "OE31",
+        "OE32",
+        "OE33",
+        "OE34",
+        "OE35",
+        "OE36"
+      ],
+      "regressionCaseIds": [
+        "OE13"
+      ],
+      "regressionRescueRatio": 0.030303030303030304,
+      "newFalseStrong": 0,
+      "failedCallsObserved": 0,
+      "failClosedObserved": null
+    }
+  }
+}

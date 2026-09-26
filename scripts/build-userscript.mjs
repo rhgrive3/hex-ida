@@ -46,7 +46,10 @@ function graphLoaderForPath(file) {
 export function boundGraphSourcePlugin({ rootDir = root, rewriteImportMeta = false } = {}) {
   const resolvedRoot = resolve(rootDir);
   const provenance = new Map();
-  const realRootPromise = realpath(resolvedRoot);
+  // Resolve the root lazily: an eager realpath() that no load ever awaits
+  // rejects unhandled when the build fails first and the root is removed.
+  let realRootPromise = null;
+  const realRoot = () => (realRootPromise ??= realpath(resolvedRoot));
   return {
     provenance,
     plugin: { name: 'hex-bound-graph-source', setup(api) {
@@ -63,7 +66,7 @@ export function boundGraphSourcePlugin({ rootDir = root, rewriteImportMeta = fal
         const sourceBytes = await readResolvedRepositorySource(resolved, {
           sourceLabel: 'Bundled graph source',
         });
-        const effectivePath = relative(await realRootPromise, resolved.realSource)
+        const effectivePath = relative(await realRoot(), resolved.realSource)
           .split('\\').join('/');
         if (!effectivePath || effectivePath === '..' || effectivePath.startsWith('../') || isAbsolute(effectivePath)) {
           throw new Error(`Bundled graph source escapes repository: ${logical}`);

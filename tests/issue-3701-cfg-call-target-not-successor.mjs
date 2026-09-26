@@ -26,6 +26,19 @@ const model = {
   assert.deepEqual(cfg.nodes[0].succ, [{ to:1, kind:EDGE.FALL }], 'external direct call target must not produce an outside TAKEN edge');
 }
 
+{
+  const tailCallModel = {
+    ...model,
+    instructions: [
+      { row:0, address:0n, mnemonic:'b', data:false, isBranch:true, isCall:true, isTailCall:true, isConditional:false, isReturn:false, branchTarget:0x100n },
+      ...model.instructions.slice(1),
+    ],
+  };
+  const cfg = buildCfg(tailCallModel, { rowOfAddress() { return null; } });
+  assert.deepEqual(cfg.nodes[0].succ, [{ to:-1, kind:EDGE.JUMP, target:0x100n, outside:true }], 'tail call to outside target must have no local FALL and emit outside JUMP');
+  assert.equal(cfg.nodes[0].isExit, true, 'tail call node must be marked as an exit');
+}
+
 for (const [insn, expected] of [
   [{ mnemonic:'b.eq', isBranch:true, isCall:false, isConditional:true }, [EDGE.TAKEN, EDGE.FALL]],
   [{ mnemonic:'b', isBranch:true, isCall:false, isConditional:false }, [EDGE.JUMP]],

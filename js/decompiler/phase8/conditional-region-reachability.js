@@ -8,7 +8,8 @@ import { createQueryGuard, sameMemoryIdentity } from '../../symbolic/memory/quer
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ workItems:262144, allocationUnits:262144, queries:4 });
 const OPTION_KEYS = new Set(['identity', 'timeoutMs', 'limits', 'signal', 'isCancelled', 'getCurrentIdentity', 'now',
-  'addressBits', 'endian', 'backendTier', 'maxPaths', 'maxSteps', 'maxBranches', 'maxBlockVisits']);
+  'addressBits', 'endian', 'backendTier', 'maxPaths', 'maxSteps', 'maxBranches', 'maxBlockVisits',
+  'deterministic', 'deterministicTransforms']);
 const ORDINARY = new Set(['branch', 'fallthrough', 'conditional-true', 'conditional-false']);
 const freeze = Object.freeze;
 

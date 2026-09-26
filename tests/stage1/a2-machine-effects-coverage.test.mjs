@@ -94,12 +94,19 @@ const architectureSwap = { ...exact, architectureId: 'x86_64' };
 {
   const arm64eBase = classifyMachineEffectsCoverage('arm64e', arm64Instruction('stage1-arm64e-base', 'b', '#0x5000', { architectureId: 'arm64e' }));
   assert.equal(arm64eBase.status, 'covered', 'ARM64e baseline effects may delegate to the canonical ARM64 semantic engine');
-  const arm64ePac = classifyMachineEffectsCoverage('arm64e', {
+  const pacInstruction = {
     instructionId: 'stage1-arm64e-pac', architectureId: 'arm64e', mnemonic: 'paciasp', operands: '', ops: [], mode: 'arm64e', address: 0x4000n,
     origin: { instructionIds: ['stage1-arm64e-pac'] },
-  });
+  };
+  // PACIASP is also an implicit BTI landing pad. With FEAT_BTI stated absent the
+  // PAC effects are exact-with-intrinsic; with FEAT_BTI unprovisioned the landing
+  // check must fail closed to partial (#8775), never be assumed away.
+  const arm64ePac = classifyMachineEffectsCoverage('arm64e', pacInstruction, { featBti: false });
   assert.equal(arm64ePac.status, 'covered');
   assert.equal(arm64ePac.completeness, 'exact-with-intrinsic');
+  const arm64ePacUnknownBti = classifyMachineEffectsCoverage('arm64e', pacInstruction);
+  assert.equal(arm64ePacUnknownBti.status, 'covered');
+  assert.equal(arm64ePacUnknownBti.completeness, 'partial', 'unprovisioned FEAT_BTI keeps the implicit landing check explicit (#8775)');
 }
 
 {

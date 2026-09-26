@@ -82,12 +82,16 @@ export async function queryTerminalEffectEquivalence(request = {}) {
     }
     const preconditions = queryArray(request.preconditions ?? [], guard, 256);
     for (const condition of preconditions) if (condition?.sort?.kind !== 'bool') throw new QueryFailure('precondition-sort');
-    const execute = ir => symbolicExecute(ir, { captureValues:true, argumentExpressions,
-      timeoutMs:Math.max(1, Math.floor(guard.remainingMilliseconds())), signal:request.signal,
-      isCancelled:request.isCancelled,
-      byteMemory:{ identity, addressBits:request.addressBits ?? 64, endian:request.endian ?? 'little',
-        timeoutMs:Math.max(1, Math.floor(guard.remainingMilliseconds())), signal:request.signal,
-        isCancelled:request.isCancelled, getCurrentIdentity:request.getCurrentIdentity } });
+    const execute = ir => {
+      const executionTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 1000)
+        : Math.max(1, Math.floor(guard.remainingMilliseconds()));
+      return symbolicExecute(ir, { captureValues:true, argumentExpressions,
+        deterministic: guard.deterministic(), timeoutMs:executionTimeoutMs, signal:request.signal,
+        isCancelled:request.isCancelled,
+        byteMemory:{ identity, addressBits:request.addressBits ?? 64, endian:request.endian ?? 'little',
+          deterministic: guard.deterministic(), timeoutMs:executionTimeoutMs, signal:request.signal,
+          isCancelled:request.isCancelled, getCurrentIdentity:request.getCurrentIdentity } });
+    };
     before = execute(beforeIr); guard.check();
     after = execute(afterIr); guard.check();
     if (!isExecutionResult(before, identity, beforeIr) || !isExecutionResult(after, identity, afterIr)) throw new QueryFailure('stale-execution');
@@ -118,11 +122,13 @@ export async function queryTerminalEffectEquivalence(request = {}) {
     const backend = backendTier === 'tiered'
       ? new TieredBvBackend({ maxExprNodes:25000, maxVariables:32768, maxClauses:131072, maxDecisions:8192, maxPropagations:500000 })
       : new ExhaustiveBvBackend({ maxAssignments:4096, maxExprNodes:25000 });
-    session = backend.createSession({ timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())), signal:request.signal });
+    const solverTimeoutMs = guard.deterministic() ? (request.timeoutMs ?? 1000) : Math.max(1, Math.floor(guard.remainingMilliseconds()));
+    const deterministic = guard.deterministic();
+    session = backend.createSession({ timeoutMs:solverTimeoutMs, signal:request.signal, deterministic });
     const proof = await verifyBoundedEquivalence({ beforeTarget:tautology, afterTarget:obligation,
-      preconditions, correspondence:{ inputs:[] }, memoryRegions:[], session,
+      correspondence:{ inputs:[] }, preconditions:preconditions.slice(), memoryRegions:[], session,
       options:{ proofScope:scope, architecture:identity.architecture,
-        timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())), signal:request.signal } });
+        timeoutMs:solverTimeoutMs, signal:request.signal, deterministic } });
     guard.check();
     if (!isExecutionResult(before,identity,beforeIr) || !isExecutionResult(after,identity,afterIr)) throw new QueryFailure('stale-execution');
     if (proof.verdict !== 'proved' && proof.verdict !== 'refuted') return stopped(proof.reasonCode ?? 'proof-ineligible');

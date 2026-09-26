@@ -1,7 +1,7 @@
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
-import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
+import { partitionDecodedFunction, semanticAbiAdapter, switchTablesForPartition } from '../../../js/analysis/semantic-function.js';
 import { decompileSemantic, enhanceSemanticDecompilation } from '../../../js/decompile.js';
 
 function addressOf(instruction) { return BigInt(instruction.address); }
@@ -67,7 +67,11 @@ export function decompileDecodedProductFunction(input, options = {}) {
   const abi = resolveABIPlugin({ architecture:architectureId, platform:input.platform || 'linux', callingConvention:input.callingConvention ?? null });
   if (!abi?.supported || abi.architectureId !== architectureId) throw new TypeError(`phase8-measurement-abi-unavailable:${architectureId}`);
   const abiAdapter = semanticAbiAdapter(abi, input);
-  const blocks = partitionDecodedFunction(input.instructions, plugin, { callPrototype:input.callPrototype ?? null });
+  const blocks = partitionDecodedFunction(input.instructions, plugin, {
+    callPrototype:input.callPrototype ?? null,
+    memorySegments:input.memorySegments,
+  });
+  const recoveredSwitches = switchTablesForPartition(blocks);
   let defaultMode = null;
   try { defaultMode = plugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
   const pipeline = buildSemanticV2CompatibilityPipeline({
@@ -86,10 +90,23 @@ export function decompileDecodedProductFunction(input, options = {}) {
     },
   }, { abiAdapter });
   const model = productModel(pipeline, input.instructions, input.name);
+  model.switches = recoveredSwitches.flatMap(table => {
+    const legacy = pipeline.legacyV1.instructions.find(instruction => {
+      try { return BigInt(instruction.address) === table.instructionAddress; } catch { return false; }
+    });
+    if (!legacy) return [];
+    return [{
+      row:legacy.row,
+      address:table.instructionAddress,
+      expr:table.selectorRegister,
+      cases:table.cases.map(entry => ({ value:entry.address, address:entry.address })),
+    }];
+  });
   const rowByAddress = new Map(model.instructions.filter((instruction) => instruction.size > 0)
     .map((instruction) => [BigInt(instruction.address).toString(), instruction.row]));
   const decompilerOptions = {
     ir:pipeline.legacyV1,
+    profile:options.profile ?? 'deep',
     abiAdapter,
     decoderSemanticVersion:String(input.decoderSemanticVersion),
     binaryId:String(input.binaryId),
@@ -104,9 +121,13 @@ export function decompileDecodedProductFunction(input, options = {}) {
     // pre-projection IR API. Match the production driver's explicit request
     // for its map even when optimizer stages are not enabled.
     renderProvenance:true,
+    ...(options.renderProvenanceBudget !== undefined ? { renderProvenanceBudget:options.renderProvenanceBudget } : {}),
+    ...(options.renderProvenanceBindingBudget !== undefined ? { renderProvenanceBindingBudget:options.renderProvenanceBindingBudget } : {}),
     decompilerTimeBudgetMs:Number(options.decompilerTimeBudgetMs ?? 5000),
-    ...(options.phase8TimeBudgetMs != null ? { phase8TimeBudgetMs:Number(options.phase8TimeBudgetMs) } : {}),
-    ...(options.phase8WorkBudget != null ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
+    ...(Number.isSafeInteger(options.decompilerNodeBudget) && options.decompilerNodeBudget >= 0
+      ? { decompilerNodeBudget:options.decompilerNodeBudget } : {}),
+    ...(options.phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs:options.phase8TimeBudgetMs == null ? options.phase8TimeBudgetMs : Number(options.phase8TimeBudgetMs) } : {}),
+    ...(options.phase8WorkBudget !== undefined ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
   };
   const raw = decompileSemantic(model, decompilerOptions);
   if (!raw) throw new Error('phase8-measurement-product-decompiler-produced-no-result');

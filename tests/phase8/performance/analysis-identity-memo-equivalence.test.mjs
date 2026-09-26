@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalAnalysisIdentity as current } from '../../js/decompiler/phase8/analysis-identity.js';
-import { canonicalAnalysisIdentity as original } from '../helpers/analysis-identity-baseline-oracle.mjs';
-import { fixture } from '../phase8/helpers/ir-fixtures.mjs';
+import { canonicalAnalysisIdentity as current } from '../../../js/decompiler/phase8/analysis-identity.js';
+import { canonicalAnalysisIdentity as original } from '../../helpers/analysis-identity-baseline-oracle.mjs';
+import { fixture } from '../helpers/ir-fixtures.mjs';
 
 function buildHeavySharedIr() {
   const f = fixture('heavy-sharing-ir');

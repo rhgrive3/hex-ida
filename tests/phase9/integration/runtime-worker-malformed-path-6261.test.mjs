@@ -7,6 +7,8 @@ const runtimeSecrets = ${JSON.stringify(`export const RUNTIME_BUILD = Object.fre
   manifest: Object.freeze({ buildId: 'phase9-test-build', assetPath: '/.runtime/runtime.test.bin', byteLength: 0 }),
   signingKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 });`)};
+const privilegedAssets = ${JSON.stringify(`export const PRIVILEGED_BUILD = Object.freeze({ buildId: 'phase9-test-build',
+  parentSource: '/* private parent */', childSource: '/* private child */', adminSource: '/* private admin */' });`)};
 
 export function resolve(specifier, context, nextResolve) {
   if (specifier === 'cloudflare:workers') {
@@ -14,6 +16,9 @@ export function resolve(specifier, context, nextResolve) {
   }
   if (specifier.endsWith('.runtime-build/runtime-secrets.js')) {
     return { url: 'data:text/javascript,' + encodeURIComponent(runtimeSecrets), shortCircuit: true };
+  }
+  if (specifier.endsWith('.runtime-build/privileged-assets.js')) {
+    return { url: 'data:text/javascript,' + encodeURIComponent(privilegedAssets), shortCircuit: true };
   }
   return nextResolve(specifier, context);
 }

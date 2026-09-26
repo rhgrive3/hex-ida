@@ -8,6 +8,8 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
+import { canonicalAnalysisIdentity, boundAnalysisIdentityForIr } from './phase8/analysis-identity.js';
+import { buildRenderProvenance } from './phase8/render-provenance.js';
 import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
 import { applyStructuredControlProjection } from './phase8/structured-control-projection.js';
@@ -52,7 +54,8 @@ function rememberProducerProjection(result, options) {
     const irRoots = producerIrRoots(result);
     const irObservation = captureRecoveryIrData(result.ir,irRoots,options.shouldAbort);
     producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
-      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
+      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true,
+      deterministicTransforms:options.deterministicTransforms === true});
   } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
   return result;
 }
@@ -65,6 +68,10 @@ export function producerExpressionToken(result, expression) {
 export function producerUsesProofOnlyRewrites(result) {
   const record = producerProjections.get(result?.semanticAst);
   return record?.ir === result?.ir && record?.cAst === result?.cAst && record?.proofOnlyRewrites === true;
+}
+export function producerDeterministicTransforms(result) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst ? record?.deterministicTransforms === true : false;
 }
 export function isProducerProjection(result) {
   try {
@@ -383,6 +390,18 @@ function structuredControlProjectionOptions(model, opts) {
   return { ...opts, addressOfRow:(row) => addressByRow.get(row) ?? null };
 }
 
+function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding, opts) {
+  const bound = boundAnalysisIdentityForIr(analysisIdentityBinding, result.ir);
+  const identity = bound?.valid === true ? bound : canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  const renderProvenance = buildRenderProvenance({
+    result,
+    snapshotId:identity?.valid === true ? identity.identity.snapshotId : null,
+    budget:opts.renderProvenanceBudget,
+    shouldAbort:opts.shouldAbort,
+  });
+  return { ...result, renderProvenance };
+}
+
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
@@ -390,6 +409,9 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const canProjectExpressions = opts.renderProvenance === true && opts.phase8PrepareProof !== true
       && opts.renderProvenanceBudget?.maxTransformRecords !== 0;
     if (canProjectExpressions && interactiveStage?.ledger?.published === true && interactiveStage.analysis) {
+      // Render-only projection keeps the producer's existing spelling and
+      // consumes only current bindings. It can describe available facts even
+      // when the source IR is explicitly partial.
       projected = applyPhase8Projection(projected, interactiveStage.analysis, {
         ...opts,
         preserveInitialSpelling:true,
@@ -407,12 +429,23 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         { ir: result.ir, types: result.types, opts },
         structuringBudget,
       );
-      if (structuringStage.ledger?.published === true && structuringStage.analysis) {
+      if (structuringStage.ledger?.published === true && structuringStage.analysis
+          && structuringStage.ledger.sourceCompleteness === 'complete') {
         projected = applyStructuredControlProjection(projected, structuringStage.analysis,
           structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
       }
     }
-    return projected;
+    const pipeline = projected.ctx?.decompilerPipeline;
+    return pipeline ? {
+      ...projected,
+      ctx: {
+        ...projected.ctx,
+        decompilerPipeline: {
+          ...pipeline,
+          sourceCompleteness: projected.phase8?.sourceCompleteness ?? 'unknown',
+        },
+      },
+    } : projected;
   }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
@@ -425,6 +458,11 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     },
   );
   const priorPipeline = result.ctx?.decompilerPipeline || {};
+  const phase8ExecutionComplete = stage.ledger?.published === true
+    && stage.ledger?.completeness === 'complete';
+  const priorPipelineTruncated = priorPipeline.completeness === 'partial'
+    || priorPipeline.degraded === true
+    || priorPipeline.rewriteStats?.budgetExceeded === true;
   let updated = {
     ...result,
     phase8:stage.ledger,
@@ -432,16 +470,33 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
       ...(result.ctx || {}),
       decompilerPipeline:{
         ...priorPipeline,
-        completeness:stage.ledger?.published === true && stage.ledger?.completeness === 'complete'
-          ? priorPipeline.completeness
-          : 'partial',
+        // Ledger completeness now records pass execution. A source-partial
+        // ledger can therefore preserve a complete pipeline result; only an
+        // unpublished/incomplete Phase 8 run or earlier pipeline truncation
+        // weakens execution completeness.
+        completeness:phase8ExecutionComplete && !priorPipelineTruncated ? 'complete' : 'partial',
+        sourceCompleteness:stage.ledger?.sourceCompleteness ?? 'unknown',
         phase8:stage.ledger,
         phase8Timings:stage.timings,
         phase8ElapsedMs:stage.elapsedMs,
       },
     },
   };
-  if (stage.ledger?.published !== true || stage.ledger?.completeness !== 'complete' || !stage.analysis) return updated;
+  if (!phase8ExecutionComplete || !stage.analysis) return updated;
+  if (stage.ledger.sourceCompleteness !== 'complete') {
+    // The pass set finished over an explicitly non-exhaustive source. Retain
+    // the producer's spelling while binding current render histories for the
+    // facts that are present. No Phase 8 expression/control rewrite is used.
+    if (opts.renderProvenance === true && opts.phase8PrepareProof !== true
+        && opts.renderProvenanceBudget?.maxTransformRecords !== 0) {
+      return applyPhase8Projection(updated, stage.analysis, {
+        ...opts,
+        preserveInitialSpelling:true,
+        analysisIdentityBinding:stage.analysisIdentityBinding,
+      });
+    }
+    return attachSourceBoundRenderProvenance(updated, stage.analysis, stage.analysisIdentityBinding, opts);
+  }
   // The region plan binds the actual prepared producer object. Adding stage
   // metadata must not replace that endpoint before its owned projection runs.
   if (opts.phase8RegionErasurePlan) {
@@ -490,7 +545,7 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
 
 const CONDITION_OPTIMIZATION_OPTIONS = new Set(['conditionalBranch','identity','timeoutMs','signal','isCancelled',
   'getCurrentIdentity','now','addressBits','endian','backendTier','phase8TimeBudgetMs','phase8WorkBudget',
-  'requireProofOnlyRewrites']);
+  'requireProofOnlyRewrites','deterministic','deterministicTransforms']);
 
 // Compose the existing region issuers through the same public optimizer. The
 // request selects one actual branch; it cannot supply a proof or a replacement
@@ -499,7 +554,12 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
   let guard;
   try {
     if (Object.keys(submitted).some(key => !CONDITION_OPTIMIZATION_OPTIONS.has(key))) return fail('unsupported-condition-optimization-option');
-    guard = createQueryGuard(submitted, {}); guard.check();
+    // The public proof optimizer is work-bounded by default: deterministic
+    // transforms remove transform/proof wall-clock deadlines and keep the
+    // deterministic work limits, so a slow host cannot change the proof result.
+    // A caller may still opt into wall-clock budgets with an explicit false.
+    guard = createQueryGuard({ ...submitted,
+      deterministic: submitted.deterministic ?? submitted.deterministicTransforms ?? true }, {}); guard.check();
     if (submitted.phase8TimeBudgetMs != null && (typeof submitted.phase8TimeBudgetMs !== 'number'
       || !Number.isFinite(submitted.phase8TimeBudgetMs) || submitted.phase8TimeBudgetMs < 0)
       || submitted.phase8WorkBudget != null && (!Number.isSafeInteger(submitted.phase8WorkBudget)
@@ -533,6 +593,9 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
     const matches = carrier?.regions.filter(item => item.original.branch === submitted.conditionalBranch) ?? [];
     if (matches.length !== 1) return fail('unbound-conditional-branch');
     const lifecycle = () => ({ identity:guard.identity, timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+      // Carry the requested determinism into each child query, so a held region
+      // plan is revalidated by work limits rather than a wall-clock deadline.
+      deterministic:guard.deterministic(),
       signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
     const structure = prepareConditionalRegionStructure(matches[0].original.record, result.ir, lifecycle());
     if (structure.status !== 'complete') return fail(structure.reason ?? 'condition-structure-unavailable');
@@ -559,9 +622,12 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       // erasure requires the explicit region-rendering authority path.
       phase8RegionErasureBody:false,
       phase8ProofIdentity:guard.identity, phase8ProofOnlyRewrites:proofOnlyRewrites,
-      phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs != null
+        ? Math.min(submitted.phase8TimeBudgetMs, guard.remainingMilliseconds())
+        : guard.deterministic() ? null : Math.min(120, guard.remainingMilliseconds()),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });
     if (!current() || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete'
+      || projected.phase8?.sourceCompleteness !== 'complete'
       || projected.cAst === result.cAst || projected.renderProvenance?.completeness !== 'complete') return fail('condition-projection-withheld');
     const applied = projected.rewriteProof?.filter(record => record.rule === 'project-proved-conditional-predicate'
       && record.evidence?.planId === conditionPlan.planId) ?? [];
@@ -632,7 +698,14 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     // scalar values itself. Only a genuinely empty derivation stays a no-op.
     const explicit = queryArray(submitted.targets ?? []);
     const targets = explicit.length > 0 ? explicit : auto;
-    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    // The public proof optimizer is work-bounded by default: deterministic
+    // transforms remove transform/proof wall-clock deadlines and keep the
+    // deterministic work limits, so a slow host cannot change the proof result.
+    // A caller may still opt into wall-clock budgets with an explicit false.
+    const deterministicTransforms = submitted.deterministicTransforms ?? submitted.deterministic ?? true;
+    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,
+      deterministicTransforms,
+      identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
     preparedPlan = plan;
     const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
     if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');
@@ -644,9 +717,10 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
       phase8ProofOnlyRewrites:proofOnlyRewrites,
       phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
-      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? (deterministicTransforms === true ? null : 120),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
-    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true
+      || projected.phase8?.completeness !== 'complete' || projected.phase8?.sourceCompleteness !== 'complete') return fail('optimizer-withheld');
     const applied = projected.phase8Projection?.transforms.filter(t=>['solver-constant','solver-scalar'].includes(t.kind)) ?? [];
     const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
       if (decision.disposition !== 'selected') return decision;

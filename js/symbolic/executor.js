@@ -436,6 +436,7 @@ function executePaths(ir, opts) {
   const maxBranches = opts?._byteMemory ? boundedLimit(opts.maxBranches, 32, 32, 'maxBranches') : executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
   const maxBlockVisits = opts?._byteMemory ? boundedLimit(opts.maxBlockVisits, 3, 3, 'maxBlockVisits') : executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
   const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
+  const deterministic = (opts?.deterministic === true || opts?.deterministicTransforms === true) && timeoutMs > 0;
   const signal = opts && opts.signal || null;
   const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
   const deadline = Date.now() + timeoutMs;
@@ -447,7 +448,7 @@ function executePaths(ir, opts) {
   let truncated = false;
 
   while (queue.length && paths.length < maxPaths) {
-    if (cancelled() || Date.now() > deadline) { truncated = true; break; }
+    if (cancelled() || (!deterministic && Date.now() > deadline)) { truncated = true; break; }
     stats.paths = Math.max(stats.paths, paths.length + queue.length);
     const state = queue.shift();
     if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget')); continue; }

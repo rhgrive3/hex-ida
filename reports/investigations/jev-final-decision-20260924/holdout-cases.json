@@ -1,0 +1,626 @@
+[
+  {
+    "id": "PROSP_BC01",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "archive management",
+    "difficulty": "paraphrase",
+    "query": "name of the file currently compressed in the archive",
+    "gold": {
+      "class": "SSZipArchive",
+      "field": "_filename"
+    }
+  },
+  {
+    "id": "PROSP_BC02",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "store transaction",
+    "difficulty": "hard-negative",
+    "query": "identifier for an App Store in-app purchase transaction",
+    "gold": {
+      "class": "ADJAppStorePurchase",
+      "field": "_transactionId"
+    }
+  },
+  {
+    "id": "PROSP_BC03",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "store billing",
+    "difficulty": "paraphrase",
+    "query": "formatted price string recorded for an App Store subscription",
+    "gold": {
+      "class": "ADJAppStoreSubscription",
+      "field": "_price"
+    }
+  },
+  {
+    "id": "PROSP_BC04",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "deep linking",
+    "difficulty": "hard-negative",
+    "query": "target URL parsed from an incoming deep link",
+    "gold": {
+      "class": "ADJDeeplink",
+      "field": "_deeplink"
+    }
+  },
+  {
+    "id": "PROSP_BC05",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "event telemetry",
+    "difficulty": "hard-negative",
+    "query": "unique tracking token assigned to an Adjust custom event",
+    "gold": {
+      "class": "ADJEvent",
+      "field": "_eventToken"
+    }
+  },
+  {
+    "id": "PROSP_BC06",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "attribution tracking",
+    "difficulty": "paraphrase",
+    "query": "unique tracking token identifying attribution source",
+    "gold": {
+      "class": "ADJAttribution",
+      "field": "_trackerToken"
+    }
+  },
+  {
+    "id": "PROSP_BC07",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "ad revenue",
+    "difficulty": "hard-negative",
+    "query": "source advertising provider for recorded ad revenue",
+    "gold": {
+      "class": "ADJAdRevenue",
+      "field": "_source"
+    }
+  },
+  {
+    "id": "PROSP_BC08",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "network reachability",
+    "difficulty": "hard-negative",
+    "query": "local wifi reference pointer checking connection",
+    "gold": {
+      "class": "aReachability",
+      "field": "localWiFiRef"
+    }
+  },
+  {
+    "id": "PROSP_BC09",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "web view request",
+    "difficulty": "paraphrase",
+    "query": "active URL request received by the web view delegate",
+    "gold": {
+      "class": "WKWebViewDelegate",
+      "field": "fRequest"
+    }
+  },
+  {
+    "id": "PROSP_BC10",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "event callback",
+    "difficulty": "paraphrase",
+    "query": "status message describing success of recorded event",
+    "gold": {
+      "class": "ADJEventSuccess",
+      "field": "_message"
+    }
+  },
+  {
+    "id": "PROSP_BC11",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "event retry",
+    "difficulty": "hard-negative",
+    "query": "retry flag indicating whether failed event will retry",
+    "gold": {
+      "class": "ADJEventFailure",
+      "field": "_willRetry"
+    }
+  },
+  {
+    "id": "PROSP_BC12",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "view resize",
+    "difficulty": "hard-negative",
+    "query": "metal view controller automatic resize flag",
+    "gold": {
+      "class": "MetalViewController",
+      "field": "_autoresize"
+    }
+  },
+  {
+    "id": "PROSP_BC13",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "authentication deletion",
+    "difficulty": "paraphrase",
+    "query": "apple sign in native state flag for account deletion",
+    "gold": {
+      "class": "AppleSignInNative",
+      "field": "_isDelete"
+    }
+  },
+  {
+    "id": "PROSP_BC14",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "background sending",
+    "difficulty": "hard-negative",
+    "query": "flag enabling background dispatch of telemetry packets",
+    "gold": {
+      "class": "ADJConfig",
+      "field": "_isSendingInBackgroundEnabled"
+    }
+  },
+  {
+    "id": "PROSP_TS01",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "date picker view",
+    "difficulty": "paraphrase",
+    "query": "underlying UIDatePicker view control in subview",
+    "gold": {
+      "class": "LayerDatePickerSubView",
+      "field": "datePicker"
+    }
+  },
+  {
+    "id": "PROSP_TS02",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "attribution delegate",
+    "difficulty": "hard-negative",
+    "query": "callback method name for 2dx attribution delegate",
+    "gold": {
+      "class": "ADJDelegate2dx",
+      "field": "_attributionCallbackMethod"
+    }
+  },
+  {
+    "id": "PROSP_TS03",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "keychain synchronization",
+    "difficulty": "hard-negative",
+    "query": "synchronizable flag for cloud keychain item storage",
+    "gold": {
+      "class": "UICKeyChainStore",
+      "field": "_synchronizable"
+    }
+  },
+  {
+    "id": "PROSP_TS04",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "text input view",
+    "difficulty": "paraphrase",
+    "query": "platform implementation pointer for edit box view",
+    "gold": {
+      "class": "EditBoxImplIOS",
+      "field": "editBox_"
+    }
+  },
+  {
+    "id": "PROSP_TS05",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "audio player",
+    "difficulty": "hard-negative",
+    "query": "audio source player instance for background music playback",
+    "gold": {
+      "class": "CDLongAudioSource",
+      "field": "audioSourcePlayer"
+    }
+  },
+  {
+    "id": "PROSP_TS06",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "sound engine",
+    "difficulty": "paraphrase",
+    "query": "core sound engine reference in audio manager",
+    "gold": {
+      "class": "CDAudioManager",
+      "field": "soundEngine"
+    }
+  },
+  {
+    "id": "PROSP_TS07",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "audio buffer management",
+    "difficulty": "hard-negative",
+    "query": "dictionary array holding loaded audio sample buffers",
+    "gold": {
+      "class": "CDBufferManager",
+      "field": "loadedBuffers"
+    }
+  },
+  {
+    "id": "PROSP_TS08",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "sound engine buffers",
+    "difficulty": "paraphrase",
+    "query": "array of sound buffers allocated in sound engine",
+    "gold": {
+      "class": "CDSoundEngine",
+      "field": "_buffers"
+    }
+  },
+  {
+    "id": "PROSP_TS09",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "audio error reporting",
+    "difficulty": "hard-negative",
+    "query": "error code recorded during last sound source playback",
+    "gold": {
+      "class": "CDSoundSource",
+      "field": "lastError"
+    }
+  },
+  {
+    "id": "PROSP_TS10",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "audio interruption",
+    "difficulty": "paraphrase",
+    "query": "enabled state flag for audio interrupt target group",
+    "gold": {
+      "class": "CDAudioInterruptTargetGroup",
+      "field": "enabled_"
+    }
+  },
+  {
+    "id": "PROSP_TS11",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "asynchronous loading",
+    "difficulty": "hard-negative",
+    "query": "list of pending async audio buffer load requests",
+    "gold": {
+      "class": "CDAsynchBufferLoader",
+      "field": "_loadRequests"
+    }
+  },
+  {
+    "id": "PROSP_TS12",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "file buffer request",
+    "difficulty": "hard-negative",
+    "query": "file path target of audio buffer load request",
+    "gold": {
+      "class": "CDBufferLoadRequest",
+      "field": "filePath"
+    }
+  },
+  {
+    "id": "PROSP_TS13",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "floating interpolation",
+    "difficulty": "paraphrase",
+    "query": "last computed scalar value of float interpolator",
+    "gold": {
+      "class": "CDFloatInterpolator",
+      "field": "lastValue"
+    }
+  },
+  {
+    "id": "PROSP_TS14",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "property modifier",
+    "difficulty": "paraphrase",
+    "query": "interpolator object modifying dynamic audio properties",
+    "gold": {
+      "class": "CDPropertyModifier",
+      "field": "interpolator"
+    }
+  },
+  {
+    "id": "PROSP_YW01",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "movie player layer",
+    "difficulty": "hard-negative",
+    "query": "rendering CALayer hosting video playback in movie player",
+    "gold": {
+      "class": "MoviePlayer",
+      "field": "m_Layer"
+    }
+  },
+  {
+    "id": "PROSP_YW02",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "json parsing",
+    "difficulty": "paraphrase",
+    "query": "parser flag enforcing strict escape codes in JSON scanner",
+    "gold": {
+      "class": "CJSONScanner",
+      "field": "strictEscapeCodes"
+    }
+  },
+  {
+    "id": "PROSP_YW03",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "opengl rendering",
+    "difficulty": "hard-negative",
+    "query": "EAGLContext rendering context driving OpenGL view",
+    "gold": {
+      "class": "GLESView",
+      "field": "renderingContext"
+    }
+  },
+  {
+    "id": "PROSP_YW04",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "game view controller",
+    "difficulty": "paraphrase",
+    "query": "gles view presentation surface in game view controller",
+    "gold": {
+      "class": "GameViewController",
+      "field": "glesView"
+    }
+  },
+  {
+    "id": "PROSP_YW05",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "deserializer scanner",
+    "difficulty": "hard-negative",
+    "query": "underlying CJSONScanner instance used by deserializer",
+    "gold": {
+      "class": "CJSONDeserializer",
+      "field": "scanner"
+    }
+  },
+  {
+    "id": "PROSP_YW06",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "data scanner pointer",
+    "difficulty": "paraphrase",
+    "query": "pointer to current byte position in binary data scanner",
+    "gold": {
+      "class": "CDataScanner",
+      "field": "current"
+    }
+  },
+  {
+    "id": "PROSP_YW07",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "json serializer converters",
+    "difficulty": "hard-negative",
+    "query": "dictionary of custom type converters by name in serializer",
+    "gold": {
+      "class": "CFilteringJSONSerializer",
+      "field": "convertersByName"
+    }
+  },
+  {
+    "id": "PROSP_YW08",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "web view loading",
+    "difficulty": "paraphrase",
+    "query": "counter tracking in flight web view resource loads",
+    "gold": {
+      "class": "WKWebViewWrapper",
+      "field": "_webViewLoadingCount"
+    }
+  },
+  {
+    "id": "PROSP_YW09",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "image save completion",
+    "difficulty": "hard-negative",
+    "query": "closure completion handler executed after saving image",
+    "gold": {
+      "class": "_TtC3YWP12ShareUtility",
+      "field": "saveImageCompletionHandler"
+    }
+  },
+  {
+    "id": "PROSP_YW10",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "camera frame streaming",
+    "difficulty": "paraphrase",
+    "query": "frame callback block invoked on each camera capture",
+    "gold": {
+      "class": "_TtC3YWP13CameraManager",
+      "field": "frameCallback"
+    }
+  },
+  {
+    "id": "PROSP_YW11",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "storekit purchase callback",
+    "difficulty": "hard-negative",
+    "query": "completion callback block for in app purchase flow",
+    "gold": {
+      "class": "_TtC3YWP14StoreKitClient",
+      "field": "completionHandler"
+    }
+  },
+  {
+    "id": "PROSP_YW12",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "openwrap interstitial adapter",
+    "difficulty": "paraphrase",
+    "query": "admob custom event adapter interstitial ad reference",
+    "gold": {
+      "class": "AdMobOpenWrapInterstitialCustomEventAdapter",
+      "field": "_interstitial"
+    }
+  },
+  {
+    "id": "PROSP_YW13",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "telemetry identity",
+    "difficulty": "hard-negative",
+    "query": "unique identifier assigned to a single impression event",
+    "gold": {
+      "class": "POBImpression",
+      "field": "_impressionId"
+    }
+  },
+  {
+    "id": "PROSP_YW14",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "reward metadata",
+    "difficulty": "paraphrase",
+    "query": "type or currency identifier for a completed video ad reward",
+    "gold": {
+      "class": "POBReward",
+      "field": "_currencyType"
+    }
+  },
+  {
+    "id": "PROSP_ABS01",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the active controller",
+    "gold": null,
+    "abstainReason": "Multiple view controllers exist with no owning screen specified."
+  },
+  {
+    "id": "PROSP_ABS02",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the timeout value",
+    "gold": null,
+    "abstainReason": "Generic timeout phrase fits dozens of network, session, and banner timers."
+  },
+  {
+    "id": "PROSP_ABS03",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "extract the decrypted runtime encryption key",
+    "gold": null,
+    "abstainReason": "Dynamic runtime keys are not represented as static field metadata."
+  },
+  {
+    "id": "PROSP_ABS04",
+    "binary": "battlecats",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "which function handles the touch end event",
+    "gold": null,
+    "abstainReason": "Query asks for a function handler, not an object field or ivar."
+  },
+  {
+    "id": "PROSP_ABS05",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the current view controller",
+    "gold": null,
+    "abstainReason": "Broad reference without class or subsystem context fits many view controllers."
+  },
+  {
+    "id": "PROSP_ABS06",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the session start timestamp",
+    "gold": null,
+    "abstainReason": "Multiple distinct session managers define start timestamps."
+  },
+  {
+    "id": "PROSP_ABS07",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "calculate the winning score for the current round",
+    "gold": null,
+    "abstainReason": "Requires dynamic game logic execution, not static field metadata."
+  },
+  {
+    "id": "PROSP_ABS08",
+    "binary": "TsumTsum",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "show the active HTTP network response body",
+    "gold": null,
+    "abstainReason": "Live in-flight response buffers cannot be resolved statically."
+  },
+  {
+    "id": "PROSP_ABS09",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the delegate callback",
+    "gold": null,
+    "abstainReason": "Dozens of unrelated ad, video, and view delegates exist without disambiguator."
+  },
+  {
+    "id": "PROSP_ABS10",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "ambiguous reference",
+    "difficulty": "ambiguous",
+    "query": "the background color",
+    "gold": null,
+    "abstainReason": "Generic color property fits various layout views and banner containers."
+  },
+  {
+    "id": "PROSP_ABS11",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "decrypt the player account password hash",
+    "gold": null,
+    "abstainReason": "Sensitive account security operations are unsupported by field metadata."
+  },
+  {
+    "id": "PROSP_ABS12",
+    "binary": "YWP",
+    "mode": "partial",
+    "family": "out-of-scope",
+    "difficulty": "unsupported",
+    "query": "which assembly instruction branches to the exit handler",
+    "gold": null,
+    "abstainReason": "Asks for low-level machine instructions rather than an object field."
+  }
+]

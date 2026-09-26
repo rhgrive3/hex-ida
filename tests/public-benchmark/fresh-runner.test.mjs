@@ -200,3 +200,65 @@ test('hard function watchdog persists TIMEOUT and restarts from the next durable
     assert.equal(JSON.parse(fs.readFileSync(out,'utf8')).state,'TIMEOUT');
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
+
+// Writes a fake subject that measures two functions and reports PASS. The inflight marker only
+// exists while a function is running (as in fresh-subject.mjs), so the interval between the first
+// function's end and the second function's start has no marker: that interval is not case setup.
+function writeTwoFunctionSubject(file,{firstFunctionMs=0,betweenFunctionsMs=0}={}) {
+  fs.writeFileSync(file,`import fs from 'node:fs';\nconst args=process.argv.slice(2);\nconst v=(n)=>args[args.indexOf(n)+1];\nconst inflight=v('--inflight-file');\nconst functions=[{address:'4096',name:'first'},{address:'8192',name:'second'}];\nconst sleep=(ms)=>new Promise((r)=>setTimeout(r,ms));\nconst syncBusy=(ms)=>{const until=performance.now()+ms;while(performance.now()<until){}};\nconst results=[];\nfor(let i=0;i<functions.length;i++){\n  const fn=functions[i];\n  fs.writeFileSync(inflight,JSON.stringify({functionAddress:fn.address,functionIndex:i,functionName:fn.name}));\n  if(i===0&&${firstFunctionMs}>0) await sleep(${firstFunctionMs});\n  fs.rmSync(inflight,{force:true});\n  results.push({address:fn.address,name:fn.name,state:'PASS',pseudocode:'void f() {}'});\n  if(i===0&&${betweenFunctionsMs}>0) syncBusy(${betweenFunctionsMs});\n}\nconsole.log(JSON.stringify({schema:'hex-public-benchmark-subject/v1',state:'PASS',functions:results,performance:{setup:{},totalMs:0,reusedFunctions:0,executedFunctions:results.length,functionTimingsMs:[]}}));\n`);
+}
+
+test('case setup timeout never fires for the gap between two measured functions', { timeout:10000 }, async () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hex-fresh-midrun-gap-'));
+  try {
+    const receiptDir=path.join(root,'receipts'); fs.mkdirSync(receiptDir,{recursive:true});
+    const out=path.join(root,'case.json');
+    const subjectPath=path.join(root,'fake-subject.mjs');
+    // setupTimeoutMs=1000: the child exceeds that total age while running the first function,
+    // then performs 600 ms of marker-less between-function work (< the setup/no-progress budget).
+    writeTwoFunctionSubject(subjectPath,{firstFunctionMs:1400,betweenFunctionsMs:600});
+    const result=await runFreshCase({
+      binary:'unused', out, caseId:'case', receiptDir, sourceIdentity:'source', configHash:'config',
+      functionTimeoutMs:2000, setupTimeoutMs:1000, watchdogGraceMs:100, pollMs:10, subjectPath,
+    });
+    assert.equal(result.row.reason ?? null,null,'mid-run gap must not be reported as case-setup-timeout');
+    assert.equal(result.row.state,'PASS');
+    assert.equal(result.row.functions.length,2);
+    assert.deepEqual(result.row.functions.map(fn=>`${fn.address}:${fn.state}`),['4096:PASS','8192:PASS']);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+test('a stall between two functions is still bounded by the setup/no-progress budget', { timeout:10000 }, async () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hex-fresh-midrun-stall-'));
+  try {
+    const receiptDir=path.join(root,'receipts'); fs.mkdirSync(receiptDir,{recursive:true});
+    const out=path.join(root,'case.json');
+    const subjectPath=path.join(root,'fake-subject.mjs');
+    writeTwoFunctionSubject(subjectPath,{firstFunctionMs:1400,betweenFunctionsMs:3000});
+    const started=performance.now();
+    const result=await runFreshCase({
+      binary:'unused', out, caseId:'case', receiptDir, sourceIdentity:'source', configHash:'config',
+      functionTimeoutMs:2000, setupTimeoutMs:1000, watchdogGraceMs:100, pollMs:10, subjectPath,
+    });
+    assert.equal(result.row.state,'TIMEOUT');
+    assert.equal(result.row.reason,'case-setup-timeout');
+    assert.ok(performance.now()-started < 5000,`stalled case must be killed by the no-progress budget, took ${performance.now()-started} ms`);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+test('a child that never reaches a function is still killed as case-setup-timeout', { timeout:10000 }, async () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hex-fresh-setup-hang-'));
+  try {
+    const receiptDir=path.join(root,'receipts'); fs.mkdirSync(receiptDir,{recursive:true});
+    const out=path.join(root,'case.json');
+    const subjectPath=path.join(root,'fake-subject.mjs');
+    fs.writeFileSync(subjectPath,`setInterval(()=>{},1000);\n`);
+    const result=await runFreshCase({
+      binary:'unused', out, caseId:'case', receiptDir, sourceIdentity:'source', configHash:'config',
+      functionTimeoutMs:2000, setupTimeoutMs:1000, watchdogGraceMs:100, pollMs:10, subjectPath,
+    });
+    assert.equal(result.row.state,'TIMEOUT');
+    assert.equal(result.row.reason,'case-setup-timeout');
+    assert.deepEqual(result.row.functions,[]);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});

@@ -6,7 +6,10 @@ export const MACHO_METADATA_LIMITS = Object.freeze({
   operations: 2_000_000,
   warnings: 2048,
   estimatedHeapBytes: 128 * 1024 * 1024,
-  wallClockMs: 5_000,
+  // Wall-clock stops made parse output depend on host speed. Work is strictly
+  // bounded by the deterministic count/byte/operation limits above; a wall-clock
+  // stop applies only when a caller explicitly requests an opt-in wallClockMs.
+  wallClockMs: Infinity,
 });
 
 function metadataOf(image) {
@@ -29,7 +32,11 @@ export function markMachOMetadataPartial(image, reason) {
  * turning omitted or coercive zero values (null/false/blank) into zero limits.
  * Other values retain the positive-integer compatibility policy.
  */
-function metadataLimit(value, fallback) {
+function metadataLimit(key, value, fallback) {
+  if (key === 'wallClockMs') {
+    if (value === Infinity) return Infinity;
+    return typeof value === 'number' && (value === Infinity || (Number.isSafeInteger(value) && value >= 0)) ? value : fallback;
+  }
   if (value === 0) return 0;
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
@@ -42,7 +49,7 @@ function metadataCost(value) {
 export function resolveMachOMetadataLimits(overrides = {}) {
   const out = {};
   for (const [key, fallback] of Object.entries(MACHO_METADATA_LIMITS)) {
-    out[key] = metadataLimit(overrides[key], fallback);
+    out[key] = metadataLimit(key, overrides[key], fallback);
   }
   return out;
 }

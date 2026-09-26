@@ -8,10 +8,9 @@ import { liftJvmMethod } from '../../../js/managed/jvm/lifter.js';
 import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 
 // #8028 — CIL `ldnull` and JVM `aconst_null` publish a definite-null fact in
-// VMEffects (`producedValues:[{isNull:true}]`), but the shared bridge only
-// preserved `constant`, so a known managed null became an anonymous
-// bitvector definition (decompiled as integer `0` / `ldnull(0)`) while the
-// final Semantic IR still advertised `complete`. ECMA-335 III.3.45 keeps
+// VMEffects (`producedValues:[{isNull:true}]`) and the shared bridge preserves
+// it as a first-class fact. Without a proven CIL target pointer width (#7775),
+// the IR correctly retains a machine-type unknown. ECMA-335 III.3.45 keeps
 // `ldnull` distinct from `ldc.i4.0`, and the JVMS defines `aconst_null` as
 // the null reference — the definite-null authority must survive the
 // VMEffects -> canonical Semantic IR boundary as a first-class fact.
@@ -37,9 +36,12 @@ test('#8028 CIL ldnull keeps its definite-null authority in the final Semantic I
   assert.equal(ldnull.completeness, 'exact');
   assert.deepEqual(ldnull.producedValues, [{ isNull: true }]);
 
-  const { value } = loweredOutput(fn, 'ldnull');
+  const { lowered, value } = loweredOutput(fn, 'ldnull');
   assert.ok(value, 'ldnull output value required');
-  assert.deepEqual(value.metadata, { isNull: true });
+  assert.equal(value.metadata.isNull, true);
+  assert.equal(value.metadata.reason, 'machine-type-unresolved');
+  assert.equal(lowered.semanticIr.completeness, 'partial');
+  assert.ok(lowered.semanticIr.unknowns.some((unknown) => unknown.reason === 'machine-type-unresolved'));
 });
 
 test('#8028 JVM aconst_null keeps its definite-null authority in the final Semantic IR', () => {

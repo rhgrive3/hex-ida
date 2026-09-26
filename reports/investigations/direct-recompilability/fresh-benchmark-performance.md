@@ -90,6 +90,8 @@ The stored function result has its own digest. Invalid JSON, stale identity, add
 
 `TIMEOUT` is explicit and terminal by default. `--retry-state TIMEOUT` makes only existing timeout receipts retryable. A timeout is never converted to PASS or silently omitted from the denominator.
 
+Per-function timeout semantics are fixed and documented in [docs/FUNCTION_TIMEOUT_SEMANTICS.md](../../../docs/FUNCTION_TIMEOUT_SEMANTICS.md): `run-fresh.mjs` / `run-fresh-case.mjs` are **hard** — the parent `SIGKILL`s a child whose `inflight.json` marker is older than `--function-timeout-ms + --watchdog-grace-ms` (default grace 2000 ms) — while `profile-fresh.mjs` and any direct `fresh-subject.mjs` invocation are **best-effort (cooperative)** in-process, where a synchronous overrun blocks the abort timer and cannot be preempted.
+
 ## Stage separation
 
 The fresh runner writes the same per-case subject JSON shape used by the public benchmark. Compiler and taxonomy stages can consume saved pseudocode without repeating fresh Hex analysis. Receipts live separately under `--receipt-dir` and are execution state, not benchmark truth.

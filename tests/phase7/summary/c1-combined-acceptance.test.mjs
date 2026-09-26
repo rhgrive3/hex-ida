@@ -18,6 +18,7 @@ function altered(summary, mode) {
   if (mode === 'unknown-effects') return createFunctionSummary({ ...summary,
     unknownCallEffects:[{ callSiteId:'unresolved-effect', reason:'summary-incomplete' }],
     status:{ ...summary.status, completeness:'partial', stopReason:'dependency-missing' },
+    memoryReadRegions:[{ broad:true, regionKind:'unknown', addressSpaces:['memory'], source:'unknown-call-fallback' }],
     memoryWriteRegions:[{ broad:true, regionKind:'unknown', addressSpaces:['memory'], source:'unknown-call-fallback' }],
     noreturn:'unknown', mayThrow:'unknown' });
   return summary;

@@ -431,10 +431,11 @@ export function safetyCounters(observations, baseline, frozenProvenance = null) 
  */
 export const MEASUREMENT_TIME_BUDGET_MS = 20000;
 
-export function determinismFailures({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS, first: firstRun = null } = {}) {
-  const first = firstRun ?? observeCorpus({ corpus, decompilerTimeBudgetMs });
+export function determinismFailures({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS,
+  deterministicTransforms = true, first: firstRun = null } = {}) {
+  const first = firstRun ?? observeCorpus({ corpus, decompilerTimeBudgetMs, deterministicTransforms });
   // Same corpus, same budget. Anything else compares two different questions.
-  const second = observeCorpus({ corpus, decompilerTimeBudgetMs });
+  const second = observeCorpus({ corpus, decompilerTimeBudgetMs, deterministicTransforms });
   const failures = [];
   for (let index = 0; index < first.length; index += 1) {
     if (stableDigest(first[index]) !== stableDigest(second[index])) failures.push(first[index].id);

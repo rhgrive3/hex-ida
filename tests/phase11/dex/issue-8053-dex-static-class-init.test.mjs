@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { buildDex } from '../fixtures/medium-dex.mjs';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { lowerVMEffectsToSemanticIr, buildManagedMethodSummary } from '../../../js/managed/shared/bridge-v2.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running dex static class-initialization authority regression #8053...');
 
@@ -38,7 +39,7 @@ function fixture(methods, interfaceTypes = []) {
     const typeListOffset = built.layout.maps.find(([type]) => type === 0x1001)[2];
     new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(built.layout.classes + 12, typeListOffset, true);
   }
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 async function lift(bytes, name) {

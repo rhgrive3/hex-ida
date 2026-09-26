@@ -149,7 +149,7 @@ class WorkerSolverSession extends SolverSession {
         reason: route.reason,
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: query?.queryHash || null,
+        queryHash: route.status === SOLVER_STATUS.INVALID_QUERY ? null : query?.queryHash || null,
         lifecycle: { budgetExceeded: route.status === SOLVER_STATUS.RESOURCE_LIMIT, publishable: false },
       });
     }
@@ -197,7 +197,7 @@ class WorkerSolverSession extends SolverSession {
     }
     const requestId = String(++this.requestSequence);
     return new Promise((resolve) => {
-      const pending = { resolve, token, queryHash: querySnapshot.queryHash, query: querySnapshot, symbols: route.collected.symbols };
+      const pending = { resolve, token, queryHash: querySnapshot.queryHash, query: querySnapshot, symbols: route.analysis.symbols };
       this.pending.set(requestId, pending);
       try {
         this.worker.postMessage({ type: 'solver-check', requestId, query: querySnapshot, options: workerOptions, token });

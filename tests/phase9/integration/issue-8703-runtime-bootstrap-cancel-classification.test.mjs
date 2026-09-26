@@ -12,6 +12,9 @@ export function resolve(specifier, context, nextResolve) {
   if (specifier === 'cloudflare:workers') {
     return { url: 'data:text/javascript,export class DurableObject {}', shortCircuit: true };
   }
+  if (specifier.endsWith('.runtime-build/privileged-assets.js')) {
+    return { url: 'data:text/javascript,' + encodeURIComponent('export const PRIVILEGED_BUILD = Object.freeze({ buildId: "phase9-test-build", parentSource: "/* private parent */", childSource: "/* private child */", adminSource: "/* private admin */" });'), shortCircuit: true };
+  }
   if (specifier.endsWith('.runtime-build/runtime-secrets.js')) {
     return { url: 'data:text/javascript,' + encodeURIComponent(runtimeSecrets), shortCircuit: true };
   }

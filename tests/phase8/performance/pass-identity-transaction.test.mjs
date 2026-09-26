@@ -84,6 +84,30 @@ test('a returned state delta preserves unchanged roots and frozen observations',
   assert.deepEqual(state.passMetrics.map(row => row.ok), [true, false]);
 });
 
+test('array capture does not invoke index getters and restores non-writable elements', () => {
+  let getterReads = 0;
+  const getter = () => { getterReads += 1; return 10; };
+  const accessorArray = [10, 20];
+  Object.defineProperty(accessorArray, '0', { get: getter, enumerable: true, configurable: true });
+  const readonlyArray = [30, 40];
+  Object.defineProperty(readonlyArray, '0', { value: 30, writable: false, enumerable: true, configurable: true });
+  const state = { accessorArray, readonlyArray, opts: { deterministicTransforms: true } };
+  new PassManager([{
+    name: 'mutate-array-tail',
+    run(s) {
+      s.accessorArray[1] = 21;
+      s.readonlyArray[1] = 41;
+      throw new Error('rollback');
+    },
+  }]).run(state);
+  assert.equal(getterReads, 0);
+  assert.equal(Object.getOwnPropertyDescriptor(accessorArray, '0').get, getter);
+  assert.equal(accessorArray[1], 20);
+  assert.equal(Object.getOwnPropertyDescriptor(readonlyArray, '0').writable, false);
+  assert.deepEqual(readonlyArray, [30, 40]);
+  assert.equal(state.passMetrics[0].ok, false);
+});
+
 test('native consumer history shares one live input observation within each read', async () => {
   const [{ loadCorpus }, { decompileEntry }, { readLineExpressionHistory }] = await Promise.all([
     import('../../../tools/validation/phase8/build-corpus.mjs'),
