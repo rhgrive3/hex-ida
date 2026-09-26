@@ -120,12 +120,20 @@ export function createSessionStore(options = {}) {
   const maxItems = options.maxItems || 400;
 
   function load() {
-    if (!filePath) return {};
+    const state = Object.create(null);
+    if (!filePath) return state;
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      return parsed && typeof parsed === "object" ? parsed : {};
+      if (parsed && typeof parsed === "object") {
+        for (const [key, value] of Object.entries(parsed)) {
+          if (Array.isArray(value)) {
+            state[key] = value;
+          }
+        }
+      }
+      return state;
     } catch {
-      return {};
+      return Object.create(null);
     }
   }
 
@@ -134,7 +142,15 @@ export function createSessionStore(options = {}) {
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const tmp = `${filePath}.${process.pid}.${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+      const serialized = Object.create(null);
+      if (state && typeof state === "object") {
+        for (const [key, value] of Object.entries(state)) {
+          if (Array.isArray(value)) {
+            serialized[key] = value;
+          }
+        }
+      }
+      fs.writeFileSync(tmp, JSON.stringify(serialized), { mode: 0o600 });
       fs.renameSync(tmp, filePath);
       return { saved: true };
     } catch {
@@ -168,8 +184,10 @@ export function createSessionStore(options = {}) {
       // Reload only after the lock is held. Every writer therefore extends the
       // latest committed state instead of racing from the same stale snapshot.
       const state = load();
-      const items = Array.isArray(state[key]) ? [...state[key]] : [];
-      items.push(appended);
+      const existing = Object.prototype.hasOwnProperty.call(state, key) && Array.isArray(state[key])
+        ? state[key]
+        : [];
+      const items = [...existing, appended];
       if (items.length > maxItems) items.splice(0, items.length - maxItems);
       state[key] = items;
       const saved = save(state);
@@ -187,7 +205,9 @@ export function createSessionStore(options = {}) {
   function recent(sessionId) {
     const state = load();
     const key = sessionId || "default";
-    return Array.isArray(state[key]) ? state[key] : [];
+    return Object.prototype.hasOwnProperty.call(state, key) && Array.isArray(state[key])
+      ? state[key]
+      : [];
   }
 
   /**
