@@ -12,6 +12,8 @@ import { stableDigest } from './core/identity/index.js';
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
 export const PLUGIN_INSTALL_DEADLINE_MS = 15000;
+export const MAX_PLUGIN_DEFINITIONS = 64;
+export const MAX_PLUGIN_METADATA_BYTES = 8192;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
 
 // A persisted v3 manifest must be provably derived from the source it claims:
@@ -55,12 +57,17 @@ function canonicalEnabledIndexSet(values) {
   return enabled;
 }
 function canonicalRestoredDefinitions(definitions) {
-  if (!Array.isArray(definitions) || definitions.length === 0) return null;
+  if (!Array.isArray(definitions) || definitions.length === 0 || definitions.length > MAX_PLUGIN_DEFINITIONS) return null;
+  let bytes = 0;
   for (const def of definitions) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) return null;
     if (canonicalPluginIndex(def.index) == null) return null;
     if (def.name !== undefined && typeof def.name !== 'string') return null;
     if (def.description !== undefined && typeof def.description !== 'string') return null;
+    const name = typeof def.name === 'string' ? def.name.slice(0, 80) : '';
+    const desc = typeof def.description === 'string' ? def.description.slice(0, 200) : '';
+    bytes += (name.length + desc.length) * 2;
+    if (bytes > MAX_PLUGIN_METADATA_BYTES) return null;
   }
   return definitions;
 }
@@ -274,6 +281,21 @@ export class PluginHost {
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
     if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
+    if (!Array.isArray(discovered.value) || discovered.value.length > MAX_PLUGIN_DEFINITIONS) {
+      return { error: 'プラグイン定義が不正または上限（' + MAX_PLUGIN_DEFINITIONS + '件）を超えています。' };
+    }
+    let totalMetadataBytes = 0;
+    for (const def of discovered.value) {
+      if (!def || typeof def !== 'object' || Array.isArray(def)) {
+        return { error: '不正なプラグイン定義形式です。' };
+      }
+      const name = String(def.name || '').slice(0, 80);
+      const desc = String(def.description || '').slice(0, 200);
+      totalMetadataBytes += (name.length + desc.length) * 2;
+      if (totalMetadataBytes > MAX_PLUGIN_METADATA_BYTES) {
+        return { error: 'プラグイン定義メタデータサイズが上限を超えています。' };
+      }
+    }
 
     const installationId = canonicalInstallationId(opts.installationId, newInstallId());
     const enabled = canonicalEnabledIndexSet(opts.enabledIndexes);
