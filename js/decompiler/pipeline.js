@@ -8,7 +8,7 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
-import { canonicalAnalysisIdentity, boundAnalysisIdentityForIr } from './phase8/analysis-identity.js';
+import { resolveAnalysisIdentityForIr } from './phase8/analysis-identity.js';
 import { buildRenderProvenance } from './phase8/render-provenance.js';
 import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
@@ -390,9 +390,14 @@ function structuredControlProjectionOptions(model, opts) {
   return { ...opts, addressOfRow:(row) => addressByRow.get(row) ?? null };
 }
 
-function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding, opts) {
-  const bound = boundAnalysisIdentityForIr(analysisIdentityBinding, result.ir);
-  const identity = bound?.valid === true ? bound : canonicalAnalysisIdentity({ ir:result.ir, analysis });
+function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding,
+  analysisIdentityResolutionBinding, opts) {
+  const identity = resolveAnalysisIdentityForIr({
+    ir:result.ir,
+    binding:analysisIdentityBinding,
+    resolutionBinding:analysisIdentityResolutionBinding,
+    context:{ analysis },
+  });
   const renderProvenance = buildRenderProvenance({
     result,
     snapshotId:identity?.valid === true ? identity.identity.snapshotId : null,
@@ -416,6 +421,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         ...opts,
         preserveInitialSpelling:true,
         analysisIdentityBinding:interactiveStage.analysisIdentityBinding,
+        analysisIdentityResolutionBinding:interactiveStage.analysisIdentityResolutionBinding,
       });
     }
     if (shouldDemandStructuring(projected, opts)) {
@@ -493,9 +499,11 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
         ...opts,
         preserveInitialSpelling:true,
         analysisIdentityBinding:stage.analysisIdentityBinding,
+        analysisIdentityResolutionBinding:stage.analysisIdentityResolutionBinding,
       });
     }
-    return attachSourceBoundRenderProvenance(updated, stage.analysis, stage.analysisIdentityBinding, opts);
+    return attachSourceBoundRenderProvenance(updated, stage.analysis, stage.analysisIdentityBinding,
+      stage.analysisIdentityResolutionBinding, opts);
   }
   // The region plan binds the actual prepared producer object. Adding stage
   // metadata must not replace that endpoint before its owned projection runs.
@@ -503,10 +511,15 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     const projected = applyPhase8Projection(result, stage.analysis, {
       ...opts,
       analysisIdentityBinding:stage.analysisIdentityBinding,
+      analysisIdentityResolutionBinding:stage.analysisIdentityResolutionBinding,
     });
     return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
   }
-  const projectionOpts = { ...opts, analysisIdentityBinding:stage.analysisIdentityBinding };
+  const projectionOpts = {
+    ...opts,
+    analysisIdentityBinding:stage.analysisIdentityBinding,
+    analysisIdentityResolutionBinding:stage.analysisIdentityResolutionBinding,
+  };
   updated = applyPhase8Projection(updated, stage.analysis, projectionOpts);
   if (allowsStructuredControlProjection(opts)) {
     updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, projectionOpts));

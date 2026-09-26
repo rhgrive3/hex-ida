@@ -24,7 +24,11 @@ import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGIS
 export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
-import { bindAnalysisIdentityToIr, canonicalAnalysisIdentity } from './analysis-identity.js';
+import {
+  bindAnalysisIdentityResolutionToIr,
+  bindAnalysisIdentityToIr,
+  canonicalAnalysisIdentity,
+} from './analysis-identity.js';
 import {
   IDENTITY_PASS,
   IDENTITY_SOURCE_TRUNCATED_DIAGNOSTIC,
@@ -458,6 +462,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const resolvedAnalysisIdentity = needsScalarIdentity || needsProjectionIdentity
     ? canonicalAnalysisIdentity({ ...providerContext, analysis: authoritative }) : null;
   const analysisIdentityBinding = bindAnalysisIdentityToIr(context.ir, resolvedAnalysisIdentity);
+  const analysisIdentityResolutionBinding = bindAnalysisIdentityResolutionToIr(context.ir, resolvedAnalysisIdentity);
   const passContext = {
     ...providerContext,
     analysis,
@@ -594,6 +599,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     timings: Object.freeze(timings),
     analysis: authoritative,
     analysisIdentityBinding,
+    analysisIdentityResolutionBinding,
   };
 }
 

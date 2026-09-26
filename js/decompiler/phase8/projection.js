@@ -13,9 +13,8 @@ import { readProvedRewrites, readProvedInputBindings } from './pass-validation.j
 import { renderProofExpression, sameProofExpression } from './proof-expression.js';
 import {
   analysisIdentityMatches,
-  boundAnalysisIdentityForIr,
-  canonicalAnalysisIdentity,
   isValidatedAnalysisIdentity,
+  resolveAnalysisIdentityForIr,
 } from './analysis-identity.js';
 import { buildRenderProvenance, DEFAULT_RENDER_TRANSFORM_RECORDS } from './render-provenance.js';
 import { readDceResultProof } from './dce.js';
@@ -616,14 +615,19 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort, r
   }
 }
 
-function boundAnalysisIdentity(result, analysis, supplied, exactBinding = null) {
-  const exact = boundAnalysisIdentityForIr(exactBinding, result.ir);
-  if (exact?.valid === true && isValidatedAnalysisIdentity(exact.identity)) {
+function boundAnalysisIdentity(result, analysis, supplied, exactBinding = null, resolutionBinding = null) {
+  const canonical = resolveAnalysisIdentityForIr({
+    ir:result.ir,
+    binding:exactBinding,
+    resolutionBinding,
+    context:{ analysis },
+  });
+  if (canonical?.valid === true && isValidatedAnalysisIdentity(canonical.identity)) {
+    const exact = canonical;
     if (supplied == null) return exact;
     if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return exact;
     return analysisIdentityMatches(supplied.identity, exact.identity) ? supplied : exact;
   }
-  const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
   if (supplied == null) return canonical;
   if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return canonical;
   if (canonical?.valid !== true || !isValidatedAnalysisIdentity(canonical.identity)) return canonical;
@@ -1168,6 +1172,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     analysis,
     opts.analysisIdentity,
     opts.analysisIdentityBinding,
+    opts.analysisIdentityResolutionBinding,
   );
   let renderProvenance = buildRenderProvenance({
     result:withLines,

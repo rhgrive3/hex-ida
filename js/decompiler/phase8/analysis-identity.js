@@ -15,16 +15,19 @@ const REQUIRED_FIELDS = Object.freeze([
 class ExactAnalysisIdentityBinding {
   #ir;
   #resolved;
+  #kind;
 
-  constructor(ir, resolved) {
+  constructor(ir, resolved, kind = 'identity') {
     this.#ir = ir;
     this.#resolved = resolved;
+    this.#kind = kind;
     Object.freeze(this);
   }
 
-  static resolve(binding, ir) {
+  static resolve(binding, ir, kind = 'identity') {
     try {
-      if (binding == null || typeof binding !== 'object' || !(#ir in binding) || binding.#ir !== ir) return null;
+      if (binding == null || typeof binding !== 'object' || !(#ir in binding)
+          || binding.#ir !== ir || binding.#kind !== kind) return null;
       return binding.#resolved;
     } catch {
       return null;
@@ -38,8 +41,53 @@ export function bindAnalysisIdentityToIr(ir, resolved) {
   return new ExactAnalysisIdentityBinding(ir, resolved);
 }
 
+function canonicalResolutionCopy(resolved) {
+  if (resolved == null || typeof resolved !== 'object' || Array.isArray(resolved)) return null;
+  const valid = ownDataProperty(resolved, 'valid');
+  const identity = ownDataProperty(resolved, 'identity');
+  const reason = ownDataProperty(resolved, 'reason');
+  if (valid.malformed || identity.malformed || reason.malformed
+      || !valid.present || !identity.present || !reason.present) return null;
+  if (valid.value === true) {
+    if (!isValidatedAnalysisIdentity(identity.value) || reason.value !== null) return null;
+  } else if (valid.value === false) {
+    if (identity.value !== null || typeof reason.value !== 'string' || reason.value.length === 0) return null;
+  } else return null;
+  return Object.freeze({ identity:identity.value, valid:valid.value, reason:reason.value });
+}
+
+/**
+ * Retain a canonical identity resolution attempt, including an explicit
+ * invalid/unknown result, for one exact IR object. This is a reuse boundary,
+ * not authority: invalid results stay invalid and cannot mint an identity.
+ */
+export function bindAnalysisIdentityResolutionToIr(ir, resolved) {
+  if (ir == null || typeof ir !== 'object') return null;
+  const copy = canonicalResolutionCopy(resolved);
+  return copy == null ? null : new ExactAnalysisIdentityBinding(ir, copy, 'resolution');
+}
+
 export function boundAnalysisIdentityForIr(binding, ir) {
   return ExactAnalysisIdentityBinding.resolve(binding, ir);
+}
+
+/** Return the previous canonical attempt only when it belongs to this exact IR. */
+export function analysisIdentityResolutionForIr(binding, ir) {
+  return ExactAnalysisIdentityBinding.resolve(binding, ir, 'resolution');
+}
+
+/** Reuse a same-IR canonical attempt; otherwise derive identity from current input. */
+export function resolveAnalysisIdentityForIr({
+  ir,
+  binding = null,
+  resolutionBinding = null,
+  context = {},
+} = {}) {
+  const bound = boundAnalysisIdentityForIr(binding, ir);
+  if (bound?.valid === true) return bound;
+  const resolution = analysisIdentityResolutionForIr(resolutionBinding, ir);
+  if (resolution != null) return resolution;
+  return canonicalAnalysisIdentity({ ...context, ir });
 }
 
 function token(value) {
