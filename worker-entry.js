@@ -4,6 +4,7 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
 import { PRIVILEGED_BUILD } from './.runtime-build/privileged-assets.js';
 import { createAuthHandler } from './js/auth/server/router.js';
+import { AuthRepository } from './js/auth/server/repository.js';
 import { AI_CAPABILITY_HEADER, verifyAICapability } from './js/auth/server/ai-capability.js';
 import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
 import { CHATGPT_ORIGINS, isAllowedRequestOrigin } from './js/userscript/request-origin-policy.js';
@@ -88,6 +89,10 @@ export class RuntimeBootstrap extends DurableObject {
 }
 
 export default {
+  async scheduled(_controller, env) {
+    const repo = new AuthRepository(env.AUTH_DB, env.HEX_OWNER_DISCORD_ID, Date.now);
+    await repo.pruneOAuthTransactions();
+  },
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
     // The protected runtime route deliberately checks method and origin before
