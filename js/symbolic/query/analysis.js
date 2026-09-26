@@ -99,7 +99,8 @@ export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
   const reject=reason=>Object.freeze({schemaVersion:'hex-branch-inputs/v1',status:'partial',reason,transformAuthorization:false});
   try {
     const options=queryRecord(inputOptions);
-    const allowed=new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','addressBits','endian']);
+    const allowed=new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','addressBits','endian',
+      'deterministic','deterministicTransforms']);
     if(Object.keys(options).some(key=>!allowed.has(key))) throw new QueryFailure('unsupported-branch-input-option');
     const realStarted=monotonicNow();
     guard=createQueryGuard(options,{workItems:98304,allocationUnits:49152});guard.check();
@@ -120,9 +121,13 @@ export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
     guard.take('workItems',memoryLimits.workItems);guard.take('allocationUnits',memoryLimits.allocationUnits);
     const timeoutMs = guard.deterministic() ? (options.timeoutMs ?? 250) : Math.max(0, Math.floor(guard.remainingMilliseconds()));
     const execution=symbolicExecute(ir,{captureValues:true,captureBranchTargets:true,timeoutMs,
+      // A deterministic request keeps deterministic work limits and no wall-clock
+      // deadline, so a held branch-input binding cannot expire with host speed.
+      deterministic:guard.deterministic(),
       signal:options.signal,isCancelled:options.isCancelled,
       byteMemory:{identity:guard.identity,addressBits:options.addressBits??64,endian:options.endian??'little',
         timeoutMs,limits:memoryLimits,signal:options.signal,isCancelled:options.isCancelled,
+        deterministic:guard.deterministic(),
         getCurrentIdentity:options.getCurrentIdentity,now:options.now}});
     guard.check();
     const covered=execution.status==='complete' || execution.status==='partial'

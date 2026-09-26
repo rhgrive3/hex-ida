@@ -64,6 +64,11 @@ export async function queryEqualitySaturation(options={}) {
         backendTier:submitted.backendTier,
         signal:submitted.signal,isCancelled:submitted.isCancelled,getCurrentIdentity:submitted.getCurrentIdentity,
         taintResult:submitted.taintResult,
+        // Forward the query's determinism into the existing proof consumer so a
+        // deterministic request keeps deterministic work limits and no wall-clock
+        // verification deadline. Without this the consumer re-reads a real
+        // monotonic allowance and the candidate batch can time out on a slow host.
+        deterministic:guard.deterministic(),
         timeoutMs:verificationTimeoutMs,
       });
       guard.check();

@@ -23,7 +23,13 @@ export function queryTaint(ir,inputOptions={}) {
   const start=monotonicNow();let flow,execution,options={};
   try {
     const submitted=queryRecord(inputOptions,null,128);
-    options=Object.freeze({...submitted,
+    // Host-speed independence: a taint query produces evidence, not a deadline.
+    // Unless the caller asks for a wall-clock allowance with an explicit
+    // `timeoutMs` (or explicitly disables determinism), bound the work
+    // deterministically so a slow host cannot turn a complete proof into a
+    // deadline. An explicit `deterministic`/`deterministicTransforms` wins.
+    const deterministic=submitted.deterministic ?? submitted.deterministicTransforms ?? submitted.timeoutMs == null;
+    options=Object.freeze({...submitted,deterministic,
       ...(submitted.memory!=null?{memory:queryRecord(submitted.memory)}:{}),
       ...(submitted.execution!=null?{execution:queryRecord(submitted.execution)}:{})});
     flow=createTaintFlow(options);
