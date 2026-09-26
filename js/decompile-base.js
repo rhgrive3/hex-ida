@@ -9,6 +9,7 @@ import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
 import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js';
 import { applyDecompilerProfile } from './decompiler/profiles.js';
 import { closeFunctionOutput } from './decompiler/c-output-closure.js';
+import { eliminateAvoidableGotos } from './decompiler/goto-closure.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -78,35 +79,55 @@ function finalize(result, model, opts) {
 
 /*
  * The public text is the artifact a caller copies, so the last step of every
- * path declares the storage it uses and defines the fixed-width spelling it
- * uses (js/decompiler/c-output-closure.js).  Everything textual — the semantic
+ * path removes the jumps that structured execution of the text itself proves
+ * redundant (js/decompiler/goto-closure.js), then declares the storage it uses
+ * and defines the fixed-width spelling it uses
+ * (js/decompiler/c-output-closure.js).  Everything textual — the semantic
  * emitter, the legacy fallback, switch/loop repair and the ARM64 raw lowering —
  * has already run at this point.  When the result carries an index-keyed render
  * provenance map, that map is refreshed over the final line array so entity
  * keys stay aligned with the published lines instead of a shifted pre-closure
  * index space.
  */
-function closePublicCOutput(result, opts) {
+function refreshRenderProvenance(closed, opts) {
+  const previous = closed.renderProvenance ?? null;
+  if (!previous) return;
+  try {
+    closed.renderProvenance = buildRenderProvenance({
+      result: closed,
+      snapshotId: previous.snapshotId ?? null,
+      budget: opts.renderProvenanceBudget,
+      shouldAbort: opts.shouldAbort,
+    });
+  } catch {
+    // Keep the previous observation rather than publishing a silently
+    // unbound map for the changed line array.
+    closed.renderProvenance = previous;
+  }
+}
+
+function closePublicCOutput(result, opts = {}) {
   if (!result?.lines?.length) return result;
-  return closeFunctionOutput(result, {
-    render: textOf,
-    onLinesChanged: (closed) => {
-      const previous = closed.renderProvenance ?? null;
-      if (!previous) return;
-      try {
-        closed.renderProvenance = buildRenderProvenance({
-          result: closed,
-          snapshotId: previous.snapshotId ?? null,
-          budget: opts.renderProvenanceBudget,
-          shouldAbort: opts.shouldAbort,
-        });
-      } catch {
-        // Keep the previous observation rather than publishing a silently
-        // unbound map for the changed line array.
-        closed.renderProvenance = previous;
-      }
-    },
+  // Provably redundant jumps go first: the declaration closure below must
+  // declare storage for the text that will actually be published, and a jump
+  // that is gone cannot leave an address nobody reads behind.  Either closure
+  // can change the line array, so the index-keyed provenance map is refreshed
+  // once, over the final text, instead of being left over a shifted index
+  // space or rebuilt after each step.
+  let linesChanged = false;
+  const noteLinesChanged = () => { linesChanged = true; };
+  const withoutJumps = eliminateAvoidableGotos(result, {
+    shouldAbort: opts.shouldAbort,
+    onLinesChanged: noteLinesChanged,
   });
+  const closed = closeFunctionOutput(withoutJumps, { render: textOf, onLinesChanged: noteLinesChanged });
+  if (linesChanged) refreshRenderProvenance(closed, opts);
+  return closed;
+}
+
+/** The public-output boundary is the contract the emitted C depends on. */
+export function closePublicCOutputForTesting(result, opts = {}) {
+  return closePublicCOutput(result, opts);
 }
 
 /*

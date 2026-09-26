@@ -10,6 +10,8 @@ import {
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
 import { enhanceSemanticDecompilation } from '../decompiler/pipeline.js';
+import { eliminateAvoidableGotos } from '../decompiler/goto-closure.js';
+import { buildRenderProvenance } from '../decompiler/phase8/render-provenance.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -1299,9 +1301,50 @@ export function decompilerSnapshot(result) {
   };
 }
 
+/**
+ * The shared x86-64 / RISC-V64 presentation boundary publishes the same
+ * finished line array the ARM64 public boundary does, so it owns the same two
+ * invariants: the jumps a structured execution of the text proves redundant are
+ * removed, and the index-keyed render-provenance map describes the text that is
+ * actually published.  The map is rebuilt once, after the final lines, and only
+ * when the closure changed them; a failed rebuild keeps the previous map rather
+ * than publishing an unbound one over a different line array.
+ */
+function closeSharedPresentationOutput(result, options) {
+  if (!result?.lines?.length) return result;
+  let linesChanged = false;
+  const withoutJumps = eliminateAvoidableGotos(result, {
+    shouldAbort: options.shouldAbort,
+    onLinesChanged: () => { linesChanged = true; },
+  });
+  if (!linesChanged) return withoutJumps;
+  const previous = withoutJumps.renderProvenance ?? null;
+  if (!previous) return withoutJumps;
+  try {
+    withoutJumps.renderProvenance = buildRenderProvenance({
+      result: withoutJumps,
+      snapshotId: previous.snapshotId ?? null,
+      budget: options.renderProvenanceBudget,
+      shouldAbort: options.shouldAbort,
+    });
+  } catch {
+    // Keep the previous observation rather than publishing a silently unbound
+    // map for the changed line array.
+    withoutJumps.renderProvenance = previous;
+  }
+  return withoutJumps;
+}
+
+/** The shared presentation boundary is the contract the shared C output depends on. */
+export function closeSharedPresentationOutputForTesting(result, options = {}) {
+  return closeSharedPresentationOutput(result, options);
+}
+
 export function decompileSemanticProjection(model, options = {}) {
   const result = decompileSemantic(model, options);
-  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:options.renderProvenance ?? true }) : result;
+  if (!result) return result;
+  const enhanced = enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:options.renderProvenance ?? true });
+  return closeSharedPresentationOutput(enhanced, options);
 }
 
 function addressWidthBitsFor(architecturePlugin) {
