@@ -11,6 +11,8 @@ import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.
 import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, isProducerProjection } from '../../../js/decompiler/pipeline.js';
 import { prepareConditionalRegionCondition, readConditionalRegionCondition } from '../../../js/decompiler/phase8/conditional-region-condition.js';
 import { prepareConditionalRegionErasure } from '../../../js/decompiler/phase8/conditional-region-erasure.js';
+import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
+import { prepareConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 import { readProvedRegionErasure } from '../../../js/decompiler/phase8/region-erasure-pass.js';
 import { runPhase8Vertical, createAnalysisState } from '../../../js/decompiler/phase8/index.js';
 import { applyPhase8Projection, readProjectedConditionalRegions, readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
@@ -24,12 +26,22 @@ function storeArm(builder, value) {
 }
 function fixture(options = {}) {
   const f = conditionalRegionFixture({ armEffect:storeArm, ...options });
+  // Host-speed independence: the shared fixture issues its structure plan (and
+  // every reachability run derived from it) with a wall-clock allowance, so a
+  // loaded host can age the whole committed plan chain past its deadline while
+  // a later projection in the same test is still running. Rebuild both in the
+  // documented deterministic mode so freshness depends on work limits only.
+  const structure = prepareConditionalRegionStructure(f.region.record, f.ir,
+    { identity, timeoutMs:5000, deterministicTransforms:true });
   const projection = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, {
     phase8PrepareProof:true, phase8PrepareRegionProof:true, deterministicTransforms:true, renderProvenance:true,
   });
-  return { ...f, projection };
+  return { ...f, structure, projection, run:extra => prepareConditionalRegionReachability(structure, f.ir,
+    { identity, addressBits:8, timeoutMs:5000, backendTier:'exhaustive', deterministicTransforms:true, ...extra }) };
 }
-const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000 };
+// Host-speed independence: the proof path is exercised with the documented
+// deterministic mode, so publication depends on work limits, not wall clock.
+const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000, deterministicTransforms:true };
 
 test('public native conditional path proves a masked RET fault before committing its predicate', async () => {
   const f=textRowConditionalRegionFixture({returnSetup:'and x30, x30, #0xfffffffffffffffc'});
@@ -46,7 +58,7 @@ test('public native conditional path proves a masked RET fault before committing
   assert.deepEqual(execution.paths,[]);
   const before=structuredClone(f.ir.instructions);
   const output=await optimizeSemanticDecompilation(projection,{identity:f.identity,addressBits:64,
-    backendTier:'tiered',timeoutMs:5000,phase8TimeBudgetMs:1000,conditionalBranch:branch});
+    backendTier:'tiered',timeoutMs:5000,deterministicTransforms:true,conditionalBranch:branch});
   assert.equal(output.proofOptimization.status,'complete',output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted,1);
   assert.equal(output.proofOptimization.scope,'conditional-predicate-only');
@@ -112,7 +124,7 @@ async function committed(input = {}, extra = {}) {
   assert.equal(f.conditionPlan.status, 'complete', f.conditionPlan.reason);
   const reachability = await f.run();
   const plan = prepareConditionalRegionErasure(f.structure, reachability, f.ir,
-    { identity, timeoutMs:5000, projection:f.projection, conditionPlan:f.conditionPlan });
+    { identity, timeoutMs:5000, deterministicTransforms:true, projection:f.projection, conditionPlan:f.conditionPlan });
   assert.equal(plan.status, 'complete', plan.reason);
   const opts = { phase8ProofIdentity:identity, phase8RegionErasurePlan:plan };
   const stage = runPhase8Vertical({ ir:f.ir, opts, enabledStages:['rendering'] }, { timeBudgetMs:1000 });
@@ -333,11 +345,20 @@ test('printed direct predicates agree with an independent C truth table, includi
   const header = output.cAst.body.find(node => node.semantic?.expression === f.packet.expression).text;
   functions.push(`static int corrected(int8_t a1) { ${header} return 1; } return 0; }`);
   checks.push('if (corrected((int8_t)i) != 0) return 99;');
-  const configured = process.env.TMPDIR || join(process.cwd(), '.cache', 'c4-condition');
+  // The compiled fixture must land on a real, persistent filesystem rather than
+  // a tmpfs root. The stage-1 verifier runs each gate in a fresh worktree under
+  // os.tmpdir(), so prefer an explicit TMPDIR, then the CI runner's RUNNER_TEMP,
+  // then a worktree-local cache dir. The forbidden-root assertion stays
+  // fail-closed when no candidate is persistent.
+  const forbiddenRoots = ['/tmp','/var/tmp','/dev/shm'];
+  const isForbiddenRoot = value => forbiddenRoots.some(path => value === path || value.startsWith(path + '/'));
+  const candidates = [process.env.TMPDIR, process.env.RUNNER_TEMP, join(process.cwd(), '.cache', 'c4-condition')]
+    .filter(value => typeof value === 'string' && value.length > 0 && isAbsolute(value));
+  const configured = candidates.find(value => !isForbiddenRoot(value)) ?? candidates[0];
   assert.ok(configured && isAbsolute(configured), 'explicit persistent TMPDIR required');
   mkdirSync(configured, { recursive:true });
   const root = realpathSync(configured);
-  assert.ok(!['/tmp','/var/tmp','/dev/shm'].some(path => root === path || root.startsWith(path + '/')));
+  assert.ok(!isForbiddenRoot(root), `persistent non-tmpfs build root required, got ${root}`);
   const directory = mkdtempSync(join(root, 'c4-condition-c-')), binary = join(directory, 'predicate');
   const source = `#include <stdint.h>\n${functions.join('\n')}\nint main(void) { for (unsigned i=0;i<256;i++) { ${checks.join('\n')} } return 0; }`;
   const compiled = spawnSync(process.env.CC || 'cc', ['-std=c11','-O2','-fsanitize=undefined','-fno-sanitize-recover=all','-x','c','-','-o',binary],

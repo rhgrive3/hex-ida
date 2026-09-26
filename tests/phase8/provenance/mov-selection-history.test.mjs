@@ -257,13 +257,15 @@ test('public no-op stack recovery preserves MOV history through real proved repl
   assert.equal(f.result.expressionHistoryBinding.completeness, 'complete');
   assert.ok(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, f.ir));
   const canonical = structuredClone(f.ir);
-  const first = await optimizeSemanticDecompilation(f.result, f.options);
+  // The proved-replacement path is about proof/replay, not deadlines: request
+  // the documented deterministic mode so only work limits bound the result.
+  const first = await optimizeSemanticDecompilation(f.result, { ...f.options, deterministicTransforms:true });
   assert.equal(first.proofOptimization.status, 'complete', JSON.stringify({
     reason:first.proofOptimization.reason, targetDecisions:first.proofOptimization.targetDecisions,
   }));
   assert.ok(first.proofOptimization.adopted > 0);
   assert.ok(records(first).some(record => record.renderedBinding === 'producer-bound' && record.producedRefs.includes('L0:stmt')));
-  const replay = await optimizeSemanticDecompilation(first, f.options);
+  const replay = await optimizeSemanticDecompilation(first, { ...f.options, deterministicTransforms:true });
   assert.equal(replay.proofOptimization.status, 'complete');
   assert.equal(replay.proofOptimization.adopted, 0);
   assert.equal(replay.renderProvenance.completeness, 'complete');
