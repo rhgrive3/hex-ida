@@ -86,6 +86,13 @@ export function isFixedWidthTypeName(name) {
   return FIXED_WIDTH_TYPES.has(String(name ?? ''));
 }
 
+/* True only for one exact line of the fixed-width prelude that
+ * `fixedWidthPreludeLines` emits (`typedef <builtin> <alias>;`). */
+export function isFixedWidthPreludeDeclaration(text) {
+  const match = /^typedef\s+(.+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(String(text ?? '').trim());
+  return !!match && FIXED_WIDTH_TYPES.get(match[2]) === match[1].replace(/\s+/g, ' ');
+}
+
 /* Remove comments and literals so identifier scans never read prose or asm
  * text.  Newlines are preserved so callers can still reason about lines. */
 export function declarationBearingSource(text) {
