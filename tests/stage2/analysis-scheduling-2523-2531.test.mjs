@@ -116,7 +116,8 @@ function pointerBytes(value) {
     },
   };
 
-  await resolveModelTexts(backend, model, 96);
+  // Pointer width is explicit: resolveModelTexts never guesses it (#9242).
+  await resolveModelTexts(backend, model, 96, { pointerBytes: 8 });
   assert.equal(reads, 192, 'coverage must remain 96 direct + 96 indirect reads');
   assert.ok(peak <= 6, `readAt peak concurrency must be <= 6, got ${peak}`);
 }
