@@ -124,6 +124,8 @@ export function decompileDecodedProductFunction(input, options = {}) {
     ...(options.renderProvenanceBudget !== undefined ? { renderProvenanceBudget:options.renderProvenanceBudget } : {}),
     ...(options.renderProvenanceBindingBudget !== undefined ? { renderProvenanceBindingBudget:options.renderProvenanceBindingBudget } : {}),
     decompilerTimeBudgetMs:Number(options.decompilerTimeBudgetMs ?? 5000),
+    ...(Number.isSafeInteger(options.decompilerNodeBudget) && options.decompilerNodeBudget >= 0
+      ? { decompilerNodeBudget:options.decompilerNodeBudget } : {}),
     ...(options.phase8TimeBudgetMs !== undefined ? { phase8TimeBudgetMs:options.phase8TimeBudgetMs == null ? options.phase8TimeBudgetMs : Number(options.phase8TimeBudgetMs) } : {}),
     ...(options.phase8WorkBudget !== undefined ? { phase8WorkBudget:options.phase8WorkBudget } : {}),
   };

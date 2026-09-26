@@ -80,9 +80,11 @@ export function captureProjectionData(roots, shouldAbort = null) {
   function scalarToken(value) {
     return typeof value === 'number' && Object.is(value,-0) ? 'number:-0' : `${typeof value}:${String(value)}`;
   }
-  const started = performance.now();
+  // Node, edge, depth, string, and expanded-unit caps below are the safety
+  // boundary. This snapshot participates in producer proof bindings, so its
+  // availability must not depend on an elapsed-host-time cutoff.
   function check() {
-    if (performance.now()-started >= 250 || shouldAbort?.()) throw new TypeError('projection-capture-cancelled-or-deadline');
+    if (shouldAbort?.()) throw new TypeError('projection-capture-cancelled');
   }
   function visit(value, depth) {
     check();

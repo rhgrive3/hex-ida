@@ -24,5 +24,12 @@ profile ceiling and is reported as `transform-time-budget`. Explicit
 keeping deterministic work limits. The `deep` profile retains its existing
 250 ms PassManager deadline and no profile Phase 8 deadline.
 
+Frozen Phase 8 corpus measurements run with deterministic transforms. In
+`decompileEntry`, an explicit `decompilerTimeBudgetMs` also caps the existing
+PassManager node-work allowance at `min(12,000, floor(milliseconds))`. This
+keeps deliberately tight and generous measurement allowances distinct without
+using host elapsed time; the default 20,000 ms measurement allowance retains
+the normal 12,000-node cap.
+
 These are in-process transform limits. The outer process or worker watchdog,
 including `--function-timeout-ms`, remains the hard stop and is unchanged.
