@@ -153,8 +153,8 @@
         "tools/validation/machine-effects/x86-long64-system-denominator.mjs",
         "tools/validation/stage2/build-profile-denominator-inventory.mjs"
       ],
-      "inventoryHash": "stage2-denominator-inventory:b85e4086d4da44113bb774abac4fc24c",
-      "lockHash": "stage2-denominator-item:cc807d11d7c02d779e103f9895911bb4"
+      "inventoryHash": "stage2-denominator-inventory:0a366cb86a5008efb6ba99d2093e085e",
+      "lockHash": "stage2-denominator-item:2f806c457f4c05fc68f326d9afa326fb"
     },
     "S2-A7-NATIVE": {
       "id": "stage2-denominator:S2-A7-NATIVE:v1",
@@ -626,5 +626,5 @@
       "lockHash": "stage2-denominator-item:fe31e8a0a656aecf57bf21ef9109f6ce"
     }
   },
-  "lockHash": "stage2-denominator-lock:a2ce840b53d100c3449cc5213110c1ec"
+  "lockHash": "stage2-denominator-lock:a19668e5ad68339030559beda80b2107"
 }

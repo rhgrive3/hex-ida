@@ -8,7 +8,7 @@ import {
   isValidatedRuntimeProfileSupport,
   runtimeProfileSupport,
 } from '../../js/runtime/authority.js';
-import { stage2ArchitectureMaturity } from '../../js/platform/stage2-capability-maturity.js';
+import { createStage1ProfileProof, stage2ArchitectureMaturity } from '../../js/platform/stage2-capability-maturity.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
 const { proofs } = validatedCapabilityProofFixture();
@@ -66,7 +66,15 @@ function evaluate(binding, extra = {}) {
 
 function maturityFor(support) {
   return stage2ArchitectureMaturity('arm64', {
-    stage1Proof: { status: 'stage1-proven', exactHead: true, fullySatisfiedLevel: 'A6', profileIds: [TARGET_PROFILE_ID] },
+    stage1Proof: createStage1ProfileProof({
+      status: 'stage1-proven',
+      exactHead: true,
+      fullySatisfiedLevel: 'A6',
+      profileIds: [TARGET_PROFILE_ID],
+      commitSha: profileProof.commitSha,
+      treeSha: profileProof.treeSha,
+      artifactIdentity: 'artifact:issue-8851:stage1',
+    }),
     runtimeProof: support,
     profileProof,
   });

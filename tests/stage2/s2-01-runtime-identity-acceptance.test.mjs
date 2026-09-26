@@ -466,6 +466,18 @@ test('S2-01 external trace module identity needs an out-of-band verifier to beco
 
 test('S2-01 runtime profile promotion needs current exact proof and cannot be copied', () => {
   const binding = fixtureBinding();
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const accepted = tracker.accept(createRuntimeObservation({
+    binding, sequence: 1, observedAt: '2026-09-15T00:00:01Z', kind: 'stop', payload: { pc: '0x1000' },
+  }));
+  const mutation = tracker.authorizeMutation({
+    actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-09-15T00:00:02Z', explicitApproval: true,
+  });
+  const runtimeReceipt = tracker.mintProfileSupportReceipt({
+    observationIdentities: [accepted.observationId],
+    mutationAuthorityIdentities: [mutation.token.tokenId],
+    testItemIdentities: ['lifecycle', 'capability', 'module-mapping', 'stale-event', 'mutation-authority'],
+  });
   const { proofs } = validatedCapabilityProofFixture();
   const providerProfileId = 'native:remote-debug-v1:qemu-lldb';
   const targetProfileId = 'arm64:a64';
@@ -484,6 +496,7 @@ test('S2-01 runtime profile promotion needs current exact proof and cannot be co
   const support = runtimeProfileSupport({
     binding, providerProfileId, targetProfileId, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   });
   assert.equal(support.status, 'supported-for-exact-provider-profile');
   assert.equal(isValidatedRuntimeProfileSupport(support), true);
@@ -491,43 +504,51 @@ test('S2-01 runtime profile promotion needs current exact proof and cannot be co
   assert.equal(runtimeProfileSupport({
     binding, providerProfileId, targetProfileId, providerCapabilities, requiredCapabilities: REQUIRED_CAPABILITIES,
     proof, profileProof: { ...proofs['S2-A7-NATIVE'] },
+    runtimeReceipt,
   }).status, 'partial', 'a copied profile proof must lose promotion authority');
 
   for (const flag of REQUIRED_PROOF_FLAGS) {
     const supportWithMissingFlag = runtimeProfileSupport({
       binding, providerProfileId, targetProfileId, providerCapabilities,
       requiredCapabilities: REQUIRED_CAPABILITIES, proof: { ...proof, [flag]: false }, profileProof: proofs['S2-A7-NATIVE'],
+      runtimeReceipt,
     });
     assert.equal(supportWithMissingFlag.status, 'partial', `missing proof flag ${flag} must not promote`);
   }
   assert.equal(runtimeProfileSupport({
     binding, providerProfileId, targetProfileId, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof: { ...proof, headSha: 'e'.repeat(40) }, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).reason, 'runtime-proof-stale-head');
   assert.equal(runtimeProfileSupport({
     binding, providerProfileId, targetProfileId, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof: { ...proof, headSha: null }, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).reason, 'runtime-proof-exact-identity-required');
   assert.equal(runtimeProfileSupport({
     binding, providerProfileId, targetProfileId,
     providerCapabilities: { ...providerCapabilities, stepInto: false },
     requiredCapabilities: REQUIRED_CAPABILITIES, proof, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).status, 'partial');
   const withoutTargetProfile = fixtureBinding({ targetProfileId: undefined, architectureProfileId: undefined });
   assert.equal(withoutTargetProfile.targetProfileId, null);
   assert.equal(runtimeProfileSupport({
     binding: withoutTargetProfile, providerProfileId, targetProfileId: null, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).reason, 'runtime-profile-identity-required', 'a binding without a locked target profile cannot promote');
   const withoutBuildIdentity = fixtureBinding({ buildIdentity: undefined, runtimeBuildIdentity: undefined });
   assert.equal(withoutBuildIdentity.buildIdentity, null);
   assert.equal(runtimeProfileSupport({
     binding: withoutBuildIdentity, providerProfileId, targetProfileId, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).status, 'partial', 'a binding without a build identity cannot promote');
   assert.equal(runtimeProfileSupport({
     binding, providerProfileId: 'native:replay-v1:other', targetProfileId, providerCapabilities,
     requiredCapabilities: REQUIRED_CAPABILITIES, proof, profileProof: proofs['S2-A7-NATIVE'],
+    runtimeReceipt,
   }).reason, 'runtime-provider-target-profile-mismatch');
   assert.throws(() => runtimeProfileSupport({
     binding, providerProfileId, targetProfileId, providerCapabilities,
