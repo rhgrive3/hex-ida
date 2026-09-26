@@ -1100,7 +1100,19 @@ function recordCompatOperationSelection(value, expression, selected, state) {
 function buildCanonicalExpressions(state) {
   const batch = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
   if (!batch) {
-    for (const value of state.ir.values || []) buildValue(value, state);
+    // Same synchronous reuse contract as the transaction path below. The
+    // no-transition branch builds every value against the unchanged observed
+    // graph too, and without a batch each selection re-walked the same sealed
+    // compat histories. Reuse exact answers inside this pass and recheck every
+    // reused answer before returning (settle() === 0 proves the batched pass
+    // equals the unbatched pass); a net mutation of the observed graph during
+    // the pass is marked explicitly on the observation budget instead of
+    // mixing pre- and post-mutation checks.
+    const validation = createValidationBatch();
+    validation.run(() => {
+      for (const value of state.ir.values || []) buildValue(value, state);
+    });
+    if (validation.settle() > 0) consumerObservationBudget(state).reasons.add('expression-build-validation-stale');
     return state;
   }
   const transaction = { check:batch.isCurrent, initiallyCurrent:batch.isCurrent(), values:state.ir.values, observation:null };
@@ -1572,7 +1584,27 @@ function returnValueAt(inst, state) {
   return reg ? reachingRegisterValue(state.ir, inst, reg) : null;
 }
 
+// Semantic facts bind many store/branch/return facts to the same sealed compat
+// histories. FAST commonly exhausts the optional pass budget before this stage
+// runs, so the mandatory fallback executes it with no pass-level batch around
+// it, and every fact re-walks an unchanged observed graph. Reuse exact
+// validation answers inside this synchronous section and recheck every reused
+// answer before returning, exactly like validatedCAstFromLines and
+// consumerSourceMap: settle() === 0 proves each memoized answer still equals a
+// fresh walk, so the returned facts are the unbatched facts. A non-zero settle
+// means an observed graph was mutated mid-section; keep one consistent
+// snapshot and mark it explicitly instead of mixing pre- and post-mutation
+// checks. This helper is used by both the optional pass and the mandatory
+// fallback, so the memoization does not depend on which path executed.
 function semanticFacts(state, result) {
+  const validation = createValidationBatch();
+  let facts = null;
+  validation.run(() => { facts = collectSemanticFacts(state, result); });
+  if (validation.settle() > 0) consumerObservationBudget(state).reasons.add('semantic-facts-validation-stale');
+  return facts;
+}
+
+function collectSemanticFacts(state, result) {
   const facts = { inputs: [], outputs: [], stores: [], calls: [], conditions: [], evidence: [], warnings: [] };
   for (const [reg, v] of state.ir.args || []) {
     if ((v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
