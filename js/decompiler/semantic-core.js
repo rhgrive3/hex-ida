@@ -1156,6 +1156,12 @@ function callRecord(inst, ctx) {
   const target = inst.extra?.target ?? null;
   const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
   let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
+  // A direct call whose target address has neither a symbol nor a model name must keep
+  // that proven target explicit. Falling through to renderCall's operand fallback would
+  // print the first argument as the callee and drop the only callee identity the IR
+  // holds. Address-form naming matches this module's function-header fallback and the
+  // legacy renderer (`sub_<HEX>`), and leaves genuinely indirect calls untouched.
+  if (!name && target != null) name = `sub_${hex(target)}`;
 
   const values = [];
   for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
