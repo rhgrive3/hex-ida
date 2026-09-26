@@ -6,7 +6,7 @@ import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
 import { PROJECTION_LIMITS } from './projection-origin.js';
-import { createProjectionIrObserver } from '../../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch } from '../../core/identity/live-data.js';
 import { children, expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
@@ -676,6 +676,24 @@ function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
 }
 
 export function applyPhase8Projection(result, analysis, opts = {}) {
+  // Only the pure render-only path has a stable producer graph for this whole
+  // synchronous section. Proof/region projections retain their existing
+  // per-check freshness boundary because they may intentionally stage writes.
+  if (opts.preserveInitialSpelling !== true || opts.phase8RewritePlan != null
+      || opts.phase8RegionErasurePlan != null) {
+    return applyPhase8ProjectionCore(result, analysis, opts);
+  }
+  // A projection is one synchronous read-only validation section over its
+  // producer inputs. Shared render consumers can ask the same liveness
+  // question many times; reuse each exact answer only within this call, then
+  // revalidate every reused answer before publishing the projection.
+  const validation = createValidationBatch();
+  let projected;
+  validation.run(() => { projected = applyPhase8ProjectionCore(result, analysis, opts); });
+  return validation.settle() === 0 ? projected : result;
+}
+
+function applyPhase8ProjectionCore(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
   const regionCopy = beginRegionProjection(result, opts);
