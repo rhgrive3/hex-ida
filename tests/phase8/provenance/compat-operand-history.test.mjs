@@ -25,22 +25,34 @@ const data = ir => structuredClone(Object.fromEntries(Object.entries(ir).filter(
 
 // Real canonical stack-operand identity chain, as in compat-v1-memory-multi-use.
 // The stored input is unknown, so this is not numeric constant forwarding.
-function fixture({ bits = 32, endian = 'little', atomic = false } = {}) {
+function fixture({ bits = 32, endian = 'little', atomic = false, mayAliasStore = null } = {}) {
   const functionId = 'operand_history';
   const origin = (id, row) => ({ instructionIds:[id], virtualRanges:[{ start:0x4000n + BigInt(row * 4), end:0x4004n + BigInt(row * 4) }] });
   const addressType = { kind:'address', widthBits:64, addressSpace:'memory' }, type = { kind:'bitvector', widthBits:bits };
   const memory = valueId => ({ addressSpace:'memory', addressExpr:{ valueId }, widthBits:bits,
     endian, alignment:bits / 8, volatility:false, atomic, ordering:'unknown', faults:[] });
   const canonical = createSemanticIrFunction({ schemaVersion:2, contractVersion:'2.0.0', functionId, entryBlockId:'b0',
-    blocks:[{ id:'b0', nodeIds:['n_store', 'n_load', 'n_ret', 'n_other'], origin:origin('block', 0) }],
+    blocks:[{ id:'b0', nodeIds:[
+      ...(mayAliasStore === 'before' ? ['n_alias_store'] : []),
+      'n_store',
+      ...(mayAliasStore === 'after' ? ['n_alias_store'] : []),
+      'n_load', 'n_ret', 'n_other',
+    ], origin:origin('block', 0) }],
     values:[
       { id:'store_addr', kind:'entry', machineType:addressType, sourceEntityId:functionId, origin:origin('store_addr', 0) },
       { id:'load_addr', kind:'entry', machineType:addressType, sourceEntityId:functionId, origin:origin('load_addr', 1) },
+      ...(mayAliasStore == null ? [] : [
+        { id:'alias_addr', kind:'entry', machineType:addressType, sourceEntityId:functionId, origin:origin('alias_addr', 1) },
+      ]),
       { id:'stored', kind:'entry', machineType:type, sourceEntityId:functionId, origin:origin('stored', 2) },
       { id:'loaded', kind:'definition', machineType:type, definitionNodeId:'n_load', sourceEntityId:'n_load', origin:origin('loaded', 4) },
     ],
     nodes:[
       { id:'n_store', kind:'store', blockId:'b0', inputs:['store_addr', 'stored'], outputs:[], memory:memory('store_addr'), origin:origin('store', 3) },
+      ...(mayAliasStore == null ? [] : [
+        { id:'n_alias_store', kind:'store', blockId:'b0', inputs:['alias_addr', 'stored'], outputs:[],
+          memory:memory('alias_addr'), origin:origin('alias_store', 3) },
+      ]),
       { id:'n_load', kind:'load', blockId:'b0', inputs:['load_addr'], outputs:['loaded'], memory:memory('load_addr'), origin:origin('load', 4) },
       { id:'n_ret', kind:'return', blockId:'b0', inputs:['loaded'], outputs:[], origin:origin('ret', 5) },
       { id:'n_other', kind:'return', blockId:'b0', inputs:['stored'], outputs:[], origin:origin('other', 6) },
@@ -48,9 +60,14 @@ function fixture({ bits = 32, endian = 'little', atomic = false } = {}) {
   const cfg = createSemanticCfg({ functionId, entryBlockId:'b0', blocks:[{ id:'b0', successors:[] }] });
   const region = createMemoryRegionRef({ id:'stack', kind:'stack-fixed', functionId, offset:'8', widthBits:bits,
     metadata:{ canonicalAddressIncludesOperationDisplacement:true }, origin:origin('region', 0) });
+  const aliasRegion = mayAliasStore == null ? null : createMemoryRegionRef({ id:'entry-argument', kind:'rooted-offset',
+    functionId, rootEntityId:'entry-argument-root', offset:0, widthBits:bits, origin:origin('arg-region', 0) });
   const irIdentity = { functionId, semanticIrId:'ir', semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonical) };
-  const memorySsa = buildMemorySsa(canonical, cfg, { regions:[region], resolveRegion:() => region,
-    queryAlias:() => ({ relation:'must', reasonCodes:['same-fixture-region'], evidenceIds:['fixture-region'],
+  const memorySsa = buildMemorySsa(canonical, cfg, { regions:[region, ...(aliasRegion ? [aliasRegion] : [])],
+    resolveRegion:memory => String(memory?.addressExpr?.valueId ?? '') === 'alias_addr' ? aliasRegion : region,
+    queryAlias:(left, right) => ({ relation:left?.id === right?.id ? 'must' : 'may',
+      reasonCodes:[left?.id === right?.id ? 'same-fixture-region' : 'fixture-may-alias'],
+      evidenceIds:['fixture-region'],
       proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     identity:{ ...irIdentity, binaryId:'operand-history', sliceId:'slice', snapshotId:'snapshot',
       scalarSsaId:'ssa', scalarSsaBuildVersion:'1.0.0', scalarSsaDigest:'ssa-digest',
@@ -128,6 +145,17 @@ test('real LOAD-to-MOV transitions retain original load/store/address sources ac
     unchanged(f); cells++;
   }
   assert.equal(cells, 8, 'observed source cells, not eight new memory theorems');
+});
+
+test('exact stack forwarding tolerates a may partition only when the exact store is its latest clobber', () => {
+  const overwritten = fixture({ mayAliasStore:'before' });
+  assert.equal(overwritten.load.op, 'mov');
+  assert.ok(readProjectedMemoryOperandTransition(overwritten.ir, overwritten.load));
+
+  const clobbered = fixture({ mayAliasStore:'after' });
+  assert.equal(clobbered.load.op, 'load');
+  assert.equal(readProjectedMemoryOperandTransition(clobbered.ir, clobbered.load), null);
+  assert.equal(clobbered.load.memoryForwarding.reason, 'memory-forwarding-load-alias-unproven');
 });
 
 test('public rendering and repeated owned projection retain the original compatibility producer', () => {
