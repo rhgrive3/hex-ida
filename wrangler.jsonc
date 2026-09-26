@@ -2,6 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ida",
   "main": "./worker-entry.js",
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "compatibility_date": "2026-08-14",
   "build": {
     "command": "npm run userscript:build && node scripts/write-deployment-identity.mjs"

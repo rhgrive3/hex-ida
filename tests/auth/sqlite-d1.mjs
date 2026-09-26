@@ -1,10 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 /** Real SQLite executing production SQL; no query-pattern mocks. */
 export function sqliteD1() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON');
-  sqlite.exec(readFileSync(new URL('../../migrations/auth/0001_auth.sql', import.meta.url), 'utf8'));
+  const migrations = join(dirname(fileURLToPath(import.meta.url)), '../../migrations/auth');
+  for (const migration of readdirSync(migrations).filter((name) => /^\d+_.*\.sql$/.test(name)).sort()) {
+    sqlite.exec(readFileSync(join(migrations, migration), 'utf8'));
+  }
   function prepare(sql, args = []) {
     return {
       bind: (...values) => prepare(sql, values),

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { sqliteD1 } from './sqlite-d1.mjs';
-import { AuthRepository } from '../../js/auth/server/repository.js';
+import { AuthRepository, OAUTH_TRANSACTION_RETENTION_MS } from '../../js/auth/server/repository.js';
+import { randomSecret } from '../../js/auth/server/primitives.js';
 
 // Execute the actual Worker module graph. Only Cloudflare's host base class and
 // generated build bytes are fixtures; routing/auth/SQL are production modules.
@@ -75,6 +76,13 @@ try {
   assert.equal(privateAdmin.headers.get('cross-origin-resource-policy'), 'same-origin');
   assert.equal((await get(`/_privileged/dev/${'c'.repeat(24)}.${'d'.repeat(24)}/child.js`, token)).status, 409);
   assert.equal(assets.length, 0);
+  const expiredId = randomSecret(), activeId = randomSecret();
+  await repo.createTransaction({ id: expiredId, stateHash: randomSecret(), kind: 'web', returnPath: '/', browserHash: null, pollHash: null, openerOrigin: null, expiresAt: Date.now() - OAUTH_TRANSACTION_RETENTION_MS - 1 });
+  await repo.createTransaction({ id: activeId, stateHash: randomSecret(), kind: 'web', returnPath: '/', browserHash: null, pollHash: null, openerOrigin: null, expiresAt: Date.now() + 60_000 });
+  assert.equal(typeof worker.scheduled, 'function', 'the deployed Worker exposes its cron cleanup handler');
+  await worker.scheduled({}, env, {});
+  assert.equal(await repo.transaction(expiredId), null, 'scheduled cleanup reclaims old rows without an HTTP request');
+  assert.ok(await repo.transaction(activeId), 'scheduled cleanup preserves active transactions');
   assert.equal((await get('/')).status, 200); assert.deepEqual(assets, ['/']);
   assert.equal((await worker.fetch(new Request('https://hex.test/'), { ASSETS: env.ASSETS }, {})).status, 200, 'missing AUTH_DB does not block Standard root');
   assert.equal((await get('/runtime/bootstrap')).status, 405, 'existing bootstrap method guard unchanged');
