@@ -13,7 +13,6 @@ import { parseOperands } from '../../../js/arm64.js';
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { createRiscv64DecodedInstruction, RISCV64_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
-import { DEFAULT_PASS_BUDGET } from '../../../js/decompiler/passes/manager.js';
 import { createCapstoneX86Session } from '../../../tests/phase5/helpers/capstone-session.mjs';
 import { createCapstoneRiscv64Session } from '../../../tests/phase6/helpers/capstone-session.mjs';
 
@@ -259,15 +258,10 @@ export function decompileEntry(entry, {
   // Corpus observations are proof-oriented measurements. Keep the profile
   // explicit so the interactive default's wall-clock and render caps cannot
   // turn host load into a missing-measurement result.
-  // Corpus measurements preserve deliberately tight caller allowances as a
-  // deterministic cap on the existing pass node-work budget. This keeps
-  // 1 ms-vs-20 s comparisons meaningful without using elapsed host time.
+  // A caller-selected node budget stays explicit; a time allowance is never
+  // reinterpreted as a work cap (deadline tests select production mode).
   const effectiveNodeBudget = Number.isSafeInteger(decompilerNodeBudget) && decompilerNodeBudget >= 0
-    ? decompilerNodeBudget
-    : deterministicTransforms === true && typeof decompilerTimeBudgetMs === 'number'
-        && Number.isFinite(decompilerTimeBudgetMs) && decompilerTimeBudgetMs >= 0
-      ? Math.min(DEFAULT_PASS_BUDGET.nodeBudget, Math.floor(decompilerTimeBudgetMs))
-      : null;
+    ? decompilerNodeBudget : null;
   const decompilerOptions = {
     profile,
     decompilerTimeBudgetMs,
