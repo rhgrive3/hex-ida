@@ -14,6 +14,8 @@ const MAX_RPC_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_SANDBOX_OUTPUT_MESSAGES = 256;
 const MAX_SANDBOX_OUTPUT_BYTES = 256 * 1024;
 const MAX_SANDBOX_OUTPUT_PER_SECOND = 96;
+const MAX_PLUGIN_DEFINITIONS = 64;
+const MAX_PLUGIN_METADATA_BYTES = 8192;
 
 /*
  * One binary transport-size contract for every sandbox estimator (#8668/#8694).
@@ -334,9 +336,28 @@ const WORKER_PRELUDE = String.raw`
     }
     send(message);
   };
+  const MAX_PLUGIN_DEFINITIONS = 64;
+  const MAX_PLUGIN_METADATA_BYTES = 8192;
   const defs = [];
+  let cumulativeMetadataBytes = 0;
+  let discoveryFailed = false;
+  let discoveryFailureReason = '';
   const registrar = Object.freeze({ plugin(def) {
     if (!def || typeof def.run !== 'function') throw new Error('run（実行する処理）がありません。');
+    if (defs.length >= MAX_PLUGIN_DEFINITIONS) {
+      discoveryFailed = true;
+      discoveryFailureReason = 'プラグイン定義数の上限（' + MAX_PLUGIN_DEFINITIONS + '件）を超えました。';
+      throw new Error(discoveryFailureReason);
+    }
+    const name = String(def.name || '名前のないプラグイン').slice(0, 80);
+    const description = String(def.description || '').slice(0, 200);
+    const itemBytes = (name.length + description.length) * 2;
+    if (cumulativeMetadataBytes + itemBytes > MAX_PLUGIN_METADATA_BYTES) {
+      discoveryFailed = true;
+      discoveryFailureReason = 'プラグイン定義メタデータサイズの上限（' + MAX_PLUGIN_METADATA_BYTES + 'バイト）を超えました。';
+      throw new Error(discoveryFailureReason);
+    }
+    cumulativeMetadataBytes += itemBytes;
     defs.push(def);
   } });
 
@@ -414,6 +435,14 @@ function workerProgram(source, mode, index, expectedDefinition) {
     factory(registrar, module, module.exports);
     if (module.exports && typeof module.exports.run === 'function') registrar.plugin(module.exports);
     if (${JSON.stringify(mode)} === 'discover') {
+      if (discoveryFailed) {
+        send({ t: 'error', error: discoveryFailureReason || 'プラグイン定義の上限を超過しました。' });
+        return;
+      }
+      if (defs.length > 64 || cumulativeMetadataBytes > 8192) {
+        send({ t: 'error', error: 'プラグイン定義の上限を超過しました。' });
+        return;
+      }
       send({ t: 'done', value: defs.map((d) => ({
         name: String(d.name || '名前のないプラグイン').slice(0, 80),
         description: String(d.description || '').slice(0, 200),
@@ -544,16 +573,32 @@ const FRAME = `<!doctype html><meta charset="utf-8">
     port.postMessage({ t: 'error', error: message });
     stop();
   };
+  let currentMode = 'script';
   const isControlMessage = (data) => {
     if (!data || typeof data !== 'object' || typeof data.t !== 'string') return false;
     if (data.t === 'print') return Array.isArray(data.args);
     if (data.t === 'rpc') return Number.isSafeInteger(data.id) && data.id > 0 && typeof data.method === 'string' && data.method.length > 0 && data.method.length <= 128 && Array.isArray(data.args);
-    if (data.t === 'done') return true;
+    if (data.t === 'done') {
+      if (currentMode === 'discover') {
+        if (!Array.isArray(data.value) || data.value.length > 64) return false;
+        let bytes = 0;
+        for (const item of data.value) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+          if (typeof item.name !== 'string' || item.name.length > 80) return false;
+          if (typeof item.description !== 'string' || item.description.length > 200) return false;
+          bytes += (item.name.length + item.description.length) * 2;
+          if (bytes > 8192) return false;
+        }
+        return true;
+      }
+      return data.value === null;
+    }
     if (data.t === 'error' || data.t === 'budgetExceeded' || data.t === 'outputLimit') return typeof data.error === 'string' && data.error.length <= 4096;
     return false;
   };
   const start = (m) => {
     stop();
+    currentMode = m.mode || 'script';
     publicOutputMessages = 0;
     publicOutputBytes = 0;
     publicOutputWindow = Date.now();
@@ -720,6 +765,19 @@ function normalizeSandboxDefinition(definition) {
   } catch {
     return null;
   }
+}
+
+function isValidDiscoveryMetadata(value) {
+  if (!Array.isArray(value) || value.length > MAX_PLUGIN_DEFINITIONS) return false;
+  let bytes = 0;
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    if (typeof item.name !== 'string' || item.name.length > 80) return false;
+    if (typeof item.description !== 'string' || item.description.length > 200) return false;
+    bytes += (item.name.length + item.description.length) * 2;
+    if (bytes > MAX_PLUGIN_METADATA_BYTES) return false;
+  }
+  return true;
 }
 
 const MAX_TIMER_DELAY = 2_147_483_647;
@@ -901,6 +959,13 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
           catch { failBudget('RPC結果を返せないため停止しました。'); }
         }
       } else if (m.t === 'done') {
+        if (mode === 'discover') {
+          if (!isValidDiscoveryMetadata(m.value)) {
+            return failBudget('不正なプラグイン定義メタデータを受信したため停止しました。');
+          }
+        } else if (m.value !== null) {
+          return failBudget('不正なsandbox完了通知を受信したため停止しました。');
+        }
         finish({ ok: true, value: m.value });
       } else if (m.t === 'error') {
         if (typeof m.error !== 'string' || m.error.length > 4096) return failBudget('不正なsandbox error通知です。');
@@ -914,3 +979,5 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     document.body.append(frame);
   });
 }
+
+export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES };
