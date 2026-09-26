@@ -1,6 +1,12 @@
 import { identityForUser } from '../capabilities.js';
 import { AuthError, hash, randomSecret, SESSION_TTL_MS } from './primitives.js';
 
+// Retain rows for 24h after expiry or consumption so polling can report
+// terminal status and replay attempts remain diagnosable.
+export const OAUTH_TRANSACTION_RETENTION_MS = 24 * 60 * 60 * 1000;
+export const OAUTH_TRANSACTION_PRUNE_BATCH_SIZE = 100;
+const OAUTH_TRANSACTION_PRUNE_PER_INDEX = Math.floor(OAUTH_TRANSACTION_PRUNE_BATCH_SIZE / 2);
+
 // This SQL predicate is the only DB-side management policy. It is evaluated in
 // the mutation transaction as well as at the HTTP gate, avoiding actor TOCTOU.
 const MANAGER = "EXISTS (SELECT 1 FROM users actor WHERE actor.discord_id = ? AND (actor.discord_id = ? OR (actor.enabled = 1 AND actor.role = 'admin')))";
@@ -37,6 +43,25 @@ export class AuthRepository {
   async createTransaction(tx) {
     await this.statement(`INSERT INTO oauth_transactions (transaction_id, state_hash, client_kind, return_path, browser_hash, poll_secret_hash, opener_origin, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, tx.id, tx.stateHash, tx.kind, tx.returnPath, tx.browserHash, tx.pollHash, tx.openerOrigin, this.now(), tx.expiresAt).run();
+  }
+  // Request paths call this best-effort: reclamation must never turn a
+  // successful OAuth step into a failure. The scheduled handler surfaces errors.
+  async pruneOAuthTransactionsBestEffort() {
+    try { return await this.pruneOAuthTransactions(); } catch { return { deleted: 0, limit: OAUTH_TRANSACTION_PRUNE_BATCH_SIZE, failed: true }; }
+  }
+  async pruneOAuthTransactions() {
+    const staleBefore = this.now() - OAUTH_TRANSACTION_RETENTION_MS;
+    const result = await this.statement(`WITH expired AS (
+        SELECT transaction_id FROM oauth_transactions
+        WHERE expires_at <= ? ORDER BY expires_at LIMIT ?
+      ), consumed AS (
+        SELECT transaction_id FROM oauth_transactions
+        WHERE consumed_at <= ? ORDER BY consumed_at LIMIT ?
+      )
+      DELETE FROM oauth_transactions WHERE transaction_id IN (
+        SELECT transaction_id FROM expired UNION ALL SELECT transaction_id FROM consumed
+      )`, staleBefore, OAUTH_TRANSACTION_PRUNE_PER_INDEX, staleBefore, OAUTH_TRANSACTION_PRUNE_PER_INDEX).run();
+    return { deleted: result.meta?.changes ?? 0, limit: OAUTH_TRANSACTION_PRUNE_BATCH_SIZE };
   }
   transaction(id) { return this.statement('SELECT * FROM oauth_transactions WHERE transaction_id = ?', id).first(); }
   transactionForState(stateHash) { return this.statement('SELECT * FROM oauth_transactions WHERE state_hash = ?', stateHash).first(); }
