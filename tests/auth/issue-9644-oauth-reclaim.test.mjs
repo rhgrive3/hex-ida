@@ -148,3 +148,29 @@ test('OAuth cleanup is scheduled independently of requests every five minutes', 
   const config = readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8');
   assert.match(config, /"crons"\s*:\s*\[\s*"\*\/5 \* \* \* \*"\s*\]/);
 });
+
+test('a failing cleanup pass never turns an OAuth start into a failure', async (t) => {
+  const db = sqliteD1(); t.after(() => db.close());
+  const original = AuthRepository.prototype.pruneOAuthTransactions;
+  AuthRepository.prototype.pruneOAuthTransactions = async () => { throw new Error('d1 unavailable'); };
+  t.after(() => { AuthRepository.prototype.pruneOAuthTransactions = original; });
+  const handler = createAuthHandler({ now: () => NOW });
+  const env = {
+    AUTH_DB: db,
+    HEX_OWNER_DISCORD_ID: OWNER,
+    DISCORD_CLIENT_ID: '999999999999999999',
+    DISCORD_CLIENT_SECRET: 'fixture-only-secret',
+    DISCORD_REDIRECT_URI: `${BASE}/auth/discord/callback`,
+  };
+  const webStart = await handler(new Request(`${BASE}/auth/discord/start`), env);
+  assert.equal(webStart.status, 302);
+  assert.equal(transactionCount(db), 1, 'the start still records its transaction');
+});
+
+test('cleanup works before the consumed_at index migration is applied', async (t) => {
+  const db = sqliteD1(); t.after(() => db.close());
+  db.sqlite.exec('DROP INDEX IF EXISTS oauth_consumed_at');
+  const repo = new AuthRepository(db, OWNER, () => NOW);
+  await transaction(repo, { expiresAt: NOW - OAUTH_TRANSACTION_RETENTION_MS - 1 });
+  assert.equal((await repo.pruneOAuthTransactions()).deleted, 1);
+});

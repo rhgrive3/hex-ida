@@ -40,7 +40,7 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         const returnPath = url.searchParams.get('return_to') || '/';
         if (!RETURN_PATHS.has(returnPath)) throw new AuthError('invalid-return-path');
         const config = oauthConfig(env, url.origin), state = randomSecret(), browser = randomSecret();
-        await repo.pruneOAuthTransactions();
+        await repo.pruneOAuthTransactionsBestEffort();
         await repo.createTransaction({ id: randomSecret(), stateHash: await hash(state), kind: 'web', returnPath, browserHash: await hash(browser), pollHash: null, openerOrigin: null, expiresAt: now() + TRANSACTION_TTL_MS });
         response = new Response(null, { status: 302, headers: headers({ location: authorizationUrl(config, state), 'set-cookie': cookie(OAUTH_COOKIE, browser, TRANSACTION_TTL_MS / 1000) }) });
       } else if (path === '/auth/discord/callback') {
@@ -61,7 +61,7 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
           const previous = cookieValue(request, SESSION_COOKIE);
           if (previous && SECRET_RE.test(previous)) await repo.revoke(await hash(previous));
           await repo.finishWeb(transaction.transaction_id);
-          await repo.pruneOAuthTransactions();
+          await repo.pruneOAuthTransactionsBestEffort();
           const resultHeaders = new Headers(headers({ location: RETURN_PATHS.has(transaction.return_path) ? transaction.return_path : '/' }));
           resultHeaders.append('set-cookie', cookie(SESSION_COOKIE, token, SESSION_TTL_MS / 1000));
           resultHeaders.append('set-cookie', cookie(OAUTH_COOKIE, '', 0));
@@ -69,7 +69,7 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         } else {
           const proof = randomSecret();
           await repo.finishUserscript(transaction.transaction_id, user.discord_id, await hash(proof), Math.min(transaction.expires_at, now() + PROOF_TTL_MS));
-          await repo.pruneOAuthTransactions();
+          await repo.pruneOAuthTransactionsBestEffort();
           response = completionPage(transaction, proof, randomSecret());
         }
       } else if (path === '/api/auth/userscript/start') {
@@ -77,7 +77,7 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         const input = objectShape(await readJson(request), ['openerOrigin'], ['openerOrigin']);
         if (!CHATGPT_ORIGINS.has(input.openerOrigin)) throw new AuthError('origin-not-allowed', 403);
         const config = oauthConfig(env, url.origin), id = randomSecret(), state = randomSecret(), pollSecret = randomSecret(), expiresAt = now() + TRANSACTION_TTL_MS;
-        await repo.pruneOAuthTransactions();
+        await repo.pruneOAuthTransactionsBestEffort();
         await repo.createTransaction({ id, stateHash: await hash(state), kind: 'userscript', returnPath: '/', browserHash: null, pollHash: await hash(pollSecret), openerOrigin: input.openerOrigin, expiresAt });
         response = json({ transactionId: id, pollSecret, authorizationUrl: authorizationUrl(config, state), expiresAt });
       } else if (path === '/api/auth/userscript/poll') {
@@ -93,7 +93,7 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         requireMethod(request, ['POST']);
         const input = objectShape(await readJson(request), ['transactionId', 'pollSecret', 'completionProof'], ['transactionId', 'pollSecret', 'completionProof']);
         const token = await repo.redeem({ id: secret(input.transactionId), pollHash: await hash(secret(input.pollSecret)), proofHash: await hash(secret(input.completionProof)) });
-        await repo.pruneOAuthTransactions();
+        await repo.pruneOAuthTransactionsBestEffort();
         response = json({ token, expiresAt: now() + SESSION_TTL_MS });
       } else if (path === '/api/auth/me') {
         requireMethod(request, ['GET']);
