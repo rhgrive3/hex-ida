@@ -22,6 +22,7 @@ import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance
 import { readSwitchLineHistory } from '../../../js/decompiler/switch.js';
 import { readSemanticStoreLineHistory, readSemanticStatementLineHistory,
   readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
+import { nativeFacadeProductDecompilation } from './native-facade-fixture.mjs';
 
 for (const id of ['quality.aggregate_array_stride.O2','quality.loop_nested.O2',
   'x86_64.quality.aggregate_array_stride.O2','x86_64.quality.loop_nested.O2']) {
@@ -395,13 +396,8 @@ test('C4-03 native nested loop retains initial expression, statement and control
 });
 
 test('C4-03 native producer graph retains full history through immutable precondition storage', () => {
-  const corpus = loadCorpus(), id = 'quality.gvn_repeated_expression.O0';
-  const index = corpus.functions.findIndex(entry => entry.id === id);
-  assert.ok(index >= 0);
-  const { result, failure } = decompileEntry(corpus.functions[index], {
-    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
-  });
-  assert.equal(failure ?? null, null);
+  const id = 'quality.gvn_repeated_expression.O0';
+  const { result, ir } = nativeFacadeProductDecompilation(id);
   assert.equal(PROJECTION_LIMITS.nodes, 10000);
   assert.equal(PROJECTION_LIMITS.edges, 100000);
   assert.equal(PROJECTION_LIMITS.depth, 96);
@@ -417,15 +413,15 @@ test('C4-03 native producer graph retains full history through immutable precond
   const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
   const actual = provenanceFromSourceMap(result.sourceMap);
   assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
-  const producer = facade.facadeStateTransitionCandidates(result.ir);
+  const producer = facade.facadeStateTransitionCandidates(ir);
   assert.ok(producer?.isCurrent());
-  assert.equal(facade.facadeStateTransitionCandidates({ ...result.ir }), null);
-  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.equal(facade.facadeStateTransitionCandidates({ ...ir }), null);
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, ir)?.length);
   assert.ok(lines.length > 1);
-  assert.equal(readLineExpressionHistory({ ...lines[0] }, result.ir), null);
-  result.ir.values = [...result.ir.values];
+  assert.equal(readLineExpressionHistory({ ...lines[0] }, ir), null);
+  ir.values = [...ir.values];
   assert.equal(producer.isCurrent(), false);
-  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null));
+  assert.ok(lines.every(line => readLineExpressionHistory(line, ir) === null));
 });
 
 test('C4-03 native aggregate loop binds every rendered entity within the bounded default budget', () => {
@@ -539,14 +535,9 @@ for (const optimization of ['O1','O2']) for (const phase8Optimize of [false,true
 
 for (const name of ['aggregate_struct_fields','dce_observable_store','dce_volatile_read','sccp_narrow_extend','sccp_wraparound']) {
   test(`C4-03 native memory history survives the actual facade writes (${name})`, () => {
-    const corpus = loadCorpus(), id = `quality.${name}.O0`;
-    const index = corpus.functions.findIndex(entry => entry.id === id);
-    assert.ok(index >= 0);
+    const id = `quality.${name}.O0`;
     const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
-    const { result, failure } = decompileEntry(corpus.functions[index], {
-      index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
-    });
-    assert.equal(failure ?? null, null);
+    const { result, ir } = nativeFacadeProductDecompilation(id);
     assert.equal(result.expressionHistoryBinding.completeness, 'complete');
     assert.equal(result.renderProvenance.completeness, 'complete');
     assert.deepEqual(result.renderProvenance.reasons, []);
@@ -557,7 +548,6 @@ for (const name of ['aggregate_struct_fields','dce_observable_store','dce_volati
     const actual = provenanceFromSourceMap(result.sourceMap);
     assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
 
-    const { ir } = result;
     const source = ir.instructions.find(inst => facade.readFacadeProjectedMemoryOperandTransition(ir, inst));
     assert.ok(source, 'the real facade handed off an existing memory producer');
     const producer = facade.readFacadeProjectedMemoryOperandTransition(ir, source);

@@ -3,6 +3,12 @@ import {
   canonicalMemorySsaProducerMatchesSemanticIr,
   isCanonicalMemorySsaProducerArtifact,
 } from './build.js';
+import {
+  CANONICAL_ALIAS_ISSUERS,
+  CANONICAL_ALIAS_ISSUER_VERSIONS,
+  MEMORY_SSA_PROOF_VERSION,
+  canonicalAliasProofDigest,
+} from './proof-core.js';
 
 /*
  * Exact identity forwarding for one narrow case that byte forwarding cannot
@@ -14,9 +20,12 @@ import {
  * artifact.  It never walks projected v1 instructions and never treats the
  * legacy `reachingStore` compatibility pointer as proof.
  *
- * The query intentionally refuses memory-phi, partial overlap, cross-region
- * may/unknown aliases, volatile/atomic accesses, width/endian changes, and
- * stale Semantic IR.  Those cases remain explicit unknowns.
+ * The query intentionally refuses memory-phi, partial overlap, unknown aliases,
+ * volatile/atomic accesses, width/endian changes, and stale Semantic IR. A
+ * cross-region `may` partition is accepted only when its current version is the
+ * same exact stack store's conservative mirror. That proves it has no later
+ * possible writer; the selected stack-region version still proves the load's
+ * exact must-alias reaching store.
  */
 
 const semanticIndexCache = new WeakMap();
@@ -184,7 +193,53 @@ function metadataFor(index, id) {
   return rows.length === 1 ? rows[0] : null;
 }
 
-function coverageFor(memorySsa, index, use) {
+function aliasProofMatches(memorySsa, proof, relation, use, regionId, depth = 0) {
+  if (!record(proof) || depth > 8) return false;
+  if (Array.isArray(proof.alternatives)) {
+    const relations = proof.alternatives.map(alternative => String(alternative?.relation ?? ''));
+    const combined = relations.length > 0 && relations.every(item => item === 'must') ? 'must'
+      : relations.length > 0 && relations.every(item => item === 'no') ? 'no'
+        : relations.length > 0 && relations.every(item => ['must', 'no', 'may'].includes(item)) ? 'may' : 'unknown';
+    return combined === relation
+      && proof.alternatives.every(alternative => record(alternative)
+        && aliasProofMatches(memorySsa, alternative.proof, String(alternative.relation), use, regionId, depth + 1));
+  }
+  if (proof.kind !== 'canonical-memory-alias-proof'
+      || String(proof.version ?? '') !== MEMORY_SSA_PROOF_VERSION
+      || String(proof.relation ?? '') !== relation) return false;
+  const issuer = proof.issuer;
+  if (!record(issuer)
+      || issuer.type !== 'canonical-alias-analyzer'
+      || !CANONICAL_ALIAS_ISSUERS.has(String(issuer.id ?? ''))
+      || issuer.version !== CANONICAL_ALIAS_ISSUER_VERSIONS[String(issuer.id)]) return false;
+  const identity = proof.identity;
+  const provenance = proof.provenance;
+  const expectedRegions = new Set([String(use.regionId), String(regionId)]);
+  const actualRegions = new Set([String(provenance?.leftRegionId ?? ''), String(provenance?.rightRegionId ?? '')]);
+  const sources = provenance?.sourceEntityIds;
+  if (!record(identity)
+      || String(identity.functionId ?? '') !== String(memorySsa.functionId ?? '')
+      || String(identity.digest ?? '') !== stableDigest(memorySsa.identity ?? null)
+      || !record(provenance)
+      || String(provenance.functionId ?? '') !== String(memorySsa.functionId ?? '')
+      || !String(provenance.purpose ?? '').trim()
+      || expectedRegions.size !== actualRegions.size
+      || [...expectedRegions].some(id => !actualRegions.has(id))
+      || !Array.isArray(sources)
+      || !sources.map(String).includes(String(use.sourceEntityId))) return false;
+  const evidence = proof.evidence;
+  const provider = evidence?.provider;
+  return record(evidence)
+    && record(provider)
+    && String(provider.analyzerId ?? '') === String(issuer.id)
+    && String(provider.analyzerVersion ?? '') === String(issuer.version)
+    && provider.completeness === 'complete'
+    && provider.stopReason == null
+    && (provider.relation == null || String(provider.relation) === relation)
+    && String(proof.proofDigest ?? '') === canonicalAliasProofDigest(proof);
+}
+
+function coverageFor(memorySsa, index, use, exactStore, exactStoreMetadata) {
   if (!index.coverageByUseId) return null;
   const rows = index.coverageByUseId.get(String(use.id)) ?? [];
   if (rows.length !== 1) return null;
@@ -201,18 +256,50 @@ function coverageFor(memorySsa, index, use) {
       || !uniqueBy(aliases, (item) => String(item?.regionId ?? ''))) return null;
   const regionIds = new Set(memorySsa.regions.map((region) => String(region?.id ?? '')));
   if (regionIds.has('') || aliases.some((item) => !regionIds.has(String(item?.regionId ?? ''))
-      || !['must', 'no'].includes(String(item?.aliasRelation ?? '')))) return null;
+      || !['must', 'no', 'may'].includes(String(item?.aliasRelation ?? '')))) return null;
   const relevant = aliases.filter((item) => item.aliasRelation !== 'no');
-  if (relevant.length !== 1
-      || relevant[0].aliasRelation !== 'must'
-      || String(relevant[0].regionId) !== String(use.regionId)) return null;
+  const selected = relevant.find(item => String(item.regionId) === String(use.regionId));
+  if (selected?.aliasRelation !== 'must'
+      || relevant.filter(item => item.aliasRelation === 'must').length !== 1
+      || relevant.some(item => item.aliasRelation === 'may'
+        && !aliasProofMatches(memorySsa, item.aliasProof, 'may', use, item.regionId))) return null;
 
   const states = coverage.regionStates;
-  if (!Array.isArray(states) || states.length !== 1) return null;
-  const state = states[0];
-  if (String(state?.regionId ?? '') !== String(use.regionId)
-      || String(state?.definitionId ?? '') !== String(use.reachingDefinitionId ?? '')
-      || state?.aliasRelation !== 'must') return null;
+  if (!Array.isArray(states) || states.length !== relevant.length
+      || !uniqueBy(states, state => String(state?.regionId ?? ''))) return null;
+  const aliasesByRegion = new Map(relevant.map(item => [String(item.regionId), item]));
+  for (const state of states) {
+    const stateRegionId = String(state?.regionId ?? '');
+    const alias = aliasesByRegion.get(stateRegionId);
+    if (!alias || state.aliasRelation !== alias.aliasRelation || state.definitionId == null) return null;
+    if (stateRegionId === String(use.regionId)) {
+      if (String(state.definitionId) !== String(use.reachingDefinitionId ?? '')
+          || state.aliasRelation !== 'must') return null;
+      continue;
+    }
+    if (state.aliasRelation !== 'may') return null;
+    const mirroredDefinitions = index.definitionsById.get(String(state.definitionId)) ?? [];
+    const mirroredDefinition = mirroredDefinitions.length === 1 ? mirroredDefinitions[0] : null;
+    const mirroredMetadata = mirroredDefinition == null ? null : metadataFor(index, mirroredDefinition.id);
+    if (!mirroredDefinition
+        || mirroredDefinition.kind !== 'may-alias-clobber'
+        || mirroredDefinition.aliasRelation !== 'may'
+        || String(mirroredDefinition.regionId ?? '') !== stateRegionId
+        || String(mirroredDefinition.sourceEntityId ?? '') !== String(exactStore.sourceEntityId ?? '')
+        || !mirroredMetadata
+        || mirroredMetadata.entityKind !== 'definition'
+        || mirroredMetadata.sourceKind !== 'store'
+        || mirroredMetadata.role !== 'write'
+        || mirroredMetadata.aliasRelation !== 'may'
+        || String(mirroredMetadata.sourceEntityId ?? '') !== String(exactStore.sourceEntityId ?? '')
+        || String(mirroredMetadata.accessIndex ?? '') !== String(exactStoreMetadata.accessIndex ?? '')
+        || stableStringify(mirroredMetadata.memory) !== stableStringify(exactStoreMetadata.memory)
+        || !record(mirroredDefinition.proof)
+        || mirroredDefinition.proof.kind !== 'conservative-memory-clobber'
+        || mirroredDefinition.proof.aliasRelation !== 'may'
+        || !aliasProofMatches(memorySsa, mirroredDefinition.proof.providerProof, 'may',
+          { ...use, sourceEntityId:exactStore.sourceEntityId }, stateRegionId)) return null;
+  }
   return coverage;
 }
 
@@ -305,7 +392,7 @@ export function forwardExactStackOperandIdentity(memorySsa, useOrId, ir) {
   const loadRange = rangeKey(loadMetadata.byteRange);
   const storeRange = rangeKey(storeMetadata.byteRange);
   if (!loadRange || loadRange !== storeRange) return null;
-  const coverage = coverageFor(memorySsa, artifactIndex, use);
+  const coverage = coverageFor(memorySsa, artifactIndex, use, definition, storeMetadata);
   if (!coverage || rangeKey(coverage.loadRange) !== loadRange) return null;
 
   const loadNode = semanticIndex.nodes.get(String(use.sourceEntityId));
