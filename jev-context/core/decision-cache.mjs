@@ -19,6 +19,36 @@ import path from "node:path";
  */
 
 const MAX_ENTRIES = 20000;
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+function acquireLock(lockPath, { timeoutMs = 3000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(fd, `${process.pid} ${Date.now()}\n`);
+      return fd;
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") return null;
+      if (Date.now() >= deadline) return null;
+      // Fail-open backoff: wait up to 10ms or remaining time.
+      Atomics.wait(LOCK_SLEEP, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
+function releaseLock(lockPath, fd) {
+  try {
+    if (fd != null) fs.closeSync(fd);
+  } catch {
+    /* ignore */
+  }
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function createDecisionCache(options = {}) {
   const filePath = options.path;
@@ -26,14 +56,17 @@ export function createDecisionCache(options = {}) {
   const maxEntries = Number.isInteger(options.maxEntries) && options.maxEntries > 0
     ? options.maxEntries
     : MAX_ENTRIES;
+  const lockTimeoutMs = Number.isInteger(options.lockTimeoutMs) && options.lockTimeoutMs > 0
+    ? options.lockTimeoutMs
+    : 3000;
 
   let entries = new Map();
+  const dirtyKeys = new Set();
   let loaded = false;
   let recovered = false;
   let corrupt = false;
   let hits = 0;
   let misses = 0;
-  let dirty = false;
 
   function load() {
     if (loaded) return summary();
@@ -78,15 +111,17 @@ export function createDecisionCache(options = {}) {
   function set(digest, decision) {
     load();
     if (!digest) return;
-    entries.set(digest, {
+    const entry = {
       a: decision.action,
       c: decision.confidence ?? 0,
       p: decision.dropProbability ?? 0,
       r: decision.reason || "",
       v: policyVersion,
       t: decision.timestamp || Date.now(),
-    });
-    dirty = true;
+    };
+    entries.set(digest, entry);
+    dirtyKeys.add(digest);
+
     // Bounded growth: drop the oldest insertion order entries.
     if (entries.size > maxEntries) {
       const overflow = entries.size - maxEntries;
@@ -94,34 +129,89 @@ export function createDecisionCache(options = {}) {
       for (const key of entries.keys()) {
         if (index >= overflow) break;
         entries.delete(key);
+        dirtyKeys.delete(key);
         index += 1;
       }
     }
   }
 
   function save() {
-    if (!filePath || !dirty) return { saved: false };
-    // The temp name must be unique per writer: several sessions (and several
-    // engine instances inside one process) can save concurrently, and a shared
-    // temp path would let one rename rob another of its file.
-    const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    if (!filePath || dirtyKeys.size === 0) return { saved: false };
+    const lockPath = `${filePath}.lock`;
+    const tmp = `${filePath}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2, 10)}.tmp`;
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const payload = { policyVersion, savedAt: new Date().toISOString(), entries: Object.fromEntries(entries) };
-      // Write-then-rename so a crash can never leave a half-written cache that
-      // later reads as a valid-but-truncated decision set.
+    } catch (error) {
+      return { saved: false, error: String(error && error.message ? error.message : error).slice(0, 200) };
+    }
+
+    const lock = acquireLock(lockPath, { timeoutMs: lockTimeoutMs });
+    if (lock == null) {
+      return { saved: false, error: "could not acquire cache lock" };
+    }
+
+    try {
+      let diskEntries = new Map();
+      try {
+        if (fs.existsSync(filePath)) {
+          const raw = fs.readFileSync(filePath, "utf8");
+          const parsed = JSON.parse(raw);
+          const source = parsed && typeof parsed === "object" && parsed.entries ? parsed.entries : parsed;
+          if (source && typeof source === "object") {
+            for (const [key, value] of Object.entries(source)) {
+              if (value && typeof value === "object" && value.v === policyVersion) {
+                diskEntries.set(key, value);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (error && error.code !== "ENOENT") {
+          corrupt = true;
+          recovered = true;
+        }
+        diskEntries = new Map();
+      }
+
+      // Merge this writer's dirty decisions into the latest on-disk entries
+      for (const key of dirtyKeys) {
+        const entry = entries.get(key);
+        if (entry) {
+          diskEntries.delete(key);
+          diskEntries.set(key, entry);
+        }
+      }
+
+      if (diskEntries.size > maxEntries) {
+        const overflow = diskEntries.size - maxEntries;
+        let index = 0;
+        for (const key of diskEntries.keys()) {
+          if (index >= overflow) break;
+          diskEntries.delete(key);
+          index += 1;
+        }
+      }
+
+      const payload = {
+        policyVersion,
+        savedAt: new Date().toISOString(),
+        entries: Object.fromEntries(diskEntries),
+      };
       fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
       fs.renameSync(tmp, filePath);
-      dirty = false;
+      entries = diskEntries;
+      dirtyKeys.clear();
+      loaded = true;
       return { saved: true, entries: entries.size };
     } catch (error) {
-      // A cache write failure is not a task failure.
       try {
         if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
       } catch {
         /* ignore */
       }
       return { saved: false, error: String(error && error.message ? error.message : error).slice(0, 200) };
+    } finally {
+      releaseLock(lockPath, lock);
     }
   }
 
@@ -129,9 +219,15 @@ export function createDecisionCache(options = {}) {
     load();
     const removed = entries.size;
     entries = new Map();
-    dirty = false;
+    dirtyKeys.clear();
+    const lockPath = filePath ? `${filePath}.lock` : null;
     try {
       if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (lockPath && fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
     } catch {
       /* ignore */
     }
