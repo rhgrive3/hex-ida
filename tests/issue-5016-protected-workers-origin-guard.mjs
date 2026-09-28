@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 
 const PAGE = { href: 'https://app.hex.invalid/userscript/entry.js', origin: 'https://app.hex.invalid' };
+const PROTECTED_BUILD_ORIGIN = 'https://hex.invalid';
 const ASSETS = {
   wasm: Buffer.from('fake-capstone-wasm-bytes').toString('base64'),
   classic: {
@@ -94,6 +95,17 @@ try {
     assert.equal(ownedWorker.value, runtime.workers.get('js/worker.js'), 'same-origin owned classic URL must be replaced');
     assert.equal(ownedWorker.messages.length, 1, 'same-origin owned classic worker receives its WASM bootstrap');
     assert.equal(ownedWorker.messages[0].message.t, '__hex_capstone_wasm__');
+
+    // 3b. Build-time import.meta.url rewriting uses the reserved .invalid
+    // origin even when the runtime host authority is a real deployment origin.
+    // It is internal provenance and must resolve to the embedded worker rather
+    // than escaping the opaque sandbox as a network Worker request.
+    const syntheticOwned = new Worker(`${PROTECTED_BUILD_ORIGIN}/js/worker.js`);
+    assert.equal(syntheticOwned.value, runtime.workers.get('js/worker.js'),
+      'reserved protected-build worker URL must be replaced');
+    assert.equal(syntheticOwned.messages.length, 1,
+      'reserved protected-build worker receives its WASM bootstrap');
+    assert.equal(syntheticOwned.messages[0].message.t, '__hex_capstone_wasm__');
 
     const ownedRelative = new Worker('/js/platform/worker.js', { type: 'module' });
     assert.equal(ownedRelative.value, runtime.workers.get('js/platform/worker.js'), 'same-origin relative module URL must be replaced');
