@@ -2,6 +2,7 @@ import { PROTECTED_WORKER_ASSETS } from '../../.runtime-build/embedded-assets.js
 import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
 
 const CAPSTONE_WASM_BOOTSTRAP = '__hex_capstone_wasm__';
+const PROTECTED_LOGICAL_ORIGIN = 'https://hex.invalid';
 const NESTED_WORKER_BOOTSTRAP = '__hex_nested_worker_runtime__';
 const PLATFORM_WORKER = 'js/platform/worker.js';
 const X86_REVALIDATION_WORKER = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
@@ -135,7 +136,12 @@ function logicalPath(value, hostLocation) {
   try {
     if (!hostLocation.origin) return null;
     const url = new URL(String(value), hostLocation.href);
-    if (url.origin !== hostLocation.origin) return null;
+    // esbuild rewrites import.meta.url to a reserved .invalid origin before
+    // encrypting the protected runtime. That synthetic URL is internal
+    // provenance, not a network authority. Preserve the #5016 cross-origin
+    // guard while allowing only this non-routable build sentinel to resolve
+    // back to an embedded worker asset.
+    if (url.origin !== hostLocation.origin && url.origin !== PROTECTED_LOGICAL_ORIGIN) return null;
     return url.pathname.replace(/^\//, '');
   } catch { return null; }
 }
