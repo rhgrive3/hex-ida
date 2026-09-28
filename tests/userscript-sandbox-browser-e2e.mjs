@@ -91,6 +91,36 @@ async function run(name, browserType) {
     assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-host')), false, `${name}: legacy DOM absent after ready`);
     assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-emergency-close')), false, `${name}: emergency close overlay must stay absent`);
 
+    const legacyArm64Probe = await child.evaluate(async () => {
+      const worker = new Worker(new URL('https://hex.invalid/js/worker.js'));
+      try {
+        return await new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ ok:false, error:'legacy probe timeout' }), 20_000);
+          worker.onmessage = (event) => {
+            const data = event.data;
+            if (!data || data.id !== 991) return;
+            clearTimeout(timer);
+            resolve(data.t === 'ok'
+              ? { ok:data.result?.ok === true, result:data.result || null }
+              : { ok:false, error:data.error || data.t || 'legacy probe failed' });
+          };
+          worker.onerror = (event) => {
+            clearTimeout(timer);
+            resolve({ ok:false, error:event.message || event.error?.message || 'legacy worker error' });
+          };
+          worker.onmessageerror = () => {
+            clearTimeout(timer);
+            resolve({ ok:false, error:'legacy worker message error' });
+          };
+          worker.postMessage({ t:'probe', id:991, epoch:0 });
+        });
+      } finally {
+        worker.terminate();
+      }
+    });
+    assert.equal(legacyArm64Probe.ok, true,
+      `${name}: protected legacy ARM64 worker probe failed: ${JSON.stringify(legacyArm64Probe)}`);
+
     const x86WorkerState = await child.evaluate(async () => {
       const request = (worker, message) => new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('worker timeout')), 60_000);
