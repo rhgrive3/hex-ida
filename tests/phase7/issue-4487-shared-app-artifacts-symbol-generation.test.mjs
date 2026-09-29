@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { SymbolIndex } from '../../js/symbols.js';
 import { installSharedAppArtifacts } from '../../js/analysis/shared-app-artifacts.js';
+import { investigationServiceFor } from '../../js/analysis/investigation-service.js';
 
 console.log('[phase7] running shared ProgramIndex symbol-generation regression for #4487...');
 
@@ -120,6 +121,30 @@ function makeApp(scanProgram, ensureFunctions = async () => {}) {
   assert.equal(refreshed.gen, symbols.gen);
   assert.equal(refreshed.functionStartOf(0x1200n), 0x1200n);
   assert.equal(scans, 2, 'the stale generation must not publish or satisfy the current generation');
+}
+
+{
+  let release;
+  let markStarted;
+  let scans = 0;
+  const firstScan = new Promise((resolve) => { release = resolve; });
+  const scanStarted = new Promise((resolve) => { markStarted = resolve; });
+  const { app, symbols } = makeApp((regionId) => {
+    scans++;
+    if (scans === 1) markStarted();
+    return scans === 1 ? firstScan.then(() => ({ regionId })) : Promise.resolve({ regionId });
+  });
+  installSharedAppArtifacts(app);
+
+  const investigationProgram = investigationServiceFor(app).buildProgram();
+  await scanStarted;
+  symbols.addFunctions([0x1300n], { source: 'background-refinement', confidence: 1, confirmed: true });
+  release();
+
+  const refreshed = await investigationProgram;
+  assert.equal(refreshed.gen, symbols.gen, 'investigation must transparently rebind to the newest symbol generation');
+  assert.equal(refreshed.functionStartOf(0x1300n), 0x1300n);
+  assert.equal(scans, 2, 'investigation retries the stale program scan exactly once after one refinement');
 }
 
 console.log('  ok #4487 shared ProgramIndex symbol-generation regression passed');
