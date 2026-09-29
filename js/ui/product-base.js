@@ -925,7 +925,12 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const list = h('details', 'ui-graph-text');
     list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
     const rows = h('div', 'ui-list');
-    graph.nodes.forEach((node, index) => rows.append(listRow({ title: String(node.label || node.title || node.id || `Block ${index + 1}`), subtitle: node.addr != null ? addressText(node.addr) : '' })));
+    graph.nodes.forEach((node, index) => rows.append(listRow({
+      title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+      subtitle: node.addr != null ? addressText(node.addr) : '',
+      // Same destination as tapping the block in the graph.
+      onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
+    })));
     list.append(rows);
     mode.append(graphHost, graphLegend('cfg'), list);
     content.replaceChildren(mode);
@@ -1650,7 +1655,12 @@ export function installProductUI(app) {
             } else {
               // Leaving data we switched to Hex for: back to assembly for code.
               if (autoHexForData && region?.exec) { app.setMode?.('asm'); autoHexForData = false; }
-              app.goToAddress(target, { announce: false, history: false });
+              if (app.goToAddress(target, { announce: false, history: false })) {
+                // Select the requested line so the address bar and the next
+                // action refer to it, not to whatever is at the top.
+                const row = app.viewer?.rowOfAddress?.(target);
+                if (row != null) { app.viewer.select(row, false); app.store.set({ selectedRow: row }); }
+              }
             }
           } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
         }
