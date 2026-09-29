@@ -147,6 +147,27 @@ function symbolsGenerationOf(app) { return app?.symbols?.gen ?? 0; }
 function programCacheKey(epoch, symbolsGeneration, key) {
   return `${epoch}:${symbolsGeneration}:${key}`;
 }
+async function ensureCurrentProgramForInvestigation(app, options = {}) {
+  // A shared ProgramIndex is intentionally generation-bound: if another
+  // producer refines symbols while the scan is running, the old producer must
+  // reject rather than publish against stale symbols. That race is expected
+  // during user-visible investigation (for example metadata/background symbol
+  // refinement), so absorb the internal stale verdict here and rebind to the
+  // newest generation instead of surfacing it as "Analysis failed".
+  //
+  // Keep retries bounded: a continuously mutating symbol table is a real
+  // instability and must not turn one UI action into an unbounded rescan loop.
+  const MAX_STALE_SYMBOL_RETRIES = 3;
+  for (let attempt = 0; ; attempt++) {
+    throwIfAborted(options?.signal ?? null);
+    try {
+      return await app.ensureProgram(options);
+    } catch (error) {
+      const retryable = error?.stale === true && error?.message === 'stale shared program symbols';
+      if (!retryable || attempt >= MAX_STALE_SYMBOL_RETRIES) throw error;
+    }
+  }
+}
 function storeValue(app, key) { try { return app?.store?.get?.(key) ?? null; } catch { return null; } }
 function stringPriority(region) {
   const section = region?.section || '';
@@ -676,7 +697,7 @@ export function installSharedAppArtifacts(app) {
   // one producer per artifact instead of maintaining parallel whole-binary scans.
   const service = investigationServiceFor(app);
   service.collectStrings = (options = {}) => app.ensureStrings(options);
-  service.buildProgram = (options = {}) => app.ensureProgram(options);
+  service.buildProgram = (options = {}) => ensureCurrentProgramForInvestigation(app, options);
 
   Object.defineProperty(app, '__sharedAppArtifactsVersion', { value:INSTALL_VERSION, configurable:true });
   return app;
