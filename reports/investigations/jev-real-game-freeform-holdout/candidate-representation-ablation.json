@@ -1,0 +1,212 @@
+[
+  {
+    "id": "SP08",
+    "query": "Host bundle being checked or updated by the basic update driver",
+    "gold": {
+      "class": "SPUBasicUpdateDriver",
+      "field": "_host"
+    },
+    "candidateCount": 212,
+    "goldRank": 1,
+    "goldInShortlist": true,
+    "armA": {
+      "topKey": "SPUBasicUpdateDriver#16#_host",
+      "topClass": "SPUBasicUpdateDriver",
+      "topField": "_host",
+      "correct": true,
+      "verdict": "ambiguous"
+    },
+    "deterministic": {
+      "key": "SPUUIBasedUpdateDriver#10#_resumingDownloadedInfoOrUpdate",
+      "class": "SPUUIBasedUpdateDriver",
+      "field": "_resumingDownloadedInfoOrUpdate",
+      "correct": false
+    },
+    "arms": {
+      "B": {
+        "chosenIndex": 92,
+        "chosenKey": "SPUProbingUpdateDriver#8#_basicDriver",
+        "chosenClass": "SPUProbingUpdateDriver",
+        "chosenField": "_basicDriver",
+        "confidence": 0.36,
+        "preference": 0.37,
+        "correct": false,
+        "isRegression": true,
+        "isRescue": false
+      },
+      "C": {
+        "chosenIndex": 0,
+        "chosenKey": "SPUBasicUpdateDriver#16#_host",
+        "chosenClass": "SPUBasicUpdateDriver",
+        "chosenField": "_host",
+        "confidence": 0.4,
+        "preference": 0.41000000000000003,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      },
+      "D": {
+        "chosenIndex": 0,
+        "chosenKey": "SPUBasicUpdateDriver#16#_host",
+        "chosenClass": "SPUBasicUpdateDriver",
+        "chosenField": "_host",
+        "confidence": 0.7,
+        "preference": 0.71,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      },
+      "E": {
+        "chosenIndex": 0,
+        "chosenKey": "SPUBasicUpdateDriver#16#_host",
+        "chosenClass": "SPUBasicUpdateDriver",
+        "chosenField": "_host",
+        "confidence": 0.63,
+        "preference": 0.64,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      }
+    }
+  },
+  {
+    "id": "SP33",
+    "query": "Extracted package signatures checked before running installation",
+    "gold": {
+      "class": "SPUInstallationInputData",
+      "field": "_signatures"
+    },
+    "candidateCount": 17,
+    "goldRank": 1,
+    "goldInShortlist": true,
+    "armA": {
+      "topKey": "SPUInstallationInputData#40#_signatures",
+      "topClass": "SPUInstallationInputData",
+      "topField": "_signatures",
+      "correct": true,
+      "verdict": "ambiguous"
+    },
+    "deterministic": {
+      "key": "SPUUpdater#120#_updateLastCheckedDate",
+      "class": "SPUUpdater",
+      "field": "_updateLastCheckedDate",
+      "correct": false
+    },
+    "arms": {
+      "B": {
+        "chosenIndex": 0,
+        "chosenKey": "SPUInstallationInputData#40#_signatures",
+        "chosenClass": "SPUInstallationInputData",
+        "chosenField": "_signatures",
+        "confidence": 0.29,
+        "preference": 0.34,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      },
+      "C": {
+        "chosenIndex": 10,
+        "chosenKey": "SUSignatures#72#_dsaSignatureStatus",
+        "chosenClass": "SUSignatures",
+        "chosenField": "_dsaSignatureStatus",
+        "confidence": 0.38,
+        "preference": 0.43,
+        "correct": false,
+        "isRegression": true,
+        "isRescue": false
+      },
+      "D": {
+        "chosenIndex": 10,
+        "chosenKey": "SUSignatures#72#_dsaSignatureStatus",
+        "chosenClass": "SUSignatures",
+        "chosenField": "_dsaSignatureStatus",
+        "confidence": 0.35,
+        "preference": 0.4,
+        "correct": false,
+        "isRegression": true,
+        "isRescue": false
+      },
+      "E": {
+        "chosenIndex": 10,
+        "chosenKey": "SUSignatures#72#_dsaSignatureStatus",
+        "chosenClass": "SUSignatures",
+        "chosenField": "_dsaSignatureStatus",
+        "confidence": 0.41,
+        "preference": 0.45,
+        "correct": false,
+        "isRegression": true,
+        "isRescue": false
+      }
+    }
+  },
+  {
+    "id": "XA40",
+    "query": "Key bytes used to initialise the RC4 stream cipher",
+    "gold": {
+      "class": "XADRC4Handle",
+      "field": "key"
+    },
+    "candidateCount": 131,
+    "goldRank": 1,
+    "goldInShortlist": true,
+    "armA": {
+      "topKey": "XADRC4Handle#72#key",
+      "topClass": "XADRC4Handle",
+      "topField": "key",
+      "correct": true,
+      "verdict": "ambiguous"
+    },
+    "deterministic": {
+      "key": "PDFMD5Engine#160#digest_bytes",
+      "class": "PDFMD5Engine",
+      "field": "digest_bytes",
+      "correct": false
+    },
+    "arms": {
+      "B": {
+        "chosenIndex": 42,
+        "chosenKey": "XADWinZipAESHandle#72#keybytes",
+        "chosenClass": "XADWinZipAESHandle",
+        "chosenField": "keybytes",
+        "confidence": 0.63,
+        "preference": 0.64,
+        "correct": false,
+        "isRegression": true,
+        "isRescue": false
+      },
+      "C": {
+        "chosenIndex": 0,
+        "chosenKey": "XADRC4Handle#72#key",
+        "chosenClass": "XADRC4Handle",
+        "chosenField": "key",
+        "confidence": 0.79,
+        "preference": 0.8,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      },
+      "D": {
+        "chosenIndex": 0,
+        "chosenKey": "XADRC4Handle#72#key",
+        "chosenClass": "XADRC4Handle",
+        "chosenField": "key",
+        "confidence": 0.85,
+        "preference": 0.86,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      },
+      "E": {
+        "chosenIndex": 0,
+        "chosenKey": "XADRC4Handle#72#key",
+        "chosenClass": "XADRC4Handle",
+        "chosenField": "key",
+        "confidence": 0.73,
+        "preference": 0.75,
+        "correct": true,
+        "isRegression": false,
+        "isRescue": false
+      }
+    }
+  }
+]

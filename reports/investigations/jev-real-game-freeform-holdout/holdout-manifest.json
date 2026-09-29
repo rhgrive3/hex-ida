@@ -1,0 +1,39 @@
+{
+  "schema": "hex-jev-realgame-holdout-manifest/v1",
+  "lockedAtUtc": "2026-09-30T02:00:00.000Z",
+  "caseCount": 70,
+  "answerableCases": 55,
+  "abstainCases": 15,
+  "caseSha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+  "binaries": {
+    "openttd": {
+      "name": "openttd",
+      "version": "13.4-1build3 (Ubuntu noble)",
+      "architecture": "aarch64",
+      "sha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "bytes": 9713136,
+      "localPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/cxx2/root-openttd/usr/games/openttd",
+      "dwarfOracle": {
+        "name": "openttd-unstripped-dwarf-oracle",
+        "sha256": "3011026d1f9e3b93ca1c808a3bb8a144b454c410c452240fabeb1469a39304f9",
+        "bytes": 404239056,
+        "localPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/cxxholdout/artifacts/run-36229161527/binaries/openttd-unstripped-dwarf-oracle",
+        "verifiedSourceRevision": "f4134d8d9182d84f23a0c6e9da12108123da1bdf"
+      }
+    },
+    "openmw": {
+      "name": "openmw",
+      "version": "0.48.0-1ubuntu5 (Ubuntu noble)",
+      "architecture": "aarch64",
+      "sha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "bytes": 23683320,
+      "localPath": "/mnt/workspace/.dev-state/agent-work/evidence/hex-completion-20260924/fba/root/usr/games/openmw"
+    }
+  },
+  "goldAudit": {
+    "source": "Objective DWARF debug symbols (gdb / llvm-dwarfdump on unstripped build) and verified RTTI class/typeinfo metadata from Debian/Ubuntu noble distributions",
+    "verifiedGold": 55,
+    "missingGold": []
+  },
+  "routerFrozenSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173"
+}
