@@ -76,6 +76,31 @@ function makeApp(scanProgram, ensureFunctions = async () => {}) {
 }
 
 {
+  let scans = 0;
+  let discoveryRuns = 0;
+  const { app, symbols } = makeApp(
+    (regionId) => {
+      scans++;
+      return Promise.resolve({ regionId });
+    },
+    async () => {
+      discoveryRuns++;
+      await Promise.resolve();
+      symbols.addFunctions([0x1150n], { source: 'mandatory-async-discovery', confidence: 1, confirmed: true });
+    },
+  );
+  installSharedAppArtifacts(app);
+
+  const first = await app.ensureProgram();
+  assert.equal(discoveryRuns, 1);
+  assert.equal(first.gen, symbols.gen, 'async discovery generation must be adopted before program scanning');
+  assert.equal(first.functionStartOf(0x1150n), 0x1150n);
+  assert.equal(scans, 1);
+  assert.strictEqual(await app.ensureProgram(), first, 'async post-discovery generation must remain reusable');
+  assert.equal(scans, 1);
+}
+
+{
   let release;
   let scans = 0;
   const firstScan = new Promise((resolve) => { release = resolve; });

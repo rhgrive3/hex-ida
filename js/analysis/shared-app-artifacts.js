@@ -410,17 +410,20 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
       priority:entry.producerOptions.priority,
       budget:entry.producerOptions.budget,
     });
-    // A synchronous discovery pass may refine symbols before its promise is
-    // awaited; that generation is the one this entry should project. A
-    // generation change that happens only while the pass is suspended is an
-    // external refinement and must invalidate this entry instead of being
-    // silently adopted as its own result (#4487).
-    const discoveryGeneration = symbolsGenerationOf(app);
-    const symbolsGeneration = discoveryGeneration === requestedSymbolsGeneration
-      ? requestedSymbolsGeneration : discoveryGeneration;
+    // Function discovery is itself an asynchronous symbol producer. Adopt the
+    // generation it has published when it finishes, then bind the program scan
+    // to that generation. Treating only synchronous discovery mutations as
+    // owned by this producer makes normal async guessFunctions() additions look
+    // like an external refinement and deterministically rejects the first
+    // user-visible analysis with `stale shared program symbols`.
+    //
+    // Changes after this boundary are still rejected below, so a refinement
+    // racing the actual program scan cannot publish a projection against stale
+    // symbols (#4487).
     await discovery;
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    const symbolsGeneration = symbolsGenerationOf(app);
     const nextCacheKey = programCacheKey(epoch, symbolsGeneration, key);
     if (nextCacheKey !== initialCacheKey) {
       const live = mapFor(PROGRAM_ENTRIES, app);
