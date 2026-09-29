@@ -455,3 +455,19 @@
    field to a sliver; this row wraps and lets the field take a full line. */
 .product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child { flex-wrap: wrap; overflow-x: visible; }
 .product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child > input { flex: 1 1 160px; }
+
+/* Which decompiler produced the pseudocode and whether it is whole. */
+.product-ui-ready .ui-decompile-notice {
+  padding: 8px 12px;
+  border: 1px solid var(--ui-border);
+  border-top: 0;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-muted);
+  font-size: var(--ui-font-sm);
+  line-height: var(--ui-line);
+}
+.product-ui-ready .ui-decompile-notice p { margin: 0; }
+.product-ui-ready .ui-decompile-notice p + p { margin-top: 4px; }
+.product-ui-ready .ui-decompile-notice-raw { margin-top: 6px; }
+.product-ui-ready .ui-decompile-notice-raw > summary { cursor: pointer; }
+.product-ui-ready .ui-decompile-notice-raw pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ui-font-xs); }

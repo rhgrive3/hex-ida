@@ -888,6 +888,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
         );
         content.replaceChildren(toolbar, provenanceView.root);
+        const notice = decompileNotice(res);
+        if (notice) toolbar.after(notice);
         return;
       } catch (err) {
         if (routeSignal.aborted) return;
@@ -1344,6 +1346,51 @@ function renderAdvanced(app) {
   list.append(listRow({ title:text('バージョン差分','Binary Diff'), subtitle:text('前のバイナリと変更関数を比較','Compare changed functions against a previous binary'), onClick:()=>requireFile(app,()=>window.__hexUi?.router?.navigate('/diff')) }));
   s.body.append(list);
   return { root: s.root };
+}
+
+/*
+ * Which producer made this pseudocode, and whether it is whole. The result
+ * already carries both (value.semantic, completeness, warnings); the tab
+ * used to show neither, so a fallback or a partial result looked identical
+ * to a complete Semantic IR decompilation.
+ */
+const DECOMPILE_WARNING_TEXT = [
+  [/^Semantic IR is explicitly truncated/, ['意味解析の範囲が途中で切れています。関数の後ろのほうは含まれていないことがあります。', 'The Semantic IR is truncated; later parts of the function may be missing.']],
+  [/^Semantic IR covers (\d+)\/(\d+) Basic Blocks/, ['意味解析がすべての基本ブロックを扱えなかったため、簡易版の逆コンパイラで出しています。', 'Semantic IR did not cover every basic block, so the simpler fallback decompiler was used.']],
+  [/^Semantic IR decompiler fallback/, ['意味解析の途中でエラーが出たため、簡易版の逆コンパイラで出しています。', 'Semantic IR failed, so the simpler fallback decompiler was used.']],
+  [/^Semantic IR is unavailable/, ['この関数は意味解析ができないため、簡易版の逆コンパイラで出しています。', 'Semantic IR is unavailable, so the simpler fallback decompiler was used.']],
+];
+
+function decompileNotice(res) {
+  const value = res?.value || {};
+  const warnings = Array.isArray(value.warnings) ? value.warnings.map(String) : [];
+  const partial = res?.completeness && res.completeness !== 'complete';
+  const fallback = value.semantic === false;
+  if (!partial && !fallback && !warnings.length) return null;
+  const root = h('div', 'ui-decompile-notice');
+  root.setAttribute('role', 'note');
+  const lines = [];
+  lines.push(fallback
+    ? text('簡易版の逆コンパイラの結果です（意味解析の結果ではありません）。', 'Produced by the fallback decompiler, not the Semantic IR pipeline.')
+    : text('意味解析（Semantic IR）の結果です。', 'Produced by the Semantic IR pipeline.'));
+  if (partial) {
+    const reason = res?.status?.reason;
+    lines.push(reason === 'function-end-unproven'
+      ? text('一部だけの結果です：関数の終わりの位置が確定していないため、確定している範囲だけを解析しています。', 'Partial: the function end is unproven, so only the proven window was analysed.')
+      : text('一部だけの結果です。', 'Partial result.'));
+  }
+  for (const warning of warnings.slice(0, 6)) {
+    const hit = DECOMPILE_WARNING_TEXT.find(([pattern]) => pattern.test(warning));
+    if (hit) lines.push(text(hit[1][0], hit[1][1]));
+  }
+  for (const line of [...new Set(lines)]) root.append(h('p', null, line));
+  if (warnings.length || res?.status?.reason) {
+    const raw = h('details', 'ui-decompile-notice-raw');
+    raw.append(h('summary', null, text('くわしい情報', 'Details')));
+    raw.append(h('pre', 'mono', [res?.status?.reason ? `reason: ${res.status.reason}` : null, `completeness: ${res?.completeness ?? '—'}`, ...warnings].filter(Boolean).join('\n')));
+    root.append(raw);
+  }
+  return root;
 }
 
 /*
