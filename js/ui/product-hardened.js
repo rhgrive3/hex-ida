@@ -1,10 +1,14 @@
 import { installProductUI as installBaseProductUI } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
-import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow, VirtualList } from './primitives.js';
+import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow, VirtualList, scrollStrip } from './primitives.js';
 import { addrHex } from '../format.js';
 
-const ja = () => (navigator.language || 'ja').toLowerCase().startsWith('ja');
+import { uiRoot } from '../ui-root.js';
+
+// Follow the in-app language setting (the UI root's lang), not only the
+// browser locale, so these screens switch language with the rest of Hex.
+const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 const CLAIM_PAGE_SIZE = 500;
 const STRING_PAGE_SIZE = 200;
@@ -106,6 +110,97 @@ export async function loadCanonicalStrings(queries, snapshot, filter = {}, optio
   }
 }
 
+// The claim adapter falls back to the generic "Finding" when its source row
+// has no title; a finding row still carries the text it found (a path, a
+// string), which says far more.
+function claimTitle(claim) {
+  const title = String(claim?.title ?? '');
+  const found = claim?.source?.text;
+  return title === 'Finding' && typeof found === 'string' && found.trim() ? found : title;
+}
+
+function inCodeRegion(app, address) {
+  const region = (app.store?.get?.('regions') || []).find((r) => r.size > 0n && address >= r.vmAddr && address < r.vmAddr + r.size);
+  return !!region?.exec;
+}
+
+function staleSnapshot(error) {
+  return error?.name === 'AnalysisSnapshotStaleError' || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
+}
+
+/*
+ * Background discovery can advance the analysis between taking a snapshot and
+ * querying it; opening the first function right after a file loaded used to
+ * end on "analysis-product-snapshot-stale". Re-read the snapshot and retry.
+ */
+async function withCurrentSnapshot(queries, signal, operation, attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    const snapshot = await queries.snapshot({ signal });
+    try {
+      return await operation(snapshot);
+    } catch (error) {
+      if (!staleSnapshot(error) || attempt >= attempts || signal?.aborted) throw error;
+    }
+  }
+}
+
+const CLASSIFICATION_LABELS = {
+  APPLICATION:['アプリ独自のコード', 'Application code'],
+  SYSTEM:['OS（システム）のコード', 'System code'],
+  RUNTIME:['ランタイムのコード', 'Runtime code'],
+  SDK:['SDK のコード', 'SDK code'],
+  LIBRARY:['ライブラリのコード', 'Library code'],
+  GENERATED:['コンパイラが作ったコード', 'Compiler-generated code'],
+  UNKNOWN:['まだ分類できません', 'Not classified yet'],
+};
+const EVIDENCE_LABELS = {
+  'custom-objc-type':['独自の Objective-C 型を使う', 'uses an app-defined Objective-C type'],
+  'custom-swift-type':['独自の Swift 型を使う', 'uses an app-defined Swift type'],
+  'app-specific-string':['アプリ独自の文字列を使う', 'uses an app-specific string'],
+  'state-writes':['状態を書き換える', 'writes state'],
+  'application-entry-path':['アプリの処理から呼ばれる', 'reached from application code'],
+  'not-known-vendor':['既知のライブラリではない', 'not a known vendor library'],
+  'uses-runtime-api':['ランタイム API を使う', 'uses runtime APIs'],
+  'compiler-generated-name':['コンパイラが付けた名前', 'compiler-generated name'],
+  'runtime-symbol-name':['ランタイムの関数名', 'runtime symbol name'],
+  'semantic-write-threshold':['しきい値で値を書き換える', 'threshold-guarded write'],
+};
+const REFINEMENT_LABELS = {
+  'semantic-evidence-confirmed-classification':['意味解析でも同じ分類になりました', 'semantic evidence confirmed the classification'],
+  'semantic-evidence-refined-classification':['意味解析で分類を修正しました', 'semantic evidence refined the classification'],
+  'semantic-evidence-unavailable':['意味解析の根拠はまだありません', 'no semantic evidence yet'],
+};
+const COMPLETENESS_LABELS = {
+  complete:['完全', 'complete'],
+  partial:['一部のみ', 'partial'],
+  unsupported:['未対応', 'unsupported'],
+};
+
+function labelFrom(table, value) {
+  const entry = table[String(value ?? '')];
+  return entry ? text(entry[0], entry[1]) : String(value ?? '');
+}
+function classificationLabel(value) { return labelFrom(CLASSIFICATION_LABELS, value || 'UNKNOWN'); }
+function refinementLabel(value) { return value ? labelFrom(REFINEMENT_LABELS, value) : ''; }
+function completenessLabel(value) { return labelFrom(COMPLETENESS_LABELS, value); }
+function evidenceList(items) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const raw = String(item);
+    if (EVIDENCE_LABELS[raw]) return labelFrom(EVIDENCE_LABELS, raw);
+    const [kind, ...rest] = raw.split(':');
+    const detail = rest.join(':');
+    if (kind === 'signature-hint' && detail) return text(`既知の関数に似ている: ${detail}`, `signature hint: ${detail}`);
+    if (kind === 'signature' && detail) return text(`既知の関数と一致: ${detail}`, `known signature: ${detail}`);
+    if (kind === 'system-library' && detail) return text(`システムライブラリ: ${detail}`, `system library: ${detail}`);
+    return raw;
+  }).join(' · ');
+}
+
+function confidenceText(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%` : '—';
+}
+
 function wrapRouteView(view, routeHost) {
   const originalGet = view.getState;
   return {
@@ -144,33 +239,31 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
 
   (async () => {
     try {
-      const snapshot = await queries.snapshot({ signal:meta.signal });
-      const result = await queries.classification(snapshot, address, { signal:meta.signal });
+      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => queries.classification(snapshot, address, { signal:meta.signal }));
       if (meta.signal.aborted) return;
       const value = result.value || {};
       const grid = h('div', 'ui-card-grid');
       const identity = card(text('コードの分類', 'Code identity'), {
-        subtitle:text('Explorerと同じ分類authorityを使い、関数解析後はsemantic evidenceで明示的にrefineします。', 'Uses the same classification authority as Explorer, with explicit semantic refinement after function analysis.'),
+        subtitle:text('見つかった手がかりから、この関数がどんな種類のコードかを推定します。', 'Uses the same classification authority as Explorer, with explicit semantic refinement after function analysis.'),
       });
       identity.body.append(listRow({
-        title:String(value.classification || 'UNKNOWN'),
-        subtitle:(value.evidence || []).join(' · ') || text('十分な分類根拠がありません', 'Not enough classification evidence'),
-        meta:`confidence ${Number(value.confidence || 0).toFixed(2)}`,
+        title:classificationLabel(value.classification),
+        // Confidence rides in the subtitle: the narrow meta column cut it to "確からしさ 3…" on phones.
+        subtitle:[evidenceList(value.evidence) || text('十分な分類根拠がありません', 'Not enough classification evidence'), text('確からしさ ', 'confidence ') + confidenceText(value.confidence)].join(' · '),
         badge:evidenceBadge(value.classification === 'UNKNOWN' ? 'unverified' : 'likely'),
       }));
       if (value.base) {
         identity.body.append(listRow({
-          title:text('基礎分類', 'Base classification'),
-          subtitle:String(value.base.classification || 'UNKNOWN'),
+          title:text('基本の分類', 'Base classification'),
+          subtitle:classificationLabel(value.base.classification),
           meta:value.base.knowledgeSourceId ? `knowledge ${value.base.knowledgeSourceId}` : '',
           badge:evidenceBadge(baseClassificationBadge(value, result)),
         }));
       }
       if (value.refinement) {
         identity.body.append(listRow({
-          title:text('Semantic refinement', 'Semantic refinement'),
-          subtitle:value.refinementReason || '',
-          meta:(value.refinement.evidence || []).join(' · '),
+          title:text('意味解析による確認', 'Semantic refinement'),
+          subtitle:[refinementLabel(value.refinementReason), evidenceList(value.refinement.evidence)].filter(Boolean).join(' — '),
           badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely'),
         }));
       }
@@ -178,12 +271,11 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
 
       const subsystems = card(text('関連サブシステム', 'Subsystems'));
       const rows = value.subsystems || [];
-      if (!rows.length) subsystems.body.append(h('p', 'ui-sub', text('サブシステム推定はまだありません。', 'No subsystem inference yet.')));
+      if (!rows.length) subsystems.body.append(h('p', 'ui-sub', text('関連するサブシステム（通信・保存・ゲーム処理など）は、まだ見つかっていません。', 'No subsystem inference yet.')));
       for (const item of rows.slice(0, 5)) {
         subsystems.body.append(listRow({
           title:item.subsystem,
-          subtitle:(item.evidence || []).join(' · '),
-          meta:`confidence ${Number(item.confidence || 0).toFixed(2)}`,
+          subtitle:[evidenceList(item.evidence), text('確からしさ ', 'confidence ') + confidenceText(item.confidence)].filter(Boolean).join(' · '),
           badge:evidenceBadge(item.confidence >= 0.72 ? 'likely' : 'unverified'),
         }));
       }
@@ -193,7 +285,7 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       facts.body.append(listRow({ title:text('命令数', 'Instructions'), meta:String(value.facts?.instructions ?? '—') }));
       facts.body.append(listRow({ title:text('ブロック数', 'Basic blocks'), meta:String(value.facts?.blocks ?? '—') }));
       facts.body.append(listRow({ title:text('アドレス', 'Address'), meta:addressText(address), mono:true }));
-      facts.body.append(listRow({ title:text('解析状態', 'Analysis status'), meta:result.completeness, badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely') }));
+      facts.body.append(listRow({ title:text('解析状態', 'Analysis status'), meta:completenessLabel(result.completeness), badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely') }));
       grid.append(facts.root);
 
       const next = card(text('次に見る', 'Next steps'));
@@ -217,7 +309,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   const detailId = route.route.id === 'finding' || route.params?.id != null ? String(route.params.id || '') : null;
   const s = screen(detailId ? text('結果の詳細', 'Finding Detail') : text('結果', 'Results'), {
     id:detailId ? 'finding' : 'results',
-    subtitle:detailId ? text('canonical claimと根拠状態を表示します。', 'Shows the canonical claim and evidence verdict.') : text('解析済みclaimをcanonical verdictのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
+    subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('自動解析で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
   });
   const host = h('div', 'ui-stack');
   host.append(loadingState(text('結果を確認しています…', 'Loading results…')));
@@ -225,35 +317,48 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
 
   (async () => {
     try {
-      const snapshot = await queries.snapshot({ signal:meta.signal });
-      const result = await loadCanonicalClaims(queries, snapshot, detailId, { signal:meta.signal });
+      const result = await withCurrentSnapshot(queries, meta.signal, (snapshot) => loadCanonicalClaims(queries, snapshot, detailId, { signal:meta.signal }));
       if (meta.signal.aborted) return;
       const claims = result.value || [];
       if (detailId) {
         const claim = claims[0];
         if (!claim) {
-          host.replaceChildren(emptyState(text('結果が見つかりません', 'Finding not found'), text('現在のsnapshotにこのclaimはありません。', 'This claim is not present in the current snapshot.'), uiButton(text('結果一覧へ', 'Back to Results'), { onClick:() => router.navigate('/results') })));
+          host.replaceChildren(emptyState(text('結果が見つかりません', 'Finding not found'), text('現在の解析結果の中に、この結果はありません。', 'This claim is not present in the current snapshot.'), uiButton(text('結果一覧へ', 'Back to Results'), { onClick:() => router.navigate('/results') })));
           return;
         }
-        const c = card(claim.title, { subtitle:claim.address != null ? addressText(claim.address) : '' });
-        c.body.append(listRow({ title:text('Verdict', 'Verdict'), meta:claim.verdict, badge:evidenceBadge(verdictBadge(claim.verdict)) }));
+        const c = card(claimTitle(claim), { subtitle:claim.address != null ? addressText(claim.address) : '' });
+        c.body.append(listRow({ title:text('判定', 'Verdict'), badge:evidenceBadge(verdictBadge(claim.verdict)) }));
         if (claim.summary) c.body.append(h('p', 'ui-lead', String(claim.summary)));
         if (claim.contradictions?.length) c.body.append(listRow({ title:text('矛盾する根拠', 'Contradictions'), meta:String(claim.contradictions.length), badge:evidenceBadge('unverified') }));
         const actions = h('div', 'ui-actions');
-        if (claim.address != null) actions.append(uiButton(text('該当関数を開く', 'Open function'), { cls:'ui-primary-action', onClick:() => router.navigate(`/function/${BigInt(claim.address).toString()}/overview`) }));
+        // A claim about data (a string, a table) has no function to open;
+        // show its bytes instead of a made-up sub_<address> function.
+        if (claim.address != null) {
+          const target = BigInt(claim.address);
+          actions.append(inCodeRegion(app, target)
+            ? uiButton(text('該当関数を開く', 'Open function'), { cls:'ui-primary-action', onClick:() => router.navigate(`/function/${target.toString()}/overview`) })
+            : uiButton(text('この場所を開く', 'Open this location'), { cls:'ui-primary-action', onClick:() => router.navigate(`/code/${target.toString()}`) }));
+        }
         actions.append(uiButton(text('結果一覧へ', 'Back to Results'), { onClick:() => router.navigate('/results') }));
         c.body.append(actions);
         host.replaceChildren(c.root);
         return;
       }
       if (!claims.length) {
-        host.replaceChildren(emptyState(text('まだ結果がありません', 'No results yet'), text('「調べる」で目的を入力してください。', 'Investigate a goal to create claims.')));
+        /* Results are the automatic analysis' claims; asking one question in
+           Investigate does not add here, so say what fills this screen and
+           offer to run it. */
+        const run = uiButton(text('自動解析を実行する', 'Run automatic analysis'), { cls:'ui-primary-action', onClick:() => runAutomaticAnalysis(app, router) });
+        host.replaceChildren(emptyState(
+          text('まだ結果がありません', 'No results yet'),
+          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Investigate a goal to create claims.'),
+          run,
+        ));
         return;
       }
       const renderRow = (claim) => listRow({
-        title:claim.title,
+        title:claimTitle(claim),
         subtitle:claim.address != null ? addressText(claim.address) : '',
-        meta:claim.verdict,
         badge:evidenceBadge(verdictBadge(claim.verdict)),
         onClick:() => router.navigate(`/finding/${encodeURIComponent(claim.claimId)}`),
       });
@@ -264,7 +369,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         claims.forEach((claim) => rows.append(renderRow(claim)));
         host.replaceChildren(rows);
       }
-      if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果集合は部分的です。未処理claimを「存在しない」とは扱いません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
+      if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果は一部だけです。まだ処理していない結果を「無い」とは判断しません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
     } catch (error) {
       if (!meta.signal.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
     }
@@ -286,15 +391,32 @@ function linkedController(parentSignal) {
   return controller;
 }
 
+// Runs the whole-file overview in its sheet. When that sheet closes while the
+// user is still on Results, Results re-queries so the new claims appear.
+function runAutomaticAnalysis(app, router) {
+  import('../panels.js').then((panels) => {
+    const sheet = panels.showOverview(app);
+    if (!sheet) return;
+    const previous = sheet.onClose;
+    sheet.onClose = (...args) => {
+      previous?.(...args);
+      if (router.current?.route?.id === 'results') router.navigate('/results?run=' + Date.now(), { replace:true });
+    };
+  });
+}
+
 function renderCanonicalStrings(app, router, route, meta, queries) {
-  const s = screen(text('索引', 'Explorer'), { id:'explorer', subtitle:text('文字列artifactをregion単位で増分検索します。', 'Searches the canonical string artifact incrementally by region.') });
+  const s = screen(text('索引', 'Explorer'), { id:'explorer', subtitle:text('ファイルの中の文字列を探します。大きいファイルは少しずつ読み込みます。', 'Searches the canonical string artifact incrementally by region.') });
   const controls = h('div', 'ui-explorer-controls');
   const scopes = h('div', 'ui-scope-tabs');
+  scopes.setAttribute('role', 'tablist');
   for (const item of EXPLORER_SCOPES) {
     const button = uiButton(item.label, { cls:'ui-scope' + (item.id === 'strings' ? ' active' : ''), onClick:() => router.navigate(`/explorer/${item.id}`) });
+    button.setAttribute('role', 'tab');
     button.setAttribute('aria-selected', String(item.id === 'strings'));
     scopes.append(button);
   }
+  scrollStrip(scopes);
   const search = h('input', 'ui-search-field');
   search.type = 'search';
   search.placeholder = text('文字列を検索', 'Search strings');
@@ -313,10 +435,9 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
     queryController = linkedController(meta.signal);
     const signal = queryController.signal;
     const filter = { text:search.value.trim() };
-    host.replaceChildren(loadingState(text('文字列artifactを検索しています…', 'Searching string artifact…')));
+    host.replaceChildren(loadingState(text('文字列を検索しています…', 'Searching string artifact…')));
     try {
-      const snapshot = await queries.snapshot({ signal });
-      const result = await loadCanonicalStrings(queries, snapshot, filter, { signal });
+      const result = await withCurrentSnapshot(queries, signal, (snapshot) => loadCanonicalStrings(queries, snapshot, filter, { signal }));
       if (disposed || signal.aborted) return;
       virtual?.dispose(); virtual = null;
       const items = result.value || [];
@@ -335,7 +456,7 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
       if (result.completeness !== 'complete') {
         const scanned = Number(result.status?.scannedRegions || 0);
         const total = Number(result.status?.totalRegions || 0);
-        nodes.push(h('p', 'ui-partial-note', text(`部分結果: ${scanned}/${total} regionを走査。未走査領域を「該当なし」とは扱いません。`, `Partial result: scanned ${scanned}/${total} regions; unscanned regions are not treated as negative evidence.`)));
+        nodes.push(h('p', 'ui-partial-note', text(`一部の結果です（${scanned}/${total} 領域を検索済み）。まだ検索していない領域に「無い」とは判断しません。`, `Partial result: scanned ${scanned}/${total} regions; unscanned regions are not treated as negative evidence.`)));
       }
       nodes.push(virtual.root);
       host.replaceChildren(...nodes);

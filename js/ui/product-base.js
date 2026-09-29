@@ -4,12 +4,12 @@ import {
 } from './registry.js';
 import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
-  tabs, sectionTitle, listRow, VirtualList,
+  tabs, sectionTitle, listRow, VirtualList, scrollStrip,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick } from '../i18n.js';
-import { menu, copyText, toast } from '../ui.js';
+import { menu, copyText, toast, closeAllSheets, closeMenu } from '../ui.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
 } from '../tools.js';
@@ -38,6 +38,8 @@ const showSections = lazyProductPanel('showSections');
 const showStructure = lazyProductPanel('showStructure');
 const showCandidates = lazyProductPanel('showCandidates');
 const showClass = lazyProductPanel('showClass');
+const showJump = lazyProductPanel('showJump');
+const showSearchPanel = lazyProductPanel('showSearch');
 
 const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -541,7 +543,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const scope = EXPLORER_SCOPES.some((x) => x.id === route.params.scope) ? route.params.scope : 'functions';
   const s = screen(text('索引', 'Explorer'), {
     id: 'explorer',
-    subtitle: text('関数・文字列・型・データ・外部API・セクションを一つの検索体験で見ます。',
+    subtitle: text('関数・文字列・型・データ・外部API・セクションを、ここでまとめて探せます。',
       'Browse functions, strings, types, data, external APIs and sections with one search.'),
   });
   const controls = h('div', 'ui-explorer-controls');
@@ -552,6 +554,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
     b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(item.id === scope));
     scopes.append(b);
   }
+  scrollStrip(scopes);
   const search = h('input', 'ui-search-field');
   search.type = 'search'; search.placeholder = text('名前・文字列・アドレスで検索', 'Search names, strings or addresses');
   search.value = route.query.get('q') || '';
@@ -567,10 +570,10 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const routeSignal = routeContext.signal || fallbackRouteController.signal;
   const queryScope = createChildTaskScope(routeSignal);
 
-  const showRows = (items, renderRow, emptyText) => {
+  const showRows = (items, renderRow, emptyText, emptyAction = null) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
-    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
+    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
     if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
@@ -592,7 +595,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
       try {
         const items = await matchingFunctionItems(app, q, { signal: signal, limit: 200 });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
+          // A word that is not a function name is often in a string: offer that search.
+          q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null);
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('検索できませんでした', 'Search failed'), String(err?.message || err)));
       }
@@ -733,12 +738,21 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     return { root: s.root };
   }
   const verifiedRange=app.validatedFunctionRange?.(addr);
+  const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
   if(verifiedRange && !verifiedRange.ok){
+    /* Keep the tab bar: this used to replace the whole workspace, so the user
+       was stuck on one tab with only a reason code and no way forward. */
     const s=screen(functionName(app,addr),{id:'function',subtitle:addressText(addr)});
-    s.body.append(errorState(text('関数境界を検証できません','Function boundary could not be verified'),verifiedRange.reason||'unverified-function-range'));
+    s.body.append(tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next)));
+    const content=h('div','ui-workspace-content');
+    content.append(errorState(
+      text('関数境界を検証できません','Function boundary could not be verified'),
+      verifiedRange.reason||'unverified-function-range',
+      uiButton(text('コードで命令を読む','Read instructions in Code'),{cls:'ui-primary-action',onClick:()=>router.navigate('/code/'+addr.toString())}),
+    ));
+    s.body.append(content);
     return {root:s.root};
   }
-  const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
   const actions = h('div', 'ui-screen-actions');
   actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -788,7 +802,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     summary.body.append(h('p', 'ui-lead', recovered || ownerLead));
     summary.body.append(evidenceBadge(recovered ? recoveredStatus : ownerFact.status));
     if (ownerFact.candidates.length > 1) {
-      for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text('不明なクラス', 'Unknown class'), subtitle: candidate.sel || text('selector不明', 'Unknown selector'), badge: evidenceBadge('likely') }));
+      for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text('不明なクラス', 'Unknown class'), subtitle: candidate.sel || text('メソッド名不明', 'Unknown selector'), badge: evidenceBadge('likely') }));
     }
     grid.append(summary.root);
 
@@ -827,7 +841,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   const renderPseudocode = (res) => {
     const map = rowMapper();
     if (!map.supported) {
-      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
       return;
     }
     const out = decompile(res.model, {
@@ -856,7 +870,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         const res = await app.analysisQueries.decompile(snapshot, addr, { signal: routeSignal });
         if (!viewCurrent()) return;
         if (res.completeness === 'unsupported' || !res.value) {
-          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
           return;
         }
         const toolbar = h('div', 'ui-code-toolbar');
@@ -874,6 +888,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
         );
         content.replaceChildren(toolbar, provenanceView.root);
+        const notice = decompileNotice(res);
+        if (notice) toolbar.after(notice);
         return;
       } catch (err) {
         if (routeSignal.aborted) return;
@@ -882,7 +898,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     }
     const map = rowMapper();
     if (!map.supported) {
-      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
       return;
     }
     const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
@@ -894,7 +910,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   const renderFlow = (res) => {
     const map = rowMapper();
     if (!map.supported) {
-      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('このファイルの命令の長さが固定ではないため、図を正しく描けません。表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
       return;
     }
     const graph = cfgGraph(res.model, {
@@ -909,7 +925,12 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const list = h('details', 'ui-graph-text');
     list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
     const rows = h('div', 'ui-list');
-    graph.nodes.forEach((node, index) => rows.append(listRow({ title: String(node.label || node.title || node.id || `Block ${index + 1}`), subtitle: node.addr != null ? addressText(node.addr) : '' })));
+    graph.nodes.forEach((node, index) => rows.append(listRow({
+      title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+      subtitle: node.addr != null ? addressText(node.addr) : '',
+      // Same destination as tapping the block in the graph.
+      onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
+    })));
     list.append(rows);
     mode.append(graphHost, graphLegend('cfg'), list);
     content.replaceChildren(mode);
@@ -921,41 +942,47 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         const snapshot = await app.analysisQueries.snapshot({ signal: routeSignal });
         const res = await app.analysisQueries.cfg(snapshot, addr, { signal: routeSignal });
         if (!viewCurrent()) return;
-        if (res.completeness === 'unsupported' || !res.value) {
-          content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+        const canonical = res.completeness !== 'unsupported' && !!res.value;
+        if (!canonical && !rowMapper().supported) {
+          content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('このファイルの命令の長さが固定ではないため、図を正しく描けません。表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
           return;
         }
-        const cfg = res.value;
-        const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({
-          id: b.id ?? `b${index}`,
-          label: b.label || b.name || `Block ${index + 1}`,
-          addr: b.startAddress ?? b.address ?? b.start ?? null,
-          title: b.title ?? b.label,
-        })) : [];
-        const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({
-          from: e.from ?? e.source,
-          to: e.to ?? e.target,
-          kind: e.kind ?? 'unconditional',
-        })) : [];
-        if (!nodes.length) {
-          content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.')));
+        /* No canonical CFG for this function (the fast route does not always
+           build one) on an ARM64 file: fall through to the local model below
+           instead of wrongly saying the architecture is unsupported. */
+        if (canonical) {
+          const cfg = res.value;
+          const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({
+            id: b.id ?? `b${index}`,
+            label: b.label || b.name || `Block ${index + 1}`,
+            addr: b.startAddress ?? b.address ?? b.start ?? null,
+            title: b.title ?? b.label,
+          })) : [];
+          const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({
+            from: e.from ?? e.source,
+            to: e.to ?? e.target,
+            kind: e.kind ?? 'unconditional',
+          })) : [];
+          if (!nodes.length) {
+            content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.')));
+            return;
+          }
+          const mode = h('div', 'ui-graph-shell');
+          const graphHost = h('div', 'ui-graph-host');
+          graphHost.append(renderGraph(nodes, edges, {}));
+          const list = h('details', 'ui-graph-text');
+          list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
+          const rows = h('div', 'ui-list');
+          nodes.forEach((node, index) => rows.append(listRow({
+            title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+            subtitle: node.addr != null ? addressText(node.addr) : '',
+            onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
+          })));
+          list.append(rows);
+          mode.append(graphHost, graphLegend('cfg'), list);
+          content.replaceChildren(mode);
           return;
         }
-        const mode = h('div', 'ui-graph-shell');
-        const graphHost = h('div', 'ui-graph-host');
-        graphHost.append(renderGraph(nodes, edges, {}));
-        const list = h('details', 'ui-graph-text');
-        list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
-        const rows = h('div', 'ui-list');
-        nodes.forEach((node, index) => rows.append(listRow({
-          title: String(node.label || node.title || node.id || `Block ${index + 1}`),
-          subtitle: node.addr != null ? addressText(node.addr) : '',
-          onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
-        })));
-        list.append(rows);
-        mode.append(graphHost, graphLegend('cfg'), list);
-        content.replaceChildren(mode);
-        return;
       } catch (err) {
         if (routeSignal.aborted) return;
         throw err;
@@ -963,7 +990,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     }
     const map = rowMapper();
     if (!map.supported) {
-      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('このファイルの命令の長さが固定ではないため、図を正しく描けません。表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
       return;
     }
     const res = await app.analyzeFunctionAt(addr, { signal: routeSignal });
@@ -1081,7 +1108,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   const renderRuntimeTab = () => {
     const runScope = createChildTaskScope(routeSignal);
     const root = h('div', 'ui-card-grid');
-    const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
+    const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('この関数だけを、端末の中の安全な実行環境（サンドボックス）で動かして、何が起きるかを記録します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
     const resultHost = h('div', 'ui-runtime-result');
     const run = uiButton(text('ローカル実行で観測する', 'Run local observation'), { cls: 'ui-primary-action' });
     run.addEventListener('click', async () => {
@@ -1100,7 +1127,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         list.append(listRow({ title: text('戻り値', 'Return value'), meta: obs.returnValue != null ? addressText(obs.returnValue) : '—', mono: true }));
         list.append(listRow({ title: text('分岐観測', 'Observed branches'), meta: String(obs.branches?.length || 0) }));
         list.append(listRow({ title: text('メモリ書き込み', 'Memory writes'), meta: String(obs.stores?.length || obs.memoryDelta?.length || 0) }));
-        list.append(listRow({ title: text('Runtime evidence', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
+        list.append(listRow({ title: text('実行で得た根拠', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
         resultHost.replaceChildren(list);
       } catch (error) {
         if (!disposed && !runSignal.aborted && !routeSignal.aborted) {
@@ -1113,8 +1140,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     c.body.append(run, resultHost);
     root.append(c.root);
 
-    const capability = card(text('Live Debugger', 'Live Debugger'), { subtitle: text('Safari単体ではiOSプロセスへ任意attachできません。LLDB/Frida互換のlive観測は外部Hex bridge接続時のみ有効です。', 'Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.') });
-    capability.body.append(uiButton(text('高度なDebuggerを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
+    const capability = card(text('実機のデバッガ', 'Live Debugger'), { subtitle: text('ブラウザだけでは、動いている iOS アプリに接続できません。実機での観測は、外部の Hex bridge に接続したときだけ使えます。', 'Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.') });
+    capability.body.append(uiButton(text('デバッガを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
     root.append(capability.root);
     content.replaceChildren(root);
   };
@@ -1299,12 +1326,12 @@ function renderDiff(app,router,routeContext = {}) {
     catch(error){if(!signal.aborted&&!routeSignal.aborted)host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
   }}));
   host.append(controls);
-  if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同一CPU/スライスだけを比較し、不完全な探索では new/deleted を断定しません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return {root:s.root};}
+  if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同じ CPU 向けのファイルどうしだけを比べます。比較が途中までのときは「新しい」「削除された」と決めつけません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return {root:s.root};}
   const counts={same:0,moved:0,changed:0,rewritten:0,new:0,deleted:0,unresolved:0};
   for(const c of state.changes||[])counts[c.changeType]=(counts[c.changeType]||0)+1;
   const summary=card(text('比較結果','Diff summary'));
-  summary.body.append(h('p','ui-body',`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`));
-  summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('関数集合とmatchingは完全です。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
+  summary.body.append(h('p','ui-body',text(`変更 ${counts.changed||0} · 書き直し ${counts.rewritten||0} · 移動 ${counts.moved||0} · 新規 ${counts.new||0} · 削除 ${counts.deleted||0} · 未確定 ${counts.unresolved||0}`,`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`)));
+  summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('すべての関数を比較しました。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
   host.append(summary.root);
   const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
   const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
@@ -1319,11 +1346,148 @@ function renderAdvanced(app) {
   list.append(listRow({ title: text('セクション詳細', 'Section details'), onClick: () => requireFile(app, () => showSections(app)) }));
   list.append(listRow({ title: text('構造 / 生データ', 'Structure / raw data'), onClick: () => requireFile(app, () => showStructure(app)) }));
   list.append(listRow({ title: text('解析ツール一覧', 'Analysis tools'), subtitle: text('パッチ・スクリプト・プラグイン等', 'Patching, scripting, plugins, etc.'), onClick: () => requireFile(app, () => showTools(app)) }));
-  list.append(listRow({ title:text('プロジェクトを書き出す (.hexproj)','Export project (.hexproj)'), subtitle:text('名前・メモ・型・patch・解析結果・AI調査・移動履歴を保存','Save names, notes, types, patches, findings, AI investigation and navigation'), onClick:()=>requireFile(app,()=>exportProjectFromProduct(app)) }));
-  list.append(listRow({ title:text('プロジェクトを読み込む','Import project'), subtitle:text('現在のバイナリhashとsliceが一致した場合だけ復元します','Restores only when binary hash and slice identity match'), onClick:()=>requireFile(app,()=>importProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('プロジェクトを書き出す (.hexproj)','Export project (.hexproj)'), subtitle:text('名前・メモ・型・パッチ・解析結果・AI調査・移動履歴を保存','Save names, notes, types, patches, findings, AI investigation and navigation'), onClick:()=>requireFile(app,()=>exportProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('プロジェクトを読み込む','Import project'), subtitle:text('いま開いているファイルと同じファイルのときだけ復元します','Restores only when binary hash and slice identity match'), onClick:()=>requireFile(app,()=>importProjectFromProduct(app)) }));
   list.append(listRow({ title:text('バージョン差分','Binary Diff'), subtitle:text('前のバイナリと変更関数を比較','Compare changed functions against a previous binary'), onClick:()=>requireFile(app,()=>window.__hexUi?.router?.navigate('/diff')) }));
   s.body.append(list);
   return { root: s.root };
+}
+
+/*
+ * Which producer made this pseudocode, and whether it is whole. The result
+ * already carries both (value.semantic, completeness, warnings); the tab
+ * used to show neither, so a fallback or a partial result looked identical
+ * to a complete Semantic IR decompilation.
+ */
+const DECOMPILE_WARNING_TEXT = [
+  [/^Semantic IR is explicitly truncated/, ['意味解析の範囲が途中で切れています。関数の後ろのほうは含まれていないことがあります。', 'The Semantic IR is truncated; later parts of the function may be missing.']],
+  [/^Semantic IR covers (\d+)\/(\d+) Basic Blocks/, ['意味解析がすべての基本ブロックを扱えなかったため、簡易版の逆コンパイラで出しています。', 'Semantic IR did not cover every basic block, so the simpler fallback decompiler was used.']],
+  [/^Semantic IR decompiler fallback/, ['意味解析の途中でエラーが出たため、簡易版の逆コンパイラで出しています。', 'Semantic IR failed, so the simpler fallback decompiler was used.']],
+  [/^Semantic IR is unavailable/, ['この関数は意味解析ができないため、簡易版の逆コンパイラで出しています。', 'Semantic IR is unavailable, so the simpler fallback decompiler was used.']],
+];
+
+function decompileNotice(res) {
+  const value = res?.value || {};
+  const warnings = Array.isArray(value.warnings) ? value.warnings.map(String) : [];
+  const partial = res?.completeness && res.completeness !== 'complete';
+  const fallback = value.semantic === false;
+  if (!partial && !fallback && !warnings.length) return null;
+  const root = h('div', 'ui-decompile-notice');
+  root.setAttribute('role', 'note');
+  const lines = [];
+  lines.push(fallback
+    ? text('簡易版の逆コンパイラの結果です（意味解析の結果ではありません）。', 'Produced by the fallback decompiler, not the Semantic IR pipeline.')
+    : text('意味解析（Semantic IR）の結果です。', 'Produced by the Semantic IR pipeline.'));
+  if (partial) {
+    const reason = res?.status?.reason;
+    lines.push(reason === 'function-end-unproven'
+      ? text('一部だけの結果です：関数の終わりの位置が確定していないため、確定している範囲だけを解析しています。', 'Partial: the function end is unproven, so only the proven window was analysed.')
+      : text('一部だけの結果です。', 'Partial result.'));
+  }
+  for (const warning of warnings.slice(0, 6)) {
+    const hit = DECOMPILE_WARNING_TEXT.find(([pattern]) => pattern.test(warning));
+    if (hit) lines.push(text(hit[1][0], hit[1][1]));
+  }
+  for (const line of [...new Set(lines)]) root.append(h('p', null, line));
+  if (warnings.length || res?.status?.reason) {
+    const raw = h('details', 'ui-decompile-notice-raw');
+    raw.append(h('summary', null, text('くわしい情報', 'Details')));
+    raw.append(h('pre', 'mono', [res?.status?.reason ? `reason: ${res.status.reason}` : null, `completeness: ${res?.completeness ?? '—'}`, ...warnings].filter(Boolean).join('\n')));
+    root.append(raw);
+  }
+  return root;
+}
+
+/*
+ * The address bar used to be read-only text. Each part now does what it
+ * shows: the address jumps, the section name switches sections, the function
+ * name opens that function, and 検索 reaches instruction / byte / number
+ * search, which had no entry point once the old toolbar buttons were retired.
+ */
+function addressIsMapped(app, addr) {
+  try {
+    const target = BigInt(addr);
+    return (app.store.get('regions') || []).some((r) => r.size > 0n && target >= r.vmAddr && target < r.vmAddr + r.size);
+  } catch { return false; }
+}
+
+function installAddressBar(app, router, addrbar) {
+  if (!addrbar) return () => {};
+  const cur = addrbar.querySelector('#addr-cur');
+  const regionLabel = addrbar.querySelector('#addr-region');
+  const actionable = (node, label, onActivate) => {
+    if (!node) return;
+    node.classList.add('addr-action');
+    node.setAttribute('role', 'button');
+    node.tabIndex = 0;
+    node.setAttribute('aria-label', label);
+    node.title = label;
+    node.addEventListener('click', onActivate);
+    node.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onActivate(event); }
+    });
+  };
+  actionable(cur, text('アドレスへジャンプ', 'Jump to address'), () => requireFile(app, () => showJump(app)));
+  actionable(regionLabel, text('区画を切り替える', 'Switch section'), (event) => requireFile(app, () => {
+    const regions = (app.store.get('regions') || []).filter((r) => r.size > 0n);
+    const current = app.store.get('currentRegion');
+    const r = event.currentTarget.getBoundingClientRect();
+    const items = [...regions].sort((a, b) => Number(!!b.exec) - Number(!!a.exec)).slice(0, 40).map((region) => ({
+      label: (current?.id === region.id ? '✓ ' : '') + region.name + (region.exec ? '' : text('（データ）', ' (data)')),
+      action: () => {
+        app.selectRegion(region, { silent: true });
+        router.navigate('/code/' + region.vmAddr.toString());
+      },
+    }));
+    if (items.length) menu(items, r.left + r.width / 2, r.bottom + 4);
+  }));
+
+  const fn = uiButton('', { cls: 'addr-fn addr-action', ariaLabel: text('この関数を開く', 'Open this function') });
+  fn.hidden = true;
+  cur?.after(fn);
+  let fnStart = null;
+  fn.addEventListener('click', () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); });
+
+  const search = uiButton(text('検索', 'Search'), {
+    cls: 'addr-search',
+    ariaLabel: text('命令・バイト列・数値を検索', 'Search instructions, bytes or numbers'),
+    onClick: () => requireFile(app, () => showSearchPanel(app)),
+  });
+  addrbar.append(search);
+
+  let frame = 0;
+  const update = () => {
+    frame = 0;
+    const region = app.store.get('currentRegion');
+    // Describe the focused line: the selected row while it is on screen,
+    // otherwise the top line (what the bar showed before).
+    const viewer = app.viewer;
+    const row = app.store.get('selectedRow');
+    let addr = null;
+    if (row != null && row >= 0 && viewer?.rowAddress && typeof viewer.topRow === 'function') {
+      const top = Number(viewer.topRow());
+      const visible = Number(viewer.visibleRows?.() ?? 0);
+      if (Number(row) >= top && Number(row) < top + visible) addr = viewer.rowAddress(row);
+    }
+    if (addr == null) addr = app.store.get('currentAddress') ?? null;
+    if (addr != null && cur) cur.textContent = addrHex(addr);
+    const sym = app.symbols;
+    let start = null;
+    if (addr != null && region?.exec && sym?.functionCount) {
+      try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
+    }
+    fnStart = start;
+    if (start == null) { fn.hidden = true; return; }
+    const offset = BigInt(addr) - BigInt(start);
+    fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
+    fn.hidden = false;
+  };
+  const unsubscribe = app.store.subscribe((_state, patch) => {
+    if (!patch || !('currentAddress' in patch || 'selectedRow' in patch || 'currentRegion' in patch || 'fileInfo' in patch)) return;
+    if (!frame) frame = requestAnimationFrame(update);
+  });
+  update();
+  return () => { unsubscribe(); if (frame) cancelAnimationFrame(frame); fn.remove(); search.remove(); };
 }
 
 function symbolAddress(app, name) {
@@ -1351,7 +1515,15 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   const form = h('form', 'ui-command-center');
   const input = h('input', 'ui-global-command');
   input.type = 'search';
-  input.placeholder = text('検索・アドレス・> コマンド・? AIに質問', 'Search, address, > command, ? ask AI');
+  // The full hint is cut off mid-word on a phone; use a shorter one there.
+  const narrow = globalThis.matchMedia?.('(max-width: 599px)');
+  const setPlaceholder = () => {
+    input.placeholder = narrow?.matches
+      ? text('検索・アドレス（? で AI）', 'Search, address, ? AI')
+      : text('検索・アドレス・> コマンド・? AIに質問', 'Search, address, > command, ? ask AI');
+  };
+  setPlaceholder();
+  narrow?.addEventListener?.('change', setPlaceholder);
   input.setAttribute('aria-label', text('検索と移動', 'Search and navigate'));
   input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
   const hint = h('span', 'ui-command-hint');
@@ -1375,6 +1547,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       case 'help': router.navigate('/help'); return true;
       case 'learn': router.navigate('/learn'); return true;
       case 'advanced': router.navigate('/advanced'); return true;
+      case 'search': requireFile(app, () => showSearchPanel(app)); return true;
+      case 'jump': requireFile(app, () => showJump(app)); return true;
       case 'ai': getAssistant()?.open(); return true;
       case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
       default: return false;
@@ -1395,7 +1569,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     if (intent.kind === 'command' && runCommand(intent)) return;
     if (intent.kind === 'address') {
       const addr = parseAddress(intent.value);
-      if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); return; }
+      // Navigate only when the address exists; a failed jump already explained why.
+      if (addr != null) { if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString()); return; }
     }
     if (intent.kind === 'symbol') {
       const addr = symbolAddress(app, intent.value);
@@ -1436,6 +1611,9 @@ export function installProductUI(app) {
    */
   chrome.append(nav);
 
+  let lastRouteId = null;
+  let autoHexForData = false;
+  let routingCodeAddress = false;
   const router = new ProductRouter(ROUTES, {
     /*
      * Code first, including before a file exists: the landing state is the
@@ -1443,6 +1621,19 @@ export function installProductUI(app) {
      * has nothing to answer questions about yet.
      */
     defaultPath: '/code',
+    /*
+     * Moving to another screen closes what floated over the old one. A sheet
+     * opened on Code (an instruction's detail, say) used to stay on top of
+     * Explorer or Investigate after Back or a screen change and swallowed
+     * every tap there. Same-screen changes (/code → /code/:address, one
+     * function tab to another) keep their sheets; sheets opened after the
+     * change (the sample guide) are not affected.
+     */
+    onState: ({ current }) => {
+      const id = current?.route?.id || null;
+      if (lastRouteId != null && id !== lastRouteId) { closeMenu(); closeAllSheets(); }
+      lastRouteId = id;
+    },
     onRoute: (route, routeContext = {}) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
@@ -1450,7 +1641,29 @@ export function installProductUI(app) {
       if (route.route.id === 'code') {
         routeHost.hidden = true;
         const raw = route.params.address;
-        if (raw) { try { app.goToAddress(BigInt(raw), { announce: false, history: false }); } catch { /* invalid deep link */ } }
+        if (raw) {
+          routingCodeAddress = true;
+          try {
+            const target = BigInt(raw);
+            const region = (app.store.get('regions') || []).find((r) => r.size > 0n && target >= r.vmAddr && target < r.vmAddr + r.size);
+            /* Data (a string, a constant) is not code: show its bytes in Hex
+               instead of disassembling it into meaningless instructions. */
+            if (region && !region.exec) {
+              if (app.store.get('currentRegion')?.id !== region.id) app.selectRegion(region, { silent: true });
+              if (app.store.get('displayMode') !== 'hex') { app.setMode?.('hex'); autoHexForData = true; }
+              app.goToAddress(target, { announce: true, history: false });
+            } else {
+              // Leaving data we switched to Hex for: back to assembly for code.
+              if (autoHexForData && region?.exec) { app.setMode?.('asm'); autoHexForData = false; }
+              if (app.goToAddress(target, { announce: false, history: false })) {
+                // Select the requested line so the address bar and the next
+                // action refer to it, not to whatever is at the top.
+                const row = app.viewer?.rowOfAddress?.(target);
+                if (row != null) { app.viewer.select(row, false); app.store.set({ selectedRow: row }); }
+              }
+            }
+          } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
+        }
         return codeViewState(app);
       }
       routeHost.hidden = false;
@@ -1488,6 +1701,23 @@ export function installProductUI(app) {
       return result;
     };
   }
+  /*
+   * A user-requested jump (goToAddress with announce, which goToFunction and
+   * the sheets' "go there" rows use) moves the code view. When it came from a
+   * sheet opened on another screen, the move happened behind that screen and
+   * looked like nothing happened. Bring Code forward after such a jump.
+   */
+  const originalGoToAddress = typeof app.goToAddress === 'function' ? app.goToAddress : null;
+  if (originalGoToAddress) {
+    app.goToAddress = function goToAddressAndShowCode(addr, options = {}) {
+      // Show Code first: the viewer cannot compute a scroll position while
+      // its view is hidden, and the jump would land on the wrong line.
+      if (options?.announce && !routingCodeAddress && router.current && router.current.route.id !== 'code' && addressIsMapped(app, addr)) {
+        router.navigate('/code');
+      }
+      return originalGoToAddress.call(this, addr, options);
+    };
+  }
   installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
@@ -1510,9 +1740,11 @@ export function installProductUI(app) {
   actions.register('navigate.code', () => router.navigate('/code/' + (currentAddress(app)?.toString() || '')));
   actions.register('navigate.explorer', () => router.navigate('/explorer/functions'));
   actions.register('navigate.results', () => router.navigate('/results'));
+  actions.register('function.label', (addr) => functionName(app, BigInt(addr)));
   actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
 
   const cleanupViewport = installViewportBridge();
+  const cleanupAddressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
   const shortcut = (event) => {
     const target = event.target;
     const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
@@ -1543,11 +1775,12 @@ export function installProductUI(app) {
   actions.register('ai.ask', (question, options) => assistant?.ask(question, options));
 
   const destroy = () => {
-    router.stop(); cleanupViewport();
+    router.stop(); cleanupViewport(); cleanupAddressBar();
     document.removeEventListener('keydown', shortcut, true);
     document.removeEventListener('hex:file-opened', onFileOpened);
     assistant?.destroy();
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
+    if (originalGoToAddress) app.goToAddress = originalGoToAddress;
     chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };

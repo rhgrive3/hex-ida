@@ -1,7 +1,8 @@
 /* Canonical breakpoints: phone < 600, tablet 600–899, desktop >= 900. */
 @media (max-width: 899px) {
   .product-ui-ready .ui-bottom-nav { display: grid; }
-  .product-ui-ready .ui-route-host { padding-bottom: calc(86px + var(--ui-safe-bottom) + var(--ui-keyboard-inset)); }
+  /* Clears the bottom navigation and the floating assistant button above it. */
+  .product-ui-ready .ui-route-host { padding-bottom: calc(140px + var(--ui-safe-bottom) + var(--ui-keyboard-inset)); }
   .product-ui-ready .statusbar { padding-bottom: calc(var(--ui-safe-bottom) + 58px); }
   .product-ui-ready .ui-card-grid { grid-template-columns: 1fr; }
   .product-ui-ready .ui-screen { max-width: 760px; }
@@ -44,7 +45,7 @@
   .product-ui-ready .ui-list-row { padding-block: 8px; }
   .product-ui-ready .ui-list-row-tail .evidence-badge { max-width: 11ch; overflow: hidden; }
   .product-ui-ready .ui-list-row-meta { max-width: 11ch; }
-  .product-ui-ready .ui-virtual-list { height: calc(var(--ui-visual-height) - 250px - var(--ui-keyboard-inset)); min-height: 240px; }
+  .product-ui-ready .ui-virtual-list { height: min(calc(var(--ui-visual-height) - 250px - var(--ui-keyboard-inset)), var(--ui-virtual-content, 100000px)); min-height: min(240px, var(--ui-virtual-content, 240px)); }
   .product-ui-ready .ui-pseudocode { min-height: 260px; max-height: calc(var(--ui-visual-height) - 220px - var(--ui-keyboard-inset)); font-size: max(12px, var(--code-size)); }
   .product-ui-ready .ui-code-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .product-ui-ready .ui-code-toolbar::-webkit-scrollbar { display: none; }
@@ -57,9 +58,12 @@
   /* Phone code view: address + assembly. Bytes remain available in Hex mode. */
   .product-ui-ready .ui-code-route .addrbar { min-height: 34px; padding-block: 3px; }
   .product-ui-ready .ui-code-route .addr-range { display: none; }
-  .product-ui-ready .ui-code-route .colhead .c-hex,
+  /* The range is hidden here, so the search button takes the free space itself. */
+  .product-ui-ready .ui-code-route .addrbar .addr-search { margin-left: auto; }
+  /* Only in assembly mode: Hex mode keeps its 16進 / 文字 headings. */
+  .product-ui-ready .ui-code-route .colhead.mode-asm-head .c-hex,
   .product-ui-ready .ui-code-route .viewport.mode-asm .c-hex { display: none; }
-  .product-ui-ready .ui-code-route .colhead .c-ascii,
+  .product-ui-ready .ui-code-route .colhead.mode-asm-head .c-ascii,
   .product-ui-ready .ui-code-route .viewport.mode-asm .c-ascii { display: none; }
   .product-ui-ready .ui-code-route .colhead,
   .product-ui-ready .ui-code-route .viewport { max-width: 100%; overflow-x: auto; }

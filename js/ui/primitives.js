@@ -1,5 +1,76 @@
 /* Shared DOM primitives for canonical screens. No domain logic belongs here. */
 
+import { uiRoot } from '../ui-root.js';
+
+const isJa = () => String(uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
+
+/*
+ * Plain-language text for the machine reason codes that analysis layers return
+ * (`function-end-unproven`, ...). Screens used to print the bare code as the
+ * whole explanation; the code is still shown, small, under this sentence.
+ */
+const REASONS = {
+  'function-end-unproven': [
+    'この関数の終わりの位置を確定できませんでした。確定していない範囲は解析しません。命令は「コード」で直接読めます。',
+    'The end of this function could not be proven, so Hex does not analyse beyond it. You can still read its instructions in Code.',
+  ],
+  'unverified-function-range': [
+    'この関数の範囲を確認できませんでした。命令は「コード」で直接読めます。',
+    'The range of this function could not be verified. You can still read its instructions in Code.',
+  ],
+  'function-range-unavailable': [
+    'この関数の範囲がまだわかりません。命令は「コード」で直接読めます。',
+    'The range of this function is not known yet. You can still read its instructions in Code.',
+  ],
+  'invalid-function-range': [
+    'この関数の範囲の情報が正しくありません。命令は「コード」で直接読めます。',
+    'The range recorded for this function is invalid. You can still read its instructions in Code.',
+  ],
+  'function-symbol-missing': [
+    'このアドレスには関数が見つかりません。索引から関数を選んでください。',
+    'No function starts at this address. Pick a function from Explorer.',
+  ],
+  'function-start-not-executable': [
+    'このアドレスは実行できる領域の外にあります。',
+    'This address is outside any executable region.',
+  ],
+  'evidence-store-unavailable': [
+    'この関数には、まだ表示できる根拠がありません。「調べる」で目的を入力すると、根拠が集まります。',
+    'There is no evidence for this function yet. Enter a goal in Investigate to collect evidence.',
+  ],
+  'evidence-target-invalid': [
+    '根拠を探す対象が正しくありません。',
+    'The evidence target is invalid.',
+  ],
+  'analysis-product-snapshot-stale': [
+    '表示の途中で解析結果が更新されました。もう一度開いてください。',
+    'The analysis changed while this was loading. Open it again.',
+  ],
+  'analysis-product-function-id-invalid': [
+    '関数のアドレスが正しくありません。',
+    'The function address is invalid.',
+  ],
+};
+
+const REASON_CODE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+$/;
+
+/** Plain-language explanation for a known reason code, or null. */
+export function reasonText(code) {
+  const entry = REASONS[String(code ?? '').trim()];
+  return entry ? (isJa() ? entry[0] : entry[1]) : null;
+}
+
+function appendStateText(root, text) {
+  if (text == null || text === '') return;
+  const raw = String(text).trim();
+  if (!REASON_CODE.test(raw)) { root.append(h('p', 'ui-state-text', raw)); return; }
+  const plain = reasonText(raw);
+  if (plain) root.append(h('p', 'ui-state-text', plain));
+  const code = h('code', 'ui-state-code', raw);
+  code.title = isJa() ? '内部の理由コード' : 'Internal reason code';
+  root.append(code);
+}
+
 export function h(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -43,7 +114,7 @@ export function card(title, { subtitle, className = '' } = {}) {
 export function emptyState(title, text, action) {
   const root = h('div', 'ui-state ui-empty-state');
   root.append(h('strong', 'ui-state-title', title));
-  if (text) root.append(h('p', 'ui-state-text', text));
+  appendStateText(root, text);
   if (action) root.append(action);
   return root;
 }
@@ -62,7 +133,7 @@ export function errorState(title, text, action) {
   const root = h('div', 'ui-state ui-error-state');
   root.setAttribute('role', 'alert');
   root.append(h('strong', 'ui-state-title', title));
-  if (text) root.append(h('p', 'ui-state-text', text));
+  appendStateText(root, text);
   if (action) root.append(action);
   return root;
 }
@@ -125,6 +196,36 @@ export function tabs(items, active, onChange, { orientation = 'horizontal' } = {
     event.preventDefault();
     activate(target);
   });
+  return scrollStrip(root);
+}
+
+/*
+ * A horizontally scrolling strip of tabs: keeps the active item in view (it
+ * used to sit clipped off the right edge on phones) and marks the clipped edges
+ * so CSS can fade them as a "scroll for more" cue.
+ */
+export function scrollStrip(root, activeSelector = '.active, [aria-selected="true"]') {
+  const update = () => {
+    const max = root.scrollWidth - root.clientWidth;
+    root.classList.toggle('can-scroll-left', max > 1 && root.scrollLeft > 1);
+    root.classList.toggle('can-scroll-right', max > 1 && root.scrollLeft < max - 1);
+  };
+  const reveal = () => {
+    if (!root.isConnected) return;
+    const active = root.querySelector(activeSelector);
+    if (active) {
+      const box = root.getBoundingClientRect();
+      const item = active.getBoundingClientRect();
+      const left = item.left - box.left + root.scrollLeft;
+      const right = left + item.width;
+      if (left < root.scrollLeft) root.scrollLeft = Math.max(0, left - 24);
+      else if (right > root.scrollLeft + root.clientWidth) root.scrollLeft = right - root.clientWidth + 24;
+    }
+    update();
+  };
+  root.addEventListener('scroll', update, { passive: true });
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(reveal);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(update).observe(root);
   return root;
 }
 
@@ -209,7 +310,10 @@ export class VirtualList {
 
   setItems(items) {
     this.items = Array.isArray(items) || validLazySource(items) ? items : [];
-    this.spacer.style.height = (sourceLength(this.items) * this.rowHeight) + 'px'; // runtime geometry
+    const contentHeight = sourceLength(this.items) * this.rowHeight;
+    this.spacer.style.height = contentHeight + 'px'; // runtime geometry
+    // +2px for the list border: a short list is exactly as tall as its rows.
+    this.root.style.setProperty('--ui-virtual-content', (contentHeight + 2) + 'px');
     this.first = undefined;
     this.last = undefined;
     this.render(true);

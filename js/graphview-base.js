@@ -207,9 +207,11 @@ function attachPanZoom(wrap, svg, layout) {
     if (points.size === 0) { suppressClick = false; multiTouchGesture = false; }
     points.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (points.size === 1) {
-      last = { x: e.clientX, y: e.clientY, moved: false };
+      last = { x: e.clientX, y: e.clientY, moved: false, pointerId: e.pointerId };
       wrap.classList.add('dragging');
-      wrap.setPointerCapture(e.pointerId);
+      /* No pointer capture yet: capturing on pointerdown retargets the tap's
+         click to this wrapper, so tapping a block or function node did
+         nothing. Capture only once the pointer really drags (below). */
     } else if (points.size === 2) {
       multiTouchGesture = true;
       pinch = spread(points);
@@ -231,7 +233,10 @@ function attachPanZoom(wrap, svg, layout) {
     if (!last) return;
     const dx = e.clientX - last.x;
     const dy = e.clientY - last.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) last.moved = true;
+    if (!last.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      last.moved = true;
+      try { wrap.setPointerCapture(last.pointerId); } catch { /* pointer already released */ }
+    }
     wrap.scrollLeft -= dx;
     wrap.scrollTop -= dy;
     last.x = e.clientX;

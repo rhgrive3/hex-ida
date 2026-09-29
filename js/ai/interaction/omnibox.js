@@ -25,6 +25,8 @@ export const COMMANDS = Object.freeze([
   { id: 'help', ja: 'ヘルプ', en: 'Help', match: /^(help|ヘルプ|使い方)$/i },
   { id: 'learn', ja: '学ぶ', en: 'Learn', match: /^(learn|学ぶ|学習)$/i },
   { id: 'advanced', ja: '高度な機能', en: 'Advanced', match: /^(advanced|lab|高度)$/i },
+  { id: 'search', ja: '命令・バイト列を検索', en: 'Search', match: /^(search|find|検索|探す)$/i },
+  { id: 'jump', ja: 'アドレスへジャンプ', en: 'Jump', match: /^(jump|goto|go|ジャンプ|移動)$/i },
   { id: 'ai', ja: 'AIに聞く', en: 'Ask AI', match: /^(ai|ask|聞く|質問)$/i },
   { id: 'agent', ja: 'エージェントで調べる', en: 'Investigate with Agent', match: /^(agent|investigate|調査|調べる)$/i },
 ]);

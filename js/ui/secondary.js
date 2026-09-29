@@ -8,9 +8,21 @@ import { toast } from '../ui.js';
 
 function list() { return h('div', 'ui-list'); }
 
-function choiceRow({ title, subtitle, selected, onClick }) {
-  const row = listRow({ title, subtitle, meta: selected ? '✓' : '', onClick });
+/*
+ * An option, not a link: a radio (or checkbox for `toggle`) mark and no
+ * chevron. The old rows used a ✓ plus "›", which read as "opens a screen".
+ */
+function choiceRow({ title, subtitle, selected, onClick, toggle = false, nested = false }) {
+  const row = h('button', 'ui-list-row ui-choice-row' + (toggle ? ' toggle' : '') + (nested ? ' sub' : ''));
+  row.type = 'button';
   row.setAttribute('aria-pressed', String(!!selected));
+  if (onClick) row.addEventListener('click', onClick);
+  const mark = h('span', 'ui-choice-mark');
+  mark.setAttribute('aria-hidden', 'true');
+  const main = h('span', 'ui-list-row-main');
+  main.append(h('strong', 'ui-list-row-title', title));
+  if (subtitle) main.append(h('span', 'ui-list-row-subtitle', subtitle));
+  row.append(mark, main);
   return row;
 }
 
@@ -31,6 +43,7 @@ function renderSettings(app, router) {
       title: pick('命令の解説を表示', 'Show instruction explanations'),
       subtitle: pick('専門用語だけでなく、何をしている命令かも表示します。', 'Also show what each instruction does in plain language.'),
       selected: !!app.prefs.explain,
+      toggle: true,
       onClick: () => { app.setExplain(!app.prefs.explain); render(); },
     }));
     if (app.prefs.explain) {
@@ -42,6 +55,7 @@ function renderSettings(app, router) {
         explainRows.append(choiceRow({
           title: pick(ja, en),
           selected: (app.prefs.noteStyle || 'ja') === key,
+          nested: true,
           onClick: () => { app.setNoteStyle(key); render(); },
         }));
       }

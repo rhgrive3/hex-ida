@@ -4,6 +4,7 @@ import { goalLabel } from '../../goals.js';
 import { VERDICT } from '../../evidence.js';
 import { investigationServiceFor } from '../../analysis/investigation-service.js';
 import { pick } from '../../i18n.js';
+import { showField } from './field-access.js';
 
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 function functionLabel(app, address) {
@@ -15,6 +16,22 @@ function verdictLabel(verdict) {
   if (verdict === VERDICT.LIKELY) return pick('ほぼ確実', 'Likely');
   if (verdict === VERDICT.AMBIGUOUS) return pick('候補あり', 'Ambiguous');
   return pick('未確認', 'Unverified');
+}
+const REASON_LABELS = {
+  'string-ref':['文字列を参照', 'string reference'],
+  'name-match':['名前が一致', 'name match'],
+  'callee-name':['呼び先の名前が一致', 'callee name match'],
+  'caller-name':['呼び元の名前が一致', 'caller name match'],
+  'calls-match':['有力候補を呼ぶ', 'calls a candidate'],
+  'called-by-match':['有力候補から呼ばれる', 'called by a candidate'],
+  numeric:['数値の計算', 'arithmetic'],
+  store:['メモリへ書き込む', 'memory writes'],
+  compare:['値を比べる', 'comparisons'],
+  popular:['よく呼ばれる', 'widely called'],
+};
+function reasonLabel(code) {
+  const entry = REASON_LABELS[code];
+  return entry ? pick(entry[0], entry[1]) : String(code ?? '');
 }
 function progressView(body) {
   const wrap = el('div', 'analysis-progress');
@@ -47,11 +64,39 @@ function appendCompleteness(body, result) {
     `Analysis is still partial${reasons.length ? ` (${reasons.join(' / ')})` : ''}. Unscanned data is not treated as negative evidence.`
   ), 'sub'));
 }
+function productRouter() {
+  return (typeof window !== 'undefined' && window.__hexUi?.router) || null;
+}
+
+/* The answer is a function, so open its workspace. goToFunction alone only
+   moved the hidden code view: the sheet closed and the screen stayed on
+   Investigate, so the tap looked like it did nothing. */
 function openFunction(app, sheet, address) {
   if (address == null) return;
   sheet.close();
-  if (typeof app.goToFunction === 'function') app.goToFunction(BigInt(address));
-  else app.goToAddress?.(BigInt(address), { announce:true });
+  const target = BigInt(address);
+  const router = productRouter();
+  if (router) { router.navigate(`/function/${target.toString()}/overview`); return; }
+  if (typeof app.goToFunction === 'function') app.goToFunction(target);
+  else app.goToAddress?.(target, { announce:true });
+}
+
+function openAddress(app, sheet, address) {
+  if (address == null) return;
+  sheet.close();
+  const target = BigInt(address);
+  app.goToAddress?.(target, { announce:true });
+  productRouter()?.navigate(`/code/${target.toString()}`);
+}
+
+/* A field answer (HP, attack, ...) has no single function; its useful next
+   step is every instruction that reads or writes the field. */
+function fieldOf(top) {
+  const field = top?.field;
+  return field && top?.className && Number.isFinite(Number(field.offset)) ? { className:String(top.className), field } : null;
+}
+function fieldLabel(target) {
+  return `${target.className}.${String(target.field.name || '').replace(/^_/, '') || '?'}`;
 }
 
 export function showCandidates(app, goal) {
@@ -77,10 +122,22 @@ export function showCandidates(app, goal) {
       const title = pin.top.name || (address != null ? functionLabel(app, address) : pin.top.field?.name) || goalLabel(goal);
       answer.append(el('div', 'fn-name', String(title)));
       answer.append(el('div', 'hint', verdictLabel(pin.verdict)));
+      const answerField = address == null ? fieldOf(pin.top) : null;
+      if (answerField) {
+        const fieldRow = list();
+        fieldRow.append(tapRow(pick('このフィールドを使う場所', 'Where this field is used'), {
+          sub:fieldLabel(answerField), right:'›', onTap:() => showField(app, answerField.className, answerField.field),
+        }));
+        answer.append(fieldRow);
+      }
       if (address != null) {
-        answer.append(tapRow(pick('この処理を開く', 'Open this routine'), {
+        // A tap row is an <li>; outside a list it rendered as a bullet with
+        // the chevron wrapped onto its own line.
+        const openRow = list();
+        openRow.append(tapRow(pick('この処理を開く', 'Open this routine'), {
           sub:addrHex(BigInt(address)), right:'›', onTap:() => openFunction(app, sheet, address),
         }));
+        answer.append(openRow);
       }
       host.append(answer);
     }
@@ -93,7 +150,7 @@ export function showCandidates(app, goal) {
     host.append(el('div', 'sec-title', pick('関係の強い処理', 'Strongest related routines')));
     const rows = list();
     for (const candidate of candidates) {
-      const reasons = (candidate.reasons || []).slice(0, 2).map((reason) => reason.code).join(' · ');
+      const reasons = (candidate.reasons || []).slice(0, 2).map((reason) => reasonLabel(reason.code)).join(' · ');
       rows.append(tapRow(functionLabel(app, candidate.addr), {
         sub:[addrHex(candidate.addr), reasons].filter(Boolean).join('  ·  '),
         right:`${Math.round(candidate.score)} pt`,
@@ -140,7 +197,17 @@ export function showOverview(app) {
       const rows = list();
       for (const item of (confirmed.length ? confirmed : goals).slice(0, 32)) {
         const address = item?.top?.addr ?? item?.addr ?? item?.address ?? null;
-        rows.append(tapRow(item?.goal?.ja || item?.goal?.en || item?.goal?.id || pick('解析結果', 'Finding'), {
+        const target = address == null ? fieldOf(item?.top) : null;
+        const label = item?.goal?.ja || item?.goal?.en || item?.goal?.id || pick('解析結果', 'Finding');
+        if (target) {
+          rows.append(tapRow(label, {
+            sub:`${fieldLabel(target)} · ${verdictLabel(item?.verdict)}`,
+            right:'›',
+            onTap:() => showField(app, target.className, target.field),
+          }));
+          continue;
+        }
+        rows.append(tapRow(label, {
           sub:address != null ? `${functionLabel(app, address)} · ${addrHex(BigInt(address))}` : verdictLabel(item?.verdict),
           right:address != null ? '›' : '',
           disabled:address == null,
@@ -153,8 +220,13 @@ export function showOverview(app) {
       host.append(el('div', 'sec-title', pick('見つかった手がかり', 'Notable evidence')));
       const rows = list();
       for (const finding of findings.slice(0, 24)) {
+        const users = Array.isArray(finding.users) ? finding.users.length : null;
+        const usage = users == null ? '' : users ? pick(` · 使っている場所 ${users} か所`, ` · used in ${users} places`) : pick(' · どこからも使われていません', ' · not referenced');
         rows.append(tapRow(String(finding.text || finding.id || pick('手がかり', 'Evidence')), {
-          sub:finding.addr != null ? addrHex(BigInt(finding.addr)) : '', disabled:true,
+          sub:finding.addr != null ? addrHex(BigInt(finding.addr)) + usage : '',
+          right:finding.addr != null ? '›' : '',
+          disabled:finding.addr == null,
+          onTap:finding.addr != null ? () => openAddress(app, sheet, finding.addr) : null,
         }));
       }
       host.append(rows);

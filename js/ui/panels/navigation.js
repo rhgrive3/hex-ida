@@ -51,7 +51,10 @@ export function showJump(app) {
     const v = parseAddress(input.value);
     if (v == null) { toast(t("jump.invalid")); return; }
     sheet.close();
-    app.goToAddress(v, { announce: true });
+    if (!app.goToAddress(v, { announce: true })) return;
+    // Select the target so the address bar and the next action refer to it.
+    const row = app.viewer?.rowOfAddress?.(v);
+    if (row != null) { app.viewer.select(row, false); app.store.set({ selectedRow: row }); }
   }
 }
 

@@ -1,8 +1,9 @@
 import { FUNCTION_TABS } from './registry.js';
-import { h, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow } from './primitives.js';
+import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow } from './primitives.js';
 import { addrHex } from '../format.js';
+import { uiRoot } from '../ui-root.js';
 
-const ja = () => (navigator.language || 'ja').toLowerCase().startsWith('ja');
+const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 const PAGE_SIZE = 100;
 const MAX_RENDERED_EVIDENCE = 5_000;
@@ -48,6 +49,17 @@ function rowSubtitle(item) {
   return bits.join(' · ');
 }
 
+// The display name comes from the shell's shared label action, so this route
+// never reads a symbol authority itself.
+function functionTitle(actions, address) {
+  const label = actions?.has?.('function.label') ? actions.run('function.label', address) : null;
+  return label || `sub_${BigInt(address).toString(16).toUpperCase()}`;
+}
+
+function staleSnapshot(error) {
+  return error?.name === 'AnalysisSnapshotStaleError' || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
+}
+
 function prepareRouteShell(appRoot, routeHost, route) {
   appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
   appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
@@ -70,7 +82,29 @@ function wrapRouteView(view, routeHost) {
   };
 }
 
-function renderCanonicalEvidence(app, router, route, meta) {
+async function loadEvidencePages(app, address, rows, signal) {
+  const snapshot = await app.analysisQueries.snapshot({ signal });
+  let offset = 0;
+  let finalResult = null;
+  while (rows.length < MAX_RENDERED_EVIDENCE) {
+    const result = await app.analysisQueries.evidence(
+      snapshot,
+      { functionId:address },
+      { offset, limit:PAGE_SIZE },
+      { signal },
+    );
+    finalResult = result;
+    if (signal?.aborted) return finalResult;
+    const pageRows = Array.isArray(result.value) ? result.value : [];
+    rows.push(...pageRows);
+    const next = result.page?.next;
+    if (next == null || next === offset || pageRows.length === 0) break;
+    offset = next;
+  }
+  return finalResult;
+}
+
+function renderCanonicalEvidence(app, router, route, meta, actions) {
   let address;
   try { address = BigInt(route.params.address); }
   catch {
@@ -79,7 +113,8 @@ function renderCanonicalEvidence(app, router, route, meta) {
     return { root:invalid.root };
   }
 
-  const s = screen(text('根拠', 'Evidence'), {
+  // Same heading as the other function tabs: the function, not the tab name.
+  const s = screen(functionTitle(actions, address), {
     id:'function',
     subtitle:addressText(address),
   });
@@ -90,24 +125,19 @@ function renderCanonicalEvidence(app, router, route, meta) {
 
   (async () => {
     try {
-      const snapshot = await app.analysisQueries.snapshot({ signal:meta.signal });
       const rows = [];
-      let offset = 0;
       let finalResult = null;
-      while (rows.length < MAX_RENDERED_EVIDENCE) {
-        const result = await app.analysisQueries.evidence(
-          snapshot,
-          { functionId:address },
-          { offset, limit:PAGE_SIZE },
-          { signal:meta.signal },
-        );
-        finalResult = result;
-        if (meta.signal?.aborted) return;
-        const pageRows = Array.isArray(result.value) ? result.value : [];
-        rows.push(...pageRows);
-        const next = result.page?.next;
-        if (next == null || next === offset || pageRows.length === 0) break;
-        offset = next;
+      // Background discovery may advance the snapshot while pages load; start
+      // over on the new snapshot instead of ending on a stale-snapshot error.
+      for (let attempt = 1; ; attempt++) {
+        rows.length = 0;
+        finalResult = null;
+        try {
+          finalResult = await loadEvidencePages(app, address, rows, meta.signal);
+          break;
+        } catch (error) {
+          if (!staleSnapshot(error) || attempt >= 3 || meta.signal?.aborted) throw error;
+        }
       }
       if (meta.signal?.aborted) return;
 
@@ -115,11 +145,13 @@ function renderCanonicalEvidence(app, router, route, meta) {
         const reason = finalResult?.status?.reason || null;
         content.replaceChildren(emptyState(
           text('表示できる根拠がありません', 'No evidence available'),
-          reason ? String(reason) : text('現在のsnapshotにはこの関数の根拠がありません。', 'The current snapshot has no evidence for this function.'),
+          reason ? String(reason) : text('この関数の根拠は、まだ集まっていません。', 'The current snapshot has no evidence for this function.'),
+          /^function-|range/.test(String(reason || ''))
+            ? uiButton(text('コードで命令を読む', 'Read instructions in Code'), { cls:'ui-secondary-action', onClick:() => router.navigate(`/code/${address.toString()}`) })
+            : uiButton(text('「調べる」で根拠を集める', 'Collect evidence in Investigate'), { cls:'ui-secondary-action', onClick:() => router.navigate('/investigate') }),
         ));
         return;
       }
-
       const stack = h('div', 'ui-evidence-stack');
       rows.slice(0, MAX_RENDERED_EVIDENCE).forEach((item, index) => {
         const verdict = typeof item?.verdict === 'string' ? item.verdict.toLowerCase() : 'unverified';
@@ -133,7 +165,7 @@ function renderCanonicalEvidence(app, router, route, meta) {
 
       const note = card(text('表示の意味', 'How to read this'), {
         subtitle:text(
-          '状態はAnalysisQueryのevidence producerが返したverdictをそのまま表示します。UIではproofやconfidenceから確信度を再判定しません。',
+          '各行の状態（確認済み・可能性が高い・未確認・矛盾あり）は、解析エンジンの判定をそのまま表示しています。画面側で判定を強めたり弱めたりはしません。',
           'Statuses are projections of verdicts returned by the AnalysisQuery evidence producer; the UI does not derive certainty from proof or confidence.',
         ),
       });
@@ -167,7 +199,7 @@ export function installCanonicalProductEvidence(app, installed) {
     const targetEvidence = route.route.id === 'function' && route.params.tab === 'evidence';
     if (!targetEvidence) return previousOnRoute(route, meta);
     prepareRouteShell(appRoot, routeHost, route);
-    const view = renderCanonicalEvidence(app, router, route, meta);
+    const view = renderCanonicalEvidence(app, router, route, meta, installed.actions);
     routeHost.append(view.root);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
     return wrapRouteView(view, routeHost);

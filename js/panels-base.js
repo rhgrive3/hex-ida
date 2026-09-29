@@ -775,7 +775,10 @@ function showXrefsLegacy(app, target) {
     status.textContent = t('xref.count', { n: res.results.length });
     const sym = app.symbols;
     for (const r of res.results.slice(0, 400)) {
-      const fn = sym.functionCount ? sym.functionAt(r.addr) : null;
+      const found = sym.functionCount ? sym.functionAt(r.addr) : null;
+      // Mid-function references still belong to their containing function.
+      const containing = found ? null : (sym.functionCount ? sym.functionStartAt?.(r.addr) : null);
+      const fn = found || (containing != null ? { start: containing } : null);
       const owner = fn ? (sym.nameAt(fn.start) || addrHex(fn.start)) : null;
       results.append(tapRow(owner || addrHex(r.addr), {
         sub: (owner ? addrHex(r.addr) + '  ·  ' : '') + xrefKind(r.kind) +
@@ -1056,7 +1059,7 @@ function renderDetail(app, sheet, root, d, row, region) {
       sheet.close(); showFunctionSummary(app, row);
     }));
     actions.append(button(pick('この関数を調べる', 'Investigate this function'), 'chip', () => {
-      sheet.close(); showFunctionReport(app, d.address, app.lastGoal);
+      sheet.close(); showFunctionReport(app, functionStartOf(app, d.address), app.lastGoal);
     }));
     // 解析済みの関数の中の行なら、その値がこのあとどこへ行くかまで辿れる
     if (canExplain && app.semantic && app.semantic.regionId === (region && region.id) &&
@@ -1098,6 +1101,7 @@ export function instructionMenu(app, row, x, y) {
   /* AI は 1 行だけ足す。動詞は「AI に聞く…」の下に置いて、このメニューを太らせない。 */
   const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
   menu([
+    ...(d.address != null ? [{ header: addrHex(d.address), sub: asm || null }] : []),
     ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
@@ -1109,7 +1113,7 @@ export function instructionMenu(app, row, x, y) {
     { label: pick('関数の概要を開く', 'Open function overview'),
       action: () => openFunctionSurfaceOrToast(app, d.address, 'report') },
     { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
-      action: () => showFunctionReport(app, d.address, app.lastGoal) },
+      action: () => showFunctionReport(app, functionStartOf(app, d.address), app.lastGoal) },
     ...(sb ? [{
       label: pick('この値の行き先を追う', 'Follow this value'),
       action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
@@ -1153,8 +1157,15 @@ export function instructionMenu(app, row, x, y) {
 
 /** そのアドレスを含む関数の先頭。分からなければそのアドレス自身。 */
 function functionStartOf(app, addr) {
-  const fn = app.symbols && app.symbols.functionCount ? app.symbols.functionAt(addr) : null;
-  return fn ? fn.start : addr;
+  const sym = app.symbols;
+  const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
+  if (fn) return fn.start;
+  /* functionAt only answers mid-function addresses when the end is proven
+     (#2409). The containing start is still safe to name, and without it
+     "逆コンパイル" / "関数の概要" from a middle row opened a function that
+     does not exist at that row's address. */
+  const start = sym && sym.functionCount ? sym.functionStartAt?.(addr) : null;
+  return start ?? addr;
 }
 
 /** 関数の見出し。名前がなければアドレスで。 */

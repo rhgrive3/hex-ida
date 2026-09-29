@@ -5,6 +5,47 @@ import { h, uiButton } from './primitives.js';
 
 const EMPTY = Object.freeze([]);
 
+/*
+ * Display-only C highlighting. Each token is a child span of its line, so the
+ * line's text (what Copy and the provenance map see) stays byte-identical.
+ */
+const C_TOKEN = /(\/\*.*?\*\/|\/\/.*$)|("(?:\\.|[^"\\])*")|(\b0x[0-9a-fA-F]+\b|\b\d+\b)|\b(if|else|while|for|do|return|break|continue|switch|case|default|goto|typedef|struct|union|enum|sizeof)\b|\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|u?int(?:8|16|32|64|128)(?:_t)?)\b|\b([A-Za-z_]\w*)(?=\s*\()/g;
+const C_TOKEN_CLASS = ['tok-cmt', 'tok-str', 'tok-num', 'tok-kw', 'tok-type', 'tok-fn'];
+
+function appendHighlighted(row, content) {
+  let last = 0;
+  C_TOKEN.lastIndex = 0;
+  for (let match = C_TOKEN.exec(content); match; match = C_TOKEN.exec(content)) {
+    if (!match[0]) { C_TOKEN.lastIndex++; continue; }
+    if (match.index > last) row.append(h('span', null, content.slice(last, match.index)));
+    const group = match.slice(1).findIndex(value => value !== undefined);
+    row.append(h('span', C_TOKEN_CLASS[group] || null, match[0]));
+    last = match.index + match[0].length;
+  }
+  if (last < content.length) row.append(h('span', null, content.slice(last)));
+}
+
+// The self-contained typedef/comment header every result starts with. It is
+// folded by default so the function itself is the first thing on screen.
+function preludeLength(lines) {
+  let count = 0;
+  while (count < lines.length) {
+    const text = String(lines[count]?.text ?? '').trim();
+    if (!/^(\/\*.*\*\/|typedef\b.*;)$/.test(text)) break;
+    count++;
+  }
+  return count;
+}
+
+const REASON_TEXT = {
+  'incomplete-map':['この関数は、疑似Cの行と命令の対応表が一部しかありません。', 'The line-to-instruction map for this function is incomplete.'],
+  'missing-render-snapshot':['この疑似Cには、命令との対応表が付いていません。', 'This pseudocode carries no line-to-instruction map.'],
+  'missing-query-snapshot':['この疑似Cには、命令との対応表が付いていません。', 'This pseudocode carries no line-to-instruction map.'],
+  'stale-query-snapshot':['解析結果が更新されました。疑似Cを開き直してください。', 'The analysis changed. Reopen the pseudocode.'],
+  'stale-view':['表示が古くなりました。疑似Cを開き直してください。', 'This view is out of date. Reopen the pseudocode.'],
+  'invalid-address':['アドレスの形が正しくありません（例: 0x100000450）。', 'Enter an address such as 0x100000450.'],
+};
+
 // The render ledger intentionally retains typed BigInt addresses for audit/replay,
 // while navigation outcomes cross a UI/query boundary and must be JSON-safe.
 // Keep the canonical ledger record untouched and publish only a shallow origin
@@ -162,6 +203,10 @@ export function createDecompilerProvenanceView(query, options = {}) {
   const rows = [];
   let action = 0;
   const label = value => addrHex(BigInt(value));
+  const reasonText = reason => {
+    const entry = REASON_TEXT[reason];
+    return entry ? text(entry[0], entry[1]) : text('対応表を利用できません。', 'Mapping unavailable.');
+  };
   const show = outcome => {
     details.replaceChildren();
     history.replaceChildren();
@@ -171,7 +216,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
       rows[index].setAttribute('aria-current', active.has(index) ? 'true' : 'false');
     }
     if (outcome.state !== 'ready') {
-      status.textContent = text('対応表を利用できません。再解析してください。', 'Mapping unavailable. Refresh the analysis.') + ` (${outcome.reason})`;
+      status.textContent = reasonText(outcome.reason) + ` (${outcome.reason})`;
       return;
     }
     const recordsWithHistory = (outcome.transforms ?? EMPTY).filter(record => record.originHistory || record.suppressedRender);
@@ -279,10 +324,23 @@ export function createDecompilerProvenanceView(query, options = {}) {
 
   const lines = query?.value?.lines;
   if (Array.isArray(lines)) {
+    const prelude = preludeLength(lines);
+    if (prelude > 0) {
+      code.classList.add('fold-prelude');
+      const toggle = uiButton(text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`), { cls:'ui-secondary-action', pressed:false, onClick:() => {
+        const shown = !code.classList.contains('show-prelude');
+        code.classList.toggle('show-prelude', shown);
+        toggle.setAttribute('aria-pressed', String(shown));
+        toggle.textContent = shown ? text('型の定義をたたむ', 'Hide type definitions') : text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`);
+      } });
+      controls.append(toggle);
+    }
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       const content = line.kind === 'blank' ? '' : '    '.repeat(Math.max(0, line.indent || 0)) + line.text;
-      const row = h('span', 'ui-pseudocode-line', content + (index + 1 < lines.length ? '\n' : ''));
+      const row = h('span', 'ui-pseudocode-line' + (index < prelude ? ' prelude' : ''));
+      appendHighlighted(row, content);
+      if (index + 1 < lines.length) row.append(h('span', null, '\n'));
       const entity = query.value.renderProvenance?.entities?.[`L${index}:${line.kind ?? 'null'}`];
       if (navigation.available && entity?.role === 'semantic') {
         row.tabIndex = 0;
@@ -303,7 +361,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
   }
   status.textContent = navigation.available
     ? text('行を選ぶと元の命令を表示します。命令アドレスから逆引きもできます。', 'Select a line to inspect its instructions, or look up an instruction address.')
-    : text('この結果には利用できる対応表がありません。', 'No usable provenance map is available for this result.') + ` (${navigation.reason})`;
+    : reasonText(navigation.reason) + text('行を選んで元の命令を見る機能は、この関数では使えません。', ' Selecting a line to see its instructions is not available here.') + ` (${navigation.reason})`;
   root.append(controls, code, status, details, history);
   return Object.freeze({ root, code, navigation });
 }

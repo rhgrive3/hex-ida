@@ -2050,8 +2050,11 @@ function valueText(v, ctx, index) {
   return varOf('x' + index, ctx);
 }
 
+// String text arrives in the scanner's display form, where tab/CR/LF are
+// already written as \t, \r, \n. Keep those escapes as they are; doubling
+// their backslash printed "%d\\n" in the pseudocode instead of "%d\n".
 function escapeText(s) {
-  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return String(s).replace(/\\(?![nrt])/g, '\\\\').replace(/"/g, '\\"')
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
     .slice(0, 120);
 }

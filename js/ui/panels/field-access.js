@@ -14,8 +14,18 @@ function offsetHex(value) {
   return (n < 0n ? '-0x' + (-n).toString(16).toUpperCase() : '+0x' + n.toString(16).toUpperCase());
 }
 
+// Field types arrive as a descriptor ({ kind:'int', bytes:4, signed:true });
+// String() of it printed "[object Object]".
 function typeText(type) {
-  return type == null ? '' : String(type);
+  if (type == null) return '';
+  if (typeof type !== 'object') return String(type);
+  const bits = Number.isFinite(Number(type.bytes)) ? Number(type.bytes) * 8 : null;
+  if (type.kind === 'int' && bits) return `${type.signed === false ? 'uint' : 'int'}${bits}`;
+  if (type.kind === 'float' && bits) return bits === 32 ? 'float' : bits === 64 ? 'double' : `float${bits}`;
+  if (type.kind === 'bool') return 'bool';
+  if (type.kind === 'pointer' || type.kind === 'ptr') return pick('ポインタ', 'pointer') + (type.target ? ` (${typeText(type.target)})` : '');
+  if (typeof type.name === 'string' && type.name) return type.name;
+  return typeof type.kind === 'string' ? type.kind + (bits ? ` (${bits} bit)` : '') : '';
 }
 
 function functionLabel(app, address) {

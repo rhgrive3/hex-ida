@@ -92,7 +92,8 @@ export function currentFunctionAddr(app) {
     if (addr == null) return null;
     const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
     if (fn) return fn.start;
-    return addr;
+    // A middle row of a function whose end is unproven: use the containing start.
+    return (sym && sym.functionCount ? sym.functionStartAt?.(addr) : null) ?? addr;
   }
   if (app.semantic && app.semantic.result) return app.semantic.result.startAddr;
   const list2 = sym && sym.functionCount ? sym.functionList(app.codeRegion(), 1) : [];
