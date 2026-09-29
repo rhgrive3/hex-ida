@@ -16,6 +16,22 @@ function verdictLabel(verdict) {
   if (verdict === VERDICT.AMBIGUOUS) return pick('候補あり', 'Ambiguous');
   return pick('未確認', 'Unverified');
 }
+const REASON_LABELS = {
+  'string-ref':['文字列を参照', 'string reference'],
+  'name-match':['名前が一致', 'name match'],
+  'callee-name':['呼び先の名前が一致', 'callee name match'],
+  'caller-name':['呼び元の名前が一致', 'caller name match'],
+  'calls-match':['有力候補を呼ぶ', 'calls a candidate'],
+  'called-by-match':['有力候補から呼ばれる', 'called by a candidate'],
+  numeric:['数値の計算', 'arithmetic'],
+  store:['メモリへ書き込む', 'memory writes'],
+  compare:['値を比べる', 'comparisons'],
+  popular:['よく呼ばれる', 'widely called'],
+};
+function reasonLabel(code) {
+  const entry = REASON_LABELS[code];
+  return entry ? pick(entry[0], entry[1]) : String(code ?? '');
+}
 function progressView(body) {
   const wrap = el('div', 'analysis-progress');
   const label = el('div', 'hint', pick('解析の準備をしています…', 'Preparing analysis…'));
@@ -78,9 +94,13 @@ export function showCandidates(app, goal) {
       answer.append(el('div', 'fn-name', String(title)));
       answer.append(el('div', 'hint', verdictLabel(pin.verdict)));
       if (address != null) {
-        answer.append(tapRow(pick('この処理を開く', 'Open this routine'), {
+        // A tap row is an <li>; outside a list it rendered as a bullet with
+        // the chevron wrapped onto its own line.
+        const openRow = list();
+        openRow.append(tapRow(pick('この処理を開く', 'Open this routine'), {
           sub:addrHex(BigInt(address)), right:'›', onTap:() => openFunction(app, sheet, address),
         }));
+        answer.append(openRow);
       }
       host.append(answer);
     }
@@ -93,7 +113,7 @@ export function showCandidates(app, goal) {
     host.append(el('div', 'sec-title', pick('関係の強い処理', 'Strongest related routines')));
     const rows = list();
     for (const candidate of candidates) {
-      const reasons = (candidate.reasons || []).slice(0, 2).map((reason) => reason.code).join(' · ');
+      const reasons = (candidate.reasons || []).slice(0, 2).map((reason) => reasonLabel(reason.code)).join(' · ');
       rows.append(tapRow(functionLabel(app, candidate.addr), {
         sub:[addrHex(candidate.addr), reasons].filter(Boolean).join('  ·  '),
         right:`${Math.round(candidate.score)} pt`,

@@ -18,6 +18,9 @@
  * to the same line as the name instead of stacking under it.
  */
 .product-ui-ready .titlebar {
+  /* Never shrink: a tall screen body used to squeeze this row by ~9px, so the
+     chrome jumped up and down when switching between screens. */
+  flex: 0 0 auto;
   min-height: 46px;
   padding: 2px max(var(--ui-space-3), var(--ui-safe-right)) 2px max(var(--ui-space-3), var(--ui-safe-left));
   gap: var(--ui-space-2);
@@ -111,7 +114,9 @@
   min-height: 0;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  padding: var(--ui-space-5) max(var(--ui-space-4), var(--ui-safe-right)) calc(var(--ui-space-10) + var(--ui-safe-bottom)) max(var(--ui-space-4), var(--ui-safe-left));
+  /* The bottom padding clears the floating assistant button (16px + 48px), so
+     the last row of a screen can always scroll out from under it. */
+  padding: var(--ui-space-5) max(var(--ui-space-4), var(--ui-safe-right)) calc(88px + var(--ui-safe-bottom)) max(var(--ui-space-4), var(--ui-safe-left));
 }
 
 .product-ui-ready .ui-screen-route > .addrbar,

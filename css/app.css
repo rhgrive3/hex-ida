@@ -262,14 +262,18 @@ button { font: inherit; color: inherit; }
   display: grid;
   align-items: center;
   gap: 0 12px;
-  padding: 3px 12px;
-  font-size: 10px;
+  padding: 3px 26px 3px 12px;
+  /* The column widths are in `ch`, which resolves against this element's own
+     font size. Size the grid with the code font so each heading sits exactly
+     over its column, and shrink only the label text. */
+  font-size: var(--code-size);
   letter-spacing: .06em;
   color: var(--label-3);
   background: var(--surface-2);
   border-bottom: 0.5px solid var(--separator);
   white-space: nowrap; overflow: hidden;
 }
+.colhead > span { font-size: 10px; line-height: 1.4; }
 
 /* ── Viewport ──────────────────────────────────────────────── */
 
@@ -598,6 +602,10 @@ button { font: inherit; color: inherit; }
 .sheet-title { flex: 1; font-weight: 600; font-size: 16px; text-align: center;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-btn.back { color: var(--accent); font-weight: 600; }
+/* `.back` above out-ranks `.tb-btn:disabled`, so a first sheet showed a live-looking "←". */
+.tb-btn.back:disabled { color: var(--label-3); }
+/* No history in either direction: hide the arrows but keep their space so the title stays centred. */
+.sheet-history-actions:has(.back:disabled):has(.forward:disabled) { visibility: hidden; }
 .sheet-body {
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;

@@ -100,7 +100,10 @@ export function createProductionSolverRegistry({ workerFactory = null, preferWor
   const backend = backendTier === 'exhaustive'
     ? new ExhaustiveBvBackend()
     : canUseWorker
-      ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined, maxBvWidth: 64 })
+      // Omit workerFactory when none was given: the backend treats an explicit
+      // `undefined` as an invalid factory and threw, so importing the AI core
+      // failed in every browser (where Worker exists).
+      ? new WorkerSolverBackend({ ...(workerFactory ? { workerFactory } : {}), maxBvWidth: 64 })
       : new TieredBvBackend();
   registry.registerBackend(backend);
   return registry;

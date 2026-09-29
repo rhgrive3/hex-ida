@@ -175,8 +175,10 @@
 .product-ui-ready .ui-explorer-content { min-height: 360px; }
 .product-ui-ready .ui-virtual-list {
   position: relative;
-  height: min(68dvh, 720px);
-  min-height: 320px;
+  /* --ui-virtual-content is the full list height; a short list is only as
+     tall as its rows instead of leaving a large empty white box. */
+  height: min(68dvh, 720px, var(--ui-virtual-content, 100000px));
+  min-height: min(320px, var(--ui-virtual-content, 320px));
   overflow: auto;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-md);
@@ -276,3 +278,150 @@
 .product-ui-ready .menu { z-index: var(--ui-z-popover); }
 .product-ui-ready .dialog { z-index: var(--ui-z-dialog); }
 .product-ui-ready .toast { z-index: var(--ui-z-toast); }
+
+/*
+ * Layout helpers that screens already emit but that had no rules, so their
+ * children stacked with no spacing (the diff button touched its card, the
+ * S/M/L/XL chips touched each other, notes looked like body text).
+ */
+.product-ui-ready .ui-stack { display: grid; gap: var(--ui-space-4); min-width: 0; }
+.product-ui-ready .ui-actions,
+.product-ui-ready .ui-setting-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.product-ui-ready .ui-card-body > .ui-actions { margin-top: var(--ui-space-4); }
+.product-ui-ready .ui-setting-chips > .ui-secondary-action { min-width: 52px; }
+.product-ui-ready .ui-secondary-action[aria-pressed="true"] {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-strong);
+  font-weight: 700;
+}
+.product-ui-ready .ui-body { margin: 0 0 var(--ui-space-2); line-height: var(--ui-line); }
+.product-ui-ready .ui-sub,
+.product-ui-ready .ui-hint { margin: 0; color: var(--ui-text-muted); font-size: var(--ui-font-sm); line-height: var(--ui-line); }
+.product-ui-ready .ui-warning,
+.product-ui-ready .ui-partial-note {
+  margin: 0 0 var(--ui-space-3);
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-warning) 40%, transparent);
+  border-radius: var(--ui-radius-sm);
+  background: color-mix(in srgb, var(--ui-warning) 10%, var(--ui-surface));
+  color: var(--ui-warning);
+  font-size: var(--ui-font-sm);
+  line-height: var(--ui-line);
+}
+.product-ui-ready .ui-explorer-content > .ui-hint { margin-bottom: var(--ui-space-3); }
+.product-ui-ready .ui-runtime-result { margin-top: var(--ui-space-4); display: grid; gap: var(--ui-space-3); min-width: 0; }
+.product-ui-ready .ui-decompiler-provenance { display: grid; gap: var(--ui-space-3); min-width: 0; }
+.product-ui-ready .ui-help-answer { margin: 0; line-height: var(--ui-line); }
+.product-ui-ready .ui-glossary-short { display: block; margin-bottom: var(--ui-space-2); color: var(--ui-accent-strong); }
+
+/* Learning chapters: readable measure, clear rhythm. */
+.product-ui-ready .ui-learning-doc {
+  max-width: 72ch;
+  margin-inline: auto;
+  padding: var(--ui-space-5);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+  line-height: 1.8;
+}
+.product-ui-ready .ui-learning-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  margin-block: var(--ui-space-4);
+}
+.product-ui-ready .ui-learn-heading { margin: var(--ui-space-6) 0 var(--ui-space-2); font-size: var(--ui-font-lg); }
+.product-ui-ready .ui-learn-heading:first-child { margin-top: 0; }
+.product-ui-ready .ui-learn-paragraph { margin: 0 0 var(--ui-space-3); }
+.product-ui-ready .ui-learn-list { margin: 0 0 var(--ui-space-3); padding-left: 1.4em; }
+.product-ui-ready .ui-learn-list > li + li { margin-top: var(--ui-space-1); }
+.product-ui-ready .ui-learn-code {
+  margin: 0 0 var(--ui-space-3);
+  padding: var(--ui-space-3) var(--ui-space-4);
+  overflow-x: auto;
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-code-bg);
+  color: var(--ui-code-text);
+  font-size: max(12px, var(--code-size));
+  line-height: 1.55;
+}
+.product-ui-ready .ui-learn-note {
+  margin: 0 0 var(--ui-space-3);
+  padding: var(--ui-space-3) var(--ui-space-4);
+  border-left: 3px solid var(--ui-accent);
+  border-radius: 0 var(--ui-radius-sm) var(--ui-radius-sm) 0;
+  background: var(--ui-accent-soft);
+}
+
+/*
+ * Choice rows in Settings are options, not links: a radio mark on the left
+ * and no chevron, so they no longer read as "opens another screen".
+ */
+.product-ui-ready .ui-choice-row { justify-content: flex-start; }
+.product-ui-ready .ui-choice-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--ui-border-strong, var(--ui-text-muted));
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark { border-color: var(--ui-accent); }
+.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ui-accent);
+}
+.product-ui-ready .ui-choice-row.toggle .ui-choice-mark { border-radius: 6px; }
+.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark { background: var(--ui-accent); }
+.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark::after {
+  content: "✓";
+  width: auto;
+  height: auto;
+  background: none;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+.product-ui-ready .ui-choice-row.sub { padding-left: calc(12px + var(--ui-space-5)); }
+
+/* Error/empty states: a readable explanation first, the raw reason code small. */
+.product-ui-ready .ui-state-code {
+  margin: 0;
+  padding: 2px 8px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-2);
+  color: var(--ui-text-muted);
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--ui-font-xs);
+  overflow-wrap: anywhere;
+}
+.product-ui-ready .ui-state .ui-actions { justify-content: center; }
+
+/* Horizontal tab strips: fade the clipped edge so it reads as "scroll for more". */
+.product-ui-ready .ui-tabs.can-scroll-right,
+.product-ui-ready .ui-scope-tabs.can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+.product-ui-ready .ui-tabs.can-scroll-left.can-scroll-right,
+.product-ui-ready .ui-scope-tabs.can-scroll-left.can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
+.product-ui-ready .ui-tabs.can-scroll-left:not(.can-scroll-right),
+.product-ui-ready .ui-scope-tabs.can-scroll-left:not(.can-scroll-right) {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 36px);
+  mask-image: linear-gradient(to right, transparent, #000 36px);
+}

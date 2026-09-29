@@ -204,6 +204,7 @@ export async function stubEngine(page, response, options = {}) {
           question: input.question, mode: input.mode, style: input.style, scope: input.scope,
           conversationId: input.conversationId,
           provider: input.provider ?? null, model: input.model ?? null, reasoning: input.reasoning ?? null,
+          targetAddress: input.context?.untrustedTarget?.address ?? null,
           fields: Object.keys(input),
         });
         for (const event of opts.activity || []) input.onActivity(event);

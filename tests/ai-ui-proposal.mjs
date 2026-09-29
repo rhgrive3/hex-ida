@@ -21,17 +21,22 @@ await run(async ({ browser }) => {
   await page.evaluate(async () => {
     const runtime = await window.__hexAi.engine.runtime();
     window.__hexProposals = runtime.proposalStore;
-    for (const id of ['ev_a', 'ev_b', 'ev_c']) {
-      runtime.evidenceStore.add({
-        id, kind: 'ui-test', status: 'supported', sourceTool: 'ui-test', title: id,
-        summary: 'bounded proposal approval evidence',
-      });
-    }
+    /* Proposals admit only deterministically verified evidence bound to the
+       current analysis (#8929), so mint it through the verifier ingest path
+       instead of adding bare `supported` records. */
+    const bindingKey = runtime.proposalStore.currentEvidenceBinding?.() ?? null;
+    const sourceRef = { detailRef: 'ui-test-proposal-evidence', path: '$', ...(bindingKey ? { bindingKey } : {}) };
+    const minted = runtime.evidenceStore.ingest('verify_field_update', {
+      verified: true,
+      evidence: ['ev_a', 'ev_b', 'ev_c'],
+      results: [{ id: 'write', kind: 'function', functionAddress: '0x1000', evidence: ['ev_a', 'ev_b', 'ev_c'], verified: true }],
+    }, { verifier: true, sourceRef });
+    window.__hexEvidenceIds = minted.filter((record) => record.status === 'verified').map((record) => record.id).slice(0, 3);
   });
   await page.evaluate(({ target: address, current }) => {
     window.__hexProposals.create({
       id: 'proposal_1', kind: 'rename', target: address, before: current, after: 'updateExperience',
-      reason: '報酬計算のあとに XP フィールドへ書き込んでいるため。', evidenceIds: ['ev_a', 'ev_b', 'ev_c'],
+      reason: '報酬計算のあとに XP フィールドへ書き込んでいるため。', evidenceIds: window.__hexEvidenceIds,
     });
   }, { target, current: currentName });
 
@@ -94,7 +99,7 @@ await run(async ({ browser }) => {
   await page.evaluate(({ target: address }) => {
     window.__hexProposals.create({
       id: 'proposal_2', kind: 'comment', target: address, before: null, after: 'XP をここで書く',
-      reason: 'メモ', evidenceIds: ['ev_a'],
+      reason: 'メモ', evidenceIds: window.__hexEvidenceIds.slice(0, 1),
     });
   }, { target });
   await stubEngine(page, {
@@ -124,7 +129,7 @@ await run(async ({ browser }) => {
   await page.evaluate(({ target: address }) => {
     window.__hexProposals.create({
       id: 'proposal_3', kind: 'rename', target: address, before: 'oldName', after: 'newName',
-      reason: '古い前提', evidenceIds: ['ev_a'],
+      reason: '古い前提', evidenceIds: window.__hexEvidenceIds.slice(0, 1),
     });
   }, { target });
   await stubEngine(page, {

@@ -336,10 +336,12 @@ await run(async ({ browser }) => {
     verb.click();
     await new Promise((resolve) => setTimeout(resolve, 350));
     const call = window.__hexStub.calls[window.__hexStub.calls.length - 1];
-    return { question: call.question, scope: call.scope, open: !document.getElementById('ai-panel').hidden };
+    return { question: call.question, targetAddress: call.targetAddress, scope: call.scope, open: !document.getElementById('ai-panel').hidden };
   });
+  /* #4288: the address travels as the structured untrusted target, never
+     inside the user's question text. */
   check('a contextual verb asks a complete question in the selection scope',
-    /0x[0-9a-f]+/.test(asked.question) && asked.scope === 'selection' && asked.open, JSON.stringify(asked));
+    /0x[0-9a-f]+/i.test(asked.targetAddress || '') && !/0x[0-9a-f]+/i.test(asked.question) && asked.scope === 'selection' && asked.open, JSON.stringify(asked));
 
   /* Several chats: New chat, the history menu, and what the engine is told. */
   await closeSheets(page);
