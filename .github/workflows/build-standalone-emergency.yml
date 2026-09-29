@@ -30,17 +30,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cp scripts/build-userscript.mjs scripts/build-userscript.original.tmp
           python3 - <<'PY'
           from pathlib import Path
           p=Path('scripts/build-userscript.mjs')
           s=p.read_text()
           needle="  const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-runtime', graph: 'standard' });"
-          repl=needle+"\n  await writeFile(resolve(generated, 'standalone-runtime.js'), runtime);"
+          injected=(
+              needle
+              +"\n  await writeFile(resolve(generated, 'standalone-runtime.js'), runtime);"
+              +"\n  await (await import('node:fs/promises')).copyFile(resolve(root, 'scripts/build-userscript.original.tmp'), fileURLToPath(import.meta.url));"
+          )
           if needle not in s:
               raise SystemExit('runtime capture insertion point missing')
-          p.write_text(s.replace(needle,repl,1))
+          p.write_text(s.replace(needle,injected,1))
           PY
           npm run userscript:build >/tmp/standalone-build.log 2>&1
+          rm -f scripts/build-userscript.original.tmp
           git restore -- scripts/build-userscript.mjs js/userscript/deployment-identity.generated.js
       - name: Generate pinned emergency loader
         timeout-minutes: 2
