@@ -44,8 +44,10 @@ jobs:
           git restore -- scripts/build-userscript.mjs js/userscript/deployment-identity.generated.js
       - name: Generate pinned emergency loader
         timeout-minutes: 2
+        shell: bash
         run: |
-          node --input-type=module <<'NODE'
+          set +e
+          node --input-type=module > /tmp/emergency-generate.out 2> /tmp/emergency-error.txt <<'NODE'
           import fs from 'node:fs';
           import path from 'node:path';
           import crypto from 'node:crypto';
@@ -85,6 +87,10 @@ jobs:
             privilegedBuildId:privileged.buildId,
           },null,2));
           NODE
+          code=$?
+          if [[ $code -ne 0 ]]; then
+            exit $code
+          fi
       - name: Verify generated emergency artifacts
         shell: bash
         run: |
@@ -111,6 +117,9 @@ jobs:
         if: always()
         with:
           name: hex-standalone-emergency-build
-          path: /tmp/emergency-build.json
+          path: |
+            /tmp/emergency-build.json
+            /tmp/emergency-error.txt
+            /tmp/emergency-generate.out
           if-no-files-found: ignore
           retention-days: 1
