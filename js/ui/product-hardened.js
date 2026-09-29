@@ -110,6 +110,11 @@ export async function loadCanonicalStrings(queries, snapshot, filter = {}, optio
   }
 }
 
+function inCodeRegion(app, address) {
+  const region = (app.store?.get?.('regions') || []).find((r) => r.size > 0n && address >= r.vmAddr && address < r.vmAddr + r.size);
+  return !!region?.exec;
+}
+
 function staleSnapshot(error) {
   return error?.name === 'AnalysisSnapshotStaleError' || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
 }
@@ -295,7 +300,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
   const detailId = route.route.id === 'finding' || route.params?.id != null ? String(route.params.id || '') : null;
   const s = screen(detailId ? text('結果の詳細', 'Finding Detail') : text('結果', 'Results'), {
     id:detailId ? 'finding' : 'results',
-    subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('「調べる」で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
+    subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('自動解析で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
   });
   const host = h('div', 'ui-stack');
   host.append(loadingState(text('結果を確認しています…', 'Loading results…')));
@@ -313,24 +318,38 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
           return;
         }
         const c = card(claim.title, { subtitle:claim.address != null ? addressText(claim.address) : '' });
-        c.body.append(listRow({ title:text('判定', 'Verdict'), meta:claim.verdict, badge:evidenceBadge(verdictBadge(claim.verdict)) }));
+        c.body.append(listRow({ title:text('判定', 'Verdict'), badge:evidenceBadge(verdictBadge(claim.verdict)) }));
         if (claim.summary) c.body.append(h('p', 'ui-lead', String(claim.summary)));
         if (claim.contradictions?.length) c.body.append(listRow({ title:text('矛盾する根拠', 'Contradictions'), meta:String(claim.contradictions.length), badge:evidenceBadge('unverified') }));
         const actions = h('div', 'ui-actions');
-        if (claim.address != null) actions.append(uiButton(text('該当関数を開く', 'Open function'), { cls:'ui-primary-action', onClick:() => router.navigate(`/function/${BigInt(claim.address).toString()}/overview`) }));
+        // A claim about data (a string, a table) has no function to open;
+        // show its bytes instead of a made-up sub_<address> function.
+        if (claim.address != null) {
+          const target = BigInt(claim.address);
+          actions.append(inCodeRegion(app, target)
+            ? uiButton(text('該当関数を開く', 'Open function'), { cls:'ui-primary-action', onClick:() => router.navigate(`/function/${target.toString()}/overview`) })
+            : uiButton(text('この場所を開く', 'Open this location'), { cls:'ui-primary-action', onClick:() => router.navigate(`/code/${target.toString()}`) }));
+        }
         actions.append(uiButton(text('結果一覧へ', 'Back to Results'), { onClick:() => router.navigate('/results') }));
         c.body.append(actions);
         host.replaceChildren(c.root);
         return;
       }
       if (!claims.length) {
-        host.replaceChildren(emptyState(text('まだ結果がありません', 'No results yet'), text('「調べる」で目的を入力してください。', 'Investigate a goal to create claims.')));
+        /* Results are the automatic analysis' claims; asking one question in
+           Investigate does not add here, so say what fills this screen and
+           offer to run it. */
+        const run = uiButton(text('自動解析を実行する', 'Run automatic analysis'), { cls:'ui-primary-action', onClick:() => runAutomaticAnalysis(app, router) });
+        host.replaceChildren(emptyState(
+          text('まだ結果がありません', 'No results yet'),
+          text('ここには自動解析で見つかった結果が並びます。ファイル全体を調べて、HP・攻撃力などの目的ごとに答えを探します。', 'Investigate a goal to create claims.'),
+          run,
+        ));
         return;
       }
       const renderRow = (claim) => listRow({
         title:claim.title,
         subtitle:claim.address != null ? addressText(claim.address) : '',
-        meta:claim.verdict,
         badge:evidenceBadge(verdictBadge(claim.verdict)),
         onClick:() => router.navigate(`/finding/${encodeURIComponent(claim.claimId)}`),
       });
@@ -361,6 +380,20 @@ function linkedController(parentSignal) {
     }, { once:true });
   }
   return controller;
+}
+
+// Runs the whole-file overview in its sheet. When that sheet closes while the
+// user is still on Results, Results re-queries so the new claims appear.
+function runAutomaticAnalysis(app, router) {
+  import('../panels.js').then((panels) => {
+    const sheet = panels.showOverview(app);
+    if (!sheet) return;
+    const previous = sheet.onClose;
+    sheet.onClose = (...args) => {
+      previous?.(...args);
+      if (router.current?.route?.id === 'results') router.navigate('/results?run=' + Date.now(), { replace:true });
+    };
+  });
 }
 
 function renderCanonicalStrings(app, router, route, meta, queries) {

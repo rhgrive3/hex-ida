@@ -198,3 +198,8 @@
 .product-ui-ready .app:has(#empty:not([hidden])) .colhead,
 .product-ui-ready .app:has(#empty:not([hidden])) .statusbar { display: none; }
 .product-ui-ready .app:has(#empty:not([hidden])) .toolbar { display: none !important; }
+
+/* The floating assistant button sits over the bottom-right corner; keep the
+   selection bar's last action (解除) clear of it. */
+.product-ui-ready .selbar { padding-right: calc(76px + var(--ui-safe-right)); }
+.product-ui-ready .selbar .sel-range { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
