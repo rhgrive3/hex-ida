@@ -110,6 +110,15 @@ export async function loadCanonicalStrings(queries, snapshot, filter = {}, optio
   }
 }
 
+// The claim adapter falls back to the generic "Finding" when its source row
+// has no title; a finding row still carries the text it found (a path, a
+// string), which says far more.
+function claimTitle(claim) {
+  const title = String(claim?.title ?? '');
+  const found = claim?.source?.text;
+  return title === 'Finding' && typeof found === 'string' && found.trim() ? found : title;
+}
+
 function inCodeRegion(app, address) {
   const region = (app.store?.get?.('regions') || []).find((r) => r.size > 0n && address >= r.vmAddr && address < r.vmAddr + r.size);
   return !!region?.exec;
@@ -317,7 +326,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
           host.replaceChildren(emptyState(text('結果が見つかりません', 'Finding not found'), text('現在の解析結果の中に、この結果はありません。', 'This claim is not present in the current snapshot.'), uiButton(text('結果一覧へ', 'Back to Results'), { onClick:() => router.navigate('/results') })));
           return;
         }
-        const c = card(claim.title, { subtitle:claim.address != null ? addressText(claim.address) : '' });
+        const c = card(claimTitle(claim), { subtitle:claim.address != null ? addressText(claim.address) : '' });
         c.body.append(listRow({ title:text('判定', 'Verdict'), badge:evidenceBadge(verdictBadge(claim.verdict)) }));
         if (claim.summary) c.body.append(h('p', 'ui-lead', String(claim.summary)));
         if (claim.contradictions?.length) c.body.append(listRow({ title:text('矛盾する根拠', 'Contradictions'), meta:String(claim.contradictions.length), badge:evidenceBadge('unverified') }));
@@ -348,7 +357,7 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
         return;
       }
       const renderRow = (claim) => listRow({
-        title:claim.title,
+        title:claimTitle(claim),
         subtitle:claim.address != null ? addressText(claim.address) : '',
         badge:evidenceBadge(verdictBadge(claim.verdict)),
         onClick:() => router.navigate(`/finding/${encodeURIComponent(claim.claimId)}`),

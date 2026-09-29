@@ -316,7 +316,7 @@ function claimRows(report, snapshot) {
     }
     rows.push({
       claimId,
-      title:String(item?.title || item?.label || item?.goal?.text || item?.goal || item?.text || 'Finding'),
+      title:String(item?.title || item?.label || item?.goal?.text || item?.goal || 'Finding'),
       address,
       verdict:canonicalClaimVerdict(item),
       confidence,

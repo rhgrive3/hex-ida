@@ -806,22 +806,15 @@ function isMechanicalStackSpill(inst, ctx) {
     (reg && canonicalRegister(load.dst?.reg) === reg) || feedsReturn(load.dst, ctx));
 }
 
-// Scanner string text is a display form with tab/CR/LF already written as
-// \t, \r, \n. JSON.stringify would double those backslashes and the
-// pseudocode showed "%d\\n"; keep the existing escapes single.
-function cStringLiteral(text) {
-  return JSON.stringify(text).replace(/\\\\([nrt])/g, '\\$1');
-}
-
 function stringLiteralAt(addr, ctx) {
   if (addr == null) return null;
   try {
     const direct = ctx.opts.stringFor?.(BigInt(addr));
-    if (typeof direct === 'string') return cStringLiteral(direct);
+    if (typeof direct === 'string') return JSON.stringify(direct);
   } catch { /* optional resolver */ }
   for (const ref of ctx.model.addressRefs || []) {
     if (ref?.addr == null || typeof ref.text !== 'string') continue;
-    try { if (BigInt(ref.addr) === BigInt(addr)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+    try { if (BigInt(ref.addr) === BigInt(addr)) return JSON.stringify(ref.text); } catch { /* malformed ref */ }
   }
   return null;
 }
@@ -831,7 +824,7 @@ function stringLiteralForValue(value, ctx) {
   const defRow = value.def?.row;
   for (const ref of ctx.model.addressRefs || []) {
     if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
-    try { if (BigInt(ref.addr) === BigInt(value.const)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
+    try { if (BigInt(ref.addr) === BigInt(value.const)) return JSON.stringify(ref.text); } catch { /* malformed ref */ }
   }
   // A direct ADR/ADRP value is intrinsically address-like. For arithmetic
   // constants require the exact row+addressRef proof above.
