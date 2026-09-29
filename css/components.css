@@ -249,7 +249,8 @@
 }
 .product-ui-ready .ui-pseudocode.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .product-ui-ready .ui-pseudocode-line[role="button"] { cursor: pointer; border-radius: 2px; }
-.product-ui-ready .ui-pseudocode-line.selected { background: var(--ui-accent-soft); }
+/* The code surface is dark in both themes; a light accent tint hid the text. */
+.product-ui-ready .ui-pseudocode-line.selected { background: color-mix(in srgb, var(--ui-accent) 55%, transparent); outline: 1px solid var(--ui-accent); }
 .product-ui-ready .ui-pseudocode-line:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 .product-ui-ready .ui-provenance-history summary { cursor: pointer; }
 .product-ui-ready .ui-provenance-history pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -428,3 +429,29 @@
   -webkit-mask-image: linear-gradient(to right, transparent, #000 36px);
   mask-image: linear-gradient(to right, transparent, #000 36px);
 }
+
+/* Pseudocode: display-only syntax colours on the dark code surface. */
+.product-ui-ready .ui-pseudocode .tok-kw { color: #f0a6c9; font-weight: 600; }
+.product-ui-ready .ui-pseudocode .tok-type { color: #7fd1c7; }
+.product-ui-ready .ui-pseudocode .tok-fn { color: #9ec7ff; }
+.product-ui-ready .ui-pseudocode .tok-num { color: #f2c27b; }
+.product-ui-ready .ui-pseudocode .tok-str { color: #b5de8c; }
+.product-ui-ready .ui-pseudocode .tok-cmt { color: #8a9a96; font-style: italic; }
+/* The typedef header is folded until asked for; Copy still includes it. */
+.product-ui-ready .ui-pseudocode.fold-prelude:not(.show-prelude) .ui-pseudocode-line.prelude { display: none; }
+.product-ui-ready .ui-pseudocode-line[role="button"]:hover { background: rgb(255 255 255 / 0.06); }
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child { border-radius: 0; border-bottom: 0; }
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child input {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: var(--ui-touch);
+  padding: 0 var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface-2);
+  color: var(--ui-text);
+}
+/* The phone toolbar rule (nowrap + fixed-size children) squeezed the address
+   field to a sliver; this row wraps and lets the field take a full line. */
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child { flex-wrap: wrap; overflow-x: visible; }
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child > input { flex: 1 1 160px; }

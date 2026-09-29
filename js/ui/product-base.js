@@ -38,6 +38,8 @@ const showSections = lazyProductPanel('showSections');
 const showStructure = lazyProductPanel('showStructure');
 const showCandidates = lazyProductPanel('showCandidates');
 const showClass = lazyProductPanel('showClass');
+const showJump = lazyProductPanel('showJump');
+const showSearchPanel = lazyProductPanel('showSearch');
 
 const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -568,10 +570,10 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const routeSignal = routeContext.signal || fallbackRouteController.signal;
   const queryScope = createChildTaskScope(routeSignal);
 
-  const showRows = (items, renderRow, emptyText) => {
+  const showRows = (items, renderRow, emptyText, emptyAction = null) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
-    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
+    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
     if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
@@ -593,7 +595,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
       try {
         const items = await matchingFunctionItems(app, q, { signal: signal, limit: 200 });
         if (!current()) return;
-        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
+          // A word that is not a function name is often in a string: offer that search.
+          q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null);
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('検索できませんでした', 'Search failed'), String(err?.message || err)));
       }
@@ -1342,6 +1346,98 @@ function renderAdvanced(app) {
   return { root: s.root };
 }
 
+/*
+ * The address bar used to be read-only text. Each part now does what it
+ * shows: the address jumps, the section name switches sections, the function
+ * name opens that function, and 検索 reaches instruction / byte / number
+ * search, which had no entry point once the old toolbar buttons were retired.
+ */
+function addressIsMapped(app, addr) {
+  try {
+    const target = BigInt(addr);
+    return (app.store.get('regions') || []).some((r) => r.size > 0n && target >= r.vmAddr && target < r.vmAddr + r.size);
+  } catch { return false; }
+}
+
+function installAddressBar(app, router, addrbar) {
+  if (!addrbar) return () => {};
+  const cur = addrbar.querySelector('#addr-cur');
+  const regionLabel = addrbar.querySelector('#addr-region');
+  const actionable = (node, label, onActivate) => {
+    if (!node) return;
+    node.classList.add('addr-action');
+    node.setAttribute('role', 'button');
+    node.tabIndex = 0;
+    node.setAttribute('aria-label', label);
+    node.title = label;
+    node.addEventListener('click', onActivate);
+    node.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onActivate(event); }
+    });
+  };
+  actionable(cur, text('アドレスへジャンプ', 'Jump to address'), () => requireFile(app, () => showJump(app)));
+  actionable(regionLabel, text('区画を切り替える', 'Switch section'), (event) => requireFile(app, () => {
+    const regions = (app.store.get('regions') || []).filter((r) => r.size > 0n);
+    const current = app.store.get('currentRegion');
+    const r = event.currentTarget.getBoundingClientRect();
+    const items = [...regions].sort((a, b) => Number(!!b.exec) - Number(!!a.exec)).slice(0, 40).map((region) => ({
+      label: (current?.id === region.id ? '✓ ' : '') + region.name + (region.exec ? '' : text('（データ）', ' (data)')),
+      action: () => {
+        app.selectRegion(region, { silent: true });
+        router.navigate('/code/' + region.vmAddr.toString());
+      },
+    }));
+    if (items.length) menu(items, r.left + r.width / 2, r.bottom + 4);
+  }));
+
+  const fn = uiButton('', { cls: 'addr-fn addr-action', ariaLabel: text('この関数を開く', 'Open this function') });
+  fn.hidden = true;
+  cur?.after(fn);
+  let fnStart = null;
+  fn.addEventListener('click', () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); });
+
+  const search = uiButton(text('検索', 'Search'), {
+    cls: 'addr-search',
+    ariaLabel: text('命令・バイト列・数値を検索', 'Search instructions, bytes or numbers'),
+    onClick: () => requireFile(app, () => showSearchPanel(app)),
+  });
+  addrbar.append(search);
+
+  let frame = 0;
+  const update = () => {
+    frame = 0;
+    const region = app.store.get('currentRegion');
+    // Describe the focused line: the selected row while it is on screen,
+    // otherwise the top line (what the bar showed before).
+    const viewer = app.viewer;
+    const row = app.store.get('selectedRow');
+    let addr = null;
+    if (row != null && row >= 0 && viewer?.rowAddress && typeof viewer.topRow === 'function') {
+      const top = Number(viewer.topRow());
+      const visible = Number(viewer.visibleRows?.() ?? 0);
+      if (Number(row) >= top && Number(row) < top + visible) addr = viewer.rowAddress(row);
+    }
+    if (addr == null) addr = app.store.get('currentAddress') ?? null;
+    if (addr != null && cur) cur.textContent = addrHex(addr);
+    const sym = app.symbols;
+    let start = null;
+    if (addr != null && region?.exec && sym?.functionCount) {
+      try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
+    }
+    fnStart = start;
+    if (start == null) { fn.hidden = true; return; }
+    const offset = BigInt(addr) - BigInt(start);
+    fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
+    fn.hidden = false;
+  };
+  const unsubscribe = app.store.subscribe((_state, patch) => {
+    if (!patch || !('currentAddress' in patch || 'selectedRow' in patch || 'currentRegion' in patch || 'fileInfo' in patch)) return;
+    if (!frame) frame = requestAnimationFrame(update);
+  });
+  update();
+  return () => { unsubscribe(); if (frame) cancelAnimationFrame(frame); fn.remove(); search.remove(); };
+}
+
 function symbolAddress(app, name) {
   const sym = app.symbols;
   const names = sym && Array.isArray(sym.names) ? sym.names : [];
@@ -1399,6 +1495,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       case 'help': router.navigate('/help'); return true;
       case 'learn': router.navigate('/learn'); return true;
       case 'advanced': router.navigate('/advanced'); return true;
+      case 'search': requireFile(app, () => showSearchPanel(app)); return true;
+      case 'jump': requireFile(app, () => showJump(app)); return true;
       case 'ai': getAssistant()?.open(); return true;
       case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
       default: return false;
@@ -1419,7 +1517,8 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     if (intent.kind === 'command' && runCommand(intent)) return;
     if (intent.kind === 'address') {
       const addr = parseAddress(intent.value);
-      if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); return; }
+      // Navigate only when the address exists; a failed jump already explained why.
+      if (addr != null) { if (app.goToAddress(addr, { announce: true })) router.navigate('/code/' + addr.toString()); return; }
     }
     if (intent.kind === 'symbol') {
       const addr = symbolAddress(app, intent.value);
@@ -1461,6 +1560,8 @@ export function installProductUI(app) {
   chrome.append(nav);
 
   let lastRouteId = null;
+  let autoHexForData = false;
+  let routingCodeAddress = false;
   const router = new ProductRouter(ROUTES, {
     /*
      * Code first, including before a file exists: the landing state is the
@@ -1488,7 +1589,24 @@ export function installProductUI(app) {
       if (route.route.id === 'code') {
         routeHost.hidden = true;
         const raw = route.params.address;
-        if (raw) { try { app.goToAddress(BigInt(raw), { announce: false, history: false }); } catch { /* invalid deep link */ } }
+        if (raw) {
+          routingCodeAddress = true;
+          try {
+            const target = BigInt(raw);
+            const region = (app.store.get('regions') || []).find((r) => r.size > 0n && target >= r.vmAddr && target < r.vmAddr + r.size);
+            /* Data (a string, a constant) is not code: show its bytes in Hex
+               instead of disassembling it into meaningless instructions. */
+            if (region && !region.exec) {
+              if (app.store.get('currentRegion')?.id !== region.id) app.selectRegion(region, { silent: true });
+              if (app.store.get('displayMode') !== 'hex') { app.setMode?.('hex'); autoHexForData = true; }
+              app.goToAddress(target, { announce: true, history: false });
+            } else {
+              // Leaving data we switched to Hex for: back to assembly for code.
+              if (autoHexForData && region?.exec) { app.setMode?.('asm'); autoHexForData = false; }
+              app.goToAddress(target, { announce: false, history: false });
+            }
+          } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
+        }
         return codeViewState(app);
       }
       routeHost.hidden = false;
@@ -1526,6 +1644,23 @@ export function installProductUI(app) {
       return result;
     };
   }
+  /*
+   * A user-requested jump (goToAddress with announce, which goToFunction and
+   * the sheets' "go there" rows use) moves the code view. When it came from a
+   * sheet opened on another screen, the move happened behind that screen and
+   * looked like nothing happened. Bring Code forward after such a jump.
+   */
+  const originalGoToAddress = typeof app.goToAddress === 'function' ? app.goToAddress : null;
+  if (originalGoToAddress) {
+    app.goToAddress = function goToAddressAndShowCode(addr, options = {}) {
+      // Show Code first: the viewer cannot compute a scroll position while
+      // its view is hidden, and the jump would land on the wrong line.
+      if (options?.announce && !routingCodeAddress && router.current && router.current.route.id !== 'code' && addressIsMapped(app, addr)) {
+        router.navigate('/code');
+      }
+      return originalGoToAddress.call(this, addr, options);
+    };
+  }
   installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
@@ -1552,6 +1687,7 @@ export function installProductUI(app) {
   actions.register('function.open', (addr, tab = 'overview') => router.navigate('/function/' + BigInt(addr).toString() + '/' + tab));
 
   const cleanupViewport = installViewportBridge();
+  const cleanupAddressBar = installAddressBar(app, router, appRoot.querySelector('.addrbar'));
   const shortcut = (event) => {
     const target = event.target;
     const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
@@ -1582,11 +1718,12 @@ export function installProductUI(app) {
   actions.register('ai.ask', (question, options) => assistant?.ask(question, options));
 
   const destroy = () => {
-    router.stop(); cleanupViewport();
+    router.stop(); cleanupViewport(); cleanupAddressBar();
     document.removeEventListener('keydown', shortcut, true);
     document.removeEventListener('hex:file-opened', onFileOpened);
     assistant?.destroy();
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
+    if (originalGoToAddress) app.goToAddress = originalGoToAddress;
     chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };

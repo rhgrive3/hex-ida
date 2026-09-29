@@ -503,6 +503,15 @@ export function menu(items, x, y) {
   m.setAttribute('role', 'menu');
   for (const it of items) {
     if (it === '-') { m.append(el('hr')); continue; }
+    /* 見出し（押せない）。長押しで出したとき、どの行のメニューかを示す。 */
+    if (it && it.header != null) {
+      const head = el('div', 'menu-header');
+      head.setAttribute('role', 'presentation');
+      head.append(el('span', 'menu-header-title', it.header));
+      if (it.sub) head.append(el('span', 'menu-header-sub', it.sub));
+      m.append(head);
+      continue;
+    }
     const b = button(it.label, null, () => { closeMenu(); it.action(); });
     b.setAttribute('role', 'menuitem');
     /* まだ押せないものは、消さずに「今は押せない」と見せる（項目が動くと迷うため）。 */

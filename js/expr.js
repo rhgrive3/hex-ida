@@ -1501,8 +1501,11 @@ export function typeName(size, signed) {
   return signed === false ? t.replace('int', 'uint') : t;
 }
 
+// Input is the string scanner's display form (tab/CR/LF already written as
+// \t, \r, \n); keep those escapes instead of doubling their backslash.
 function escapeText(s) {
-  return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').slice(0, 90);
+  return String(s == null ? '' : s).replace(/\\(?![nrt])/g, '\\\\').replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').slice(0, 90);
 }
 
 /* ────────────────────────────────────────────────────────────

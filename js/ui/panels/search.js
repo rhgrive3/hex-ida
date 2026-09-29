@@ -4,6 +4,12 @@ import { numberPattern } from '../numeric-pattern.js';
 import { t } from '../../i18n.js';
 
 const SEARCH_PAGE_LIMIT = 1000;
+// Search can be opened from any screen (the omnibox "> 検索"); a hit is
+// only visible in the code view, so bring that view forward first.
+function showCodeRoute() {
+  const router = typeof window !== 'undefined' ? window.__hexUi?.router : null;
+  if (router && router.current?.route?.id !== 'code') router.navigate('/code');
+}
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 
 export function createSearchPager(queries, snapshot, query) {
@@ -166,7 +172,7 @@ export function showSearch(app) {
         }
       }
       const frag=document.createDocumentFragment();const end=Math.min(items.length,shown+PAGE);
-      for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{sheet.close();app.viewer.goToRow(item.row,'third');app.viewer.mark(item.row);app.viewer.select(item.row,false);app.store.set({selectedRow:item.row});}}));}
+      for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{sheet.close();showCodeRoute();app.viewer.goToRow(item.row,'third');app.viewer.mark(item.row);app.viewer.select(item.row,false);app.store.set({selectedRow:item.row});}}));}
       results.append(frag);addMore();
     };
     if(items.length)void page();

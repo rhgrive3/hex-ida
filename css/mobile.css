@@ -58,6 +58,8 @@
   /* Phone code view: address + assembly. Bytes remain available in Hex mode. */
   .product-ui-ready .ui-code-route .addrbar { min-height: 34px; padding-block: 3px; }
   .product-ui-ready .ui-code-route .addr-range { display: none; }
+  /* The range is hidden here, so the search button takes the free space itself. */
+  .product-ui-ready .ui-code-route .addrbar .addr-search { margin-left: auto; }
   /* Only in assembly mode: Hex mode keeps its 16進 / 文字 headings. */
   .product-ui-ready .ui-code-route .colhead.mode-asm-head .c-hex,
   .product-ui-ready .ui-code-route .viewport.mode-asm .c-hex { display: none; }
