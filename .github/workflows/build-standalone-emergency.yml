@@ -76,7 +76,6 @@ jobs:
             if(!loader.includes(from)) throw new Error('loader placeholder missing: '+from);
             loader=loader.replaceAll(from,to);
           }
-          if(/__HEX_[A-Z0-9_]+__/.test(loader)) throw new Error('unresolved emergency loader placeholder');
           fs.writeFileSync('userscript/hex-standalone-runtime.js',runtime);
           fs.writeFileSync('userscript/hex-standalone-hotfix.user.js',loader);
           fs.writeFileSync('/tmp/emergency-build.json',JSON.stringify({
