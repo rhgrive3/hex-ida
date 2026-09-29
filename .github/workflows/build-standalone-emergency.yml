@@ -90,13 +90,18 @@ jobs:
           if [[ $code -ne 0 ]]; then
             exit $code
           fi
-      - name: Verify generated emergency artifacts
+      - name: Verify emergency loader syntax
+        run: node --check userscript/hex-standalone-hotfix.user.js
+      - name: Verify emergency runtime syntax
+        timeout-minutes: 2
+        run: node --check userscript/hex-standalone-runtime.js
+      - name: Verify emergency runtime hash
+        shell: bash
+        run: test "$(sha256sum userscript/hex-standalone-runtime.js | awk '{print $1}')" = "$(jq -r .runtimeSha256 /tmp/emergency-build.json)"
+      - name: Verify canonical outputs stayed unchanged
         shell: bash
         run: |
           set -euo pipefail
-          node --check userscript/hex-standalone-hotfix.user.js
-          node --check userscript/hex-standalone-runtime.js
-          test "$(sha256sum userscript/hex-standalone-runtime.js | awk '{print $1}')" = "$(jq -r .runtimeSha256 /tmp/emergency-build.json)"
           git diff --check
           git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
       - name: Commit emergency artifacts
