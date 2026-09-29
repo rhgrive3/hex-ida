@@ -40,7 +40,7 @@
     {
       "binding": "AUTH_DB",
       "database_name": "hex-auth",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "9a1398ca-58e4-4003-9bc4-a203779330a5",
       "migrations_dir": "migrations/auth"
     }
   ]
