@@ -1,0 +1,116 @@
+name: Build standalone Hex emergency runtime
+
+on:
+  push:
+    branches: [hotfix/live-2213-runtime-worker]
+    paths:
+      - .github/workflows/build-standalone-emergency.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/live-2213-runtime-worker
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact dependencies
+        timeout-minutes: 4
+        run: npm ci --silent --no-audit --no-fund
+      - name: Capture canonical protected runtime
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/build-userscript.mjs')
+          s=p.read_text()
+          needle="  const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-runtime', graph: 'standard' });"
+          repl=needle+"\n  await writeFile(resolve(generated, 'standalone-runtime.js'), runtime);"
+          if needle not in s:
+              raise SystemExit('runtime capture insertion point missing')
+          p.write_text(s.replace(needle,repl,1))
+          PY
+          npm run userscript:build >/tmp/standalone-build.log 2>&1
+          git restore -- scripts/build-userscript.mjs js/userscript/deployment-identity.generated.js
+      - name: Generate pinned emergency loader
+        timeout-minutes: 2
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { pathToFileURL } from 'node:url';
+
+          const runtimePath='.runtime-build/standalone-runtime.js';
+          const runtime=fs.readFileSync(runtimePath);
+          const hash=crypto.createHash('sha256').update(runtime).digest('hex');
+          const release=JSON.parse(fs.readFileSync('userscript/release-version.json','utf8'));
+          const secrets=await import(pathToFileURL(path.resolve('.runtime-build/runtime-secrets.js')).href+'?emergency='+Date.now());
+          const privileged=secrets.RUNTIME_BUILD?.manifest?.privileged;
+          if(!privileged || typeof privileged.buildId!=='string') throw new Error('privileged manifest unavailable');
+          if(release.buildId!==secrets.RUNTIME_BUILD.manifest.buildId) throw new Error('release/runtime build identity mismatch');
+          if(hash!==secrets.RUNTIME_BUILD.manifest.contentHash) throw new Error('captured runtime hash mismatch');
+
+          let loader=fs.readFileSync('userscript/hex-standalone-hotfix.template.js','utf8');
+          const replacements=new Map([
+            ['__HEX_EMERGENCY_VERSION__', '2.0.'+release.serial+'.1'],
+            ['__HEX_RUNTIME_SHA256__', hash],
+            ['__HEX_RUNTIME_BYTES__', String(runtime.byteLength)],
+            ['__HEX_LOADER_VERSION__', '2.0.'+release.serial],
+            ['__HEX_BUILD_ID__', release.buildId],
+            ['__HEX_PRIVILEGED_MANIFEST__', JSON.stringify(privileged)],
+          ]);
+          for(const [from,to] of replacements){
+            if(!loader.includes(from)) throw new Error('loader placeholder missing: '+from);
+            loader=loader.replaceAll(from,to);
+          }
+          if(/__HEX_[A-Z0-9_]+__/.test(loader)) throw new Error('unresolved emergency loader placeholder');
+          fs.writeFileSync('userscript/hex-standalone-runtime.js',runtime);
+          fs.writeFileSync('userscript/hex-standalone-hotfix.user.js',loader);
+          fs.writeFileSync('/tmp/emergency-build.json',JSON.stringify({
+            runtimeBytes:runtime.byteLength,
+            runtimeSha256:hash,
+            buildId:release.buildId,
+            loaderVersion:'2.0.'+release.serial,
+            privilegedBuildId:privileged.buildId,
+          },null,2));
+          NODE
+      - name: Verify generated emergency artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check userscript/hex-standalone-hotfix.user.js
+          node --check userscript/hex-standalone-runtime.js
+          test "$(sha256sum userscript/hex-standalone-runtime.js | awk '{print $1}')" = "$(jq -r .runtimeSha256 /tmp/emergency-build.json)"
+          git diff --check
+          git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+      - name: Commit emergency artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add userscript/hex-standalone-runtime.js userscript/hex-standalone-hotfix.user.js
+          if git diff --cached --quiet; then
+            echo "Emergency artifacts already current."
+            exit 0
+          fi
+          git commit -m "hotfix(userscript): publish standalone emergency runtime"
+          git push --no-verify origin HEAD:hotfix/live-2213-runtime-worker
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hex-standalone-emergency-build
+          path: /tmp/emergency-build.json
+          if-no-files-found: ignore
+          retention-days: 1
