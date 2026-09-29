@@ -46,6 +46,9 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--ui-space-4);
 }
+/* The grid gap spaces its cards; the stacked-card margin above pushed every
+   card after the first 20px lower than its row neighbour. */
+.product-ui-ready .ui-card-grid > .ui-card + .ui-card { margin-top: 0; }
 .product-ui-ready .ui-lead { margin: 0 0 var(--ui-space-3); line-height: var(--ui-line); }
 .product-ui-ready .ui-metric { margin: 0 0 var(--ui-space-4); font-size: var(--ui-font-lg); font-weight: 700; }
 
