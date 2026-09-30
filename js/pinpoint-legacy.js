@@ -36,6 +36,7 @@ import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './ver
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
 import { isCxxMemberField } from './analysis/cxx/member-index.js';
+import { composePinpointFields } from './pinpoint-fields.js';
 import { vendorsOf, vendorOf, vendorConflicts } from './vendors.js';
 import { evidenceFor as shapeEvidenceFor, byGoal as shapesByGoal } from './shapes.js';
 import { describePurpose, changeAt } from './purpose.js';
@@ -106,7 +107,7 @@ const FIELD_LIKELY_OPTS = Object.freeze({ allowTrustedTwoGroup: true });
 export async function pinpointField(opts) {
   const o = opts || {};
   const goal = o.goal;
-  const fields = o.fields;
+  const fields = composePinpointFields(o.fields, o.cxxFields);
   const progress = o.onProgress || (() => {});
   const cancelled = o.isCancelled || (() => false);
 

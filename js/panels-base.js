@@ -1512,7 +1512,9 @@ export function showOverview(app) {
   function run() {
     // 一度出した結果は取っておく。開き直すたびに走らせ直さない。
     const cached = app.autoReport;
-    if (cached && region && cached.key === region.id && cached.gen === app.symbols.gen) {
+    const publishedCxx = cxxMemberIndexForApp(app);
+    if (cached && region && cached.key === region.id && cached.gen === app.symbols.gen &&
+        (cached.cxxFields || null) === publishedCxx && (cached.cxxRevision || 0) === (publishedCxx?.revision || 0)) {
       renderAutoReport(app, sheet, later, cached.report, region);
       return;
     }
@@ -1529,8 +1531,10 @@ export function showOverview(app) {
       if (cancelled || !sheet.root.isConnected) return;
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
+      const cxxFields = cxxMemberIndexForApp(app);
+      const cxxRevision = cxxFields?.revision || 0;
       const report = await autoAnalyze({
-        cxxFields: cxxMemberIndexForApp(app),
+        cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
@@ -1549,7 +1553,7 @@ export function showOverview(app) {
       });
       box.done();
       if (cancelled || !sheet.root.isConnected) return;
-      app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen };
+      app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
       renderAutoReport(app, sheet, later, report, region);
     }).catch((err) => {
       box.done();
@@ -1595,14 +1599,16 @@ function makeAccessScanner(app, region, signal = null) {
  */
 async function pinnedFor(app, goal, ctx) {
   if (!goal) return null;
+  const cxxFields = cxxMemberIndexForApp(app);
   const report = app.autoReport && app.autoReport.report ? app.autoReport.report : null;
   const fromAuto = report && report.pinned
     ? report.pinned.find((p) => p.goal && p.goal.id === goal.id && p.goal.text === goal.text)
     : null;
-  if (fromAuto) return fromAuto;
+  if (fromAuto && (app.autoReport.cxxFields || null) === cxxFields &&
+      (app.autoReport.cxxRevision || 0) === (cxxFields?.revision || 0)) return fromAuto;
 
   if (!app.pinnedCache) app.pinnedCache = new Map();
-  const key = goal.id + '\u0000' + goal.text + '\u0000' + app.symbols.gen;
+  const key = JSON.stringify([goal.id, goal.text, app.symbols.gen, cxxFields?.snapshotId, cxxFields?.revision]);
   if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
 
   const region = ctx.region;
@@ -1610,6 +1616,7 @@ async function pinnedFor(app, goal, ctx) {
   const common = {
     goal,
     fields: app.fields,
+    cxxFields,
     shapes: ctx.shapes || app.shapes || null,
     program: ctx.program,
     symbols: app.symbols,
@@ -1639,7 +1646,7 @@ async function pinnedFor(app, goal, ctx) {
   };
   const p = (async () => {
     let pin = null;
-    if (app.fields && app.fields.classCount) {
+    if (app.fields?.classCount || cxxFields?.fieldCount) {
       pin = await attempt(() => pinpointField(common));
     }
     /*

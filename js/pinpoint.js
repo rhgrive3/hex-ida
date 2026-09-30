@@ -21,7 +21,6 @@ import {
   groupSites,
 } from './pinpoint-legacy.js';
 import { fuse, decide, explain, starsOf } from './evidence.js';
-import { composePinpointFields } from './pinpoint-fields.js';
 
 export * from './pinpoint-legacy.js';
 
@@ -422,7 +421,6 @@ function preparedOptions(opts) {
   const automaticBatch = opts?.shapes != null && opts?.forceAccessScan !== true;
   return {
     ...(opts || {}),
-    fields: composePinpointFields(opts?.fields, opts?.cxxFields),
     analyze: guardedAnalyze(opts?.analyze, opts),
     scanAccess: automaticBatch ? batchedScanAccess(opts?.scanAccess, opts) : opts?.scanAccess,
   };

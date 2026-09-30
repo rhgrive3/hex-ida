@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { CxxMemberIndex } from '../../../js/analysis/cxx/member-index.js';
 import { createCppReceiverEvidence, createCppMemberEvidence } from '../../../js/analysis/cxx/object-evidence.js';
-import { pinpointField, rerankWithJev } from '../../../js/pinpoint.js';
+import { pinpoint, pinpointField, rerankWithJev } from '../../../js/pinpoint.js';
 import { FieldIndex } from '../../../js/fields.js';
 import { parseGoal } from '../../../js/goals.js';
 import { openProduct } from '../../../tools/validation/public-benchmark/product-host.mjs';
@@ -11,6 +11,7 @@ import { cxxMemberIndexForApp } from '../../../js/analysis/query/app-adapter.js'
 import { composePinpointFields } from '../../../js/pinpoint-fields.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
 import { proofText } from '../../../js/narrate.js';
+import { autoAnalyze } from '../../../js/auto.js';
 
 function projection(className, members, address = 0x1000n) {
   const receiver = createCppReceiverEvidence({
@@ -86,6 +87,24 @@ test('producer-supplied C++ names use existing deterministic evidence without cr
   assert.ok(result.top.evidence.some((e) => e.code === 'access-verified' && e.detail.source === 'cxx'));
   assert.equal(result.top.provenance[0].member.memberName, 'health');
   assert.ok(result.candidates[1].anonymous);
+});
+
+test('the combined public Pinpoint entrypoint enumerates the same canonical C++ members', async () => {
+  const cxxFields = new CxxMemberIndex();
+  cxxFields.publish(projection('Player', [{ memberName: 'health' }, { offsetBytes: 12n }]));
+  const direct = await pinpointField({ goal: parseGoal('health'), cxxFields });
+  const combined = await pinpoint({ goal: parseGoal('health'), cxxFields });
+  assert.deepEqual(combined.field.candidates.map((c) => c.key), direct.candidates.map((c) => c.key));
+  assert.equal(combined.field.top.field, direct.top.field);
+});
+
+test('automatic analysis can enumerate published C++ fields with no ObjC metadata or new analyzer', async () => {
+  const cxxFields = new CxxMemberIndex();
+  cxxFields.publish(projection('Player', [{ memberName: 'health' }]));
+  const report = await autoAnalyze({ cxxFields, deepLimit: 0 });
+  assert.ok(report.stats.pinpointModes.field > 0);
+  assert.ok(report.pinned.some((pin) => pin.top?.source === 'cxx' && pin.top.memberName === 'health'));
+  assert.deepEqual(report.diagnostics, []);
 });
 
 test('synthetic labels cannot become recovered-name evidence or claim a semantic member name', async () => {
