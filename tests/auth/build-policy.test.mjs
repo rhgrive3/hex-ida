@@ -89,10 +89,15 @@ test('privileged graph kind discriminator fails closed', () => {
 });
 
 test('local D1 configuration is usable but production sentinel is explicitly rejected', async () => {
-  const config = JSON.parse(await readFile(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
-  assert.equal(validateAuthConfig(config, { local: true }), true);
-  assert.throws(() => validateAuthConfig(config), /sentinel/);
-  const production = structuredClone(config); production.d1_databases[0].database_id = '11111111-2222-3333-4444-555555555555';
+  const configured = parseJsonc(await readFile(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
+  assert.equal(validateAuthConfig(configured, { local: true }), true);
+  // Deployment can already have a real UUID. Exercise the local sentinel
+  // explicitly instead of assuming the checked-in deployment is unconfigured.
+  const local = structuredClone(configured);
+  local.d1_databases.find((binding) => binding.binding === 'AUTH_DB').database_id = '00000000-0000-0000-0000-000000000000';
+  assert.equal(validateAuthConfig(local, { local: true }), true);
+  assert.throws(() => validateAuthConfig(local), /sentinel/);
+  const production = structuredClone(local); production.d1_databases.find((binding) => binding.binding === 'AUTH_DB').database_id = '11111111-2222-3333-4444-555555555555';
   assert.equal(validateAuthConfig(production), true);
   production.assets.run_worker_first = false; assert.throws(() => validateAuthConfig(production), /Worker|worker/);
 });
@@ -197,4 +202,3 @@ test('#9193 validate-auth-config CLI argument validation rejects unknown options
   assert.equal(validLocalResult.status, 0, 'supported --local must succeed against default config');
   assert.match(validLocalResult.stdout, /Auth deployment configuration validated/);
 });
-

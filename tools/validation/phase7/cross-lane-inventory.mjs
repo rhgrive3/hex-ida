@@ -35,6 +35,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "js/pinpoint.js",
     "reports/investigations/pinpoint-cxx-member-candidates/README.md",
     "scripts/validate-pinpoint-cxx-members.mjs",
+    "tests/auth/build-policy.test.mjs",
   ]),
   "perf/index-repeated-semantic-lookups": Object.freeze([
     ".circleci/config.yml",
