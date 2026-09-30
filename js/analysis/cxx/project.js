@@ -36,6 +36,7 @@ import {
 } from './object-evidence.js';
 import { recoverMemberTypeEvidence } from './member-types.js';
 import { CxxMemberIndex } from './member-index.js';
+import { createPrimaryOwnerResolver } from './primary-owner.js';
 import {
   buildCxxClassEvidence,
   vtableEvidenceFor,
@@ -237,6 +238,7 @@ function indexFromReport(report, symbols) {
     vtables: Object.freeze(vtables),
     vtableClassNames: Object.freeze(vtableClassNames),
     bySlotAddress,
+    primaryOwnerFor: createPrimaryOwnerResolver(report.classes),
     symbolOwners,
     slotCount,
   });
@@ -379,6 +381,22 @@ export function createCxxEvidenceProvider(input = {}) {
           for (const vtableIndex of index.bySlotAddress.get(key) || []) {
             vtables.push(index.vtables[vtableIndex]);
             vtableClassNames.push(index.vtableClassNames[vtableIndex] ?? null);
+          }
+        }
+      }
+
+      // Base implementations may occur in several derived primary tables.
+      // Existing RTTI must prove every referencing owner reaches that base
+      // through one non-virtual path at zero offset before selecting its table.
+      if (new Set(vtableClassNames).size > 1) {
+        const symbol = symbols?.nameAt?.(functionAddress) ?? rawSymbol ?? functionName;
+        const info = analyzeFunctionSymbol(symbol);
+        const owner = !info.isAdjustedThunk
+          ? index.primaryOwnerFor(BigInt(functionAddress), info.className) : null;
+        const aliases = index.symbolOwners?.get(String(functionAddress));
+        if (owner && (!aliases?.size || aliases.size === 1 && aliases.has(owner.className))) {
+          for (let i = vtables.length - 1; i >= 0; i--) {
+            if (vtableClassNames[i] !== owner.className) { vtables.splice(i, 1); vtableClassNames.splice(i, 1); }
           }
         }
       }

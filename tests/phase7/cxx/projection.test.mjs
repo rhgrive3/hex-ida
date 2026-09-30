@@ -93,6 +93,24 @@ async function rttiProbe() {
   return probe;
 }
 
+test('inherited virtual implementation publishes only its RTTI-proven primary declaring owner without new reads', async () => {
+  const probe = await rttiProbe(), provider = providerFor(probe);
+  await provider.build();
+  const address = symbolAddress(probe, '_ZN5Actor6updateEf');
+  assert.notEqual(address, null);
+  const before = provider.stats().reads;
+  const projection = provider.projectForFunction({ functionId: 'fn:actor-update', functionAddress: address,
+    functionName: '_ZN5Actor6updateEf', ir: memberIr([{ offset: 24, size: 4 }]) });
+  assert.ok(projection);
+  assert.equal(projection.receiver.classIdentity.className, 'Actor');
+  assert.equal(projection.receiver.classIdentity.offsetToTop, 0n);
+  assert.equal(isCanonicalCppReceiverEvidence(projection.receiver), true);
+  assert.equal(provider.memberIndex().fieldCount, 1);
+  assert.deepEqual([...provider.memberIndex().classes.keys()].length, 1);
+  assert.equal([...provider.memberIndex().classes.values()][0].name, 'Actor');
+  assert.equal(provider.stats().reads, before);
+});
+
 test('nothing is projected before the slice index is built', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);

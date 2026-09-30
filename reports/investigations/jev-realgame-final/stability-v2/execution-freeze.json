@@ -6,7 +6,7 @@
   "policySha256": "a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59",
   "sourceHashes": {
     "scripts/evaluate-jev-realgame-stability.mjs": "26714f56e5fff80b6946601fd9e2f3d2f7532696c006b015ec576bf5c951eb5e",
-    "scripts/verify-jev-realgame-stability.mjs": "452aeb503a2e8edf4bfe60ca817b13ab020ba46b90a6a6cc05d0ee0c2cf96b4d",
+    "scripts/verify-jev-realgame-stability.mjs": "f16039f37570b6cd10b3f137d4e9d37e33cae2d2062b511400cebc981f3a38fa",
     "scripts/run-jev-stability-controls.mjs": "948cfce8734ac4e403a858664e7564df064c52402e8dc02b82afb4f4c76406c4",
     "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
     "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07",
@@ -64,5 +64,13 @@
     "runtimeOrPromptOrScoringChanged": false,
     "apiCallsRerun": false,
     "allNonVerifierExecutionSourcesMustStillMatchPriorFreeze": true
+  },
+  "explicitHistoricalReplay": {
+    "previousManifestCommit": "79ccf53f44d684d0fdffa485a4fae65b055977ee",
+    "previousManifestSha256": "743c4b3f3332b4e60de3b45d9a709830ef279f945f1e4a03fc79c370d7bd4544",
+    "sourceRevisionMustEqualMeasuredProduct": true,
+    "allSourceBytesMustMatchExactAncestorGitObjects": true,
+    "historicalOnlyResultCannotProveCurrentProduct": true,
+    "numericScoringPolicyOrMeasuredResponsesChanged": false
   }
 }

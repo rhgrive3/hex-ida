@@ -5,6 +5,7 @@ import { decompile } from '../../decompile.js';
 import { irFor } from '../../ir.js';
 import { createCxxEvidenceProvider } from '../cxx/project.js';
 import { createCxxQueryPlanner, recoverCxxQueryMembers } from '../cxx/query-recovery.js';
+import { selectJevRecoveryPlan } from './jev-recovery.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -57,13 +58,22 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     cached={symbolsGen:app.symbols.gen,planner};CXX_QUERY_PLANNERS.set(entry.provider,cached);
   }
   const maxFunctions=options.maxFunctions??8;
-  const plan=cached.planner.plan(phrase,{maxFunctions});
+  const selection=await selectJevRecoveryPlan(phrase,cached.planner,{enabled:options.jevRetrieval===true,
+    client:options.jevClient,signal:options.signal,timeoutMs:options.jevTimeoutMs,maxFunctions,
+    isCurrent:()=>{checkBinding();return true;}});
+  checkBinding();
+  const plan=selection.plan;
   const beforeCount=entry.provider.memberIndex().fieldCount,beforeRevision=entry.provider.memberIndex().revision;
+  if(options.planOnly===true)return {status:'planned',attempted:[],elapsedMs:0,plan,
+    retrievalSource:selection.source,selectedAddress:selection.selectedAddress,selectedClass:selection.selectedClass,
+    functionCount:cached.planner.functionCount,beforeCount,beforeRevision,afterCount:beforeCount,
+    afterRevision:beforeRevision,candidateCount:beforeCount};
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
     decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,queryOptions);checkBinding();return value;}});
   checkBinding();
   const index=cxxMemberIndexForApp(app);
-  return {...result,plan,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
+  return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
+    selectedClass:selection.selectedClass,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
     afterCount:index.fieldCount,afterRevision:index.revision,candidateCount:index.fieldCount};
 }
 

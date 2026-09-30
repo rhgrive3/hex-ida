@@ -53,7 +53,12 @@ test('V2 actual evidence independently replays stable commits and rejects inject
     snapshots: ['openttd', 'openmw'].map(game => JSON.parse(read(`snapshots/${game}.json`))),
     rows: read('results/raw-results.jsonl').toString().trim().split('\n').map(JSON.parse),
     summary: JSON.parse(read('results/summary.json')), controls: JSON.parse(read('controls.json')) };
-  assert.equal(verifyStabilityEvidence(original).valid, true);
+  // V3 development must not relabel V2's measured source as the current head.
+  // Explicit historical replay validates every source byte in the exact
+  // ancestor commit; the default verifier still requires current source.
+  const history = { historicalSourceRevision: original.summary.productSha };
+  assert.equal(verifyStabilityEvidence(original, history).valid, true);
+  assert.throws(() => verifyStabilityEvidence(original, { historicalSourceRevision: '0'.repeat(40) }));
   const index = original.rows.findIndex(row => row.arms.E2.calls.length > 0);
   assert.ok(index >= 0);
   for (const mutate of [
@@ -62,7 +67,7 @@ test('V2 actual evidence independently replays stable commits and rejects inject
     row => { row.arms.ADVISORY.repeatedKeys[0] = 'remote-driven commit'; },
   ]) {
     const rows = [...original.rows]; rows[index] = structuredClone(rows[index]); mutate(rows[index]);
-    assert.throws(() => verifyStabilityEvidence({ ...original, rows }));
+    assert.throws(() => verifyStabilityEvidence({ ...original, rows }, history));
   }
 });
 

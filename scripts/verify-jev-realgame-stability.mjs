@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readJevEvidence } from './read-jev-evidence.mjs';
 import { stablePick, comparisonPool, stabilityRequestBody } from './jev-realgame-stability-contract.mjs';
 import { validateChoice } from './jev-realgame-final-client.mjs';
@@ -12,7 +13,12 @@ import { jevShortlist } from '../js/pinpoint.js';
 import { stabilitySummary } from './evaluate-jev-realgame-stability.mjs';
 import { assertStabilityExecution } from './jev-stability-execution-guard.mjs';
 
-export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, rows, summary, controls }) {
+export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, rows, summary, controls }, { historicalSourceRevision = null } = {}) {
+  if (historicalSourceRevision !== null) {
+    assert.match(historicalSourceRevision, /^[0-9a-f]{40}$/);
+    assert.equal(historicalSourceRevision, summary.productSha, 'historical source must be the measured product');
+    execFileSync('git', ['merge-base', '--is-ancestor', historicalSourceRevision, 'HEAD'], { cwd: new URL('../', import.meta.url) });
+  }
   const cases = JSON.parse(casesBytes), policy = JSON.parse(policyBytes);
   const inputs = new Map(snapshots.flatMap(s => s.rows.map(row => [row.id, row])));
   assert.equal(cases.length, 50); assert.equal(inputs.size, cases.length); assert.equal(rows.length, cases.length);
@@ -25,7 +31,11 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
     for (const file of ['scripts/collect-jev-realgame-stability.mjs', 'scripts/jev-realgame-stability-contract.mjs',
       'js/pinpoint.js', 'js/analysis/query/cxx-semantic-preference.js', 'js/analysis/cxx/object-evidence.js'])
       assert.match(snapshot.sourceHashes[file] ?? '', /^[0-9a-f]{64}$/, 'missing source binding');
-    for (const [file, hash] of Object.entries(snapshot.sourceHashes)) assert.equal(sha256(fs.readFileSync(new URL('../' + file, import.meta.url))), hash, `current source drift: ${file}`);
+    for (const [file, hash] of Object.entries(snapshot.sourceHashes)) {
+      const bytes = historicalSourceRevision === null ? fs.readFileSync(new URL('../' + file, import.meta.url))
+        : execFileSync('git', ['show', `${historicalSourceRevision}:${file}`], { cwd: new URL('../', import.meta.url), maxBuffer: 16 * 1024 * 1024 });
+      assert.equal(sha256(bytes), hash, `source drift: ${file}`);
+    }
   }
   let calls = 0;
   for (const gold of cases) {
@@ -108,7 +118,9 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
     && summary.summaries.ADVISORY.regression === summary.summaries.R1.regression
     && controls != null && controls.rows.every(r => r.committedCorrect === r.total);
   assert.equal(summary.finalPolicy, defaultOn ? 'DEFAULT_ON' : selective ? 'SELECTIVE_DEFAULT_ON' : advisory ? 'OPTIONAL_ADVISORY' : 'NO_GO');
-  return { valid: true, cases: cases.length, verified: cases.filter(c => c.status === 'verified').length, calls, finalPolicy: summary.finalPolicy };
+  return { valid: true, cases: cases.length, verified: cases.filter(c => c.status === 'verified').length, calls,
+    finalPolicy: summary.finalPolicy, ...(historicalSourceRevision === null ? {} : {
+      historicalOnly: true, historicalSourceRevision, provesCurrentProduct: false }) };
 }
 
 function main() {

@@ -1,6 +1,7 @@
 // Explicit interactive recovery planning. This module does not recover,
 // publish, prove ownership, read binary bytes or call an external model.
 import { analyzeFunctionSymbol } from './object-evidence.js';
+import { createPrimaryOwnerResolver } from './primary-owner.js';
 
 const STOP = new Set('a an and are as at be being by current field find for from has have in is it member of on or stored that the this to used value what where which with'.split(' '));
 export function cxxQueryTokens(text) {
@@ -10,6 +11,7 @@ export function cxxQueryTokens(text) {
 
 export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false}={}) {
   const starts=new Set(Array.from(symbols?.funcs??[],String));
+  const primaryOwnerFor=createPrimaryOwnerResolver(classEvidence?.classes??[]);
   const owners=new Map();
   for(const cls of classEvidence?.classes??[]) {
     if(!cls.className)continue;
@@ -25,13 +27,14 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     const info=analyzeFunctionSymbol(symbols.names[i]);const names=owners.get(String(address));
     // Planning never resolves conflicting ownership or treats an ordinary
     // qualified symbol as proof that a method is non-static.
-    if(info.isAdjustedThunk||names?.size>1){blocked.add(String(address));records.delete(String(address));continue;}
+    const declaringOwner=names?.size>1&&!info.isAdjustedThunk?primaryOwnerFor(BigInt(address),info.className):null;
+    if(info.isAdjustedThunk||names?.size>1&&!declaringOwner){blocked.add(String(address));records.delete(String(address));continue;}
     const symbolProof=info.isConstructor||info.isDestructor||info.isConstMember;
-    if(!symbolProof&&names?.size!==1)continue;
-    const className=names?.size===1?[...names][0]:info.className;
+    if(!symbolProof&&names?.size!==1&&!declaringOwner)continue;
+    const className=declaringOwner?.className??(names?.size===1?[...names][0]:info.className);
     if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
     const row={address:BigInt(address),className,methodName:info.methodName??'',symbolName:symbols.names[i],
-      proof:symbolProof?'non-static-symbol':'unique-vtable-owner',
+      proof:declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
       classTokens:cxxQueryTokens(className),methodTokens:info.isConstructor||info.isDestructor?[]:cxxQueryTokens(info.methodName)};
     const previous=records.get(String(address));
     if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
@@ -43,21 +46,50 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     const className=[...names][0];records.set(key,{address:BigInt(key),className,methodName:'',symbolName:null,
       proof:'unique-vtable-owner',classTokens:cxxQueryTokens(className),methodTokens:[]});
   }
-  const rows=[...records.values()];
+  const rows=[...records.values()].map(row=>Object.freeze({...row,
+    classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}));
+  const scoreRows=phrase=>{
+    const tokens=new Set(cxxQueryTokens(phrase));
+    return rows.map(row=>{
+      const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
+      const leaf=row.className.split('::').at(-1);
+      const exactObject=cxxQueryTokens(leaf).length===1&&tokens.has(leaf.toLowerCase());
+      return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
+        specificity:classHits.length/Math.max(1,row.classTokens.length)};
+    }).sort((a,b)=>b.score-a.score||b.specificity-a.specificity
+      ||b.methodHits.length-a.methodHits.length||(a.address<b.address?-1:a.address>b.address?1:0));
+  };
   return Object.freeze({
     functionCount:rows.length,
+    // Existing release functions only. Round-robin owners prevent one large
+    // class from consuming the external selector's entire 255-choice budget.
+    choices(phrase,{maxChoices=255}={}) {
+      if(!Number.isSafeInteger(maxChoices)||maxChoices<1||maxChoices>255)throw new Error('C++ recovery choice budget must be 1..255');
+      const groups=new Map();
+      for(const row of scoreRows(phrase)) {
+        const group=groups.get(row.className)??[];group.push(row);groups.set(row.className,group);
+      }
+      const result=[];
+      for(let depth=0;result.length<maxChoices;depth++) {
+        let added=false;
+        for(const group of groups.values()) {
+          if(group[depth]){result.push(Object.freeze(group[depth]));added=true;}
+          if(result.length===maxChoices)break;
+        }
+        if(!added)break;
+      }
+      return Object.freeze(result);
+    },
+    planOwner(phrase,className,{maxFunctions=8,firstAddress=null}={}) {
+      if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
+      const selected=scoreRows(phrase).filter(row=>row.className===className);
+      const first=selected.find(row=>row.address===firstAddress);
+      if(first)selected.splice(selected.indexOf(first),1);
+      return Object.freeze((first?[first,...selected]:selected).slice(0,maxFunctions).map(Object.freeze));
+    },
     plan(phrase,{maxFunctions=8}={}) {
       if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
-      const tokens=new Set(cxxQueryTokens(phrase));
-      return Object.freeze(rows.map(row=>{
-        const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
-        const leaf=row.className.split('::').at(-1);
-        const exactObject=cxxQueryTokens(leaf).length===1&&tokens.has(leaf.toLowerCase());
-        return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
-          specificity:classHits.length/Math.max(1,row.classTokens.length)};
-      }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||b.specificity-a.specificity
-        ||b.methodHits.length-a.methodHits.length
-        ||(a.address<b.address?-1:a.address>b.address?1:0)).slice(0,maxFunctions).map(Object.freeze));
+      return Object.freeze(scoreRows(phrase).filter(row=>row.score>0).slice(0,maxFunctions).map(Object.freeze));
     },
   });
 }
