@@ -63,18 +63,22 @@ try {
   // A first publication can arrive while the query still runs. Closing at
   // that point cancels the rest and can leave only one candidate, making the
   // two-candidate advisory ineligible. Wait for the production completion.
-  await page.waitForFunction(()=>!window.__recoverySheet.isConnected,null,{timeout:30000});
+  // Sheet.close() parks the old sheet as history when the next result opens;
+  // it deliberately remains connected. Observe the actual visible-sheet
+  // transition instead of waiting for its history node to be destroyed.
+  await page.waitForFunction(()=>window.__recoverySheet.classList.contains('parked')
+    && document.querySelector('#overlays .sheet:not(.parked)')!==window.__recoverySheet,null,{timeout:30000});
   const fields=await page.evaluate(async()=>{
     const {cxxMemberIndexForApp}=await import('/js/analysis/query/app-adapter.js');
     return [...cxxMemberIndexForApp(window.__app).classes.values()].flatMap(c=>c.ivars.map(f=>({anonymous:f.anonymous,offset:f.offset,size:f.size})));
   });
-  assert.ok(fields.length>0);assert.ok(fields.every(f=>f.anonymous&&f.offset>=0&&f.size>0));
+  assert.ok(fields.length>=2,'completed fixture recovery must support candidate comparison');assert.ok(fields.every(f=>f.anonymous&&f.offset>=0&&f.size>0));
   assert.equal(remoteCalls,0,'explicit recovery must remain local with Jev disabled');
   await page.evaluate(async()=>{const {closeAllSheets}=await import('/js/ui.js');closeAllSheets();});
   await open('unrelated musical tune');
   const advisory=page.getByText(/^(Ask Jev for an alternative \(optional\)|Jevに別案を聞く（任意）)$/);
   await advisory.waitFor({state:'visible',timeout:30000});
-  const originalText=await page.locator('#overlays .sheet:last-child').innerText();
+  const originalText=await page.locator('#overlays .sheet:not(.parked)').innerText();
   assert.equal(remoteCalls,0,'rendering an optional action must not call Jev');
   await advisory.click();await page.getByLabel('OpenJev API key').fill('test-key');
   allowAdvisory=true;
@@ -83,7 +87,7 @@ try {
   assert.equal(remoteCalls,1,'only an explicit comparison calls Jev');
   assert.equal(await page.getByLabel('OpenJev API key').inputValue(),'');
   await page.getByRole('button',{name:/^(Back|戻る)$/}).last().click();
-  assert.equal(await page.locator('#overlays .sheet:last-child').innerText(),originalText,'advisory must not replace or mutate the main result');
+  assert.equal(await page.locator('#overlays .sheet:not(.parked)').innerText(),originalText,'advisory must not replace or mutate the main result');
   assert.deepEqual(errors,[]);
   console.log(`C++ query/advisory production DOM: PASS (WebKit, ${fields.length} anonymous fields; local recovery; explicit advisory; main result preserved)`);
 } finally {
