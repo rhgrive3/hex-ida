@@ -2,6 +2,7 @@
 // publish, prove ownership, read binary bytes or call an external model.
 import { analyzeFunctionSymbol } from './object-evidence.js';
 import { createPrimaryOwnerResolver } from './primary-owner.js';
+import { createCppTypedArgumentEvidence } from './typed-argument.js';
 
 const STOP = new Set('a an and are as at be being by current field find for from has have in is it member of on or stored that the this to used value what where which with'.split(' '));
 export function cxxQueryTokens(text) {
@@ -19,6 +20,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
   if(!['legacy','value-accessor-v3'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
   const valueAccessors=planningPolicy==='value-accessor-v3';
   const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
+  const typedClassNames=new Set((classEvidence?.classes??[]).map(cls=>cls.className).filter(Boolean));
   const extentFor=address=>{
     if(!valueAccessors)return null;
     const end=symbols?.declaredFunctionEnd?.(address);
@@ -34,22 +36,31 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       const key=String(slot.address);const names=owners.get(key)??new Set();names.add(cls.className);owners.set(key,names);
     }
   }
-  const records=new Map(),blocked=new Set();
+  const records=new Map(),blocked=new Set(),argumentAliases=new Map();
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs[i];if(address==null||!starts.has(String(address)))continue;
     if(blocked.has(String(address)))continue;
+    const argumentProof=valueAccessors?createCppTypedArgumentEvidence({symbol:symbols.names[i],functionAddress:BigInt(address)}):null;
+    if(valueAccessors) {
+      const key=String(address),kind=argumentProof?.className??null;
+      if(argumentAliases.has(key)&&argumentAliases.get(key)!==kind&&(kind||argumentAliases.get(key))) {
+        blocked.add(key);records.delete(key);continue;
+      }
+      argumentAliases.set(key,kind);
+    }
     const info=analyzeFunctionSymbol(symbols.names[i]);const names=owners.get(String(address));
     // Planning never resolves conflicting ownership or treats an ordinary
     // qualified symbol as proof that a method is non-static.
     const declaringOwner=names?.size>1&&!info.isAdjustedThunk?primaryOwnerFor(BigInt(address),info.className):null;
     if(info.isAdjustedThunk||names?.size>1&&!declaringOwner){blocked.add(String(address));records.delete(String(address));continue;}
     const symbolProof=info.isConstructor||info.isDestructor||info.isConstMember;
-    if(!symbolProof&&names?.size!==1&&!declaringOwner)continue;
-    const className=declaringOwner?.className??(names?.size===1?[...names][0]:info.className);
+    if(!symbolProof&&names?.size!==1&&!declaringOwner&&!argumentProof)continue;
+    const className=declaringOwner?.className??(names?.size===1?[...names][0]:argumentProof?.className??info.className);
     if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
-    const row={address:BigInt(address),className,methodName:info.methodName??'',symbolName:symbols.names[i],
-      proof:declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
-      classTokens:tokensFor(className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(info.methodName),
+    const methodName=argumentProof?.functionName??info.methodName??'';
+    const row={address:BigInt(address),className,methodName,symbolName:symbols.names[i],
+      proof:argumentProof?'release-typed-object-argument':declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
+      classTokens:tokensFor(className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(methodName),
       declaredSizeBytes:extentFor(BigInt(address))};
     const previous=records.get(String(address));
     if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
@@ -62,7 +73,9 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       proof:'unique-vtable-owner',classTokens:tokensFor(className),methodTokens:[],declaredSizeBytes:extentFor(BigInt(key))});
   }
   const rows=[...records.values()].map(row=>Object.freeze({...row,
-    classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}));
+    classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}))
+    .filter(row=>row.proof!=='release-typed-object-argument'
+      ||typedClassNames.has(row.className));
   const scoreRows=phrase=>{
     const tokens=new Set(tokensFor(phrase));
     return rows.map(row=>{

@@ -18,6 +18,9 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Actual reviewed integration inventory, including the native SSA repair.
   // Only Phase 8-owned paths reach its canonical validator.
   "integration/jev-realgame-final": Object.freeze([
+    "tests/phase7/cxx/typed-argument-binding.test.mjs",
+    "tests/phase7/cxx/typed-argument.test.mjs",
+    "js/analysis/cxx/typed-argument.js",
     "reports/investigations/jev-realgame-final/development-v3/queries-openmw.json",
     "reports/investigations/jev-realgame-final/development-v3/queries-openttd.json",
     "reports/investigations/jev-realgame-final/development-v3/selection-receipt.json",

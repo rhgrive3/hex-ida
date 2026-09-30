@@ -39,8 +39,15 @@ try {
     }
     return originalPublish.call(this,projection);
   };
-  const rows=[];
+  const rows=[],metadataRows=[];
   for(const c of manifest.cases) {
+    if(arm==='hex-value') {
+      let choices=[],body=null;
+      const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
+        planningPolicy:'value-accessor-v3',jevRetrieval:true,
+        jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
+      metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
+    }
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const receipt=selected.get(c.id);
     const replayClient={call:async input=>{
@@ -78,8 +85,15 @@ try {
     arm,selectionSha256:sha256(fs.readFileSync(selectionFile)),remoteRetrievalExecution:'validated-live-response-replay',
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
-      ['scripts/collect-jev-recovery-development.mjs','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
+      ['scripts/collect-jev-recovery-development.mjs','js/analysis/cxx/typed-argument.js','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
         'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/cxx/project.js','js/analysis/query/app-adapter.js',
         'js/decompiler/pipeline-core.js','js/decompiler/value-dependency.js']
         .map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),collection,rows});
+  if(metadataRows.length)persistentWrite(`${destination}.metadata.json`,{
+    schema:'hex-jev-recovery-metadata-audit/v3',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
+    planningPolicy:'value-accessor-v3',productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
+    binarySha256,queriesSha256:sha256(queryBytes),profile:product.profile,
+    sourceHashes:Object.fromEntries(['js/analysis/cxx/typed-argument.js','js/analysis/cxx/primary-owner.js','js/analysis/cxx/project.js',
+      'js/analysis/cxx/query-recovery.js','js/analysis/query/app-adapter.js','js/analysis/query/jev-recovery.js',
+      'scripts/collect-jev-recovery-development.mjs'].map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),rows:metadataRows});
 } finally {CxxMemberIndex.prototype.publish=originalPublish;await product.close();}

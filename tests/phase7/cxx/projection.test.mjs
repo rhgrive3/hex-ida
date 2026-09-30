@@ -293,6 +293,22 @@ test('a free function taking an object pointer projects nothing', async () => {
   assert.equal(provider.stats().unproven >= 1, true);
 });
 
+test('typed ABI input recovery uses a real compiled global function without inventing this', async () => {
+  const probe=await rttiProbe(),provider=providerFor(probe);await provider.build();
+  const symbol='_Z10readHealthP6Entity',address=symbolAddress(probe,symbol);
+  assert.notEqual(address,null);
+  const beforeReads=provider.stats();
+  const projection=provider.projectForFunction({functionId:'fn:typed-health',functionAddress:address,
+    functionName:symbol,enableTypedArguments:true,ir:memberIr([{offset:8,size:4}])});
+  assert.ok(projection);assert.ok(isCanonicalCppReceiverEvidence(projection.receiver));
+  assert.equal(projection.receiver.receiverRole,'typed-argument');
+  assert.equal(projection.receiver.nonStaticProof,null);
+  assert.equal(projection.receiver.classIdentity.className,'Entity');
+  assert.equal(projection.members[0].offsetBytes,8n);
+  assert.equal(provider.memberIndex().fieldCount,1);
+  assert.equal(provider.stats().builds,beforeReads.builds,'projection must not rebuild class analysis');
+});
+
 test('a proven member projects canonical member evidence for its field accesses', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);

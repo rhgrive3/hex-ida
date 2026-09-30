@@ -43,7 +43,7 @@ export function cxxSemanticViews(candidates, symbols) {
       if (!isCanonicalCppReceiverEvidence(receiver) || !isCanonicalCppMemberEvidence(member)
         || member.receiverDigest !== receiver.digest || member.functionId !== receiver.functionId
         || member.snapshotId !== receiver.snapshotId || member.offsetBytes !== BigInt(field.offset)
-        || member.sizeBytes !== field.size || receiver.receiverRole !== 'this') continue;
+        || member.sizeBytes !== field.size || !['this','typed-argument'].includes(receiver.receiverRole)) continue;
       const owner = receiver.classIdentity;
       const ownerKey = owner?.kind === 'named'
         ? JSON.stringify([receiver.snapshotId, 'named', owner.className])

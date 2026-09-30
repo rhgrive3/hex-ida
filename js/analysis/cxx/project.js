@@ -37,6 +37,7 @@ import {
 import { recoverMemberTypeEvidence } from './member-types.js';
 import { CxxMemberIndex } from './member-index.js';
 import { createPrimaryOwnerResolver } from './primary-owner.js';
+import { createCppTypedArgumentEvidence } from './typed-argument.js';
 import {
   buildCxxClassEvidence,
   vtableEvidenceFor,
@@ -193,22 +194,27 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
  * point at, so per-function lookup is O(1) instead of scanning every slot of
  * every class.
  */
-function indexFromReport(report, symbols) {
+function indexFromReport(report, symbols, architecture) {
   // Only aliased addresses need extra ownership scrutiny. This one metadata
   // walk never reads code or runs an analysis pass; name parsing is restricted
   // to duplicates, and the temporary first-name map is not retained.
-  const symbolOwners = new Map(),firstSymbol = new Map();
+  const symbolOwners = new Map(),firstSymbol = new Map(),typedArguments=new Map();
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs?.[i];if(address==null)continue;
     const key=String(address),name=symbols.names[i];
-    if(!firstSymbol.has(key)){firstSymbol.set(key,name);continue;}
+    const argumentProof=/^_Z\d/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
+    if(!firstSymbol.has(key)){
+      firstSymbol.set(key,name);if(argumentProof)typedArguments.set(key,argumentProof);continue;
+    }
+    const priorArgument=typedArguments.get(key);
+    if(priorArgument&&(!argumentProof||argumentProof.className!==priorArgument.className))typedArguments.delete(key);
     const names=symbolOwners.get(key)??new Set();
     for(const value of [firstSymbol.get(key),name]) {
       const info=analyzeFunctionSymbol(value);if(info.className)names.add(info.className);
     }
     if(names.size)symbolOwners.set(key,names);
   }
-  const vtables = [];
+  const vtables = [],typedClasses=new Map();
   const vtableClassNames = [];
   const bySlotAddress = new Map();
   let slotCount = 0;
@@ -219,6 +225,13 @@ function indexFromReport(report, symbols) {
     const vtableIndex = vtables.length;
     vtables.push(vtable);
     vtableClassNames.push(typeof record.className === 'string' ? record.className : null);
+    if(record.className&&vtable.offsetToTop===0n) {
+      const owner={kind:'named',className:record.className,vtableAddress:vtable.vtableAddress,
+        typeinfoAddress:vtable.typeinfo??null,offsetToTop:0n};
+      if(!typedClasses.has(record.className))typedClasses.set(record.className,owner);
+      else if(typedClasses.get(record.className)?.vtableAddress!==owner.vtableAddress
+        ||typedClasses.get(record.className)?.typeinfoAddress!==owner.typeinfoAddress)typedClasses.set(record.className,null);
+    }
     for (const slot of vtable.slots) {
       if (slot.address == null) continue;
       slotCount++;
@@ -240,6 +253,8 @@ function indexFromReport(report, symbols) {
     bySlotAddress,
     primaryOwnerFor: createPrimaryOwnerResolver(report.classes),
     symbolOwners,
+    typedArguments,
+    typedClasses,
     slotCount,
   });
 }
@@ -321,7 +336,7 @@ export function createCxxEvidenceProvider(input = {}) {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report,symbols) : EMPTY_INDEX;
+        index = report ? indexFromReport(report,symbols,architecture) : EMPTY_INDEX;
         return index;
       })();
       try {
@@ -346,6 +361,7 @@ export function createCxxEvidenceProvider(input = {}) {
         rawSymbol = null,
         ir = null,
         metadata = {},
+        enableTypedArguments = false,
       } = request;
       if (index) attempts++;
 
@@ -403,6 +419,14 @@ export function createCxxEvidenceProvider(input = {}) {
 
       let report;
       try {
+        const typed=index.typedArguments?.get(String(functionAddress));
+        const symbol=symbols?.nameAt?.(functionAddress)??rawSymbol??functionName;
+        const argumentOwner=index.typedClasses?.get(typed?.className);
+        if(enableTypedArguments===true&&typed&&vtables.length) {
+          unproven++;return bind(null); // folded global/virtual identities stay ambiguous
+        }
+        const currentArgument=enableTypedArguments===true&&typed&&argumentOwner
+          ?createCppTypedArgumentEvidence({symbol,functionAddress:BigInt(functionAddress),architecture}):null;
         report = extractCppObjectEvidence({
           functionId: functionId != null ? String(functionId) : `sub_${BigInt(functionAddress).toString(16)}`,
           functionAddress,
@@ -414,6 +438,8 @@ export function createCxxEvidenceProvider(input = {}) {
           metadata,
           snapshotId,
           architecture,
+          typedArgumentProof:currentArgument?.className===typed?.className?currentArgument:null,
+          typedArgumentClassIdentity:argumentOwner??null,
         });
       } catch {
         unproven++;

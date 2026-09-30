@@ -70,7 +70,8 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     functionCount:cached.planner.functionCount,beforeCount,beforeRevision,afterCount:beforeCount,
     afterRevision:beforeRevision,candidateCount:beforeCount};
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
-    decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,queryOptions);checkBinding();return value;}});
+    decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,
+      {...queryOptions,typedArgumentRecovery:planningPolicy==='value-accessor-v3'});checkBinding();return value;}});
   checkBinding();
   const index=cxxMemberIndexForApp(app);
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
@@ -1224,6 +1225,7 @@ export function createAppAnalysisQueryAdapter(app) {
                 functionAddress: address != null ? BigInt(address) : null,
                 functionName: address == null ? null : app?.symbols?.nameAt?.(address),
                 ir:projectionIr,
+                enableTypedArguments:options.typedArgumentRecovery===true,
               });
             } catch {
               cxxEvidence = null;

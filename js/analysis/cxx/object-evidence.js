@@ -11,6 +11,7 @@
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { demangleCxx, readableName, isMangled } from '../../rtti.js';
+import { isCanonicalCppTypedArgumentEvidence } from './typed-argument.js';
 
 export const CPP_OBJECT_EVIDENCE_VERSION = '1.0.0';
 
@@ -26,6 +27,34 @@ const canonicalCppMemberEvidence = new WeakSet();
 
 export function isCanonicalCppReceiverEvidence(value) {
   return value !== null && typeof value === 'object' && canonicalCppReceiverEvidence.has(value);
+}
+
+// A typed input object is a separate ABI role. It does not establish that a
+// free function is a member, and consumers of `this` must keep rejecting it.
+export function createCppTypedArgumentReceiverEvidence(input = {}) {
+  const proof=input.argumentProof;
+  if(!isCanonicalCppTypedArgumentEvidence(proof))fail('cpp-typed-argument-proof-required');
+  // Itanium named types include enums. A pointer signature alone therefore
+  // cannot establish a class: require the independently recovered primary
+  // class identity, supplied by the slice's existing vtable/RTTI index.
+  const owner=input.classIdentity;
+  if(owner?.kind!=='named'||owner.className!==proof.className||owner.offsetToTop!==0n
+    ||typeof owner.vtableAddress!=='bigint'||owner.vtableAddress<=0n)fail('cpp-typed-argument-class-proof-required');
+  const functionId=typeof input.functionId==='string'&&input.functionId.trim()
+    ?input.functionId.trim():fail('cpp-receiver-function-id-required');
+  const functionAddress=nonNegativeBigInt(input.functionAddress,'cpp-receiver-function-address');
+  if(functionAddress!==proof.functionAddress)fail('cpp-typed-argument-function-binding');
+  if(input.canonicalValueId==null||!['string','number'].includes(typeof input.canonicalValueId))fail('cpp-receiver-canonical-value-id-required');
+  const snapshotId=typeof input.snapshotId==='string'&&input.snapshotId.trim()
+    ?input.snapshotId.trim():fail('cpp-receiver-snapshot-id-required');
+  const record={schema:CPP_RECEIVER_SCHEMA,functionId,functionAddress,
+    canonicalValueId:input.canonicalValueId,receiverRole:'typed-argument',
+    classIdentity:createCppClassIdentity(owner),
+    argumentProof:proof,nonStaticProof:null,
+    abiBinding:{architecture:proof.architecture,register:proof.register,argumentIndex:proof.argumentIndex},
+    completeness:'complete',snapshotId,uncertainty:null};
+  record.digest=stableDigest(record);
+  const canonical=deepFreeze(record);canonicalCppReceiverEvidence.add(canonical);return canonical;
 }
 
 export function isCanonicalCppVirtualSlotEvidence(value) {
@@ -487,7 +516,26 @@ export function extractCppObjectEvidence(context = {}) {
     metadata = {},
     snapshotId = 'snapshot_default',
     architecture = 'arm64',
+    typedArgumentProof = null,
+    typedArgumentClassIdentity = null,
   } = context;
+
+  if(isCanonicalCppTypedArgumentEvidence(typedArgumentProof)
+    &&typedArgumentProof.architecture===architecture
+    &&typedArgumentProof.symbol===(rawSymbol||functionName)
+    &&typedArgumentProof.functionAddress===functionAddress
+    &&metadata.isStatic!==true&&metadata.memberKind!=='static'&&metadata.isAdjustedThunk!==true
+    &&vtables.length===0) {
+    const argumentsAtX0=ir?.values?.filter(v=>v.kind==='arg'
+      &&(v.reg==null||v.reg==='x0')&&(v.reg==='x0'||v.label==='x0'))??[];
+    const arg0=argumentsAtX0.length===1?argumentsAtX0[0]:null;
+    if(arg0) {
+      const receiver=createCppTypedArgumentReceiverEvidence({argumentProof:typedArgumentProof,
+        classIdentity:typedArgumentClassIdentity,functionId,functionAddress,canonicalValueId:arg0.id,snapshotId});
+      return deepFreeze({schema:'cpp-object-evidence-report/v1',functionId,receiver,
+        vtables:[],virtualSlots:[],completeness:'complete',status:'verified-cpp-typed-argument',reason:null});
+    }
+  }
 
   // 1. Symbol and membership analysis
   const symInfo = analyzeFunctionSymbol(functionName || rawSymbol, rawSymbol || functionName);

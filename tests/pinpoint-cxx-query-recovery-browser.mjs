@@ -68,6 +68,15 @@ try {
   // transition instead of waiting for its history node to be destroyed.
   await page.waitForFunction(()=>window.__recoverySheet.classList.contains('parked')
     && document.querySelector('#overlays .sheet:not(.parked)')!==window.__recoverySheet,null,{timeout:30000});
+  // One query may legitimately recover just one proven field. Exercise a
+  // second real local query to obtain the comparison lattice through the UI.
+  await page.evaluate(async()=>{const {closeAllSheets}=await import('/js/ui.js');closeAllSheets();});
+  await open('actor speed');
+  await action.waitFor({state:'visible',timeout:30000});
+  await page.evaluate(()=>{window.__recoverySheet=document.querySelector('#overlays .sheet:not(.parked)');});
+  await action.click();
+  await page.waitForFunction(()=>window.__recoverySheet.classList.contains('parked')
+    && document.querySelector('#overlays .sheet:not(.parked)')!==window.__recoverySheet,null,{timeout:30000});
   const fields=await page.evaluate(async()=>{
     const {cxxMemberIndexForApp}=await import('/js/analysis/query/app-adapter.js');
     return [...cxxMemberIndexForApp(window.__app).classes.values()].flatMap(c=>c.ivars.map(f=>({anonymous:f.anonymous,offset:f.offset,size:f.size})));
