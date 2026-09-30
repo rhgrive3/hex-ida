@@ -54,11 +54,16 @@ try {
   await page.evaluate(async()=>{const {closeAllSheets}=await import('/js/ui.js');closeAllSheets();});
   await open('player health');
   await action.waitFor({state:'visible',timeout:30000});
+  await page.evaluate(()=>{window.__recoverySheet=document.querySelector('#overlays .sheet:last-child');});
   await action.click();
   await page.waitForFunction(async()=>{
     const {cxxMemberIndexForApp}=await import('/js/analysis/query/app-adapter.js');
     return (cxxMemberIndexForApp(window.__app)?.fieldCount??0)>0;
   },null,{timeout:30000});
+  // A first publication can arrive while the query still runs. Closing at
+  // that point cancels the rest and can leave only one candidate, making the
+  // two-candidate advisory ineligible. Wait for the production completion.
+  await page.waitForFunction(()=>!window.__recoverySheet.isConnected,null,{timeout:30000});
   const fields=await page.evaluate(async()=>{
     const {cxxMemberIndexForApp}=await import('/js/analysis/query/app-adapter.js');
     return [...cxxMemberIndexForApp(window.__app).classes.values()].flatMap(c=>c.ivars.map(f=>({anonymous:f.anonymous,offset:f.offset,size:f.size})));

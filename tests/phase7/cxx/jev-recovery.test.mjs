@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCxxQueryPlanner } from '../../../js/analysis/cxx/query-recovery.js';
-import { jevRecoveryRequest, selectJevRecoveryPlan } from '../../../js/analysis/query/jev-recovery.js';
+import { jevRecoveryRequest, selectJevRecoveryPlan, createJevRecoveryClient } from '../../../js/analysis/query/jev-recovery.js';
 
 function planner() {
   return createCxxQueryPlanner({ symbols: { funcs: [1n,2n,3n], addrs: [1n,2n,3n],
@@ -23,6 +23,12 @@ test('semantic retrieval selects only existing proven release functions and agre
   const inconsistent=await selectJevRecoveryPlan('unrelated phrase',p,{enabled:true,isCurrent:()=>true,
     client:{call:async()=>payload(`c${selected}`,`c${other}`)}});
   assert.equal(inconsistent.source,'hex');assert.deepEqual(inconsistent.plan,[]);
+  assert.equal(createJevRecoveryClient({}),null);
+  const http=createJevRecoveryClient({apiKey:'test-key',fetchImpl:async(url,options)=>{
+    assert.equal(url,'https://api.openjev.sh/v1/systemone');
+    assert.ok(!options.body.includes('forbidden_oracle'));assert.ok(!options.body.includes('test-key'));
+    return {ok:false};}});
+  assert.equal(await http.call({query:'count',choices,body:{oracle:'forbidden_oracle'}}),null);
 });
 
 test('disabled, stale, HTTP failure, malformed, invented choices and real timeout preserve the deterministic plan', async () => {

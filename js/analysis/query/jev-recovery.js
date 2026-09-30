@@ -2,6 +2,17 @@
 // choices may direct existing Fast analysis; they cannot prove a field/owner.
 import { demangleCxx } from '../../rtti.js';
 
+export function createJevRecoveryClient({ apiKey, fetchImpl = fetch } = {}) {
+  if (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 4096) return null;
+  return Object.freeze({ async call({ query, choices, signal }) {
+    const response = await fetchImpl('https://api.openjev.sh/v1/systemone', {
+      method: 'POST', headers: { authorization: `Bearer ${apiKey.trim()}`, 'content-type': 'application/json' },
+      body: JSON.stringify(jevRecoveryRequest(query, choices)), signal,
+    });
+    return response.ok ? response.json() : null;
+  } });
+}
+
 export function jevRecoveryRequest(query, choices) {
   const criteria = Object.fromEntries(choices.map((row, index) => [`c${index}`,
     `class: ${row.className.slice(0, 240)} | release method: ${String(row.symbolName
