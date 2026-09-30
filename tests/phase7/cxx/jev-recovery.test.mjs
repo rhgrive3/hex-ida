@@ -2,6 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCxxQueryPlanner } from '../../../js/analysis/cxx/query-recovery.js';
 import { jevRecoveryRequest, selectJevRecoveryPlan, createJevRecoveryClient } from '../../../js/analysis/query/jev-recovery.js';
+import { jevValueFlowRequest } from '../../../js/analysis/query/jev-advisory.js';
+
+test('prospective value-flow descriptions ignore oracle labels and bound canonical machine roles',()=>{
+  const view={className:'Widget',offset:9,size:1,recoveredType:{category:'bool-like',proven:true},
+    sourceFieldName:'SECRET_ORACLE_FIELD',oracle:{name:'SECRET_ORACLE_FIELD'},
+    functionContexts:Array.from({length:80},(_,index)=>({address:String(index+1),
+      name:'_ZN6Widget6updateEb',receiverProven:true,accessRoles:['constant-written','SECRET_ORACLE_FIELD']}))};
+  const body=jevValueFlowRequest('Is the work complete?',[view]);
+  assert.equal(JSON.stringify(body).includes('SECRET_ORACLE_FIELD'),false);
+  assert.equal((body.questions.pick.criteria.c0.match(/store roles:/g)??[]).length,8);
+  assert.ok(body.questions.pick.criteria.c0.includes('constant-written'));
+  assert.equal(view.functionContexts.length,80,'projection must not mutate its input');
+});
 
 function planner() {
   return createCxxQueryPlanner({ symbols: { funcs: [1n,2n,3n], addrs: [1n,2n,3n],

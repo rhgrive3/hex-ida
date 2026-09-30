@@ -22,7 +22,7 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const browser=await webkit.launch();
 try {
   const page=await browser.newPage({locale:'en-US',viewport:{width:1024,height:768}});
-  const errors=[];let remoteCalls=0,allowAdvisory=false;
+  const errors=[];let remoteCalls=0,allowAdvisory=false,remoteChoice=null;
   page.on('pageerror',e=>errors.push(e.message));
   await page.route('https://api.openjev.sh/**',route=>{
     if(route.request().method()==='OPTIONS')return route.fulfill({status:204,headers:{'access-control-allow-origin':'*','access-control-allow-headers':'authorization,content-type'}});
@@ -30,7 +30,8 @@ try {
     const body=route.request().postDataJSON();assert.equal(body.model,'openjev');
     assert.ok(Object.keys(body.questions.pick.criteria).length<=255);
     assert.equal(JSON.stringify(body).includes('test-key'),false);
-    return route.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify({model:'openjev',answers:{pick:{type:'choice',choice:'c0',confidence:.8,probabilities:{c0:.8}},unique:{type:'noul',noul:.5}}})});
+    assert.ok(remoteChoice&&Object.hasOwn(body.questions.pick.criteria,remoteChoice));
+    return route.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify({model:'openjev',answers:{pick:{type:'choice',choice:remoteChoice,confidence:.8,probabilities:{[remoteChoice]:.8}},unique:{type:'noul',noul:.5}}})});
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
   await page.waitForFunction(()=>Boolean(window.__app),null,{timeout:30000});
@@ -89,10 +90,21 @@ try {
   await advisory.waitFor({state:'visible',timeout:30000});
   const originalText=await page.locator('#overlays .sheet:not(.parked)').innerText();
   assert.equal(remoteCalls,0,'rendering an optional action must not call Jev');
+  remoteChoice=await page.evaluate(async()=>{
+    const {pinpointField,jevShortlist}=await import('/js/pinpoint.js');
+    const {parseGoal}=await import('/js/goals.js');
+    const {cxxMemberIndexForApp}=await import('/js/analysis/query/app-adapter.js');
+    const local=await pinpointField({goal:parseGoal('unrelated musical tune'),cxxFields:cxxMemberIndexForApp(window.__app),
+      symbols:window.__app.symbols,binaryContextPreference:true,limit:400});
+    const index=jevShortlist(local.candidates,{max:255}).findIndex(candidate=>!candidate.field.conflict);
+    return index<0?null:`c${index}`;
+  });
+  assert.ok(remoteChoice,'the real fixture lattice must contain an eligible existing field');
   await advisory.click();await page.getByLabel('OpenJev API key').fill('test-key');
   allowAdvisory=true;
   await page.getByRole('button',{name:/^(Compare candidates|候補を比較する)$/}).click();
-  await page.getByText(/^(An alternative; the current result is unchanged\.|参考案です。いまの結果は変更していません。)$/).waitFor({timeout:15000});
+  // The status also contains the appended candidate-inspection row.
+  await page.getByText(/^(An alternative; the current result is unchanged\.|参考案です。いまの結果は変更していません。)/).waitFor({timeout:15000});
   assert.equal(remoteCalls,1,'only an explicit comparison calls Jev');
   assert.equal(await page.getByLabel('OpenJev API key').inputValue(),'');
   await page.getByRole('button',{name:/^(Back|戻る)$/}).last().click();

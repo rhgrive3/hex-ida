@@ -32,6 +32,23 @@ export function jevAdvisoryRequest(query, views) {
         criteria: { true: 'The phrase distinguishes one field', false: 'Several fields plausibly fit' } } } };
 }
 
+// Prospective V3 representation. Preserve the V2 projector for historical
+// replay; these extra roles come only from the canonical machine IR producer.
+export function jevValueFlowRequest(query, views) {
+  const body=jevAdvisoryRequest(query,views);
+  body.questions.pick.instructions+=' Machine store roles distinguish a value copied from a caller argument from a flag assigned a known constant. Use that distinction when the question asks for input state versus completion or lifecycle state. A constant write by itself does not identify a purpose. Indistinguishable use contexts remain ambiguous.';
+  for(let index=0;index<views.length;index++) {
+    const flows=(views[index].functionContexts??[]).slice(0,64).flatMap(context=>{
+      const roles=(context.accessRoles??[]).filter(role=>['constant-written','argument-written'].includes(role));
+      if(!roles.length)return [];
+      const method=context.name?(demangleCxx(context.name)??context.name):`0x${BigInt(context.address).toString(16)}`;
+      return [`release method: ${bounded(method)}; store roles: ${roles.join(', ')}`];
+    }).slice(0,8);
+    if(flows.length)body.questions.pick.criteria[`c${index}`]+=' | '+flows.join(' | ');
+  }
+  return body;
+}
+
 export async function requestJevAlternative(query, local, options = {}) {
   const fallback = () => adviseWithJev(query, local);
   try {

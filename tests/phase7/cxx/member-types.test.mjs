@@ -52,6 +52,23 @@ test('direct SSA uses retain member roles even without an intermediate copy',()=
   assert.deepEqual(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}).fields[0].accessRoles,['return-input']);
 });
 
+test('stored constants and bounded argument flows remain machine context without naming members',()=>{
+  const base={id:'object'},argument={id:'input',kind:'arg',reg:'x1'},one={id:'one'},copy={id:'copy'};
+  const ir={values:[argument],instructions:[
+    {op:'const',dst:one,extra:{value:1n}},
+    {op:'mov',dst:copy,args:[argument]},
+    {op:'store',args:[copy],loc:{kind:'field',base,disp:8n,size:1}},
+    {op:'store',args:[one],loc:{kind:'field',base,disp:9n,size:1}}]};
+  const result=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(result,8).accessRoles,['argument-written']);
+  assert.deepEqual(fieldAt(result,9).accessRoles,['constant-written']);
+  assert.equal(fieldAt(result,8).category,'int8');
+  assert.equal(fieldAt(result,9).category,'bool-like');
+  assert.equal(fieldAt(result,9).memberName,undefined);
+  ir.instructions[1]={op:'mov',dst:copy,args:[copy]};
+  assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).accessRoles,[]);
+});
+
 // ── pure classifier ────────────────────────────────────────────────────────
 
 test('classifier proves only what the access evidence proves', () => {

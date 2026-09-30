@@ -213,6 +213,16 @@ function constantValueOf(seedId, chains) {
   return null;
 }
 
+function isStoredArgument(seedId, argumentIds, chains) {
+  const visited=new Set();let current=seedId;
+  for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
+    if(argumentIds.has(current))return true;
+    if(visited.has(current))return false;
+    visited.add(current);current=chains.sources.get(current)??null;
+  }
+  return false;
+}
+
 /**
  * Recovers per-offset member type evidence for accesses through a receiver.
  *
@@ -230,6 +240,8 @@ export function recoverMemberTypeEvidence({
 } = {}) {
   if (typeof isReceiverBase !== 'function') throw new TypeError('cpp-member-type-receiver-predicate-required');
   const chains = buildChains(ir, maxInstructions);
+  const argumentIds=new Set((ir?.values??[]).slice(0,maxInstructions)
+    .filter(value=>value.kind==='arg').map(value=>valueId(value)).filter(id=>id!=null));
   const byOffset = new Map();
   let accesses = 0;
   let truncated = false;
@@ -258,7 +270,7 @@ export function recoverMemberTypeEvidence({
 
     let fp = false;
     let boolLike = false;
-    let pointerUse = false;
+    let pointerUse = false,storedRole=null;
     if (inst.op === 'load') {
       fp = flowsInto(loadValueId, chains.vectorTargets, chains.consumers);
       pointerUse = size === 8 && !indexed && loadValueId != null && (
@@ -268,6 +280,8 @@ export function recoverMemberTypeEvidence({
     } else {
       const storedId = valueId(inst.args?.[0]?.value ?? inst.args?.[0]);
       const storedConstant = constantValueOf(storedId, chains);
+      if(storedConstant!=null)storedRole='constant-written';
+      else if(isStoredArgument(storedId,argumentIds,chains))storedRole='argument-written';
       if (size === 1 && storedConstant != null && (storedConstant === 0n || storedConstant === 1n)) boolLike = true;
       const storedSource = storedId != null ? chains.sources.get(storedId) : null;
       if (size <= 8) {
@@ -284,6 +298,7 @@ export function recoverMemberTypeEvidence({
       byOffset.set(offset, entry);
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
+    if(storedRole)entry.accessRoles.add(storedRole);
     // A bounded extension of the already-built SSA copy/unary chains. These
     // are machine use roles, never source names or semantic field labels.
     if(inst.op==='load')for(const [role,targets] of [['return-input',chains.returnInputs],

@@ -13,7 +13,7 @@ import {recoverySnapshot} from './jev-realgame-recovery-contract.mjs';
 import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
 const [binaryPath,queriesFile,selectionFile,destination,arm]=process.argv.slice(2);
-if(!binaryPath||!queriesFile||!selectionFile||!destination||!['hex','hex-value','jev-retrieval'].includes(arm))throw new Error('usage: BINARY PLAIN_QUERIES SELECTION OUTPUT ARM');
+if(!binaryPath||!queriesFile||!selectionFile||!destination||!['hex','hex-value','jev-retrieval','jev-value'].includes(arm))throw new Error('usage: BINARY PLAIN_QUERIES SELECTION OUTPUT ARM');
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
 if(manifest.binarySha256!==binarySha256||!manifest.binaryKey||!Array.isArray(manifest.cases)||!manifest.cases.length
@@ -55,8 +55,8 @@ try {
       return receipt.call?.error?null:receipt.call?.response??null;
     }};
     const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,
-      jevRetrieval:arm==='jev-retrieval',jevClient:replayClient,
-      planningPolicy:arm==='hex-value'?'value-accessor-v3':'legacy',
+      jevRetrieval:arm==='jev-retrieval'||arm==='jev-value',jevClient:replayClient,
+      planningPolicy:arm==='hex-value'||arm==='jev-value'?'value-accessor-v3':'legacy',
       maxFunctions:policy.collection.maxFunctionsPerQuery,maxElapsedMs:policy.collection.maxElapsedMs});
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
     const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});
@@ -68,7 +68,7 @@ try {
     const candidates=hex.candidates.map(s=>recoverySnapshot(s,product.app.symbols,binarySha256)),byKey=new Map(candidates.map(s=>[s.key,s]));
     const published=[...(index?.classes.values()??[])].flatMap(cls=>cls.ivars.map(field=>({key:field.key,source:'cxx',
       binarySha256,className:cls.name,offset:field.offset,size:field.size,recoveredType:field.recoveredType,conflict:field.conflict})));
-    rows.push({retrievalReceiptSha256:sha256(JSON.stringify(receipt)),retrievalApiAddedLatencyMs:arm==='jev-retrieval'?receipt.call?.latencyMs??0:0,id:c.id,binary:manifest.binaryKey,query:c.query,binarySha256,beforeCount,recovery,candidateCount:candidates.length,
+    rows.push({retrievalReceiptSha256:sha256(JSON.stringify(receipt)),retrievalApiAddedLatencyMs:arm.startsWith('jev-')?receipt.call?.latencyMs??0:0,id:c.id,binary:manifest.binaryKey,query:c.query,binarySha256,beforeCount,recovery,candidateCount:candidates.length,
       verdict:hex.verdict,topKey:hex.top?.key??null,stableTopKey:stable.top?.key??null,semanticPreference:stable.semanticPreference??null,trustedViews,preferenceLatencyMs,candidates,shortlist:jevShortlist(hex.candidates,{max:255}).map(s=>byKey.get(s.key)),
       recovered:rawRecovered.slice(),published,hexLatencyMs,
       routed:c.mode==='partial'&&candidates.length>=2&&!['confirmed','likely'].includes(hex.verdict)});
