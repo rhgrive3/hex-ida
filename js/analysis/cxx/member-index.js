@@ -98,8 +98,10 @@ export class CxxMemberIndex {
     for (const member of Array.isArray(projection.members) ? projection.members : []) {
       if (!eligible(member, receiver)) continue;
       const offset = Number(member.offsetBytes);
+      // ObjC keys always contain raw '#' separators. Keep the C++ namespace
+      // disjoint even when an untrusted binary name contains those characters.
       const key = `cxx:${JSON.stringify([ownerKey, offset, member.sizeBytes,
-        member.category, member.typeLabel, member.signedness, member.categoryCandidates, member.widthOnly])}`;
+        member.category, member.typeLabel, member.signedness, member.categoryCandidates, member.widthOnly]).replaceAll('#', '\\u0023')}`;
       if (!state) {
         const identity = receiver.classIdentity;
         const name = identity.className || `anonymous@${identity.vtableAddress != null ? 'vtable' : 'typeinfo'}:0x${(identity.vtableAddress ?? identity.typeinfoAddress).toString(16)}`;

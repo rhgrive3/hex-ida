@@ -34,7 +34,7 @@ slice / backend epoch changes expire the index.
 | location / width | `offset`, `size`, `width`; canonical receiver-bound access |
 | type | `type`, `recoveredType`; category, alternatives, signedness, rule/reason, width-only status |
 | provenance | canonical `{receiver, member}` references, snapshot/function/digests and access counts |
-| key | snapshot + structural owner + offset + width + type/sign/alternatives, JSON-encoded |
+| key | snapshot + structural owner + offset + width + type/sign/alternatives, JSON-encoded; `#` escaped to stay disjoint from ObjC keys |
 | confidence | existing deterministic evidence/fusion; no new evidence code or threshold |
 
 Repeated observations deduplicate. Conflicting widths/types remain explicit

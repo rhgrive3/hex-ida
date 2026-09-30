@@ -77,6 +77,27 @@ test('ObjC exact-name candidate retains its rank while unnamed C++ remains in th
   assert.equal(after.candidates[1].source, 'cxx');
 });
 
+test('C++ keys remain disjoint from legacy ObjC keys even for separator-bearing binary names', async () => {
+  const cxxFields = new CxxMemberIndex();
+  cxxFields.publish(projection('Thing#8#tail', [{ memberName: 'health' }]));
+  const iv = [...cxxFields.classes.values()][0].ivars[0];
+  // Construct the ObjC identity that collided with the previous C++ encoding.
+  const oldKey = iv.key.replaceAll('\\u0023', '#');
+  const [className, offset, name] = oldKey.split('#');
+  const fields = new FieldIndex({ classes: [{ name: className, instanceSize: 32,
+    ivars: [{ name, offset: Number(offset), size: 4, type: { kind: 'int', bytes: 4 } }] }] });
+  assert.equal(`${className}#${offset}#${name}`, oldKey);
+  assert.ok(!iv.key.includes('#'));
+  assert.equal(JSON.parse(JSON.parse(iv.key.slice(4))[0])[2], 'Thing#8#tail');
+  const result = await pinpointField({ goal: parseGoal(name), fields, cxxFields });
+  assert.equal(result.candidates.length, 2);
+  assert.equal(new Set(result.candidates.map((c) => c.key)).size, 2);
+  assert.ok(result.candidates.some((c) => c.source === 'cxx'));
+  assert.ok(result.candidates.some((c) => c.key === oldKey));
+  cxxFields.publish(projection('Thing\\u00238\\u0023tail', [{ memberName: 'health' }]));
+  assert.equal(new Set([...cxxFields.classes.values()].flatMap((cls) => cls.ivars.map((field) => field.key))).size, 2);
+});
+
 test('producer-supplied C++ names use existing deterministic evidence without creating another universe', async () => {
   const cxxFields = new CxxMemberIndex();
   cxxFields.publish(projection('Player', [{ memberName: 'health' }, { offsetBytes: 12n }]));
