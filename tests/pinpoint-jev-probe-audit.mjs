@@ -99,11 +99,13 @@ test('router freeze rejects policy drift and unapproved C++ edits even after ref
   assertRouterContinuity(source);
   const policyDrift = source.replace('max: opts?.maxChoices ?? 255', 'max: opts?.maxChoices ?? 254');
   assert.notEqual(policyDrift, source);
-  assert.throws(() => assertRouterContinuity(policyDrift, sha256(policyDrift)), /unchanged frozen router body/);
+  assert.throws(() => assertRouterContinuity(policyDrift, sha256(policyDrift)), /current router must match the independently evaluated V2 source/);
   const cxxDrift = source.replace("if (pin?.top?.source === 'cxx') return pin;", "if (pin?.top?.source === 'objc') return pin;");
-  assert.throws(() => assertRouterContinuity(cxxDrift, sha256(cxxDrift)), /approved C\+\+ router delta/);
+  assert.notEqual(cxxDrift, source);
+  assert.throws(() => assertRouterContinuity(cxxDrift, sha256(cxxDrift)), /current router must match the independently evaluated V2 source/);
   const duplicatedGuard = source.replace(CXX_ROUTER_DELTAS[1].current, CXX_ROUTER_DELTAS[1].current + "  if (pin?.top?.source === 'cxx') return pin;\n");
-  assert.throws(() => assertRouterContinuity(duplicatedGuard, sha256(duplicatedGuard)), /unchanged frozen router body/);
+  assert.notEqual(duplicatedGuard, source);
+  assert.throws(() => assertRouterContinuity(duplicatedGuard, sha256(duplicatedGuard)), /current router must match the independently evaluated V2 source/);
 });
 
 test('focused denominator and production empty replay parity', () => {
