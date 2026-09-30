@@ -19,6 +19,7 @@ export async function runDecompilerTests({ env = process.env } = {}) {
     label: 'decompiler',
     files: [
       ...DECOMPILER_ASSERTION_FILES.map((file) => path.join(ROOT, file)),
+      path.join(DIRECTORY, 'value-dependency.test.mjs'),
       path.join(DIRECTORY, 'recompilation-watchdog.test.mjs'),
       path.join(DIRECTORY, 'output-c-declarations.test.mjs'),
       path.join(DIRECTORY, 'avoidable-goto-closure.test.mjs'),

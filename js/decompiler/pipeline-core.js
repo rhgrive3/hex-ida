@@ -16,6 +16,7 @@ import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVir
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
+import { valueDependsOnAny } from './value-dependency.js';
 import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 import { mayAliasProvenance } from '../ir.js';
@@ -1607,21 +1608,6 @@ function semanticFacts(state, result) {
   return facts;
 }
 
-function valueDependsOnAny(value, targetValueIds, active = new Set()) {
-  if (!value || active.has(value.id)) return false;
-  if (targetValueIds.has(value.id)) return true;
-  active.add(value.id);
-  const def = value.def;
-  if (!def) { active.delete(value.id); return false; }
-  const inputs = [
-    ...(def.args || []).map((arg) => arg?.value).filter(Boolean),
-    ...(def.incoming || []).map((item) => item?.value).filter(Boolean),
-  ];
-  const result = inputs.some((input) => valueDependsOnAny(input, targetValueIds, active));
-  active.delete(value.id);
-  return result;
-}
-
 /*
  * Hide only a stack slot proven to be machine-level return preservation across
  * a call. MemorySSA must identify one exact store and one exact reaching load;
@@ -1655,7 +1641,9 @@ function isElidableReturnSpillStore(store, state) {
   const addressBaseId = store.addr?.base?.id ?? null;
   if (addressBaseId != null) {
     const addressBase = new Set([addressBaseId]);
-    if (calls.some((call) => (call.args || []).some((arg) => valueDependsOnAny(arg?.value, addressBase)))) return false;
+    // An incomplete walk cannot prove the spill address is absent from a call.
+    if (calls.some((call) => (call.args || []).some((arg) =>
+      valueDependsOnAny(arg?.value, addressBase, { shouldAbort:state.opts?.shouldAbort }) !== false))) return false;
   }
 
   const loadIds = new Set([load.dst.id]);
@@ -1667,7 +1655,7 @@ function isElidableReturnSpillStore(store, state) {
   for (const ret of instructions) {
     if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
     const returned = returnValueAt(ret, state);
-    if (!returned || !valueDependsOnAny(returned, loadIds)) continue;
+    if (!returned || valueDependsOnAny(returned, loadIds, { shouldAbort:state.opts?.shouldAbort }) !== true) continue;
     if (structuralKey(expressionFor(returned, state)) === storedKey) return { ret, returned, load, storedValue };
   }
   return false;

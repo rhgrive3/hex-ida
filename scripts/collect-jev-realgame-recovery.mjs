@@ -62,6 +62,7 @@ try {
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
       ['scripts/collect-jev-realgame-recovery.mjs','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
-        'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/cxx/project.js','js/analysis/query/app-adapter.js']
+        'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/cxx/project.js','js/analysis/query/app-adapter.js',
+        'js/decompiler/pipeline-core.js','js/decompiler/value-dependency.js']
         .map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),collection,rows});
 } finally {CxxMemberIndex.prototype.publish=originalPublish;await product.close();}
