@@ -46,6 +46,12 @@ test('member access roles distinguish returned and compared loads without naming
   assert.equal(fieldAt(report,64).memberName,undefined);
 });
 
+test('direct SSA uses retain member roles even without an intermediate copy',()=>{
+  const base={id:1},loaded={id:2};
+  const ir={instructions:[{op:'load',dst:loaded,loc:{kind:'field',base,disp:8n,size:4}},{op:'ret',args:[loaded]}]};
+  assert.deepEqual(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}).fields[0].accessRoles,['return-input']);
+});
+
 // ── pure classifier ────────────────────────────────────────────────────────
 
 test('classifier proves only what the access evidence proves', () => {

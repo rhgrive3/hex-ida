@@ -7,6 +7,9 @@ import { rerankWithJev, jevShortlist } from '../js/pinpoint.js';
 import { parsePtypeOutput } from '../scripts/extract-jev-realgame-layout.mjs';
 import { isGoldMatch } from '../scripts/run-jev-realgame-eval.mjs';
 import { resolveStructuralGold } from '../scripts/audit-jev-realgame-gold.mjs';
+import { recoveryRequestBody,deterministicRecoveryPick } from '../scripts/jev-realgame-recovery-contract.mjs';
+import { verifyRecoveryEvidence } from '../scripts/verify-jev-realgame-recovery.mjs';
+import { summarize } from '../scripts/evaluate-jev-realgame-final.mjs';
 import { verifyEvidence } from '../scripts/verify-jev-realgame-final.mjs';
 
 const member = (key, offset = 306) => ({ key, source: 'cxx', binarySha256: 'binary-a', className: 'Vehicle',
@@ -148,4 +151,50 @@ test('disabled and exact/strong paths never call external service; successful pr
   const hex={top:candidates[0],candidates,verdict:'ambiguous'};
   const result=await rerankWithJev('speed',hex,{enabled:true,client});
   assert.equal(result.top1,candidates[1]);assert.equal(hex.verdict,'ambiguous');
+});
+
+
+test('recovery representation ignores oracle-shaped descriptions and bounds machine context',()=>{
+  const c={...member('existing'),description:'GOLD SECRET CUR_SPEED',semanticLabel:'GOLD SECRET',
+    functionContexts:[{address:'100',name:'_ZNK6Widget8getCountEv',receiverProven:true,accessRoles:['return-input','GOLD SECRET']}]};
+  const body=recoveryRequestBody('widget count',[member('other'),c],'E');
+  const serialized=JSON.stringify(body);
+  assert.ok(!serialized.includes('GOLD SECRET'));
+  assert.ok(serialized.includes('return-input'));
+  assert.ok(serialized.includes('Widget::getCount'));
+  assert.equal(deterministicRecoveryPick('widget count',[member('other'),c]).key,'existing');
+});
+
+
+test('recovery replay rejects gold, build, candidate selection and oracle payload drift',()=>{
+  const c={id:'check',binary:'openttd',query:'widget count',...gold};
+  const cases=[c],policy={repeats:1};
+  const candidates=[member('one'),member('two',400)];
+  const input={id:c.id,binary:c.binary,query:c.query,binarySha256:'binary-a',candidates,published:candidates,
+    recovered:candidates,shortlist:candidates,topKey:'one',routed:true};
+  const row={id:c.id,binary:c.binary,query:c.query,status:c.status,gold:c,funnel:funnel(input,c),
+    topKey:'one',hexCorrect:true,verdict:'ambiguous',hexLatencyMs:1,recoveryLatencyMs:2,failureCauses:[],
+    arms:{A:{key:'one',correct:true},DET:{key:'one',correct:true}}};
+  for(const arm of ['B','E']) {
+    const body=recoveryRequestBody(c.query,candidates,arm);
+    row.arms[arm]={key:'one',correct:true,repeatedKeys:['one'],repeatedCorrect:[true],calls:[{
+      arm,query:c.query,repeat:0,bodyHash:sha256(JSON.stringify(body)),criteria:body.questions.pick.criteria,
+      attempts:[{number:1,status:200,error:null,latencyMs:1}],error:null,addedLatencyMs:1,
+      choiceIndex:0,selectedKey:'one',response:response('c0')}]};
+  }
+  const caseBytes=Buffer.from(JSON.stringify(cases)),policyBytes=Buffer.from(JSON.stringify(policy));
+  const snapshots=[{complete:true,productSha:'test-only',policySha256:sha256(policyBytes),sourceHashes:{},
+    binaryKey:'openttd',binarySha256:'binary-a',collection:{keyCollisions:0},rows:[input]}];
+  const rows=[row],summaries=Object.fromEntries(['A','DET','B','E'].map(a=>[a,summarize(rows,a)]));
+  const summary={productSha:'test-only',caseSha256:sha256(caseBytes),policySha256:sha256(policyBytes),sourceHashes:{},summaries,
+    coldRecoveryLatency:{count:1,p50:2,p95:2,p99:2},perGame:Object.fromEntries(['openttd','openmw'].map(game=>
+      [game,Object.fromEntries(['A','DET','B','E'].map(a=>[a,summarize(rows.filter(r=>r.binary===game),a)]))]))};
+  const original={caseBytes,policyBytes,snapshots,rows,summary};
+  assert.deepEqual(verifyRecoveryEvidence(original),{cases:1,verified:1,calls:2,valid:true});
+  for(const mutate of [v=>{v.snapshots[0].binarySha256='other';},v=>{v.rows[0].gold.identities[0].offset++;},
+    v=>{v.rows[0].arms.E.calls[0].criteria.c0='Vehicle.cur_speed';},
+    v=>{v.rows[0].arms.E.calls[0].selectedKey='invented';},v=>{v.summary.summaries.E.top1++;}]) {
+    const copy={...structuredClone(original),caseBytes:Buffer.from(caseBytes),policyBytes:Buffer.from(policyBytes)};
+    mutate(copy);assert.throws(()=>verifyRecoveryEvidence(copy));
+  }
 });

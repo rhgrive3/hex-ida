@@ -24,6 +24,7 @@ import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
 import { analyzeFunctionCached, describeFunction, supportsArm64SemanticAnalysis } from './analyze.js';
 import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
 import { cxxMemberIndexForApp, recoverCxxMembersForQuery } from './analysis/query/app-adapter.js';
+import { cxxRecoveryMadeProgress } from './analysis/cxx/query-recovery.js';
 import { showXrefs } from './ui/panels/navigation.js';
 import { showField } from './ui/panels/field-access.js';
 export { showXrefs, showField };
@@ -3331,7 +3332,7 @@ export function showCandidates(app, goal) {
     box.done();
     if (!sheet.root.isConnected) return;
     if ((!pin?.top || verdictRank(pin.verdict)<=verdictRank(VERDICT.AMBIGUOUS))
-        && supportsArm64SemanticAnalysis(app.store?.get?.('architecture'))
+        && supportsArm64SemanticAnalysis(app.store?.get?.('architecture')??app.store?.get?.('capability')?.architecture)
         && app.symbols?.names?.some(name=>typeof name==='string'&&/^_?_Z/.test(name))) {
       const recoveryActions=list();let recovering=false;
       recoveryActions.append(tapRow(pick('関連する処理から値の候補を探す','Find member candidates in related routines'),{
@@ -3346,6 +3347,7 @@ export function showCandidates(app, goal) {
             recoveryBox.done();
             if(!sheet.root.isConnected)return;
             if(!recovered.attempted.length){toast(pick('関連するC++処理を特定できませんでした。','No related C++ routines could be identified.'));return;}
+            if(!cxxRecoveryMadeProgress(recovered)){toast(pick('追加のmemberの証拠は見つかりませんでした。','No additional member evidence was found.'));return;}
             sheet.close();showCandidates(app,goal);
           } catch(error) {
             recoveryBox.done();if(!controller.signal.aborted)toast(userError(error));

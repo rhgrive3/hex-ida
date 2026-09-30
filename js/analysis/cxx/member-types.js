@@ -288,7 +288,7 @@ export function recoverMemberTypeEvidence({
     // are machine use roles, never source names or semantic field labels.
     if(inst.op==='load')for(const [role,targets] of [['return-input',chains.returnInputs],
       ['comparison-input',chains.comparisonInputs],['arithmetic-input',chains.arithmeticInputs],['address-base',chains.addressUsed]]) {
-      if(flowsInto(loadValueId,targets,chains.consumers))entry.accessRoles.add(role);
+      if(targets.has(loadValueId)||flowsInto(loadValueId,targets,chains.consumers))entry.accessRoles.add(role);
     }
     if (inst.op === 'load') entry.readCount++; else entry.writeCount++;
     accesses++;

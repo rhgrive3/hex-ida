@@ -58,10 +58,13 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   }
   const maxFunctions=options.maxFunctions??8;
   const plan=cached.planner.plan(phrase,{maxFunctions});
+  const beforeCount=entry.provider.memberIndex().fieldCount,beforeRevision=entry.provider.memberIndex().revision;
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
     decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,queryOptions);checkBinding();return value;}});
   checkBinding();
-  return {...result,plan,functionCount:cached.planner.functionCount,candidateCount:cxxMemberIndexForApp(app)?.fieldCount??0};
+  const index=cxxMemberIndexForApp(app);
+  return {...result,plan,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
+    afterCount:index.fieldCount,afterRevision:index.revision,candidateCount:index.fieldCount};
 }
 
 // Publication only: a Pinpoint request must not build an index or reanalyze

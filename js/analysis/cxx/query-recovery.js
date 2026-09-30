@@ -79,5 +79,12 @@ export async function recoverCxxQueryMembers({enabled=false,plan=[],snapshot,dec
       pseudocode:Boolean(result?.value?.pseudocode)});
     onProgress({phase:'cxx-query-recovery',done:attempted.length,all:Math.min(plan.length,maxFunctions)});
   }
+  if(now()-started>=maxElapsedMs)status='budget-exhausted';
   return {status,attempted,elapsedMs:now()-started};
+}
+
+export function cxxRecoveryMadeProgress(result) {
+  return result?.attempted?.some(r=>r.pseudocode===true)===true
+    &&Number.isSafeInteger(result.beforeRevision)&&Number.isSafeInteger(result.afterRevision)
+    &&result.afterRevision>result.beforeRevision;
 }

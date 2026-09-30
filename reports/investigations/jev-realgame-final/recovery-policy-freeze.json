@@ -20,7 +20,7 @@
   ],
   "primaryArm": "E",
   "representation": "class,anonymous offset,size,type category,read/write counts,up to8 demangled release method contexts and proven machine use roles",
-  "promptSha256": "b2d4cd7ef9a16240781ce1b72797745bcbd2f98ae3e456970726c61088a445ca",
+  "promptSha256": "d1f730c4ff220f6acdd64b7000d4c65c0165f614145133ba55ff1294a8cdc1ca",
   "repeats": 3,
   "firstRepeatPrimary": true,
   "majorityVoting": false,
@@ -50,5 +50,6 @@
     "cold recovery latency",
     "error timeout retry",
     "repeat instability"
-  ]
+  ],
+  "comparator": "weak C++ preference:2*matching class tokens + maximum context 4*matching method tokens*(2 if canonical return-input else1); conflict candidates0; stable original-order ties; no evidence/verdict upgrade"
 }

@@ -4,10 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rerankWithJev } from '../js/pinpoint.js';
 import { RealGameJevClient } from './jev-realgame-final-client.mjs';
+import { recoveryRequestBody } from './jev-realgame-recovery-contract.mjs';
 import { ARMS, persistentWrite, sha256, percentiles } from './jev-realgame-final-contract.mjs';
 
 async function main() {
-  const [inputFile,outputFile]=process.argv.slice(2);
+  const [inputFile,outputFile,armList]=process.argv.slice(2);
+  const arms=armList?armList.split(','):ARMS;
+  if(!arms.length||arms.some(a=>![...ARMS,'E'].includes(a)))throw new Error('invalid control arms');
   if (!inputFile || !outputFile || !process.env.OPENJEV_API_KEY) throw new Error('usage: CONTROLS_JSON OUTPUT_JSON; API key required');
   const controls = JSON.parse(fs.readFileSync(inputFile));
   const rows = [];
@@ -21,8 +24,8 @@ async function main() {
     const base={ candidates,top:candidates[0],verdict:c.candidateLattice.verdict ?? 'ambiguous' };
     const row={id:c.caseId,query:c.query,target:c.target,baselineKey:base.top.key,baselineCorrect:
       base.top.className===c.target.className && base.top.fieldName===c.target.fieldName,arms:{}};
-    for (const arm of ARMS) {
-      const client=new RealGameJevClient({apiKey:process.env.OPENJEV_API_KEY,arm});
+    for (const arm of arms) {
+      const client=new RealGameJevClient({apiKey:process.env.OPENJEV_API_KEY,arm,requestBuilder:recoveryRequestBody});
       const calls=[];
       for(let repeat=0;repeat<5;repeat++) {
         const result=await rerankWithJev(c.query,base,{enabled:true,mode:'partial',client,maxChoices:255});
@@ -35,7 +38,7 @@ async function main() {
     }
     rows.push(row);persistentWrite(outputFile,{schema:'hex-jev-final-regression-results/v1',controlsSha256:sha256(fs.readFileSync(inputFile)),
       role:'diagnostic regression controls, no prompt tuning or majority replacement',repeats:5,rows,
-      latency:percentiles(rows.flatMap(r=>ARMS.flatMap(a=>r.arms[a].calls.map(c=>c.call?.addedLatencyMs))))});
+      latency:percentiles(rows.flatMap(r=>arms.flatMap(a=>r.arms[a].calls.map(c=>c.call?.addedLatencyMs))))});
     console.log(`${c.caseId} controls evaluated`);
   }
 }

@@ -1,6 +1,7 @@
 // Supplementary recovery experiment: separate from the already-used70 freeze.
 import {snapshotCandidate,requestBody,describeCandidate} from './jev-realgame-final-contract.mjs';
 import {demangleCxx} from '../js/rtti.js';
+import {cxxQueryTokens} from '../js/analysis/cxx/query-recovery.js';
 
 const ROLES=new Set(['return-input','comparison-input','arithmetic-input','address-base']);
 export function recoverySnapshot(c,symbols,binarySha256) {
@@ -21,4 +22,22 @@ export function recoveryRequestBody(query,candidates,arm) {
     for(const ctx of contexts)parts.push(`release method: ${String(ctx.name?(demangleCxx(ctx.name)??ctx.name):`0x${BigInt(ctx.address).toString(16)}`).slice(0,240)}; proven receiver: ${ctx.receiverProven===true}; uses: ${(ctx.accessRoles??[]).filter(r=>ROLES.has(r)).join(', ')||'unclassified'}`);
     return [`c${i}`,parts.join(' | ')];
   }));return body;
+}
+
+// Frozen comparator for weak C++ ranking only. A lexical match to an accessor
+// whose loaded member feeds its return is more specific than a shared class.
+// This selects a preference; it does not modify any evidence or verdict.
+export function deterministicRecoveryPick(query,candidates) {
+  const tokens=new Set(cxxQueryTokens(query));
+  const score=c=>{
+    if(c.source!=='cxx'||c.conflict)return 0;
+    const classHits=cxxQueryTokens(c.className).filter(t=>tokens.has(t)).length;
+    const context=Math.max(0,...(c.functionContexts??[]).map(ctx=>{
+      const method=ctx.name?(demangleCxx(ctx.name)??ctx.name).split('(')[0].split('::').at(-1):'';
+      const hits=cxxQueryTokens(method).filter(t=>tokens.has(t)).length;
+      return 4*hits*(ctx.accessRoles?.includes('return-input')?2:1);
+    }));return 2*classHits+context;
+  };
+  const ranked=candidates.map((c,i)=>({c,i,score:score(c)})).sort((a,b)=>b.score-a.score||a.i-b.i);
+  return ranked[0]?.score>0?ranked[0].c:candidates[0]??null;
 }

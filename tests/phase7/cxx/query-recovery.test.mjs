@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCxxQueryPlanner,recoverCxxQueryMembers} from '../../../js/analysis/cxx/query-recovery.js';
+import {createCxxQueryPlanner,recoverCxxQueryMembers,cxxRecoveryMadeProgress} from '../../../js/analysis/cxx/query-recovery.js';
 
 test('query plans use release symbol evidence, reject static/ambiguous owners, and bound matching functions',()=>{
   const symbols={funcs:[1n,2n,3n,4n,5n],addrs:[1n,2n,3n,4n,5n],names:[
@@ -26,4 +26,14 @@ test('constructor class words cannot outrank a matching value method by counting
   const symbols={funcs:[0n,1n,2n],addrs:[0n,1n,2n],names:['_ZN10WidgetListC1Ev','_ZNK6Widget8GetCountEv','_ZN6WidgetC1Ev']};
   const planner=createCxxQueryPlanner({symbols,isExecutable:()=>true});
   assert.deepEqual(planner.plan('widget count',{maxFunctions:3}).map(r=>r.address),[1n,2n,0n]);
+});
+
+test('no-progress results do not reopen the result view; elapsed overruns remain explicit',async()=>{
+  const noGrowth={attempted:[{pseudocode:true}],beforeRevision:1,afterRevision:1};
+  assert.equal(cxxRecoveryMadeProgress(noGrowth),false);
+  assert.equal(cxxRecoveryMadeProgress({...noGrowth,afterRevision:2}),true);
+  assert.equal(cxxRecoveryMadeProgress({...noGrowth,attempted:[{pseudocode:false}],afterRevision:2}),false);
+  let time=0;const result=await recoverCxxQueryMembers({enabled:true,snapshot:{},plan:[{address:1n}],
+    maxElapsedMs:10,now:()=>time,decompile:async()=>{time=20;return {value:{pseudocode:'body'}};}});
+  assert.equal(result.status,'budget-exhausted');assert.equal(result.elapsedMs,20);
 });
