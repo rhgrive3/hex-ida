@@ -1,27 +1,26 @@
 {
-  "schema": "hex-evidence-packaging/v1",
-  "artifacts": [
+  "schema": "hex-jev-recovery-integrity/v1",
+  "productSha": "1c274ec00d8006354a01db415a8c91b86f3a2dc0",
+  "collectionRun": "https://github.com/rhgrive3/actions/actions/runs/36723696486",
+  "independentReplays": [
     {
-      "path": "raw-results.jsonl.gz",
-      "uncompressedSha256": "dc5569ad68b7f55b2a879438056e63e8b7a88f671cae7b15a8046dd8da2f005f",
-      "compressedSha256": "276c3def513ec587867d299e1e27178e2eb011d91a237fe0b96ad78b42e99b6c",
-      "uncompressedBytes": 7393271,
-      "compressedBytes": 388851
+      "role": "development-original70",
+      "cases": 70,
+      "verified": 49,
+      "calls": 420,
+      "valid": true
     },
     {
-      "path": "production-snapshots/openttd.json.gz",
-      "uncompressedSha256": "9219e55dd1f3f62c4d46c0846d757e996de1394ab4ab27efe8d6f872bcf6e31c",
-      "compressedSha256": "2bcd073db8c5efde4626fa6187dfd2b0ced85417860b7b6d0ce95c6d1095505f",
-      "uncompressedBytes": 14114729,
-      "compressedBytes": 721749
-    },
-    {
-      "path": "production-snapshots/openmw.json.gz",
-      "uncompressedSha256": "a90cbf251aad0ecf67ea526c48be61bd380a867578c2169ece1510ba8b00c96d",
-      "compressedSha256": "ef414003224a010c0ae23a7f0849551c61a66dda6fb83791d9be583ca380350e",
-      "uncompressedBytes": 565587,
-      "compressedBytes": 33173
-    },
+      "role": "untouched-final",
+      "cases": 50,
+      "verified": 40,
+      "calls": 450,
+      "valid": true
+    }
+  ],
+  "verifierSha256": "5a317b0295e37c3333d9da3e98144ddb46f21e2022ba65c1420619e31d0befa4",
+  "controlsSha256": "d1affdbb2425f5bec95afae326efc1dae070cca7c42a725aba874c4bc12943cb",
+  "packagedArtifacts": [
     {
       "path": "recovery-results/development-original70/raw-results.jsonl.gz",
       "uncompressedSha256": "3308693602bf0b037638787bc7e6043d5b30d2839ce94d8a287cfeb61a1f2629",
@@ -64,5 +63,7 @@
       "uncompressedBytes": 13752764,
       "compressedBytes": 586680
     }
-  ]
+  ],
+  "collectionPolicy": "Two pre-frozen policies, identical collection parameters; distinct development/final arm sets.",
+  "runtimeRepairDisclosure": "Partial retrieval and deterministic outcomes were inspected before a runtime-only SSA walk repair. No final prompt, scoring, query, or ranking changes followed final outcomes."
 }
