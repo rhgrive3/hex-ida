@@ -17,6 +17,7 @@ const foreign = [
   'reports/investigations/pinpoint-cxx-member-candidates/README.md',
   'scripts/validate-pinpoint-cxx-members.mjs',
   'tests/auth/build-policy.test.mjs',
+  'tests/pinpoint-jev-probe-audit.mjs',
 ];
 const owned = [
   '.github/workflows/phase7-ownership.yml',

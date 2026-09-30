@@ -89,6 +89,10 @@ multiple members, offset/type/width differences, partial RTTI, no-proof and
 malformed/forged cases, collisions/deduplication, ownership conflicts, ObjC
 ranking, public/automatic publication, epoch/cache expiry and offset-only
 misattribution. The unchanged Jev shortlist/fail-closed tests are also exercised.
+The full-gate repairs use an explicit local D1 sentinel fixture and preserve
+historical Jev source/artifact hashes. Router continuity checks pin the exact
+current file and the unchanged old body outside two exact C++ safeguards;
+negative controls reject policy drift even if the current-file hash is refreshed.
 
 Only **already analyzed** canonical projections are published. RTTI/vtables
 alone do not prove fields; metadata-only queries can still have zero members.
@@ -96,6 +100,7 @@ The existing production projection hook and real-binary validation are ARM64;
 x86_64 semantic decompilation does not currently invoke this receiver/member
 producer, and this branch does not add that recovery. Free/static functions,
 adjusted receivers, ambiguous owners and missing binding remain unavailable.
+Indexed or mixed-width access records without a fixed member width are withheld.
 Existing recovery budgets and Pinpoint's 400-entry bound remain. The current
 producer supplies types/accesses but no recovered member names; supplied names
 are preserved by the canonical schema and tested without semantic guessing.
