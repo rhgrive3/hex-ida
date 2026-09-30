@@ -10,7 +10,7 @@
  */
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
-import { demangleCxx, readableName, isMangled } from '../../rtti.js';
+import { demangleCxx, readableName, isMangled, cxxAbiFunctionRole } from '../../rtti.js';
 import { isCanonicalCppTypedArgumentEvidence } from './typed-argument.js';
 
 export const CPP_OBJECT_EVIDENCE_VERSION = '1.0.0';
@@ -482,9 +482,10 @@ export function analyzeFunctionSymbol(name, rawMangled = null) {
   const className = parts.slice(0, -1).join('::');
 
   // Check constructor / destructor / const qualifier
-  const isConstructor = /_ZN.*C[123]E/.test(stripped) || methodName === parts[parts.length - 2];
-  const isDestructor = /_ZN.*D[012]E/.test(stripped) || methodName.startsWith('~');
-  const isConstMember = /_ZNK/.test(stripped) || demangled.endsWith(' const');
+  const abiRole = cxxAbiFunctionRole(sym);
+  const isConstructor = abiRole?.kind === 'constructor';
+  const isDestructor = abiRole?.kind === 'destructor';
+  const isConstMember = abiRole?.constQualified === true;
 
   return {
     isCxx: true,

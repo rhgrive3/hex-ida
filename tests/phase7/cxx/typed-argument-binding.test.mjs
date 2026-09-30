@@ -1,11 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCxxEvidenceProvider} from '../../../js/analysis/cxx/project.js';
-import {createCppTypedArgumentReceiverEvidence,isCanonicalCppReceiverEvidence} from '../../../js/analysis/cxx/object-evidence.js';
+import {createCppTypedArgumentReceiverEvidence,isCanonicalCppReceiverEvidence,analyzeFunctionSymbol} from '../../../js/analysis/cxx/object-evidence.js';
 import {createCppTypedArgumentEvidence} from '../../../js/analysis/cxx/typed-argument.js';
 import {currentCppReceiver} from '../../../js/decompiler/cxx-evidence.js';
 import {createCxxQueryPlanner} from '../../../js/analysis/cxx/query-recovery.js';
 const symbol='_Z10readHealthP6Entity';
+test('only outer ABI role tokens prove constructors, destructors or const members',()=>{
+ for(const raw of ['_ZN3Foo3FooEv','_ZN3Foo5aC1EbEv','_ZN3Foo1fEPK3Foo']) {
+  const role=analyzeFunctionSymbol(raw);assert.equal(role.isConstructor,false,raw);
+  assert.equal(role.isDestructor,false,raw);assert.equal(role.isConstMember,false,raw);
+ }
+ for(const raw of ['_ZN3FooC1Ev','_ZN3FooC2Ev','_ZN3BoxIiEC1Ev'])
+  assert.equal(analyzeFunctionSymbol(raw).isConstructor,true,raw);
+ assert.equal(analyzeFunctionSymbol('_ZN3FooD1Ev').isDestructor,true);
+ assert.equal(analyzeFunctionSymbol('_ZNK3Foo1fEv').isConstMember,true);
+ assert.equal(analyzeFunctionSymbol('_ZN3FooC9Ev').isCxx,true);
+ assert.equal(analyzeFunctionSymbol('_ZN3FooC9Ev').isConstructor,false);
+});
 const ir={functionId:'reader',values:[{id:'arg0',kind:'arg',reg:'x0',bits:64}],instructions:[
  {id:'read',op:'load',loc:{kind:'field',base:{id:'arg0'},disp:8n,size:4},dst:{id:'value',bits:32}}]};
 function symbolsFor(names=[symbol]){return{names,addrs:names.map(()=>1n),funcs:[1n],nameAt:()=>names[0]};}

@@ -28,6 +28,8 @@ function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return n
 function readName(p,isSub=true){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S'){if(two==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;const out=`std::${tail}`;if(isSub)p.subs.push(out);return out;}return readSubstitution(p);}if(/\d/.test(c||''))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
 function readNested(p,isSub=true){
   const parts=[];
+  const captureRole=p.captureFunctionRole===true&&p.i===3;
+  let finalRole='ordinary';
   let cvr='',cvMask=0,cvLast=-1,currentPrefix='',lastUnqualified=null;
   while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){
     const code=p.s[p.i],rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;
@@ -36,10 +38,11 @@ function readNested(p,isSub=true){
   }
   while(p.i<p.s.length&&p.s[p.i]!=='E'){
     const c=p.s[p.i];let part=null,isSubst=false,updatesName=false;
+    finalRole='ordinary';
     if(/\d/.test(c)){part=readSourceName(p,false);updatesName=true;}
     else if(c==='S'){part=readSubstitution(p);isSubst=true;updatesName=true;}
-    else if(c==='C'){if(p.i+2>p.s.length)return null;p.i+=2;part=lastUnqualified||'ctor';}
-    else if(c==='D'){if(p.i+2>p.s.length)return null;p.i+=2;part='~'+(lastUnqualified||'dtor');}
+    else if(c==='C'){if(p.i+2>p.s.length||captureRole&&!/[123]/.test(p.s[p.i+1]))return null;p.i+=2;part=lastUnqualified||'ctor';finalRole='constructor';}
+    else if(c==='D'){if(p.i+2>p.s.length||captureRole&&!/[012]/.test(p.s[p.i+1]))return null;p.i+=2;part='~'+(lastUnqualified||'dtor');finalRole='destructor';}
     else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}
     else if(c==='I')part=readTemplateArgs(p);
     else return null;
@@ -51,8 +54,22 @@ function readNested(p,isSub=true){
     if(!isSubst){if(p.s[p.i]!=='E')p.subs.push(currentPrefix);else if(isSub)p.subs.push(currentPrefix);}
   }
   if(p.s[p.i]!=='E'||!parts.length)return null;
+  if(captureRole)p.functionRole={kind:parts.length>=2?finalRole:'ordinary',constQualified:(cvMask&4)!==0};
   p.i++;
   return parts.reduce((a,b)=>b.startsWith('<')?a+b:(a?`${a}::${b}`:b),'')+cvr;
+}
+// Decode role tokens at the outer function-name boundary. Identifier bytes,
+// argument type names and demangled name resemblance cannot prove a `this`.
+export function cxxAbiFunctionRole(name){
+  if(typeof name!=='string'||name.length>4096)return null;
+  const s=name.startsWith('__Z')?name.slice(1):name;
+  if(!s.startsWith('_ZN'))return null;
+  const p={s,i:2,subs:[],captureFunctionRole:true};
+  try{
+    if(!readName(p,false)||!p.functionRole||p.i>=s.length)return null;
+    if(readArgs(p)==null||p.i!==s.length)return null;
+    return Object.freeze(p.functionRole);
+  }catch{return null;}
 }
 function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(isSub)p.subs.push(out);return out;}
 function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return SUBSTITUTIONS[two];}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;return Number.isSafeInteger(n)?(p.subs[n]||null):null;}

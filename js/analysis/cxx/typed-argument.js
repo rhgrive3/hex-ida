@@ -1,5 +1,5 @@
 // A deliberately small Itanium ABI subset: a global, ordinary function with
-// exactly one pointer-to-named-object parameter. Qualified functions may be
+// a first pointer-to-named-object parameter. Qualified functions may be
 // static members; templates may encode return types. Neither is accepted.
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 
@@ -37,11 +37,36 @@ export function createCppTypedArgumentEvidence({symbol,functionAddress,architect
   } else {
     const name=sourceName();if(!name)return null;components.push(name);
   }
-  // No substitutions, multiple parameters, template suffixes, version suffixes
-  // or trailing garbage can silently become an object-argument assertion.
-  if(position!==symbol.length)return null;
+  // ARM64's first ordinary pointer argument remains x0 when later scalar or
+  // pointer arguments are present. Validate the entire supported signature;
+  // unknown encodings never become an argument assertion by prefix matching.
+  let parameterCount=1;
+  const trailingType=(depth=0)=>{
+    if(depth>8||position>=symbol.length)return false;
+    const code=symbol[position];
+    if('bcahstijlmxy nofde'.replace(/ /g,'').includes(code)){position++;return true;}
+    if(code==='P'||code==='R'||code==='O'||code==='K'||code==='V') {
+      position++;
+      if(code==='P'&&symbol[position]==='v'){position++;return true;}
+      return trailingType(depth+1);
+    }
+    if(/[1-9]/.test(code))return sourceName()!==null;
+    if(code==='N') {
+      position++;let count=0;
+      while(position<symbol.length&&symbol[position]!=='E') {
+        if(count++>=16||!sourceName())return false;
+      }
+      if(count<2||symbol[position++]!=='E')return false;
+      return true;
+    }
+    return false;
+  };
+  while(position<symbol.length) {
+    if(parameterCount>=16||!trailingType())return null;
+    parameterCount++;
+  }
   const record={schema:'cpp-typed-object-argument/v1',symbol,functionName,functionAddress,
     className:components.join('::'),pointeeConst,receiverRole:'typed-argument',
-    architecture,argumentIndex:0,register:'x0',rule:'itanium-global-single-object-pointer-parameter'};
+    architecture,argumentIndex:0,register:'x0',parameterCount,rule:'itanium-global-first-object-pointer-parameter'};
   record.digest=stableDigest(record);const proof=deepFreeze(record);canonical.add(proof);return proof;
 }
