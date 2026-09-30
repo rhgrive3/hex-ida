@@ -86,7 +86,10 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
     assert.ok(row.calls.every(c => c.committedKey === row.baselineKey));
   }
   const replay = stabilitySummary(rows, snapshots, policyBytes, casesBytes, controls);
-  for (const [key, value] of Object.entries(replay)) assert.deepEqual(summary[key], value, `aggregate drift: ${key}`);
+  // Reports are JSON: optional undefined keys are absent after serialization.
+  // Normalize the replay through the same JSON data model, without changing
+  // a decision, number, response, or actual repeated selection.
+  for (const [key, value] of Object.entries(replay)) assert.deepEqual(summary[key], JSON.parse(JSON.stringify(value)), `aggregate drift: ${key}`);
   // Independently recompute promotion, rather than trusting the live runner's
   // decision field or its aggregation function to enforce the safety bars.
   const cxxCorrect = rows.filter(r => r.arms.R1.correct).length;
@@ -117,7 +120,19 @@ function main() {
   });
   const casesBytes = fs.readFileSync(new URL('structural-cases.json', root)), policyBytes = fs.readFileSync(new URL('policy-freeze.json', root));
   assertStabilityExecution({ snapshots });
-  assert.equal(summary.executionFreezeSha256, sha256(fs.readFileSync(new URL('execution-freeze.json', root))));
+  const executionBytes = fs.readFileSync(new URL('execution-freeze.json', root));
+  if (summary.executionFreezeSha256 !== sha256(executionBytes)) {
+    const execution = JSON.parse(executionBytes), compatibility = execution.verificationOnlyRepair;
+    assert.equal(summary.executionFreezeSha256, compatibility?.priorExecutionFreezeSha256);
+    const priorBytes = fs.readFileSync(new URL('execution-freeze-before-json-verifier.json', root));
+    assert.equal(sha256(priorBytes), compatibility.priorExecutionFreezeSha256);
+    const prior = JSON.parse(priorBytes);
+    assert.equal(prior.policySha256, summary.policySha256);
+    assert.equal(prior.collectionProductSha, summary.productSha);
+    assert.equal(prior.sourceHashes['scripts/verify-jev-realgame-stability.mjs'], compatibility.priorVerifierSha256);
+    for (const [file, hash] of Object.entries(prior.sourceHashes)) if (file !== 'scripts/verify-jev-realgame-stability.mjs')
+      assert.equal(sha256(fs.readFileSync(new URL('../' + file, import.meta.url))), hash, 'runtime changed since measured calls');
+  }
   assert.equal(sha256(casesBytes), summary.caseSha256); assert.equal(sha256(policyBytes), summary.policySha256);
   const controls = controlsFile ? JSON.parse(fs.readFileSync(controlsFile)) : null;
   assert.equal(summary.controlsSha256, controlsFile ? sha256(fs.readFileSync(controlsFile)) : null);

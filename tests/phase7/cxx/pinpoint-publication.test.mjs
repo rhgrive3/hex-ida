@@ -13,6 +13,33 @@ import { __investigationInternalsForTests } from '../../../js/analysis/investiga
 import { proofText } from '../../../js/narrate.js';
 import { autoAnalyze } from '../../../js/auto.js';
 import { cxxSemanticViews, withCxxSemanticPreference } from '../../../js/analysis/query/cxx-semantic-preference.js';
+import { requestJevAlternative } from '../../../js/analysis/query/jev-advisory.js';
+
+test('optional production advisory sends only canonical facts and preserves local under choices and failures', async () => {
+  const fields = new CxxMemberIndex(); fields.publish(projection('Thing', [{}, { offsetBytes: 12n }]));
+  const local = await pinpointField({ goal: parseGoal('speed'), cxxFields: fields, limit: 400 });
+  const symbols = { nameAt: () => '_ZN5Thing8getSpeedEv' };
+  let calls = 0;
+  const fetchImpl = async (_url, init) => {
+    calls++; const body = JSON.parse(init.body);
+    assert.equal(/oracle|secret-label/.test(JSON.stringify(body)), false);
+    assert.equal(init.signal instanceof AbortSignal, true);
+    return { ok: true, json: async () => ({ model: 'openjev', answers: {
+      pick: { type: 'choice', choice: 'c1', confidence: .8, probabilities: { c1: .8 } }, unique: { type: 'noul', noul: .5 } } }) };
+  };
+  const options = { enabled: true, isCurrent: () => true, apiKey: 'test-key', symbols, fetchImpl };
+  const result = await requestJevAlternative('speed', { ...local, candidates: local.candidates.map(c => ({ ...c, oracle: 'secret-label' })) }, options);
+  assert.equal(result.top1, local.top); assert.equal(result.advisory.candidate.key, local.candidates[1].key);
+  assert.equal(local.verdict, result.hexResult.verdict);
+  for (const change of [{ enabled: false }, { mode: 'exact' }, { isCurrent: () => false }, { isCurrent: () => { throw new Error('stale'); } }]) {
+    const before = calls; const r = await requestJevAlternative('speed', local, { ...options, ...change });
+    assert.equal(r.top1, local.top); assert.equal(calls, before);
+  }
+  for (const fetchImpl of [async () => ({ ok: false, status: 500 }), async () => ({ ok: true, json: async () => ({ invented: 'c0' }) })]) {
+    const r = await requestJevAlternative('speed', local, { ...options, fetchImpl });
+    assert.equal(r.top1, local.top); assert.equal(r.advisory.candidate, null);
+  }
+});
 
 function projection(className, members, address = 0x1000n) {
   const receiver = createCppReceiverEvidence({

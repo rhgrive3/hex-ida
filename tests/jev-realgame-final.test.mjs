@@ -12,6 +12,59 @@ import { recoveryRequestBody,deterministicRecoveryPick } from '../scripts/jev-re
 import { verifyRecoveryEvidence } from '../scripts/verify-jev-realgame-recovery.mjs';
 import { summarize } from '../scripts/evaluate-jev-realgame-final.mjs';
 import { verifyEvidence } from '../scripts/verify-jev-realgame-final.mjs';
+import { stabilityRequestBody } from '../scripts/jev-realgame-stability-contract.mjs';
+import { verifyStabilityEvidence } from '../scripts/verify-jev-realgame-stability.mjs';
+import { assertStabilityExecution } from '../scripts/jev-stability-execution-guard.mjs';
+
+test('V2 execution rejects changed evaluator or collection before any client is constructed', () => {
+  const file = new URL('../reports/investigations/jev-realgame-final/stability-v2/execution-freeze.json', import.meta.url);
+  const freeze = JSON.parse(fs.readFileSync(file));
+  assertStabilityExecution({ freeze });
+  for (const mutate of [
+    f => { f.sourceHashes['scripts/evaluate-jev-realgame-stability.mjs'] = '0'.repeat(64); },
+    f => { delete f.sourceHashes['scripts/verify-jev-realgame-stability.mjs']; },
+    f => { f.maxAttempts++; },
+  ]) {
+    const changed = structuredClone(freeze); mutate(changed);
+    assert.throws(() => assertStabilityExecution({ freeze: changed }));
+  }
+  assert.throws(() => assertStabilityExecution({ freeze, snapshots: [{ productSha: 'different product', policySha256: freeze.policySha256 }] }));
+});
+
+test('V2 representations prioritize available method evidence without oracle leakage', () => {
+  const candidates = [member('a'), member('b', 304)].map(c => ({ ...c,
+    goldName: 'cur_speed', semanticLabel: 'Vehicle.cur_speed', sourceDescription: 'health money',
+    dwarf: { name: 'cur_speed' }, oracle: gold,
+    functionContexts: [...Array.from({ length: 8 }, (_, i) => ({ address: String(i + 1), name: '_ZN6WidgetC1Ev',
+      receiverProven: true, accessRoles: [] })), { address: '1000', name: '_ZN6Widget8getSpeedEv',
+      receiverProven: true, accessRoles: ['return-input'] }] }));
+  const body = stabilityRequestBody('speed', candidates, 'E2');
+  for (const text of Object.values(body.questions.pick.criteria)) {
+    assert.equal(/cur_speed|health|money/.test(text), false);
+    assert.ok(text.includes('getSpeed'));
+    assert.equal(text.split('release method:').length - 1, 8);
+  }
+});
+
+test('V2 actual evidence independently replays stable commits and rejects injected payloads and choices', () => {
+  const root = new URL('../reports/investigations/jev-realgame-final/stability-v2/', import.meta.url);
+  const read = file => readJevEvidence(new URL(file, root));
+  const original = { casesBytes: read('structural-cases.json'), policyBytes: read('policy-freeze.json'),
+    snapshots: ['openttd', 'openmw'].map(game => JSON.parse(read(`snapshots/${game}.json`))),
+    rows: read('results/raw-results.jsonl').toString().trim().split('\n').map(JSON.parse),
+    summary: JSON.parse(read('results/summary.json')), controls: JSON.parse(read('controls.json')) };
+  assert.equal(verifyStabilityEvidence(original).valid, true);
+  const index = original.rows.findIndex(row => row.arms.E2.calls.length > 0);
+  assert.ok(index >= 0);
+  for (const mutate of [
+    row => { row.arms.E2.calls[0].criteria.c0 = 'oracle source member name'; },
+    row => { row.arms.E2.calls[0].selectedKey = 'invented candidate'; },
+    row => { row.arms.ADVISORY.repeatedKeys[0] = 'remote-driven commit'; },
+  ]) {
+    const rows = [...original.rows]; rows[index] = structuredClone(rows[index]); mutate(rows[index]);
+    assert.throws(() => verifyStabilityEvidence({ ...original, rows }));
+  }
+});
 
 const member = (key, offset = 306) => ({ key, source: 'cxx', binarySha256: 'binary-a', className: 'Vehicle',
   anonymous: true, syntheticName: `member_0x${offset.toString(16)}`, fieldName: null, offset, size: 2,

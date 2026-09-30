@@ -25,6 +25,7 @@ import { analyzeFunctionCached, describeFunction, supportsArm64SemanticAnalysis 
 import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
 import { cxxMemberIndexForApp, recoverCxxMembersForQuery } from './analysis/query/app-adapter.js';
 import { cxxRecoveryMadeProgress } from './analysis/cxx/query-recovery.js';
+import { appendJevAlternativeAction } from './ui/jev-advisory.js';
 import { showXrefs } from './ui/panels/navigation.js';
 import { showField } from './ui/panels/field-access.js';
 export { showXrefs, showField };
@@ -3362,6 +3363,7 @@ export function showCandidates(app, goal) {
      * 決着していないときは、名前を出さずに理由だけ言って、下の候補一覧に譲る。
      */
     const decided = pin && pin.top && pin.verdict !== VERDICT.NONE;
+    appendJevAlternativeAction(app, goal, pin, results, controller.signal);
     let candidateHost = results;
     if (pin && pin.top && !decided) {
       results.append(verdictBadge(pin.verdict));

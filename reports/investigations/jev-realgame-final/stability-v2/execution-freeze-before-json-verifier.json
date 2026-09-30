@@ -6,7 +6,7 @@
   "policySha256": "a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59",
   "sourceHashes": {
     "scripts/evaluate-jev-realgame-stability.mjs": "26714f56e5fff80b6946601fd9e2f3d2f7532696c006b015ec576bf5c951eb5e",
-    "scripts/verify-jev-realgame-stability.mjs": "452aeb503a2e8edf4bfe60ca817b13ab020ba46b90a6a6cc05d0ee0c2cf96b4d",
+    "scripts/verify-jev-realgame-stability.mjs": "4f6245c34b2248871776aec32dd53130ee2bc36149c36cb785d051d7c486822a",
     "scripts/run-jev-stability-controls.mjs": "948cfce8734ac4e403a858664e7564df064c52402e8dc02b82afb4f4c76406c4",
     "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
     "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07",
@@ -55,14 +55,5 @@
       "commit": "7e32114cf",
       "sha256": "00c82f97f76e707af06bea3cf759f7f5b92f8ef3b924ec4b29eee9232f382b48"
     }
-  ],
-  "verificationOnlyRepair": {
-    "atUtc": "2026-09-30T18:27:53.999808+00:00",
-    "priorExecutionFreezeSha256": "78520ffef3714baa722f9f28948b8b548b364a22e14719ca669f9194e77a51d6",
-    "priorVerifierSha256": "4f6245c34b2248871776aec32dd53130ee2bc36149c36cb785d051d7c486822a",
-    "reason": "JSON serialization drops undefined repeatedKeys for deterministic regression records; compare replay in JSON data model",
-    "runtimeOrPromptOrScoringChanged": false,
-    "apiCallsRerun": false,
-    "allNonVerifierExecutionSourcesMustStillMatchPriorFreeze": true
-  }
+  ]
 }

@@ -27,6 +27,20 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Keep the foreign surface exact; the Phase 7 manifest remains unchanged.
   // The final game study integrates A/B without widening canonical ownership.
   "integration/jev-realgame-final": Object.freeze([
+    "js/ui/jev-advisory.js",
+    "reports/investigations/jev-realgame-final/stability-v2/controls.json",
+    "reports/investigations/jev-realgame-final/stability-v2/design-review.md",
+    "reports/investigations/jev-realgame-final/stability-v2/evidence-packaging.json",
+    "reports/investigations/jev-realgame-final/stability-v2/execution-repair-review.md",
+    "reports/investigations/jev-realgame-final/stability-v2/implementation-review.md",
+    "reports/investigations/jev-realgame-final/stability-v2/pre-guard-controls.json",
+    "reports/investigations/jev-realgame-final/stability-v2/pre-guard-results/raw-results.jsonl.gz",
+    "reports/investigations/jev-realgame-final/stability-v2/pre-guard-results/summary.json",
+    "reports/investigations/jev-realgame-final/stability-v2/results/raw-results.jsonl.gz",
+    "reports/investigations/jev-realgame-final/stability-v2/results/summary.json",
+    "reports/investigations/jev-realgame-final/stability-v2/snapshots/openmw.json.gz",
+    "reports/investigations/jev-realgame-final/stability-v2/snapshots/openttd.json.gz",
+    "reports/investigations/jev-realgame-final/stability-v2/execution-freeze-before-json-verifier.json",
     "reports/investigations/jev-realgame-final/stability-v2/execution-freeze-before-guard.json",
     "scripts/jev-stability-execution-guard.mjs",
     "scripts/evaluate-jev-realgame-stability.mjs",

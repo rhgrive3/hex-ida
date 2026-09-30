@@ -1,0 +1,38 @@
+{
+  "schema": "hex-jev-stability-evidence-packaging/v2",
+  "artifacts": [
+    {
+      "path": "snapshots/openttd.json.gz",
+      "uncompressedSha256": "09f3bb5a440d6d3c7b2fb324cf652c114bc48a43aca6161ad08e319d07be4030",
+      "compressedSha256": "b5f5a60a0a44f322fed44bfe579c8550d982cdb814ae078d5b5050feb9c801bf",
+      "uncompressedBytes": 20085562,
+      "compressedBytes": 791259
+    },
+    {
+      "path": "snapshots/openmw.json.gz",
+      "uncompressedSha256": "6c815afd646c1951e990a8ba049f56a6a2b219f9722f2560c892ec16c5e44e73",
+      "compressedSha256": "783591b5a564ba7ede979ea2a6ad5fb5650357cf6c48e3e62e8c51bba6679312",
+      "uncompressedBytes": 11865477,
+      "compressedBytes": 600062
+    },
+    {
+      "path": "results/raw-results.jsonl.gz",
+      "uncompressedSha256": "715b4edf01268d1af1adde058d2341106a963eeb1f233c60bfd68e175ff1b8c7",
+      "compressedSha256": "6d59710fcb59bc749922b8b5689489c2e5c726ce8c2b47cd7c688717e55e18e1",
+      "uncompressedBytes": 11392728,
+      "compressedBytes": 657565
+    },
+    {
+      "path": "pre-guard-results/raw-results.jsonl.gz",
+      "uncompressedSha256": "be96edba585a90704abe0d11683471f12fc88db141bb810cfaeefaea6e93e4f1",
+      "compressedSha256": "6460de27be74c01b753e909ae341fd3c8d15bad48d5e8954cab28df77f4e9ab3",
+      "uncompressedBytes": 11391984,
+      "compressedBytes": 658272
+    }
+  ],
+  "sourceProductSha": "77984276ef1ef4f4e09eb00bbcfe13836498c2dc",
+  "finalEvaluationSourceSha": "0e8e0b08dbf35eacfb8a998593af227bb2861b79",
+  "preGuardRunExcludedFromFinalJudge": true,
+  "preGuardOutcomesNotInspectedBeforeRepair": true,
+  "semanticPolicyAndRepresentationUnchanged": true
+}
