@@ -57,6 +57,7 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
       assert.deepEqual(result.repeatedCorrect, result.repeatedKeys.map(correctKey));
       const pool = arm === 'G' && input.routed ? comparisonPool(gold.query, input.candidates) : input.candidates;
       const shortlist = jevShortlist(pool, { max: 255 });
+      assert.equal(row.armShortlistGold[arm], verified ? shortlist.some(c => structuralMatch(c, gold)) : null);
       const shouldCall = input.routed && shortlist.length >= 2;
       assert.equal(result.calls.length, shouldCall ? policy.repeats : 0);
       for (const call of result.calls) {

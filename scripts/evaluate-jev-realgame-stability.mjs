@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { rerankWithJev, adviseWithJev } from '../js/pinpoint.js';
+import { rerankWithJev, adviseWithJev, jevShortlist } from '../js/pinpoint.js';
 import { RealGameJevClient } from './jev-realgame-final-client.mjs';
 import { stablePick, comparisonPool, stabilityRequestBody } from './jev-realgame-stability-contract.mjs';
 import { structuralMatch, funnel, persistentWrite, sha256, percentiles } from './jev-realgame-final-contract.mjs';
@@ -70,10 +70,11 @@ async function main() {
     const correct = candidate => gold.status === 'verified' ? structuralMatch(candidate, gold) : null;
     const row = { id: gold.id, binary: gold.binary, query: gold.query, status: gold.status, gold, verdict: input.verdict,
       topKey: input.topKey, hexCorrect: correct(hex), hexLatencyMs: input.hexLatencyMs, preferenceLatencyMs: input.preferenceLatencyMs,
-      recovery: input.recovery, funnel: funnel({ ...input, candidates: input.published }, gold), failureCauses: [],
+      recovery: input.recovery, funnel: funnel({ ...input, candidates: input.published }, gold), failureCauses: [], armShortlistGold: {},
       arms: { A: { key: hex?.key ?? null, correct: correct(hex) }, R1: { key: local?.key ?? null, correct: correct(local) } } };
     await Promise.all(['current', 'E', 'E2', 'G'].map(async arm => {
       const pool = arm === 'G' && input.routed ? comparisonPool(gold.query, input.candidates) : input.candidates;
+      row.armShortlistGold[arm] = gold.status === 'verified' ? jevShortlist(pool, { max: 255 }).some(c => structuralMatch(c, gold)) : null;
       const base = { top: arm === 'G' ? pool[0] ?? local : hex, candidates: pool, verdict: input.verdict };
       const keys = [], repeatedCorrect = [], calls = [];
       for (let repeat = 0; repeat < policy.repeats; repeat++) {
