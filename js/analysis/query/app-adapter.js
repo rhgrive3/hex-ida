@@ -4,6 +4,7 @@ import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
 import { irFor } from '../../ir.js';
 import { createCxxEvidenceProvider } from '../cxx/project.js';
+import { createCxxQueryPlanner, recoverCxxQueryMembers } from '../cxx/query-recovery.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -29,6 +30,38 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
 // also records the reader and SymbolIndex identities because either can be
 // replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
+const CXX_QUERY_PLANNERS = new WeakMap();
+
+// An explicit interactive operation, separate from ordinary Fast decompilation
+// and candidate enumeration. It reuses the scoped query owner's existing
+// analysis; the canonical producer remains the sole publication authority.
+export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
+  if (options.enabled !== true) return {status:'disabled',attempted:[],elapsedMs:0};
+  const query=app?.analysisQueries;
+  if (!query?.snapshot || !query?.decompile) throw new Error('scoped C++ recovery owner unavailable');
+  const snapshot=await query.snapshot({signal:options.signal});
+  const entry=ensureCxxEvidenceProviderForApp(app);
+  if (!entry) return {status:'unsupported',attempted:[],elapsedMs:0};
+  await entry.buildPromise;
+  const symbolsGen=app.symbols.gen;
+  const checkBinding=()=>{
+    if (cxxMemberIndexForApp(app)!==entry.provider.memberIndex() || app.symbols.gen!==symbolsGen) throw new Error('C++ recovery binding changed');
+    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new DOMException('Aborted','AbortError');
+  };
+  checkBinding();
+  let cached=CXX_QUERY_PLANNERS.get(entry.provider);
+  if (!cached || cached.symbolsGen!==app.symbols.gen) {
+    const planner=createCxxQueryPlanner({symbols:app.symbols,classEvidence:entry.provider.classEvidence(),
+      isExecutable:address=>Boolean(app.executableRegionFor?.(address))});
+    cached={symbolsGen:app.symbols.gen,planner};CXX_QUERY_PLANNERS.set(entry.provider,cached);
+  }
+  const maxFunctions=options.maxFunctions??8;
+  const plan=cached.planner.plan(phrase,{maxFunctions});
+  const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
+    decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,queryOptions);checkBinding();return value;}});
+  checkBinding();
+  return {...result,plan,functionCount:cached.planner.functionCount,candidateCount:cxxMemberIndexForApp(app)?.fieldCount??0};
+}
 
 // Publication only: a Pinpoint request must not build an index or reanalyze
 // functions. The existing decompile producer fills the member lattice.

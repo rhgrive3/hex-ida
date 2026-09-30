@@ -72,6 +72,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "scripts/jev-realgame-gdb-layout.py",
     "scripts/measure-openjev-reliability.mjs",
     "scripts/run-jev-realgame-eval.mjs",
+    "scripts/probe-cxx-query-recovery.mjs",
     "scripts/run-jev-regression-controls.mjs",
     "scripts/validate-pinpoint-cxx-members.mjs",
     "scripts/verify-jev-realgame-final.mjs",
