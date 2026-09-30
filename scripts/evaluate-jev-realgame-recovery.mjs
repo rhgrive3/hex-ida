@@ -14,6 +14,7 @@ if(!casesFile||!snapshotsDir||!outputDir||!['untouched-final','development-origi
 const caseBytes=fs.readFileSync(casesFile),cases=JSON.parse(caseBytes);
 const policyBytes=fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/'+(role==='development-original70'?'recovery-policy-freeze-development.json':'recovery-policy-freeze.json'),import.meta.url));
 const policy=JSON.parse(policyBytes);
+if(policy.promptSha256!==sha256(fs.readFileSync(new URL('./jev-realgame-recovery-contract.mjs',import.meta.url))))throw new Error('frozen representation/prompt binding');
 const experiment=JSON.parse(fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-experiment-freeze.json',import.meta.url)));
 if(experiment.corpora[role].caseSha256!==sha256(caseBytes)||experiment.corpora[role].policySha256!==sha256(policyBytes))throw new Error('pre-run experiment freeze binding');
 const snapshots=['openttd','openmw'].map(k=>JSON.parse(fs.readFileSync(path.join(snapshotsDir,`${k}.json`))));

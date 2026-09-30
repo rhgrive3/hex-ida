@@ -90,6 +90,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "scripts/verify-jev-realgame-recovery.mjs",
     "scripts/read-jev-evidence.mjs",
     "scripts/audit-jev-recovery-holdout.mjs",
+    "scripts/diagnose-cxx-query-recovery.mjs",
     "scripts/extract-jev-realgame-layout.mjs",
     "scripts/jev-realgame-final-client.mjs",
     "scripts/jev-realgame-final-contract.mjs",

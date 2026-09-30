@@ -169,10 +169,10 @@ test('recovery representation ignores oracle-shaped descriptions and bounds mach
 
 test('recovery replay rejects gold, build, candidate selection and oracle payload drift',()=>{
   const c={id:'check',binary:'openttd',query:'widget count',...gold};
-  const cases=[c],policy={repeats:1};
+  const cases=[c],policy={repeats:1,promptSha256:sha256(fs.readFileSync(new URL('../scripts/jev-realgame-recovery-contract.mjs',import.meta.url))),collection:{maxFunctionsPerQuery:8,maxElapsedMs:15000}};
   const candidates=[member('one'),member('two',400)];
   const input={id:c.id,binary:c.binary,query:c.query,binarySha256:'binary-a',candidates,published:candidates,
-    recovered:candidates,shortlist:candidates,topKey:'one',routed:true};
+    recovered:candidates,shortlist:candidates,topKey:'one',routed:true,recovery:{attempted:[],elapsedMs:2,status:'complete'}};
   const row={id:c.id,binary:c.binary,query:c.query,status:c.status,gold:c,funnel:funnel(input,c),
     topKey:'one',hexCorrect:true,verdict:'ambiguous',hexLatencyMs:1,recoveryLatencyMs:2,failureCauses:[],
     arms:{A:{key:'one',correct:true},DET:{key:'one',correct:true}}};
@@ -194,7 +194,9 @@ test('recovery replay rejects gold, build, candidate selection and oracle payloa
   assert.deepEqual(verifyRecoveryEvidence(original),{cases:1,verified:1,calls:2,valid:true});
   for(const mutate of [v=>{v.snapshots[0].binarySha256='other';},v=>{v.rows[0].gold.identities[0].offset++;},
     v=>{v.rows[0].arms.E.calls[0].criteria.c0='Vehicle.cur_speed';},
-    v=>{v.rows[0].arms.E.calls[0].selectedKey='invented';},v=>{v.summary.summaries.E.top1++;}]) {
+    v=>{v.rows[0].arms.E.calls[0].selectedKey='invented';},v=>{v.summary.summaries.E.top1++;},
+    v=>{v.snapshots[0].sourceHashes['js/analysis/cxx/query-recovery.js']='drift';v.summary.sourceHashes['js/analysis/cxx/query-recovery.js']='drift';},
+    v=>{v.snapshots[0].rows[0].recovery.elapsedMs=20000;},v=>{v.rows[0].failureCauses=['wrong gold'];}]) {
     const copy={...structuredClone(original),caseBytes:Buffer.from(caseBytes),policyBytes:Buffer.from(policyBytes)};
     mutate(copy);assert.throws(()=>verifyRecoveryEvidence(copy));
   }

@@ -10,8 +10,9 @@ import {recoveryRequestBody,deterministicRecoveryPick} from './jev-realgame-reco
 import {validateChoice} from './jev-realgame-final-client.mjs';
 import {summarize} from './evaluate-jev-realgame-final.mjs';
 
-export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,summary}) {
+export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,summary,controlsBytes=null}) {
   const cases=JSON.parse(caseBytes),policy=JSON.parse(policyBytes);
+  assert.equal(policy.promptSha256,sha256(fs.readFileSync(new URL('./jev-realgame-recovery-contract.mjs',import.meta.url))));
   const inputs=new Map(snapshots.flatMap(s=>s.rows.map(r=>[r.id,r])));
   assert.equal(new Set(cases.map(c=>c.id)).size,cases.length);
   assert.equal(inputs.size,cases.length);assert.equal(rows.length,cases.length);
@@ -20,6 +21,7 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
     assert.equal(s.complete,true);assert.equal(s.productSha,summary.productSha);
     assert.equal(s.policySha256,sha256(policyBytes));assert.deepEqual(s.sourceHashes,summary.sourceHashes);
     assert.equal(s.collection.keyCollisions,0);
+    for(const [file,hash] of Object.entries(s.sourceHashes))assert.equal(sha256(fs.readFileSync(new URL('../'+file,import.meta.url))),hash,'current source drift');
     for(const r of s.rows) {
       assert.equal(r.binary,s.binaryKey);assert.equal(r.binarySha256,s.binarySha256);
       for(const c of [...r.candidates,...r.published,...r.recovered])assert.equal(c.binarySha256,s.binarySha256);
@@ -29,10 +31,18 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
   let calls=0;
   for(const c of cases) {
     const input=inputs.get(c.id),row=rows.find(r=>r.id===c.id),verified=c.status==='verified';
-    assert.ok(input&&row);assert.equal(input.query,c.query);assert.equal(row.query,c.query);
+    assert.ok(input&&row);
+    assert.ok(input.recovery.attempted.length<=policy.collection.maxFunctionsPerQuery);
+    assert.equal(new Set(input.recovery.attempted.map(a=>a.address)).size,input.recovery.attempted.length);
+    assert.ok(Number.isFinite(input.recovery.elapsedMs)&&input.recovery.elapsedMs>=0);
+    if(input.recovery.elapsedMs>=policy.collection.maxElapsedMs)assert.equal(input.recovery.status,'budget-exhausted');assert.equal(input.query,c.query);assert.equal(row.query,c.query);
     assert.equal(row.binary,c.binary);assert.equal(row.status,c.status);assert.deepEqual(row.gold,c);
     if(verified) {assert.ok(c.identities.length);for(const g of c.identities)assert.equal(g.binarySha256,input.binarySha256);}
     assert.deepEqual(row.funnel,funnel({...input,candidates:input.published},c));
+    const causes=row.funnel.unreachableBecauseNotRecovered?['candidate recovery failure']:[];
+    if(callArms.some(a=>new Set(row.arms[a].repeatedKeys).size>1))causes.push('stochastic instability');
+    if(row.funnel.shortlist&&!row.arms.E.correct)causes.push('insufficient member semantics or reranking failure');
+    assert.deepEqual(row.failureCauses,causes);
     const hex=input.candidates.find(s=>s.key===input.topKey)??null;
     const det=input.routed?deterministicRecoveryPick(c.query,input.candidates):hex;
     assert.equal(row.arms.A.key,hex?.key??null);assert.equal(row.arms.DET.key,det?.key??null);
@@ -66,11 +76,20 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
     for(const game of ['openttd','openmw'])assert.deepEqual(summary.perGame[game][arm],summarize(rows.filter(r=>r.binary===game),arm));
   }
   assert.deepEqual(summary.coldRecoveryLatency,percentiles(rows.map(r=>r.recoveryLatencyMs)));
+  if(summary.role) {
+    const primary=summary.summaries.E,controls=controlsBytes?JSON.parse(controlsBytes):null;
+    assert.equal(summary.controlsSha256,controlsBytes?sha256(controlsBytes):null);
+    const expected=summary.role!=='untouched-final'?'DEVELOPMENT_ONLY':!controls?'NOT_DECIDED':
+      ['openttd','openmw'].every(k=>summary.perGame[k].E.net>0)&&primary.net>0&&primary.regression===0
+      &&primary.unsafeConfident===0&&primary.apiErrorRate!=null&&primary.apiErrorRate<=.05
+      &&controls.rows.every(r=>!r.baselineCorrect||r.arms.E.correct===r.arms.E.total)?'OPTIONAL_ADVISORY':'NO_GO';
+    assert.equal(summary.finalPolicy,expected,'frozen classification drift');
+  }
   return {cases:cases.length,verified:cases.filter(c=>c.status==='verified').length,calls,valid:true};
 }
 
 function main() {
-  const [caseFile,snapshotsDir,resultsDir]=process.argv.slice(2);
+  const [caseFile,snapshotsDir,resultsDir,controlsFile]=process.argv.slice(2);
   if(!resultsDir)throw new Error('usage: CASES SNAPSHOTS RESULTS');
   const summary=JSON.parse(fs.readFileSync(path.join(resultsDir,'summary.json')));
   const experiment=JSON.parse(fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-experiment-freeze.json',import.meta.url)));
@@ -82,7 +101,7 @@ function main() {
   });
   const result=verifyRecoveryEvidence({caseBytes:fs.readFileSync(caseFile),
     policyBytes:fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/'+(summary.role==='development-original70'?'recovery-policy-freeze-development.json':'recovery-policy-freeze.json'),import.meta.url)),
-    snapshots,summary,rows:readJevEvidence(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse)});
+    snapshots,summary,controlsBytes:controlsFile?fs.readFileSync(controlsFile):null,rows:readJevEvidence(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse)});
   console.log(JSON.stringify(result));
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();
