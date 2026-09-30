@@ -12,7 +12,7 @@ This is a completed evaluation of the unchanged 70-case corpus under the **pre-f
 
 ## What changed
 
-Integration branch `integration/jev-realgame-final` starts from main `d2177389cd1770edb3548251a080bf23e829a8a0`, incorporates publication branch A (`bb5f415cc9498aff47fc41f0867f201a515d53b2`, PR #9662) and holdout branch B (`b696f8fcc`), and preserves main's changes. Product publication sources are byte-identical to reviewed A. No new Jev prompt, routing threshold, default API dependency or production analysis pass was introduced.
+Integration branch `integration/jev-realgame-final` starts from main `d2177389cd1770edb3548251a080bf23e829a8a0`, incorporates publication branch A (`bb5f415cc9498aff47fc41f0867f201a515d53b2`, PR #9662) and holdout branch B (`b696f8fcc`), and preserves main's changes. For the initial evaluation, product publication sources were byte-identical to reviewed A. That evaluation introduced no production Jev prompt or default API dependency. The subsequent recovery expansion adds explicit bounded query-directed Fast analysis, machine-use context in the existing member-type walk, and conservative release-alias ownership checks; its independent evaluation is pending.
 
 The added evaluation boundary collects live canonical candidates from release binaries, separates exact-build DWARF gold from Jev descriptions, scores by structural identity, records a recovery funnel, and retains every actual request description, response, attempt and repeated selection. The historical name-only C++ evaluator now requires structural gold. Historical query files and results remain historical; this directory is the authoritative final report.
 
@@ -89,7 +89,7 @@ Lattice-to-shortlist retention is 2/2 (100%). All 47/19 actual candidates fit in
 
 **OpenMW:** every arm is 0/1, with 0 rescues and 0 regressions. RG55's verified `mRef` is not recovered in this warm state. Four originally answerable cases are unverified and one further query is a control. This is insufficient evidence to claim independent OpenMW gain or to estimate Jev's reachable-member accuracy there.
 
-The C++ baseline-correct destruction rate is **undefined**, because there are zero correct baseline answers in the verified denominator. Reporting "0% destruction" would conceal the missing denominator. The regression controls below supply a meaningful baseline-correct check. See [summary.json](summary.json) and [per-case evidence](raw-results.jsonl).
+The C++ baseline-correct destruction rate is **undefined**, because there are zero correct baseline answers in the verified denominator. Reporting "0% destruction" would conceal the missing denominator. The regression controls below supply a meaningful baseline-correct check. See [summary.json](summary.json) and [per-case evidence](raw-results.jsonl.gz).
 
 ## SP08 / SP33 / XA40 controls and failure analysis
 
@@ -132,7 +132,7 @@ The existing optional client sends the user's query plus candidate descriptions 
 
 ## Integrity, reproducibility and validation
 
-The live release-only production snapshots are retained as [OpenTTD](production-snapshots/openttd.json) and [OpenMW](production-snapshots/openmw.json). Collection used exact pushed product SHA `a15e196c0d5176870c22c5995b3cf1e1d399adc9` on [Actions run 36689172349](https://github.com/rhgrive3/actions/actions/runs/36689172349), with 47/19 anonymous candidates, zero key collisions and exact binary/case/policy/source bindings. The initial failed collector run is excluded; BigInt serialization was fixed and regression-tested before accepted collection.
+The live release-only production snapshots are retained as [OpenTTD](production-snapshots/openttd.json.gz) and [OpenMW](production-snapshots/openmw.json.gz). Collection used exact pushed product SHA `a15e196c0d5176870c22c5995b3cf1e1d399adc9` on [Actions run 36689172349](https://github.com/rhgrive3/actions/actions/runs/36689172349), with 47/19 anonymous candidates, zero key collisions and exact binary/case/policy/source bindings. The initial failed collector run is excluded; BigInt serialization was fixed and regression-tested before accepted collection.
 
 Independent offline verification regenerates every one of the **840 actual request bodies and criteria from binary-only candidate snapshots**, recomputes each structural funnel and repeated top-1, verifies selection containment and recomputes all aggregate/per-game metrics. [evaluation-integrity.json](evaluation-integrity.json) records 70 cases, 49 verified, 840 calls and valid replay. Automated mutation tests reject query/hash drift, binary/policy binding drift, altered gold, oracle descriptions, invented selections, changed funnels and changed aggregates. Frozen alternatives and verified inheritance remain scoring-only.
 

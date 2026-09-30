@@ -1,0 +1,26 @@
+{
+  "schema": "hex-evidence-packaging/v1",
+  "artifacts": [
+    {
+      "path": "raw-results.jsonl.gz",
+      "uncompressedSha256": "dc5569ad68b7f55b2a879438056e63e8b7a88f671cae7b15a8046dd8da2f005f",
+      "compressedSha256": "276c3def513ec587867d299e1e27178e2eb011d91a237fe0b96ad78b42e99b6c",
+      "uncompressedBytes": 7393271,
+      "compressedBytes": 388851
+    },
+    {
+      "path": "production-snapshots/openttd.json.gz",
+      "uncompressedSha256": "9219e55dd1f3f62c4d46c0846d757e996de1394ab4ab27efe8d6f872bcf6e31c",
+      "compressedSha256": "2bcd073db8c5efde4626fa6187dfd2b0ced85417860b7b6d0ce95c6d1095505f",
+      "uncompressedBytes": 14114729,
+      "compressedBytes": 721749
+    },
+    {
+      "path": "production-snapshots/openmw.json.gz",
+      "uncompressedSha256": "a90cbf251aad0ecf67ea526c48be61bd380a867578c2169ece1510ba8b00c96d",
+      "compressedSha256": "ef414003224a010c0ae23a7f0849551c61a66dda6fb83791d9be583ca380350e",
+      "uncompressedBytes": 565587,
+      "compressedBytes": 33173
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Independent offline replay of retained evidence; never calls a service.
 import fs from 'node:fs';
+import {readJevEvidence} from './read-jev-evidence.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -71,12 +72,12 @@ function main() {
   const goldBytes=fs.readFileSync(path.join(report,'structural-gold.json'));
   assert.equal(summary.goldSha256,sha256(goldBytes));
   const snapshots=['openttd','openmw'].map(k=>{
-    const bytes=fs.readFileSync(path.join(snapshotsDir,`${k}.json`));
+    const bytes=readJevEvidence(path.join(snapshotsDir,`${k}.json`));
     assert.equal(summary.snapshotHashes[k],sha256(bytes));return JSON.parse(bytes);
   });
   const result=verifyEvidence({casesBytes:fs.readFileSync(path.join(ROOT,'reports/investigations/jev-real-game-freeform-holdout/holdout-cases.json')),
     gold,policyBytes:fs.readFileSync(path.join(report,'policy-freeze.json')),snapshots,
-    rows:fs.readFileSync(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse),summary});
+    rows:readJevEvidence(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse),summary});
   console.log(JSON.stringify(result));
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();

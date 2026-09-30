@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {readJevEvidence} from '../scripts/read-jev-evidence.mjs';
 import { requestBody, structuralMatch, funnel, verifyCases, sha256, CASE_HASH, evidenceJSON } from '../scripts/jev-realgame-final-contract.mjs';
 import { RealGameJevClient, validateChoice } from '../scripts/jev-realgame-final-client.mjs';
 import { rerankWithJev, jevShortlist } from '../js/pinpoint.js';
@@ -23,7 +24,7 @@ const response = choice => ({ model: 'openjev', answers: { pick: { type: 'choice
 
 test('retained real-game evidence replays all decisions and rejects corpus, build, gold, payload and result drift', () => {
   const report=new URL('../reports/investigations/jev-realgame-final/',import.meta.url);
-  const read=name=>fs.readFileSync(new URL(name,report));
+  const read=name=>readJevEvidence(new URL(name,report));
   const original={casesBytes:fs.readFileSync(new URL('../reports/investigations/jev-real-game-freeform-holdout/holdout-cases.json',import.meta.url)),
     gold:JSON.parse(read('structural-gold.json')),policyBytes:read('policy-freeze.json'),
     snapshots:['openttd','openmw'].map(k=>JSON.parse(read(`production-snapshots/${k}.json`))),

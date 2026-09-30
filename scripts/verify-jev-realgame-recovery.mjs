@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Offline verification is independent of the live runner and makes no calls.
 import fs from 'node:fs';
+import {readJevEvidence} from './read-jev-evidence.mjs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
@@ -75,12 +76,12 @@ function main() {
   assert.equal(sha256(fs.readFileSync(caseFile)),experiment.corpora[summary.role].caseSha256);
   assert.equal(summary.policySha256,experiment.policySha256);
   const snapshots=['openttd','openmw'].map(k=>{
-    const bytes=fs.readFileSync(path.join(snapshotsDir,`${k}.json`));
+    const bytes=readJevEvidence(path.join(snapshotsDir,`${k}.json`));
     assert.equal(summary.snapshotHashes[k],sha256(bytes));return JSON.parse(bytes);
   });
   const result=verifyRecoveryEvidence({caseBytes:fs.readFileSync(caseFile),
     policyBytes:fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-policy-freeze.json',import.meta.url)),
-    snapshots,summary,rows:fs.readFileSync(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse)});
+    snapshots,summary,rows:readJevEvidence(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse)});
   console.log(JSON.stringify(result));
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))main();
