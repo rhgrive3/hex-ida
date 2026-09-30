@@ -1,0 +1,153 @@
+{
+  "schema": "hex-jev-stability-holdout-v2-freeze/v1",
+  "frozenAtUtc": "2026-09-30T16:58:00.614Z",
+  "artifacts": {
+    "holdout.json": {
+      "sha256": "d17d8f8ef6a5c60daf8e3ba24ab6bffe0aea3d4329c7a3ae1cc2f3d29fd9a1e4",
+      "bytes": 160029,
+      "path": "../../../evidence/jev-realgame-final/stability-holdout-v2/holdout.json"
+    },
+    "authority.md": {
+      "sha256": "71b15562b4e1f571e221bb2a62763fa04d180b57943aba06f2a3029e8d7f9fc5",
+      "bytes": 84796,
+      "path": "../../../evidence/jev-realgame-final/stability-holdout-v2/authority.md"
+    }
+  },
+  "authorityFiles": [
+    {
+      "path": "reports/investigations/jev-realgame-final/oracle-authority.json",
+      "sha256": "38665f5657573bf281e71b4a2b7f50805862eca19448c86f1ff904e549833844",
+      "bytes": 1098,
+      "role": "independent oracle authority"
+    },
+    {
+      "path": "reports/investigations/jev-realgame-final/layout-openttd.json",
+      "sha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+      "bytes": 356640,
+      "role": "exact parent layout extract (openttd)"
+    },
+    {
+      "path": "reports/investigations/jev-realgame-final/layout-openmw.json",
+      "sha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+      "bytes": 42212,
+      "role": "exact parent layout extract (openmw)"
+    },
+    {
+      "path": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+      "sha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+      "bytes": 88578,
+      "role": "independent fresh layout extract (openttd)"
+    },
+    {
+      "path": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+      "sha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+      "bytes": 108387,
+      "role": "independent fresh layout extract (openmw)"
+    }
+  ],
+  "distribution": {
+    "total": 50,
+    "verified": 40,
+    "control": 10,
+    "openttdVerified": 20,
+    "openmwVerified": 20,
+    "openttdControl": 5,
+    "openmwControl": 5,
+    "verifiedWidthHistogram": {
+      "1": 12,
+      "2": 5,
+      "4": 13,
+      "8": 10
+    },
+    "distinctOwningClasses": 36,
+    "physicalIdentitiesEmitted": 56
+  },
+  "originalCaseHashes": [
+    {
+      "role": "original frozen70 case text",
+      "path": "reports/investigations/jev-real-game-freeform-holdout/holdout-cases.json",
+      "sha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+      "bytes": 18878
+    },
+    {
+      "path": "original70 caseTextSha256",
+      "sha256": "246045f09566c2d93e6100403742db993ff9f8d8ae4ef01fa5a84d3dc2bb444e"
+    },
+    {
+      "path": "original70 structuralGold identitySha256",
+      "sha256": "1d743c5fd8edb134e7a186c49f47db613de37f5764f2af163a501f8dfae3007f"
+    }
+  ],
+  "priorCaseHashes": [
+    {
+      "role": "prior fresh50 holdout case text",
+      "path": "reports/investigations/jev-realgame-final/fresh-holdout.json",
+      "sha256": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+      "bytes": 71554
+    },
+    {
+      "role": "prior fresh50 structural identities",
+      "path": "reports/investigations/jev-realgame-final/fresh-structural-cases.json",
+      "sha256": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+      "bytes": 42902
+    },
+    {
+      "path": "fresh50 caseTextSha256",
+      "sha256": "54bcbd3d9844bb2c46487d3f41be8511d202b3db0c5c948256be341a09540b34"
+    },
+    {
+      "path": "fresh50 structuralIdentitySha256",
+      "sha256": "ffecc3083d0f9471041ea7d39cab8bc7e21781d30105e8f4a3ddccef180321ae"
+    }
+  ],
+  "exclusionOverlapAudit": {
+    "original70StructuralIdentitiesChecked": 142,
+    "fresh50StructuralIdentitiesChecked": 71,
+    "newIdentitiesChecked": 56,
+    "physicalGoldOverlaps": [],
+    "priorSemanticLabelReuses": [],
+    "forbiddenQueryPatternHits": [],
+    "duplicateQueriesWithinHoldout": [],
+    "exactPriorQueryCollisions": [],
+    "releaseBuildIdentityChecks": [
+      {
+        "binary": "openttd",
+        "parent": "layout-openttd.json",
+        "fresh": "fresh-layout-openttd.json",
+        "sameBinarySha256": true,
+        "sameBuildId": true,
+        "sameDebugSha256": true
+      },
+      {
+        "binary": "openmw",
+        "parent": "layout-openmw.json",
+        "fresh": "fresh-layout-openmw.json",
+        "sameBinarySha256": true,
+        "sameBuildId": true,
+        "sameDebugSha256": true
+      }
+    ],
+    "mechanicallyRevalidatedAt": "2026-09-30T16:58:00.615Z",
+    "result": "PASS"
+  },
+  "declaration": {
+    "noProductionOrResultsInspected": true,
+    "statement": "While authoring this holdout the author did not inspect Jev outcomes, recovery/evaluation results, result snapshots, README metric tables, summary/aggregate metric files, the v2 stability/routing implementation, stability-design-v2.md, or any candidate/ranking outputs. Only the authoritative layout/oracle metadata and the original/prior CASE files were read, and only to avoid duplicate text and duplicate physical gold identities. No source files were edited, no production candidate description received oracle information, and no question was tuned against any candidate or metric.",
+    "inspectedFiles": [
+      "reports/investigations/jev-realgame-final/oracle-authority.json",
+      "reports/investigations/jev-realgame-final/layout-openttd.json",
+      "reports/investigations/jev-realgame-final/layout-openmw.json",
+      "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+      "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+      "reports/investigations/jev-real-game-freeform-holdout/holdout-cases.json",
+      "reports/investigations/jev-realgame-final/structural-gold.json",
+      "reports/investigations/jev-realgame-final/fresh-holdout.json",
+      "reports/investigations/jev-realgame-final/fresh-structural-cases.json"
+    ],
+    "notInspected": [
+      "reports/investigations/jev-realgame-final/{summary.json,raw-results*,control-results*,recovery-results/**,production-snapshots/**,recovery-snapshots/**,README.md,evaluation-integrity.json,failure-analysis.json,regression-controls.json}",
+      "stability-design-v2.md (if present) and any v2 implementation files",
+      "any candidate/ranking evaluation outputs"
+    ]
+  }
+}

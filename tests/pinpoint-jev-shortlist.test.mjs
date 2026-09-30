@@ -1,7 +1,82 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { jevShortlist, rerankWithJev } from '../js/pinpoint.js';
+import { jevShortlist, rerankWithJev, adviseWithJev } from '../js/pinpoint.js';
+
+test('advisory choices remain visible while every committed result stays local', async () => {
+  const candidates = [{ key: 'first' }, { key: 'second' }, { key: 'third' }];
+  const local = { verdict: 'ambiguous', top: candidates[0], candidates };
+  const suggestions = [];
+  for (const choiceIndex of [1, 2, 0]) {
+    const result = await adviseWithJev('a value', local, { enabled: true,
+      client: { call: async () => ({ choiceIndex, selectedKey: candidates[choiceIndex].key }) } });
+    assert.equal(result.top1, local.top);
+    assert.equal(result.hexResult, local);
+    assert.equal(result.source, 'hex');
+    assert.equal(result.advisory.advisoryOnly, true);
+    suggestions.push(result.advisory.candidate.key);
+  }
+  assert.deepEqual(suggestions, ['second', 'third', 'first']);
+  const failed = await adviseWithJev('a value', local, { enabled: true,
+    client: { call: async () => { throw new Error('HTTP failure'); } } });
+  assert.equal(failed.top1, local.top);
+  assert.equal(failed.advisory.candidate, null);
+});
+
+test('rerankWithJev rejects conflicting or malformed supplied choice identities', async () => {
+  const candidates = [{ key: 'ownerA:offset8', score: 2 }, { key: 'ownerB:offset8', score: 1 }];
+  const hex = { verdict: 'ambiguous', top: candidates[0], candidates };
+  for (const response of [
+    { selectedKey: 'invented', choiceIndex: 1 },
+    { selectedKey: candidates[0].key, choiceIndex: 1 },
+    { selectedKey: candidates[1].key, choiceIndex: 999 },
+    { selectedKey: candidates[1].key, choiceIndex: '1' },
+    { selectedKey: null, choiceIndex: 1 },
+  ]) {
+    const result = await rerankWithJev('member query', hex, { enabled: true, client: { call: async () => response } });
+    assert.equal(result.top1, hex.top);
+    assert.equal(result.source, 'hex');
+  }
+  const good = await rerankWithJev('member query', hex, {
+    enabled: true, client: { call: async () => ({ selectedKey: candidates[1].key, choiceIndex: 1 }) },
+  });
+  assert.equal(good.top1, candidates[1]);
+});
+
+test('rerankWithJev rejects duplicate structural keys instead of guessing an owner', async () => {
+  const candidates = [{ key: 'baseline', score: 3 }, { key: 'duplicate', score: 2 }, { key: 'duplicate', score: 1 }];
+  const hex = { verdict: 'ambiguous', top: candidates[0], candidates };
+  const result = await rerankWithJev('member query', hex, {
+    enabled: true, client: { call: async () => ({ selectedKey: 'duplicate', choiceIndex: 1 }) },
+  });
+  assert.equal(result.top1, hex.top);
+  assert.equal(result.source, 'hex');
+});
+
+test('rerankWithJev actually times out a nonresponding client and aborts its request', async () => {
+  const candidates = [{ key: 'first' }, { key: 'second' }];
+  const hex = { verdict: 'ambiguous', top: candidates[0], candidates };
+  let requestSignal;
+  const result = await rerankWithJev('member query', hex, {
+    enabled: true, timeoutMs: 10,
+    client: { call: async ({ signal }) => { requestSignal = signal; return new Promise(() => {}); } },
+  });
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(result.top1, hex.top);
+  assert.equal(result.source, 'hex');
+});
+
+test('rerankWithJev rejects a response after the interactive snapshot changes', async () => {
+  const candidates = [{ key: 'first' }, { key: 'second' }];
+  const hex = { verdict: 'ambiguous', top: candidates[0], candidates };
+  let revision = 1;
+  const result = await rerankWithJev('member query', hex, {
+    enabled: true, isCurrent: () => revision === 1,
+    client: { call: async () => { revision++; return { selectedKey: 'second', choiceIndex: 1 }; } },
+  });
+  assert.equal(result.top1, hex.top);
+  assert.equal(result.source, 'hex');
+});
 
 test('jevShortlist: clamps candidate count to <=255 even with 400 candidates', () => {
   const candidates = Array.from({ length: 400 }, (_, i) => ({

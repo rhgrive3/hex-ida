@@ -27,6 +27,20 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Keep the foreign surface exact; the Phase 7 manifest remains unchanged.
   // The final game study integrates A/B without widening canonical ownership.
   "integration/jev-realgame-final": Object.freeze([
+    "js/analysis/query/cxx-semantic-preference.js",
+    "tests/pinpoint-jev-shortlist.test.mjs",
+    "scripts/jev-realgame-stability-contract.mjs",
+    "scripts/collect-jev-realgame-stability.mjs",
+    "reports/investigations/jev-realgame-final/stability-v2/authority.md",
+    "reports/investigations/jev-realgame-final/stability-v2/freeze.json",
+    "reports/investigations/jev-realgame-final/stability-v2/holdout.json",
+    "reports/investigations/jev-realgame-final/stability-v2/layout-openmw.json",
+    "reports/investigations/jev-realgame-final/stability-v2/layout-openttd.json",
+    "reports/investigations/jev-realgame-final/stability-v2/parent-authority.json",
+    "reports/investigations/jev-realgame-final/stability-v2/policy-freeze.json",
+    "reports/investigations/jev-realgame-final/stability-v2/queries-openmw.json",
+    "reports/investigations/jev-realgame-final/stability-v2/queries-openttd.json",
+    "reports/investigations/jev-realgame-final/stability-v2/structural-cases.json",
     ".circleci/config.yml",
     ".github/workflows/phase8-ownership.yml",
     "tests/phase8/ownership/cross-lane-routing.test.mjs",

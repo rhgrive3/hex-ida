@@ -1,0 +1,131 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "SV2-MW-01",
+      "query": "Which stance of weapon readiness is this actor's animation in right now?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-02",
+      "query": "What reputation score does this character currently hold?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-03",
+      "query": "What kind of AI task was this actor running most recently?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-04",
+      "query": "Which world cell record was this path grid graph built for?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-05",
+      "query": "For how many consecutive physics frames has this actor been unable to move?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-06",
+      "query": "Is the drawing of actor path overlays switched on?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-07",
+      "query": "Which cell store holds the cell that contains this world object?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-08",
+      "query": "Is the list of items recharging inside this cell still reliable?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-09",
+      "query": "Which day number does this timestamp point to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-10",
+      "query": "Which running number is used to mint fresh unique references inside this cell record?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-11",
+      "query": "What category of journal entry does this record represent?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-12",
+      "query": "Has this game state been set so the player cannot draw a weapon?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-13",
+      "query": "Is the player shown as asleep while this dialog counts down the hours?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-14",
+      "query": "What speed setting controls how quickly message boxes pop up on screen?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-15",
+      "query": "Which HUD widget draws the aiming crosshair?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-16",
+      "query": "Can the device's motion sensors be used to steer the camera here?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-17",
+      "query": "How many blend cycles per second does this animation controller run at?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-18",
+      "query": "Has the software cursor system finished its initial setup?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-19",
+      "query": "Does the engine classify this skinned mesh as part of a creature's body?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-20",
+      "query": "Which table of local variables does this compiled output refer to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-06",
+      "query": "How many pages does the book this character is reading contain?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-07",
+      "query": "What is this character's favourite colour?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-08",
+      "query": "How many languages can this character speak fluently?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-09",
+      "query": "How many fish are currently swimming in this lake?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-10",
+      "query": "How long would it take to boil water at this location's altitude?",
+      "mode": "partial"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import { composePinpointFields } from '../../../js/pinpoint-fields.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
 import { proofText } from '../../../js/narrate.js';
 import { autoAnalyze } from '../../../js/auto.js';
+import { cxxSemanticViews, withCxxSemanticPreference } from '../../../js/analysis/query/cxx-semantic-preference.js';
 
 function projection(className, members, address = 0x1000n) {
   const receiver = createCppReceiverEvidence({
@@ -28,6 +29,28 @@ function projection(className, members, address = 0x1000n) {
     readCount: 1, writeCount: 0, ...m,
   })) };
 }
+
+test('binary method preference uses bound anonymous evidence without new analysis or stronger verdicts', async () => {
+  const fields = new CxxMemberIndex();
+  fields.publish(projection('Thing', [{}], 0x1000n));
+  fields.publish(projection('Thing', [{ offsetBytes: 12n }], 0x2000n));
+  let analyses = 0;
+  const options = { goal: parseGoal('speed'), cxxFields: fields, limit: 400,
+    analyze: async () => { analyses++; }, symbols: { nameAt: address => address === 0x1000n ? '_ZN5Thing8getSpeedEv' : '_ZN5Thing8getColorEv' } };
+  const baseline = await pinpointField(options);
+  const preferred = await pinpointField({ ...options, binaryContextPreference: true });
+  assert.equal(baseline.top.offset, 12);
+  assert.equal(preferred.top.offset, 8);
+  assert.equal(preferred.verdict, baseline.verdict);
+  assert.equal(preferred.top.field, baseline.candidates[1].field);
+  assert.equal(preferred.semanticPreference.verdict, 'weak-preference');
+  assert.equal(analyses, 0);
+  assert.equal(withCxxSemanticPreference('speed', { ...baseline, verdict: 'confirmed' }, options.symbols).top, baseline.top);
+  assert.equal(cxxSemanticViews([{ ...baseline.candidates[0], className: 'InventedOwner' }], options.symbols)[0], null);
+  assert.equal(cxxSemanticViews([{ ...baseline.candidates[0], field: { ...baseline.top.field } }], options.symbols)[0], null);
+  const mixed = { ...baseline, candidates: [...baseline.candidates, { source: 'objc' }] };
+  assert.equal(withCxxSemanticPreference('speed', mixed, options.symbols), mixed);
+});
 
 test('canonical unnamed C++ members reach deterministic ranking without semantic names or new scans', async () => {
   const cxxFields = new CxxMemberIndex();

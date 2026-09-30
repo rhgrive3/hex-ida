@@ -1,0 +1,15 @@
+{
+  "schema": "hex-jev-stability-parent-authority/v2",
+  "holdoutSha256": "d17d8f8ef6a5c60daf8e3ba24ab6bffe0aea3d4329c7a3ae1cc2f3d29fd9a1e4",
+  "casesSha256": "1ded64a8ef549f2188328f8c56d7e3bdc7d26b0346cce26f2906f8f0d6c23c0a",
+  "verified": 40,
+  "independentlyReextractedMatchingIdentities": 56,
+  "layoutHashes": {
+    "openttd": "9850a9fc83e909a7e07e679bd1706cb0dd008b382b4c88ae8d213ccb2b95d041",
+    "openmw": "b161225f8a4649bbc07a9e20c77d6a3878d660d51cd781027c211e802e8e954e"
+  },
+  "overlapPriorGold": false,
+  "overlapUnverifiedPriorLabels": false,
+  "queriesUnchanged": true,
+  "oracleEvaluationOnly": true
+}

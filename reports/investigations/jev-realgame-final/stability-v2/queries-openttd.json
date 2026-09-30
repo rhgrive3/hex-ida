@@ -1,0 +1,131 @@
+{
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "cases": [
+    {
+      "id": "SV2-OP-01",
+      "query": "Which game tick was recorded as the moment this vehicle's timetable began?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-02",
+      "query": "Which status flags is this vehicle carrying right now, such as stopped, loading, or waiting at a waypoint?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-03",
+      "query": "How high above the map is this vehicle drawn at the moment?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-04",
+      "query": "What cargo capacity will this vehicle have once its ordered refit is applied?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-05",
+      "query": "Which facing rotation is this ship currently turned to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-06",
+      "query": "What kind of road surface is this road vehicle running on at the moment?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-07",
+      "query": "What is the precomputed overall length of this train's entire consist?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-08",
+      "query": "Which station or stop is this schedule instruction pointed at?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-09",
+      "query": "Which instruction follows this one in the schedule list?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-10",
+      "query": "Which town is this station part of?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-11",
+      "query": "Which cargo types does this station accept no matter what its industries currently need?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-12",
+      "query": "What countdown drives this industry's next production update?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-13",
+      "query": "Which of this industry type's possible map layouts is this particular site using?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-14",
+      "query": "Which group does this group sit underneath in the group hierarchy?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-15",
+      "query": "Which window opened this one?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-16",
+      "query": "Which rail types is this company currently allowed to use?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-17",
+      "query": "What is the current connection state of this multiplayer client session?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-18",
+      "query": "Which colour scheme mode does this NewGRF request for its graphics?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-19",
+      "query": "At which x coordinate did this diagonal scan of the map begin?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-20",
+      "query": "Which overlay does this link graph legend window use to draw its data?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-01",
+      "query": "How many millimetres of rain have fallen on this station today?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-02",
+      "query": "What is the licence plate number of this road vehicle?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-03",
+      "query": "How much noise, in decibels, does this aircraft produce during take-off?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-04",
+      "query": "Which real-world city has a street layout most similar to this town?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-CTL-05",
+      "query": "How many days of paid holiday does this company's president receive each year?",
+      "mode": "partial"
+    }
+  ]
+}
