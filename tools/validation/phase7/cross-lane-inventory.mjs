@@ -106,7 +106,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/issue-4964-raw-binary-egress-classification.mjs",
     "tests/jev-realgame-final.test.mjs",
     "tests/jev-realgame-holdout.test.mjs",
-    "tests/pinpoint-jev-probe-audit.mjs"
+    "tests/pinpoint-jev-probe-audit.mjs",
+    "tests/pinpoint-cxx-query-recovery-browser.mjs"
 ]),
   "fix/pinpoint-cxx-member-candidates": Object.freeze([
     ".circleci/config.yml",
