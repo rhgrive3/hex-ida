@@ -1,0 +1,131 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "FH-MW-01",
+      "query": "Whether this actor is dead at this moment.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-02",
+      "query": "Whether this actor has already been spoken to.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-03",
+      "query": "Whether this actor is knocked down right now.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-04",
+      "query": "The height of the fall this actor most recently took.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-05",
+      "query": "The disposition this NPC currently has toward the player.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-06",
+      "query": "The gold bounty carried on this character\u2019s head for crimes.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-07",
+      "query": "How far this character has progressed toward reaching the next level.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-08",
+      "query": "How many seconds remain before this character starts to drown.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-09",
+      "query": "Whether this character is currently in werewolf form.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-10",
+      "query": "How many combat orders are lined up in this actor\u2019s AI queue.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-11",
+      "query": "The hour of the day recorded by this timestamp.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-12",
+      "query": "How much of this cell is currently loaded into the running game.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-13",
+      "query": "The water level currently in effect for this cell.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-14",
+      "query": "The colour used to paint this place on the map.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-15",
+      "query": "The day of the month on which this journal entry was recorded.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-16",
+      "query": "Whether jumping is switched off in this game state.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-17",
+      "query": "The number of hours the player has chosen to wait.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-18",
+      "query": "Whether a message box is currently on screen.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-19",
+      "query": "Whether the map overlay is currently shown on the HUD.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-MW-20",
+      "query": "Whether joystick input is currently enabled.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-01",
+      "query": "How much fuel is currently left in this vehicle\u2019s tank?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-03",
+      "query": "How much wear is left on this vehicle\u2019s brake pads?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-04",
+      "query": "What is this character\u2019s blood alcohol level?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-09",
+      "query": "How much caffeine is in the potion this character just drank?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-10",
+      "query": "How long until the next solar eclipse in this region?",
+      "mode": "partial"
+    }
+  ]
+}

@@ -25,6 +25,7 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
       for(const c of [...r.candidates,...r.published,...r.recovered])assert.equal(c.binarySha256,s.binarySha256);
     }
   }
+  const callArms=(policy.arms??['B','E']).filter(a=>['current','B','E'].includes(a));
   let calls=0;
   for(const c of cases) {
     const input=inputs.get(c.id),row=rows.find(r=>r.id===c.id),verified=c.status==='verified';
@@ -41,7 +42,7 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
     assert.ok(input.shortlist.every(s=>input.candidates.some(x=>x.key===s.key)));
     for(const [arm,a] of Object.entries(row.arms)) {
       assert.equal(a.correct,verified?structuralMatch(input.candidates.find(s=>s.key===a.key),c):null);
-      if(!['B','E'].includes(arm))continue;
+      if(!callArms.includes(arm))continue;
       assert.equal(a.repeatedKeys.length,policy.repeats);assert.equal(a.key,a.repeatedKeys[0]);
       assert.deepEqual(a.repeatedCorrect,a.repeatedKeys.map(key=>verified?structuralMatch(input.candidates.find(s=>s.key===key),c):null));
       assert.equal(a.calls.length,input.routed?policy.repeats:0);
@@ -60,7 +61,7 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
       }
     }
   }
-  for(const arm of ['A','DET','B','E']) {
+  for(const arm of ['A','DET',...callArms]) {
     assert.deepEqual(summary.summaries[arm],summarize(rows,arm));
     for(const game of ['openttd','openmw'])assert.deepEqual(summary.perGame[game][arm],summarize(rows.filter(r=>r.binary===game),arm));
   }
@@ -74,13 +75,13 @@ function main() {
   const summary=JSON.parse(fs.readFileSync(path.join(resultsDir,'summary.json')));
   const experiment=JSON.parse(fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-experiment-freeze.json',import.meta.url)));
   assert.equal(sha256(fs.readFileSync(caseFile)),experiment.corpora[summary.role].caseSha256);
-  assert.equal(summary.policySha256,experiment.policySha256);
+  assert.equal(summary.policySha256,experiment.corpora[summary.role].policySha256);
   const snapshots=['openttd','openmw'].map(k=>{
     const bytes=readJevEvidence(path.join(snapshotsDir,`${k}.json`));
     assert.equal(summary.snapshotHashes[k],sha256(bytes));return JSON.parse(bytes);
   });
   const result=verifyRecoveryEvidence({caseBytes:fs.readFileSync(caseFile),
-    policyBytes:fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-policy-freeze.json',import.meta.url)),
+    policyBytes:fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/'+(summary.role==='development-original70'?'recovery-policy-freeze-development.json':'recovery-policy-freeze.json'),import.meta.url)),
     snapshots,summary,rows:readJevEvidence(path.join(resultsDir,'raw-results.jsonl'),'utf8').trim().split('\n').map(JSON.parse)});
   console.log(JSON.stringify(result));
 }

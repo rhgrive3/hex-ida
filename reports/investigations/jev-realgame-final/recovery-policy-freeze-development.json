@@ -1,6 +1,6 @@
 {
   "schema": "hex-jev-recovery-policy/v1",
-  "frozenAtUtc": "2026-09-30T11:01:52.514537+00:00",
+  "frozenAtUtc": "2026-09-30T10:33:19.462541+00:00",
   "original70Status": "already used; supplementary development regression only, never an untouched final judge after changes",
   "finalHoldout": "separately generated exact-build fields not in original70; independent agent blind to candidate recovery and prior Jev outcomes; separate hash freeze",
   "collection": {
@@ -15,7 +15,6 @@
   "arms": [
     "Hex",
     "DET",
-    "current",
     "B",
     "E"
   ],

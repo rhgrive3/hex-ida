@@ -1,0 +1,26 @@
+{
+  "schema": "hex-jev-fresh-parent-audit/v1",
+  "independentlyFrozenInputSha256": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+  "normalizedCasesSha256": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+  "authority": {
+    "openttd": {
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "parentLayoutSha256": "aca006cbf153cf221767f322af177195c6835f75a5d5cf077ee54dba6e4af9f2",
+      "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID"
+    },
+    "openmw": {
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+      "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID"
+    }
+  },
+  "cases": 50,
+  "verified": 40,
+  "queryBodiesUnchanged": true,
+  "original70Overlap": false,
+  "oracleIsEvaluationOnly": true
+}

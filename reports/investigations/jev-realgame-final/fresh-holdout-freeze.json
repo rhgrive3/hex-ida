@@ -1,0 +1,53 @@
+{
+  "schema": "hex-jev-fresh-holdout-freeze/v1",
+  "frozenAtUtc": "2026-09-30T10:48:00.833Z",
+  "frozenBeforeParentEvaluatorRun": true,
+  "holdoutFile": "fresh-holdout.json",
+  "holdoutSha256": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+  "casesSha256": "b6e4155d09a426de91f50b8d2ded587b124a9f5e9538dca0c54d2555b8b97e5c",
+  "authorityFile": "fresh-holdout-authority.md",
+  "authoritySha256": "a23826860fe90f8b33dae1278bcbff0e7a0c13456419bcb3174e865956e6a59f",
+  "counts": {
+    "total": 50,
+    "verified": 40,
+    "control": 10,
+    "byBinary": {
+      "openttd": 20,
+      "openmw": 20
+    }
+  },
+  "excludesOriginal70": true,
+  "original70Overlap": false,
+  "exactBuilds": {
+    "openttd": {
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be"
+    },
+    "openmw": {
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41"
+    }
+  },
+  "extraction": {
+    "retainedScript": "scripts/jev-realgame-gdb-layout.py",
+    "retainedScriptSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+    "gdb": "GNU gdb 12.1 (Ubuntu 12.1-0ubuntu1~22.04.2)",
+    "myArtifacts": [
+      "scratch/jev-realgame-final/fresh-holdout/openttd-verify-layout.json",
+      "scratch/jev-realgame-final/fresh-holdout/openmw-extra-layout.json"
+    ]
+  },
+  "validation": {
+    "uniqueIds": true,
+    "uniqueQueries": true,
+    "uniqueGoldFields": true,
+    "scalarOnly": true,
+    "offsetsWithinClassSize": true,
+    "crossCheckedAgainstAuthorisedLayoutWhereClassPresent": true,
+    "original70GoldOverlap": false,
+    "original70QueryOverlap": false
+  },
+  "author": "Freebuff4 (fresh-holdout lane)"
+}
