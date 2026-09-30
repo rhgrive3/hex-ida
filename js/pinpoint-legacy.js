@@ -1384,7 +1384,7 @@ async function verifyFunctionCandidate(c, goal, o) {
   c.instructions = (model.instructions || []).length;
 
   const field = o.field || null;
-  if (field) {
+  if (field && field.source !== 'cxx') {
     const use = verifyFunctionHandlesField(model, BigInt(field.offset));
     if (use.touches) {
       c.evidence.push(evidence(use.writes ? 'fn-writes-field' : 'fn-touches-field', 1, {
@@ -1449,7 +1449,8 @@ export async function pinpoint(opts) {
   let fn = null;
   if (o.ranked && o.ranked.length) {
     fn = await pinpointFunction(Object.assign({}, o, {
-      field: field.top ? {
+      // Offset-only function verification cannot establish a C++ owner.
+      field: field.top && field.top.source !== 'cxx' ? {
         offset: field.top.offset, className: field.top.className,
         plain: field.top.plain, name: field.top.field.name,
       } : null,

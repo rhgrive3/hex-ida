@@ -1,68 +1,114 @@
-# C++ member publication into Pinpoint
+# C++ member candidates in Pinpoint
 
 Branch: `fix/pinpoint-cxx-member-candidates`.
 
-## Cause and first divergence
+## Cause / first divergence
 
-`createCxxEvidenceProvider.projectForFunction()` already produces canonical,
-receiver-bound members with offsets, access widths, recovered types and access
-counts. They reach the decompiler through `cxxEvidence`, but never enter the
-Objective-C-only `FieldIndex`. `pinpointField()` returns `no-class-table` for an
-ELF without ObjC metadata. Even after publication, the old intent/name filter
-would discard unnamed C++ members.
+`createCxxEvidenceProvider.projectForFunction()` already recovers canonical,
+receiver-bound members, with offsets, widths, types and accesses. The decompiler
+consumes them, but the ObjC-only `FieldIndex` never published them to Pinpoint.
+ELF field enumeration therefore returned `no-class-table` / zero candidates.
+The first divergence was **canonical projection → field enumeration**, before
+ranking or Jev. A second name/intent filter also discarded unnamed members.
 
-The first divergence is the missing publication between the canonical C++
-projection and field enumeration, before deterministic ranking or Jev.
+Existing RTTI/vtable ownership and symbol proofs establish the receiver;
+receiver aliases and member type recovery establish its accesses. Virtual-slot
+and indirect-target evidence retain their existing authority and flow. This
+change adds publication, with no new recovery, reader, disassembly or callsite
+pass. Ambiguous vtable owners remain withheld.
 
-## Data flow and interface
+## Data flow / schema
 
-The existing per-slice C++ provider publishes its canonical projections into
-`CxxMemberIndex`. `cxxMemberIndexForApp(app)` reads the existing index without
-starting analysis. Pinpoint accepts `cxxFields` alongside `fields`; its shared
-field view enumerates both into the existing evidence fusion and ranking.
-Investigation and automatic analysis pass that same index, and publication
-revisions invalidate cached results. A binary/slice/generation change expires
-the index.
+The existing per-slice provider publishes into `CxxMemberIndex`.
+`cxxMemberIndexForApp(app)` reads that existing index. `pinpointField()` and the
+combined `pinpoint()` share its enumeration with ObjC, then use existing
+deterministic evidence fusion/ranking. Investigation and automatic analysis
+forward the index; publication revisions expire cached results, and binary /
+slice / backend epoch changes expire the index.
 
-C++ candidates retain `className`, `field.name`/`memberName`, `offset`, `size`/
-`width`, `type`/`recoveredType`, `classIdentity`/`owningClassIdentity`,
-`provenance`, and a stable structural `key`. Provenance retains canonical
-receiver/member objects and their function, snapshot, binding, access and type
-rules. Missing names become offset labels, never inferred semantic facts.
-Unknown types remain explicit.
+| Candidate facts | Representation / authority |
+| --- | --- |
+| class / owner | `className`, `classIdentity`, `owningClassIdentity`; canonical receiver proof |
+| member name | nullable `memberName` / `fieldName`; producer-supplied names only |
+| display label | `field.name`, `anonymous`, `syntheticName`; offset labels are never name evidence |
+| location / width | `offset`, `size`, `width`; canonical receiver-bound access |
+| type | `type`, `recoveredType`; category, alternatives, signedness, rule/reason, width-only status |
+| provenance | canonical `{receiver, member}` references, snapshot/function/digests and access counts |
+| key | snapshot + structural owner + offset + width + type/sign/alternatives, JSON-encoded |
+| confidence | existing deterministic evidence/fusion; no new evidence code or threshold |
 
-Repeated observations deduplicate by owner/location/width/type. Distinct owners
-and conflicting width/type observations retain distinct identities. Unproven,
-replayed, malformed or unsupported ownership evidence is withheld.
+Repeated observations deduplicate. Conflicting widths/types remain explicit
+separate candidates; retained provenance is bounded to 64 records with count /
+truncation flags. Unproven, forged, malformed, adjusted or ambiguous ownership
+fails closed. Generic offset scans, shape sites and offset-only function hints
+cannot establish a C++ class/member attribution.
 
-Anonymous members remain in the shared ranked lattice after literal narrowing.
-Generic ObjC accessor verification, global offset scans and shape-site fallback
-cannot add evidence to a C++ candidate. Already proven accesses can contribute
-existing deterministic evidence when a separate intent match exists.
+## Real binaries / latency
 
-`rerankWithJev(query, result, options)` receives the ordinary Pinpoint result
-and candidate objects. No separate Jev candidate universe, prompt change,
-routing change, confidence change, or evaluation-policy change is introduced.
+[Exact-SHA Actions validation](https://github.com/rhgrive3/actions/actions/runs/36655237565)
+passed on `25c3385aba2a7612802aa0305816f751469690d7`, compared with main
+`d2177389cd1770edb3548251a080bf23e829a8a0`. Both sides selected the same 30
+existing, uniquely owned functions and used the production Fast decompile
+route. Counts cover those analyzed functions, not every field in the binary.
 
-## Validation
+| ARM64 ELF corpus | Candidate count before → after | Classes | Named / unnamed | Key collisions / binding failures |
+| --- | ---: | ---: | ---: | ---: |
+| OpenTTD 13.4-1build3 | 0 → **47** | 19 | 0 / 47 (100% unnamed) | 0 / 0 |
+| OpenMW 0.48.0-1ubuntu5 | 0 → **19** | 10 | 0 / 19 (100% unnamed) | 0 / 0 |
 
-Focused tests cover named/unnamed members, owners with identical names,
-multiple locations and type/width conflicts, partial RTTI, binding failures,
-malformed/forged evidence, duplicate/key collisions, ObjC compatibility,
-production Fast publication, cache invalidation and the existing Jev boundary.
+No candidate or provenance truncation occurred. Every ranked C++ field was a
+member of the published canonical lattice. Duplicate observations aggregate,
+and every published key is distinct. For intent `health`, both verdicts remain
+`none`: structural members do not establish health semantics.
 
-Real-binary counts and matched before/after timings are pending exact-SHA
-Actions validation. Corpus: Ubuntu noble ARM64 OpenTTD 13.4-1build3 and OpenMW
-0.48.0-1ubuntu5. Validation samples existing recovered vtable functions and
-executes the production Fast decompile route; it does not add a production
-whole-binary recovery pass.
+| Timing (ms; before → after) | OpenTTD | OpenMW |
+| --- | ---: | ---: |
+| Fast decompile median | 1612.734 → 1606.713 | 1279.577 → 1199.697 |
+| Fast decompile P95 | 14819.937 → 15306.221 | 7767.558 → 7978.581 |
+| 30-function total | 90320.721 → 90821.006 | 68570.148 → 65912.269 |
+| Publication total / P95 per call | 2.314 / 0.224 | 1.463 / 0.232 |
+| Pinpoint field enumeration/rank | 1.988 → 9.811 | 1.221 → 5.990 |
 
-## Limits
+These are one matched cold comparison per binary on Actions, with runner/JIT
+variation; they are not a guaranteed speedup. Publication adds milliseconds
+across the sample and no reads or analyses. Setup remains existing work
+(OpenTTD 22.426 → 22.441 s; OpenMW 126.358 → 129.451 s).
 
-The lattice contains members of functions already analyzed by the existing
-C++ producer. RTTI/vtables alone do not prove fields. Static/free functions,
-adjusted/secondary receivers, ambiguous owners and missing receiver proof
-remain unavailable. Stripped builds usually provide offset labels rather than
-member names. Structural recovery does not establish which field implements a
-natural-language concept. Existing recovery budgets and Pinpoint's 400-entry
-ranking bound still apply. No deep analysis pass moves into Fast.
+Binary SHA256: OpenTTD
+`8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5`;
+OpenMW `a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db`.
+Official Ubuntu noble packages; verifier records corpus hash, exact SHA, script
+hash, sample addresses, per-function outcomes and timings in uploaded JSON.
+The first run's artifact-copy error was corrected; failed runs are excluded
+from passing evidence.
+
+## Focused tests / limits / Jev handoff
+
+Focused regressions cover named/unnamed members, repeated names across classes,
+multiple members, offset/type/width differences, partial RTTI, no-proof and
+malformed/forged cases, collisions/deduplication, ownership conflicts, ObjC
+ranking, public/automatic publication, epoch/cache expiry and offset-only
+misattribution. The unchanged Jev shortlist/fail-closed tests are also exercised.
+
+Only **already analyzed** canonical projections are published. RTTI/vtables
+alone do not prove fields; metadata-only queries can still have zero members.
+The existing production projection hook and real-binary validation are ARM64;
+x86_64 semantic decompilation does not currently invoke this receiver/member
+producer, and this branch does not add that recovery. Free/static functions,
+adjusted receivers, ambiguous owners and missing binding remain unavailable.
+Existing recovery budgets and Pinpoint's 400-entry bound remain. The current
+producer supplies types/accesses but no recovered member names; supplied names
+are preserved by the canonical schema and tested without semantic guessing.
+
+Jev evaluation can call:
+
+```js
+const result = await pinpointField({ goal, fields: app.fields,
+  cxxFields: cxxMemberIndexForApp(app), limit: 400 });
+const reranked = await rerankWithJev(intent, result, existingOptions);
+```
+
+The same candidate objects/keys enter Jev after deterministic ranking. Jev
+selects only existing candidates. Prompts, descriptions, routing, thresholds,
+default enablement, prospective evaluation and Sparkle/XADMaster holdouts are
+unchanged. All structural facts remain deterministic Hex authority.

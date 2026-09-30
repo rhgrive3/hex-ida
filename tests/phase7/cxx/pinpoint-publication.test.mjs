@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { CxxMemberIndex } from '../../../js/analysis/cxx/member-index.js';
 import { createCppReceiverEvidence, createCppMemberEvidence } from '../../../js/analysis/cxx/object-evidence.js';
-import { pinpoint, pinpointField, rerankWithJev } from '../../../js/pinpoint.js';
+import { pinpoint, pinpointField, pinpointFunction, rerankWithJev } from '../../../js/pinpoint.js';
 import { FieldIndex } from '../../../js/fields.js';
 import { parseGoal } from '../../../js/goals.js';
 import { openProduct } from '../../../tools/validation/public-benchmark/product-host.mjs';
@@ -105,6 +105,28 @@ test('automatic analysis can enumerate published C++ fields with no ObjC metadat
   assert.ok(report.stats.pinpointModes.field > 0);
   assert.ok(report.pinned.some((pin) => pin.top?.source === 'cxx' && pin.top.memberName === 'health'));
   assert.deepEqual(report.diagnostics, []);
+});
+
+test('an unrelated function touching the same offset cannot acquire a C++ class/member attribution', async () => {
+  const cxxFields = new CxxMemberIndex();
+  cxxFields.publish(projection('Player', [{ memberName: 'health' }]));
+  const goal = parseGoal('health');
+  const ranked = [{ addr: 0x2000n, name: 'unrelated', reasons: [] }];
+  let analyses = 0;
+  const analyze = async () => {
+    analyses++;
+    return { basicBlocks: [], instructions: [{ row: 0, address: 0x2000n,
+      mnemonic: 'str', ops: [], reads: [], writes: [],
+      memory: { kind: 'store', base: 'x0', disp: 8n, size: 4 } }] };
+  };
+  const combined = await pinpoint({ goal, cxxFields, ranked, analyze });
+  const direct = await pinpointFunction({ goal, ranked, analyze, field: combined.field.top });
+  assert.ok(analyses > 0, 'existing function ranking still runs');
+  assert.equal(combined.field.top.className, 'Player');
+  for (const fn of [combined.function, direct]) {
+    assert.equal(fn.candidates.length, 1);
+    assert.ok(!fn.candidates[0].evidence.some((e) => e.detail?.className === 'Player'));
+  }
 });
 
 test('synthetic labels cannot become recovered-name evidence or claim a semantic member name', async () => {
