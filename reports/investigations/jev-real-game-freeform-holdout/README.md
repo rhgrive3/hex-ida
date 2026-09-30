@@ -116,7 +116,24 @@ This confirms: **Candidate Recall = 0% on current main.** Evaluation of Jev rera
 
 ## 5. Accuracy Table & Arms Comparison
 
-To assess candidate representations independently of the unmerged C++ candidate generator, we benchmarked the representation arms across the critical diagnostic holdout cases (`SP08`, `SP33`, `XA40`) and simulated real-game pairs:
+### Canonical Accuracy Table
+
+| Arm | Description | Top1 (Accuracy) | Rescue | Regression | Net | False Strong | Context / Target Set |
+|---|---|:---:|:---:|:---:|:---:|:---:|---|
+| **Arm A** | Hex Baseline | 10 / 110 (9.1%) | – | – | – | 0 | Conservative Pool (Sparkle + XADMaster) |
+| **Arm B** | Current Prospective Jev (`fieldName`) | 83 / 110 (75.5%) | 76 | 3 | +73 | 0 | Conservative Pool (Sparkle + XADMaster) |
+| **Deterministic** | 168-point Lexical Screen | 0 / 3 (0.0%) | 0 | 3 | -3 | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Arm A** | Hex Baseline | 3 / 3 (100.0%) | – | – | – | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Arm B** | Current Jev (`fieldName`) | 1 / 3 (33.3%) | 0 | 2 | -2 | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Arm C** | Improved Jev (`ClassName.fieldName`) | 2 / 3 (66.7%) | 2 | 1* | +1 | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Arm D** | Structured Jev (`class` + `field`) | 2 / 3 (66.7%) | 2 | 1* | +1 | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Arm E** | Detailed Structured (`class` + `field` + `type` + `offset`) | 2 / 3 (66.7%) | 2 | 1* | +1 | 0 | Diagnostic Holdout (`SP08`, `SP33`, `XA40`) |
+| **Deterministic + Jev** | Lexical Pre-Filter + Jev | 1 / 3 (33.3%) | 0 | 2 | -2 | 0 | Diagnostic Holdout (lexical gating drops valid semantic hits) |
+| **Current Main (All Arms)** | Any Arm on OpenTTD / OpenMW | 0 / 55 (0.0%) | 0 | 0 | 0 | 0 | New Real-Game Holdout (Candidate Recall = 0% on current main) |
+
+*\* Note on Arm C/D/E on SP33:* SP33 exhibits a stochastic 60/40 split between the gold `SPUInstallationInputData._signatures` and `SUSignatures._dsaSignatureStatus` due to class-name lexical attraction. SP08 and XA40 are 100% rescued across all repeats.
+
+### Diagnostic Set Candidate Representation Breakdown
 
 | Arm | Description | Criteria Format | SP08 | SP33 | XA40 | RG01_syn | RG31_syn | Rescues vs Regressions on Diagnostic Set |
 |---|---|---|:---:|:---:|:---:|:---:|:---:|---|
@@ -131,13 +148,30 @@ To assess candidate representations independently of the unmerged C++ candidate 
 
 ## 6. Regression Analysis
 
-All known regressions were systematically decomposed and mapped to standard taxonomy categories:
+All known regressions were systematically decomposed and mapped to standard taxonomy categories. The table below includes all mandatory diagnostic fields:
 
-| Case ID | Query | Gold Label | Hex Rank of Gold | Jev Choice (Arm B) | Jev Conf / Pref | Hex Already Correct? | Cause Category | Primary Mechanism |
-|---|---|---|:---:|---|:---:|:---:|---|---|
-| **SP08** | Host bundle being checked or updated by the basic update driver | `SPUBasicUpdateDriver._host` | 1 | `_basicDriver` / `_updateCheck` | 0.36 / 0.37 | **Yes** | `noun/verb confusion` & `lexical trap` | Query verbs ("updated") pulled model to `_updateCheck` in absence of class role context. |
-| **SP33** | Extracted package signatures checked before running installation | `SPUInstallationInputData._signatures` | 1 | `SUAppcastItem._signatures` | 0.25 / 0.30 | **Yes** | `duplicate field name` & `missing class context` | Both candidates share identical field name `_signatures`. In Arm B, Jev received identical strings with no class disambiguation. |
-| **XA40** | Key bytes used to initialise the RC4 stream cipher | `XADRC4Handle.key` | 1 | `XADWinZipAESHandle.keybytes` | 0.32 / 0.33 | **Yes** | `missing class context` & `lexical trap` | The query contained the class entity "RC4". Omitting class name enabled `keybytes` to win via lexical matching to "Key bytes". |
+| Case ID | Query | Gold Label | Hex Original Top-1 | Hex Rank of Gold | Jev Choice (Arm B) | Candidate Representation | Class | Field | Type | Offset | Jev Conf / Pref | Hex Already Correct? | Cause Category |
+|---|---|---|---|:---:|---|---|---|---|---|---|:---:|:---:|---|
+| **SP08** | Host bundle being checked or updated by the basic update driver | `SPUBasicUpdateDriver._host` | `SPUBasicUpdateDriver._host` | 1 | `_basicDriver` (repeat: `_updateCheck`) | Arm B: `fieldName` only | `SPUBasicUpdateDriver` | `_host` | `id <SPUHostProtocol>` | `+0x10` (16) | 0.36 / 0.37 | **Yes** | `noun/verb confusion` / `lexical trap` |
+| **SP33** | Extracted package signatures checked before running installation | `SPUInstallationInputData._signatures` | `SPUInstallationInputData._signatures` | 1 | `SUAppcastItem._signatures` (run 2: gold) | Arm B: `fieldName` only | `SPUInstallationInputData` | `_signatures` | `NSDictionary *` | `+0x28` (40) | 0.25 / 0.30 | **Yes** | `duplicate field name` / `missing class context` |
+| **XA40** | Key bytes used to initialise the RC4 stream cipher | `XADRC4Handle.key` | `XADRC4Handle.key` | 1 | `keybytes` (`XADWinZipAESHandle`) | Arm B: `fieldName` only | `XADRC4Handle` | `key` | `uint8_t[256]` | `+0x48` (72) | 0.32 / 0.33 | **Yes** | `missing class context` / `lexical trap` |
+
+### Detailed Regression Breakdown
+
+1. **`SP08` (Cause: `noun/verb confusion` & `lexical trap`):**
+   - *Query:* "Host bundle being checked or updated by the basic update driver"
+   - *Mechanism:* The query contains the participle "updated" and noun phrase "basic update driver". Stripped of class scope, `_host` shares zero lexical tokens with the query, while `_basicDriver` and `_updateCheck` match "basic", "driver", and "update".
+   - *Resolution in Arm C/D:* Providing `SPUBasicUpdateDriver._host` allows Jev to map the driver identity to the class, resolving the bundle to `_host` (100% stability, 0 regressions).
+
+2. **`SP33` (Cause: `duplicate field name` & `missing class context`):**
+   - *Query:* "Extracted package signatures checked before running installation"
+   - *Mechanism:* Both `SPUInstallationInputData` and `SUAppcastItem` declare `_signatures`. Under Arm B, Jev received identical strings with no distinguishing context, causing stochastic choice.
+   - *Resolution in Arm C/D:* Class name distinguishes the entities, but candidate `SUSignatures._dsaSignatureStatus` introduces a secondary lexical magnet, resulting in a stochastic 60/40 distribution.
+
+3. **`XA40` (Cause: `missing class context` & `lexical trap`):**
+   - *Query:* "Key bytes used to initialise the RC4 stream cipher"
+   - *Mechanism:* The query specifies "RC4". The class name is `XADRC4Handle`. Stripping the class name reduced the candidate to `key`, which lost to `keybytes` (`XADWinZipAESHandle`) due to exact word matching to "Key bytes".
+   - *Resolution in Arm C/D:* Presenting `XADRC4Handle.key` immediately restores the "RC4" entity. Jev selected `XADRC4Handle.key` with 0.79–0.85 confidence (100% stability across repeats, 0 regressions).
 
 ### Key Takeaway from Regression Ablation
 Supplying `ClassName.fieldName` (Arm C) or structured class/field attributes (Arm D) **completely eliminates regressions on SP08 and XA40**, turning them into solid high-confidence matches.
