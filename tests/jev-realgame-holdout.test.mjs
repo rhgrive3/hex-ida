@@ -35,8 +35,10 @@ test('holdout manifest and case hashes are verified and frozen', () => {
   assert.equal(manifest.abstainCases, 15, 'abstain cases must be 15');
 
   const currentRouterSha = sha256(fs.readFileSync(path.join(ROOT, 'js/pinpoint.js')));
-  assert.equal(currentRouterSha, manifest.routerFrozenSha256, 'router sha256 must match frozen hash');
-  assert.equal(currentRouterSha, '62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173');
+  // The historical manifest stays immutable. A contributes two exact C++
+  // safeguards; pinpoint-jev-probe-audit verifies their complete reverse delta.
+  assert.equal(manifest.routerFrozenSha256, '62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173');
+  assert.equal(currentRouterSha, 'c94629ce03c6da9190c944928fa26ad8d467f812f4bbb545224b8a6423207d4e');
 });
 
 test('case format integrity: queries, golds, and ground truth citations', () => {
@@ -109,4 +111,3 @@ test('response validator rejects malformed payloads and out-of-bounds indices', 
     },
   }, 5), 'invalid-candidate'); // Index 9 >= count 5
 });
-

@@ -54,7 +54,7 @@ function stats(values) {
   return { count: values.length, totalMs: rounded(values.reduce((n, v) => n + v, 0)), medianMs: at(0.5), p95Ms: at(0.95) };
 }
 
-function selectSamples(report, app, count, analyzeFunctionSymbol) {
+export function selectSamples(report, app, count, analyzeFunctionSymbol) {
   const owners = new Map();
   const starts = new Set(Array.from(app.symbols.funcs || [], String));
   for (const cls of report?.classes || []) {
@@ -246,4 +246,6 @@ async function main() {
     timings: report.current.timings, failures: report.current.failures }));
   if (!['pass', 'baseline'].includes(report.status)) process.exitCode = 1;
 }
-main().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+}
