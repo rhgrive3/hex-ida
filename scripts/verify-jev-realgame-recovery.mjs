@@ -19,7 +19,9 @@ export function verifyRecoveryEvidence({caseBytes,policyBytes,snapshots,rows,sum
   assert.equal(summary.caseSha256,sha256(caseBytes));assert.equal(summary.policySha256,sha256(policyBytes));
   for(const s of snapshots) {
     assert.equal(s.complete,true);assert.equal(s.productSha,summary.productSha);
-    assert.equal(s.policySha256,sha256(policyBytes));assert.deepEqual(s.sourceHashes,summary.sourceHashes);
+    const collectionBytes=fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-policy-freeze.json',import.meta.url));
+    assert.deepEqual(JSON.parse(collectionBytes).collection,policy.collection,'collection parameters drift');
+    assert.equal(s.policySha256,sha256(collectionBytes));assert.deepEqual(s.sourceHashes,summary.sourceHashes);
     assert.equal(s.collection.keyCollisions,0);
     for(const [file,hash] of Object.entries(s.sourceHashes))assert.equal(sha256(fs.readFileSync(new URL('../'+file,import.meta.url))),hash,'current source drift');
     for(const r of s.rows) {

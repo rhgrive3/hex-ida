@@ -169,7 +169,8 @@ test('recovery representation ignores oracle-shaped descriptions and bounds mach
 
 test('recovery replay rejects gold, build, candidate selection and oracle payload drift',()=>{
   const c={id:'check',binary:'openttd',query:'widget count',...gold};
-  const cases=[c],policy={repeats:1,promptSha256:sha256(fs.readFileSync(new URL('../scripts/jev-realgame-recovery-contract.mjs',import.meta.url))),collection:{maxFunctionsPerQuery:8,maxElapsedMs:15000}};
+  const collectionBytes=fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-policy-freeze.json',import.meta.url));
+  const cases=[c],policy={repeats:1,promptSha256:sha256(fs.readFileSync(new URL('../scripts/jev-realgame-recovery-contract.mjs',import.meta.url))),collection:JSON.parse(collectionBytes).collection};
   const candidates=[member('one'),member('two',400)];
   const input={id:c.id,binary:c.binary,query:c.query,binarySha256:'binary-a',candidates,published:candidates,
     recovered:candidates,shortlist:candidates,topKey:'one',routed:true,recovery:{attempted:[],elapsedMs:2,status:'complete'}};
@@ -184,7 +185,7 @@ test('recovery replay rejects gold, build, candidate selection and oracle payloa
       choiceIndex:0,selectedKey:'one',response:response('c0')}]};
   }
   const caseBytes=Buffer.from(JSON.stringify(cases)),policyBytes=Buffer.from(JSON.stringify(policy));
-  const snapshots=[{complete:true,productSha:'test-only',policySha256:sha256(policyBytes),sourceHashes:{},
+  const snapshots=[{complete:true,productSha:'test-only',policySha256:sha256(collectionBytes),sourceHashes:{},
     binaryKey:'openttd',binarySha256:'binary-a',collection:{keyCollisions:0},rows:[input]}];
   const rows=[row],summaries=Object.fromEntries(['A','DET','B','E'].map(a=>[a,summarize(rows,a)]));
   const summary={productSha:'test-only',caseSha256:sha256(caseBytes),policySha256:sha256(policyBytes),sourceHashes:{},summaries,
