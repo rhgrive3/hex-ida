@@ -18,6 +18,7 @@ import {
 import {
   REMOTE_CANONICAL_RESPONSE_SCHEMA,
   RemoteCanonicalHttpTransport,
+  remoteCanonicalTransportBinding,
 } from '../js/collaboration/remote-transport.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -152,7 +153,21 @@ assert.equal(gate().validate(forgeEnvelope(Uint8Array.from([1, 2]), { egress: { 
   assert.equal(sent.length, 1, 'genuine derived payload must still be transportable');
   const body = JSON.parse(sent[0].body);
   assert.equal(typeof body.ciphertext, 'string');
-  assert.ok(!Buffer.from(body.ciphertext, 'base64').includes(Buffer.from([0x7f, 0x45])), 'ciphertext must not carry raw bytes in the clear');
+  // Random ciphertext can contain any two-byte sequence. Check the authenticated
+  // plaintext and the complete request shape instead of a probabilistic scan.
+  assert.deepEqual(Object.keys(body).sort(), ['bindingDigest', 'ciphertext', 'iv', 'keyId', 'requestId', 'schemaVersion']);
+  const ciphertext = Buffer.from(body.ciphertext, 'base64');
+  const encryption = {
+    name: 'AES-GCM',
+    iv: Buffer.from(body.iv, 'base64'),
+    additionalData: new TextEncoder().encode(`${body.schemaVersion}:${body.keyId}`),
+    tagLength: 128,
+  };
+  const plaintext = await webcrypto.subtle.decrypt(encryption, sessionEncryptionKey, ciphertext);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(plaintext)), remoteCanonicalTransportBinding(clean));
+  const tampered = Buffer.from(ciphertext);
+  tampered[0] ^= 1;
+  await assert.rejects(() => webcrypto.subtle.decrypt(encryption, sessionEncryptionKey, tampered));
 }
 
 console.log('issue-4964 raw-binary-egress classification regression passed');

@@ -93,6 +93,8 @@ The full-gate repairs use an explicit local D1 sentinel fixture and preserve
 historical Jev source/artifact hashes. Router continuity checks pin the exact
 current file and the unchanged old body outside two exact C++ safeguards;
 negative controls reject policy drift even if the current-file hash is refreshed.
+An unrelated probabilistic egress regression now verifies the authenticated
+decrypted binding and exact request shape; raw-byte rejection is unchanged.
 
 Only **already analyzed** canonical projections are published. RTTI/vtables
 alone do not prove fields; metadata-only queries can still have zero members.

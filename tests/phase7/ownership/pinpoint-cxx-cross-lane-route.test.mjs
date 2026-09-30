@@ -17,6 +17,7 @@ const foreign = [
   'reports/investigations/pinpoint-cxx-member-candidates/README.md',
   'scripts/validate-pinpoint-cxx-members.mjs',
   'tests/auth/build-policy.test.mjs',
+  'tests/issue-4964-raw-binary-egress-classification.mjs',
   'tests/pinpoint-jev-probe-audit.mjs',
 ];
 const owned = [
