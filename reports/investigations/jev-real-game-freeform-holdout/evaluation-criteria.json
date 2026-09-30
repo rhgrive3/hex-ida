@@ -1,0 +1,110 @@
+{
+  "schema": "hex-jev-realgame-evaluation-criteria/v1",
+  "frozenAtUtc": "2026-09-30T02:00:00.000Z",
+  "frozenBy": "test/jev-real-game-freeform-holdout",
+  "statement": "Evaluation criteria frozen prior to running and inspecting new real-game holdout results. No threshold or passing bar may be altered post-hoc based on measured numbers.",
+  "metrics": {
+    "baselineTop1Accuracy": {
+      "definition": "Fraction of answerable queries where Hex original top-1 candidate matches ground truth.",
+      "formula": "baselineCorrect / answerable"
+    },
+    "jevTop1Accuracy": {
+      "definition": "Fraction of answerable queries where Jev reranked top-1 candidate matches ground truth.",
+      "formula": "jevCorrect / answerable"
+    },
+    "rescue": {
+      "definition": "Number of answerable queries where Hex baseline was incorrect (or null) and Jev reranker selected the gold candidate.",
+      "formula": "count(baselineCorrect == false && jevCorrect == true)"
+    },
+    "regression": {
+      "definition": "Number of answerable queries where Hex baseline was already correct and Jev reranker selected a non-gold candidate.",
+      "formula": "count(baselineCorrect == true && jevCorrect == false)"
+    },
+    "netRescue": {
+      "definition": "Net gain in correct top-1 answers provided by Jev reranking.",
+      "formula": "rescue - regression"
+    },
+    "regressionRescueRatio": {
+      "definition": "Ratio of destructive regressions to productive rescues.",
+      "formula": "rescue > 0 ? (regression / rescue) : null"
+    },
+    "baselineCorrectDestructionRate": {
+      "definition": "Fraction of existing correct baseline answers destroyed by reranking.",
+      "formula": "baselineCorrect > 0 ? (regression / baselineCorrect) : 0"
+    },
+    "falseStrong": {
+      "definition": "Number of answerable queries where the selected top-1 candidate has a strong verdict ('confirmed' or 'likely') but is incorrect.",
+      "formula": "count(verdict in ['confirmed', 'likely'] && correct == false)"
+    },
+    "unsafeConfident": {
+      "definition": "Number of queries (answerable or abstain) where Hex/Jev produced a strong verdict ('confirmed' or 'likely') on a false answer or an abstain case.",
+      "formula": "count((isAnswerable && !correct && isStrong) || (!isAnswerable && isStrong))"
+    },
+    "candidateRecall": {
+      "definition": "Fraction of answerable queries where the ground truth candidate was successfully generated into Hex's initial candidate lattice.",
+      "formula": "goldInLattice / answerable"
+    },
+    "shortlistRetention": {
+      "definition": "Fraction of gold candidates retained within the top K<=255 shortlist sent to Jev.",
+      "latticePresentRetention": "goldInShortlist / goldInLattice",
+      "allAnswerableRetention": "goldInShortlist / answerable"
+    },
+    "routedCount": {
+      "definition": "Number of cases that fulfilled routing criteria and were dispatched to the OpenJev API.",
+      "conditions": "mode == 'partial' && candidateCount >= 2 && verdict not in ['confirmed', 'likely']"
+    },
+    "apiFailures": {
+      "definition": "Count of unhandled HTTP errors, timeouts, network disconnections, or malformed payloads from the external API.",
+      "subcategories": ["http-error", "timeout", "network", "malformed-json", "schema-violation"]
+    },
+    "latency": {
+      "definition": "Wall-clock latency percentiles (p50, p95, p99 in milliseconds) measured for baseline, API call, and total rerank.",
+      "percentiles": ["p50", "p95", "p99"]
+    }
+  },
+  "bars": {
+    "canonicalBar": {
+      "targetPolicy": "DEFAULT_ON",
+      "requirements": {
+        "minRescues": 1,
+        "maxRegressions": 1,
+        "maxRegressionRescueRatio": 0.10,
+        "maxNewFalseStrong": 0,
+        "maxNewUnsafeConfident": 0,
+        "minCandidateRecall": 0.50,
+        "failClosedVerified": true,
+        "runStability": "Identical results or zero regressions across repeated runs on frozen holdout."
+      }
+    },
+    "selectiveDefaultOnBar": {
+      "targetPolicy": "SELECTIVE_DEFAULT_ON",
+      "requirements": {
+        "maxRegressions": 0,
+        "minRescues": 1,
+        "subdomainGating": "Strict deterministic domain gate isolating verified non-regressing query family.",
+        "maxNewFalseStrong": 0,
+        "failClosedVerified": true
+      }
+    },
+    "optionalAdvisoryBar": {
+      "targetPolicy": "OPTIONAL_ADVISORY",
+      "requirements": {
+        "minNetRescue": 1,
+        "maxNewFalseStrong": 0,
+        "failClosedVerified": true,
+        "defaultSetting": "Disabled by default; user must explicitly enable advisory rerank."
+      }
+    },
+    "noGoBar": {
+      "targetPolicy": "NO_GO",
+      "triggers": [
+        "netRescue <= 0",
+        "candidateRecall == 0",
+        "regressions / rescues > 0.20",
+        "new false strong introduced",
+        "API failure rate > 0.05",
+        "unrecoverable stochastic instability"
+      ]
+    }
+  }
+}

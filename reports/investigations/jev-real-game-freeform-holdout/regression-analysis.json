@@ -1,0 +1,135 @@
+{
+  "schema": "hex-jev-regression-analysis/v1",
+  "analyzedAtUtc": "2026-09-30T02:25:00.000Z",
+  "causeCategories": [
+    "duplicate field name",
+    "missing class context",
+    "lexical trap",
+    "noun/verb confusion",
+    "insufficient candidate description",
+    "candidate not in lattice",
+    "candidate outside shortlist",
+    "ambiguous gold",
+    "stochastic difference",
+    "other"
+  ],
+  "regressions": [
+    {
+      "caseId": "SP08",
+      "holdout": "Sparkle 2.x",
+      "query": "Host bundle being checked or updated by the basic update driver",
+      "gold": {
+        "class": "SPUBasicUpdateDriver",
+        "field": "_host"
+      },
+      "hexOriginalTop1": {
+        "class": "SPUBasicUpdateDriver",
+        "field": "_host"
+      },
+      "hexRankOfGold": 1,
+      "jevChoiceArmB": {
+        "class": "SPUBasicUpdateDriver",
+        "field": "_updateCheck"
+      },
+      "jevChoiceArmBRepeat": {
+        "class": "SPUProbingUpdateDriver",
+        "field": "_basicDriver"
+      },
+      "candidateRepresentation": "Arm B: fieldName only",
+      "class": "SPUBasicUpdateDriver",
+      "field": "_host",
+      "type": "id <SPUHostProtocol>",
+      "offset": "0x10 (16)",
+      "jevConfidence": 0.36,
+      "jevPreference": 0.37,
+      "whetherHexWasAlreadyCorrect": true,
+      "causeCategory": "noun/verb confusion",
+      "secondaryCauseCategory": "lexical trap",
+      "detailedDiagnosis": "The query contains the verb participle 'updated' and noun phrase 'basic update driver'. In Arm B (fieldName only), Jev saw '_host' with no lexical overlap with 'bundle' vs '_updateCheck' / '_basicDriver' which strongly matched 'update' and 'driver'. Once class context was added in Arm C (SPUBasicUpdateDriver._host) and Arm D, Jev recognized that SPUBasicUpdateDriver was the driver entity and _host was the host bundle, completely eliminating the regression.",
+      "armA_HexBaseline": "correct",
+      "armB_CurrentJev": "regressed",
+      "armC_ClassNameDotFieldName": "rescued (correct, 5/5 repeats)",
+      "armD_StructuredClassField": "rescued (correct, 5/5 repeats)",
+      "armE_StructuredDetailed": "rescued (correct, 5/5 repeats)",
+      "deterministicComparator": "wrong"
+    },
+    {
+      "caseId": "SP33",
+      "holdout": "Sparkle 2.x",
+      "query": "Extracted package signatures checked before running installation",
+      "gold": {
+        "class": "SPUInstallationInputData",
+        "field": "_signatures"
+      },
+      "hexOriginalTop1": {
+        "class": "SPUInstallationInputData",
+        "field": "_signatures"
+      },
+      "hexRankOfGold": 1,
+      "jevChoiceArmB": {
+        "class": "SUAppcastItem",
+        "field": "_signatures"
+      },
+      "jevChoiceArmBRepeat": {
+        "class": "SPUInstallationInputData",
+        "field": "_signatures"
+      },
+      "candidateRepresentation": "Arm B: fieldName only",
+      "class": "SPUInstallationInputData",
+      "field": "_signatures",
+      "type": "NSDictionary *",
+      "offset": "0x28 (40)",
+      "jevConfidence": 0.25,
+      "jevPreference": 0.30,
+      "whetherHexWasAlreadyCorrect": true,
+      "causeCategory": "duplicate field name",
+      "secondaryCauseCategory": "missing class context",
+      "detailedDiagnosis": "Both SPUInstallationInputData and SUAppcastItem declare identical field name '_signatures'. In Arm B (fieldName only), Jev receives two identical strings '_signatures' and has no way to distinguish the package installation data from the appcast feed item, causing arbitrary / stochastic selection. In Arm C/D, adding class name provides the distinguishing context, but also introduces a subtle lexical trap: candidate SUSignatures._dsaSignatureStatus has strong lexical pull on 'signatures'. Repeated runs showed 60/40 stochastic split.",
+      "armA_HexBaseline": "correct",
+      "armB_CurrentJev": "regressed (run 1: wrong, run 2: correct)",
+      "armC_ClassNameDotFieldName": "lexical trap to SUSignatures (stochastic split)",
+      "armD_StructuredClassField": "lexical trap to SUSignatures (stochastic split)",
+      "armE_StructuredDetailed": "lexical trap to SUSignatures (stochastic split)",
+      "deterministicComparator": "wrong"
+    },
+    {
+      "caseId": "XA40",
+      "holdout": "XADMaster 1.10",
+      "query": "Key bytes used to initialise the RC4 stream cipher",
+      "gold": {
+        "class": "XADRC4Handle",
+        "field": "key"
+      },
+      "hexOriginalTop1": {
+        "class": "XADRC4Handle",
+        "field": "key"
+      },
+      "hexRankOfGold": 1,
+      "jevChoiceArmB": {
+        "class": "XADWinZipAESHandle",
+        "field": "keybytes"
+      },
+      "jevChoiceArmBRepeat": {
+        "class": "XADRC4Handle",
+        "field": "key"
+      },
+      "candidateRepresentation": "Arm B: fieldName only",
+      "class": "XADRC4Handle",
+      "field": "key",
+      "type": "uint8_t[256]",
+      "offset": "0x48 (72)",
+      "jevConfidence": 0.32,
+      "jevPreference": 0.33,
+      "whetherHexWasAlreadyCorrect": true,
+      "causeCategory": "missing class context",
+      "secondaryCauseCategory": "lexical trap",
+      "detailedDiagnosis": "The query explicitly names 'RC4 stream cipher'. Candidate class XADRC4Handle contains this exact cryptographic cipher name. However, Arm B stripped the class name and presented only 'key' vs 'keybytes'. In isolation, 'keybytes' was a stronger lexical distractor for the query phrase 'Key bytes', misleading Jev in run 1. When class name was restored in Arm C (XADRC4Handle.key) and Arm D, Jev unambiguously selected the gold candidate with high confidence (0.79 - 0.85, 5/5 repeats), completely eliminating the regression.",
+      "armA_HexBaseline": "correct",
+      "armB_CurrentJev": "regressed (run 1: wrong, repeat: correct)",
+      "armC_ClassNameDotFieldName": "rescued (correct, 5/5 repeats, conf 0.79)",
+      "armD_StructuredClassField": "rescued (correct, 5/5 repeats, conf 0.85)",
+      "armE_StructuredDetailed": "rescued (correct, 5/5 repeats, conf 0.73)",
+      "deterministicComparator": "wrong"
+    }
+  ]
+}
