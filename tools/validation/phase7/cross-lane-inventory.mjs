@@ -28,6 +28,9 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // The final game study integrates A/B without widening canonical ownership.
   "integration/jev-realgame-final": Object.freeze([
     ".circleci/config.yml",
+    ".github/workflows/phase8-ownership.yml",
+    "tests/phase8/ownership/cross-lane-routing.test.mjs",
+    "tools/validation/phase8/cross-lane-inventory.mjs",
     "js/auto.js",
     "js/narrate.js",
     "js/decompiler/pipeline-core.js",
