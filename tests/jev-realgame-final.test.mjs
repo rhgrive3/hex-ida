@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import { requestBody, structuralMatch, funnel, verifyCases, sha256, CASE_HASH, evidenceJSON } from '../scripts/jev-realgame-final-contract.mjs';
 import { RealGameJevClient, validateChoice } from '../scripts/jev-realgame-final-client.mjs';
 import { rerankWithJev, jevShortlist } from '../js/pinpoint.js';
+import { parsePtypeOutput } from '../scripts/extract-jev-realgame-layout.mjs';
+import { isGoldMatch } from '../scripts/run-jev-realgame-eval.mjs';
+import { resolveStructuralGold } from '../scripts/audit-jev-realgame-gold.mjs';
+import { verifyEvidence } from '../scripts/verify-jev-realgame-final.mjs';
 
 const member = (key, offset = 306) => ({ key, source: 'cxx', binarySha256: 'binary-a', className: 'Vehicle',
   anonymous: true, syntheticName: `member_0x${offset.toString(16)}`, fieldName: null, offset, size: 2,
@@ -14,12 +18,41 @@ const gold = { status: 'verified', semanticLabel: 'Vehicle.cur_speed', identitie
 ] };
 const response = choice => ({ model: 'openjev', answers: { pick: { type: 'choice', choice, confidence: .8, probabilities: { [choice]: .8 } }, unique: { type: 'noul', noul: .5 } } });
 
+test('retained real-game evidence replays all decisions and rejects corpus, build, gold, payload and result drift', () => {
+  const report=new URL('../reports/investigations/jev-realgame-final/',import.meta.url);
+  const read=name=>fs.readFileSync(new URL(name,report));
+  const original={casesBytes:fs.readFileSync(new URL('../reports/investigations/jev-real-game-freeform-holdout/holdout-cases.json',import.meta.url)),
+    gold:JSON.parse(read('structural-gold.json')),policyBytes:read('policy-freeze.json'),
+    snapshots:['openttd','openmw'].map(k=>JSON.parse(read(`production-snapshots/${k}.json`))),
+    rows:read('raw-results.jsonl').toString().trim().split('\n').map(JSON.parse),summary:JSON.parse(read('summary.json'))};
+  assert.deepEqual(verifyEvidence(original),{cases:70,verified:49,calls:840,valid:true});
+  const mutations=[
+    v=>{v.casesBytes=Buffer.concat([v.casesBytes,Buffer.from(' ')]);},
+    v=>{v.snapshots[0].binarySha256='another-build';},
+    v=>{v.snapshots[0].policySha256='unfrozen-policy';},
+    v=>{v.gold.cases[0].identities[0].offset++;},
+    v=>{v.rows[0].arms.D.calls[0].criteria.c0='Vehicle.cur_speed';},
+    v=>{v.rows[0].arms.D.repeatedKeys[0]='invented';},
+    v=>{v.rows[0].funnel.recovered=true;},
+    v=>{v.summary.summaries.D.top1++;},
+  ];
+  for(const mutate of mutations) {
+    const v={...structuredClone(original),casesBytes:Buffer.from(original.casesBytes),policyBytes:Buffer.from(original.policyBytes)};
+    mutate(v);assert.throws(()=>verifyEvidence(v));
+  }
+});
+
 test('canonical BigInt addresses survive snapshot serialization without precision loss', () => {
   const address = 0xffffffffffffffffn;
   const decoded = JSON.parse(evidenceJSON({ classIdentity: { vtableAddress: address, offsetToTop: 0n }, offset: 306 }));
   assert.equal(decoded.classIdentity.vtableAddress,'18446744073709551615');
   assert.equal(BigInt(decoded.classIdentity.vtableAddress),address);
   assert.equal(decoded.offset,306);
+});
+
+test('independent DWARF extractor retains scalar, pointer and array declarations ending in semicolons', () => {
+  const tree=parsePtypeOutput('/* offset | size */ type = struct Sample {\n/* 8 | 2 */ uint16_t speed;\n/* 16 | 8 */ void *data;\n/* 24 | 12 */ int values[3];\n}');
+  assert.deepEqual(tree.children.map(c=>[c.name,c.offset,c.size]),[['speed',8,2],['data',16,8],['values[3]',24,12]]);
 });
 
 test('anonymous scoring uses exact build/class/offset/width and verified type, never semantic names', () => {
@@ -31,6 +64,15 @@ test('anonymous scoring uses exact build/class/offset/width and verified type, n
   assert.equal(structuralMatch(c, { ...gold, status: 'unverified' }), false);
   assert.equal(structuralMatch(member('other', 400), { ...gold, identities: [...gold.identities,
     { binarySha256: 'binary-a', className: 'Vehicle', offset: 400, size: 2 }] }), true);
+  assert.equal(isGoldMatch({...c,fieldName:'cur_speed'},{class:'Vehicle',field:'cur_speed'}),false);
+  assert.equal(isGoldMatch(c,gold),true);
+});
+
+test('unqualified class labels require verified qualification and cannot guess a namespace',()=>{
+  const cls={status:'resolved',className:'ns::State',declaration:'class ns::State',members:[{path:'level',offset:4,size:4,type:'int'}]};
+  const layout={classes:{State:{status:'unresolved'},'ns::State':cls}};
+  assert.equal(resolveStructuralGold(layout,{class:'State',field:'level'},'binary').status,'unverified');
+  assert.equal(resolveStructuralGold({...layout,qualifiedAliases:{State:{verified:true,className:'ns::State'}}},{class:'State',field:'level'},'binary').identity.className,'ns::State');
 });
 
 test('recovery/publication/shortlist failures are distinct', () => {

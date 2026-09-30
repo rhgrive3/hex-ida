@@ -1,0 +1,1420 @@
+{
+  "schema": "hex-jev-realgame-struct-layout/v1",
+  "sourceLabel": "Ubuntu noble exact build",
+  "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+  "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+  "gdb": "gdb",
+  "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+  "classes": {
+    "ActorStats": {
+      "status": "unresolved",
+      "error": "No type named ActorStats."
+    },
+    "Compiler::Output": {
+      "status": "resolved",
+      "className": "Compiler::Output",
+      "declaration": "class Compiler::Output",
+      "size": 104,
+      "members": [
+        {
+          "path": "mLiterals",
+          "topLevel": "mLiterals",
+          "offset": 0,
+          "size": 72,
+          "type": "Compiler::Literals",
+          "owningClassName": "Compiler::Output",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mCode",
+          "topLevel": "mCode",
+          "offset": 72,
+          "size": 24,
+          "type": "std::vector<unsigned int, std::allocator<unsigned int> >",
+          "owningClassName": "Compiler::Output",
+          "owningOffset": 72,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mLocals",
+          "topLevel": "mLocals",
+          "offset": 96,
+          "size": 8,
+          "type": "Compiler::Locals &",
+          "owningClassName": "Compiler::Output",
+          "owningOffset": 96,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": []
+    },
+    "CreatureStats": {
+      "status": "unresolved",
+      "error": "No type named CreatureStats."
+    },
+    "MWMechanics::CreatureStats": {
+      "status": "resolved",
+      "className": "MWMechanics::CreatureStats",
+      "declaration": "class MWMechanics::CreatureStats",
+      "size": 712,
+      "members": [
+        {
+          "path": "mDrawState",
+          "topLevel": "mDrawState",
+          "offset": 0,
+          "size": 4,
+          "type": "MWMechanics::DrawState",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mAttributes",
+          "topLevel": "mAttributes",
+          "offset": 4,
+          "size": 96,
+          "type": "MWMechanics::AttributeValue [8]",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 4,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mDynamic",
+          "topLevel": "mDynamic",
+          "offset": 100,
+          "size": 36,
+          "type": "MWMechanics::DynamicStat<float> [3]",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 100,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSpells",
+          "topLevel": "mSpells",
+          "offset": 136,
+          "size": 96,
+          "type": "MWMechanics::Spells",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 136,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mActiveSpells",
+          "topLevel": "mActiveSpells",
+          "offset": 232,
+          "size": 136,
+          "type": "MWMechanics::ActiveSpells",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 232,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mMagicEffects",
+          "topLevel": "mMagicEffects",
+          "offset": 368,
+          "size": 48,
+          "type": "MWMechanics::MagicEffects",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 368,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mAiSettings",
+          "topLevel": "mAiSettings",
+          "offset": 416,
+          "size": 32,
+          "type": "MWMechanics::Stat<int> [4]",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 416,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mAiSequence",
+          "topLevel": "mAiSequence",
+          "offset": 448,
+          "size": 56,
+          "type": "MWMechanics::AiSequence",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 448,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mDead",
+          "topLevel": "mDead",
+          "offset": 504,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 504,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mDeathAnimationFinished",
+          "topLevel": "mDeathAnimationFinished",
+          "offset": 505,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 505,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mDied",
+          "topLevel": "mDied",
+          "offset": 506,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 506,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mMurdered",
+          "topLevel": "mMurdered",
+          "offset": 507,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 507,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mFriendlyHits",
+          "topLevel": "mFriendlyHits",
+          "offset": 508,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 508,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mTalkedTo",
+          "topLevel": "mTalkedTo",
+          "offset": 512,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 512,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mAlarmed",
+          "topLevel": "mAlarmed",
+          "offset": 513,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 513,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mAttacked",
+          "topLevel": "mAttacked",
+          "offset": 514,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 514,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mKnockdown",
+          "topLevel": "mKnockdown",
+          "offset": 515,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 515,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mKnockdownOneFrame",
+          "topLevel": "mKnockdownOneFrame",
+          "offset": 516,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 516,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mKnockdownOverOneFrame",
+          "topLevel": "mKnockdownOverOneFrame",
+          "offset": 517,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 517,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mHitRecovery",
+          "topLevel": "mHitRecovery",
+          "offset": 518,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 518,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mBlock",
+          "topLevel": "mBlock",
+          "offset": 519,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 519,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mMovementFlags",
+          "topLevel": "mMovementFlags",
+          "offset": 520,
+          "size": 4,
+          "type": "unsigned int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 520,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mFallHeight",
+          "topLevel": "mFallHeight",
+          "offset": 524,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 524,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mLastHitObject",
+          "topLevel": "mLastHitObject",
+          "offset": 528,
+          "size": 32,
+          "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 528,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mLastHitAttemptObject",
+          "topLevel": "mLastHitAttemptObject",
+          "offset": 560,
+          "size": 32,
+          "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 560,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mLastRestock",
+          "topLevel": "mLastRestock",
+          "offset": 592,
+          "size": 8,
+          "type": "MWWorld::TimeStamp",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 592,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mGoldPool",
+          "topLevel": "mGoldPool",
+          "offset": 600,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 600,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mActorId",
+          "topLevel": "mActorId",
+          "offset": 604,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 604,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mHitAttemptActorId",
+          "topLevel": "mHitAttemptActorId",
+          "offset": 608,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 608,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mDeathAnimation",
+          "topLevel": "mDeathAnimation",
+          "offset": 612,
+          "size": 1,
+          "type": "signed char",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 612,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mTimeOfDeath",
+          "topLevel": "mTimeOfDeath",
+          "offset": 616,
+          "size": 8,
+          "type": "MWWorld::TimeStamp",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 616,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mSideMovementAngle",
+          "topLevel": "mSideMovementAngle",
+          "offset": 624,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 624,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSummonedCreatures",
+          "topLevel": "mSummonedCreatures",
+          "offset": 632,
+          "size": 48,
+          "type": "std::multimap<int, int, std::less<int>, std::allocator<std::pair<int const, int> > >",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 632,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mSummonGraveyard",
+          "topLevel": "mSummonGraveyard",
+          "offset": 680,
+          "size": 24,
+          "type": "std::vector<int, std::allocator<int> >",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 680,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mLevel",
+          "topLevel": "mLevel",
+          "offset": 704,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 704,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mAttackingOrSpell",
+          "topLevel": "mAttackingOrSpell",
+          "offset": 708,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::CreatureStats",
+          "owningOffset": 708,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": []
+    },
+    "MWMechanics::PathgridGraph": {
+      "status": "resolved",
+      "className": "MWMechanics::PathgridGraph",
+      "declaration": "class MWMechanics::PathgridGraph",
+      "size": 104,
+      "members": [
+        {
+          "path": "mCell",
+          "topLevel": "mCell",
+          "offset": 0,
+          "size": 8,
+          "type": "const ESM::Cell *",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mPathgrid",
+          "topLevel": "mPathgrid",
+          "offset": 8,
+          "size": 8,
+          "type": "const ESM::Pathgrid *",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 8,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mGraph",
+          "topLevel": "mGraph",
+          "offset": 16,
+          "size": 24,
+          "type": "std::vector<MWMechanics::PathgridGraph::Node, std::allocator<MWMechanics::PathgridGraph::Node> >",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 16,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mIsGraphConstructed",
+          "topLevel": "mIsGraphConstructed",
+          "offset": 40,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 40,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSCCId",
+          "topLevel": "mSCCId",
+          "offset": 44,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 44,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSCCIndex",
+          "topLevel": "mSCCIndex",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 48,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSCCStack",
+          "topLevel": "mSCCStack",
+          "offset": 56,
+          "size": 24,
+          "type": "std::vector<int, std::allocator<int> >",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 56,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mSCCPoint",
+          "topLevel": "mSCCPoint",
+          "offset": 80,
+          "size": 24,
+          "type": "std::vector<std::pair<int, int>, std::allocator<std::pair<int, int> > >",
+          "owningClassName": "MWMechanics::PathgridGraph",
+          "owningOffset": 80,
+          "inheritance": [],
+          "isAggregate": true
+        }
+      ],
+      "bases": []
+    },
+    "MWPhysics::ActorFrameData": {
+      "status": "resolved",
+      "className": "MWPhysics::ActorFrameData",
+      "declaration": "class MWPhysics::ActorFrameData",
+      "size": 112,
+      "members": [
+        {
+          "path": "mPosition",
+          "topLevel": "mPosition",
+          "offset": 0,
+          "size": 12,
+          "type": "osg::Vec3f",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mInertia",
+          "topLevel": "mInertia",
+          "offset": 12,
+          "size": 12,
+          "type": "osg::Vec3f",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 12,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mStandingOn",
+          "topLevel": "mStandingOn",
+          "offset": 24,
+          "size": 8,
+          "type": "const btCollisionObject *",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 24,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mIsOnGround",
+          "topLevel": "mIsOnGround",
+          "offset": 32,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 32,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mIsOnSlope",
+          "topLevel": "mIsOnSlope",
+          "offset": 33,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 33,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mWalkingOnWater",
+          "topLevel": "mWalkingOnWater",
+          "offset": 34,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 34,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mInert",
+          "topLevel": "mInert",
+          "offset": 35,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 35,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mCollisionObject",
+          "topLevel": "mCollisionObject",
+          "offset": 40,
+          "size": 8,
+          "type": "btCollisionObject *",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 40,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSwimLevel",
+          "topLevel": "mSwimLevel",
+          "offset": 48,
+          "size": 4,
+          "type": "const float",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 48,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSlowFall",
+          "topLevel": "mSlowFall",
+          "offset": 52,
+          "size": 4,
+          "type": "const float",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 52,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mRotation",
+          "topLevel": "mRotation",
+          "offset": 56,
+          "size": 8,
+          "type": "osg::Vec2f",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 56,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mMovement",
+          "topLevel": "mMovement",
+          "offset": 64,
+          "size": 12,
+          "type": "osg::Vec3f",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 64,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mLastStuckPosition",
+          "topLevel": "mLastStuckPosition",
+          "offset": 76,
+          "size": 12,
+          "type": "osg::Vec3f",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 76,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mWaterlevel",
+          "topLevel": "mWaterlevel",
+          "offset": 88,
+          "size": 4,
+          "type": "const float",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 88,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mHalfExtentsZ",
+          "topLevel": "mHalfExtentsZ",
+          "offset": 92,
+          "size": 4,
+          "type": "const float",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 92,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mOldHeight",
+          "topLevel": "mOldHeight",
+          "offset": 96,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 96,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mStuckFrames",
+          "topLevel": "mStuckFrames",
+          "offset": 100,
+          "size": 4,
+          "type": "unsigned int",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 100,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mFlying",
+          "topLevel": "mFlying",
+          "offset": 104,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 104,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mWasOnGround",
+          "topLevel": "mWasOnGround",
+          "offset": 105,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 105,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mIsAquatic",
+          "topLevel": "mIsAquatic",
+          "offset": 106,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 106,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mWaterCollision",
+          "topLevel": "mWaterCollision",
+          "offset": 107,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 107,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mSkipCollisionDetection",
+          "topLevel": "mSkipCollisionDetection",
+          "offset": 108,
+          "size": 1,
+          "type": "const bool",
+          "owningClassName": "MWPhysics::ActorFrameData",
+          "owningOffset": 108,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": []
+    },
+    "MWRender::ActorsPaths": {
+      "status": "resolved",
+      "className": "MWRender::ActorsPaths",
+      "declaration": "class MWRender::ActorsPaths",
+      "size": 64,
+      "members": [
+        {
+          "path": "mRootNode",
+          "topLevel": "mRootNode",
+          "offset": 0,
+          "size": 8,
+          "type": "osg::ref_ptr<osg::Group>",
+          "owningClassName": "MWRender::ActorsPaths",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mGroups",
+          "topLevel": "mGroups",
+          "offset": 8,
+          "size": 48,
+          "type": "std::map<MWWorld::LiveCellRefBase const*, MWRender::ActorsPaths::Group, std::less<MWWorld::LiveCellRefBase const*>, std::allocator<std::pair<MWWorld::LiveCellRefBase const* const, MWRender::ActorsPaths::Group> > >",
+          "owningClassName": "MWRender::ActorsPaths",
+          "owningOffset": 8,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mEnabled",
+          "topLevel": "mEnabled",
+          "offset": 56,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "MWRender::ActorsPaths",
+          "owningOffset": 56,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": []
+    },
+    "MWWorld::ConstPtr": {
+      "status": "resolved",
+      "className": "MWWorld::ConstPtr",
+      "declaration": "class MWWorld::ConstPtr",
+      "size": 24,
+      "members": [
+        {
+          "path": "mRef",
+          "topLevel": "mRef",
+          "offset": 0,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::add_const_t>::LiveCellRefBaseType *",
+          "owningClassName": "MWWorld::PtrBase<std::add_const_t>",
+          "owningOffset": 0,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::add_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "mCell",
+          "topLevel": "mCell",
+          "offset": 8,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::add_const_t>::CellStoreType *",
+          "owningClassName": "MWWorld::PtrBase<std::add_const_t>",
+          "owningOffset": 8,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::add_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "mContainerStore",
+          "topLevel": "mContainerStore",
+          "offset": 16,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::add_const_t>::ContainerStoreType *",
+          "owningClassName": "MWWorld::PtrBase<std::add_const_t>",
+          "owningOffset": 16,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::add_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        }
+      ],
+      "bases": [
+        {
+          "className": "MWWorld::PtrBase<std::add_const_t>",
+          "offset": 0,
+          "size": 24
+        }
+      ]
+    },
+    "MWWorld::Ptr": {
+      "status": "resolved",
+      "className": "MWWorld::Ptr",
+      "declaration": "class MWWorld::Ptr",
+      "size": 24,
+      "members": [
+        {
+          "path": "mRef",
+          "topLevel": "mRef",
+          "offset": 0,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::remove_const_t>::LiveCellRefBaseType *",
+          "owningClassName": "MWWorld::PtrBase<std::remove_const_t>",
+          "owningOffset": 0,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::remove_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "mCell",
+          "topLevel": "mCell",
+          "offset": 8,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::remove_const_t>::CellStoreType *",
+          "owningClassName": "MWWorld::PtrBase<std::remove_const_t>",
+          "owningOffset": 8,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::remove_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "mContainerStore",
+          "topLevel": "mContainerStore",
+          "offset": 16,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::remove_const_t>::ContainerStoreType *",
+          "owningClassName": "MWWorld::PtrBase<std::remove_const_t>",
+          "owningOffset": 16,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::remove_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "isAggregate": false
+        }
+      ],
+      "bases": [
+        {
+          "className": "MWWorld::PtrBase<std::remove_const_t>",
+          "offset": 0,
+          "size": 24
+        }
+      ]
+    },
+    "MWWorld::Store<ESM::Door>": {
+      "status": "resolved",
+      "className": "MWWorld::Store<ESM::Door>",
+      "declaration": "class MWWorld::Store<ESM::Door>",
+      "size": 144,
+      "members": [
+        {
+          "path": "_vptr.StoreBase",
+          "topLevel": "_vptr.StoreBase",
+          "offset": 0,
+          "size": 8,
+          "type": "int (**)(void)",
+          "owningClassName": "MWWorld::StoreBase",
+          "owningOffset": 0,
+          "inheritance": [
+            {
+              "className": "MWWorld::StoreBase",
+              "offset": 0,
+              "size": 8
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "mStatic",
+          "topLevel": "mStatic",
+          "offset": 8,
+          "size": 56,
+          "type": "std::unordered_map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, ESM::Door, Misc::StringUtils::CiHash, Misc::StringUtils::CiEqual, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, ESM::Door> > >",
+          "owningClassName": "MWWorld::Store<ESM::Door>",
+          "owningOffset": 8,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mShared",
+          "topLevel": "mShared",
+          "offset": 64,
+          "size": 24,
+          "type": "std::vector<ESM::Door*, std::allocator<ESM::Door*> >",
+          "owningClassName": "MWWorld::Store<ESM::Door>",
+          "owningOffset": 64,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mDynamic",
+          "topLevel": "mDynamic",
+          "offset": 88,
+          "size": 56,
+          "type": "std::unordered_map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, ESM::Door, Misc::StringUtils::CiHash, Misc::StringUtils::CiEqual, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, ESM::Door> > >",
+          "owningClassName": "MWWorld::Store<ESM::Door>",
+          "owningOffset": 88,
+          "inheritance": [],
+          "isAggregate": true
+        }
+      ],
+      "bases": [
+        {
+          "className": "MWWorld::StoreBase",
+          "offset": 0,
+          "size": 8
+        }
+      ]
+    },
+    "Nif::bhkBlendController": {
+      "status": "resolved",
+      "className": "Nif::bhkBlendController",
+      "declaration": "class Nif::bhkBlendController",
+      "size": 96,
+      "members": [
+        {
+          "path": "_vptr.Record",
+          "topLevel": "_vptr.Record",
+          "offset": 0,
+          "size": 8,
+          "type": "int (**)(void)",
+          "owningClassName": "Nif::Record",
+          "owningOffset": 0,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            },
+            {
+              "className": "Nif::Record",
+              "offset": 0,
+              "size": 56
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "recType",
+          "topLevel": "recType",
+          "offset": 8,
+          "size": 4,
+          "type": "Nif::RecordType",
+          "owningClassName": "Nif::Record",
+          "owningOffset": 8,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            },
+            {
+              "className": "Nif::Record",
+              "offset": 0,
+              "size": 56
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "recName",
+          "topLevel": "recName",
+          "offset": 16,
+          "size": 32,
+          "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+          "owningClassName": "Nif::Record",
+          "owningOffset": 16,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            },
+            {
+              "className": "Nif::Record",
+              "offset": 0,
+              "size": 56
+            }
+          ],
+          "isAggregate": true
+        },
+        {
+          "path": "recIndex",
+          "topLevel": "recIndex",
+          "offset": 48,
+          "size": 4,
+          "type": "unsigned int",
+          "owningClassName": "Nif::Record",
+          "owningOffset": 48,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            },
+            {
+              "className": "Nif::Record",
+              "offset": 0,
+              "size": 56
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "next",
+          "topLevel": "next",
+          "offset": 56,
+          "size": 8,
+          "type": "Nif::RecordPtrT<Nif::Controller>",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 56,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": true
+        },
+        {
+          "path": "flags",
+          "topLevel": "flags",
+          "offset": 64,
+          "size": 4,
+          "type": "int",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 64,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "frequency",
+          "topLevel": "frequency",
+          "offset": 68,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 68,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "phase",
+          "topLevel": "phase",
+          "offset": 72,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 72,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "timeStart",
+          "topLevel": "timeStart",
+          "offset": 76,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 76,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "timeStop",
+          "topLevel": "timeStop",
+          "offset": 80,
+          "size": 4,
+          "type": "float",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 80,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": false
+        },
+        {
+          "path": "target",
+          "topLevel": "target",
+          "offset": 88,
+          "size": 8,
+          "type": "Nif::RecordPtrT<Nif::Named>",
+          "owningClassName": "Nif::Controller",
+          "owningOffset": 88,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "isAggregate": true
+        }
+      ],
+      "bases": [
+        {
+          "className": "Nif::Controller",
+          "offset": 0,
+          "size": 96
+        }
+      ]
+    },
+    "SDLUtil::SDLCursorManager": {
+      "status": "resolved",
+      "className": "SDLUtil::SDLCursorManager",
+      "declaration": "class SDLUtil::SDLCursorManager",
+      "size": 96,
+      "members": [
+        {
+          "path": "_vptr.SDLCursorManager",
+          "topLevel": "_vptr.SDLCursorManager",
+          "offset": 0,
+          "size": 8,
+          "type": "int (**)(void)",
+          "owningClassName": "SDLUtil::SDLCursorManager",
+          "owningOffset": 0,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mCursorMap",
+          "topLevel": "mCursorMap",
+          "offset": 8,
+          "size": 48,
+          "type": "std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, SDL_Cursor*, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, SDL_Cursor*> > >",
+          "owningClassName": "SDLUtil::SDLCursorManager",
+          "owningOffset": 8,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mCurrentCursor",
+          "topLevel": "mCurrentCursor",
+          "offset": 56,
+          "size": 32,
+          "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+          "owningClassName": "SDLUtil::SDLCursorManager",
+          "owningOffset": 56,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mEnabled",
+          "topLevel": "mEnabled",
+          "offset": 88,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "SDLUtil::SDLCursorManager",
+          "owningOffset": 88,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mInitialized",
+          "topLevel": "mInitialized",
+          "offset": 89,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "SDLUtil::SDLCursorManager",
+          "owningOffset": 89,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": []
+    },
+    "SceneUtil::RigGeometryHolder": {
+      "status": "resolved",
+      "className": "SceneUtil::RigGeometryHolder",
+      "declaration": "class SceneUtil::RigGeometryHolder",
+      "size": 384,
+      "members": [
+        {
+          "path": "mGeometry",
+          "topLevel": "mGeometry",
+          "offset": 344,
+          "size": 16,
+          "type": "std::array<osg::ref_ptr<SceneUtil::OsgaRigGeometry>, 2>",
+          "owningClassName": "SceneUtil::RigGeometryHolder",
+          "owningOffset": 344,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mSourceRigGeometry",
+          "topLevel": "mSourceRigGeometry",
+          "offset": 360,
+          "size": 8,
+          "type": "osg::ref_ptr<SceneUtil::OsgaRigGeometry>",
+          "owningClassName": "SceneUtil::RigGeometryHolder",
+          "owningOffset": 360,
+          "inheritance": [],
+          "isAggregate": true
+        },
+        {
+          "path": "mBackToOrigin",
+          "topLevel": "mBackToOrigin",
+          "offset": 368,
+          "size": 8,
+          "type": "osg::MatrixTransform *",
+          "owningClassName": "SceneUtil::RigGeometryHolder",
+          "owningOffset": 368,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mLastFrameNumber",
+          "topLevel": "mLastFrameNumber",
+          "offset": 376,
+          "size": 4,
+          "type": "unsigned int",
+          "owningClassName": "SceneUtil::RigGeometryHolder",
+          "owningOffset": 376,
+          "inheritance": [],
+          "isAggregate": false
+        },
+        {
+          "path": "mIsBodyPart",
+          "topLevel": "mIsBodyPart",
+          "offset": 380,
+          "size": 1,
+          "type": "bool",
+          "owningClassName": "SceneUtil::RigGeometryHolder",
+          "owningOffset": 380,
+          "inheritance": [],
+          "isAggregate": false
+        }
+      ],
+      "bases": [
+        {
+          "className": "osg::Drawable",
+          "offset": 0,
+          "size": 0
+        }
+      ]
+    },
+    "osg::Texture2D": {
+      "status": "unresolved",
+      "error": "No type named osg::Texture2D."
+    },
+    "std::vector<Terrain::TextureLayer, std::allocator, <Terrain::TextureLayer>>": {
+      "status": "unresolved",
+      "error": "No type named std::vector<Terrain::TextureLayer, std::allocator, <Terrain::TextureLayer>>."
+    }
+  },
+  "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+  "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177"
+}

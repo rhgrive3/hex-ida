@@ -9,6 +9,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import { structuralMatch } from './jev-realgame-final-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPORT_DIR = path.resolve(process.env.HEX_JEV_HOLDOUT_DIR
@@ -207,6 +208,9 @@ export function deterministicLexicalPick(query, candidates, params = { exact: 0,
 
 export function isGoldMatch(cand, gold) {
   if (!cand || !gold) return false;
+  // C++ names are reporting labels, never scoring authority. The authoritative
+  // real-game runner supplies exact-build structural gold, including inheritance.
+  if (cand.source === 'cxx' || Array.isArray(gold.identities)) return structuralMatch(cand, gold);
   const candClass = cand.className ?? cand.class ?? cand.key?.split('#')?.[0];
   const candField = cand.fieldName ?? cand.field?.name ?? cand.name ?? cand.key?.split('#')?.[2];
   if (candClass === gold.class && candField === gold.field) return true;
@@ -227,7 +231,7 @@ async function main() {
   }
   const routerSha = sha256(fs.readFileSync(path.join(ROOT, 'js/pinpoint.js')));
   if (manifest.routerFrozenSha256 && routerSha !== manifest.routerFrozenSha256) {
-    throw new Error(`Jev router changed after freeze: expected ${manifest.routerFrozenSha256}, got ${routerSha}`);
+    throw new Error(`Historical name-scored runner is frozen to ${manifest.routerFrozenSha256}; use collect-jev-realgame-final.mjs and evaluate-jev-realgame-final.mjs for the integrated structural evaluation (router ${routerSha}).`);
   }
 
   const cases = JSON.parse(casesBytes);
