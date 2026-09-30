@@ -37,6 +37,7 @@ const CXX_QUERY_PLANNERS = new WeakMap();
 // analysis; the canonical producer remains the sole publication authority.
 export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   if (options.enabled !== true) return {status:'disabled',attempted:[],elapsedMs:0};
+  if (!supportsArm64SemanticAnalysis(architectureOf(app))) return {status:'unsupported',attempted:[],elapsedMs:0};
   const query=app?.analysisQueries;
   if (!query?.snapshot || !query?.decompile) throw new Error('scoped C++ recovery owner unavailable');
   const snapshot=await query.snapshot({signal:options.signal});

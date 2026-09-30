@@ -155,6 +155,7 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         indexed: field.indexed,
         readCount: field.readCount,
         writeCount: field.writeCount,
+        accessRoles: field.accessRoles,
         rule: field.rule,
         reason: field.reason,
       }));

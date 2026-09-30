@@ -113,6 +113,7 @@ function buildChains(ir, maxInstructions) {
   const vectorTargets = new Set();
   const conditionValues = new Set();
   const addressUsed = new Set();
+  const returnInputs = new Set(), comparisonInputs = new Set(), arithmeticInputs = new Set();
   const instructions = [];
   let scanned = 0;
 
@@ -131,6 +132,11 @@ function buildChains(ir, maxInstructions) {
   }
 
   for (const inst of instructions) {
+    const roleTargets = ['ret','return'].includes(inst.op) ? returnInputs
+      : ['cmp','cbr'].includes(inst.op) ? comparisonInputs : ['bin','binary'].includes(inst.op) ? arithmeticInputs : null;
+    if (roleTargets) for (const arg of inst.args || []) {
+      const id=valueId(arg?.value ?? arg);if(id!=null)roleTargets.add(id);
+    }
     const dstId = valueId(inst.dst);
     if (dstId != null && (inst.op === 'mov' || inst.op === 'un') && inst.args?.length) {
       const source = valueId(inst.args[0]?.value ?? inst.args[0]);
@@ -170,7 +176,7 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, consumers, constants, vectorTargets, conditionValues, addressUsed };
+  return { sources, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
 }
 
 /** Breadth-first walk over mov/unary chains, bounded by MAX_CHAIN_DEPTH. */
@@ -274,10 +280,16 @@ export function recoverMemberTypeEvidence({
     let entry = byOffset.get(offset);
     if (!entry) {
       if (byOffset.size >= maxFields) { truncated = true; continue; }
-      entry = { offset, accesses: [], readCount: 0, writeCount: 0 };
+      entry = { offset, accesses: [], readCount: 0, writeCount: 0, accessRoles:new Set() };
       byOffset.set(offset, entry);
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
+    // A bounded extension of the already-built SSA copy/unary chains. These
+    // are machine use roles, never source names or semantic field labels.
+    if(inst.op==='load')for(const [role,targets] of [['return-input',chains.returnInputs],
+      ['comparison-input',chains.comparisonInputs],['arithmetic-input',chains.arithmeticInputs],['address-base',chains.addressUsed]]) {
+      if(flowsInto(loadValueId,targets,chains.consumers))entry.accessRoles.add(role);
+    }
     if (inst.op === 'load') entry.readCount++; else entry.writeCount++;
     accesses++;
   }
@@ -322,6 +334,7 @@ export function recoverMemberTypeEvidence({
       mixedWidths,
       readCount: entry.readCount,
       writeCount: entry.writeCount,
+      accessRoles: Object.freeze([...entry.accessRoles].sort()),
       indexed: representative.indexed,
       category: kind,
       typeLabel: classification.label,

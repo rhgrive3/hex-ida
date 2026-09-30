@@ -2,7 +2,9 @@
 
 ## Executive Summary
 
-**Production policy: NO_GO for automatic Jev routing on real-game C++ member queries. Jev remains disabled by default.** C++ publication is useful and mergeable; it does not recover source member names. The preselected context representation D produced **0 rescues, 0 regressions, 0/49 verified top-1 answers**. The current, minimum-name and structured representations each rescued **one OpenTTD case**, giving 1/49. No OpenMW improvement was demonstrated. We did not select a different primary arm after seeing these results.
+**Initial frozen-design decision: NO_GO for automatic Jev routing on real-game C++ member queries. Jev remains disabled by default.**
+
+**Work continues:** following the user's request, query-directed recovery and machine-use context are being implemented and will be judged on a separate untouched holdout. The tables below preserve the completed original 30-function design; they are not yet the expanded-recovery final result. C++ publication is useful and mergeable; it does not recover source member names. The preselected context representation D produced **0 rescues, 0 regressions, 0/49 verified top-1 answers**. The current, minimum-name and structured representations each rescued **one OpenTTD case**, giving 1/49. No OpenMW improvement was demonstrated. We did not select a different primary arm after seeing these results.
 
 高校生向けに言うと、Hexがゲーム内の候補を探し、Jevがその中から人間の質問に近い候補を選びます。今回は正解が候補に入った質問が49件中2件しかありませんでした。しかも候補は全部匿名で、役割の説明も十分ではありません。Jevを通常ONにする価値は確認できず、まずHexの候補回収と意味の証拠を改善する必要があります。
 

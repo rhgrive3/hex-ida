@@ -21,3 +21,9 @@ test('explicit recovery preserves scoped snapshot, disables by default, deduplic
   const c=new AbortController();c.abort();await assert.rejects(recoverCxxQueryMembers({enabled:true,plan,snapshot,decompile,signal:c.signal}),/abort/i);
   await assert.rejects(recoverCxxQueryMembers({enabled:true,plan,snapshot,decompile:async()=>{throw new Error('stale snapshot');}}),/stale snapshot/);
 });
+
+test('constructor class words cannot outrank a matching value method by counting the object twice',()=>{
+  const symbols={funcs:[0n,1n,2n],addrs:[0n,1n,2n],names:['_ZN10WidgetListC1Ev','_ZNK6Widget8GetCountEv','_ZN6WidgetC1Ev']};
+  const planner=createCxxQueryPlanner({symbols,isExecutable:()=>true});
+  assert.deepEqual(planner.plan('widget count',{maxFunctions:3}).map(r=>r.address),[1n,2n,0n]);
+});

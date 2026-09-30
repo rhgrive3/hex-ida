@@ -17,12 +17,12 @@ export function validateChoice(payload, count) {
 }
 
 export class RealGameJevClient {
-  constructor({ apiKey, arm, fetchImpl = fetch, timeoutMs = 15000, maxAttempts = 2 }) {
-    Object.assign(this, { apiKey, arm, fetchImpl, timeoutMs, maxAttempts });
+  constructor({ apiKey, arm, fetchImpl = fetch, timeoutMs = 15000, maxAttempts = 2, requestBuilder = requestBody }) {
+    Object.assign(this, { apiKey, arm, fetchImpl, timeoutMs, maxAttempts, requestBuilder });
     this.calls = [];
   }
   async call({ query, candidates }) {
-    const body = requestBody(query, candidates, this.arm);
+    const body = this.requestBuilder(query, candidates, this.arm);
     const attempts = [];
     const started = performance.now();
     let responsePayload = null;

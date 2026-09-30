@@ -31,7 +31,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));continue;}
     const row={address:BigInt(address),className,methodName:info.methodName??'',symbolName:symbols.names[i],
       proof:symbolProof?'non-static-symbol':'unique-vtable-owner',
-      classTokens:cxxQueryTokens(className),methodTokens:cxxQueryTokens(info.methodName)};
+      classTokens:cxxQueryTokens(className),methodTokens:info.isConstructor||info.isDestructor?[]:cxxQueryTokens(info.methodName)};
     records.set(String(address),row);
   }
   // Slots with no symbol can still be planned by their unique proven owner.
@@ -48,8 +48,12 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       const tokens=new Set(cxxQueryTokens(phrase));
       return Object.freeze(rows.map(row=>{
         const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t));
-        return {...row,score:2*classHits.length+4*methodHits.length,classHits,methodHits};
+        const leaf=row.className.split('::').at(-1);
+        const exactObject=cxxQueryTokens(leaf).length===1&&tokens.has(leaf.toLowerCase());
+        return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
+          specificity:classHits.length/Math.max(1,row.classTokens.length)};
       }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||b.methodHits.length-a.methodHits.length
+        ||b.specificity-a.specificity
         ||(a.address<b.address?-1:a.address>b.address?1:0)).slice(0,maxFunctions).map(Object.freeze));
     },
   });

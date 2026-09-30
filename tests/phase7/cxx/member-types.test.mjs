@@ -36,6 +36,16 @@ function fieldAt(report, offset) {
   return report.fields.find((field) => field.offset === BigInt(offset)) ?? null;
 }
 
+test('member access roles distinguish returned and compared loads without naming or strengthening the field type', () => {
+  const ir=createIr(['ldr w1, [x0, #0x38]','cmp w1, #0x3','ldr w0, [x0, #0x40]','ret']);
+  const report=recoverMemberTypeEvidence({ir,isReceiverBase:allBases});
+  assert.ok(fieldAt(report,56).accessRoles.includes('comparison-input'));
+  assert.equal(fieldAt(report,56).accessRoles.includes('return-input'),false);
+  assert.deepEqual(fieldAt(report,64).accessRoles,['return-input']);
+  assert.equal(fieldAt(report,64).category,'int32');assert.equal(fieldAt(report,64).widthOnly,true);
+  assert.equal(fieldAt(report,64).memberName,undefined);
+});
+
 // ── pure classifier ────────────────────────────────────────────────────────
 
 test('classifier proves only what the access evidence proves', () => {
