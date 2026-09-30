@@ -675,3 +675,14 @@ test('a vtable that does not reference the address is never attached', async () 
   });
   assert.equal(projection, null);
 });
+
+
+test('publication withholds a member whose release address has contradictory named owners',async()=>{
+  const probe=await rttiProbe(),address=symbolAddress(probe,'_ZN6Player10takeDamageEi');
+  const symbols={addrs:[...probe.symbols.addrs,address],names:[...probe.symbols.names,'_ZNK5Other8GetCountEv']};
+  const provider=providerFor(probe,{symbols});await provider.build();
+  const projection=provider.projectForFunction({functionAddress:address,functionName:'_ZN6Player10takeDamageEi',
+    ir:memberIr([{offset:8,size:4}])});
+  assert.ok(projection?.members.length);
+  assert.equal(provider.memberIndex().fieldCount,0);
+});

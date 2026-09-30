@@ -34,7 +34,7 @@ export function deterministicRecoveryPick(query,candidates) {
     const classHits=cxxQueryTokens(c.className).filter(t=>tokens.has(t)).length;
     const context=Math.max(0,...(c.functionContexts??[]).map(ctx=>{
       const method=ctx.name?(demangleCxx(ctx.name)??ctx.name).split('(')[0].split('::').at(-1):'';
-      const hits=cxxQueryTokens(method).filter(t=>tokens.has(t)).length;
+      const hits=cxxQueryTokens(method).filter(t=>tokens.has(t)&&!cxxQueryTokens(c.className).includes(t)).length;
       return 4*hits*(ctx.accessRoles?.includes('return-input')?2:1);
     }));return 2*classHits+context;
   };

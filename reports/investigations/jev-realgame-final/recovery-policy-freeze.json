@@ -1,13 +1,13 @@
 {
   "schema": "hex-jev-recovery-policy/v1",
-  "frozenAtUtc": "2026-09-30T09:48:00.519653+00:00",
+  "frozenAtUtc": "2026-09-30T10:33:19.462541+00:00",
   "original70Status": "already used; supplementary development regression only, never an untouched final judge after changes",
   "finalHoldout": "separately generated exact-build fields not in original70; independent agent blind to candidate recovery and prior Jev outcomes; separate hash freeze",
   "collection": {
     "explicitInteractiveRecovery": true,
     "maxFunctionsPerQuery": 8,
     "maxElapsedMs": 15000,
-    "selection": "release canonical owner functions only; query method token hits4, class token hits2, exact single-token object class2; constructor method tokens ignored; class specificity and address ties",
+    "selection": "release canonical owner functions only; query method token hits4 excluding repeated class tokens, class token hits2, exact single-token object class2; constructor method tokens ignored; class specificity, method hits and address ties",
     "profile": "fast",
     "highCostNewPass": false,
     "metadata": "bounded machine return/comparison/arithmetic/address-base use roles in existing member-type chain walk"
@@ -20,7 +20,7 @@
   ],
   "primaryArm": "E",
   "representation": "class,anonymous offset,size,type category,read/write counts,up to8 demangled release method contexts and proven machine use roles",
-  "promptSha256": "d1f730c4ff220f6acdd64b7000d4c65c0165f614145133ba55ff1294a8cdc1ca",
+  "promptSha256": "e2f3f168feed368fc14e1d095c53590bb46f747075e364d67b71c3c01e3e3939",
   "repeats": 3,
   "firstRepeatPrimary": true,
   "majorityVoting": false,
@@ -51,5 +51,5 @@
     "error timeout retry",
     "repeat instability"
   ],
-  "comparator": "weak C++ preference:2*matching class tokens + maximum context 4*matching method tokens*(2 if canonical return-input else1); conflict candidates0; stable original-order ties; no evidence/verdict upgrade"
+  "comparator": "weak C++ preference:2*matching class tokens + maximum context 4*matching method tokens excluding repeated class tokens*(2 if canonical return-input else1); conflict candidates0; stable original-order ties; no evidence/verdict upgrade"
 }

@@ -21,17 +21,20 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
   const records=new Map(),blocked=new Set();
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs[i];if(address==null||!starts.has(String(address)))continue;
+    if(blocked.has(String(address)))continue;
     const info=analyzeFunctionSymbol(symbols.names[i]);const names=owners.get(String(address));
     // Planning never resolves conflicting ownership or treats an ordinary
     // qualified symbol as proof that a method is non-static.
-    if(info.isAdjustedThunk||names?.size>1){blocked.add(String(address));continue;}
+    if(info.isAdjustedThunk||names?.size>1){blocked.add(String(address));records.delete(String(address));continue;}
     const symbolProof=info.isConstructor||info.isDestructor||info.isConstMember;
     if(!symbolProof&&names?.size!==1)continue;
     const className=names?.size===1?[...names][0]:info.className;
-    if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));continue;}
+    if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
     const row={address:BigInt(address),className,methodName:info.methodName??'',symbolName:symbols.names[i],
       proof:symbolProof?'non-static-symbol':'unique-vtable-owner',
       classTokens:cxxQueryTokens(className),methodTokens:info.isConstructor||info.isDestructor?[]:cxxQueryTokens(info.methodName)};
+    const previous=records.get(String(address));
+    if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
     records.set(String(address),row);
   }
   // Slots with no symbol can still be planned by their unique proven owner.
@@ -47,13 +50,13 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
       const tokens=new Set(cxxQueryTokens(phrase));
       return Object.freeze(rows.map(row=>{
-        const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t));
+        const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
         const leaf=row.className.split('::').at(-1);
         const exactObject=cxxQueryTokens(leaf).length===1&&tokens.has(leaf.toLowerCase());
         return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
           specificity:classHits.length/Math.max(1,row.classTokens.length)};
-      }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||b.methodHits.length-a.methodHits.length
-        ||b.specificity-a.specificity
+      }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||b.specificity-a.specificity
+        ||b.methodHits.length-a.methodHits.length
         ||(a.address<b.address?-1:a.address>b.address?1:0)).slice(0,maxFunctions).map(Object.freeze));
     },
   });

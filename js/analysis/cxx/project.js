@@ -28,6 +28,7 @@
 
 import {
   createCppMemberEvidence,
+  analyzeFunctionSymbol,
   extractCppObjectEvidence,
   isCanonicalCppMemberEvidence,
   isCanonicalCppReceiverEvidence,
@@ -191,7 +192,21 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
  * point at, so per-function lookup is O(1) instead of scanning every slot of
  * every class.
  */
-function indexFromReport(report) {
+function indexFromReport(report, symbols) {
+  // Only aliased addresses need extra ownership scrutiny. This one metadata
+  // walk never reads code or runs an analysis pass; name parsing is restricted
+  // to duplicates, and the temporary first-name map is not retained.
+  const symbolOwners = new Map(),firstSymbol = new Map();
+  for(let i=0;i<(symbols?.names?.length??0);i++) {
+    const address=symbols.addrs?.[i];if(address==null)continue;
+    const key=String(address),name=symbols.names[i];
+    if(!firstSymbol.has(key)){firstSymbol.set(key,name);continue;}
+    const names=symbolOwners.get(key)??new Set();
+    for(const value of [firstSymbol.get(key),name]) {
+      const info=analyzeFunctionSymbol(value);if(info.className)names.add(info.className);
+    }
+    if(names.size)symbolOwners.set(key,names);
+  }
   const vtables = [];
   const vtableClassNames = [];
   const bySlotAddress = new Map();
@@ -222,6 +237,7 @@ function indexFromReport(report) {
     vtables: Object.freeze(vtables),
     vtableClassNames: Object.freeze(vtableClassNames),
     bySlotAddress,
+    symbolOwners,
     slotCount,
   });
 }
@@ -303,7 +319,7 @@ export function createCxxEvidenceProvider(input = {}) {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report) : EMPTY_INDEX;
+        index = report ? indexFromReport(report,symbols) : EMPTY_INDEX;
         return index;
       })();
       try {
@@ -419,8 +435,10 @@ export function createCxxEvidenceProvider(input = {}) {
       // one owner. The decompiler's conservative anonymous projection remains
       // available, but it cannot mint a member of the first table for Pinpoint.
       const owner = receiver.classIdentity;
-      const publishOwner = owner?.kind === 'named'
-        || (vtables.length === 1 && vtableClassNames.every((name) => !name));
+      const symbolOwners=functionAddress!=null?index.symbolOwners?.get(String(functionAddress)):null;
+      const symbolBindingValid=!symbolOwners?.size||(symbolOwners.size===1&&symbolOwners.has(owner?.className));
+      const publishOwner = symbolBindingValid && (owner?.kind === 'named'
+        || (vtables.length === 1 && vtableClassNames.every((name) => !name)));
       if (publishOwner) {
         try { memberIndex.publish(projection); } catch { /* publication only */ }
       }

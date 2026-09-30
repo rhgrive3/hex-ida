@@ -1,0 +1,12 @@
+{
+  "schema": "hex-jev-recovery-experiment-freeze/v1",
+  "frozenAtUtc": "2026-09-30T10:35:40.076555+00:00",
+  "policySha256": "8aabe4fc144e1317fde0a39d7605c7299a45b91234d50664f5cdbf2f5c0514f5",
+  "corpora": {
+    "development-original70": {
+      "caseSha256": "58bdbb1dfd683b85b283e65890f97e88871168168cb03bfac323edcaf7ea4a62",
+      "originalUnchangedQueryCorpusSha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+      "role": "already-used development only"
+    }
+  }
+}

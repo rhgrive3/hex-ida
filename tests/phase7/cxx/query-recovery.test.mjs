@@ -37,3 +37,21 @@ test('no-progress results do not reopen the result view; elapsed overruns remain
     maxElapsedMs:10,now:()=>time,decompile:async()=>{time=20;return {value:{pseudocode:'body'}};}});
   assert.equal(result.status,'budget-exhausted');assert.equal(result.elapsedMs,20);
 });
+
+
+test('owner words repeated in method names cannot crowd out the requested object',()=>{
+  const symbols={funcs:[1n,2n,3n,4n],addrs:[1n,2n,3n,4n],names:[
+    '_ZNK8Registry17getWidgetPasswordEv','_ZNK6Widget14getWidgetCacheEv',
+    '_ZN6WidgetC1Ev','_ZNK6Engine8getSpeedEv']};
+  const planner=createCxxQueryPlanner({symbols,classEvidence:{classes:[]},isExecutable:()=>true});
+  const rows=planner.plan('current widget speed');
+  assert.deepEqual(rows.map(r=>r.address),[2n,3n,1n,4n]);
+  assert.deepEqual(rows.find(r=>r.address===2n).methodHits,[]);
+});
+
+
+test('folded positive member symbols from different owners fail closed',()=>{
+  const symbols={funcs:[1n],addrs:[1n,1n],names:['_ZNK6Widget8GetCountEv','_ZNK5Other8GetCountEv']};
+  const planner=createCxxQueryPlanner({symbols,classEvidence:{classes:[]},isExecutable:()=>true});
+  assert.deepEqual(planner.plan('widget count'),[]);
+});
