@@ -30,6 +30,19 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
 // replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
 
+// Publication only: a Pinpoint request must not build an index or reanalyze
+// functions. The existing decompile producer fills the member lattice.
+export function cxxMemberIndexForApp(app) {
+  const backend = app?.backend;
+  const source = backend?.file ?? storeValue(app, 'file');
+  const key = source && (typeof source === 'object' || typeof source === 'function') ? source : backend;
+  const entry = key && SLICE_CXX_PROVIDERS.get(key)?.get(String(storeValue(app, 'sliceIndex') ?? 0));
+  if (!entry || entry.backend !== backend || entry.symbols !== app?.symbols
+    || entry.backendGeneration !== (backend?.gen ?? backend?.analysisEpoch ?? null)
+    || entry.architecture !== (architectureOf(app) ?? 'arm64')) return null;
+  return entry.provider.memberIndex();
+}
+
 function ensureCxxEvidenceProviderForApp(app) {
   const symbols = app?.symbols ?? null;
   const backend = app?.backend ?? null;

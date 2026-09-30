@@ -1706,6 +1706,9 @@ export function proofText(item) {
         (d.fromArgument ? '引数の値を' : '') + '書き込んでいた',
       '-[' + d.className + ' ' + d.sel + '] really does write offset ' + hexOffset(d.offset));
     case 'access-verified':
+      if (d.source === 'cxx') return pick(
+        d.className + ' のこのメンバーへの読み書きを、復元済みの命令情報で確認した',
+        'Recovered instructions access this member of ' + d.className);
       return pick(d.className + ' 自身のメソッド（' + d.sel + '）が、この位置を' +
         [d.loads ? d.loads + ' 回読み' : '', d.stores ? d.stores + ' 回書いて' : '']
           .filter(Boolean).join('、') + 'いるのを命令で確認した',

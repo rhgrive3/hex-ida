@@ -7,6 +7,7 @@ import { VERDICT, verdictRank } from '../evidence.js';
 import { stringLookup } from '../role.js';
 import { makePinpointAnalyzer } from '../ui/pinpoint-runtime.js';
 import { autoAnalyze } from '../auto.js';
+import { cxxMemberIndexForApp } from './query/app-adapter.js';
 
 const SERVICES = new WeakMap();
 const SCHEDULER_PRIORITIES = new Set(['user-blocking', 'user-visible', 'background']);
@@ -206,6 +207,8 @@ function effectiveRankingLimit(options) {
 function pinEvidenceCoverage(context) {
   return {
     fields:context?.fields ?? null,
+    cxxFields:context?.cxxFields ?? null,
+    cxxRevision:context?.cxxRevision ?? 0,
     shapes:context?.shapes ?? null,
     program:context?.program ?? null,
     symbols:context?.symbols ?? null,
@@ -216,6 +219,8 @@ function pinEvidenceCoverage(context) {
 function pinEvidenceCoverageMatches(cached, request) {
   if (!cached || !request) return false;
   return Object.is(cached.fields, request.fields)
+    && Object.is(cached.cxxFields, request.cxxFields)
+    && cached.cxxRevision === request.cxxRevision
     && Object.is(cached.shapes, request.shapes)
     && Object.is(cached.program, request.program)
     && Object.is(cached.symbols, request.symbols)
@@ -262,6 +267,8 @@ function captureAnalysisBinding(app, resolved = {}) {
     symbols,
     symbolsGen,
     fields:resolved.fields ?? app?.fields ?? null,
+    cxxFields:cxxMemberIndexForApp(app),
+    cxxRevision:cxxMemberIndexForApp(app)?.revision ?? 0,
     program,
     programPublished:program != null && app?.program === program,
     programRegionKey:program == null ? null : execRegions(app).map((item) => item.id).join('|'),
@@ -280,6 +287,8 @@ function analysisBindingCurrent(app, binding) {
   const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
   if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
   if (!sameBoundArtifact(binding.fields, app?.fields)) return false;
+  const cxxFields = cxxMemberIndexForApp(app);
+  if (binding.cxxFields !== cxxFields || binding.cxxRevision !== (cxxFields?.revision ?? 0)) return false;
   if (binding.program == null) {
     if (!sameBoundArtifact(binding.program, app?.program)) return false;
   } else {
@@ -665,6 +674,8 @@ export class InvestigationService {
       shapes:binding.shapes,
       symbols:binding.symbols,
       fields:binding.fields,
+      cxxFields:binding.cxxFields,
+      cxxRevision:binding.cxxRevision,
       region:binding.region,
       metadata,
       goal,
@@ -705,6 +716,7 @@ export class InvestigationService {
       const common = {
         goal,
         fields:context.fields,
+        cxxFields:context.cxxFields,
         shapes:context.shapes,
         program:context.program,
         symbols:context.symbols,
@@ -724,7 +736,7 @@ export class InvestigationService {
         try { return await fn(); }
         catch (error) { if (options.signal?.aborted) throw error; return null; }
       };
-      if (context.fields?.classCount) candidate = await attempt(() => pinpointField(common));
+      if (context.fields?.classCount || context.cxxFields?.fieldCount) candidate = await attempt(() => pinpointField(common));
       const undecided = (value) => !value?.top || verdictRank(value.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
       if (undecided(candidate) && (ranked.candidates.length || context.shapes?.size)) {
         const location = await attempt(() => pinpointLocation({ ...common, ranked:ranked.candidates }));
@@ -780,6 +792,7 @@ export class InvestigationService {
       symbols:context.symbols,
       region:context.region,
       fields:context.fields,
+      cxxFields:context.cxxFields,
       shapes:context.shapes,
       recognition,
       analyze:this.#addressAwareAnalyzer(options.signal || null),

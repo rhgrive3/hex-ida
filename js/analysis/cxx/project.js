@@ -34,6 +34,7 @@ import {
   isCanonicalCppVirtualSlotEvidence,
 } from './object-evidence.js';
 import { recoverMemberTypeEvidence } from './member-types.js';
+import { CxxMemberIndex } from './member-index.js';
 import {
   buildCxxClassEvidence,
   vtableEvidenceFor,
@@ -266,6 +267,10 @@ export function createCxxEvidenceProvider(input = {}) {
   let memberFields = 0;
   let typedMemberFields = 0;
   let lastAttempt = null;
+  // Every canonical projection this provider creates is also published into a
+  // member lattice so Pinpoint can enumerate the same proven members without a
+  // second analysis pass. Publication is pure bookkeeping: it reads no bytes.
+  const memberIndex = new CxxMemberIndex();
 
   function producerInput() {
     return {
@@ -407,6 +412,17 @@ export function createCxxEvidenceProvider(input = {}) {
         status: report.status ?? 'verified-cpp-object',
         reason: report.reason ?? null,
       });
+      // Publication must never be able to invalidate an already-proven
+      // projection, so a rejected/duplicate publish is simply a no-op.
+      // A shared slot with contradictory/unknown class names does not prove
+      // one owner. The decompiler's conservative anonymous projection remains
+      // available, but it cannot mint a member of the first table for Pinpoint.
+      const owner = receiver.classIdentity;
+      const publishOwner = owner?.kind === 'named'
+        || (vtables.length === 1 && vtableClassNames.every((name) => !name));
+      if (publishOwner) {
+        try { memberIndex.publish(projection); } catch { /* publication only */ }
+      }
       return bind(projection);
     },
 
@@ -432,6 +448,16 @@ export function createCxxEvidenceProvider(input = {}) {
       return index?.report ?? null;
     },
 
+    /**
+     * The published C++ member lattice for this slice.
+     *
+     * Reading it never builds the index or reanalyzes a function: it is filled
+     * only by projections this provider already produced during decompilation.
+     */
+    memberIndex() {
+      return memberIndex;
+    },
+
     stats() {
       return Object.freeze({
         ready: index != null,
@@ -452,6 +478,7 @@ export function createCxxEvidenceProvider(input = {}) {
       index = null;
       pending = null;
       lastAttempt = null;
+      memberIndex.clear();
     },
   };
 

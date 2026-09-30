@@ -84,7 +84,10 @@ export function narrowedPriorCount(candidates, universe) {
  */
 export function byRecallLane(a, b) {
   return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
-    || (b.fusion.logOdds - a.fusion.logOdds);
+    || (b.fusion.logOdds - a.fusion.logOdds)
+    || (a.source === 'cxx' || b.source === 'cxx'
+      ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+      : 0);
 }
 
 /**
@@ -455,6 +458,7 @@ function shapeMutationSites(shapes, offset) {
 /* Shape sites are only a fallback when the exhaustive batched access scan did
  * not produce a change site. Never replace stronger full-scan evidence. */
 function hydrateShapeChangeSites(pin, opts) {
+  if (pin?.top?.source === 'cxx') return pin;
   if (!pin?.top || opts?.shapes == null || pin.changeSites?.length) return pin;
   const sites = shapeMutationSites(opts.shapes, pin.top.offset);
   if (!sites.length) return pin;

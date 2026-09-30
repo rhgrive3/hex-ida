@@ -315,8 +315,10 @@ export function createCppVirtualSlotEvidence(input = {}) {
  * - `typeProven`: the access shape proves a *type category*. It is false for a
  *   width-only or contradictory access, and a consumer that renders a type must
  *   require it rather than defaulting to one;
- * - the record never carries a field *name*. A proven offset and a proven type
- *   do not make `this->health` correct, so no name is minted here.
+ * - the record never *infers* a field name. A proven offset and a proven type
+ *   do not make `this->health` correct, so no name is minted here. A producer
+ *   that already owns the name may supply `memberName`; it is carried through
+ *   verbatim and is null otherwise.
  *
  * `receiverDigest` and `functionId` bind the member to the exact receiver
  * evidence it was derived from, so a member set cannot be replayed against
@@ -333,6 +335,11 @@ export function createCppMemberEvidence(input = {}) {
 
   const snapshotId = typeof input.snapshotId === 'string' && input.snapshotId.trim()
     ? input.snapshotId.trim() : fail('cpp-member-snapshot-id-required');
+
+  // An optional producer-supplied name is carried through verbatim. It is never
+  // derived from the offset/type, and a blank value is the same as no name.
+  const memberName = typeof input.memberName === 'string' && input.memberName.trim()
+    ? input.memberName.trim() : null;
 
   // A member without a location cannot be binary-grounded, and `nonNegativeBigInt`
   // returns null rather than throwing for a missing value, so an absent offset
@@ -375,13 +382,14 @@ export function createCppMemberEvidence(input = {}) {
     functionId,
     receiverDigest,
     snapshotId,
+    memberName,
     offsetBytes,
     sizeBytes,
     accessProven: true,
     typeProven,
     category,
     typeLabel,
-    signedness: input.signedness ? String(input.signedness) : null,
+    signedness: input.signedness === false ? 'false' : input.signedness ? String(input.signedness) : null,
     categoryCandidates: Array.isArray(input.categoryCandidates)
       ? Object.freeze([...new Set(input.categoryCandidates.map(String))].sort())
       : Object.freeze([]),
@@ -402,7 +410,7 @@ export function createCppMemberEvidence(input = {}) {
 /**
  * Parses C++ function symbol and determines member role and class identity.
  */
-function analyzeFunctionSymbol(name, rawMangled = null) {
+export function analyzeFunctionSymbol(name, rawMangled = null) {
   const sym = rawMangled || name;
   if (!sym || typeof sym !== 'string') return { isCxx: false, reason: 'no-symbol' };
 
