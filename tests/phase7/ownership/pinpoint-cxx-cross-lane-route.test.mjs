@@ -53,6 +53,20 @@ test('C++ publication route rejects undeclared owners, lookalike branches, and f
   assert.throws(() => validateCrossLaneInventory(branch, foreign), /no Phase 7-owned paths/);
 });
 
+test('real-game integration declares evaluation paths exactly and rejects unrelated source or reports', () => {
+  const integration = 'integration/jev-realgame-final';
+  const actual = [...owned, ...CROSS_LANE_ROUTES[integration]];
+  assert.ok(validateCrossLaneInventory(integration, actual).length > 0);
+  for (const path of ['js/decompiler/semantic-core.js','reports/investigations/jev-realgame-final/unreviewed.json','scripts/unreviewed.mjs']) {
+    assert.throws(() => validateCrossLaneInventory(integration,[...actual,path]), /unexpected foreign paths/);
+  }
+  assert.throws(() => validateCrossLaneInventory(`${integration}-extra`,actual),/no exact Phase 7/);
+  for (const file of ['.circleci/config.yml','.github/workflows/phase7-ownership.yml']) {
+    const source = readFileSync(new URL(`../../../${file}`,import.meta.url),'utf8');
+    assert.ok(source.includes(integration));
+  }
+});
+
 function routeBlock(file, start, end) {
   const text = readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
   const first = text.indexOf(start);

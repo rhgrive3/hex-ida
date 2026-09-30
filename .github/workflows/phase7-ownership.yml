@@ -274,6 +274,12 @@ jobs:
               --base-sha "$BASE_SHA" \
               --head-sha "$HEAD_SHA")"
             node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "integration/jev-realgame-final" ]]; then
+            FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+              --branch "$HEAD_REF" \
+              --base-sha "$BASE_SHA" \
+              --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
           elif [[ "$HEAD_REF" == "codex/agy-issue-followup-20260918" ]]; then
             # The agy follow-up combines Phase 7 analysis with multiple
             # independently-owned issue fixes. Enumerate every foreign path

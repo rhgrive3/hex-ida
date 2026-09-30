@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { requestBody, structuralMatch, funnel, verifyCases, sha256, CASE_HASH } from '../scripts/jev-realgame-final-contract.mjs';
+import { requestBody, structuralMatch, funnel, verifyCases, sha256, CASE_HASH, evidenceJSON } from '../scripts/jev-realgame-final-contract.mjs';
 import { RealGameJevClient, validateChoice } from '../scripts/jev-realgame-final-client.mjs';
 import { rerankWithJev, jevShortlist } from '../js/pinpoint.js';
 
@@ -13,6 +13,14 @@ const gold = { status: 'verified', semanticLabel: 'Vehicle.cur_speed', identitie
   { binarySha256: 'binary-a', className: 'Vehicle', offset: 306, size: 2, type: 'uint16_t', allowedCategories: ['int16'] },
 ] };
 const response = choice => ({ model: 'openjev', answers: { pick: { type: 'choice', choice, confidence: .8, probabilities: { [choice]: .8 } }, unique: { type: 'noul', noul: .5 } } });
+
+test('canonical BigInt addresses survive snapshot serialization without precision loss', () => {
+  const address = 0xffffffffffffffffn;
+  const decoded = JSON.parse(evidenceJSON({ classIdentity: { vtableAddress: address, offsetToTop: 0n }, offset: 306 }));
+  assert.equal(decoded.classIdentity.vtableAddress,'18446744073709551615');
+  assert.equal(BigInt(decoded.classIdentity.vtableAddress),address);
+  assert.equal(decoded.offset,306);
+});
 
 test('anonymous scoring uses exact build/class/offset/width and verified type, never semantic names', () => {
   const c = member('anon');

@@ -8,6 +8,7 @@ export const CASE_HASH = '05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055c
 export const ARMS = ['current', 'B', 'C', 'D'];
 export const PICK_INSTRUCTION = 'Pick the existing field most likely to be the remembered target of the user phrase. This is a forced ranking preference, not proof. Use only listed candidate IDs.';
 export const UNIQUE_INSTRUCTION = 'Does the user phrase uniquely identify one of these candidates without additional context?';
+export const evidenceJSON = value => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? String(item) : item, 2);
 
 export function persistentWrite(file, value) {
   const dir = path.dirname(path.resolve(file));
@@ -17,7 +18,7 @@ export function persistentWrite(file, value) {
   fs.mkdirSync(dir, { recursive: true });
   if (!fs.realpathSync(dir).startsWith('/mnt/workspace/')) throw new Error('persistent storage required');
   const pending = `${file}.pending-${process.pid}`;
-  fs.writeFileSync(pending, typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+  fs.writeFileSync(pending, typeof value === 'string' ? value : `${evidenceJSON(value)}\n`, { flag: 'wx' });
   fs.renameSync(pending, file);
 }
 
