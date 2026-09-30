@@ -6,6 +6,7 @@ import { RealGameJevClient } from './jev-realgame-final-client.mjs';
 import { stablePick, comparisonPool, stabilityRequestBody } from './jev-realgame-stability-contract.mjs';
 import { structuralMatch, funnel, persistentWrite, sha256, percentiles } from './jev-realgame-final-contract.mjs';
 import { summarize } from './evaluate-jev-realgame-final.mjs';
+import { assertStabilityExecution } from './jev-stability-execution-guard.mjs';
 
 export const STABILITY_ARMS = ['A', 'R1', 'current', 'E', 'E2', 'G', 'ADVISORY'];
 const root = new URL('../reports/investigations/jev-realgame-final/stability-v2/', import.meta.url);
@@ -51,6 +52,7 @@ async function main() {
     || policy.rankingSourceSha256 !== sha256(fs.readFileSync(new URL('../js/analysis/query/cxx-semantic-preference.js', import.meta.url)))
     || policy.routerSourceSha256 !== sha256(fs.readFileSync(new URL('../js/pinpoint.js', import.meta.url)))) throw new Error('frozen V2 implementation binding');
   const snapshots = ['openttd', 'openmw'].map(game => JSON.parse(fs.readFileSync(path.join(snapshotsDir, `${game}.json`))));
+  const execution = assertStabilityExecution({ snapshots });
   if (new Set(snapshots.map(s => s.productSha)).size !== 1) throw new Error('mixed product');
   for (const s of snapshots) {
     if (!s.complete || s.policySha256 !== sha256(policyBytes)) throw new Error('collection binding');
@@ -59,7 +61,8 @@ async function main() {
   const inputs = new Map(snapshots.flatMap(s => s.rows.map(row => [row.id, row])));
   if (inputs.size !== cases.length) throw new Error('incomplete case inventory');
   const clients = Object.fromEntries(['current', 'E', 'E2', 'G'].map(arm => [arm, new RealGameJevClient({ apiKey: process.env.OPENJEV_API_KEY,
-    arm: arm === 'G' ? 'E2' : arm, requestBuilder: stabilityRequestBody, maxAttempts: 1 })]));
+    arm: arm === 'G' ? 'E2' : arm, requestBuilder: stabilityRequestBody, maxAttempts: execution.maxAttempts,
+    timeoutMs: execution.totalTimeoutMs })]));
   const rows = [];
   for (const gold of cases) {
     const input = inputs.get(gold.id);
@@ -103,6 +106,7 @@ async function main() {
   }
   const controls = controlsFile ? JSON.parse(fs.readFileSync(controlsFile)) : null;
   const summary = stabilitySummary(rows, snapshots, policyBytes, casesBytes, controls);
+  summary.executionFreezeSha256 = sha256(fs.readFileSync(new URL('execution-freeze.json', root)));
   summary.snapshotHashes = Object.fromEntries(['openttd', 'openmw'].map(game => [game, sha256(fs.readFileSync(path.join(snapshotsDir, `${game}.json`)))]));
   summary.controlsSha256 = controlsFile ? sha256(fs.readFileSync(controlsFile)) : null;
   persistentWrite(path.join(outputDir, 'summary.json'), summary);

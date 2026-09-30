@@ -10,6 +10,7 @@ import { validateChoice } from './jev-realgame-final-client.mjs';
 import { structuralMatch, funnel, sha256 } from './jev-realgame-final-contract.mjs';
 import { jevShortlist } from '../js/pinpoint.js';
 import { stabilitySummary } from './evaluate-jev-realgame-stability.mjs';
+import { assertStabilityExecution } from './jev-stability-execution-guard.mjs';
 
 export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, rows, summary, controls }) {
   const cases = JSON.parse(casesBytes), policy = JSON.parse(policyBytes);
@@ -101,6 +102,7 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
     && ['openttd', 'openmw'].every(g => summary.perGameVsR1[g].E2.net >= 2);
   const selective = safe('G') && ['openttd', 'openmw'].every(g => summary.perGameVsR1[g].G.net >= 1);
   const advisory = summary.vsR1.E2.rescue >= 1 && rows.every(r => r.arms.ADVISORY.repeatedKeys.every(k => k === r.arms.R1.key))
+    && summary.summaries.ADVISORY.regression === summary.summaries.R1.regression
     && controls != null && controls.rows.every(r => r.committedCorrect === r.total);
   assert.equal(summary.finalPolicy, defaultOn ? 'DEFAULT_ON' : selective ? 'SELECTIVE_DEFAULT_ON' : advisory ? 'OPTIONAL_ADVISORY' : 'NO_GO');
   return { valid: true, cases: cases.length, verified: cases.filter(c => c.status === 'verified').length, calls, finalPolicy: summary.finalPolicy };
@@ -114,6 +116,8 @@ function main() {
     const bytes = readJevEvidence(path.join(snapshotsDir, `${game}.json`)); assert.equal(sha256(bytes), summary.snapshotHashes[game]); return JSON.parse(bytes);
   });
   const casesBytes = fs.readFileSync(new URL('structural-cases.json', root)), policyBytes = fs.readFileSync(new URL('policy-freeze.json', root));
+  assertStabilityExecution({ snapshots });
+  assert.equal(summary.executionFreezeSha256, sha256(fs.readFileSync(new URL('execution-freeze.json', root))));
   assert.equal(sha256(casesBytes), summary.caseSha256); assert.equal(sha256(policyBytes), summary.policySha256);
   const controls = controlsFile ? JSON.parse(fs.readFileSync(controlsFile)) : null;
   assert.equal(summary.controlsSha256, controlsFile ? sha256(fs.readFileSync(controlsFile)) : null);
