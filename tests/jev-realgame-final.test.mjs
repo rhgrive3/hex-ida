@@ -193,7 +193,7 @@ test('recovery replay rejects gold, build, candidate selection and oracle payloa
       [game,Object.fromEntries(['A','DET','B','E'].map(a=>[a,summarize(rows.filter(r=>r.binary===game),a)]))]))};
   const original={caseBytes,policyBytes,snapshots,rows,summary};
   assert.deepEqual(verifyRecoveryEvidence(original),{cases:1,verified:1,calls:2,valid:true});
-  for(const mutate of [v=>{v.snapshots[0].binarySha256='other';},v=>{v.rows[0].gold.identities[0].offset++;},
+  for(const mutate of [v=>{v.snapshots[0].policySha256='unfrozen-collection';},v=>{v.snapshots[0].binarySha256='other';},v=>{v.rows[0].gold.identities[0].offset++;},
     v=>{v.rows[0].arms.E.calls[0].criteria.c0='Vehicle.cur_speed';},
     v=>{v.rows[0].arms.E.calls[0].selectedKey='invented';},v=>{v.summary.summaries.E.top1++;},
     v=>{v.snapshots[0].sourceHashes['js/analysis/cxx/query-recovery.js']='drift';v.summary.sourceHashes['js/analysis/cxx/query-recovery.js']='drift';},

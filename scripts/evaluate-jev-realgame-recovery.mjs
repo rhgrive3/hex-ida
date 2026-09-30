@@ -22,9 +22,11 @@ const inputs=new Map(snapshots.flatMap(s=>s.rows.map(r=>[r.id,r])));
 if(inputs.size!==cases.length||new Set(snapshots.map(s=>s.productSha)).size!==1)throw new Error('recovery snapshot case/product binding');
 for(const s of snapshots) {
   // Collection has one frozen policy; archived development arms differ only at evaluation.
-  const collectionPolicy=fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/recovery-policy-freeze.json',import.meta.url));
-  if(JSON.stringify(JSON.parse(collectionPolicy).collection)!==JSON.stringify(policy.collection)
-    ||!s.complete||s.policySha256!==sha256(collectionPolicy))throw new Error('collection policy binding');
+  const collectionPolicy=['recovery-policy-freeze.json','recovery-policy-freeze-development.json']
+    .map(file=>fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/'+file,import.meta.url)))
+    .find(bytes=>sha256(bytes)===s.policySha256);
+  if(!collectionPolicy||JSON.stringify(JSON.parse(collectionPolicy).collection)!==JSON.stringify(policy.collection)
+    ||!s.complete)throw new Error('collection policy binding');
   for(const [file,hash] of Object.entries(s.sourceHashes))if(sha256(fs.readFileSync(new URL(`../${file}`,import.meta.url)))!==hash)throw new Error('source hash binding');
 }
 const callArms=policy.arms.filter(a=>['current','B','E'].includes(a));
