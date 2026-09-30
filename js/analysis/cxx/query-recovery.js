@@ -9,7 +9,21 @@ export function cxxQueryTokens(text) {
   return [...new Set(words.filter(w=>w.length>1&&!STOP.has(w)).map(w=>w.length>4&&w.endsWith('s')&&!w.endsWith('ss')?w.slice(0,-1):w))];
 }
 
-export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false}={}) {
+// Keep the published V2 tokenizer stable for historical replay. Recovery V3
+// also separates acronym boundaries in release symbols (SDLDevice -> SDL Device).
+export function cxxRecoveryTokens(text) {
+  return cxxQueryTokens(String(text??'').replace(/([A-Z]+)([A-Z][a-z])/g,'$1 $2'));
+}
+
+export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false,planningPolicy='legacy'}={}) {
+  if(!['legacy','value-accessor-v3'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
+  const valueAccessors=planningPolicy==='value-accessor-v3';
+  const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
+  const extentFor=address=>{
+    if(!valueAccessors)return null;
+    const end=symbols?.declaredFunctionEnd?.(address);
+    return typeof end==='bigint'&&end>address?end-address:null;
+  };
   const starts=new Set(Array.from(symbols?.funcs??[],String));
   const primaryOwnerFor=createPrimaryOwnerResolver(classEvidence?.classes??[]);
   const owners=new Map();
@@ -35,7 +49,8 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
     const row={address:BigInt(address),className,methodName:info.methodName??'',symbolName:symbols.names[i],
       proof:declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
-      classTokens:cxxQueryTokens(className),methodTokens:info.isConstructor||info.isDestructor?[]:cxxQueryTokens(info.methodName)};
+      classTokens:tokensFor(className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(info.methodName),
+      declaredSizeBytes:extentFor(BigInt(address))};
     const previous=records.get(String(address));
     if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
     records.set(String(address),row);
@@ -44,23 +59,38 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
   for(const [key,names] of owners) {
     if(records.has(key)||blocked.has(key)||names.size!==1||!isExecutable(BigInt(key)))continue;
     const className=[...names][0];records.set(key,{address:BigInt(key),className,methodName:'',symbolName:null,
-      proof:'unique-vtable-owner',classTokens:cxxQueryTokens(className),methodTokens:[]});
+      proof:'unique-vtable-owner',classTokens:tokensFor(className),methodTokens:[],declaredSizeBytes:extentFor(BigInt(key))});
   }
   const rows=[...records.values()].map(row=>Object.freeze({...row,
     classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}));
   const scoreRows=phrase=>{
-    const tokens=new Set(cxxQueryTokens(phrase));
+    const tokens=new Set(tokensFor(phrase));
     return rows.map(row=>{
       const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
       const leaf=row.className.split('::').at(-1);
-      const exactObject=cxxQueryTokens(leaf).length===1&&tokens.has(leaf.toLowerCase());
+      const exactObject=tokensFor(leaf).length===1&&tokens.has(leaf.toLowerCase());
       return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
         specificity:classHits.length/Math.max(1,row.classTokens.length)};
-    }).sort((a,b)=>b.score-a.score||b.specificity-a.specificity
-      ||b.methodHits.length-a.methodHits.length||(a.address<b.address?-1:a.address>b.address?1:0));
+    }).sort((a,b)=>{
+      const score=b.score-a.score;
+      if(score)return score;
+      const method=b.methodHits.length-a.methodHits.length;
+      const owner=b.specificity-a.specificity;
+      const relevance=valueAccessors?method||owner:owner||method;
+      if(relevance)return relevance;
+      // A smaller independently declared extent is cheaper to attempt. Unknown
+      // or large functions stay eligible; this is scheduling, never ownership.
+      if(valueAccessors&&a.declaredSizeBytes!==b.declaredSizeBytes) {
+        if(a.declaredSizeBytes==null)return 1;
+        if(b.declaredSizeBytes==null)return -1;
+        return a.declaredSizeBytes<b.declaredSizeBytes?-1:1;
+      }
+      return a.address<b.address?-1:a.address>b.address?1:0;
+    });
   };
   return Object.freeze({
     functionCount:rows.length,
+    planningPolicy,
     // Existing release functions only. Round-robin owners prevent one large
     // class from consuming the external selector's entire 255-choice budget.
     choices(phrase,{maxChoices=255}={}) {

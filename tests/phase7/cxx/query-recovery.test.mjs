@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCxxQueryPlanner,recoverCxxQueryMembers,cxxRecoveryMadeProgress} from '../../../js/analysis/cxx/query-recovery.js';
+import {createCxxQueryPlanner,recoverCxxQueryMembers,cxxRecoveryMadeProgress,cxxQueryTokens,cxxRecoveryTokens} from '../../../js/analysis/cxx/query-recovery.js';
 
 test('query plans use release symbol evidence, reject static/ambiguous owners, and bound matching functions',()=>{
   const symbols={funcs:[1n,2n,3n,4n,5n],addrs:[1n,2n,3n,4n,5n],names:[
@@ -54,4 +54,21 @@ test('folded positive member symbols from different owners fail closed',()=>{
   const symbols={funcs:[1n],addrs:[1n,1n],names:['_ZNK6Widget8GetCountEv','_ZNK5Other8GetCountEv']};
   const planner=createCxxQueryPlanner({symbols,classEvidence:{classes:[]},isExecutable:()=>true});
   assert.deepEqual(planner.plan('widget count'),[]);
+});
+
+test('V3 scheduling prioritizes requested accessors and declared extent without changing eligibility or legacy replay',()=>{
+  const symbols={funcs:[1n,2n,3n,4n,5n],addrs:[1n,2n,3n,4n,5n],names:[
+    '_ZNK6Person5beginEv','_ZNK9UserStats10getCreditsEv','_ZNK9UserStats11readCreditsEv',
+    '_ZNK9UserStats12countCreditsEv','_ZNK9UserStats12checkCreditsEv'],
+    declaredFunctionEnd:a=>a===2n?1002n:a===3n?13n:a===5n?25n:null};
+  const legacy=createCxxQueryPlanner({symbols,isExecutable:()=>true});
+  const v3=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'value-accessor-v3'});
+  const phrase='person credits';
+  assert.deepEqual(legacy.plan(phrase).map(r=>r.address),[1n,2n,3n,4n,5n]);
+  assert.deepEqual(v3.plan(phrase).map(r=>r.address),[3n,5n,2n,4n,1n]);
+  assert.deepEqual(new Set(v3.plan(phrase).map(r=>r.address)),new Set(legacy.plan(phrase).map(r=>r.address)));
+  assert.equal(v3.plan(phrase).find(r=>r.address===2n).declaredSizeBytes,1000n);
+  assert.throws(()=>createCxxQueryPlanner({planningPolicy:'oracle'}),/unknown/);
+  assert.deepEqual(cxxQueryTokens('SDLDeviceManager'),['sdldevice','manager']);
+  assert.deepEqual(cxxRecoveryTokens('SDLDeviceManager'),['sdl','device','manager']);
 });

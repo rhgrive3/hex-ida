@@ -13,7 +13,7 @@ import {recoverySnapshot} from './jev-realgame-recovery-contract.mjs';
 import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
 const [binaryPath,queriesFile,selectionFile,destination,arm]=process.argv.slice(2);
-if(!binaryPath||!queriesFile||!selectionFile||!destination||!['hex','jev-retrieval'].includes(arm))throw new Error('usage: BINARY PLAIN_QUERIES SELECTION OUTPUT ARM');
+if(!binaryPath||!queriesFile||!selectionFile||!destination||!['hex','hex-value','jev-retrieval'].includes(arm))throw new Error('usage: BINARY PLAIN_QUERIES SELECTION OUTPUT ARM');
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
 if(manifest.binarySha256!==binarySha256||!manifest.binaryKey||!Array.isArray(manifest.cases)||!manifest.cases.length
@@ -49,6 +49,7 @@ try {
     }};
     const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,
       jevRetrieval:arm==='jev-retrieval',jevClient:replayClient,
+      planningPolicy:arm==='hex-value'?'value-accessor-v3':'legacy',
       maxFunctions:policy.collection.maxFunctionsPerQuery,maxElapsedMs:policy.collection.maxElapsedMs});
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
     const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});

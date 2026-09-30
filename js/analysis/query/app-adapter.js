@@ -52,9 +52,10 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   };
   checkBinding();
   let cached=CXX_QUERY_PLANNERS.get(entry.provider);
-  if (!cached || cached.symbolsGen!==app.symbols.gen) {
+  const planningPolicy=options.planningPolicy??'legacy';
+  if (!cached || cached.symbolsGen!==app.symbols.gen || cached.planner.planningPolicy!==planningPolicy) {
     const planner=createCxxQueryPlanner({symbols:app.symbols,classEvidence:entry.provider.classEvidence(),
-      isExecutable:address=>Boolean(app.executableRegionFor?.(address))});
+      isExecutable:address=>Boolean(app.executableRegionFor?.(address)),planningPolicy});
     cached={symbolsGen:app.symbols.gen,planner};CXX_QUERY_PLANNERS.set(entry.provider,cached);
   }
   const maxFunctions=options.maxFunctions??8;
