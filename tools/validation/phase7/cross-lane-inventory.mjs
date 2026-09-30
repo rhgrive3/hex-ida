@@ -23,6 +23,19 @@ const AGY_ISSUE_FOLLOWUP_LANE = 'codex/agy-issue-followup-20260918';
 // Each route fails closed on any undeclared foreign path before projecting the
 // Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  // Canonical C++ publication crosses the analysis, Pinpoint, and UI owners.
+  // Keep the foreign surface exact; the Phase 7 manifest remains unchanged.
+  "fix/pinpoint-cxx-member-candidates": Object.freeze([
+    ".circleci/config.yml",
+    "js/auto.js",
+    "js/narrate.js",
+    "js/panels-base.js",
+    "js/pinpoint-fields.js",
+    "js/pinpoint-legacy.js",
+    "js/pinpoint.js",
+    "reports/investigations/pinpoint-cxx-member-candidates/README.md",
+    "scripts/validate-pinpoint-cxx-members.mjs",
+  ]),
   "perf/index-repeated-semantic-lookups": Object.freeze([
     ".circleci/config.yml",
     "js/decompiler/ast/nodes.js",
