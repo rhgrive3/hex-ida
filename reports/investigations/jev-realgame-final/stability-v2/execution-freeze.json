@@ -6,7 +6,7 @@
   "policySha256": "a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59",
   "sourceHashes": {
     "scripts/evaluate-jev-realgame-stability.mjs": "1373e5e34a19e049a6eead3453d294b21538c3ed1fb7cde0f9935270d3fbe19e",
-    "scripts/verify-jev-realgame-stability.mjs": "5f9d433856f3f7e0675ec354f177ce2234c3fff82a67b4a7c0ca047df53a5f04",
+    "scripts/verify-jev-realgame-stability.mjs": "e7bd8cc27e8bf446db999b0f067452eb14f9e05bdd576ddfd334f0684dcdeeff",
     "scripts/run-jev-stability-controls.mjs": "ca4ea6fec73659e6d922451abedc3b840326df86eefc854ddf99aca070d7d265",
     "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
     "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07"
@@ -15,5 +15,13 @@
   "totalTimeoutMs": 15000,
   "primaryRepeat": 0,
   "repeats": 3,
-  "controlRepeats": 5
+  "controlRepeats": 5,
+  "verifierHardeningBeforeFinalEvaluation": {
+    "atUtc": "2026-09-30T17:55:43.845763+00:00",
+    "priorVerifierSha256": "5f9d433856f3f7e0675ec354f177ce2234c3fff82a67b4a7c0ca047df53a5f04",
+    "changes": "require source binding, replay latency/verdict/recovery, independently rebuild unchanged frozen decision criteria",
+    "finalHoldoutCallsBeforeChange": 0,
+    "controlCallsAlreadyCompleted": 15,
+    "promptAndCriteriaChanged": false
+  }
 }

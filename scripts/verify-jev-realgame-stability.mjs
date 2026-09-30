@@ -17,15 +17,21 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
   assert.equal(cases.length, 50); assert.equal(inputs.size, cases.length); assert.equal(rows.length, cases.length);
   assert.equal(new Set(cases.map(c => c.id)).size, cases.length); assert.equal(new Set(rows.map(c => c.id)).size, cases.length);
   for (const snapshot of snapshots) {
+    assert.match(snapshot.productSha, /^[0-9a-f]{40}$/);
     assert.equal(snapshot.complete, true); assert.equal(snapshot.productSha, summary.productSha);
     assert.equal(snapshot.policySha256, sha256(policyBytes)); assert.equal(snapshot.collection.keyCollisions, 0);
     assert.deepEqual(snapshot.sourceHashes, summary.sourceHashes);
+    for (const file of ['scripts/collect-jev-realgame-stability.mjs', 'scripts/jev-realgame-stability-contract.mjs',
+      'js/pinpoint.js', 'js/analysis/query/cxx-semantic-preference.js', 'js/analysis/cxx/object-evidence.js'])
+      assert.match(snapshot.sourceHashes[file] ?? '', /^[0-9a-f]{64}$/, 'missing source binding');
     for (const [file, hash] of Object.entries(snapshot.sourceHashes)) assert.equal(sha256(fs.readFileSync(new URL('../' + file, import.meta.url))), hash, `current source drift: ${file}`);
   }
   let calls = 0;
   for (const gold of cases) {
     const input = inputs.get(gold.id), row = rows.find(r => r.id === gold.id), verified = gold.status === 'verified';
     assert.equal(input.query, gold.query); assert.equal(row.query, gold.query); assert.equal(input.binary, gold.binary);
+    assert.equal(row.verdict, input.verdict); assert.equal(row.hexLatencyMs, input.hexLatencyMs);
+    assert.equal(row.preferenceLatencyMs, input.preferenceLatencyMs); assert.deepEqual(row.recovery, input.recovery);
     assert.deepEqual(row.gold, gold); assert.equal(row.status, gold.status);
     assert.ok(input.recovery.attempted.length <= policy.collection.maxFunctionsPerQuery);
     assert.equal(new Set(input.candidates.map(c => c.key)).size, input.candidates.length);
@@ -79,6 +85,23 @@ export function verifyStabilityEvidence({ casesBytes, policyBytes, snapshots, ro
   }
   const replay = stabilitySummary(rows, snapshots, policyBytes, casesBytes, controls);
   for (const [key, value] of Object.entries(replay)) assert.deepEqual(summary[key], value, `aggregate drift: ${key}`);
+  // Independently recompute promotion, rather than trusting the live runner's
+  // decision field or its aggregation function to enforce the safety bars.
+  const cxxCorrect = rows.filter(r => r.arms.R1.correct).length;
+  const baselineCases = cxxCorrect + (controls?.rows.filter(r => r.baselineCorrect).length ?? 0);
+  const preserved = arm => rows.every(r => !r.arms.R1.correct || r.arms[arm].repeatedCorrect.every(Boolean));
+  const safe = arm => summary.vsR1[arm].regression === 0 && preserved(arm)
+    && summary.vsR1[arm].unsafeConfident === 0 && summary.vsR1[arm].falseStrong === 0
+    && baselineCases >= 15 && cxxCorrect >= 5
+    && summary.vsR1[arm].apiAddedLatency.p95 != null && summary.vsR1[arm].apiAddedLatency.p95 <= 1000
+    && summary.vsR1[arm].apiErrorRate != null && summary.vsR1[arm].apiErrorRate <= .05
+    && controls != null && controls.rows.every(r => !r.baselineCorrect || r.rawCorrect === r.total);
+  const defaultOn = safe('E2') && summary.summaries.E2.latticeRecall >= .5
+    && ['openttd', 'openmw'].every(g => summary.perGameVsR1[g].E2.net >= 2);
+  const selective = safe('G') && ['openttd', 'openmw'].every(g => summary.perGameVsR1[g].G.net >= 1);
+  const advisory = summary.vsR1.E2.rescue >= 1 && rows.every(r => r.arms.ADVISORY.repeatedKeys.every(k => k === r.arms.R1.key))
+    && controls != null && controls.rows.every(r => r.committedCorrect === r.total);
+  assert.equal(summary.finalPolicy, defaultOn ? 'DEFAULT_ON' : selective ? 'SELECTIVE_DEFAULT_ON' : advisory ? 'OPTIONAL_ADVISORY' : 'NO_GO');
   return { valid: true, cases: cases.length, verified: cases.filter(c => c.status === 'verified').length, calls, finalPolicy: summary.finalPolicy };
 }
 
