@@ -1,22 +1,24 @@
 #!/usr/bin/env node
-// Read-only release-only diagnosis. This is never accuracy/passing evidence.
-import fs from 'node:fs';
-import {openProduct} from '../tools/validation/public-benchmark/product-host.mjs';
-import {recoverCxxMembersForQuery} from '../js/analysis/query/app-adapter.js';
-const [binary,manifestFile]=process.argv.slice(2);
-const manifest=JSON.parse(fs.readFileSync(manifestFile));
-const c=manifest.cases[0];
-console.log(JSON.stringify({phase:'opening',id:c.id,query:c.query}));
-const product=await openProduct(binary);
-console.log(JSON.stringify({phase:'opened',profile:product.profile}));
-const api=product.app.analysisQueries,original=api.decompile.bind(api);
-api.decompile=async(snapshot,address,options)=>{
-  console.log(JSON.stringify({phase:'function-start',address:String(address),name:product.app.symbols.nameAt(address),options}));
-  const start=performance.now();const result=await original(snapshot,address,options);
-  console.log(JSON.stringify({phase:'function-end',address:String(address),elapsedMs:performance.now()-start}));
-  return result;
+// Transparent telemetry around the actual blind collector. Diagnosis only;
+// no oracle input, policy change, alternate engine or passing accuracy claim.
+import {AnalysisQueryAPI} from '../js/analysis/query/api.js';
+import {CxxMemberIndex} from '../js/analysis/cxx/member-index.js';
+const emit=value=>console.log(JSON.stringify({diagnostic:true,...value}));
+for(const method of ['snapshot','decompile']) {
+  const original=AnalysisQueryAPI.prototype[method];
+  AnalysisQueryAPI.prototype[method]=async function(...args) {
+    const address=method==='decompile'?String(args[1]):null;
+    emit({phase:method+'-start',address});const start=performance.now();
+    try {return await original.apply(this,args);}
+    finally {emit({phase:method+'-end',address,elapsedMs:performance.now()-start});}
+  };
+}
+const publish=CxxMemberIndex.prototype.publish;
+CxxMemberIndex.prototype.publish=function(projection) {
+  emit({phase:'publication-start',functionId:projection?.functionId});
+  const result=publish.call(this,projection);
+  emit({phase:'publication-end',fields:this.fieldCount});return result;
 };
-try {
-  const result=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,maxFunctions:8,maxElapsedMs:15000});
-  console.log(JSON.stringify({phase:'query-end',status:result.status,elapsedMs:result.elapsedMs,attempted:result.attempted.length}));
-} finally {await product.close();}
+emit({phase:'collector-start'});
+await import('./collect-jev-realgame-recovery.mjs');
+emit({phase:'collector-end'});
