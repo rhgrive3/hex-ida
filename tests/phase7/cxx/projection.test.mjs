@@ -216,6 +216,27 @@ test('a conflicting member symbol cannot type a shared vtable target', () => {
   assert.equal(report.receiver.classIdentity.className, null);
 });
 
+test('publication withholds members of a function shared by contradictory vtable owners', async () => {
+  const probe = await rttiProbe();
+  const original = providerFor(probe);
+  await original.build();
+  const report = original.classEvidence();
+  const player = report.classes.find((cls) => cls.className === 'Player');
+  assert.ok(player);
+  // Model linker identical-code folding: another class points at the same
+  // implementation. Its offset accesses do not establish either owner.
+  const folded = { ...player, className: 'Unrelated', vtableAddress: player.vtableAddress + 0x100000n };
+  const provider = providerFor(probe, { cache: { get: async () => ({ ...report, classes: [player, folded] }) } });
+  await provider.build();
+  const projection = provider.projectForFunction({
+    functionAddress: symbolAddress(probe, '_ZN6Player10takeDamageEi'),
+    ir: memberIr([{ offset: 8, size: 4 }]),
+  });
+  assert.ok(projection?.members.length, 'the existing decompiler projection is preserved');
+  assert.equal(projection.receiver.classIdentity.kind, 'anonymous');
+  assert.equal(provider.memberIndex().fieldCount, 0, 'ambiguous ownership cannot publish a field');
+});
+
 test('a constructor projects evidence from symbol syntax without a vtable slot', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);

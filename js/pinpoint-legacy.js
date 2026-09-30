@@ -35,6 +35,7 @@ import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, e
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
+import { isCxxMemberField } from './analysis/cxx/member-index.js';
 import { vendorsOf, vendorOf, vendorConflicts } from './vendors.js';
 import { evidenceFor as shapeEvidenceFor, byGoal as shapesByGoal } from './shapes.js';
 import { describePurpose, changeAt } from './purpose.js';
@@ -73,7 +74,10 @@ const MAX_LEXICAL_RESCUE = 64;
  * recall lane が無い通常時は、従来どおり fusion だけで並ぶ。
  */
 const byRecallLane = (a, b) => ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
-  || (b.fusion.logOdds - a.fusion.logOdds);
+  || (b.fusion.logOdds - a.fusion.logOdds)
+  || (a.source === 'cxx' || b.source === 'cxx'
+    ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+    : 0);
 const VERIFY_ROUND = 4;          // 1 巡で逆アセンブルする候補の数
 const MAX_ROUNDS = 3;            // 決着が付くまで、最大この回数まで粘る
 /*
@@ -143,12 +147,14 @@ export async function pinpointField(opts) {
     const ctx = classContext(cls, goal, categoryOf, classStringHits, vendors);
     for (const iv of cls.ivars || []) {
       universe++;
-      const nameHit = matchField(goal, iv.name);
+      const cxx = isCxxMemberField(iv, cls);
+      if ((cls.source === 'cxx' || iv.source === 'cxx') && !cxx) continue;
+      const nameHit = cxx && iv.anonymous ? null : matchField(goal, iv.name);
       const propHit = iv.property ? matchField(goal, iv.property.name) : null;
       const fit = typeFits(goal, iv.type);
-      if (fit === 'conflict' && !nameHit && !propHit) continue;
+      if (!cxx && fit === 'conflict' && !nameHit && !propHit) continue;
       // 名前も当たらず、クラスの担当も違うなら、証拠が 1 つもないので候補にしない
-      if (!nameHit && !propHit && !ctx.categoryHit && !ctx.nameHit) continue;
+      if (!cxx && !nameHit && !propHit && !ctx.categoryHit && !ctx.nameHit) continue;
       raw.push({ cls, iv, nameHit, fit, ctx });
     }
   }
@@ -204,7 +210,14 @@ export async function pinpointField(opts) {
     asked = candidates.filter((c) => c.askedBySequence || c.askedByWords);
   }
   const narrowed = asked.length > 0 && asked.length < candidates.length;
-  if (asked.length) candidates = asked;
+  if (asked.length) {
+    const keys = new Set(asked.map((c) => c.key));
+    // Anonymous C++ fields keep their binary identity even when their names
+    // cannot answer an intent. They share the deterministic ranked lattice.
+    const structural = candidates.filter((c) => c.source === 'cxx' && !keys.has(c.key));
+    for (const c of structural) c.recallLane = true;
+    candidates = asked.concat(structural);
+  }
 
   /*
    * 事前オッズは「絞り込んだあとの候補数」から。完全一致の枠があるときは、
@@ -237,7 +250,7 @@ export async function pinpointField(opts) {
        * 上げながら analyze 呼び出しは 152→100 に減る）。verify は元からの
        * 完全一致候補だけに当てる。
        */
-      const targets = ranked.filter((c) => !verified.has(c.key) && !c.recallLane)
+      const targets = ranked.filter((c) => c.source !== 'cxx' && !verified.has(c.key) && !c.recallLane)
         .slice(0, VERIFY_ROUND);
       if (!targets.length) break;
 
@@ -267,7 +280,7 @@ export async function pinpointField(opts) {
 
   let changeSites = [];
   const top = result.top;
-  if (top && o.scanAccess) {
+  if (top && top.source !== 'cxx' && o.scanAccess) {
     try {
       changeSites = await collectChangeSites(top, o);
     } catch { changeSites = []; }
@@ -299,13 +312,14 @@ export async function pinpointField(opts) {
 /* ── クラスの前提 ────────────────────────────────────────── */
 
 function classContext(cls, goal, categoryOf, classStringHits, vendors) {
-  const info = categoryOf.get(cls.name) || null;
+  const cxx = cls.source === 'cxx';
+  const info = cxx ? null : categoryOf.get(cls.name) || null;
   const wanted = GOAL_TO_CATEGORY[goal.id] || [];
-  const nameHit = matchText(goal, cls.name);
+  const nameHit = cxx && cls.classIdentity?.kind !== 'named' ? null : matchText(goal, cls.name);
   // 同じクラスに、その目的の仲間の値がいくつあるか（hp があるクラスには attack もある）
   let siblings = 0;
   for (const iv of cls.ivars || []) {
-    if (matchField(goal, iv.name)) siblings++;
+    if ((!cxx || !iv.anonymous) && matchField(goal, iv.name)) siblings++;
   }
   // その目的の言葉を含むメソッドが、このクラスにあるか
   let selectors = 0;
@@ -320,7 +334,7 @@ function classContext(cls, goal, categoryOf, classStringHits, vendors) {
     nameHit,
     siblings,
     selectors,
-    strings: classStringHits.get(cls.name) || 0,
+    strings: cxx ? 0 : classStringHits.get(cls.name) || 0,
     vendor,
     // 広告 SDK の値を「ゲームの所持金」として答えないための印
     vendorConflict: vendorConflicts(goal.id, vendor),
@@ -356,6 +370,7 @@ function classesReferencingGoalStrings(goal, o) {
 
 function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
   const ev = [];
+  const cxx = isCxxMemberField(iv, cls);
 
   /* 名前 — いちばん直接的だが、これだけでは確定にしない（evidence.js が上限を掛ける） */
   if (nameHit) {
@@ -440,10 +455,29 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
     }));
   }
 
+  // Reuse proven accesses only when there is an independent intent match.
+  // Unnamed members retain structural provenance without a semantic claim.
+  if (cxx && !iv.conflict && (nameHit || ctx.nameHit || ctx.categoryHit)) {
+    ev.push(evidence('access-verified', 1, {
+      className: cls.name, offset: iv.offset, size: iv.size,
+      provenance: iv.provenance,
+      source: 'cxx', loads: iv.readCount, stores: iv.writeCount,
+    }));
+  }
+
   return {
-    key: cls.name + '#' + iv.offset + '#' + iv.name,
+    key: cxx ? iv.key : cls.name + '#' + iv.offset + '#' + iv.name,
     kind: 'field',
     className: cls.name,
+    ...(cxx ? {
+      source: 'cxx', classIdentity: iv.classIdentity,
+      owningClassIdentity: iv.classIdentity,
+      fieldName: iv.anonymous ? null : iv.name, memberName: iv.anonymous ? null : iv.name,
+      anonymous: iv.anonymous, syntheticName: iv.anonymous ? iv.name : null,
+      provenance: iv.provenance,
+      recoveredType: iv.recoveredType,
+      width: iv.size,
+    } : {}),
     field: iv,
     plain: plainFieldName(iv.name),
     normalized: normalizeFieldName(iv.name),

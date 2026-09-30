@@ -23,6 +23,7 @@ import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
 import { analyzeFunctionCached, describeFunction, supportsArm64SemanticAnalysis } from './analyze.js';
 import { makePinpointAnalyzer, makePinpointAccessScanner } from './ui/pinpoint-runtime.js';
+import { cxxMemberIndexForApp } from './analysis/query/app-adapter.js';
 import { showXrefs } from './ui/panels/navigation.js';
 import { showField } from './ui/panels/field-access.js';
 export { showXrefs, showField };
@@ -1529,6 +1530,7 @@ export function showOverview(app) {
       let recognition=null;
       try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
       const report = await autoAnalyze({
+        cxxFields: cxxMemberIndexForApp(app),
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, recognition,
         analyze: makeAnalyzer(app, region, runController.signal),
