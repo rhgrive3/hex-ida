@@ -4,13 +4,27 @@
 
 The user requires default-quality behavior; this task is **not complete** at the historical NO_GO or OPTIONAL_ADVISORY decisions. Production default is still disabled while generic recovery and preservation fixes receive independent review and a new judge.
 
-The latest untouched V3 judge ran all **50 queries**: **40 verified answers** and **10 controls**, using release-game candidates and **867 real API calls**. Hex achieved **2/40**; V3 Jev **6/40**, with **4 rescues and 0 primary regressions**. All four rescues are OpenMW; OpenTTD has **0 rescues / 0 regressions**. Recovery is **9/40 (22.5%)**, and V3 accuracy where recovered is **6/9 (66.7%)**. API added latency is **698 / 970 / 1043 ms p50/p95/p99**; no observed API errors, timeouts or retries. Three of 50 V3 queries changed preference across three repeated calls. These results do **not** authorize default activation: the pre-frozen per-game gain and coverage conditions fail.
+The latest untouched **V4 judge completed all50 queries:40 independently verified answers and10 controls**, with750 real API calls. OpenTTD recovered3/20 gold members; OpenMW1/20. All4 recovered members were published and retained in the255-choice shortlist. Hex A top1 was0/40; the pre-frozen best deterministic comparator O4, current Jev, improved V4 and selective S4 each achieved1/40. V4/S4 therefore rescue1 OpenMW answer over A,0 OpenTTD answers, and have **zero net improvement over O4**. The frozen V4 policy does not qualify for default promotion. This task remains in generic recovery development; production default is **OFF**.
 
-Independent replay detected a missing baseline flag in the original aggregate. The original erroneous summary and unchanged raw responses are retained; the separate rescoring tool restores Hex/R1 baseline flags and independent replay passes. The frozen queries, prompts, execution source and criteria were not changed or rerun to improve the numbers. The selective S arm also reveals a real problem: its deterministic R1 input already destroys both Hex-correct cases. Subsequent work fixes that generic object/action priority and passes original Hex to fallbacks, rather than treating R1's damaged answers as the baseline.
+| V4 arm | Top1 | Rescue vs A | Regression vs A | Net vs O4 |
+|---|---:|---:|---:|---:|
+| Hex A |0/40|0|0|-1|
+| Best deterministic O4 |1/40|1|0|0|
+| Current Jev |1/40|1|0|0|
+| Anonymous minimum B |0/40|0|0|-1|
+| Structured C |1/40|1|0|0|
+| Improved V4 |1/40|1|0|0|
+| Selective S4 |1/40|1|0|0|
 
-See [V3 exact evidence](default-v3/evidence-packaging.json), [corrected results](default-v3/results/summary.json), [all-case failure analysis](default-v3/failure-analysis.json) and [source review](default-v3/nonpoly-typed-review.md). V3 is now a development corpus for later changes; a subsequent prompt or routing policy needs a new untouched judge. The sections below retain the original V1 decision as historical evidence, not the current task's completion claim.
+Accuracy among recovered cases is1/4 (25%) for V4/S4. There are **36 recovery misses**, zero recovered-but-unpublished misses, zero shortlist losses, and three reachable primary errors. One station list shares identical visible semantic context with another list, so its offset alone cannot tell Jev which is for trucks. Hex A has no correct cases in this judge: its destruction percentage is **undefined**, not0%. O4's single correct case survives all V4/S4 repeats, but one preservation case is insufficient for default safety.
 
-高校生向け：Hexがゲームの機械語から候補を探し、Jevが質問の意味に合う候補を選びます。今回のJevは2問だった正解を6問に増やしました。ただし、40問のうち31問では正解候補をまだ復元できていません。候補を増やす仕組みと、元の正解を守る仕組みを修正して、通常ONにできるか改めて検証しています。
+V4 added API latency is **760/1067/1434ms p50/p95/p99**, S4 **771/1184/1369ms**. All750 calls completed without observed errors/timeouts/retries. V4 changed preference on4/50 queries, S4 on8/50. S4 called the API for every query and repeat, so this routing revision saved no calls. Warm Hex ranking is2.23/3.34/6.81ms; **cold existing Fast recovery is11579/27959/31734ms**, separately from binary setup. Its15000ms budget is cooperative admission, not a hard wall-clock bound. These quality, coverage, routing and latency failures must be fixed before normal activation.
+
+See [V4 exact evidence](default-v4/evidence-packaging.json), [unaltered aggregate](default-v4/results/summary.json), [all-case failure analysis](default-v4/failure-analysis.json), [latency/reliability](default-v4/latency-reliability.json) and [source review](default-v4/visible-context-review.md). Actual release candidates, raw requests/responses and structural scoring inputs are retained in compressed, hash-bound files. Independent replay passed before any later source edit; its source is sealed at92f7c880d. V4 is now consumed and may be used for development only. A new independently authored V5 set must stay unread until its prospective representation/policy is frozen.
+
+The earlier V3 judge achieved2/40 Hex versus6/40 Jev with9/40 recovered, all4 rescues in OpenMW. That independent result is retained in [V3 evidence](default-v3/evidence-packaging.json); it does not transfer to V4 or authorize new default behavior. Original V1 decisions below remain historical, not a current task completion claim.
+
+高校生向け：Hexがゲームの機械語から候補を探し、Jevが質問に合う候補を選びます。今回の40問では、正解の候補を探せたのが4問で、Jevが正しく選べたのは1問でした。その1問はAPIを使わない方法でも選べました。いまは質問に関係する関数を選ぶ部分を改善し、速さと元の正解を守れることも確認しています。通常ONへの作業はまだ完了していません。
 
 ## Historical V1 Executive Summary
 

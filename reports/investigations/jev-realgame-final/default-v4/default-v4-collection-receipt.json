@@ -1,0 +1,27 @@
+{
+  "complete": true,
+  "conclusion": "success",
+  "files": [
+    {
+      "file": "openttd.json",
+      "sha256": "52045f9e53f6a9956237a0682cc86bebdd533981850734cae97504e0e8c1a6c6",
+      "productSha": "22d5ed9aa35228104bc274a2c2d8e53d1da9ec6e",
+      "run": 36853541599,
+      "artifactId": 11157530580,
+      "downloadReceiptSha256": "8754af8acc4e200ae7746676e3586921b675f1fa5c0a321319d366d75874b095",
+      "zipSha256": "ea363e825b5e462ef9c8b75894158122ca60f3978df6b42831d497c220e3bb4c"
+    },
+    {
+      "file": "openmw.json",
+      "sha256": "3ea368ea10ea36e3c9a5da00b56feadda503f9386d46c48c59d5f90e890bfef4",
+      "productSha": "22d5ed9aa35228104bc274a2c2d8e53d1da9ec6e",
+      "run": 36853541599,
+      "artifactId": 11158095810,
+      "downloadReceiptSha256": "2e2bd6e77b6fd288b514a41bf010fb845cb07a37746ccf86a08cd9738f25019b",
+      "zipSha256": "b1a34d0ad60b58a31b871366a0ab6204687350b81c490064d3347a06da68c73f"
+    }
+  ],
+  "runId": 36853541599,
+  "allWorkflowJobsPassed": true,
+  "sourceBytesFrozen": true
+}

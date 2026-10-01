@@ -1,0 +1,45 @@
+{
+  "schema": "hex-jev-v4-evidence-packaging/v1",
+  "runtimeSourceSha": "c2aaeb2f0610af3c241a22a9c2ad72acd1f89f96",
+  "collectionSha": "22d5ed9aa35228104bc274a2c2d8e53d1da9ec6e",
+  "evaluationCheckoutSha": "92f7c880dadaea0c93ab11abdf63712c98e7144d",
+  "independentReplay": {
+    "replayExit": 0,
+    "results": "/mnt/workspace/.dev-state/agent-work/evidence/jev-realgame-final/default-v4-results"
+  },
+  "files": {
+    "results/raw-results.jsonl.gz": {
+      "originalSha256": "8bb6a6a27956e881390e440579da5c8d91c1c932077d26f3f8496627143300b4",
+      "packagedSha256": "ec298a54f117830b89cb66f778ac3c6a6874d8960837505210fe511d2544cae5",
+      "originalBytes": 19374816,
+      "packagedBytes": 1185935
+    },
+    "results/summary.json": {
+      "originalSha256": "5293e8ae187664f1d9e20aabc710037d0ab0629e20c8562f7ecd9b4bd2e84da7",
+      "packagedSha256": "5293e8ae187664f1d9e20aabc710037d0ab0629e20c8562f7ecd9b4bd2e84da7",
+      "originalBytes": 156179,
+      "packagedBytes": 156179
+    },
+    "snapshots/openttd.json.gz": {
+      "originalSha256": "52045f9e53f6a9956237a0682cc86bebdd533981850734cae97504e0e8c1a6c6",
+      "packagedSha256": "b12e61cc9786777a44a3ec8534152b35f42dc90422d63e994ff564fed3ff4833",
+      "originalBytes": 16504760,
+      "packagedBytes": 533895
+    },
+    "snapshots/openmw.json.gz": {
+      "originalSha256": "3ea368ea10ea36e3c9a5da00b56feadda503f9386d46c48c59d5f90e890bfef4",
+      "packagedSha256": "c1fc7d205593fe50dca3c93dcb4c27a389d0a9d8b19b2885b3d9b60124828772",
+      "originalBytes": 18509969,
+      "packagedBytes": 672351
+    },
+    "default-v4-collection-receipt.json": {
+      "originalSha256": "e32246abd519d8b3c4c770fc45a586f3485b01e498786fca66d0d2fe66fbcc84",
+      "packagedSha256": "e32246abd519d8b3c4c770fc45a586f3485b01e498786fca66d0d2fe66fbcc84",
+      "originalBytes": 1022,
+      "packagedBytes": 1022
+    }
+  },
+  "productionDefaultEnabled": false,
+  "taskComplete": false,
+  "reusableAsUntouchedHoldout": false
+}
