@@ -101,6 +101,22 @@ export function jevSemanticRoute(query,views,{verdict='none',topKey=null,policy=
     .sort(compareCxxSemanticScores);
   const best=scores[0],owner=cxxQueryTokens(views[best.index].className);
   const ownerScore=2*owner.filter(token=>tokens.has(token)).length;
+  if(policy==='object-context-v4'&&best.key===topKey&&best.score>ownerScore) {
+    const related=context=>{
+      const method=context.name?(demangleCxx(context.name)??context.name).split('(')[0].split('::').at(-1):'';
+      return cxxQueryTokens(method).some(token=>tokens.has(token)&&!owner.includes(token));
+    };
+    const callerInput=context=>context.receiverProven===true
+      &&((context.writtenArgumentRegisters??[]).some(register=>typeof register==='string'&&/^x[0-7]$/.test(register))
+        ||argumentBitsFor(context).length>0);
+    const localView=views[best.index],localInputs=localView.functionContexts.filter(context=>related(context)&&callerInput(context));
+    const peers=views.filter(view=>view.key!==topKey&&view.className===localView.className
+      &&view.functionContexts.some(related));
+    if(localInputs.length&&peers.length&&peers.every(peer=>peer.functionContexts.filter(related).every(context=>
+      localInputs.some(input=>input.address===context.address)&&!callerInput(context)
+      &&context.accessRoles?.some(role=>role==='zero-written'||role==='one-written'))))
+      return skip('local-caller-input-versus-literal-markers');
+  }
   const unique=policy==='object-context-v4'
     ?best.objectMatches>scores[1].objectMatches||best.objectMatches===scores[1].objectMatches&&best.score>scores[1].score
     :best.score>scores[1].score;

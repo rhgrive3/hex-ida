@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import {baselineSummaries} from '../../../scripts/rescore-jev-default-v3.mjs';
 import {DEFAULT_V3_ARMS} from '../../../scripts/evaluate-jev-default-v3.mjs';
 import {execFileSync} from 'node:child_process';
+import {v4Summaries} from '../../../scripts/evaluate-jev-default-v4.mjs';
+import {V4_ARMS} from '../../../scripts/jev-default-v4-contract.mjs';
+test('V4 keeps recovery drift and remote destruction separate from the best comparator',()=>{
+  const rows=[[true,false,false,true],[false,true,true,false]].map(([prior,hex,local,remote],index)=>({
+    id:String(index),binary:index?'openmw':'openttd',status:'verified',verdict:'ambiguous',hexLatencyMs:1,
+    funnel:{verified:true,recovered:true,lattice:true,shortlist:true},
+    arms:Object.fromEntries(V4_ARMS.map(arm=>[arm,{key:String(index),correct:arm==='A0'?prior:arm==='A'?hex:arm==='O4'?local:remote,
+      calls:[],repeatedKeys:[String(index)],repeatedCorrect:[arm==='A0'?prior:arm==='A'?hex:arm==='O4'?local:remote]}]))}));
+  const s=v4Summaries(rows);
+  assert.equal(s.vsBeforeExtension.A.regression,1);assert.equal(s.vsBeforeExtension.A.rescue,1);
+  assert.equal(s.summaries.S4.regression,1);assert.equal(s.summaries.S4.rescue,1);
+  assert.equal(s.vsBeforeExtension.S4.regression,0);assert.equal(s.vsBeforeExtension.S4.rescue,0);
+  assert.equal(s.vsBestDeterministic.S4.baselineDestructionRate,1);
+  assert.equal(s.perGame.openttd.A.S4.rescue,1);assert.equal(s.perGame.openmw.A.S4.regression,1);
+});
 test('V3 rescue and destruction count the actual Hex and deterministic baselines independently',()=>{
   const rows=[[true,false,true],[false,true,true],[true,true,false]].map(([hex,local,remote],index)=>({
     id:String(index),binary:'openttd',status:'verified',verdict:'ambiguous',hexLatencyMs:1,

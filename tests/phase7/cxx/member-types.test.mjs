@@ -42,12 +42,17 @@ test('single-bit masked input stores retain caller provenance and reject transfo
   assert.deepEqual(fieldAt(report,5).writtenArgumentBits,[]);
   assert.ok(fieldAt(report,5).accessRoles.includes('one-written'));
   assert.equal(fieldAt(report,4).memberName,undefined);
-  const base={id:'b'},argument={id:'a',kind:'arg',reg:'x1'},mask={id:'m'},masked={id:'v'};
+  const base={id:'b'},argument={id:'a',kind:'arg',reg:'x1'},mask={id:'m'},masked={id:'v',bits:64};
   const toy={values:[argument],instructions:[{op:'const',dst:mask,extra:{value:1n}},
     {op:'bin',sub:'and',dst:masked,args:[argument,mask]},
     {op:'store',args:[masked],loc:{kind:'field',base,disp:4n,size:1}}]};
   const read=()=>recoverMemberTypeEvidence({ir:toy,isReceiverBase:v=>v===base}).fields[0].writtenArgumentBits;
   assert.deepEqual(read(),['x1:0']);
+  masked.bits=8;toy.instructions[0].extra.value=1n<<9n;toy.instructions[2].loc.size=2;
+  assert.deepEqual(read(),[],'a bit outside the AND operation width is unavailable');
+  masked.bits=undefined;toy.instructions[0].extra.value=1n;
+  assert.deepEqual(read(),[],'unknown operation width cannot establish a selected input bit');
+  masked.bits=64;toy.instructions[2].loc.size=1;
   for(const value of [0n,-1n,3n,256n,1n<<128n]) {
     toy.instructions[0].extra.value=value;assert.deepEqual(read(),[]);
   }
@@ -57,7 +62,7 @@ test('single-bit masked input stores retain caller provenance and reject transfo
   assert.deepEqual(read(),[],'transformed inputs cannot claim an entry argument bit');
   const many={values:[argument],instructions:Array.from({length:16},(_,bit)=>[
     {op:'const',dst:{id:`mask${bit}`},extra:{value:1n<<BigInt(bit)}},
-    {op:'bin',sub:'and',dst:{id:`bit${bit}`},args:[argument,{id:`mask${bit}`}]},
+    {op:'bin',sub:'and',dst:{id:`bit${bit}`,bits:64},args:[argument,{id:`mask${bit}`}]},
     {op:'store',args:[{id:`bit${bit}`}],loc:{kind:'field',base,disp:4n,size:2}}]).flat()};
   const field=recoverMemberTypeEvidence({ir:many,isReceiverBase:v=>v===base}).fields[0];
   assert.equal(field.writeCount,16);assert.equal(field.writtenArgumentBits.length,8);
@@ -127,6 +132,9 @@ test('single-bit masked input stores retain caller provenance and reject transfo
     {op:'store',args:[longCopies.at(-1).dst],loc:{kind:'field',base,disp:4n,size:1}}]};
   const boundedSource=fieldAt(recoverMemberTypeEvidence({ir:overBudget,isReceiverBase:v=>v===base}),4);
   assert.deepEqual(boundedSource.writtenArgumentRegisters,[],'long input chains fail closed at their fixed cap');
+  input.bits=128;
+  assert.deepEqual(fieldAt(widthReport(),7).writtenArgumentRegisters,[],
+    'malformed argument widths cannot fall back to a register-width assumption');
 });
 
 function fieldAt(report, offset) {

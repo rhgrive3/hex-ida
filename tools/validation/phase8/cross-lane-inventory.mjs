@@ -20,6 +20,10 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   "integration/jev-realgame-final": Object.freeze([
     "js/rtti.js",
     "scripts/download-jev-action-evidence.py",
+    "scripts/collect-jev-default-v4.mjs",
+    "scripts/evaluate-jev-default-v4.mjs",
+    "scripts/jev-default-v4-contract.mjs",
+    "scripts/verify-jev-default-v4.mjs",
     "scripts/verify-jev-default-v3.mjs",
     "scripts/rescore-jev-default-v3.mjs",
     "scripts/evaluate-jev-default-v3.mjs",

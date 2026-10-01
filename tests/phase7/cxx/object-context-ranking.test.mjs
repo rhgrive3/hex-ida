@@ -18,6 +18,24 @@ test('object-aware ranking keeps the requested owner ahead of an unrelated lexic
   assert.equal(jevSemanticRoute(query,views,{policy:'unknown'}).call,false);
   assert.deepEqual(cxxObjectSemanticScores(query,views.map(view=>({...view,offset:999,size:1,sourceFieldName:'gold'}))),
     cxxObjectSemanticScores(query,views),'layout and source names cannot alter semantic object priority');
+  const input={address:'3',name:'_ZN6Entity8setStateEb',receiverProven:true,receiverRole:'this',
+    accessRoles:['argument-written'],writtenArgumentRegisters:['x1']};
+  const marker={...input,accessRoles:['constant-written','one-written'],writtenArgumentRegisters:[]};
+  const stateViews=[{key:'setting',source:'cxx',anonymous:true,className:'Entity',functionContexts:[input]},
+    {key:'marker',source:'cxx',anonymous:true,className:'Entity',functionContexts:[marker]}];
+  const options={topKey:'setting',policy:'object-context-v4'};
+  assert.deepEqual(jevSemanticRoute('What state is selected for this entity?',stateViews,options),
+    {call:false,reason:'local-caller-input-versus-literal-markers'},
+    'a unique local caller input is preserved against literal markers from the same operation');
+  assert.equal(jevSemanticRoute('What state is selected for this entity?',stateViews.map(v=>({...v,
+    functionContexts:v.functionContexts.map(c=>({...c,address:v.key==='marker'?'4':c.address}))})),options).call,true,
+    'a marker from a different operation does not establish this preservation rule');
+  assert.equal(jevSemanticRoute('What state is selected for this entity?',stateViews.map(v=>({...v,
+    functionContexts:v.functionContexts.map(c=>({...c,receiverProven:false}))})),options).call,true,
+    'unproven input origins cannot authorize the preservation rule');
+  assert.equal(jevSemanticRoute('What state is selected for this entity?',stateViews.map(v=>({...v,
+    functionContexts:v.functionContexts.map(c=>v.key==='marker'?{...c,writtenArgumentRegisters:['x2']}:c)})),options).call,true,
+    'two caller-supplied values still require disambiguation');
 });
 
 test('argument context stays bounded and duplicate or forged metadata cannot create semantics',()=> {

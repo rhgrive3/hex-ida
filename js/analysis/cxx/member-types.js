@@ -158,7 +158,9 @@ function buildChains(ir, maxInstructions) {
         if(inst.op==='mov'&&(inst.sub==null||['copy','trunc','zext','sext'].includes(inst.sub))) {
           const sourceValue=inst.args[0]?.value??inst.args[0];
           const widths=[inst.dst?.bits,sourceValue?.bits].filter(bits=>Number.isSafeInteger(bits)&&bits>0&&bits<=64);
-          if(inst.sub==null||inst.sub==='copy'||widths.length===2) {
+          const malformedWidth=[inst.dst?.bits,sourceValue?.bits].some(bits=>bits!=null
+            &&(!Number.isSafeInteger(bits)||bits<1||bits>64));
+          if(!malformedWidth&&(inst.sub==null||inst.sub==='copy'||widths.length===2)) {
             copies.set(dstId,source);
             copyWidths.set(dstId,widths.length?Math.min(...widths):64);
             if(['trunc','zext','sext'].includes(inst.sub))
@@ -305,7 +307,7 @@ function storedArgumentBit(seedId, argumentRegisters, chains, storeSize) {
         const mask=storedBitConstant(operands[index],chains);
         if(mask==null||mask<=0n||mask>0xffffffffffffffffn||(mask&(mask-1n))!==0n)continue;
         let bit=0;for(let value=mask;value>1n;value>>=1n)bit++;
-        if(bit>=preservedBits||bit>=64)return null;
+        if(bit>=preservedBits||bit>=64||bit>=(chains.maskWidths.get(current)??0))return null;
         const register=storedArgumentRegister(operands[1-index],argumentRegisters,chains,bit+1);
         return register?`${register}:${bit}`:null;
       }
@@ -339,6 +341,7 @@ export function recoverMemberTypeEvidence({
     .filter(value=>value.kind==='arg').map(value=>valueId(value)).filter(id=>id!=null));
   const argumentRegisters=new Map((ir?.values??[]).slice(0,maxInstructions)
     .filter(value=>value.kind==='arg'&&/^[xw][0-7]$/.test(value.reg??value.label??'')&&valueId(value)!=null)
+    .filter(value=>value.bits==null||Number.isSafeInteger(value.bits)&&value.bits>0&&value.bits<=64)
     .map(value=>{
       const register=value.reg??value.label;
       const bits=Number.isSafeInteger(value.bits)&&value.bits>0&&value.bits<=64
