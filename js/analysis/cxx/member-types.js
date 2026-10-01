@@ -35,6 +35,9 @@ const FP_REGISTER = /^[vsdq]\d+$/;
 // (byte -> word -> doubleword -> register move -> truncate), so the chain walk
 // must cover normal codegen without becoming unbounded.
 const MAX_CHAIN_DEPTH = 8;
+// Semantic IR expands register copies and truncations into separate nodes.
+// Exact input/constant tracing follows one path and retains an explicit cap.
+const MAX_INPUT_CHAIN_DEPTH = 32;
 
 function toBigInt(value) {
   if (typeof value === 'bigint') return value;
@@ -110,7 +113,9 @@ function buildChains(ir, maxInstructions) {
   const sources = new Map();
   const copies = new Map();
   const copyWidths = new Map();
+  const copyConversions = new Map();
   const masks = new Map();
+  const maskWidths = new Map();
   const consumers = new Map();
   const constants = new Map();
   const vectorTargets = new Set();
@@ -135,8 +140,11 @@ function buildChains(ir, maxInstructions) {
   }
 
   for (const inst of instructions) {
-    if(inst.dst&&inst.op==='bin'&&inst.sub==='and'&&inst.args?.length===2)
+    if(inst.dst&&inst.op==='bin'&&inst.sub==='and'&&inst.args?.length===2) {
       masks.set(valueId(inst.dst),inst.args.map(argument=>valueId(argument?.value??argument)));
+      if(Number.isSafeInteger(inst.dst.bits)&&inst.dst.bits>0&&inst.dst.bits<=64)
+        maskWidths.set(valueId(inst.dst),inst.dst.bits);
+    }
     const roleTargets = ['ret','return'].includes(inst.op) ? returnInputs
       : ['cmp','cbr'].includes(inst.op) ? comparisonInputs : ['bin','binary'].includes(inst.op) ? arithmeticInputs : null;
     if (roleTargets) for (const arg of inst.args || []) {
@@ -153,6 +161,8 @@ function buildChains(ir, maxInstructions) {
           if(inst.sub==null||inst.sub==='copy'||widths.length===2) {
             copies.set(dstId,source);
             copyWidths.set(dstId,widths.length?Math.min(...widths):64);
+            if(['trunc','zext','sext'].includes(inst.sub))
+              copyConversions.set(dstId,{kind:inst.sub,sourceBits:sourceValue.bits,destinationBits:inst.dst.bits});
           }
         }
         const list = consumers.get(source);
@@ -189,15 +199,23 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, copies, copyWidths, masks, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
+  return { sources, copies, copyWidths, copyConversions, masks, maskWidths, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
 }
 
 // Exact 0/1 writes may follow copies, never arbitrary unary operations.
 function storedBitConstant(seed,chains) {
-  const seen=new Set();let id=seed;
-  for(let depth=0;depth<MAX_CHAIN_DEPTH&&id!=null;depth++) {
+  const seen=new Set(),conversions=[];let id=seed;
+  for(let depth=0;depth<MAX_INPUT_CHAIN_DEPTH&&id!=null;depth++) {
     if(seen.has(id))return null;seen.add(id);
-    if(chains.constants.has(id))return chains.constants.get(id);
+    if(chains.constants.has(id)) {
+      let value=chains.constants.get(id);
+      for(const conversion of conversions.reverse()) {
+        const bits=conversion.kind==='trunc'?conversion.destinationBits:conversion.sourceBits;
+        value=conversion.kind==='sext'?BigInt.asIntN(bits,value):BigInt.asUintN(bits,value);
+      }
+      return value;
+    }
+    const conversion=chains.copyConversions.get(id);if(conversion)conversions.push(conversion);
     id=chains.copies.get(id);
   }
   return null;
@@ -239,7 +257,7 @@ function constantValueOf(seedId, chains) {
 
 function isStoredArgument(seedId, argumentIds, chains) {
   const visited=new Set();let current=seedId;
-  for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
     if(argumentIds.has(current))return true;
     if(visited.has(current))return false;
     visited.add(current);current=chains.sources.get(current)??null;
@@ -250,10 +268,23 @@ function isStoredArgument(seedId, argumentIds, chains) {
 function storedArgumentRegister(seedId, argumentRegisters, chains, requiredBits=1) {
   if(!Number.isSafeInteger(requiredBits)||requiredBits<1||requiredBits>64)return null;
   const seen=new Set();let current=seedId;
-  for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
     if(seen.has(current))return null;seen.add(current);
     const argument=argumentRegisters.get(current);
     if(argument)return argument.bits>=requiredBits?argument.register:null;
+    const maskOperands=chains.masks.get(current);
+    if(maskOperands) {
+      if((chains.maskWidths.get(current)??0)<requiredBits)return null;
+      const requiredMask=(1n<<BigInt(requiredBits))-1n;
+      const constantIndex=maskOperands.findIndex(operand=>{
+        const mask=storedBitConstant(operand,chains);
+        return mask!=null&&(mask&requiredMask)===requiredMask;
+      });
+      if(constantIndex<0)return null;
+      // Masking away bits outside the stored width leaves every stored bit
+      // identical to the caller's value. This proves a machine source only.
+      current=maskOperands[1-constantIndex];continue;
+    }
     // An arbitrary unary expression is argument-derived, but cannot claim
     // the unmodified parameter source. Copy/truncation stores remain explicit
     // machine observations; they do not establish declared field types.
@@ -266,7 +297,7 @@ function storedArgumentRegister(seedId, argumentRegisters, chains, requiredBits=
 function storedArgumentBit(seedId, argumentRegisters, chains, storeSize) {
   if(!Number.isSafeInteger(storeSize)||storeSize<1||storeSize>8)return null;
   const seen=new Set();let current=seedId,preservedBits=storeSize*8;
-  for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
     if(seen.has(current))return null;seen.add(current);
     const operands=chains.masks.get(current);
     if(operands) {

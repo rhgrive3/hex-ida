@@ -98,6 +98,35 @@ test('single-bit masked input stores retain caller provenance and reject transfo
   widths.instructions.push({op:'store',args:[input],loc:{kind:'field',base,disp:7n,size:8}});
   assert.deepEqual(fieldAt(widthReport(),7).writtenArgumentRegisters,[],
     'entry argument width must cover every attributed stored bit');
+  const constant={id:'constant-wide',bits:64},byte={id:'constant-byte',bits:8};
+  const converted={id:'constant-converted',bits:64},maskedConstant={id:'constant-result'};
+  const constantIr={values:[argument],instructions:[
+    {op:'const',dst:constant,extra:{value:512n}},
+    {op:'mov',sub:'trunc',dst:byte,args:[constant]},
+    {op:'mov',sub:'zext',dst:converted,args:[byte]},
+    {op:'bin',sub:'and',dst:maskedConstant,args:[argument,converted]},
+    {op:'store',args:[maskedConstant],loc:{kind:'field',base,disp:4n,size:2}},
+    {op:'store',args:[converted],loc:{kind:'field',base,disp:5n,size:1}}]};
+  const constants=()=>recoverMemberTypeEvidence({ir:constantIr,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(constants(),4).writtenArgumentBits,[],
+    'a mask truncated to zero cannot claim its original high bit');
+  assert.ok(fieldAt(constants(),5).accessRoles.includes('zero-written'));
+  constantIr.instructions[0].extra.value=1n;
+  byte.bits=1;constantIr.instructions[2].sub='sext';
+  assert.equal(fieldAt(constants(),5).accessRoles.includes('one-written'),false,
+    'sign extension of one signed bit is minus one, not a literal one');
+  const maskedByte=createIr(['and w1, w1, #0xff','strb w1, [x0, #4]','strh w1, [x0, #6]','ret']);
+  const byteReport=recoverMemberTypeEvidence({ir:maskedByte,isReceiverBase:allBases});
+  assert.deepEqual(fieldAt(byteReport,4).writtenArgumentRegisters,['x1'],
+    'masking only discarded bits preserves the full stored byte');
+  assert.deepEqual(fieldAt(byteReport,6).writtenArgumentRegisters,[],
+    'the same mask does not preserve a stored halfword');
+  const longCopies=Array.from({length:40},(_,i)=>({op:'mov',dst:{id:`copy-${i}`,bits:64},
+    args:[i?{id:`copy-${i-1}`,bits:64}:argument]}));
+  const overBudget={values:[argument],instructions:[...longCopies,
+    {op:'store',args:[longCopies.at(-1).dst],loc:{kind:'field',base,disp:4n,size:1}}]};
+  const boundedSource=fieldAt(recoverMemberTypeEvidence({ir:overBudget,isReceiverBase:v=>v===base}),4);
+  assert.deepEqual(boundedSource.writtenArgumentRegisters,[],'long input chains fail closed at their fixed cap');
 });
 
 function fieldAt(report, offset) {
