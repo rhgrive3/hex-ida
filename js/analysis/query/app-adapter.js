@@ -74,7 +74,7 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     afterRevision:beforeRevision,candidateCount:beforeCount};
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
     decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,
-      {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4'].includes(planningPolicy)});checkBinding();return value;}});
+      {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy)});checkBinding();return value;}});
   checkBinding();
   const index=cxxMemberIndexForApp(app);
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
@@ -106,6 +106,7 @@ export function cxxMemberIndexForApp(app) {
   const key = source && (typeof source === 'object' || typeof source === 'function') ? source : backend;
   const entry = key && SLICE_CXX_PROVIDERS.get(key)?.get(String(storeValue(app, 'sliceIndex') ?? 0));
   if (!entry || entry.backend !== backend || entry.symbols !== app?.symbols
+    || entry.symbolsGeneration !== (app?.symbols?.gen ?? null)
     || entry.backendGeneration !== (backend?.gen ?? backend?.analysisEpoch ?? null)
     || entry.architecture !== (architectureOf(app) ?? 'arm64')) return null;
   return entry.provider.memberIndex();
@@ -130,8 +131,9 @@ function ensureCxxEvidenceProviderForApp(app) {
   }
   const sliceKey = String(sliceIndex);
   const backendGeneration = backend.gen ?? backend.analysisEpoch ?? null;
+  const symbolsGeneration = symbols.gen ?? null;
   let entry = slices.get(sliceKey);
-  if (entry && (entry.backend !== backend || entry.symbols !== symbols
+  if (entry && (entry.backend !== backend || entry.symbols !== symbols || entry.symbolsGeneration !== symbolsGeneration
     || entry.backendGeneration !== backendGeneration
     || entry.architecture !== architecture || entry.pointerBytes !== pointerBytes)) entry = null;
   if (!entry) {
@@ -154,7 +156,7 @@ function ensureCxxEvidenceProviderForApp(app) {
       maxReads: 8192,
     });
     const buildPromise = provider.build().catch(() => null);
-    entry = { provider, buildPromise, backend, symbols, backendGeneration, architecture, pointerBytes };
+    entry = { provider, buildPromise, backend, symbols, symbolsGeneration, backendGeneration, architecture, pointerBytes };
     slices.set(sliceKey, entry);
   }
   return entry;

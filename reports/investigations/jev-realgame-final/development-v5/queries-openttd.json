@@ -1,0 +1,17 @@
+{
+  "schema": "hex-jev-blind-query-manifest/v4",
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "cases": [
+    {
+      "id": "SV4-OP-04",
+      "query": "How many trees is this company allowed to plant on the map?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-20",
+      "query": "Which tile is the large UFO destroyer aiming at?",
+      "mode": "partial"
+    }
+  ]
+}

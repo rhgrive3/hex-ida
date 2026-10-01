@@ -10,7 +10,7 @@
  */
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
-import { demangleCxx, readableName, isMangled, cxxAbiFunctionRole } from '../../rtti.js';
+import { demangleCxx, readableName, isMangled, cxxAbiFunctionIdentity } from '../../rtti.js';
 import { isCanonicalCppTypedArgumentEvidence } from './typed-argument.js';
 import { isCanonicalCppClassTypeEvidence } from './class-type.js';
 
@@ -21,6 +21,21 @@ export const CPP_CLASS_IDENTITY_SCHEMA = 'cpp-class-identity/v1';
 export const CPP_VTABLE_SCHEMA = 'cpp-vtable-evidence/v1';
 export const CPP_VIRTUAL_SLOT_SCHEMA = 'cpp-virtual-slot-evidence/v1';
 export const CPP_CANONICAL_MEMBER_SCHEMA = 'cpp-canonical-member-evidence/v1';
+
+// Read the release symbol table rather than a user's display rename. Small
+// first-party hosts that expose only nameAt keep their existing contract.
+export function cxxBinarySymbolNameAt(symbols,address){
+  const names=symbols?.names,addrs=symbols?.addrs;
+  if(names&&addrs){
+    if(!Number.isSafeInteger(names.length)||names.length!==addrs.length)return null;
+    let left=0,right=addrs.length;
+    while(left<right){const middle=Math.floor((left+right)/2);
+      if(addrs[middle]<=address)left=middle+1;else right=middle;}
+    return left&&addrs[left-1]===address?names[left-1]??null:null;
+  }
+  if(symbols?.nameEvidence?.(address)?.manual===true)return null;
+  return symbols?.nameAt?.(address)??null;
+}
 
 const canonicalCppReceiverEvidence = new WeakSet();
 const canonicalCppVirtualSlotEvidence = new WeakSet();
@@ -484,21 +499,16 @@ export function analyzeFunctionSymbol(name, rawMangled = null) {
     return { isCxx: true, isFreeFunction: true, isMember: false, demangled, reason: 'cxx-free-function' };
   }
 
-  // Nested member: _ZN...
-  // Parse class name and method name
-  const paren = demangled.indexOf('(');
-  const fullSignature = paren > 0 ? demangled.slice(0, paren).trim() : demangled.trim();
-  const parts = fullSignature.split('::');
-
-  if (parts.length < 2) {
-    return { isCxx: true, isFreeFunction: true, isMember: false, demangled, reason: 'no-class-qualifier' };
+  const abiRole = cxxAbiFunctionIdentity(sym);
+  if (!abiRole?.owner) {
+    return { isCxx: true, isFreeFunction: true, isMember: false, demangled,
+      isConstructor:false,isDestructor:false,isConstMember:false,
+      reason: abiRole ? 'no-class-qualifier' : 'unverified-function-name' };
   }
-
-  const methodName = parts[parts.length - 1];
-  const className = parts.slice(0, -1).join('::');
+  const methodName = abiRole.method;
+  const className = abiRole.owner;
 
   // Check constructor / destructor / const qualifier
-  const abiRole = cxxAbiFunctionRole(sym);
   const isConstructor = abiRole?.kind === 'constructor';
   const isDestructor = abiRole?.kind === 'destructor';
   const isConstMember = abiRole?.constQualified === true;

@@ -12,10 +12,11 @@ import {parseGoal} from '../js/goals.js';
 import {recoverySnapshot} from './jev-realgame-recovery-contract.mjs';
 import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
-const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3']=process.argv.slice(2);
+const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect']=process.argv.slice(2);
 const arm="hex-value";
-if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4'].includes(planningPolicy))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT [value-accessor-v3|object-context-v4|staged-object-v4]');
+if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4','semantic-retrieval-v5'].includes(planningPolicy)
+  ||!['collect','metadata-only'].includes(operation))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only]');
 const initialPlanningPolicy=planningPolicy==='staged-object-v4'?'value-accessor-v3':planningPolicy;
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
@@ -47,6 +48,7 @@ try {
         jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
       metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
     }
+    if(operation==='metadata-only')continue;
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
     const recovery=await recover(product.app,c.query,{enabled:true,
@@ -78,10 +80,11 @@ try {
   const collection={beforeCount:0,afterCount:fields.length,named:fields.filter(f=>!f.anonymous).length,unnamed:fields.filter(f=>f.anonymous).length,
     classCount:index?.classCount??0,keyCollisions:fields.length-new Set(fields.map(f=>f.key)).size,
     analyzedFunctions:new Set(rows.flatMap(r=>r.recovery.attempted.map(a=>a.address))).size,profile:product.profile};
-  if(collection.keyCollisions||rows.length!==manifest.cases.length)throw new Error('invalid recovery collection');
+  if(collection.keyCollisions||(operation==='collect'&&rows.length!==manifest.cases.length)
+    ||(operation==='metadata-only'&&(rows.length||metadataRows.length!==manifest.cases.length)))throw new Error('invalid recovery collection');
   const root=new URL('../',import.meta.url);
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
-    arm,planningPolicy,remoteRetrievalExecution:'none; deterministic modern recovery only',
+    arm,planningPolicy,operation,remoteRetrievalExecution:'none; deterministic modern recovery only',
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
       ['scripts/collect-jev-context-development.mjs','js/rtti.js','js/analysis/cxx/member-index.js','js/analysis/query/jev-advisory.js','js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',

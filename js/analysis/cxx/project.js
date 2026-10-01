@@ -202,7 +202,8 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
 function indexFromReport(report, symbols, architecture, snapshotId) {
   // Only aliased addresses need extra ownership scrutiny. This one metadata
   // walk never reads code or runs an analysis pass; name parsing is restricted
-  // to duplicates, and the temporary first-name map is not retained.
+  // to duplicates. Raw names are retained so presentation renames cannot
+  // create a receiver proof or change the owner of an existing proof.
   const symbolOwners = new Map(),firstSymbol = new Map(),typedArguments=new Map();
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs?.[i];if(address==null)continue;
@@ -265,6 +266,7 @@ function indexFromReport(report, symbols, architecture, snapshotId) {
     bySlotAddress,
     primaryOwnerFor: createPrimaryOwnerResolver(report.classes),
     symbolOwners,
+    symbolNameFor:address=>firstSymbol.get(String(address))??null,
     typedArguments,
     typedClasses,
     classTypeFor,
@@ -394,6 +396,7 @@ export function createCxxEvidenceProvider(input = {}) {
       if (!index) return bind(null);
       if (index.empty) return bind(null);
       if (functionId == null && functionAddress == null) return bind(null);
+      const binarySymbol=index.symbolNameFor?.(functionAddress)??null;
 
       // Only the vtables that actually reference this address can prove
       // membership, so a function is never attributed to an unrelated class.
@@ -418,7 +421,7 @@ export function createCxxEvidenceProvider(input = {}) {
       // Existing RTTI must prove every referencing owner reaches that base
       // through one non-virtual path at zero offset before selecting its table.
       if (new Set(vtableClassNames).size > 1) {
-        const symbol = symbols?.nameAt?.(functionAddress) ?? rawSymbol ?? functionName;
+        const symbol = binarySymbol;
         const info = analyzeFunctionSymbol(symbol);
         const owner = !info.isAdjustedThunk
           ? index.primaryOwnerFor(BigInt(functionAddress), info.className) : null;
@@ -433,7 +436,7 @@ export function createCxxEvidenceProvider(input = {}) {
       let report;
       try {
         const typed=index.typedArguments?.get(String(functionAddress));
-        const symbol=symbols?.nameAt?.(functionAddress)??rawSymbol??functionName;
+        const symbol=binarySymbol;
         const lifetimeClass=enableTypedArguments===true&&typed?index.classTypeFor?.(typed.className):null;
         // A conflicting primary-vtable identity cannot be repaired by a name.
         const argumentOwner=index.typedClasses?.has(typed?.className)
@@ -447,8 +450,8 @@ export function createCxxEvidenceProvider(input = {}) {
         report = extractCppObjectEvidence({
           functionId: functionId != null ? String(functionId) : `sub_${BigInt(functionAddress).toString(16)}`,
           functionAddress,
-          functionName,
-          rawSymbol,
+          functionName:binarySymbol,
+          rawSymbol:binarySymbol,
           ir,
           vtables,
           vtableClassNames,

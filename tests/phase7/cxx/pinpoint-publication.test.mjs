@@ -7,13 +7,28 @@ import { pinpoint, pinpointField, pinpointFunction, rerankWithJev } from '../../
 import { FieldIndex } from '../../../js/fields.js';
 import { parseGoal } from '../../../js/goals.js';
 import { openProduct } from '../../../tools/validation/public-benchmark/product-host.mjs';
-import { cxxMemberIndexForApp } from '../../../js/analysis/query/app-adapter.js';
+import { cxxMemberIndexForApp, recoverCxxMembersForQuery } from '../../../js/analysis/query/app-adapter.js';
 import { composePinpointFields } from '../../../js/pinpoint-fields.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
 import { proofText } from '../../../js/narrate.js';
 import { autoAnalyze } from '../../../js/auto.js';
 import { cxxSemanticViews, withCxxSemanticPreference } from '../../../js/analysis/query/cxx-semantic-preference.js';
 import { requestJevAlternative } from '../../../js/analysis/query/jev-advisory.js';
+
+test('symbol epoch changes retire cached C++ publication before another semantic query',async()=>{
+ const symbols={gen:1,names:['_ZN6WidgetC1Ev'],addrs:[1n],funcs:[1n]};
+ const file={},backend={file,gen:1,binaryId:'epoch-fixture',readAt:async()=>({found:false})};
+ const app={symbols,backend,store:{get:key=>({architecture:'arm64',sliceIndex:0})[key]},
+  executableRegionFor:()=>({start:1n,end:100n}),
+  analysisQueries:{snapshot:async()=>({snapshotId:'bound'}),decompile:async()=>{throw Error('metadata-only query must not decompile');}}};
+ await recoverCxxMembersForQuery(app,'widget',{enabled:true,planOnly:true});
+ const before=cxxMemberIndexForApp(app);assert.ok(before);
+ symbols.gen++;
+ assert.equal(cxxMemberIndexForApp(app),null,'same object identity does not preserve stale symbol ownership');
+ await recoverCxxMembersForQuery(app,'widget',{enabled:true,planOnly:true});
+ assert.notEqual(cxxMemberIndexForApp(app),before);
+ backend.gen++;assert.equal(cxxMemberIndexForApp(app),null);
+});
 
 test('optional production advisory sends only canonical facts and preserves local under choices and failures', async () => {
   const fields = new CxxMemberIndex(); fields.publish(projection('Thing', [{}, { offsetBytes: 12n }]));

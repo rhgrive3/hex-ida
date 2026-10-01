@@ -168,3 +168,31 @@ test('the 255 boundary and ambiguous aliases never grant an external selector ex
   const folded=createCxxQueryPlanner({symbols:{funcs:[1n],addrs:[1n,1n],names:['_ZNK6Widget8GetCountEv','_ZNK5Other8GetCountEv']},isExecutable:()=>true});
   assert.deepEqual(folded.choices('count'),[]);
 });
+
+test('V5 retrieval retains matching owner depth and broad exploration without adding receiver authority',()=>{
+ const names=[],funcs=[];
+ const add=name=>{names.push(name);funcs.push(BigInt(names.length));};
+ for(let i=0;i<60;i++){const method='value'+i;add(`_ZNK6Widget${method.length}${method}Ev`);}
+ for(let i=0;i<260;i++){const owner='Other'+i;add(`_ZNK${owner.length}${owner}4readEv`);}
+ add('_ZN6Widget6StaticEv');
+ const symbols={names,addrs:funcs,funcs};
+ const old=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'value-accessor-v3'});
+ const next=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'semantic-retrieval-v5'});
+ const choices=next.choices('widget setting');
+ assert.equal(choices.length,255);assert.equal(new Set(choices.map(row=>String(row.address))).size,255);
+ assert.ok(!old.choices('widget setting').some(row=>row.address===60n));
+ assert.ok(choices.some(row=>row.address===60n),'the late proven method is visible to the external selector');
+ assert.ok(choices.filter(row=>row.className!=='Widget').length>=127,'global owners keep at least half the available budget');
+ assert.ok(choices.every(row=>row.methodName!=='Static'),'ordinary qualified names remain unproven');
+ assert.equal(next.functionCount,old.functionCount);
+ assert.deepEqual(next.plan('widget setting'),old.plan('widget setting'),'only the remote shortlist changes');
+ assert.equal(next.choices('widget',{maxChoices:1}).length,1);
+ assert.equal(next.choices('no matching object').length,255);
+ const nested=createCxxQueryPlanner({symbols:{funcs:[1n,2n],addrs:[1n,2n],
+  names:['_ZNK3BoxI6WidgetE4readEv','_ZNK6Widget4readEv']},
+  isExecutable:()=>true,planningPolicy:'semantic-retrieval-v5'});
+ const box=nested.choices('widget').find(row=>row.address===1n);
+ assert.equal(box.className,'Box<Widget>');assert.deepEqual(box.classTokens,['box'],
+  'a template argument is related context, not the requested owning object');
+ assert.equal(nested.choices('widget')[0].address,2n);
+});

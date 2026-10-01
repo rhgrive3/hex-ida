@@ -1,0 +1,17 @@
+{
+  "schema": "hex-jev-blind-query-manifest/v4",
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "SV4-MW-10",
+      "query": "How many hours has the player chosen to rest for?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-16",
+      "query": "How many times has this creature been struck by a friend?",
+      "mode": "partial"
+    }
+  ]
+}

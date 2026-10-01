@@ -3,7 +3,7 @@
 import { demangleCxx } from '../../rtti.js';
 import { cxxQueryTokens, cxxRecoveryTokens } from '../cxx/query-recovery.js';
 import { isCxxMemberField } from '../cxx/member-index.js';
-import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence } from '../cxx/object-evidence.js';
+import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence, cxxBinarySymbolNameAt } from '../cxx/object-evidence.js';
 
 export function cxxSemanticScores(query, views) {
   if (!Array.isArray(views) || views.length > 400) return [];
@@ -66,7 +66,7 @@ export function cxxSemanticViews(candidates, symbols) {
       if (ownerKey !== field.ownerKey || owner?.offsetToTop !== 0n) continue;
       const address = receiver.functionAddress;
       const cacheKey = String(address);
-      if (!names.has(cacheKey)) names.set(cacheKey, symbols.nameAt(address) ?? null);
+      if (!names.has(cacheKey)) names.set(cacheKey, cxxBinarySymbolNameAt(symbols,address));
       contexts.push(Object.freeze({ address: cacheKey, name: names.get(cacheKey),
         receiverProven: true, accessRoles: member.accessRoles ?? [],
         receiverRole: receiver.receiverRole,

@@ -17,8 +17,18 @@ export function cxxRecoveryTokens(text) {
   return cxxQueryTokens(String(text??'').replace(/([A-Z]+)([A-Z][a-z])/g,'$1 $2'));
 }
 
+function ownerScopeName(name){
+  let depth=0,result='';
+  for(const character of String(name).slice(0,4096)){
+    if(character==='<')depth++;
+    else if(character==='>'){if(!depth)return null;depth--;}
+    else if(!depth)result+=character;
+  }
+  return depth?null:result;
+}
+
 export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false,planningPolicy='legacy'}={}) {
-  if(!['legacy','value-accessor-v3','object-context-v4'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
+  if(!['legacy','value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
   const valueAccessors=planningPolicy!=='legacy';
   const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
   const typedClassNames=new Set((classEvidence?.classes??[]).map(cls=>cls.className).filter(Boolean));
@@ -63,7 +73,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     const row={address:BigInt(address),className,methodName,symbolName:symbols.names[i],
       ...(planningPolicy==='object-context-v4'?{isConstructor:info.isConstructor===true}:{}),
       proof:argumentProof?'release-typed-object-argument':declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
-      classTokens:tokensFor(className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(methodName),
+      classTokens:tokensFor(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(className)??'':className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(methodName),
       declaredSizeBytes:extentFor(BigInt(address))};
     const previous=records.get(String(address));
     if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
@@ -73,7 +83,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
   for(const [key,names] of owners) {
     if(records.has(key)||blocked.has(key)||names.size!==1||!isExecutable(BigInt(key)))continue;
     const className=[...names][0];records.set(key,{address:BigInt(key),className,methodName:'',symbolName:null,
-      proof:'unique-vtable-owner',classTokens:tokensFor(className),methodTokens:[],declaredSizeBytes:extentFor(BigInt(key))});
+      proof:'unique-vtable-owner',classTokens:tokensFor(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(className)??'':className),methodTokens:[],declaredSizeBytes:extentFor(BigInt(key))});
   }
   const rows=[...records.values()].map(row=>Object.freeze({...row,
     classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}))
@@ -83,7 +93,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     const tokens=new Set(tokensFor(phrase));
     return rows.map(row=>{
       const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
-      const leaf=row.className.split('::').at(-1);
+      const leaf=(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(row.className)??'':row.className).split('::').at(-1);
       const exactObject=tokensFor(leaf).length===1&&tokens.has(leaf.toLowerCase());
       return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
         objectMatches:planningPolicy==='object-context-v4'?tokensFor(leaf).filter(token=>tokens.has(token)).length:0,
@@ -127,14 +137,36 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       for(const row of scoreRows(phrase)) {
         const group=groups.get(row.className)??[];group.push(row);groups.set(row.className,group);
       }
-      const result=[];
+      const result=[],seen=new Set();
+      if(planningPolicy==='semantic-retrieval-v5'){
+        // Reserve half the finite choice budget for depth within up to eight
+        // query-matching owners. The remaining half still explores owners.
+        // A one-method-per-class list can otherwise hide the requested
+        // accessor even when its proven owner is already present.
+        const focused=[...groups.values()].filter(group=>group[0].classHits.length>0)
+          .sort((a,b)=>b[0].classHits.length-a[0].classHits.length||b[0].specificity-a[0].specificity)
+          .slice(0,8);
+        const focusedBudget=Math.floor(maxChoices/2);
+        for(let depth=0;result.length<focusedBudget;depth++){
+          let added=false;
+          for(const group of focused){
+            if(group[depth]){const row=group[depth];result.push(Object.freeze(row));seen.add(String(row.address));added=true;}
+            if(result.length===focusedBudget)break;
+          }
+          if(!added)break;
+        }
+      }
       for(let depth=0;result.length<maxChoices;depth++) {
         let added=false;
         for(const group of groups.values()) {
-          if(group[depth]){result.push(Object.freeze(group[depth]));added=true;}
+          if(group[depth]&&!seen.has(String(group[depth].address))){
+            const row=group[depth];result.push(Object.freeze(row));seen.add(String(row.address));added=true;
+          }
           if(result.length===maxChoices)break;
         }
-        if(!added)break;
+        // A depth containing only previously focused rows is not exhaustion:
+        // deeper rows of those owners may still fill the global budget.
+        if(!added&&![...groups.values()].some(group=>group.length>depth+1))break;
       }
       return Object.freeze(result);
     },

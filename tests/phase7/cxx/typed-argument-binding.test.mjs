@@ -5,7 +5,56 @@ import {createCppTypedArgumentReceiverEvidence,isCanonicalCppReceiverEvidence,an
 import {createCppTypedArgumentEvidence} from '../../../js/analysis/cxx/typed-argument.js';
 import {currentCppReceiver} from '../../../js/decompiler/cxx-evidence.js';
 import {createCxxQueryPlanner} from '../../../js/analysis/cxx/query-recovery.js';
+import {cxxSemanticViews} from '../../../js/analysis/query/cxx-semantic-preference.js';
+import {pinpointField} from '../../../js/pinpoint.js';
+import {parseGoal} from '../../../js/goals.js';
 const symbol='_Z10readHealthP6Entity';
+test('integral and enum template arguments retain exact ABI owner and receiver proof',async()=>{
+ for(const [raw,owner] of [
+  ['_ZNK3BoxILi2EE3getEv','Box<2>'],
+  ['_ZNK3BoxILin2EE3getEv','Box<-2>'],
+  ['_ZNK3BoxILb1EE3getEv','Box<true>'],
+  ['_ZNK3BoxILN3abc4KindE1EE3getEv','Box<(abc::Kind)1>'],
+ ]){
+  const info=analyzeFunctionSymbol(raw);assert.equal(info.className,owner,raw);
+  assert.equal(info.isConstMember,true);
+  const p=createCxxEvidenceProvider({symbols:symbolsFor([raw]),read:()=>null,snapshotId:'literal-abi',
+   cacheKey:raw,cache:{get:async()=>({classes:[],pointerBytes:8})}});
+  await p.build();const projection=p.projectForFunction({functionId:'reader',functionAddress:1n,functionName:raw,ir});
+  assert.equal(projection.receiver.classIdentity.className,owner);
+  assert.equal(p.memberIndex().fieldCount,1);
+ }
+ for(const raw of ['_ZNK3BoxILb2EE3getEv','_ZNK3BoxILin0EE3getEv','_ZNK3BoxILi01EE3getEv',
+  '_ZNK3BoxILi2147483648EE3getEv','_ZNK3BoxILjn1EE3getEv','_ZNK3BoxILd3ff0000000000000EE3getEv',
+  '_ZNK3BoxILPi0EE3getEv','_ZNK3BoxIL_Z3foovEE3getEv','_ZNK3BoxILi2EE3getEvBAD'])
+  assert.equal(analyzeFunctionSymbol(raw).className,undefined,raw);
+ const ordinary=analyzeFunctionSymbol('_ZN3BoxILi2EE3getEv');
+ assert.equal(ordinary.className,'Box<2>');assert.equal(ordinary.isConstMember,false);
+});
+test('ABI component boundaries keep method template namespaces out of owners',async()=>{
+ const cases=[
+  ['_ZNK6Widget3getIN3abc1XEEEiv','Widget','get<abc::X>'],
+  ['_ZNK6WidgetIN3abc1XEE3getEv','Widget<abc::X>','get'],
+  ['_ZNK3abc6WidgetIN3def1XEE3getIN3ghi1YEEEiv','abc::Widget<def::X>','get<ghi::Y>'],
+  ['_ZNK6WidgetlsEi','Widget','operator<<'],
+  ['_ZNK6WidgetclEv','Widget','operator()'],
+ ];
+ for(const [raw,owner,method] of cases){
+  const info=analyzeFunctionSymbol(raw);
+  assert.equal(info.className,owner,raw);assert.equal(info.methodName,method,raw);
+  assert.equal(info.isConstMember,true,raw);
+  const p=createCxxEvidenceProvider({symbols:symbolsFor([raw]),read:()=>null,snapshotId:'abi-components',
+   cacheKey:raw,cache:{get:async()=>({classes:[],pointerBytes:8})}});
+  await p.build();const projection=p.projectForFunction({functionId:'reader',functionAddress:1n,functionName:raw,ir});
+  assert.equal(projection.receiver.classIdentity.className,owner);
+  assert.equal(p.memberIndex().classCount,1);
+  assert.equal([...p.memberIndex().classes.values()][0].name,owner);
+ }
+ for(const raw of ['_ZNK6Widget3getIN3abc1XEEEivBAD','_ZNK6Widget3getIN3abc1XEEiv'])
+  assert.equal(analyzeFunctionSymbol(raw).className,undefined,raw);
+ const ordinary=analyzeFunctionSymbol('_ZN6Widget3getIN3abc1XEEEiv');
+ assert.equal(ordinary.className,'Widget');assert.equal(ordinary.isConstMember,false);
+});
 test('only outer ABI role tokens prove constructors, destructors or const members',()=>{
  for(const raw of ['_ZN3Foo3FooEv','_ZN3Foo5aC1EbEv','_ZN3Foo1fEPK3Foo']) {
   const role=analyzeFunctionSymbol(raw);assert.equal(role.isConstructor,false,raw);
@@ -20,6 +69,24 @@ test('only outer ABI role tokens prove constructors, destructors or const member
 });
 const ir={functionId:'reader',values:[{id:'arg0',kind:'arg',reg:'x0',bits:64}],instructions:[
  {id:'read',op:'load',loc:{kind:'field',base:{id:'arg0'},disp:8n,size:4},dst:{id:'value',bits:32}}]};
+test('display renames cannot create C++ ownership or enter binary-derived Jev contexts',async()=>{
+ const forged='_ZNK6Oracle11secretFieldEv';
+ const raw='_Z4readv';
+ const symbols={names:[raw],addrs:[1n],funcs:[1n],nameAt:()=>forged};
+ const make=async symbols=>{const p=createCxxEvidenceProvider({symbols,read:()=>null,snapshotId:'raw-symbols',
+  cacheKey:'renames',cache:{get:async()=>({classes:[],pointerBytes:8})}});await p.build();return p;};
+ let p=await make(symbols);
+ assert.equal(p.projectForFunction({functionId:'reader',functionAddress:1n,functionName:forged,ir}),null);
+ assert.equal(p.memberIndex().fieldCount,0);
+ const legitimate='_ZNK6Widget4readEv';
+ p=await make({...symbols,names:[legitimate]});
+ const projection=p.projectForFunction({functionId:'reader',functionAddress:1n,functionName:forged,ir});
+ assert.equal(projection.receiver.classIdentity.className,'Widget');
+ const local=await pinpointField({goal:parseGoal('widget'),cxxFields:p.memberIndex(),limit:400});
+ const views=cxxSemanticViews(local.candidates,{...symbols,names:[legitimate]});
+ assert.ok(views.length);assert.equal(views[0].functionContexts[0].name,legitimate);
+ assert.equal(JSON.stringify(views).includes('secretField'),false);
+});
 function symbolsFor(names=[symbol]){return{names,addrs:names.map(()=>1n),funcs:[1n],nameAt:()=>names[0]};}
 async function provider(names=[symbol],snapshotId='first',knownClass=true){
  let reads=0;const p=createCxxEvidenceProvider({symbols:symbolsFor(names),read:()=>{reads++;return null;},snapshotId,
