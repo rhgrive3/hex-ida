@@ -38,6 +38,35 @@ test('automatic anonymous routing vetoes identical context and fails closed on s
   client:{call:async()=>{current=false;return {choiceIndex:1};}}})).top1,local.top);
  assert.equal(local.verdict,'ambiguous');assert.equal(local.top,local.candidates[0]);
 });
+test('live V4 selection uses the same branded request projection as its ambiguity veto',async()=>{
+ const local=anonymousLocal(),symbols={nameAt:()=> '_ZN6Widget6updateEb'};let calls=0,body;
+ const opts={enabled:true,isCurrent:()=>true,symbols,mode:'partial',representation:'argument-flow-v4',routingPolicy:'object-context-v4'};
+ const client=createJevMemberClient({apiKey:'secret-test-key',symbols,representation:'argument-flow-v4',fetchImpl:async(_url,options)=>{
+  calls++;body=JSON.parse(options.body);
+  return {ok:true,json:async()=>({model:'openjev',answers:{pick:{type:'choice',choice:'c1',confidence:.6,probabilities:{c1:.6}},unique:{type:'noul',noul:.5}}})};
+ }});
+ local.candidates[0].oracle='SECRET_ORACLE';
+ const selected=await rerankAnonymousCxx('Has the operation finished?',local,{...opts,client});
+ assert.equal(selected.source,'jev','a valid live V4 selection must survive the visible-context veto');
+ assert.equal(selected.top1,local.candidates[1]);assert.equal(local.top,local.candidates[0]);
+ assert.ok(body.questions.pick.criteria.c0.includes('member: offset 0x8'));
+ assert.ok(body.questions.pick.criteria.c1.includes('member: offset 0x9'));
+ assert.equal(JSON.stringify(body).includes('SECRET_ORACLE'),false);
+ assert.equal(JSON.stringify(body).includes('secret-test-key'),false);
+ const same=anonymousLocal(true);
+ assert.equal((await rerankAnonymousCxx('Has the operation finished?',same,{...opts,client})).top1,same.top);
+ const before=calls;
+ for(const options of [{...opts,enabled:false},{...opts,isCurrent:()=>false}])
+  assert.equal((await rerankAnonymousCxx('Has the operation finished?',local,{...options,client})).top1,local.top);
+ assert.equal((await rerankAnonymousCxx('Has the operation finished?',{...local,verdict:'confirmed'},{...opts,client})).top1,local.top);
+ assert.equal((await rerankAnonymousCxx('Has the operation finished?',{...local,candidates:local.candidates.map(c=>({...c,field:{...c.field}}))},{...opts,client})).top1,local.top);
+ assert.equal(calls,before,'disabled, strong, stale and forged input never call the remote client');
+ // Untrusted candidate display properties cannot overwrite branded facts.
+ local.candidates[1].recoveredType={category:'SECRET_ORACLE'};
+ await rerankAnonymousCxx('Has the operation finished?',local,{...opts,client});
+ assert.equal(JSON.stringify(body).includes('SECRET_ORACLE'),false);
+});
+
 test('anonymous HTTP client uses only branded release facts and rejects malformed responses',async()=>{
  const local=anonymousLocal(),symbols={nameAt:()=> '_ZN6Widget6updateEb'};let calls=0;
  const valid={model:'openjev',answers:{pick:{type:'choice',choice:'c1',confidence:0.6,probabilities:{c1:0.6}},unique:{type:'noul',noul:0.5}}};

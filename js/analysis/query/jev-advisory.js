@@ -179,6 +179,16 @@ export function jevVisibleArgumentContextSignature(query,view) {
   return JSON.stringify([bounded(view?.className),context]);
 }
 
+// Complete the context-only trust projection with facts from the same branded
+// field. Both the HTTP body and the live veto must see this exact projection.
+function memberRequestViews(candidates,contexts) {
+  return contexts.map((context,index)=>{
+    const field=candidates[index].field;
+    return {...context,anonymous:field.anonymous,offset:field.offset,size:field.size,
+      recoveredType:field.recoveredType,readCount:field.readCount,writeCount:field.writeCount};
+  });
+}
+
 export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
   if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
   if(!['value-flow-v3','argument-flow-v4'].includes(representation))return null;
@@ -186,9 +196,7 @@ export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representa
     if(!Array.isArray(candidates)||candidates.length<2||candidates.length>255)return null;
     const contexts=cxxSemanticViews(candidates,symbols);
     if(!contexts||contexts.some(context=>!context))return null;
-    const views=contexts.map((context,index)=>({...context,offset:candidates[index].offset,
-      size:candidates[index].size,recoveredType:candidates[index].recoveredType,
-      readCount:candidates[index].field.readCount,writeCount:candidates[index].field.writeCount}));
+    const views=memberRequestViews(candidates,contexts);
     const response=await fetchImpl('https://api.openjev.sh/v1/systemone',{
       method:'POST',headers:{authorization:`Bearer ${apiKey.trim()}`,'content-type':'application/json'},
       body:JSON.stringify((representation==='argument-flow-v4'?jevArgumentFlowRequest:jevValueFlowRequest)(query,views)),signal});
@@ -216,7 +224,7 @@ export async function rerankAnonymousCxx(query,local,options={}) {
     if(options.isCurrent()!==true||local?.candidates?.some(candidate=>candidate.askedByName))return fallback();
     const contexts=cxxSemanticViews(local?.candidates,options.symbols);
     if(!contexts||contexts.some(context=>!context))return fallback();
-    const views=contexts.map((context,index)=>({...context,anonymous:local.candidates[index].anonymous}));
+    const views=memberRequestViews(local.candidates,contexts);
     if(!jevSemanticRoute(query,views,{verdict:local.verdict,topKey:local.top?.key,
       policy:options.routingPolicy??'legacy'}).call)return fallback();
     const client={call:async input=>{
