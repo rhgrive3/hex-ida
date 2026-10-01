@@ -70,7 +70,8 @@ export function cxxSemanticViews(candidates, symbols) {
       contexts.push(Object.freeze({ address: cacheKey, name: names.get(cacheKey),
         receiverProven: true, accessRoles: member.accessRoles ?? [],
         receiverRole: receiver.receiverRole,
-        writtenArgumentRegisters: member.writtenArgumentRegisters ?? [] }));
+        writtenArgumentRegisters: member.writtenArgumentRegisters ?? [],
+        writtenArgumentBits: member.writtenArgumentBits ?? [] }));
     }
     return Object.freeze({ key: candidate.key, source: 'cxx', className: candidate.className,
       conflict: field.conflict === true, functionContexts: Object.freeze(contexts) });

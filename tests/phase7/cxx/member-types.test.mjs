@@ -32,6 +32,30 @@ function createIr(lines) {
 
 const allBases = () => true;
 
+test('single-bit masked input stores retain caller provenance and reject transformed or oversized masks',()=>{
+  const ir=createIr(['and w2, w1, #1','strb w2, [x0, #4]','mov w2, #1','strb w2, [x0, #5]','ret']);
+  const report=recoverMemberTypeEvidence({ir,isReceiverBase:allBases});
+  assert.deepEqual(fieldAt(report,4).writtenArgumentBits,['x1:0']);
+  assert.deepEqual(fieldAt(report,4).writtenArgumentRegisters,[]);
+  assert.ok(fieldAt(report,4).accessRoles.includes('argument-written'));
+  assert.deepEqual(fieldAt(report,5).writtenArgumentBits,[]);
+  assert.ok(fieldAt(report,5).accessRoles.includes('one-written'));
+  assert.equal(fieldAt(report,4).memberName,undefined);
+  const base={id:'b'},argument={id:'a',kind:'arg',reg:'x1'},mask={id:'m'},masked={id:'v'};
+  const toy={values:[argument],instructions:[{op:'const',dst:mask,extra:{value:1n}},
+    {op:'bin',sub:'and',dst:masked,args:[argument,mask]},
+    {op:'store',args:[masked],loc:{kind:'field',base,disp:4n,size:1}}]};
+  const read=()=>recoverMemberTypeEvidence({ir:toy,isReceiverBase:v=>v===base}).fields[0].writtenArgumentBits;
+  assert.deepEqual(read(),['x1:0']);
+  for(const value of [0n,-1n,3n,256n,1n<<128n]) {
+    toy.instructions[0].extra.value=value;assert.deepEqual(read(),[]);
+  }
+  toy.instructions[0].extra.value=1n;
+  toy.instructions.splice(1,0,{op:'un',sub:'neg',dst:{id:'neg'},args:[argument]});
+  toy.instructions[2].args[0]={id:'neg'};
+  assert.deepEqual(read(),[],'transformed inputs cannot claim an entry argument bit');
+});
+
 function fieldAt(report, offset) {
   return report.fields.find((field) => field.offset === BigInt(offset)) ?? null;
 }

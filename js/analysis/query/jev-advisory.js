@@ -7,6 +7,8 @@ import { demangleCxx } from '../../rtti.js';
 
 const INSTRUCTION = 'Select only an existing candidate. Identify the main object and requested value in the phrase separately from actions and related helper objects. Prefer evidence for that object and value over an unrelated class with a matching word. Machine use roles and method names are context, not proof of a source field name. A shared method may access several different members. This is a weak ranking preference, never binary proof. Prefer a method that retrieves or changes the requested value over a method that only mentions an action in the question. Constructor and shared-method accesses do not distinguish individual unnamed members. Treat identical context as ambiguous; do not infer a source member name from an offset.';
 const bounded = value => String(value).slice(0, 240);
+const argumentBitsFor = context => (context.writtenArgumentBits??[]).slice(0,8)
+  .filter(value=>typeof value==='string'&&/^x[0-7]:(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(value));
 
 // This pure projection accepts an already validated view; unknown properties
 // (including descriptions, source labels, and oracle objects) are ignored.
@@ -65,13 +67,17 @@ export function jevArgumentFlowRequest(query, views) {
     'Constructor and shared-method accesses do not distinguish individual unnamed members.',
     'A shared method name alone does not distinguish individual unnamed members; separately tracked input sources and machine use roles may distinguish its accesses.');
   body.questions.pick.instructions+=' Input register writes identify machine-copy sources, possibly truncated to the member width. Use the release function signature and proven receiver ABI role as context. These observations do not recover a source parameter name or declare a field type. Separate a value supplied by a caller from literal default initialization. Caller-supplied properties may be initialized only once; the absence of an observed runtime write does not exclude them. Match the requested owning object before action words in helper classes.';
+  body.questions.pick.instructions+=' A single-bit input write records the indicated bit of an entry argument, not a guessed field type. For a question about a configurable setting, prefer the caller-supplied setting stored by a matching setter over a neighbouring literal 1 that may indicate the setter ran. For a question about whether an operation finished, a completion marker may instead be relevant. Distinguish the requested setting from the operation that changes it.';
   for(let index=0;index<views.length;index++) {
     const inputs=(views[index].functionContexts??[]).slice(0,64).flatMap(context=>{
-      const registers=(context.writtenArgumentRegisters??[]).filter(value=>typeof value==='string'&&/^x[0-7]$/.test(value));
-      if(!registers.length)return [];
+      const registers=(context.writtenArgumentRegisters??[]).slice(0,8).filter(value=>typeof value==='string'&&/^x[0-7]$/.test(value));
+      const bits=argumentBitsFor(context);
+      if(!registers.length&&!bits.length)return [];
       const role=['this','typed-argument'].includes(context.receiverRole)?context.receiverRole:'unknown';
       const method=context.name?(demangleCxx(context.name)??context.name):`0x${BigInt(context.address).toString(16)}`;
-      return [`entry-register write: ${[...new Set(registers)].sort().join(', ')}; receiver ABI role: ${role}; release method: ${bounded(method)}`];
+      const sources=registers.length?`entry-register write: ${[...new Set(registers)].sort().join(', ')}`:'';
+      const bitSources=bits.length?`entry-argument bit write: ${[...new Set(bits)].sort().map(value=>value.replace(':','[')+']').join(', ')}`:'';
+      return [[sources,bitSources,`receiver ABI role: ${role}`,`release method: ${bounded(method)}`].filter(Boolean).join('; ')];
     }).slice(0,8);
     if(inputs.length)body.questions.pick.criteria[`c${index}`]+=` | ${inputs.join(' | ')}`;
   }
@@ -111,7 +117,8 @@ export function jevSemanticRoute(query,views,{verdict='none',topKey=null,policy=
     const queryTokens=new Set(cxxRecoveryTokens(query));
     const callerInput=views.some(view=>cxxRecoveryTokens(view.className.split('::').at(-1)).some(token=>queryTokens.has(token))
       &&(view.functionContexts??[]).some(context=>context.receiverProven===true
-        &&context.writtenArgumentRegisters?.some(register=>typeof register==='string'&&/^x[0-7]$/.test(register))));
+        &&(context.writtenArgumentRegisters?.some(register=>typeof register==='string'&&/^x[0-7]$/.test(register))
+          ||argumentBitsFor(context).length)));
     if(callerInput)return Object.freeze({call:true,reason:'anonymous-caller-input-context'});
   }
   return skip('insufficient-runtime-context');
@@ -131,14 +138,15 @@ export function jevMemberContextSignature(view) {
 export function jevArgumentContextSignature(view) {
   const byAddress=new Map();
   for(const context of (view?.functionContexts??[]).slice(0,64)) {
-    const entry=byAddress.get(context.address)??{roles:new Set(),registers:new Set(),receiverRoles:new Set()};
+    const entry=byAddress.get(context.address)??{roles:new Set(),registers:new Set(),bits:new Set(),receiverRoles:new Set()};
     for(const role of context.accessRoles??[])entry.roles.add(role);
     for(const register of context.writtenArgumentRegisters??[])if(typeof register==='string'&&/^x[0-7]$/.test(register))entry.registers.add(register);
+    for(const bit of argumentBitsFor(context))entry.bits.add(bit);
     if(['this','typed-argument'].includes(context.receiverRole))entry.receiverRoles.add(context.receiverRole);
     byAddress.set(context.address,entry);
   }
   return JSON.stringify([view?.className,[...byAddress].map(([address,entry])=>
-    [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.receiverRoles].sort()])
+    [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.bits].sort(),[...entry.receiverRoles].sort()])
     .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
 }
 

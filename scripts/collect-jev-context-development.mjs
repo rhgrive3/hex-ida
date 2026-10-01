@@ -12,9 +12,10 @@ import {parseGoal} from '../js/goals.js';
 import {recoverySnapshot} from './jev-realgame-recovery-contract.mjs';
 import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
-const [binaryPath,queriesFile,destination]=process.argv.slice(2);
+const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3']=process.argv.slice(2);
 const arm="hex-value";
-if(!binaryPath||!queriesFile||!destination)throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT');
+if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4'].includes(planningPolicy))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT [value-accessor-v3|object-context-v4]');
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
 if(manifest.binarySha256!==binarySha256||!manifest.binaryKey||!Array.isArray(manifest.cases)||!manifest.cases.length
@@ -41,14 +42,14 @@ try {
     if(arm==='hex-value') {
       let choices=[],body=null;
       const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
-        planningPolicy:'value-accessor-v3',jevRetrieval:true,
+        planningPolicy,jevRetrieval:true,
         jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
       metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
     }
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,
       jevRetrieval:false,
-      planningPolicy:arm==='hex-value'||arm==='jev-value'?'value-accessor-v3':'legacy',
+      planningPolicy,
       maxFunctions:policy.collection.maxFunctionsPerQuery,maxElapsedMs:policy.collection.maxElapsedMs});
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
     const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});
@@ -74,7 +75,7 @@ try {
   if(collection.keyCollisions||rows.length!==manifest.cases.length)throw new Error('invalid recovery collection');
   const root=new URL('../',import.meta.url);
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
-    arm,remoteRetrievalExecution:'none; deterministic modern recovery only',
+    arm,planningPolicy,remoteRetrievalExecution:'none; deterministic modern recovery only',
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
       ['scripts/collect-jev-context-development.mjs','js/rtti.js','js/analysis/cxx/member-index.js','js/analysis/query/jev-advisory.js','js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
@@ -83,7 +84,7 @@ try {
         .map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),collection,rows});
   if(metadataRows.length)persistentWrite(`${destination}.metadata.json`,{
     schema:'hex-jev-recovery-metadata-audit/v3',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
-    planningPolicy:'value-accessor-v3',productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
+    planningPolicy,productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     binarySha256,queriesSha256:sha256(queryBytes),profile:product.profile,
     sourceHashes:Object.fromEntries(['js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/cxx/primary-owner.js','js/analysis/cxx/project.js',
       'js/analysis/cxx/query-recovery.js','js/analysis/query/app-adapter.js','js/analysis/query/jev-recovery.js',

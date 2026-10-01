@@ -18,8 +18,8 @@ export function cxxRecoveryTokens(text) {
 }
 
 export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false,planningPolicy='legacy'}={}) {
-  if(!['legacy','value-accessor-v3'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
-  const valueAccessors=planningPolicy==='value-accessor-v3';
+  if(!['legacy','value-accessor-v3','object-context-v4'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
+  const valueAccessors=planningPolicy!=='legacy';
   const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
   const typedClassNames=new Set((classEvidence?.classes??[]).map(cls=>cls.className).filter(Boolean));
   if(valueAccessors)for(const name of buildCppClassTypeIndex({symbols,snapshotId:'planning-only'}).keys())typedClassNames.add(name);
@@ -85,8 +85,10 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       const leaf=row.className.split('::').at(-1);
       const exactObject=tokensFor(leaf).length===1&&tokens.has(leaf.toLowerCase());
       return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
+        objectMatches:planningPolicy==='object-context-v4'?tokensFor(leaf).filter(token=>tokens.has(token)).length:0,
         specificity:classHits.length/Math.max(1,row.classTokens.length)};
     }).sort((a,b)=>{
+      const object=b.objectMatches-a.objectMatches;if(object)return object;
       const score=b.score-a.score;
       if(score)return score;
       const method=b.methodHits.length-a.methodHits.length;

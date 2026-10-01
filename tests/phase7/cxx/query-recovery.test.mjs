@@ -72,3 +72,11 @@ test('V3 scheduling prioritizes requested accessors and declared extent without 
   assert.deepEqual(cxxQueryTokens('SDLDeviceManager'),['sdldevice','manager']);
   assert.deepEqual(cxxRecoveryTokens('SDLDeviceManager'),['sdl','device','manager']);
 });
+
+test('V4 recovery prioritizes the requested class over a helper with matching action words',()=>{
+  const symbols={funcs:[1n,2n],addrs:[1n,2n],names:['_ZN6PersonC1Ev','_ZNK9UserStats10getCreditsEv']};
+  const plan=policy=>createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:policy}).plan('person credits');
+  assert.equal(plan('value-accessor-v3')[0].className,'UserStats');
+  assert.equal(plan('object-context-v4')[0].className,'Person');
+  assert.deepEqual(new Set(plan('object-context-v4').map(row=>row.address)),new Set(plan('value-accessor-v3').map(row=>row.address)));
+});

@@ -30,6 +30,17 @@ test('argument context stays bounded and duplicate or forged metadata cannot cre
   assert.equal(JSON.stringify(jevArgumentFlowRequest('question',[forbidden])).includes('SECRET_ORACLE_FIELD'),false);
   assert.equal(jevArgumentContextSignature(view),jevArgumentContextSignature({...view,offset:99,functionContexts:[context,context]}));
   assert.notEqual(jevArgumentContextSignature(view),jevArgumentContextSignature({...view,functionContexts:[{...context,writtenArgumentRegisters:['x1']}]}));
+  const bitContext={...context,writtenArgumentRegisters:[],writtenArgumentBits:['x2:0','x2:0','x255:0','SECRET_ORACLE_FIELD']};
+  const bitView={...view,functionContexts:[bitContext]};
+  const bitBody=jevArgumentFlowRequest('Which value was supplied?',[bitView]);
+  assert.match(bitBody.questions.pick.criteria.c0,/entry-argument bit write: x2\[0\]/);
+  assert.equal(JSON.stringify(bitBody).includes('SECRET_ORACLE_FIELD'),false);
+  assert.equal(jevArgumentContextSignature(bitView),jevArgumentContextSignature({...bitView,functionContexts:[bitContext,bitContext]}));
+  assert.notEqual(jevArgumentContextSignature(bitView),jevArgumentContextSignature(view));
+  const input={functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:8n,sizeBytes:1,writeCount:1,reason:'unclassified'};
+  assert.deepEqual(createCppMemberEvidence({...input,writtenArgumentBits:['x1:0']}).writtenArgumentBits,['x1:0']);
+  for(const bits of [['x1:8'],['x8:0'],['x1:64'],[{toString:()=> 'x1:0'}]])
+    assert.throws(()=>createCppMemberEvidence({...input,writtenArgumentBits:bits}),/argument-bit-invalid/);
   assert.throws(()=>createCppMemberEvidence({functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:8n,sizeBytes:1,
     writeCount:1,reason:'unclassified',writtenArgumentRegisters:[{toString:()=> 'x2'}]}),/argument-register-invalid/);
 });

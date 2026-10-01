@@ -71,7 +71,7 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     afterRevision:beforeRevision,candidateCount:beforeCount};
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
     decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,
-      {...queryOptions,typedArgumentRecovery:planningPolicy==='value-accessor-v3'});checkBinding();return value;}});
+      {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4'].includes(planningPolicy)});checkBinding();return value;}});
   checkBinding();
   const index=cxxMemberIndexForApp(app);
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,

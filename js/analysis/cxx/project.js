@@ -162,6 +162,7 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         writeCount: field.writeCount,
         accessRoles: field.accessRoles,
         writtenArgumentRegisters: field.writtenArgumentRegisters,
+        writtenArgumentBits: field.writtenArgumentBits,
         rule: field.rule,
         reason: field.reason,
       }));
@@ -218,7 +219,13 @@ function indexFromReport(report, symbols, architecture, snapshotId) {
     if(names.size)symbolOwners.set(key,names);
   }
   const vtables = [],typedClasses=new Map();
-  const classTypes=buildCppClassTypeIndex({symbols,snapshotId});
+  // Keep the new lifetime metadata walk off ordinary Fast projection. It is
+  // needed only when an explicit typed-input recovery query requests it.
+  let classTypes=null;
+  const classTypeFor=className=>{
+    if(!classTypes)classTypes=buildCppClassTypeIndex({symbols,snapshotId});
+    return classTypes.get(className);
+  };
   const vtableClassNames = [];
   const bySlotAddress = new Map();
   let slotCount = 0;
@@ -259,7 +266,7 @@ function indexFromReport(report, symbols, architecture, snapshotId) {
     symbolOwners,
     typedArguments,
     typedClasses,
-    classTypes,
+    classTypeFor,
     slotCount,
   });
 }
@@ -426,7 +433,7 @@ export function createCxxEvidenceProvider(input = {}) {
       try {
         const typed=index.typedArguments?.get(String(functionAddress));
         const symbol=symbols?.nameAt?.(functionAddress)??rawSymbol??functionName;
-        const lifetimeClass=index.classTypes?.get(typed?.className);
+        const lifetimeClass=enableTypedArguments===true&&typed?index.classTypeFor?.(typed.className):null;
         // A conflicting primary-vtable identity cannot be repaired by a name.
         const argumentOwner=index.typedClasses?.has(typed?.className)
           ?index.typedClasses.get(typed.className)
