@@ -24,7 +24,7 @@ function v4GameSummary(rows) {
 export function v4SelectionAllowed(query,selected,pool,selective) {
   if(!selected||selected.conflict||selected.functionContexts?.some(c=>c.writtenArgumentBitsTruncated===true))return false;
   const signature=selective?jevVisibleArgumentContextSignature(query,selected):null;
-  return !selective||!pool.some(peer=>peer.key!==selected.key&&peer.className===selected.className
+  return !selective||!pool.some(peer=>peer.key!==selected.key
     &&jevVisibleArgumentContextSignature(query,peer)===signature);
 }
 

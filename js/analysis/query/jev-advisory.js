@@ -173,9 +173,10 @@ export function jevArgumentContextSignature(view) {
 // two otherwise identical descriptions semantically distinguishable.
 export function jevVisibleArgumentContextSignature(query,view) {
   const description=jevArgumentFlowRequest(query,[view]).questions.pick.criteria.c0;
-  const context=[...new Set(description.split(' | ').slice(7)
+  const prefix=jevArgumentFlowRequest(query,[{...view,functionContexts:[]}]).questions.pick.criteria.c0;
+  const context=[...new Set(description.slice(prefix.length).split(' | ')
     .map(part=>part.replace(/release method: 0x[0-9a-f]+/g,'release method: unnamed')).filter(Boolean))].sort();
-  return JSON.stringify([view?.className,context]);
+  return JSON.stringify([bounded(view?.className),context]);
 }
 
 export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
@@ -229,8 +230,7 @@ export async function rerankAnonymousCxx(query,local,options={}) {
         ?view=>jevVisibleArgumentContextSignature(query,view):jevMemberContextSignature;
       const signature=signatureFor(selected);
       // Offsets, widths and read/write totals alone cannot distinguish meaning.
-      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key
-        &&view.className===selected.className&&signatureFor(view)===signature))return null;
+      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key&&signatureFor(view)===signature))return null;
       return response;
     }};
     const eligible={...local,candidates:local.candidates.filter(candidate=>!candidate.field.conflict)};

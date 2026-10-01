@@ -66,7 +66,7 @@ for(const row of rows) {
           const index=Number(call.response.answers.pick.choice.slice(1)),selected=shortlist[index];
           assert.equal(call.selectedKey,selected.key);assert.equal(call.choiceIndex,index);
           const contextUnsafe=selected.conflict||selected.functionContexts?.some(c=>c.writtenArgumentBitsTruncated===true);
-          const equivalent=selective&&pool.some(peer=>peer.key!==selected.key&&peer.className===selected.className
+          const equivalent=selective&&pool.some(peer=>peer.key!==selected.key
             &&jevVisibleArgumentContextSignature(row.query,peer)===jevVisibleArgumentContextSignature(row.query,selected));
           if(!['V4','S4'].includes(arm)||!contextUnsafe&&!equivalent)expected=selected.key;
         }

@@ -70,6 +70,13 @@ test('argument context stays bounded and duplicate or forged metadata cannot cre
     'unnamed code addresses do not distinguish member meaning');
   assert.equal(jevVisibleArgumentContextSignature('question',view),jevVisibleArgumentContextSignature('question',
     {...view,offset:999,size:8,readCount:999,recoveredType:{category:'pointer'}}));
+  const delimited={...view,className:'Owner | displayed class'};
+  assert.equal(jevVisibleArgumentContextSignature('question',delimited),
+    jevVisibleArgumentContextSignature('question',{...delimited,offset:999,size:8}),
+    'display separators inside a class name cannot turn layout into semantic context');
+  assert.equal(jevVisibleArgumentContextSignature('question',{...view,className:'a'.repeat(240)+'A'}),
+    jevVisibleArgumentContextSignature('question',{...view,className:'a'.repeat(240)+'B'}),
+    'hidden owner suffixes cannot distinguish identical visible descriptions');
   const input={functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:8n,sizeBytes:1,writeCount:1,reason:'unclassified'};
   assert.deepEqual(createCppMemberEvidence({...input,writtenArgumentBits:['x1:0']}).writtenArgumentBits,['x1:0']);
   for(const bits of [['x1:8'],['x8:0'],['x1:64'],[{toString:()=> 'x1:0'}]])
