@@ -71,7 +71,10 @@ export async function main() {
         const result=await rerankWithJev(input.query,base,{enabled:route.call&&input.routed,mode:gold.mode,
           client:safeClient,maxChoices:255});
         const key=result.top1?.key??input.topKey;keys.push(key);answers.push(correct(key));
-        if(client.calls.length!==before)calls.push({...client.calls.at(-1),repeat,policyArm:arm,committedKey:key});
+        if(client.calls.length!==before) {
+          const audit=client.calls.at(-1);
+          calls.push({...audit,repeat,policyArm:arm,committedKey:key,rawCorrect:correct(audit.selectedKey)});
+        }
       }
       row.arms[arm]={key:keys[0],correct:answers[0],repeatedKeys:keys,repeatedCorrect:answers,calls,route,
         goldInShortlist:gold.status==='verified'?jevShortlist(pool,{max:255}).some(c=>structuralMatch(c,gold)):null};
@@ -91,7 +94,7 @@ export async function main() {
     collection:snapshots.map(s=>({binary:s.binaryKey,...s.collection})),
     coldRecoveryLatency:percentiles(rows.map(row=>row.recovery.elapsedMs)),
     rawRemoteHighConfidenceErrors:rows.reduce((count,row)=>count+row.arms.V4.calls.filter(call=>row.status==='verified'
-      &&!row.arms.V4.repeatedKeys.some((key,index)=>key===call.selectedKey&&row.arms.V4.repeatedCorrect[index])
+      &&call.rawCorrect===false
       &&call.response?.answers?.pick?.confidence>=0.9&&call.response?.answers?.unique?.noul>=0.9).length,0),
     finalPolicy:'PENDING_PRESERVATION_AND_EXACT_HEAD_GATES',
     primaryRepeat:0,majorityVoting:false,repeats:policy.repeats});
