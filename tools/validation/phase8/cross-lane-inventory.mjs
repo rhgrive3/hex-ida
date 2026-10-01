@@ -18,6 +18,22 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Actual reviewed integration inventory, including the native SSA repair.
   // Only Phase 8-owned paths reach its canonical validator.
   "integration/jev-realgame-final": Object.freeze([
+    "reports/investigations/jev-realgame-final/default-v3/layout-openmw.json",
+    "reports/investigations/jev-realgame-final/default-v3/layout-openttd.json",
+    "reports/investigations/jev-realgame-final/default-v3/oracle-verification.json",
+    "reports/investigations/jev-realgame-final/default-v3/structural-cases.json",
+
+    "scripts/collect-jev-default-v3.mjs",
+    "reports/investigations/jev-realgame-final/default-v3/authority.draft-v1.md",
+    "reports/investigations/jev-realgame-final/default-v3/authority.md",
+    "reports/investigations/jev-realgame-final/default-v3/exposure-audit.json",
+    "reports/investigations/jev-realgame-final/default-v3/freeze.draft-v1.json",
+    "reports/investigations/jev-realgame-final/default-v3/freeze.json",
+    "reports/investigations/jev-realgame-final/default-v3/holdout.draft-v1.json",
+    "reports/investigations/jev-realgame-final/default-v3/holdout.json",
+    "reports/investigations/jev-realgame-final/default-v3/queries-openmw.json",
+    "reports/investigations/jev-realgame-final/default-v3/queries-openttd.json",
+
     "reports/investigations/jev-realgame-final/default-v3/policy-freeze.json",
     "tests/phase7/cxx/typed-argument-binding.test.mjs",
     "tests/phase7/cxx/typed-argument.test.mjs",

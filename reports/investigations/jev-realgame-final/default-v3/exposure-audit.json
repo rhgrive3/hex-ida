@@ -1,0 +1,50 @@
+{
+  "schema": "hex-jev-v3-holdout-exposure-audit/v1",
+  "recordedAtUtc": "2026-10-01T02:43:19Z",
+  "exposure": {
+    "occurred": true,
+    "mechanism": "Parent ran a filename-scoped rg over the in-progress draft authority.md.",
+    "exposedReportLabels": [
+      "Company identity colour stored on the company property block",
+      "ClientNetworkGameSocketHandler::sock offset 40 size 4"
+    ],
+    "exposedDraftCaseIds": [
+      "SV3-OP-01",
+      "SV3-OP-13"
+    ],
+    "queryTextExposed": false,
+    "otherCaseLabelsExposed": false,
+    "outcomesOrCandidateDataExposed": false,
+    "tuningFromExposure": false,
+    "remediation": "Both exposed physical fields were dropped and replaced by independently selected never-used verified identities (Group.vehicle_type for SV3-OP-01; ClientNetworkGameSocketHandler.info for SV3-OP-13). No exposed identity is present in the final holdout.",
+    "draftPreservedAs": [
+      "holdout.draft-v1.json",
+      "freeze.draft-v1.json",
+      "authority.draft-v1.md"
+    ]
+  },
+  "unchangedOriginalDraft": {
+    "files": [
+      "holdout.draft-v1.json",
+      "freeze.draft-v1.json",
+      "authority.draft-v1.md"
+    ],
+    "sha256": {
+      "holdout.draft-v1.json": "d663172fa099e35641b499d9d8ee557cfd1a0a27787d361e9d5c7de7a9cce57b",
+      "freeze.draft-v1.json": "f995a2ac9b92f23a24e2ebba2efd2a6d02a6aca5143a2b0adb1f2d8f65c88d16",
+      "authority.draft-v1.md": "f1e8434ea2e8d132914750b3fa42da4bf10065397199618d15d0416aff1dfa36"
+    },
+    "draftMarker": "holdout-v3.draft-v1.done"
+  },
+  "finalFiles": {
+    "holdoutSha256": "16106dc5900e40c24200664c19d9b2f26cdaf44b0eaae86ceb844d266c3a9b16",
+    "freezeSha256": "aabb038d05f34daa88b843a1ada9e8d7ad944779a1f5458ddfcd54a6db4b2ccb",
+    "authorityMdSha256": "189306f6a76f93b1c85f3e0d975a1cabee990de8367e398404daf7dc4e8616eb"
+  },
+  "exposedIdentitiesAbsentFromFinal": true,
+  "replacementCases": {
+    "SV3-OP-01": "Group.vehicle_type (offset 41, VehicleType)",
+    "SV3-OP-13": "NetworkGameSocketHandler.info (offset 48, NetworkClientInfo *)"
+  },
+  "declaration": "Parent saw exactly two draft report labels via a filename-scoped rg; that partial exposure is recorded here. No query text, other case labels, or outcomes were exposed. Both exposed physical fields were replaced by independently selected never-used verified identities. The final holdout does not claim zero parent exposure to the draft."
+}

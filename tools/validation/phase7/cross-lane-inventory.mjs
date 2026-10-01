@@ -27,6 +27,22 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Keep the foreign surface exact; the Phase 7 manifest remains unchanged.
   // The final game study integrates A/B without widening canonical ownership.
   "integration/jev-realgame-final": Object.freeze([
+    "reports/investigations/jev-realgame-final/default-v3/layout-openmw.json",
+    "reports/investigations/jev-realgame-final/default-v3/layout-openttd.json",
+    "reports/investigations/jev-realgame-final/default-v3/oracle-verification.json",
+    "reports/investigations/jev-realgame-final/default-v3/structural-cases.json",
+
+    "scripts/collect-jev-default-v3.mjs",
+    "reports/investigations/jev-realgame-final/default-v3/authority.draft-v1.md",
+    "reports/investigations/jev-realgame-final/default-v3/authority.md",
+    "reports/investigations/jev-realgame-final/default-v3/exposure-audit.json",
+    "reports/investigations/jev-realgame-final/default-v3/freeze.draft-v1.json",
+    "reports/investigations/jev-realgame-final/default-v3/freeze.json",
+    "reports/investigations/jev-realgame-final/default-v3/holdout.draft-v1.json",
+    "reports/investigations/jev-realgame-final/default-v3/holdout.json",
+    "reports/investigations/jev-realgame-final/default-v3/queries-openmw.json",
+    "reports/investigations/jev-realgame-final/default-v3/queries-openttd.json",
+
     "reports/investigations/jev-realgame-final/default-v3/policy-freeze.json",
     "reports/investigations/jev-realgame-final/development-v3/queries-openmw.json",
     "reports/investigations/jev-realgame-final/development-v3/queries-openttd.json",

@@ -1,0 +1,9 @@
+{
+  "authority": "parent independently re-extracted exact matching DWARF with GDB; every inherited alias checked",
+  "verifiedCases": 40,
+  "verifiedStructuralIdentities": 45,
+  "controls": 10,
+  "noPriorIdentityOverlap": true,
+  "holdoutHash": "16106dc5900e40c24200664c19d9b2f26cdaf44b0eaae86ceb844d266c3a9b16",
+  "structuralHash": "a69bf4bae93741b910a866410f2b25dd33737b779882b5ca1d8dddee8f25f96a"
+}
