@@ -36,15 +36,22 @@ export function jevAdvisoryRequest(query, views) {
 // replay; these extra roles come only from the canonical machine IR producer.
 export function jevValueFlowRequest(query, views) {
   const body=jevAdvisoryRequest(query,views);
-  body.questions.pick.instructions+=' Machine store roles distinguish a value copied from a caller argument from a flag assigned a known constant. Use that distinction when the question asks for input state versus completion or lifecycle state. A constant write by itself does not identify a purpose. Indistinguishable use contexts remain ambiguous.';
+  body.questions.pick.instructions+=' Machine store roles distinguish caller-derived input from exact 0 or 1 assignments. Recovered categories describe machine use, not declared source types: a one-byte zero write can be a string terminator or padding, not a boolean field. Construction-only writes do not establish runtime state or completion. For a current-state question prefer matching runtime reads or updates over construction-only initialization. A 1 assigned during a relevant runtime operation can mark that operation having occurred; this is contextual support, not proof of its purpose. Indistinguishable use contexts remain ambiguous.';
   for(let index=0;index<views.length;index++) {
     const flows=(views[index].functionContexts??[]).slice(0,64).flatMap(context=>{
-      const roles=(context.accessRoles??[]).filter(role=>['constant-written','argument-written'].includes(role));
+      const roles=(context.accessRoles??[]).filter(role=>['constant-written','argument-written','zero-written','one-written'].includes(role));
       if(!roles.length)return [];
       const method=context.name?(demangleCxx(context.name)??context.name):`0x${BigInt(context.address).toString(16)}`;
       return [`release method: ${bounded(method)}; store roles: ${roles.join(', ')}`];
     }).slice(0,8);
     if(flows.length)body.questions.pick.criteria[`c${index}`]+=' | '+flows.join(' | ');
+    const contexts=(views[index].functionContexts??[]).slice(0,64);
+    if(contexts.length&&contexts.every(context=>{
+      const name=context.name?demangleCxx(context.name):null;
+      if(!name)return false;
+      const parts=name.split('(')[0].split('::'),owner=parts.at(-2)?.split('<')[0],method=parts.at(-1);
+      return method===owner||method===`~${owner}`;
+    }))body.questions.pick.criteria[`c${index}`]+=' | observed access context: construction/destruction only; runtime use unavailable';
   }
   return body;
 }

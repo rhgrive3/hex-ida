@@ -108,6 +108,7 @@ const WIDTH_ONLY = new Set(['int8', 'int16', 'int32', 'int64']);
 
 function buildChains(ir, maxInstructions) {
   const sources = new Map();
+  const copies = new Map();
   const consumers = new Map();
   const constants = new Map();
   const vectorTargets = new Set();
@@ -142,6 +143,7 @@ function buildChains(ir, maxInstructions) {
       const source = valueId(inst.args[0]?.value ?? inst.args[0]);
       if (source != null) {
         sources.set(dstId, source);
+        if(inst.op==='mov')copies.set(dstId,source);
         const list = consumers.get(source);
         if (list) list.push(dstId); else consumers.set(source, [dstId]);
       }
@@ -176,7 +178,18 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
+  return { sources, copies, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
+}
+
+// Exact 0/1 writes may follow copies, never arbitrary unary operations.
+function storedBitConstant(seed,chains) {
+  const seen=new Set();let id=seed;
+  for(let depth=0;depth<MAX_CHAIN_DEPTH&&id!=null;depth++) {
+    if(seen.has(id))return null;seen.add(id);
+    if(chains.constants.has(id))return chains.constants.get(id);
+    id=chains.copies.get(id);
+  }
+  return null;
 }
 
 /** Breadth-first walk over mov/unary chains, bounded by MAX_CHAIN_DEPTH. */
@@ -299,6 +312,11 @@ export function recoverMemberTypeEvidence({
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
     if(storedRole)entry.accessRoles.add(storedRole);
+    if(inst.op==='store') {
+      const literal=storedBitConstant(valueId(inst.args?.[0]?.value??inst.args?.[0]),chains);
+      if(literal===0n)entry.accessRoles.add('zero-written');
+      if(literal===1n)entry.accessRoles.add('one-written');
+    }
     // A bounded extension of the already-built SSA copy/unary chains. These
     // are machine use roles, never source names or semantic field labels.
     if(inst.op==='load')for(const [role,targets] of [['return-input',chains.returnInputs],

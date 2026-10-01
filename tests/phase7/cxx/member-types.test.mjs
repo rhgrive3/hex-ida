@@ -61,12 +61,19 @@ test('stored constants and bounded argument flows remain machine context without
     {op:'store',args:[one],loc:{kind:'field',base,disp:9n,size:1}}]};
   const result=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
   assert.deepEqual(fieldAt(result,8).accessRoles,['argument-written']);
-  assert.deepEqual(fieldAt(result,9).accessRoles,['constant-written']);
+  assert.deepEqual(fieldAt(result,9).accessRoles,['constant-written','one-written']);
   assert.equal(fieldAt(result,8).category,'int8');
   assert.equal(fieldAt(result,9).category,'bool-like');
   assert.equal(fieldAt(result,9).memberName,undefined);
   ir.instructions[1]={op:'mov',dst:copy,args:[copy]};
   assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).accessRoles,[]);
+  ir.instructions.splice(1,0,{op:'un',dst:{id:'negated'},args:[one],extra:{kind:'not'}},
+    {op:'store',args:[{id:'negated'}],loc:{kind:'field',base,disp:10n,size:1}},
+    {op:'const',dst:{id:'zero'},extra:{value:0n}},
+    {op:'store',args:[{id:'zero'}],loc:{kind:'field',base,disp:11n,size:1}});
+  const literalResult=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(literalResult,10).accessRoles,['constant-written']);
+  assert.deepEqual(fieldAt(literalResult,11).accessRoles,['constant-written','zero-written']);
 });
 
 // ── pure classifier ────────────────────────────────────────────────────────

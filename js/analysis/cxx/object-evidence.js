@@ -406,8 +406,8 @@ export function createCppMemberEvidence(input = {}) {
   const writeCount = Number.isSafeInteger(input.writeCount) && input.writeCount >= 0 ? input.writeCount : 0;
   if (readCount + writeCount === 0) fail('cpp-member-access-count-required');
   const accessRoles=input.accessRoles??[];
-  if(!Array.isArray(accessRoles)||accessRoles.length>6||accessRoles.some(role=>
-    !['return-input','comparison-input','arithmetic-input','address-base','constant-written','argument-written'].includes(role)))fail('cpp-member-access-role-invalid');
+  if(!Array.isArray(accessRoles)||accessRoles.length>8||accessRoles.some(role=>
+    !['return-input','comparison-input','arithmetic-input','address-base','constant-written','argument-written','zero-written','one-written'].includes(role)))fail('cpp-member-access-role-invalid');
 
   const record = {
     schema: CPP_CANONICAL_MEMBER_SCHEMA,
