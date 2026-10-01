@@ -65,6 +65,39 @@ test('single-bit masked input stores retain caller provenance and reject transfo
   const canonical=createCppMemberEvidence({...field,functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:field.offset,sizeBytes:field.size});
   assert.equal(canonical.accessProven,true,'bounded descriptions must not remove the member');
   assert.equal(canonical.writtenArgumentBitsTruncated,true);
+  const input={id:'wide-input',kind:'arg',reg:'x1',bits:64};
+  const narrow={id:'narrow',bits:8},wide={id:'wide',bits:64};
+  const widthMask={id:'width-mask'},widthMasked={id:'width-masked',bits:64};
+  const widths={values:[input],instructions:[
+    {op:'mov',sub:'trunc',dst:narrow,args:[input]},
+    {op:'mov',sub:'zext',dst:wide,args:[narrow]},
+    {op:'const',dst:widthMask,extra:{value:1n<<9n}},
+    {op:'bin',sub:'and',dst:widthMasked,args:[wide,widthMask]},
+    {op:'store',args:[widthMasked],loc:{kind:'field',base,disp:4n,size:2}},
+    {op:'store',args:[wide],loc:{kind:'field',base,disp:5n,size:2}},
+    {op:'store',args:[wide],loc:{kind:'field',base,disp:6n,size:1}}]};
+  const widthReport=()=>recoverMemberTypeEvidence({ir:widths,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,[],
+    'bit 9 was lost by truncation and cannot be attributed to the input');
+  assert.deepEqual(fieldAt(widthReport(),5).writtenArgumentRegisters,[],
+    'zero extension does not restore the removed input bits');
+  assert.deepEqual(fieldAt(widthReport(),6).writtenArgumentRegisters,['x1']);
+  widths.instructions[2].extra.value=1n<<7n;
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,['x1:7']);
+  // Copies after the mask preserve only the surviving low bits too.
+  widths.instructions.splice(4,0,{op:'mov',sub:'trunc',dst:{id:'masked-byte',bits:8},args:[widthMasked]},
+    {op:'mov',sub:'zext',dst:{id:'masked-wide',bits:64},args:[{id:'masked-byte',bits:8}]});
+  widths.instructions[6].args=[{id:'masked-wide',bits:64}];
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,['x1:7']);
+  widths.instructions[2].extra.value=1n<<9n;
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,[]);
+  widths.instructions[0].sub='neg';
+  assert.deepEqual(fieldAt(widthReport(),6).writtenArgumentRegisters,[],
+    'non-identity MOV operations cannot claim an exact caller source');
+  input.bits=8;
+  widths.instructions.push({op:'store',args:[input],loc:{kind:'field',base,disp:7n,size:8}});
+  assert.deepEqual(fieldAt(widthReport(),7).writtenArgumentRegisters,[],
+    'entry argument width must cover every attributed stored bit');
 });
 
 function fieldAt(report, offset) {

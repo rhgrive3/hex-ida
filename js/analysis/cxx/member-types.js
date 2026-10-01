@@ -109,6 +109,7 @@ const WIDTH_ONLY = new Set(['int8', 'int16', 'int32', 'int64']);
 function buildChains(ir, maxInstructions) {
   const sources = new Map();
   const copies = new Map();
+  const copyWidths = new Map();
   const masks = new Map();
   const consumers = new Map();
   const constants = new Map();
@@ -146,7 +147,14 @@ function buildChains(ir, maxInstructions) {
       const source = valueId(inst.args[0]?.value ?? inst.args[0]);
       if (source != null) {
         sources.set(dstId, source);
-        if(inst.op==='mov')copies.set(dstId,source);
+        if(inst.op==='mov'&&(inst.sub==null||['copy','trunc','zext','sext'].includes(inst.sub))) {
+          const sourceValue=inst.args[0]?.value??inst.args[0];
+          const widths=[inst.dst?.bits,sourceValue?.bits].filter(bits=>Number.isSafeInteger(bits)&&bits>0&&bits<=64);
+          if(inst.sub==null||inst.sub==='copy'||widths.length===2) {
+            copies.set(dstId,source);
+            copyWidths.set(dstId,widths.length?Math.min(...widths):64);
+          }
+        }
         const list = consumers.get(source);
         if (list) list.push(dstId); else consumers.set(source, [dstId]);
       }
@@ -181,7 +189,7 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, copies, masks, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
+  return { sources, copies, copyWidths, masks, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
 }
 
 // Exact 0/1 writes may follow copies, never arbitrary unary operations.
@@ -239,14 +247,17 @@ function isStoredArgument(seedId, argumentIds, chains) {
   return false;
 }
 
-function storedArgumentRegister(seedId, argumentRegisters, chains) {
+function storedArgumentRegister(seedId, argumentRegisters, chains, requiredBits=1) {
+  if(!Number.isSafeInteger(requiredBits)||requiredBits<1||requiredBits>64)return null;
   const seen=new Set();let current=seedId;
   for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
     if(seen.has(current))return null;seen.add(current);
-    if(argumentRegisters.has(current))return argumentRegisters.get(current);
+    const argument=argumentRegisters.get(current);
+    if(argument)return argument.bits>=requiredBits?argument.register:null;
     // An arbitrary unary expression is argument-derived, but cannot claim
     // the unmodified parameter source. Copy/truncation stores remain explicit
     // machine observations; they do not establish declared field types.
+    if((chains.copyWidths.get(current)??0)<requiredBits)return null;
     current=chains.copies.get(current)??null;
   }
   return null;
@@ -254,7 +265,7 @@ function storedArgumentRegister(seedId, argumentRegisters, chains) {
 
 function storedArgumentBit(seedId, argumentRegisters, chains, storeSize) {
   if(!Number.isSafeInteger(storeSize)||storeSize<1||storeSize>8)return null;
-  const seen=new Set();let current=seedId;
+  const seen=new Set();let current=seedId,preservedBits=storeSize*8;
   for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
     if(seen.has(current))return null;seen.add(current);
     const operands=chains.masks.get(current);
@@ -263,12 +274,14 @@ function storedArgumentBit(seedId, argumentRegisters, chains, storeSize) {
         const mask=storedBitConstant(operands[index],chains);
         if(mask==null||mask<=0n||mask>0xffffffffffffffffn||(mask&(mask-1n))!==0n)continue;
         let bit=0;for(let value=mask;value>1n;value>>=1n)bit++;
-        if(bit>=storeSize*8||bit>=64)return null;
-        const register=storedArgumentRegister(operands[1-index],argumentRegisters,chains);
+        if(bit>=preservedBits||bit>=64)return null;
+        const register=storedArgumentRegister(operands[1-index],argumentRegisters,chains,bit+1);
         return register?`${register}:${bit}`:null;
       }
       return null;
     }
+    preservedBits=Math.min(preservedBits,chains.copyWidths.get(current)??0);
+    if(preservedBits<1)return null;
     current=chains.copies.get(current)??null;
   }
   return null;
@@ -295,7 +308,12 @@ export function recoverMemberTypeEvidence({
     .filter(value=>value.kind==='arg').map(value=>valueId(value)).filter(id=>id!=null));
   const argumentRegisters=new Map((ir?.values??[]).slice(0,maxInstructions)
     .filter(value=>value.kind==='arg'&&/^[xw][0-7]$/.test(value.reg??value.label??'')&&valueId(value)!=null)
-    .map(value=>[valueId(value),(value.reg??value.label).replace(/^w/,'x')]));
+    .map(value=>{
+      const register=value.reg??value.label;
+      const bits=Number.isSafeInteger(value.bits)&&value.bits>0&&value.bits<=64
+        ?value.bits:register.startsWith('w')?32:64;
+      return [valueId(value),{register:register.replace(/^w/,'x'),bits}];
+    }));
   const byOffset = new Map();
   let accesses = 0;
   let truncated = false;
@@ -359,7 +377,7 @@ export function recoverMemberTypeEvidence({
     if(storedRole)entry.accessRoles.add(storedRole);
     if(inst.op==='store') {
       if(argumentBit)entry.writtenArgumentBits.add(argumentBit);
-      const argumentRegister=storedArgumentRegister(valueId(inst.args?.[0]?.value??inst.args?.[0]),argumentRegisters,chains);
+      const argumentRegister=storedArgumentRegister(valueId(inst.args?.[0]?.value??inst.args?.[0]),argumentRegisters,chains,size*8);
       if(argumentRegister)entry.writtenArgumentRegisters.add(argumentRegister);
       const literal=storedBitConstant(valueId(inst.args?.[0]?.value??inst.args?.[0]),chains);
       if(literal===0n)entry.accessRoles.add('zero-written');
