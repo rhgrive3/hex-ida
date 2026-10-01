@@ -94,9 +94,10 @@ function receiverBasePredicate(receiver, ir) {
     for (const inst of instructions) {
       const dst = inst?.dst ?? null;
       if (dst?.id == null) continue;
-      if (inst.op === 'mov' || inst.op === 'copy' || inst.op === 'un' || inst.op === 'unary') {
+      if (inst.op === 'mov' || inst.op === 'copy') {
         const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
         if (source?.id == null || !aliasIds.has(String(source.id))) continue;
+        // Unary negation/not is not a receiver alias even at the same width.
         // A width-changing copy is a different value, not an alias of `this`.
         if (dst.bits != null && source.bits != null && dst.bits !== source.bits) continue;
       } else if (inst.op === 'load') {
@@ -160,6 +161,7 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         readCount: field.readCount,
         writeCount: field.writeCount,
         accessRoles: field.accessRoles,
+        writtenArgumentRegisters: field.writtenArgumentRegisters,
         rule: field.rule,
         reason: field.reason,
       }));

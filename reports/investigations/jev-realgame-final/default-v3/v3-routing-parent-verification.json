@@ -1,0 +1,11 @@
+{
+  "review": "v3-routing-review.md",
+  "hashesVerified": {
+    "js/analysis/query/jev-advisory.js": "3200a87cd385267f76ce7ea1840e306fb4fc6ab411e78cf664cc431c5b8769a8",
+    "js/analysis/cxx/member-types.js": "fd4f3dce9c2c2be38ff26b1013fc7fa0057ee63fc9290b898b5c624a7973b11f",
+    "js/analysis/cxx/object-evidence.js": "7a3f2e2d8b8db990b783a496af627cd8a516bfafb43d2817c252f44b5948e23a",
+    "tests/phase7/cxx/jev-recovery.test.mjs": "8139a6e7d288c0b8e644c2a3138349f6999180716fdaf8f7201c76b735154e8f"
+  },
+  "scope": "source-level only; no default authorization",
+  "head": "74cba530fa4a0c493b9374e48d524c7cea5767d3"
+}

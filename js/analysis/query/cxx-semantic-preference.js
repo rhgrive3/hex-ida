@@ -1,7 +1,7 @@
 // Cheap ranking of existing anonymous members, never an evidence producer.
 // The scoring formula is the pre-frozen real-game deterministic comparator.
 import { demangleCxx } from '../../rtti.js';
-import { cxxQueryTokens } from '../cxx/query-recovery.js';
+import { cxxQueryTokens, cxxRecoveryTokens } from '../cxx/query-recovery.js';
 import { isCxxMemberField } from '../cxx/member-index.js';
 import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence } from '../cxx/object-evidence.js';
 
@@ -24,6 +24,20 @@ export function cxxSemanticScores(query, views) {
     return Object.freeze({ key: view?.key, index, score });
   });
 }
+
+// Prospective comparator: an explicitly mentioned owning object precedes an
+// action word in an unrelated helper class. No offsets, gold names, particular
+// classes, learned confidence cutoffs, or external answers enter this rule.
+export function cxxObjectSemanticScores(query, views) {
+  const tokens = new Set(cxxRecoveryTokens(query));
+  return cxxSemanticScores(query, views).map(row => Object.freeze({ ...row,
+    objectMatches: views[row.index]?.conflict ? 0
+      : cxxRecoveryTokens(views[row.index]?.className?.split('::').at(-1))
+        .filter(token => tokens.has(token)).length }));
+}
+
+export const compareCxxSemanticScores = (a, b) =>
+  (b.objectMatches ?? 0) - (a.objectMatches ?? 0) || b.score - a.score || a.index - b.index;
 
 // This is the production trust boundary. Serialized/forged provenance cannot
 // acquire a method context. Names come only from the active binary's symbols.
@@ -54,22 +68,26 @@ export function cxxSemanticViews(candidates, symbols) {
       const cacheKey = String(address);
       if (!names.has(cacheKey)) names.set(cacheKey, symbols.nameAt(address) ?? null);
       contexts.push(Object.freeze({ address: cacheKey, name: names.get(cacheKey),
-        receiverProven: true, accessRoles: member.accessRoles ?? [] }));
+        receiverProven: true, accessRoles: member.accessRoles ?? [],
+        receiverRole: receiver.receiverRole,
+        writtenArgumentRegisters: member.writtenArgumentRegisters ?? [] }));
     }
     return Object.freeze({ key: candidate.key, source: 'cxx', className: candidate.className,
       conflict: field.conflict === true, functionContexts: Object.freeze(contexts) });
   });
 }
 
-export function withCxxSemanticPreference(query, local, symbols) {
+export function withCxxSemanticPreference(query, local, symbols, {policy='legacy'}={}) {
+  if(!['legacy','object-context-v4'].includes(policy))return local;
   if (!local || ['confirmed', 'likely'].includes(local.verdict)
     || !Array.isArray(local.candidates) || !local.candidates.length
     || local.candidates.some(candidate => candidate.source !== 'cxx' || candidate.anonymous !== true || candidate.askedByName)) return local;
   try {
     const views = cxxSemanticViews(local.candidates, symbols);
     if (!views || views.some(view => !view)) return local;
-    const scores = cxxSemanticScores(query, views).sort((a, b) => b.score - a.score || a.index - b.index);
-    if (!scores.length || scores[0].score <= 0) return local;
+    const scores = (policy==='object-context-v4'?cxxObjectSemanticScores:cxxSemanticScores)(query, views)
+      .sort(compareCxxSemanticScores);
+    if (!scores.length || scores[0].score <= 0 && (scores[0].objectMatches??0)<=0) return local;
     const candidates = scores.map(row => local.candidates[row.index]);
     const top = candidates[0];
     return {

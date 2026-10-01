@@ -61,12 +61,15 @@ test('stored constants and bounded argument flows remain machine context without
     {op:'store',args:[one],loc:{kind:'field',base,disp:9n,size:1}}]};
   const result=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
   assert.deepEqual(fieldAt(result,8).accessRoles,['argument-written']);
+  assert.deepEqual(fieldAt(result,8).writtenArgumentRegisters,['x1']);
+  assert.deepEqual(fieldAt(result,9).writtenArgumentRegisters,[]);
   assert.deepEqual(fieldAt(result,9).accessRoles,['constant-written','one-written']);
   assert.equal(fieldAt(result,8).category,'int8');
   assert.equal(fieldAt(result,9).category,'bool-like');
   assert.equal(fieldAt(result,9).memberName,undefined);
   ir.instructions[1]={op:'mov',dst:copy,args:[copy]};
   assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).accessRoles,[]);
+  assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).writtenArgumentRegisters,[]);
   ir.instructions.splice(1,0,{op:'un',dst:{id:'negated'},args:[one],extra:{kind:'not'}},
     {op:'store',args:[{id:'negated'}],loc:{kind:'field',base,disp:10n,size:1}},
     {op:'const',dst:{id:'zero'},extra:{value:0n}},
@@ -75,6 +78,11 @@ test('stored constants and bounded argument flows remain machine context without
   assert.deepEqual(fieldAt(literalResult,10).accessRoles,['constant-written']);
   assert.equal(fieldAt(literalResult,10).category,'int8','arbitrary unary operations cannot prove a 0/1 store');
   assert.deepEqual(fieldAt(literalResult,11).accessRoles,['constant-written','zero-written']);
+  ir.instructions.push({op:'un',dst:{id:'modified-input'},args:[argument],extra:{kind:'not'}},
+    {op:'store',args:[{id:'modified-input'}],loc:{kind:'field',base,disp:12n,size:1}});
+  const modified=fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),12);
+  assert.ok(modified.accessRoles.includes('argument-written'));
+  assert.deepEqual(modified.writtenArgumentRegisters,[],'unary argument-derived values cannot claim an unmodified entry source');
 });
 
 // ── pure classifier ────────────────────────────────────────────────────────

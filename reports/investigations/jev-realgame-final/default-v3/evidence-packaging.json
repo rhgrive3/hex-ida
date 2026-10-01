@@ -1,0 +1,39 @@
+{
+  "complete": true,
+  "phase": "V3 frozen final judge, now development only for any subsequent changes",
+  "collectionRevision": "752d06c541dd71a51767d96b74346e1f7880bd9c",
+  "evaluationRevision": "74cba530fa4a0c493b9374e48d524c7cea5767d3",
+  "independentReplayRevision": "26034a50a",
+  "collectionRun": 36808254949,
+  "independentReplay": "PASS:50queries,40verified,867actualcalls; exact structural identities and request hashes",
+  "originalErroneousSummaryRetained": true,
+  "remoteCallsRepeatedForAggregateRepair": 0,
+  "files": {
+    "reports/investigations/jev-realgame-final/default-v3/snapshots/openttd.json.gz": {
+      "sha256": "046f9cdc146a3b34491c2a954ceedbe43dfa429f6642d0b89dbc1b2d36867b02",
+      "uncompressedSha256": "9bba563ac3382a22be5b3e18a22c34bca32e88ae282882b2fe3996c9575858aa",
+      "bytes": 576612
+    },
+    "reports/investigations/jev-realgame-final/default-v3/snapshots/openmw.json.gz": {
+      "sha256": "e45e434393a19e01de38c1fff3ab6678fac7979ac4ba59def1e78c76fedac969",
+      "uncompressedSha256": "2bc211480d4c5819658530aa6f8f3e1a2bd40dffdc15f11e9160eae117d7954d",
+      "bytes": 431066
+    },
+    "reports/investigations/jev-realgame-final/default-v3/results/raw-results.jsonl.gz": {
+      "sha256": "ad7b87ba92cda72e1b3039cb748cf996160cc1ac2307a25f442517a0de2a9af7",
+      "uncompressedSha256": "8ab824abb02300f6fd0326029d8f632724057daf4d30de0c0e654c5afb530062",
+      "bytes": 883644
+    },
+    "reports/investigations/jev-realgame-final/default-v3/results/summary.json": {
+      "sha256": "ae380bede7264857d9b2c57440f6542b3c09f963d3594bbb5fb0326035a98799",
+      "uncompressedSha256": "ae380bede7264857d9b2c57440f6542b3c09f963d3594bbb5fb0326035a98799",
+      "bytes": 127675
+    },
+    "reports/investigations/jev-realgame-final/default-v3/results/summary.original-missing-baseline.json": {
+      "sha256": "0b17a3ed9414ac7a953caa0f6db3b7e24a93640f5785af788eb0fb56d95320c7",
+      "uncompressedSha256": "0b17a3ed9414ac7a953caa0f6db3b7e24a93640f5785af788eb0fb56d95320c7",
+      "bytes": 54640
+    }
+  },
+  "defaultAuthorized": false
+}

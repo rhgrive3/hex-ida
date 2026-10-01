@@ -1,6 +1,18 @@
-# Jev / Pinpoint real-game final decision
+# Jev / Pinpoint real-game integration
 
-## Executive Summary
+## Current status — default-quality follow-up in progress
+
+The user requires default-quality behavior; this task is **not complete** at the historical NO_GO or OPTIONAL_ADVISORY decisions. Production default is still disabled while generic recovery and preservation fixes receive independent review and a new judge.
+
+The latest untouched V3 judge ran all **50 queries**: **40 verified answers** and **10 controls**, using release-game candidates and **867 real API calls**. Hex achieved **2/40**; V3 Jev **6/40**, with **4 rescues and 0 primary regressions**. All four rescues are OpenMW; OpenTTD has **0 rescues / 0 regressions**. Recovery is **9/40 (22.5%)**, and V3 accuracy where recovered is **6/9 (66.7%)**. API added latency is **698 / 970 / 1043 ms p50/p95/p99**; no observed API errors, timeouts or retries. Three of 50 V3 queries changed preference across three repeated calls. These results do **not** authorize default activation: the pre-frozen per-game gain and coverage conditions fail.
+
+Independent replay detected a missing baseline flag in the original aggregate. The original erroneous summary and unchanged raw responses are retained; the separate rescoring tool restores Hex/R1 baseline flags and independent replay passes. The frozen queries, prompts, execution source and criteria were not changed or rerun to improve the numbers. The selective S arm also reveals a real problem: its deterministic R1 input already destroys both Hex-correct cases. Subsequent work fixes that generic object/action priority and passes original Hex to fallbacks, rather than treating R1's damaged answers as the baseline.
+
+See [V3 exact evidence](default-v3/evidence-packaging.json), [corrected results](default-v3/results/summary.json), [all-case failure analysis](default-v3/failure-analysis.json) and [source review](default-v3/nonpoly-typed-review.md). V3 is now a development corpus for later changes; a subsequent prompt or routing policy needs a new untouched judge. The sections below retain the original V1 decision as historical evidence, not the current task's completion claim.
+
+高校生向け：Hexがゲームの機械語から候補を探し、Jevが質問の意味に合う候補を選びます。今回のJevは2問だった正解を6問に増やしました。ただし、40問のうち31問では正解候補をまだ復元できていません。候補を増やす仕組みと、元の正解を守る仕組みを修正して、通常ONにできるか改めて検証しています。
+
+## Historical V1 Executive Summary
 
 **Final production policy: NO_GO. Jev remains disabled by default.** Improved anonymous-C++ Jev E rescued **1 OpenTTD case and 5 OpenMW cases**, with **0 primary C++ regressions**, on the independent final judge. Hex top-1 was **0/40**; E was **6/40 (15%)**. The pre-frozen deterministic comparator already achieved **5/40**. Hex recovered the correct structural member in **13/40 (32.5%)**. This demonstrates conditional semantic value, but insufficient value and preservation evidence for normal routing.
 

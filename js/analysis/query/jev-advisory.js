@@ -1,7 +1,7 @@
 // Optional interactive suggestion. It cannot replace the local result or issue
 // binary facts. Only the active binary's branded anonymous C++ fields are sent.
 import { adviseWithJev, rerankWithJev } from '../../pinpoint.js';
-import { cxxSemanticViews, cxxSemanticScores } from './cxx-semantic-preference.js';
+import { cxxSemanticViews, cxxSemanticScores, cxxObjectSemanticScores, compareCxxSemanticScores } from './cxx-semantic-preference.js';
 import { cxxQueryTokens } from '../cxx/query-recovery.js';
 import { demangleCxx } from '../../rtti.js';
 
@@ -56,21 +56,45 @@ export function jevValueFlowRequest(query, views) {
   return body;
 }
 
+// Prospective V4: a bounded observation of an input register copied into the
+// member. The release ABI symbol is already present above. Never substitute a
+// parameter name or an oracle-declared field type for this machine observation.
+export function jevArgumentFlowRequest(query, views) {
+  const body=jevValueFlowRequest(query,views);
+  body.questions.pick.instructions+=' Input register writes identify machine-copy sources, possibly truncated to the member width. Use the release function signature and proven receiver ABI role as context. These observations do not recover a source parameter name or declare a field type. Separate a value supplied by a caller from literal default initialization.';
+  for(let index=0;index<views.length;index++) {
+    const inputs=(views[index].functionContexts??[]).slice(0,64).flatMap(context=>{
+      const registers=(context.writtenArgumentRegisters??[]).filter(value=>typeof value==='string'&&/^x[0-7]$/.test(value));
+      if(!registers.length)return [];
+      const role=['this','typed-argument'].includes(context.receiverRole)?context.receiverRole:'unknown';
+      const method=context.name?(demangleCxx(context.name)??context.name):`0x${BigInt(context.address).toString(16)}`;
+      return [`entry-register write: ${[...new Set(registers)].sort().join(', ')}; receiver ABI role: ${role}; release method: ${bounded(method)}`];
+    }).slice(0,8);
+    if(inputs.length)body.questions.pick.criteria[`c${index}`]+=` | ${inputs.join(' | ')}`;
+  }
+  return body;
+}
+
 // Prospective automatic routing, kept explicitly disabled by its caller until
 // an independent evaluation authorizes activation. Serialized views are useful
 // for evaluation; the live wrapper below obtains them from branded evidence.
-export function jevSemanticRoute(query,views,{verdict='none',topKey=null}={}) {
+export function jevSemanticRoute(query,views,{verdict='none',topKey=null,policy='legacy'}={}) {
   const skip=reason=>Object.freeze({call:false,reason});
   if(['confirmed','likely'].includes(verdict))return skip('strong-local-result');
+  if(!['legacy','object-context-v4'].includes(policy))return skip('unsupported-routing-policy');
   if(!Array.isArray(views)||views.length>400
     ||views.some(view=>view?.source!=='cxx'||view.anonymous!==true))return skip('unsupported-lattice');
   views=views.filter(view=>!view.conflict);
   if(views.length<2)return skip('insufficient-eligible-candidates');
   const tokens=new Set(cxxQueryTokens(query));
-  const scores=cxxSemanticScores(query,views).sort((a,b)=>b.score-a.score||a.index-b.index);
+  const scores=(policy==='object-context-v4'?cxxObjectSemanticScores:cxxSemanticScores)(query,views)
+    .sort(compareCxxSemanticScores);
   const best=scores[0],owner=cxxQueryTokens(views[best.index].className);
   const ownerScore=2*owner.filter(token=>tokens.has(token)).length;
-  if(best.key===topKey&&best.score>ownerScore&&best.score>scores[1].score
+  const unique=policy==='object-context-v4'
+    ?best.objectMatches>scores[1].objectMatches||best.objectMatches===scores[1].objectMatches&&best.score>scores[1].score
+    :best.score>scores[1].score;
+  if(best.key===topKey&&best.score>ownerScore&&unique
     &&views[best.index].functionContexts.some(context=>context.accessRoles?.includes('return-input')))
     return skip('unique-local-accessor');
   const runtime=views.some(view=>(view.functionContexts??[]).some(context=>{
@@ -93,8 +117,23 @@ export function jevMemberContextSignature(view) {
     .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
 }
 
-export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch}={}) {
+export function jevArgumentContextSignature(view) {
+  const byAddress=new Map();
+  for(const context of (view?.functionContexts??[]).slice(0,64)) {
+    const entry=byAddress.get(context.address)??{roles:new Set(),registers:new Set(),receiverRoles:new Set()};
+    for(const role of context.accessRoles??[])entry.roles.add(role);
+    for(const register of context.writtenArgumentRegisters??[])if(typeof register==='string'&&/^x[0-7]$/.test(register))entry.registers.add(register);
+    if(['this','typed-argument'].includes(context.receiverRole))entry.receiverRoles.add(context.receiverRole);
+    byAddress.set(context.address,entry);
+  }
+  return JSON.stringify([view?.className,[...byAddress].map(([address,entry])=>
+    [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.receiverRoles].sort()])
+    .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+}
+
+export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
   if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
+  if(!['value-flow-v3','argument-flow-v4'].includes(representation))return null;
   return Object.freeze({async call({query,candidates,signal}) {
     if(!Array.isArray(candidates)||candidates.length<2||candidates.length>255)return null;
     const contexts=cxxSemanticViews(candidates,symbols);
@@ -104,7 +143,7 @@ export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch}={}) {
       readCount:candidates[index].field.readCount,writeCount:candidates[index].field.writeCount}));
     const response=await fetchImpl('https://api.openjev.sh/v1/systemone',{
       method:'POST',headers:{authorization:`Bearer ${apiKey.trim()}`,'content-type':'application/json'},
-      body:JSON.stringify(jevValueFlowRequest(query,views)),signal});
+      body:JSON.stringify((representation==='argument-flow-v4'?jevArgumentFlowRequest:jevValueFlowRequest)(query,views)),signal});
     if(!response.ok)return null;
     const payload=await response.json(),pick=payload?.answers?.pick,unique=payload?.answers?.unique;
     const unit=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1;
@@ -124,21 +163,24 @@ export async function rerankAnonymousCxx(query,local,options={}) {
   const fallback=()=>rerankWithJev(query,local);
   if(options.enabled!==true||typeof options.isCurrent!=='function'
     ||options.mode!=null&&options.mode!=='partial'||typeof options.client?.call!=='function')return fallback();
+  if(options.representation!=null&&!['value-flow-v3','argument-flow-v4'].includes(options.representation))return fallback();
   try {
     if(options.isCurrent()!==true||local?.candidates?.some(candidate=>candidate.askedByName))return fallback();
     const contexts=cxxSemanticViews(local?.candidates,options.symbols);
     if(!contexts||contexts.some(context=>!context))return fallback();
     const views=contexts.map((context,index)=>({...context,anonymous:local.candidates[index].anonymous}));
-    if(!jevSemanticRoute(query,views,{verdict:local.verdict,topKey:local.top?.key}).call)return fallback();
+    if(!jevSemanticRoute(query,views,{verdict:local.verdict,topKey:local.top?.key,
+      policy:options.routingPolicy??'legacy'}).call)return fallback();
     const client={call:async input=>{
       const response=await options.client.call(input);
       if(!response)return null;
       const selected=typeof response.selectedKey==='string'?views.find(view=>view.key===response.selectedKey)
         :Number.isInteger(response.choiceIndex)?views.find(view=>view.key===input.candidates[response.choiceIndex]?.key):null;
       if(!selected)return null;
-      const signature=jevMemberContextSignature(selected);
+      const signatureFor=options.representation==='argument-flow-v4'?jevArgumentContextSignature:jevMemberContextSignature;
+      const signature=signatureFor(selected);
       // Offsets, widths and read/write totals alone cannot distinguish meaning.
-      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key&&jevMemberContextSignature(view)===signature))return null;
+      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key&&signatureFor(view)===signature))return null;
       return response;
     }};
     const eligible={...local,candidates:local.candidates.filter(candidate=>!candidate.field.conflict)};

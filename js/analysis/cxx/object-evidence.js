@@ -412,6 +412,9 @@ export function createCppMemberEvidence(input = {}) {
   const accessRoles=input.accessRoles??[];
   if(!Array.isArray(accessRoles)||accessRoles.length>8||accessRoles.some(role=>
     !['return-input','comparison-input','arithmetic-input','address-base','constant-written','argument-written','zero-written','one-written'].includes(role)))fail('cpp-member-access-role-invalid');
+  const writtenArgumentRegisters=input.writtenArgumentRegisters??[];
+  if(!Array.isArray(writtenArgumentRegisters)||writtenArgumentRegisters.length>8
+    ||writtenArgumentRegisters.some(register=>typeof register!=='string'||!/^x[0-7]$/.test(register)))fail('cpp-member-argument-register-invalid');
 
   const record = {
     schema: CPP_CANONICAL_MEMBER_SCHEMA,
@@ -435,6 +438,7 @@ export function createCppMemberEvidence(input = {}) {
     readCount,
     writeCount,
     ...(accessRoles.length ? {accessRoles:Object.freeze([...new Set(accessRoles)].sort())} : {}),
+    ...(writtenArgumentRegisters.length ? {writtenArgumentRegisters:Object.freeze([...new Set(writtenArgumentRegisters)].sort())} : {}),
     rule,
     reason,
   };

@@ -53,4 +53,9 @@ test('non-polymorphic input recovery publishes canonical anonymous fields withou
   const planner=createCxxQueryPlanner({symbols:sym,classEvidence:{classes:[]},
     isExecutable:()=>true,planningPolicy:'value-accessor-v3'});
   assert.ok(planner.planOwner('entity','Entity').some(row=>row.address===2n));
+  const transformed={...ir,instructions:[
+    {op:'un',id:'negate',dst:{id:'not-object',bits:64},args:[{value:ir.values[0]}],extra:{kind:'neg'}},
+    {op:'load',id:'bad-read',loc:{kind:'field',base:{id:'not-object'},disp:8n,size:4},dst:{id:'bad',bits:32}}]};
+  const rejected=provider.projectForFunction({...request,ir:transformed,enableTypedArguments:true});
+  assert.equal(rejected.members.length,0,'equal-width unary transformations are not canonical receiver aliases');
 });

@@ -236,6 +236,19 @@ function isStoredArgument(seedId, argumentIds, chains) {
   return false;
 }
 
+function storedArgumentRegister(seedId, argumentRegisters, chains) {
+  const seen=new Set();let current=seedId;
+  for(let depth=0;current!=null&&depth<MAX_CHAIN_DEPTH;depth++) {
+    if(seen.has(current))return null;seen.add(current);
+    if(argumentRegisters.has(current))return argumentRegisters.get(current);
+    // An arbitrary unary expression is argument-derived, but cannot claim
+    // the unmodified parameter source. Copy/truncation stores remain explicit
+    // machine observations; they do not establish declared field types.
+    current=chains.copies.get(current)??null;
+  }
+  return null;
+}
+
 /**
  * Recovers per-offset member type evidence for accesses through a receiver.
  *
@@ -255,6 +268,9 @@ export function recoverMemberTypeEvidence({
   const chains = buildChains(ir, maxInstructions);
   const argumentIds=new Set((ir?.values??[]).slice(0,maxInstructions)
     .filter(value=>value.kind==='arg').map(value=>valueId(value)).filter(id=>id!=null));
+  const argumentRegisters=new Map((ir?.values??[]).slice(0,maxInstructions)
+    .filter(value=>value.kind==='arg'&&/^[xw][0-7]$/.test(value.reg??'')&&valueId(value)!=null)
+    .map(value=>[valueId(value),value.reg.replace(/^w/,'x')]));
   const byOffset = new Map();
   let accesses = 0;
   let truncated = false;
@@ -308,12 +324,14 @@ export function recoverMemberTypeEvidence({
     let entry = byOffset.get(offset);
     if (!entry) {
       if (byOffset.size >= maxFields) { truncated = true; continue; }
-      entry = { offset, accesses: [], readCount: 0, writeCount: 0, accessRoles:new Set() };
+      entry = { offset, accesses: [], readCount: 0, writeCount: 0, accessRoles:new Set(),writtenArgumentRegisters:new Set() };
       byOffset.set(offset, entry);
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
     if(storedRole)entry.accessRoles.add(storedRole);
     if(inst.op==='store') {
+      const argumentRegister=storedArgumentRegister(valueId(inst.args?.[0]?.value??inst.args?.[0]),argumentRegisters,chains);
+      if(argumentRegister)entry.writtenArgumentRegisters.add(argumentRegister);
       const literal=storedBitConstant(valueId(inst.args?.[0]?.value??inst.args?.[0]),chains);
       if(literal===0n)entry.accessRoles.add('zero-written');
       if(literal===1n)entry.accessRoles.add('one-written');
@@ -369,6 +387,7 @@ export function recoverMemberTypeEvidence({
       readCount: entry.readCount,
       writeCount: entry.writeCount,
       accessRoles: Object.freeze([...entry.accessRoles].sort()),
+      writtenArgumentRegisters: Object.freeze([...entry.writtenArgumentRegisters].sort()),
       indexed: representative.indexed,
       category: kind,
       typeLabel: classification.label,

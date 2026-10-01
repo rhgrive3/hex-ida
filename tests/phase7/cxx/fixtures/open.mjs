@@ -26,6 +26,9 @@ export function openCxxFixture(name, options = {}) {
     names: rawSymbols.map((symbol) => symbol.name),
     kinds: rawSymbols.map(() => 0),
     flags: rawSymbols.map(() => 0),
+    // Preserve the loader's actual defined-function authority. A constructor
+    // name in a data symbol must not replace this metadata for class proof.
+    funcs: image.functions.map(fn => fn.address),
   });
 
   const sizeByAddress = new Map();
