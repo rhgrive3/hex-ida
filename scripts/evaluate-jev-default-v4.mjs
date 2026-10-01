@@ -4,7 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {rerankWithJev,jevShortlist} from '../js/pinpoint.js';
 import {cxxObjectSemanticScores,compareCxxSemanticScores} from '../js/analysis/query/cxx-semantic-preference.js';
-import {jevArgumentFlowRequest,jevSemanticRoute,jevArgumentContextSignature} from '../js/analysis/query/jev-advisory.js';
+import {jevArgumentFlowRequest,jevSemanticRoute,jevVisibleArgumentContextSignature} from '../js/analysis/query/jev-advisory.js';
 import {RealGameJevClient} from './jev-realgame-final-client.mjs';
 import {stabilityRequestBody} from './jev-realgame-stability-contract.mjs';
 import {structuralMatch,funnel,persistentWrite,percentiles,sha256} from './jev-realgame-final-contract.mjs';
@@ -21,10 +21,11 @@ function v4GameSummary(rows) {
   return Object.fromEntries(['A0','A','O4'].map(baseline=>[baseline,Object.fromEntries(V4_ARMS.map(arm=>
     [arm,summarize(rows.map(row=>({...row,hexCorrect:row.arms[baseline].correct})),arm)]))]));
 }
-export function v4SelectionAllowed(selected,pool,selective) {
+export function v4SelectionAllowed(query,selected,pool,selective) {
   if(!selected||selected.conflict||selected.functionContexts?.some(c=>c.writtenArgumentBitsTruncated===true))return false;
-  return !selective||!pool.some(peer=>peer.key!==selected.key
-    &&jevArgumentContextSignature(peer)===jevArgumentContextSignature(selected));
+  const signature=selective?jevVisibleArgumentContextSignature(query,selected):null;
+  return !selective||!pool.some(peer=>peer.key!==selected.key&&peer.className===selected.className
+    &&jevVisibleArgumentContextSignature(query,peer)===signature);
 }
 
 export async function main() {
@@ -62,7 +63,7 @@ export async function main() {
       const client=clients[arm],keys=[],answers=[],calls=[];
       const safeClient=['V4','S4'].includes(arm)?{call:async request=>{
         const response=await client.call(request);
-        return response&&v4SelectionAllowed(request.candidates[response.choiceIndex],pool,selective)?response:null;
+        return response&&v4SelectionAllowed(input.query,request.candidates[response.choiceIndex],pool,selective)?response:null;
       }}:client;
       for(let repeat=0;repeat<policy.repeats;repeat++) {
         const before=client.calls.length;

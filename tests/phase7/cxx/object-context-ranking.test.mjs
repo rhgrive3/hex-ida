@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cxxSemanticScores, cxxObjectSemanticScores, compareCxxSemanticScores } from '../../../js/analysis/query/cxx-semantic-preference.js';
-import { jevSemanticRoute, jevArgumentFlowRequest, jevArgumentContextSignature } from '../../../js/analysis/query/jev-advisory.js';
+import { jevSemanticRoute, jevArgumentFlowRequest, jevArgumentContextSignature,jevVisibleArgumentContextSignature } from '../../../js/analysis/query/jev-advisory.js';
 import { createCppMemberEvidence } from '../../../js/analysis/cxx/object-evidence.js';
 
 test('object-aware ranking keeps the requested owner ahead of an unrelated lexical accessor',()=> {
@@ -58,6 +58,18 @@ test('argument context stays bounded and duplicate or forged metadata cannot cre
   const truncatedView={...bitView,functionContexts:[{...bitContext,writtenArgumentBitsTruncated:true}]};
   assert.match(jevArgumentFlowRequest('question',[truncatedView]).questions.pick.criteria.c0,/context truncated/);
   assert.notEqual(jevArgumentContextSignature(truncatedView),jevArgumentContextSignature(bitView));
+  const visible=Array.from({length:8},(_,i)=>({address:String(i),name:'_ZN6Entity4readEv',accessRoles:['comparison-input']}));
+  const extras=address=>({...view,functionContexts:[...visible,{address,name:'_ZN6Entity5otherEv',accessRoles:[]}]});
+  assert.notEqual(jevArgumentContextSignature(extras('999')),jevArgumentContextSignature(extras('998')));
+  assert.equal(jevVisibleArgumentContextSignature('question',extras('999')),
+    jevVisibleArgumentContextSignature('question',extras('998')),
+    'unshown provenance must not defeat the ambiguity veto');
+  const unnamed=address=>({...view,functionContexts:[{address,name:null,accessRoles:['comparison-input']}]});
+  assert.equal(jevVisibleArgumentContextSignature('question',unnamed('1')),
+    jevVisibleArgumentContextSignature('question',unnamed('2')),
+    'unnamed code addresses do not distinguish member meaning');
+  assert.equal(jevVisibleArgumentContextSignature('question',view),jevVisibleArgumentContextSignature('question',
+    {...view,offset:999,size:8,readCount:999,recoveredType:{category:'pointer'}}));
   const input={functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:8n,sizeBytes:1,writeCount:1,reason:'unclassified'};
   assert.deepEqual(createCppMemberEvidence({...input,writtenArgumentBits:['x1:0']}).writtenArgumentBits,['x1:0']);
   for(const bits of [['x1:8'],['x8:0'],['x1:64'],[{toString:()=> 'x1:0'}]])

@@ -168,6 +168,16 @@ export function jevArgumentContextSignature(view) {
     .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
 }
 
+// The ambiguity veto may use only context actually shown to the remote model.
+// Hidden/truncated provenance, layout and unnamed code addresses cannot make
+// two otherwise identical descriptions semantically distinguishable.
+export function jevVisibleArgumentContextSignature(query,view) {
+  const description=jevArgumentFlowRequest(query,[view]).questions.pick.criteria.c0;
+  const context=[...new Set(description.split(' | ').slice(7)
+    .map(part=>part.replace(/release method: 0x[0-9a-f]+/g,'release method: unnamed')).filter(Boolean))].sort();
+  return JSON.stringify([view?.className,context]);
+}
+
 export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch,representation='value-flow-v3'}={}) {
   if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
   if(!['value-flow-v3','argument-flow-v4'].includes(representation))return null;
@@ -215,10 +225,12 @@ export async function rerankAnonymousCxx(query,local,options={}) {
         :Number.isInteger(response.choiceIndex)?views.find(view=>view.key===input.candidates[response.choiceIndex]?.key):null;
       if(!selected)return null;
       if(selected.functionContexts.some(context=>context.writtenArgumentBitsTruncated===true))return null;
-      const signatureFor=options.representation==='argument-flow-v4'?jevArgumentContextSignature:jevMemberContextSignature;
+      const signatureFor=options.representation==='argument-flow-v4'
+        ?view=>jevVisibleArgumentContextSignature(query,view):jevMemberContextSignature;
       const signature=signatureFor(selected);
       // Offsets, widths and read/write totals alone cannot distinguish meaning.
-      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key&&signatureFor(view)===signature))return null;
+      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key
+        &&view.className===selected.className&&signatureFor(view)===signature))return null;
       return response;
     }};
     const eligible={...local,candidates:local.candidates.filter(candidate=>!candidate.field.conflict)};

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {jevShortlist} from '../js/pinpoint.js';
-import {jevArgumentFlowRequest,jevSemanticRoute,jevArgumentContextSignature} from '../js/analysis/query/jev-advisory.js';
+import {jevArgumentFlowRequest,jevSemanticRoute,jevVisibleArgumentContextSignature} from '../js/analysis/query/jev-advisory.js';
 import {cxxObjectSemanticScores,compareCxxSemanticScores} from '../js/analysis/query/cxx-semantic-preference.js';
 import {stabilityRequestBody} from './jev-realgame-stability-contract.mjs';
 import {assertV4Execution,V4_ARMS} from './jev-default-v4-contract.mjs';
@@ -53,8 +53,8 @@ for(const row of rows) {
           const index=Number(call.response.answers.pick.choice.slice(1)),selected=shortlist[index];
           assert.equal(call.selectedKey,selected.key);assert.equal(call.choiceIndex,index);
           const contextUnsafe=selected.conflict||selected.functionContexts?.some(c=>c.writtenArgumentBitsTruncated===true);
-          const equivalent=selective&&pool.some(peer=>peer.key!==selected.key
-            &&jevArgumentContextSignature(peer)===jevArgumentContextSignature(selected));
+          const equivalent=selective&&pool.some(peer=>peer.key!==selected.key&&peer.className===selected.className
+            &&jevVisibleArgumentContextSignature(row.query,peer)===jevVisibleArgumentContextSignature(row.query,selected));
           if(!['V4','S4'].includes(arm)||!contextUnsafe&&!equivalent)expected=selected.key;
         }
         assert.equal(call.committedKey,expected);
