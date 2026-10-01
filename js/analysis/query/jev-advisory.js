@@ -83,9 +83,14 @@ export function jevSemanticRoute(query,views,{verdict='none',topKey=null}={}) {
 }
 
 export function jevMemberContextSignature(view) {
-  return JSON.stringify([view?.className,
-    (view?.functionContexts??[]).slice(0,64).map(context=>[context.address,
-      [...(context.accessRoles??[])].sort()]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))) ]);
+  const byAddress=new Map();
+  for(const context of (view?.functionContexts??[]).slice(0,64)) {
+    const roles=byAddress.get(context.address)??new Set();
+    for(const role of context.accessRoles??[])roles.add(role);
+    byAddress.set(context.address,roles);
+  }
+  return JSON.stringify([view?.className,[...byAddress].map(([address,roles])=>[address,[...roles].sort()])
+    .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
 }
 
 export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch}={}) {

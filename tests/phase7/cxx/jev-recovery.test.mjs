@@ -69,6 +69,8 @@ test('selective semantics preserve strong and unique local accessors and expose 
  assert.equal(jevSemanticRoute('current count',views.map(view=>({...view,anonymous:false}))).call,false);
  const same={...views[0],key:'c',offset:99,size:1};
  assert.equal(jevMemberContextSignature(views[0]),jevMemberContextSignature(same),'an offset/width does not invent semantics');
+ assert.equal(jevMemberContextSignature(views[0]),jevMemberContextSignature({...same,
+  functionContexts:[...same.functionContexts,...same.functionContexts]}),'duplicate provenance does not invent semantics');
  assert.equal(jevSemanticRoute('finished',views.map(view=>({...view,functionContexts:[{address:'1',name:'_ZN6WidgetC1Ev',accessRoles:['zero-written']}]}))).call,false);
 });
 
