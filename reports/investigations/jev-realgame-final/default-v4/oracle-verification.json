@@ -1,0 +1,40 @@
+{
+  "schema": "hex-jev-default-independent-oracle-audit/v4",
+  "auditedAtUtc": "2026-10-01T11:14:33.818320+00:00",
+  "holdoutSha256": "c8381905d3c1711da768de709599c68708e703c7bdf2828046fb789bd4abad3c",
+  "policySha256": "c5e4392b1970f8a28740fb4522d02c5a178dc5e109a03943da12de882d7ac8ef",
+  "structuralCasesSha256": "261c89bdf8e7498f6a2c4db7e8467f9df1f3e97aff7728507cffb7f4f9e29334",
+  "authority": {
+    "openttd": {
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "gdbLayoutSha256": "e6ce551f7666a002cd6094e2138bbee9099e540374fc32333133cb98c189c947",
+      "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+      "method": "Independent parent exact same-build DWARF GDB Type.fields re-extraction, recursive base adjustment and actual sizeof"
+    },
+    "openmw": {
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "gdbLayoutSha256": "57af8b10149c355bcdf8c34b6b4a647a902514f14244578ed08491c5eb164943",
+      "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+      "method": "Independent parent exact same-build DWARF GDB Type.fields re-extraction, recursive base adjustment and actual sizeof"
+    }
+  },
+  "cases": 50,
+  "verified": 40,
+  "controls": 10,
+  "physicalAliasesVerified": 56,
+  "independentGdbChecks": 56,
+  "priorPhysicalOverlap": false,
+  "queryBodiesUnchanged": true,
+  "oracleIsEvaluationOnly": true,
+  "authorIdentitiesVerifiedNotGuessed": true,
+  "priorCaseFileHashes": {
+    "reports/investigations/jev-realgame-final/structural-gold.json": "873838d84844ca77b52b52635b52fbd7f2d1f8b7d09ce8fc6da57da754c0f909",
+    "reports/investigations/jev-realgame-final/fresh-structural-cases.json": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+    "reports/investigations/jev-realgame-final/stability-v2/structural-cases.json": "1ded64a8ef549f2188328f8c56d7e3bdc7d26b0346cce26f2906f8f0d6c23c0a",
+    "reports/investigations/jev-realgame-final/default-v3/structural-cases.json": "a69bf4bae93741b910a866410f2b25dd33737b779882b5ca1d8dddee8f25f96a"
+  }
+}

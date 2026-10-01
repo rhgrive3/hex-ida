@@ -1,0 +1,1318 @@
+[
+  {
+    "id": "SV4-OP-01",
+    "binary": "openttd",
+    "query": "How long has this vehicle already been working on the order it is currently carrying out?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "BaseConsist.current_order_time",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 40,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-02",
+    "binary": "openttd",
+    "query": "Which status flags are currently set on this vehicle?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "BaseConsist.vehicle_flags",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 56,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-03",
+    "binary": "openttd",
+    "query": "Which company does this vehicle group belong to?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Group.owner",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Group",
+        "offset": 40,
+        "size": 1,
+        "type": "Owner",
+        "declaringClass": "Group",
+        "declaringOffset": 40,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-04",
+    "binary": "openttd",
+    "query": "How many trees is this company allowed to plant on the map?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "CompanyProperties.tree_limit",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 160,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 160,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 160,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 160,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 160,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 160,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-05",
+    "binary": "openttd",
+    "query": "Where is the description of the artificial intelligence currently running this company?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Company.ai_info",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 7816,
+        "size": 8,
+        "type": "AIInfo *",
+        "declaringClass": "Company",
+        "declaringOffset": 7816,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-06",
+    "binary": "openttd",
+    "query": "Which version does this NewGRF configuration declare?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "GRFConfig.version",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GRFConfig",
+        "offset": 112,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "GRFConfig",
+        "declaringOffset": 112,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-07",
+    "binary": "openttd",
+    "query": "How many configuration parameters does this NewGRF accept?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "GRFConfig.num_params",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GRFConfig",
+        "offset": 644,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "GRFConfig",
+        "declaringOffset": 644,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-08",
+    "binary": "openttd",
+    "query": "What identifier marks this loaded NewGRF file?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "GRFFile.grfid",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GRFFile",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "GRFFile",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-09",
+    "binary": "openttd",
+    "query": "How many sound effects does this NewGRF provide?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "GRFFile.num_sounds",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GRFFile",
+        "offset": 28,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "GRFFile",
+        "declaringOffset": 28,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-10",
+    "binary": "openttd",
+    "query": "Which town is this industry built next to?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Industry.town",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 16,
+        "size": 8,
+        "type": "Town *",
+        "declaringClass": "Industry",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-11",
+    "binary": "openttd",
+    "query": "Is this industry currently part of a subsidy scheme?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Industry.part_of_subsidy",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 302,
+        "size": 1,
+        "type": "PartOfSubsidy",
+        "declaringClass": "Industry",
+        "declaringOffset": 302,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-12",
+    "binary": "openttd",
+    "query": "Which company has the exclusive right to consume this industry's output?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Industry.exclusive_consumer",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 462,
+        "size": 1,
+        "type": "Owner",
+        "declaringClass": "Industry",
+        "declaringOffset": 462,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-13",
+    "binary": "openttd",
+    "query": "Where does the list of truck stops belonging to this station begin?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Station.truck_stops",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 208,
+        "size": 8,
+        "type": "RoadStop *",
+        "declaringClass": "Station",
+        "declaringOffset": 208,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-14",
+    "binary": "openttd",
+    "query": "Which kinds of vehicles have called at this station?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Station.had_vehicle_of_type",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 328,
+        "size": 1,
+        "type": "StationHadVehicleOfType",
+        "declaringClass": "Station",
+        "declaringOffset": 328,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-15",
+    "binary": "openttd",
+    "query": "What facilities does this station offer?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "BaseStation.facilities",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseStation",
+        "offset": 121,
+        "size": 1,
+        "type": "StationFacility",
+        "declaringClass": "BaseStation",
+        "declaringOffset": 121,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 121,
+        "size": 1,
+        "type": "StationFacility",
+        "declaringClass": "BaseStation",
+        "declaringOffset": 121,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 121,
+        "size": 1,
+        "type": "StationFacility",
+        "declaringClass": "BaseStation",
+        "declaringOffset": 121,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-16",
+    "binary": "openttd",
+    "query": "Which row does this diagonal map scan start from?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DiagonalTileIterator.base_y",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DiagonalTileIterator",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "DiagonalTileIterator",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-17",
+    "binary": "openttd",
+    "query": "Has this network client already left the game?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "NetworkSocketHandler.has_quit",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "ClientNetworkGameSocketHandler",
+        "offset": 16,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "NetworkSocketHandler",
+        "declaringOffset": 8,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          },
+          {
+            "className": "NetworkSocketHandler",
+            "offset": 8,
+            "size": 16
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-18",
+    "binary": "openttd",
+    "query": "Where are the resolved network addresses for this pending connection stored?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "TCPConnecter.ai",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "TCPConnecter",
+        "offset": 24,
+        "size": 8,
+        "type": "addrinfo *",
+        "declaringClass": "TCPConnecter",
+        "declaringOffset": 24,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-19",
+    "binary": "openttd",
+    "query": "Where is the weak reference record of this script object kept?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "SQRefCounted._weakref",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "SQRefCounted",
+        "offset": 16,
+        "size": 8,
+        "type": "SQWeakRef *",
+        "declaringClass": "SQRefCounted",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-OP-20",
+    "binary": "openttd",
+    "query": "Which tile is the large UFO destroyer aiming at?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DisasterVehicle.big_ufo_destroyer_target",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 544,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "DisasterVehicle",
+        "declaringOffset": 544,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-01",
+    "binary": "openmw",
+    "query": "Is the water level recorded in this cell meant for an interior?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "ESM::Cell.mWaterInt",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "ESM::Cell",
+        "offset": 176,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "ESM::Cell",
+        "declaringOffset": 176,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-02",
+    "binary": "openmw",
+    "query": "Is the player currently prevented from switching between first and third person?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "ESM::ControlsState.mViewSwitchDisabled",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "ESM::ControlsState",
+        "offset": 0,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "ESM::ControlsState",
+        "declaringOffset": 0,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-03",
+    "binary": "openmw",
+    "query": "On which day of the month was this journal entry written?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "ESM::JournalEntry.mDay",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "ESM::JournalEntry",
+        "offset": 136,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "ESM::JournalEntry",
+        "declaringOffset": 136,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-04",
+    "binary": "openmw",
+    "query": "How far is the local map zoomed in?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::LocalMapBase.mLocalMapZoom",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::HUD",
+        "offset": 112,
+        "size": 4,
+        "type": "float",
+        "declaringClass": "MWGui::LocalMapBase",
+        "declaringOffset": 8,
+        "inheritance": [
+          {
+            "className": "MWGui::LocalMapBase",
+            "offset": 104,
+            "size": 328
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-05",
+    "binary": "openmw",
+    "query": "Where is the renderer that draws this interface's local map?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::LocalMapBase.mLocalMapRender",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::HUD",
+        "offset": 120,
+        "size": 8,
+        "type": "MWRender::LocalMap *",
+        "declaringClass": "MWGui::LocalMapBase",
+        "declaringOffset": 16,
+        "inheritance": [
+          {
+            "className": "MWGui::LocalMapBase",
+            "offset": 104,
+            "size": 328
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-06",
+    "binary": "openmw",
+    "query": "How many map cells does this local map cover?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::LocalMapBase.mNumCells",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::HUD",
+        "offset": 208,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWGui::LocalMapBase",
+        "declaringOffset": 104,
+        "inheritance": [
+          {
+            "className": "MWGui::LocalMapBase",
+            "offset": 104,
+            "size": 328
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-07",
+    "binary": "openmw",
+    "query": "Where is the drag-and-drop helper used by this interface?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::HUD.mDragAndDrop",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::HUD",
+        "offset": 648,
+        "size": 8,
+        "type": "MWGui::DragAndDrop *",
+        "declaringClass": "MWGui::HUD",
+        "declaringOffset": 648,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-08",
+    "binary": "openmw",
+    "query": "Which actor is currently highlighted as the enemy on this interface?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::HUD.mEnemyActorId",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::HUD",
+        "offset": 776,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWGui::HUD",
+        "declaringOffset": 776,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-09",
+    "binary": "openmw",
+    "query": "Where is the non-interactive message box owned by the message box manager?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::MessageBoxManager.mStaticMessageBox",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::MessageBoxManager",
+        "offset": 56,
+        "size": 8,
+        "type": "MWGui::MessageBox *",
+        "declaringClass": "MWGui::MessageBoxManager",
+        "declaringOffset": 56,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-10",
+    "binary": "openmw",
+    "query": "How many hours has the player chosen to rest for?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::WaitDialog.mManualHours",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::WaitDialog",
+        "offset": 264,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWGui::WaitDialog",
+        "declaringOffset": 264,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-11",
+    "binary": "openmw",
+    "query": "How much fade time is left before this wait dialog disappears?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWGui::WaitDialog.mFadeTimeRemaining",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWGui::WaitDialog",
+        "offset": 268,
+        "size": 4,
+        "type": "float",
+        "declaringClass": "MWGui::WaitDialog",
+        "declaringOffset": 268,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-12",
+    "binary": "openmw",
+    "query": "Where is the action manager used by the controller input handler?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWInput::ControllerManager.mActionManager",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWInput::ControllerManager",
+        "offset": 16,
+        "size": 8,
+        "type": "MWInput::ActionManager *",
+        "declaringClass": "MWInput::ControllerManager",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-13",
+    "binary": "openmw",
+    "query": "Was a joystick the last input device the player used?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWInput::ControllerManager.mJoystickLastUsed",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWInput::ControllerManager",
+        "offset": 46,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "MWInput::ControllerManager",
+        "declaringOffset": 46,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-14",
+    "binary": "openmw",
+    "query": "Has this actor's queue of AI actions finished?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWMechanics::AiSequence.mDone",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::AiSequence",
+        "offset": 32,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "MWMechanics::AiSequence",
+        "declaringOffset": 32,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-15",
+    "binary": "openmw",
+    "query": "How much gold does this creature carry?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWMechanics::CreatureStats.mGoldPool",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::CreatureStats",
+        "offset": 600,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 600,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::NpcStats",
+        "offset": 600,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 600,
+        "inheritance": [
+          {
+            "className": "MWMechanics::CreatureStats",
+            "offset": 0,
+            "size": 712
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-16",
+    "binary": "openmw",
+    "query": "How many times has this creature been struck by a friend?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWMechanics::CreatureStats.mFriendlyHits",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::CreatureStats",
+        "offset": 508,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 508,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      },
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::NpcStats",
+        "offset": 508,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 508,
+        "inheritance": [
+          {
+            "className": "MWMechanics::CreatureStats",
+            "offset": 0,
+            "size": 712
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-17",
+    "binary": "openmw",
+    "query": "Where is the pathgrid data this navigation graph was built from?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWMechanics::PathgridGraph.mPathgrid",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWMechanics::PathgridGraph",
+        "offset": 8,
+        "size": 8,
+        "type": "const ESM::Pathgrid *",
+        "declaringClass": "MWMechanics::PathgridGraph",
+        "declaringOffset": 8,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-18",
+    "binary": "openmw",
+    "query": "Is this actor currently walking on the surface of water?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWPhysics::ActorFrameData.mWalkingOnWater",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWPhysics::ActorFrameData",
+        "offset": 34,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "MWPhysics::ActorFrameData",
+        "declaringOffset": 34,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-19",
+    "binary": "openmw",
+    "query": "Has this cell store recorded any changes to its cell yet?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "MWWorld::CellStore.mHasState",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWWorld::CellStore",
+        "offset": 36,
+        "size": 1,
+        "type": "bool",
+        "declaringClass": "MWWorld::CellStore",
+        "declaringOffset": 36,
+        "inheritance": [],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-MW-20",
+    "binary": "openmw",
+    "query": "What phase is this animation blend controller currently at?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "Nif::Controller.phase",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "Nif::bhkBlendController",
+        "offset": 72,
+        "size": 4,
+        "type": "float",
+        "declaringClass": "Nif::Controller",
+        "declaringOffset": 72,
+        "inheritance": [
+          {
+            "className": "Nif::Controller",
+            "offset": 0,
+            "size": 96
+          }
+        ],
+        "oracle": "independent same-build DWARF re-extraction"
+      }
+    ]
+  },
+  {
+    "id": "SV4-CTL-01",
+    "binary": "openttd",
+    "query": "What is the name of the pilot flying this aircraft?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-02",
+    "binary": "openttd",
+    "query": "How many passengers on this bus are currently asleep?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-03",
+    "binary": "openttd",
+    "query": "What is the average humidity inside this station's waiting room?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-04",
+    "binary": "openttd",
+    "query": "Which flavour of ice cream does this town's mayor prefer?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-05",
+    "binary": "openttd",
+    "query": "How much does the clock on this station platform weigh?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-06",
+    "binary": "openmw",
+    "query": "What is the name of this shopkeeper's pet cat?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-07",
+    "binary": "openmw",
+    "query": "What is the temperature of the water in this cell?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-08",
+    "binary": "openmw",
+    "query": "Which song is the bard in this tavern currently composing?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-09",
+    "binary": "openmw",
+    "query": "How many keys are on this guard's keyring?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  },
+  {
+    "id": "SV4-CTL-10",
+    "binary": "openmw",
+    "query": "What is the serial number stamped on this iron dagger?",
+    "mode": "partial",
+    "status": "control",
+    "identities": [],
+    "semanticLabel": "unanswerable-control"
+  }
+]
