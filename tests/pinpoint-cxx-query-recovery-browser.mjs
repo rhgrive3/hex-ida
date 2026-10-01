@@ -88,7 +88,9 @@ try {
   await open('unrelated musical tune');
   const advisory=page.getByText(/^(Ask Jev for an alternative \(optional\)|Jevに別案を聞く（任意）)$/);
   await advisory.waitFor({state:'visible',timeout:30000});
-  const originalText=await page.locator('#overlays .sheet:not(.parked)').innerText();
+  await page.evaluate(()=>{window.__originalResultSheet=document.querySelector('#overlays .sheet:not(.parked)');});
+  const originalText=await page.locator('#overlays .sheet:not(.parked) .sheet-body').innerText();
+  const originalTitle=await page.locator('#overlays .sheet:not(.parked) .sheet-title').innerText();
   assert.equal(remoteCalls,0,'rendering an optional action must not call Jev');
   remoteChoice=await page.evaluate(async()=>{
     const {pinpointField,jevShortlist}=await import('/js/pinpoint.js');
@@ -108,7 +110,11 @@ try {
   assert.equal(remoteCalls,1,'only an explicit comparison calls Jev');
   assert.equal(await page.getByLabel('OpenJev API key').inputValue(),'');
   await page.getByRole('button',{name:/^(Back|戻る)$/}).last().click();
-  assert.equal(await page.locator('#overlays .sheet:not(.parked)').innerText(),originalText,'advisory must not replace or mutate the main result');
+  // History navigation legitimately adds back/forward controls to the header.
+  // Assert the same result node, title and full result body remain unchanged.
+  assert.equal(await page.evaluate(()=>document.querySelector('#overlays .sheet:not(.parked)')===window.__originalResultSheet),true);
+  assert.equal(await page.locator('#overlays .sheet:not(.parked) .sheet-title').innerText(),originalTitle);
+  assert.equal(await page.locator('#overlays .sheet:not(.parked) .sheet-body').innerText(),originalText,'advisory must not replace or mutate the main result');
   assert.deepEqual(errors,[]);
   console.log(`C++ query/advisory production DOM: PASS (WebKit, ${fields.length} anonymous fields; local recovery; explicit advisory; main result preserved)`);
 } finally {
