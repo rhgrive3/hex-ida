@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {baselineSummaries} from '../../../scripts/rescore-jev-default-v3.mjs';
 import {DEFAULT_V3_ARMS} from '../../../scripts/evaluate-jev-default-v3.mjs';
+import {execFileSync} from 'node:child_process';
 test('V3 rescue and destruction count the actual Hex and deterministic baselines independently',()=>{
   const rows=[[true,false,true],[false,true,true],[true,true,false]].map(([hex,local,remote],index)=>({
     id:String(index),binary:'openttd',status:'verified',verdict:'ambiguous',hexLatencyMs:1,
@@ -14,4 +15,24 @@ test('V3 rescue and destruction count the actual Hex and deterministic baselines
   assert.equal(s.vsR1.V3.hexTop1,2);assert.equal(s.vsR1.V3.rescue,1);assert.equal(s.vsR1.V3.regression,1);
   assert.equal(s.summaries.A.rescue,0);assert.equal(s.summaries.A.regression,0);
   assert.equal(s.vsR1.R1.net,0);
+});
+
+test('Actions artifact names cannot merge distinct IDs and unsafe archives fail closed',()=>{
+  execFileSync('python',['-c',`
+import importlib.util, io, zipfile
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('artifact_downloader','scripts/download-jev-action-evidence.py')
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+root=Path('/mnt/workspace/.dev-state/agent-work/evidence/jev-realgame-final')
+assert module.artifact_destination(root,1,2)!=module.artifact_destination(root,1,3)
+assert module.artifact_destination(root,1,2)!=module.artifact_destination(root,2,2)
+for names in [['../escape'],['/absolute'],['same','./same']]:
+ stream=io.BytesIO()
+ with zipfile.ZipFile(stream,'w') as archive:
+  for name in names: archive.writestr(name,'evidence')
+ with zipfile.ZipFile(stream) as archive:
+  try: module.validate_archive(archive,root/'artifact')
+  except ValueError: pass
+  else: raise AssertionError('unsafe artifact accepted')
+`],{cwd:new URL('../../../',import.meta.url),env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'},stdio:'pipe'});
 });
