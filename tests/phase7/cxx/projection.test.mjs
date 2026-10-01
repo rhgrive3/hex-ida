@@ -309,6 +309,21 @@ test('typed ABI input recovery uses a real compiled global function without inve
   assert.equal(provider.stats().builds,beforeReads.builds,'projection must not rebuild class analysis');
 });
 
+test('non-polymorphic typed input uses actual compiler lifetime symbols and substitutions', async () => {
+  const probe=await rttiProbe(),provider=providerFor(probe);await provider.build();
+  const symbol='_Z16readPlainCounterP12PlainCounterS0_',address=symbolAddress(probe,symbol);
+  assert.notEqual(address,null,'the compiler must emit the repeated-pointer substitution');
+  assert.equal(provider.classEvidence().classes.some(cls=>cls.className==='PlainCounter'),false,
+    'this class must have no vtable proof');
+  const projection=provider.projectForFunction({functionId:'fn:plain-input',functionAddress:address,
+    functionName:symbol,enableTypedArguments:true,ir:memberIr([{offset:0,size:4}])});
+  assert.ok(projection);assert.equal(projection.receiver.classIdentity.className,'PlainCounter');
+  assert.equal(projection.receiver.classIdentity.vtableAddress,null);
+  assert.equal(projection.receiver.nonStaticProof,null);
+  assert.equal(projection.receiver.receiverRole,'typed-argument');
+  assert.equal(projection.members[0].offsetBytes,0n);
+});
+
 test('a proven member projects canonical member evidence for its field accesses', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);

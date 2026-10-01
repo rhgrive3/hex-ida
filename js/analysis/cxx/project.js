@@ -38,6 +38,7 @@ import { recoverMemberTypeEvidence } from './member-types.js';
 import { CxxMemberIndex } from './member-index.js';
 import { createPrimaryOwnerResolver } from './primary-owner.js';
 import { createCppTypedArgumentEvidence } from './typed-argument.js';
+import { buildCppClassTypeIndex } from './class-type.js';
 import {
   buildCxxClassEvidence,
   vtableEvidenceFor,
@@ -194,7 +195,7 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
  * point at, so per-function lookup is O(1) instead of scanning every slot of
  * every class.
  */
-function indexFromReport(report, symbols, architecture) {
+function indexFromReport(report, symbols, architecture, snapshotId) {
   // Only aliased addresses need extra ownership scrutiny. This one metadata
   // walk never reads code or runs an analysis pass; name parsing is restricted
   // to duplicates, and the temporary first-name map is not retained.
@@ -215,6 +216,7 @@ function indexFromReport(report, symbols, architecture) {
     if(names.size)symbolOwners.set(key,names);
   }
   const vtables = [],typedClasses=new Map();
+  const classTypes=buildCppClassTypeIndex({symbols,snapshotId});
   const vtableClassNames = [];
   const bySlotAddress = new Map();
   let slotCount = 0;
@@ -255,6 +257,7 @@ function indexFromReport(report, symbols, architecture) {
     symbolOwners,
     typedArguments,
     typedClasses,
+    classTypes,
     slotCount,
   });
 }
@@ -336,7 +339,7 @@ export function createCxxEvidenceProvider(input = {}) {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report,symbols,architecture) : EMPTY_INDEX;
+        index = report ? indexFromReport(report,symbols,architecture,snapshotId) : EMPTY_INDEX;
         return index;
       })();
       try {
@@ -421,7 +424,11 @@ export function createCxxEvidenceProvider(input = {}) {
       try {
         const typed=index.typedArguments?.get(String(functionAddress));
         const symbol=symbols?.nameAt?.(functionAddress)??rawSymbol??functionName;
-        const argumentOwner=index.typedClasses?.get(typed?.className);
+        const lifetimeClass=index.classTypes?.get(typed?.className);
+        // A conflicting primary-vtable identity cannot be repaired by a name.
+        const argumentOwner=index.typedClasses?.has(typed?.className)
+          ?index.typedClasses.get(typed.className)
+          :lifetimeClass?{kind:'named',className:typed.className,offsetToTop:0n}:null;
         if(enableTypedArguments===true&&typed&&vtables.length) {
           unproven++;return bind(null); // folded global/virtual identities stay ambiguous
         }
@@ -440,6 +447,7 @@ export function createCxxEvidenceProvider(input = {}) {
           architecture,
           typedArgumentProof:currentArgument?.className===typed?.className?currentArgument:null,
           typedArgumentClassIdentity:argumentOwner??null,
+          typedArgumentClassTypeProof:lifetimeClass??null,
         });
       } catch {
         unproven++;

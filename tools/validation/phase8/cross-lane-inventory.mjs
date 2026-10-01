@@ -44,6 +44,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/phase7/cxx/jev-default-summary.test.mjs",
     "tests/phase7/cxx/typed-argument.test.mjs",
     "js/analysis/cxx/typed-argument.js",
+    "js/analysis/cxx/class-type.js",
+    "tests/phase7/cxx/class-type.test.mjs",
     "reports/investigations/jev-realgame-final/development-v3/queries-openmw.json",
     "reports/investigations/jev-realgame-final/development-v3/queries-openttd.json",
     "reports/investigations/jev-realgame-final/development-v3/selection-receipt.json",

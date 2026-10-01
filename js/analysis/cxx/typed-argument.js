@@ -2,6 +2,7 @@
 // a first pointer-to-named-object parameter. Qualified functions may be
 // static members; templates may encode return types. Neither is accepted.
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { demangleCxx } from '../../rtti.js';
 
 const canonical = new WeakSet();
 export const isCanonicalCppTypedArgumentEvidence = value => value !== null
@@ -58,6 +59,14 @@ export function createCppTypedArgumentEvidence({symbol,functionAddress,architect
       }
       if(count<2||symbol[position++]!=='E')return false;
       return true;
+    }
+    // Later parameter substitutions do not move the already proven first
+    // pointer argument from x0. Accept only a complete, validated signature;
+    // an unresolved substitution or extra suffix still fails closed.
+    if(code==='S') {
+      const substitution=/^S(?:[0-9A-Z]{1,6})?_/.exec(symbol.slice(position));
+      if(!substitution||demangleCxx(symbol)===null)return false;
+      position+=substitution[0].length;return true;
     }
     return false;
   };

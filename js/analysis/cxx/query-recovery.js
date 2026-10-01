@@ -3,6 +3,7 @@
 import { analyzeFunctionSymbol } from './object-evidence.js';
 import { createPrimaryOwnerResolver } from './primary-owner.js';
 import { createCppTypedArgumentEvidence } from './typed-argument.js';
+import { buildCppClassTypeIndex } from './class-type.js';
 
 const STOP = new Set('a an and are as at be being by current field find for from has have in is it member of on or stored that the this to used value what where which with'.split(' '));
 export function cxxQueryTokens(text) {
@@ -21,6 +22,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
   const valueAccessors=planningPolicy==='value-accessor-v3';
   const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
   const typedClassNames=new Set((classEvidence?.classes??[]).map(cls=>cls.className).filter(Boolean));
+  if(valueAccessors)for(const name of buildCppClassTypeIndex({symbols,snapshotId:'planning-only'}).keys())typedClassNames.add(name);
   const extentFor=address=>{
     if(!valueAccessors)return null;
     const end=symbols?.declaredFunctionEnd?.(address);

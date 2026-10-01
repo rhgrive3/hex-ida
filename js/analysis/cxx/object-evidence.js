@@ -12,6 +12,7 @@
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { demangleCxx, readableName, isMangled, cxxAbiFunctionRole } from '../../rtti.js';
 import { isCanonicalCppTypedArgumentEvidence } from './typed-argument.js';
+import { isCanonicalCppClassTypeEvidence } from './class-type.js';
 
 export const CPP_OBJECT_EVIDENCE_VERSION = '1.0.0';
 
@@ -35,11 +36,14 @@ export function createCppTypedArgumentReceiverEvidence(input = {}) {
   const proof=input.argumentProof;
   if(!isCanonicalCppTypedArgumentEvidence(proof))fail('cpp-typed-argument-proof-required');
   // Itanium named types include enums. A pointer signature alone therefore
-  // cannot establish a class: require the independently recovered primary
-  // class identity, supplied by the slice's existing vtable/RTTI index.
+  // cannot establish a class: require an independent primary vtable identity,
+  // or exact constructor/destructor class-type evidence from this snapshot.
   const owner=input.classIdentity;
+  const classTypeProof=input.classTypeProof;
+  const lifetimeClass=isCanonicalCppClassTypeEvidence(classTypeProof)
+    &&classTypeProof.className===proof.className&&classTypeProof.snapshotId===input.snapshotId;
   if(owner?.kind!=='named'||owner.className!==proof.className||owner.offsetToTop!==0n
-    ||typeof owner.vtableAddress!=='bigint'||owner.vtableAddress<=0n)fail('cpp-typed-argument-class-proof-required');
+    ||!lifetimeClass&&(typeof owner.vtableAddress!=='bigint'||owner.vtableAddress<=0n))fail('cpp-typed-argument-class-proof-required');
   const functionId=typeof input.functionId==='string'&&input.functionId.trim()
     ?input.functionId.trim():fail('cpp-receiver-function-id-required');
   const functionAddress=nonNegativeBigInt(input.functionAddress,'cpp-receiver-function-address');
@@ -50,7 +54,7 @@ export function createCppTypedArgumentReceiverEvidence(input = {}) {
   const record={schema:CPP_RECEIVER_SCHEMA,functionId,functionAddress,
     canonicalValueId:input.canonicalValueId,receiverRole:'typed-argument',
     classIdentity:createCppClassIdentity(owner),
-    argumentProof:proof,nonStaticProof:null,
+    argumentProof:proof,classTypeProof:lifetimeClass?classTypeProof:null,nonStaticProof:null,
     abiBinding:{architecture:proof.architecture,register:proof.register,argumentIndex:proof.argumentIndex},
     completeness:'complete',snapshotId,uncertainty:null};
   record.digest=stableDigest(record);
@@ -519,6 +523,7 @@ export function extractCppObjectEvidence(context = {}) {
     architecture = 'arm64',
     typedArgumentProof = null,
     typedArgumentClassIdentity = null,
+    typedArgumentClassTypeProof = null,
   } = context;
 
   if(isCanonicalCppTypedArgumentEvidence(typedArgumentProof)
@@ -532,7 +537,8 @@ export function extractCppObjectEvidence(context = {}) {
     const arg0=argumentsAtX0.length===1?argumentsAtX0[0]:null;
     if(arg0) {
       const receiver=createCppTypedArgumentReceiverEvidence({argumentProof:typedArgumentProof,
-        classIdentity:typedArgumentClassIdentity,functionId,functionAddress,canonicalValueId:arg0.id,snapshotId});
+        classIdentity:typedArgumentClassIdentity,classTypeProof:typedArgumentClassTypeProof,
+        functionId,functionAddress,canonicalValueId:arg0.id,snapshotId});
       return deepFreeze({schema:'cpp-object-evidence-report/v1',functionId,receiver,
         vtables:[],virtualSlots:[],completeness:'complete',status:'verified-cpp-typed-argument',reason:null});
     }
