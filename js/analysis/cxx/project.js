@@ -163,6 +163,7 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         accessRoles: field.accessRoles,
         writtenArgumentRegisters: field.writtenArgumentRegisters,
         writtenArgumentBits: field.writtenArgumentBits,
+        writtenArgumentBitsTruncated: field.writtenArgumentBitsTruncated,
         rule: field.rule,
         reason: field.reason,
       }));

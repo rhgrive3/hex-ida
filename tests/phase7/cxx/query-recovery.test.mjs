@@ -74,9 +74,13 @@ test('V3 scheduling prioritizes requested accessors and declared extent without 
 });
 
 test('V4 recovery prioritizes the requested class over a helper with matching action words',()=>{
-  const symbols={funcs:[1n,2n],addrs:[1n,2n],names:['_ZN6PersonC1Ev','_ZNK9UserStats10getCreditsEv']};
+  const symbols={funcs:[1n,2n,3n,4n],addrs:[1n,2n,3n,4n],names:[
+    '_ZN6PersonC1Ev','_ZNK9UserStats10getCreditsEv','_ZN12PersonConfigC1Eb','_ZNK6Person6getAgeEv']};
   const plan=policy=>createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:policy}).plan('person credits');
   assert.equal(plan('value-accessor-v3')[0].className,'UserStats');
   assert.equal(plan('object-context-v4')[0].className,'Person');
+  assert.equal(plan('object-context-v4')[1].className,'PersonConfig','a related constructor cannot be starved by unrelated short methods');
+  const accessor=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'object-context-v4'}).plan('person age');
+  assert.equal(accessor[0].address,4n,'a requested accessor stays ahead of constructor scheduling');
   assert.deepEqual(new Set(plan('object-context-v4').map(row=>row.address)),new Set(plan('value-accessor-v3').map(row=>row.address)));
 });

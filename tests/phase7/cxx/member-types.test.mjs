@@ -8,6 +8,7 @@ import {
   memberTypeResolver,
   recoverMemberTypeEvidence,
 } from '../../../js/analysis/cxx/member-types.js';
+import {createCppMemberEvidence} from '../../../js/analysis/cxx/object-evidence.js';
 
 function createIr(lines) {
   const rows = lines.map((text, row) => {
@@ -54,6 +55,16 @@ test('single-bit masked input stores retain caller provenance and reject transfo
   toy.instructions.splice(1,0,{op:'un',sub:'neg',dst:{id:'neg'},args:[argument]});
   toy.instructions[2].args[0]={id:'neg'};
   assert.deepEqual(read(),[],'transformed inputs cannot claim an entry argument bit');
+  const many={values:[argument],instructions:Array.from({length:16},(_,bit)=>[
+    {op:'const',dst:{id:`mask${bit}`},extra:{value:1n<<BigInt(bit)}},
+    {op:'bin',sub:'and',dst:{id:`bit${bit}`},args:[argument,{id:`mask${bit}`}]},
+    {op:'store',args:[{id:`bit${bit}`}],loc:{kind:'field',base,disp:4n,size:2}}]).flat()};
+  const field=recoverMemberTypeEvidence({ir:many,isReceiverBase:v=>v===base}).fields[0];
+  assert.equal(field.writeCount,16);assert.equal(field.writtenArgumentBits.length,8);
+  assert.equal(field.writtenArgumentBitsTruncated,true);
+  const canonical=createCppMemberEvidence({...field,functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:field.offset,sizeBytes:field.size});
+  assert.equal(canonical.accessProven,true,'bounded descriptions must not remove the member');
+  assert.equal(canonical.writtenArgumentBitsTruncated,true);
 });
 
 function fieldAt(report, offset) {

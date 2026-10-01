@@ -87,6 +87,7 @@ try {
     planningPolicy,productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     binarySha256,queriesSha256:sha256(queryBytes),profile:product.profile,
     sourceHashes:Object.fromEntries(['js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/cxx/primary-owner.js','js/analysis/cxx/project.js',
+      'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/query/cxx-semantic-preference.js',
       'js/analysis/cxx/query-recovery.js','js/analysis/query/app-adapter.js','js/analysis/query/jev-recovery.js',
       'scripts/collect-jev-context-development.mjs','js/rtti.js','js/analysis/cxx/member-index.js','js/analysis/query/jev-advisory.js'].map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),rows:metadataRows});
 } finally {CxxMemberIndex.prototype.publish=originalPublish;await product.close();}

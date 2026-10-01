@@ -77,7 +77,8 @@ export function jevArgumentFlowRequest(query, views) {
       const method=context.name?(demangleCxx(context.name)??context.name):`0x${BigInt(context.address).toString(16)}`;
       const sources=registers.length?`entry-register write: ${[...new Set(registers)].sort().join(', ')}`:'';
       const bitSources=bits.length?`entry-argument bit write: ${[...new Set(bits)].sort().map(value=>value.replace(':','[')+']').join(', ')}`:'';
-      return [[sources,bitSources,`receiver ABI role: ${role}`,`release method: ${bounded(method)}`].filter(Boolean).join('; ')];
+      return [[sources,bitSources,context.writtenArgumentBitsTruncated===true?'input-bit context truncated; additional sources unavailable':'',
+        `receiver ABI role: ${role}`,`release method: ${bounded(method)}`].filter(Boolean).join('; ')];
     }).slice(0,8);
     if(inputs.length)body.questions.pick.criteria[`c${index}`]+=` | ${inputs.join(' | ')}`;
   }
@@ -138,15 +139,16 @@ export function jevMemberContextSignature(view) {
 export function jevArgumentContextSignature(view) {
   const byAddress=new Map();
   for(const context of (view?.functionContexts??[]).slice(0,64)) {
-    const entry=byAddress.get(context.address)??{roles:new Set(),registers:new Set(),bits:new Set(),receiverRoles:new Set()};
+    const entry=byAddress.get(context.address)??{roles:new Set(),registers:new Set(),bits:new Set(),receiverRoles:new Set(),truncated:false};
     for(const role of context.accessRoles??[])entry.roles.add(role);
     for(const register of context.writtenArgumentRegisters??[])if(typeof register==='string'&&/^x[0-7]$/.test(register))entry.registers.add(register);
     for(const bit of argumentBitsFor(context))entry.bits.add(bit);
+    if(context.writtenArgumentBitsTruncated===true)entry.truncated=true;
     if(['this','typed-argument'].includes(context.receiverRole))entry.receiverRoles.add(context.receiverRole);
     byAddress.set(context.address,entry);
   }
   return JSON.stringify([view?.className,[...byAddress].map(([address,entry])=>
-    [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.bits].sort(),[...entry.receiverRoles].sort()])
+    [address,[...entry.roles].sort(),[...entry.registers].sort(),[...entry.bits].sort(),[...entry.receiverRoles].sort(),entry.truncated])
     .sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
 }
 
@@ -196,6 +198,7 @@ export async function rerankAnonymousCxx(query,local,options={}) {
       const selected=typeof response.selectedKey==='string'?views.find(view=>view.key===response.selectedKey)
         :Number.isInteger(response.choiceIndex)?views.find(view=>view.key===input.candidates[response.choiceIndex]?.key):null;
       if(!selected)return null;
+      if(selected.functionContexts.some(context=>context.writtenArgumentBitsTruncated===true))return null;
       const signatureFor=options.representation==='argument-flow-v4'?jevArgumentContextSignature:jevMemberContextSignature;
       const signature=signatureFor(selected);
       // Offsets, widths and read/write totals alone cannot distinguish meaning.

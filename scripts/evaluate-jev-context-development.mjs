@@ -67,6 +67,7 @@ for(const input of snapshots.flatMap(snapshot=>snapshot.rows)) {
         const response=await client.call(request);if(!response)return null;
         const selected=request.candidates[response.choiceIndex];
         if(!selected||selected.conflict)return null;
+        if(selective&&selected.functionContexts.some(context=>context.writtenArgumentBitsTruncated===true))return null;
         if(selective&&pool.some(peer=>peer.key!==selected.key
           &&jevArgumentContextSignature(peer)===jevArgumentContextSignature(selected)))return null;
         return response;

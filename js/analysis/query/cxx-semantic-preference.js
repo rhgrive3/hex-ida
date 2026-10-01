@@ -71,7 +71,8 @@ export function cxxSemanticViews(candidates, symbols) {
         receiverProven: true, accessRoles: member.accessRoles ?? [],
         receiverRole: receiver.receiverRole,
         writtenArgumentRegisters: member.writtenArgumentRegisters ?? [],
-        writtenArgumentBits: member.writtenArgumentBits ?? [] }));
+        writtenArgumentBits: member.writtenArgumentBits ?? [],
+        writtenArgumentBitsTruncated: member.writtenArgumentBitsTruncated===true }));
     }
     return Object.freeze({ key: candidate.key, source: 'cxx', className: candidate.className,
       conflict: field.conflict === true, functionContexts: Object.freeze(contexts) });

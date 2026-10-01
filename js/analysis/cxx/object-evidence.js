@@ -419,6 +419,8 @@ export function createCppMemberEvidence(input = {}) {
   if(!Array.isArray(writtenArgumentBits)||writtenArgumentBits.length>8
     ||writtenArgumentBits.some(value=>typeof value!=='string'||!/^x[0-7]:(?:0|[1-9][0-9]?)$/.test(value)
       ||Number(value.split(':')[1])>=Math.min(64,sizeBytes*8)))fail('cpp-member-argument-bit-invalid');
+  if(input.writtenArgumentBitsTruncated!=null&&typeof input.writtenArgumentBitsTruncated!=='boolean')
+    fail('cpp-member-argument-bit-truncation-invalid');
 
   const record = {
     schema: CPP_CANONICAL_MEMBER_SCHEMA,
@@ -444,6 +446,7 @@ export function createCppMemberEvidence(input = {}) {
     ...(accessRoles.length ? {accessRoles:Object.freeze([...new Set(accessRoles)].sort())} : {}),
     ...(writtenArgumentRegisters.length ? {writtenArgumentRegisters:Object.freeze([...new Set(writtenArgumentRegisters)].sort())} : {}),
     ...(writtenArgumentBits.length ? {writtenArgumentBits:Object.freeze([...new Set(writtenArgumentBits)].sort())} : {}),
+    ...(input.writtenArgumentBitsTruncated===true ? {writtenArgumentBitsTruncated:true} : {}),
     rule,
     reason,
   };

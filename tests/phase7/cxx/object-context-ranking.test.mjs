@@ -37,6 +37,9 @@ test('argument context stays bounded and duplicate or forged metadata cannot cre
   assert.equal(JSON.stringify(bitBody).includes('SECRET_ORACLE_FIELD'),false);
   assert.equal(jevArgumentContextSignature(bitView),jevArgumentContextSignature({...bitView,functionContexts:[bitContext,bitContext]}));
   assert.notEqual(jevArgumentContextSignature(bitView),jevArgumentContextSignature(view));
+  const truncatedView={...bitView,functionContexts:[{...bitContext,writtenArgumentBitsTruncated:true}]};
+  assert.match(jevArgumentFlowRequest('question',[truncatedView]).questions.pick.criteria.c0,/context truncated/);
+  assert.notEqual(jevArgumentContextSignature(truncatedView),jevArgumentContextSignature(bitView));
   const input={functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:8n,sizeBytes:1,writeCount:1,reason:'unclassified'};
   assert.deepEqual(createCppMemberEvidence({...input,writtenArgumentBits:['x1:0']}).writtenArgumentBits,['x1:0']);
   for(const bits of [['x1:8'],['x8:0'],['x1:64'],[{toString:()=> 'x1:0'}]])

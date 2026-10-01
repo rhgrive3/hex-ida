@@ -61,6 +61,7 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
     const methodName=argumentProof?.functionName??info.methodName??'';
     const row={address:BigInt(address),className,methodName,symbolName:symbols.names[i],
+      ...(planningPolicy==='object-context-v4'?{isConstructor:info.isConstructor===true}:{}),
       proof:argumentProof?'release-typed-object-argument':declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
       classTokens:tokensFor(className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(methodName),
       declaredSizeBytes:extentFor(BigInt(address))};
@@ -89,6 +90,16 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
         specificity:classHits.length/Math.max(1,row.classTokens.length)};
     }).sort((a,b)=>{
       const object=b.objectMatches-a.objectMatches;if(object)return object;
+      if(planningPolicy==='object-context-v4') {
+        // A matching accessor remains first. When no method identifies the
+        // requested property, construction can expose caller-supplied values
+        // on a related/base owner instead of spending the whole budget on
+        // short unrelated routines of the top lexical owner.
+        const accessor=Number(b.methodHits.length>0)-Number(a.methodHits.length>0);
+        if(accessor)return accessor;
+        const constructor=Number(b.isConstructor===true)-Number(a.isConstructor===true);
+        if(constructor)return constructor;
+      }
       const score=b.score-a.score;
       if(score)return score;
       const method=b.methodHits.length-a.methodHits.length;
