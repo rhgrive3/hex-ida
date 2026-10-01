@@ -1,0 +1,52 @@
+{
+  "schema": "hex-jev-v4-holdout-freeze/v1",
+  "revision": "independent-untouched-v4",
+  "createdAtUtc": "2026-10-01T05:29:06Z",
+  "holdoutSha256": "c8381905d3c1711da768de709599c68708e703c7bdf2828046fb789bd4abad3c",
+  "authorityFileSha256": {
+    "layout-openttd.json": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+    "fresh-layout-openttd.json": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+    "layout-openmw.json": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+    "fresh-layout-openmw.json": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+    "oracle-authority.json": "38665f5657573bf281e71b4a2b7f50805862eca19448c86f1ff904e549833844"
+  },
+  "priorCaseFileSha256": {
+    "original70-holdout-cases.json": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+    "original70-structural-gold.json": "873838d84844ca77b52b52635b52fbd7f2d1f8b7d09ce8fc6da57da754c0f909",
+    "fresh50-holdout.json": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+    "fresh50-structural-cases.json": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+    "v2-holdout.json": "d17d8f8ef6a5c60daf8e3ba24ab6bffe0aea3d4329c7a3ae1cc2f3d29fd9a1e4",
+    "v2-structural-cases.json": "1ded64a8ef549f2188328f8c56d7e3bdc7d26b0346cce26f2906f8f0d6c23c0a",
+    "v3-holdout.json": "16106dc5900e40c24200664c19d9b2f26cdaf44b0eaae86ceb844d266c3a9b16",
+    "v3-structural-cases.json": "a69bf4bae93741b910a866410f2b25dd33737b779882b5ca1d8dddee8f25f96a"
+  },
+  "distribution": {
+    "total": 50,
+    "verified": 40,
+    "control": 10,
+    "verifiedOpenttd": 20,
+    "verifiedOpenmw": 20,
+    "controlOpenttd": 5,
+    "controlOpenmw": 5
+  },
+  "overlapAudit": {
+    "excludedPhysicalIdentityCount": 326,
+    "verifiedOverlapCount": 0,
+    "aliasOverlapCount": 0,
+    "controlIdentityCount": 0,
+    "v3OverlapCount": 0
+  },
+  "declarations": {
+    "noProductionOrResultsInspected": true,
+    "noSnapshotsOrResultsReadmesInspected": true,
+    "noPolicyOrDevelopmentOutcomeInspected": true,
+    "noV3OrV4DevelopmentReceiptInspected": true,
+    "noCandidateRecoveryOrRankingConsidered": true,
+    "noSourceHintsOrHardcodesAdded": true,
+    "noQueryTextOrGoldSentToParent": true,
+    "noParentExposureOccurred": true,
+    "reducedFromRequiredDenominator": false,
+    "allPriorPhysicalIdentitiesExcluded": true
+  },
+  "note": "Independent V4 holdout authored blind. Every verified identity is disjoint from all original/V1/V2/V3 physical identities including base aliases. No parent exposure occurred and no query text or gold label was returned."
+}

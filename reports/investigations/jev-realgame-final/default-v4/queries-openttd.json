@@ -1,0 +1,132 @@
+{
+  "schema": "hex-jev-blind-query-manifest/v4",
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "cases": [
+    {
+      "id": "SV4-OP-01",
+      "query": "How long has this vehicle already been working on the order it is currently carrying out?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-02",
+      "query": "Which status flags are currently set on this vehicle?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-03",
+      "query": "Which company does this vehicle group belong to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-04",
+      "query": "How many trees is this company allowed to plant on the map?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-05",
+      "query": "Where is the description of the artificial intelligence currently running this company?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-06",
+      "query": "Which version does this NewGRF configuration declare?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-07",
+      "query": "How many configuration parameters does this NewGRF accept?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-08",
+      "query": "What identifier marks this loaded NewGRF file?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-09",
+      "query": "How many sound effects does this NewGRF provide?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-10",
+      "query": "Which town is this industry built next to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-11",
+      "query": "Is this industry currently part of a subsidy scheme?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-12",
+      "query": "Which company has the exclusive right to consume this industry's output?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-13",
+      "query": "Where does the list of truck stops belonging to this station begin?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-14",
+      "query": "Which kinds of vehicles have called at this station?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-15",
+      "query": "What facilities does this station offer?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-16",
+      "query": "Which row does this diagonal map scan start from?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-17",
+      "query": "Has this network client already left the game?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-18",
+      "query": "Where are the resolved network addresses for this pending connection stored?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-19",
+      "query": "Where is the weak reference record of this script object kept?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-OP-20",
+      "query": "Which tile is the large UFO destroyer aiming at?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-01",
+      "query": "What is the name of the pilot flying this aircraft?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-02",
+      "query": "How many passengers on this bus are currently asleep?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-03",
+      "query": "What is the average humidity inside this station's waiting room?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-04",
+      "query": "Which flavour of ice cream does this town's mayor prefer?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-05",
+      "query": "How much does the clock on this station platform weigh?",
+      "mode": "partial"
+    }
+  ]
+}
