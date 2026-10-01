@@ -17,6 +17,15 @@ const root=new URL('../',import.meta.url);
 const golds=JSON.parse(fs.readFileSync(new URL('reports/investigations/jev-realgame-final/default-v3/structural-cases.json',root)));
 const byId=new Map(golds.map(gold=>[gold.id,gold]));
 const snapshots=['openttd','openmw'].map(game=>JSON.parse(fs.readFileSync(path.join(snapshotDir,`${game}.json`))));
+const receipt=JSON.parse(fs.readFileSync(path.join(snapshotDir,'collection-receipt.json')));
+if(receipt.complete!==true||receipt.developmentOnly!==true||receipt.files?.length!==2)
+  throw new Error('actual Actions artifact receipt required before remote inference');
+for(const snapshot of snapshots) {
+  const item=receipt.files.find(item=>item.file===`${snapshot.binaryKey}.json`);
+  if(!item||item.productSha!==snapshot.productSha||!Number.isSafeInteger(item.run)||item.run<=0
+    ||sha256(fs.readFileSync(path.join(snapshotDir,item.file)))!==item.sha256)
+    throw new Error('development artifact byte/revision binding failure');
+}
 if(new Set(snapshots.map(snapshot=>snapshot.productSha)).size!==1)throw new Error('mixed collection source revisions');
 for(const snapshot of snapshots) {
   if(!snapshot.complete||snapshot.developmentOnly!==true||snapshot.authorizesDefaultActivation!==false
