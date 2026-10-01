@@ -2,7 +2,7 @@
 // binary facts. Only the active binary's branded anonymous C++ fields are sent.
 import { adviseWithJev, rerankWithJev } from '../../pinpoint.js';
 import { cxxSemanticViews, cxxSemanticScores, cxxObjectSemanticScores, compareCxxSemanticScores } from './cxx-semantic-preference.js';
-import { cxxQueryTokens } from '../cxx/query-recovery.js';
+import { cxxQueryTokens, cxxRecoveryTokens } from '../cxx/query-recovery.js';
 import { demangleCxx } from '../../rtti.js';
 
 const INSTRUCTION = 'Select only an existing candidate. Identify the main object and requested value in the phrase separately from actions and related helper objects. Prefer evidence for that object and value over an unrelated class with a matching word. Machine use roles and method names are context, not proof of a source field name. A shared method may access several different members. This is a weak ranking preference, never binary proof. Prefer a method that retrieves or changes the requested value over a method that only mentions an action in the question. Constructor and shared-method accesses do not distinguish individual unnamed members. Treat identical context as ambiguous; do not infer a source member name from an offset.';
@@ -61,7 +61,10 @@ export function jevValueFlowRequest(query, views) {
 // parameter name or an oracle-declared field type for this machine observation.
 export function jevArgumentFlowRequest(query, views) {
   const body=jevValueFlowRequest(query,views);
-  body.questions.pick.instructions+=' Input register writes identify machine-copy sources, possibly truncated to the member width. Use the release function signature and proven receiver ABI role as context. These observations do not recover a source parameter name or declare a field type. Separate a value supplied by a caller from literal default initialization.';
+  body.questions.pick.instructions=body.questions.pick.instructions.replace(
+    'Constructor and shared-method accesses do not distinguish individual unnamed members.',
+    'A shared method name alone does not distinguish individual unnamed members; separately tracked input sources and machine use roles may distinguish its accesses.');
+  body.questions.pick.instructions+=' Input register writes identify machine-copy sources, possibly truncated to the member width. Use the release function signature and proven receiver ABI role as context. These observations do not recover a source parameter name or declare a field type. Separate a value supplied by a caller from literal default initialization. Caller-supplied properties may be initialized only once; the absence of an observed runtime write does not exclude them. Match the requested owning object before action words in helper classes.';
   for(let index=0;index<views.length;index++) {
     const inputs=(views[index].functionContexts??[]).slice(0,64).flatMap(context=>{
       const registers=(context.writtenArgumentRegisters??[]).filter(value=>typeof value==='string'&&/^x[0-7]$/.test(value));
@@ -103,7 +106,15 @@ export function jevSemanticRoute(query,views,{verdict='none',topKey=null,policy=
     const parts=name.split('(')[0].split('::'),owner=parts.at(-2)?.split('<')[0],method=parts.at(-1);
     return method!==owner&&method!==`~${owner}`;
   }));
-  return runtime?Object.freeze({call:true,reason:'anonymous-runtime-context'}):skip('insufficient-runtime-context');
+  if(runtime)return Object.freeze({call:true,reason:'anonymous-runtime-context'});
+  if(policy==='object-context-v4') {
+    const queryTokens=new Set(cxxRecoveryTokens(query));
+    const callerInput=views.some(view=>cxxRecoveryTokens(view.className.split('::').at(-1)).some(token=>queryTokens.has(token))
+      &&(view.functionContexts??[]).some(context=>context.receiverProven===true
+        &&context.writtenArgumentRegisters?.some(register=>typeof register==='string'&&/^x[0-7]$/.test(register))));
+    if(callerInput)return Object.freeze({call:true,reason:'anonymous-caller-input-context'});
+  }
+  return skip('insufficient-runtime-context');
 }
 
 export function jevMemberContextSignature(view) {

@@ -42,6 +42,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
 
     "scripts/collect-jev-default-v3.mjs",
     "scripts/collect-jev-context-development.mjs",
+    "reports/investigations/jev-realgame-final/development-v4/queries-openmw.json",
+    "reports/investigations/jev-realgame-final/development-v4/queries-openttd.json",
     "reports/investigations/jev-realgame-final/default-v3/authority.draft-v1.md",
     "reports/investigations/jev-realgame-final/default-v3/authority.md",
     "reports/investigations/jev-realgame-final/default-v3/exposure-audit.json",
