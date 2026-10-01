@@ -27,6 +27,9 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Keep the foreign surface exact; the Phase 7 manifest remains unchanged.
   // The final game study integrates A/B without widening canonical ownership.
   "integration/jev-realgame-final": Object.freeze([
+    "scripts/evaluate-jev-default-v3.mjs",
+    "reports/investigations/jev-realgame-final/default-v3/execution-freeze.json",
+
     "reports/investigations/jev-realgame-final/default-v3/layout-openmw.json",
     "reports/investigations/jev-realgame-final/default-v3/layout-openttd.json",
     "reports/investigations/jev-realgame-final/default-v3/oracle-verification.json",
