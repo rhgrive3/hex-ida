@@ -4,7 +4,7 @@ import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
 import { irFor } from '../../ir.js';
 import { createCxxEvidenceProvider } from '../cxx/project.js';
-import { createCxxQueryPlanner, recoverCxxQueryMembers } from '../cxx/query-recovery.js';
+import { createCxxQueryPlanner, recoverCxxQueryMembers, recoverCxxQueryStages } from '../cxx/query-recovery.js';
 import { selectJevRecoveryPlan } from './jev-recovery.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
@@ -38,6 +38,8 @@ const CXX_QUERY_PLANNERS = new WeakMap();
 // analysis; the canonical producer remains the sole publication authority.
 export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   if (options.enabled !== true) return {status:'disabled',attempted:[],elapsedMs:0};
+  if(options.unpublishedOwnersOnly===true&&options.jevRetrieval===true)
+    throw new Error('unpublished-owner extension cannot use remote retrieval');
   if (!supportsArm64SemanticAnalysis(architectureOf(app))) return {status:'unsupported',attempted:[],elapsedMs:0};
   const query=app?.analysisQueries;
   if (!query?.snapshot || !query?.decompile) throw new Error('scoped C++ recovery owner unavailable');
@@ -63,7 +65,8 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     client:options.jevClient,signal:options.signal,timeoutMs:options.jevTimeoutMs,maxFunctions,
     isCurrent:()=>{checkBinding();return true;}});
   checkBinding();
-  const plan=selection.plan;
+  const plan=options.unpublishedOwnersOnly===true?cached.planner.plan(phrase,{maxFunctions,
+    excludeOwners:new Set([...entry.provider.memberIndex().classes.values()].map(cls=>cls.name))}):selection.plan;
   const beforeCount=entry.provider.memberIndex().fieldCount,beforeRevision=entry.provider.memberIndex().revision;
   if(options.planOnly===true)return {status:'planned',attempted:[],elapsedMs:0,plan,
     retrievalSource:selection.source,selectedAddress:selection.selectedAddress,selectedClass:selection.selectedClass,
@@ -77,6 +80,22 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
     selectedClass:selection.selectedClass,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
     afterCount:index.fieldCount,afterRevision:index.revision,candidateCount:index.fieldCount};
+}
+
+export async function recoverCxxMembersForSemanticQuery(app,phrase,options={}) {
+  const symbols=app?.symbols,symbolsGen=symbols?.gen;
+  let index=null;
+  return recoverCxxQueryStages({enabled:options.enabled===true,query:phrase,
+    maxElapsedMs:options.maxElapsedMs??15000,
+    primary:async()=>{
+      const result=await recoverCxxMembersForQuery(app,phrase,{...options,planningPolicy:'value-accessor-v3',jevRetrieval:false});
+      index=cxxMemberIndexForApp(app);return result;
+    },
+    captureBaseline:options.captureBaseline,
+    owners:()=>[...(index?.classes.values()??[])].filter(cls=>cls.ivars.some(field=>!field.conflict)).map(cls=>cls.name),
+    extend:(_priorOwners,remaining)=>recoverCxxMembersForQuery(app,phrase,{...options,planningPolicy:'object-context-v4',
+      jevRetrieval:false,unpublishedOwnersOnly:true,maxElapsedMs:remaining}),
+    isCurrent:()=>app?.symbols===symbols&&symbols?.gen===symbolsGen&&cxxMemberIndexForApp(app)===index});
 }
 
 // Publication only: a Pinpoint request must not build an index or reanalyze

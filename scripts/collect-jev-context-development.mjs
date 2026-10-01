@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {openProduct} from '../tools/validation/public-benchmark/product-host.mjs';
-import {recoverCxxMembersForQuery,cxxMemberIndexForApp} from '../js/analysis/query/app-adapter.js';
+import {recoverCxxMembersForQuery,recoverCxxMembersForSemanticQuery,cxxMemberIndexForApp} from '../js/analysis/query/app-adapter.js';
 import {CxxMemberIndex} from '../js/analysis/cxx/member-index.js';
 import {isCanonicalCppMemberEvidence,isCanonicalCppReceiverEvidence} from '../js/analysis/cxx/object-evidence.js';
 import {pinpointField,jevShortlist} from '../js/pinpoint.js';
@@ -14,8 +14,9 @@ import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
 const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3']=process.argv.slice(2);
 const arm="hex-value";
-if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4'].includes(planningPolicy))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT [value-accessor-v3|object-context-v4]');
+if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4'].includes(planningPolicy))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT [value-accessor-v3|object-context-v4|staged-object-v4]');
+const initialPlanningPolicy=planningPolicy==='staged-object-v4'?'value-accessor-v3':planningPolicy;
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
 if(manifest.binarySha256!==binarySha256||!manifest.binaryKey||!Array.isArray(manifest.cases)||!manifest.cases.length
@@ -42,14 +43,19 @@ try {
     if(arm==='hex-value') {
       let choices=[],body=null;
       const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
-        planningPolicy,jevRetrieval:true,
+        planningPolicy:initialPlanningPolicy,jevRetrieval:true,
         jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
       metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
     }
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
-    const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,
+    const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
+    const recovery=await recover(product.app,c.query,{enabled:true,
       jevRetrieval:false,
-      planningPolicy,
+      planningPolicy:initialPlanningPolicy,
+      captureBaseline:async()=>{
+        const initialHex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:cxxMemberIndexForApp(product.app),limit:400});
+        return {verdict:initialHex.verdict,topKey:initialHex.top?.key??null};
+      },
       maxFunctions:policy.collection.maxFunctionsPerQuery,maxElapsedMs:policy.collection.maxElapsedMs});
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
     const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});

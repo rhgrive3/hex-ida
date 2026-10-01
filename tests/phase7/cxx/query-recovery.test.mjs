@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCxxQueryPlanner,recoverCxxQueryMembers,cxxRecoveryMadeProgress,cxxQueryTokens,cxxRecoveryTokens} from '../../../js/analysis/cxx/query-recovery.js';
+import {createCxxQueryPlanner,recoverCxxQueryMembers,recoverCxxQueryStages,cxxRecoveryMadeProgress,cxxQueryTokens,cxxRecoveryTokens} from '../../../js/analysis/cxx/query-recovery.js';
 
 test('query plans use release symbol evidence, reject static/ambiguous owners, and bound matching functions',()=>{
   const symbols={funcs:[1n,2n,3n,4n,5n],addrs:[1n,2n,3n,4n,5n],names:[
@@ -82,5 +82,25 @@ test('V4 recovery prioritizes the requested class over a helper with matching ac
   assert.equal(plan('object-context-v4')[1].className,'PersonConfig','a related constructor cannot be starved by unrelated short methods');
   const accessor=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'object-context-v4'}).plan('person age');
   assert.equal(accessor[0].address,4n,'a requested accessor stays ahead of constructor scheduling');
+  assert.deepEqual(createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'object-context-v4'})
+    .plan('person credits',{maxFunctions:1,excludeOwners:new Set(['Person'])}).map(row=>row.className),['PersonConfig'],
+    'exclude prior owners before applying the bounded function budget');
   assert.deepEqual(new Set(plan('object-context-v4').map(row=>row.address)),new Set(plan('value-accessor-v3').map(row=>row.address)));
+});
+
+test('staged recovery preserves represented owners and strong results before adding unseen owners',async()=>{
+  let called=0,current=true,ownerNames=['Person'];
+  const baseline={verdict:'ambiguous',topKey:'original'};
+  const options={enabled:true,query:'person credits',primary:async()=>({status:'complete',attempted:[{address:'1'}]}),
+    captureBaseline:async()=>baseline,owners:()=>ownerNames,isCurrent:()=>current,
+    extend:async(exclusions,remaining)=>{called++;assert.ok(exclusions.has('Other'));assert.ok(remaining>0);
+      return {status:'complete',attempted:[{address:'2'}]};}};
+  let result=await recoverCxxQueryStages(options);
+  assert.equal(result.baseline,baseline);assert.equal(result.extensionReason,'requested-object-already-represented');assert.equal(called,0);
+  ownerNames=['Other'];result=await recoverCxxQueryStages(options);
+  assert.equal(called,1);assert.equal(result.baseline,baseline);assert.equal(result.attempted.length,2);
+  baseline.verdict='likely';result=await recoverCxxQueryStages(options);
+  assert.equal(result.extensionReason,'strong-local-result');assert.equal(called,1);
+  current=false;await assert.rejects(recoverCxxQueryStages(options),/binding changed/);
+  assert.equal((await recoverCxxQueryStages()).status,'disabled');
 });

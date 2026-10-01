@@ -145,11 +145,35 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
       if(first)selected.splice(selected.indexOf(first),1);
       return Object.freeze((first?[first,...selected]:selected).slice(0,maxFunctions).map(Object.freeze));
     },
-    plan(phrase,{maxFunctions=8}={}) {
+    plan(phrase,{maxFunctions=8,excludeOwners=new Set()}={}) {
       if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
-      return Object.freeze(scoreRows(phrase).filter(row=>row.score>0).slice(0,maxFunctions).map(Object.freeze));
+      if(!(excludeOwners instanceof Set))throw new Error('C++ recovery owner exclusions must be a set');
+      return Object.freeze(scoreRows(phrase).filter(row=>row.score>0&&!excludeOwners.has(row.className)).slice(0,maxFunctions).map(Object.freeze));
     },
   });
+}
+
+// An explicit interactive extension never reanalyses an already recovered
+// owner. Keeping its canonical fields intact also keeps the captured local
+// baseline intact; more recovery is not counted as remote reranking gain.
+export async function recoverCxxQueryStages({enabled=false,query,primary,captureBaseline,owners,extend,
+  maxElapsedMs=15000,now=()=>performance.now(),isCurrent=()=>true}={}) {
+  if(!enabled)return {status:'disabled',attempted:[],elapsedMs:0};
+  if(![primary,captureBaseline,owners,extend,isCurrent].every(value=>typeof value==='function')
+    ||!Number.isFinite(maxElapsedMs)||maxElapsedMs<=0||maxElapsedMs>120000)throw new Error('bound interactive C++ stages required');
+  const start=now(),initial=await primary();
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  const baseline=await captureBaseline();
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  const priorOwners=new Set(owners()),tokens=new Set(cxxRecoveryTokens(query));
+  const represented=[...priorOwners].some(owner=>cxxRecoveryTokens(owner.split('::').at(-1)).some(token=>tokens.has(token)));
+  const remaining=maxElapsedMs-(now()-start);
+  const reason=['confirmed','likely'].includes(baseline?.verdict)?'strong-local-result'
+    :represented?'requested-object-already-represented':remaining<=0?'recovery-budget-exhausted':null;
+  const extra=reason?null:await extend(priorOwners,remaining);
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  return {status:extra?.status??initial.status,attempted:[...(initial.attempted??[]),...(extra?.attempted??[])],
+    elapsedMs:now()-start,initial,extra,baseline,extensionReason:reason??'missing-requested-object'};
 }
 
 // Reuses the existing scoped Fast decompiler. Callers supply the bound query
