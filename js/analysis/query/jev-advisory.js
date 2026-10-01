@@ -1,7 +1,7 @@
 // Optional interactive suggestion. It cannot replace the local result or issue
 // binary facts. Only the active binary's branded anonymous C++ fields are sent.
-import { adviseWithJev } from '../../pinpoint.js';
-import { cxxSemanticViews } from './cxx-semantic-preference.js';
+import { adviseWithJev, rerankWithJev } from '../../pinpoint.js';
+import { cxxSemanticViews, cxxSemanticScores } from './cxx-semantic-preference.js';
 import { cxxQueryTokens } from '../cxx/query-recovery.js';
 import { demangleCxx } from '../../rtti.js';
 
@@ -54,6 +54,92 @@ export function jevValueFlowRequest(query, views) {
     }))body.questions.pick.criteria[`c${index}`]+=' | observed access context: construction/destruction only; runtime use unavailable';
   }
   return body;
+}
+
+// Prospective automatic routing, kept explicitly disabled by its caller until
+// an independent evaluation authorizes activation. Serialized views are useful
+// for evaluation; the live wrapper below obtains them from branded evidence.
+export function jevSemanticRoute(query,views,{verdict='none',topKey=null}={}) {
+  const skip=reason=>Object.freeze({call:false,reason});
+  if(['confirmed','likely'].includes(verdict))return skip('strong-local-result');
+  if(!Array.isArray(views)||views.length>400
+    ||views.some(view=>view?.source!=='cxx'||view.anonymous!==true))return skip('unsupported-lattice');
+  views=views.filter(view=>!view.conflict);
+  if(views.length<2)return skip('insufficient-eligible-candidates');
+  const tokens=new Set(cxxQueryTokens(query));
+  const scores=cxxSemanticScores(query,views).sort((a,b)=>b.score-a.score||a.index-b.index);
+  const best=scores[0],owner=cxxQueryTokens(views[best.index].className);
+  const ownerScore=2*owner.filter(token=>tokens.has(token)).length;
+  if(best.key===topKey&&best.score>ownerScore&&best.score>scores[1].score
+    &&views[best.index].functionContexts.some(context=>context.accessRoles?.includes('return-input')))
+    return skip('unique-local-accessor');
+  const runtime=views.some(view=>(view.functionContexts??[]).some(context=>{
+    const name=context.name?demangleCxx(context.name):null;
+    if(!name)return false;
+    const parts=name.split('(')[0].split('::'),owner=parts.at(-2)?.split('<')[0],method=parts.at(-1);
+    return method!==owner&&method!==`~${owner}`;
+  }));
+  return runtime?Object.freeze({call:true,reason:'anonymous-runtime-context'}):skip('insufficient-runtime-context');
+}
+
+export function jevMemberContextSignature(view) {
+  return JSON.stringify([view?.className,
+    (view?.functionContexts??[]).slice(0,64).map(context=>[context.address,
+      [...(context.accessRoles??[])].sort()]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))) ]);
+}
+
+export function createJevMemberClient({apiKey,symbols,fetchImpl=fetch}={}) {
+  if(typeof apiKey!=='string'||!apiKey.trim()||apiKey.length>4096)return null;
+  return Object.freeze({async call({query,candidates,signal}) {
+    if(!Array.isArray(candidates)||candidates.length<2||candidates.length>255)return null;
+    const contexts=cxxSemanticViews(candidates,symbols);
+    if(!contexts||contexts.some(context=>!context))return null;
+    const views=contexts.map((context,index)=>({...context,offset:candidates[index].offset,
+      size:candidates[index].size,recoveredType:candidates[index].recoveredType,
+      readCount:candidates[index].field.readCount,writeCount:candidates[index].field.writeCount}));
+    const response=await fetchImpl('https://api.openjev.sh/v1/systemone',{
+      method:'POST',headers:{authorization:`Bearer ${apiKey.trim()}`,'content-type':'application/json'},
+      body:JSON.stringify(jevValueFlowRequest(query,views)),signal});
+    if(!response.ok)return null;
+    const payload=await response.json(),pick=payload?.answers?.pick,unique=payload?.answers?.unique;
+    const unit=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1;
+    if(payload?.model!=='openjev'||pick?.type!=='choice'||!/^c(?:0|[1-9]\d*)$/.test(pick.choice??'')
+      ||!unit(pick.confidence)||!pick.probabilities||typeof pick.probabilities!=='object'
+      ||Array.isArray(pick.probabilities)||Object.keys(pick.probabilities).length>candidates.length
+      ||!unit(pick.probabilities[pick.choice])||unique?.type!=='noul'||!unit(unique.noul))return null;
+    const index=Number(pick.choice.slice(1));
+    if(!Number.isSafeInteger(index)||index>=candidates.length||candidates[index].field.conflict)return null;
+    for(const [key,probability] of Object.entries(pick.probabilities))
+      if(!/^c(?:0|[1-9]\d*)$/.test(key)||Number(key.slice(1))>=candidates.length||!unit(probability))return null;
+    return {selectedKey:candidates[index].key,choiceIndex:index};
+  }});
+}
+
+export async function rerankAnonymousCxx(query,local,options={}) {
+  const fallback=()=>rerankWithJev(query,local);
+  if(options.enabled!==true||typeof options.isCurrent!=='function'
+    ||options.mode!=null&&options.mode!=='partial'||typeof options.client?.call!=='function')return fallback();
+  try {
+    if(options.isCurrent()!==true||local?.candidates?.some(candidate=>candidate.askedByName))return fallback();
+    const contexts=cxxSemanticViews(local?.candidates,options.symbols);
+    if(!contexts||contexts.some(context=>!context))return fallback();
+    const views=contexts.map((context,index)=>({...context,anonymous:local.candidates[index].anonymous}));
+    if(!jevSemanticRoute(query,views,{verdict:local.verdict,topKey:local.top?.key}).call)return fallback();
+    const client={call:async input=>{
+      const response=await options.client.call(input);
+      if(!response)return null;
+      const selected=typeof response.selectedKey==='string'?views.find(view=>view.key===response.selectedKey)
+        :Number.isInteger(response.choiceIndex)?views.find(view=>view.key===input.candidates[response.choiceIndex]?.key):null;
+      if(!selected)return null;
+      const signature=jevMemberContextSignature(selected);
+      // Offsets, widths and read/write totals alone cannot distinguish meaning.
+      if(selected.conflict||views.some(view=>!view.conflict&&view.key!==selected.key&&jevMemberContextSignature(view)===signature))return null;
+      return response;
+    }};
+    const eligible={...local,candidates:local.candidates.filter(candidate=>!candidate.field.conflict)};
+    const result=await rerankWithJev(query,eligible,{...options,enabled:true,mode:'partial',client,maxChoices:255});
+    return result.source==='jev'?{...result,hexResult:local}:fallback();
+  }catch{return fallback();}
 }
 
 export async function requestJevAlternative(query, local, options = {}) {

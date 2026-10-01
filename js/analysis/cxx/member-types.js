@@ -295,7 +295,8 @@ export function recoverMemberTypeEvidence({
       const storedConstant = constantValueOf(storedId, chains);
       if(storedConstant!=null)storedRole='constant-written';
       else if(isStoredArgument(storedId,argumentIds,chains))storedRole='argument-written';
-      if (size === 1 && storedConstant != null && (storedConstant === 0n || storedConstant === 1n)) boolLike = true;
+      const exactStoredConstant=storedBitConstant(storedId,chains);
+      if (size === 1 && (exactStoredConstant === 0n || exactStoredConstant === 1n)) boolLike = true;
       const storedSource = storedId != null ? chains.sources.get(storedId) : null;
       if (size <= 8) {
         // A store of a value that came straight out of a vector register is

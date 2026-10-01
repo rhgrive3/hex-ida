@@ -73,6 +73,7 @@ test('stored constants and bounded argument flows remain machine context without
     {op:'store',args:[{id:'zero'}],loc:{kind:'field',base,disp:11n,size:1}});
   const literalResult=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
   assert.deepEqual(fieldAt(literalResult,10).accessRoles,['constant-written']);
+  assert.equal(fieldAt(literalResult,10).category,'int8','arbitrary unary operations cannot prove a 0/1 store');
   assert.deepEqual(fieldAt(literalResult,11).accessRoles,['constant-written','zero-written']);
 });
 
