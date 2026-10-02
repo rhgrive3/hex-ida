@@ -216,7 +216,7 @@ function buildChains(ir, maxInstructions) {
 // Unknown calls/loads/merges veto the whole computed-return observation rather
 // than hiding another possible member behind an untraced expression.
 function computedReturnMembers(chains,memberLoads,argumentIds,{complete}) {
-  const unavailable=()=>({members:new Set(),incomplete:true});
+  const unavailable=()=>({members:new Set(),memberCount:null,incomplete:true});
   if(!complete||chains.returnFlowUnknown||chains.returnInputs.size>32)return unavailable();
   const binaryOps=new Set(['add','sub','mul','and','or','xor','shl','shr','sar','lsr','asr','udiv','sdiv']);
   const members=new Set(),active=new Set();
@@ -253,7 +253,8 @@ function computedReturnMembers(chains,memberLoads,argumentIds,{complete}) {
     active.delete(id);return valid;
   };
   for(const root of chains.returnInputs)if(!walk(root,0))return unavailable();
-  return {members:hasComputation?members:new Set(),incomplete:false};
+  return {members:hasComputation?members:new Set(),
+    memberCount:new Set([...members].map(id=>memberLoads.get(id).offset)).size,incomplete:false};
 }
 
 // Exact 0/1 writes may follow copies, never arbitrary unary operations.
@@ -527,6 +528,7 @@ export function recoverMemberTypeEvidence({
       writeCount: entry.writeCount,
       accessRoles: Object.freeze([...entry.accessRoles].sort()),
       ...(returned.incomplete?{returnExpressionIncomplete:true}:{}),
+      ...(returned.memberCount!=null?{returnedMemberCount:returned.memberCount}:{}),
       writtenArgumentRegisters: Object.freeze([...entry.writtenArgumentRegisters].sort()),
       writtenArgumentBits: Object.freeze([...entry.writtenArgumentBits].sort().slice(0,8)),
       writtenArgumentBitsTruncated: entry.writtenArgumentBits.size>8,

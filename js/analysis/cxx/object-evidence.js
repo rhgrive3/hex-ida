@@ -431,6 +431,9 @@ export function createCppMemberEvidence(input = {}) {
     ||accessRoles.some(role=>!CPP_MEMBER_ACCESS_ROLES.includes(role)))fail('cpp-member-access-role-invalid');
   if(input.returnExpressionIncomplete!=null&&typeof input.returnExpressionIncomplete!=='boolean')
     fail('cpp-member-return-expression-status-invalid');
+  if(input.returnedMemberCount!=null&&(!Number.isSafeInteger(input.returnedMemberCount)
+    ||input.returnedMemberCount<0||input.returnedMemberCount>256))
+    fail('cpp-member-return-member-count-invalid');
   const writtenArgumentRegisters=input.writtenArgumentRegisters??[];
   if(!Array.isArray(writtenArgumentRegisters)||writtenArgumentRegisters.length>8
     ||writtenArgumentRegisters.some(register=>typeof register!=='string'||!/^x[0-7]$/.test(register)))fail('cpp-member-argument-register-invalid');
@@ -464,6 +467,7 @@ export function createCppMemberEvidence(input = {}) {
     writeCount,
     ...(accessRoles.length ? {accessRoles:Object.freeze([...new Set(accessRoles)].sort())} : {}),
     ...(input.returnExpressionIncomplete===true?{returnExpressionIncomplete:true}:{}),
+    ...(input.returnedMemberCount!=null?{returnedMemberCount:input.returnedMemberCount}:{}),
     ...(writtenArgumentRegisters.length ? {writtenArgumentRegisters:Object.freeze([...new Set(writtenArgumentRegisters)].sort())} : {}),
     ...(writtenArgumentBits.length ? {writtenArgumentBits:Object.freeze([...new Set(writtenArgumentBits)].sort())} : {}),
     ...(input.writtenArgumentBitsTruncated===true ? {writtenArgumentBitsTruncated:true} : {}),

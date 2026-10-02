@@ -17,7 +17,10 @@ export function cxxSemanticScores(query, views) {
       for (const ctx of (view.functionContexts ?? []).slice(0, 64)) {
         const method = ctx.name ? (demangleCxx(ctx.name) ?? ctx.name).split('(')[0].split('::').at(-1) : '';
         const hits = cxxQueryTokens(method).filter(token => tokens.has(token) && !owner.includes(token)).length;
-        contextScore = Math.max(contextScore, 4 * hits * (ctx.accessRoles?.includes('return-input') ? 2 : 1));
+        const returned=ctx.accessRoles?.includes('return-input')
+          ||ctx.accessRoles?.includes('computed-return-input')&&ctx.returnedMemberCount===1
+            &&ctx.returnExpressionIncomplete!==true;
+        contextScore = Math.max(contextScore, 4 * hits * (returned ? 2 : 1));
       }
       score = 2 * classHits + contextScore;
     }
@@ -69,6 +72,8 @@ export function cxxSemanticViews(candidates, symbols) {
       if (!names.has(cacheKey)) names.set(cacheKey, cxxBinarySymbolNameAt(symbols,address));
       contexts.push(Object.freeze({ address: cacheKey, name: names.get(cacheKey),
         receiverProven: true, accessRoles: member.accessRoles ?? [],
+        ...(member.returnedMemberCount!=null?{returnedMemberCount:member.returnedMemberCount}:{}),
+        ...(member.returnExpressionIncomplete===true?{returnExpressionIncomplete:true}:{}),
         receiverRole: receiver.receiverRole,
         writtenArgumentRegisters: member.writtenArgumentRegisters ?? [],
         writtenArgumentBits: member.writtenArgumentBits ?? [],
@@ -144,7 +149,8 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
       if(field.provenance.some(({receiver,member})=>isCanonicalCppReceiverEvidence(receiver)
         &&isCanonicalCppMemberEvidence(member)&&receiver.functionAddress===address
         &&member.receiverDigest===receiver.digest&&member.snapshotId===index.snapshotId
-        &&member.returnExpressionIncomplete===true))return local;
+        &&(member.returnExpressionIncomplete===true
+          ||member.returnedMemberCount!=null&&member.returnedMemberCount!==1)))return local;
       const linked=field.provenance.some(({receiver,member})=>
         isCanonicalCppReceiverEvidence(receiver) && isCanonicalCppMemberEvidence(member)
         && receiver.completeness==='complete' && receiver.snapshotId===index.snapshotId
@@ -153,7 +159,7 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
         && member.snapshotId===receiver.snapshotId && member.receiverDigest===receiver.digest
         && member.offsetBytes===BigInt(field.offset) && member.sizeBytes===field.size
         && member.readCount>0 && (member.accessRoles?.includes('return-input')
-          ||member.accessRoles?.includes('computed-return-input')));
+          ||member.accessRoles?.includes('computed-return-input')&&member.returnedMemberCount===1));
       if (linked) returned.push(field);
     }
     if (returned.length!==1) return local;

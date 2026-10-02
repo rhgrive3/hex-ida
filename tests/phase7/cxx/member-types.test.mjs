@@ -164,14 +164,20 @@ test('closed computed returns keep machine type unchanged and retain every contr
   {op:'bin',sub:'and',dst:result,args:[left,constant]},{op:'ret',args:[result]}];
  const read=()=>recoverMemberTypeEvidence({ir:{instructions},isReceiverBase:v=>v===base});
  const field=read().fields[0];assert.ok(field.accessRoles.includes('computed-return-input'));
+ assert.equal(field.returnedMemberCount,1);
  assert.equal(field.category,'int32');assert.equal(field.widthOnly,true);assert.equal(field.memberName,undefined);
  instructions.splice(1,1,load(right,12));instructions[2]={op:'bin',sub:'add',dst:result,args:[left,right]};
  assert.ok(read().fields.every(f=>f.accessRoles.includes('computed-return-input')),
   'both returned member operands remain visible to the uniqueness veto');
+ assert.ok(read().fields.every(f=>f.returnedMemberCount===2),
+  'the complete producer count survives subsequent per-member publication losses');
+ instructions[1].loc.disp=8n;
+ assert.equal(read().fields[0].returnedMemberCount,1,'two reads of the same structural member count once');
  const machine=recoverMemberTypeEvidence({ir:createIr(['ldr w1, [x0, #8]','and w0, w1, #3','ret']),isReceiverBase:allBases});
  assert.ok(fieldAt(machine,8).accessRoles.includes('computed-return-input'),'real ARM64 lifting reaches the bounded observation');
  const direct=recoverMemberTypeEvidence({ir:createIr(['ldr w0, [x0, #8]','ret']),isReceiverBase:allBases});
  assert.ok(fieldAt(direct,8).accessRoles.includes('return-input'));assert.notEqual(fieldAt(direct,8).returnExpressionIncomplete,true);
+ assert.equal(fieldAt(direct,8).returnedMemberCount,1);
 });
 
 test('computed return observations fail closed on unknown roots, constant annihilation, invalid locations and budgets',()=>{

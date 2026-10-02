@@ -5,7 +5,7 @@ import { jevRecoveryRequest, selectJevRecoveryPlan, createJevRecoveryClient } fr
 import { jevValueFlowRequest,jevSemanticRoute,jevMemberContextSignature,rerankAnonymousCxx,createJevMemberClient } from '../../../js/analysis/query/jev-advisory.js';
 import {createCppReceiverEvidence,createCppMemberEvidence} from '../../../js/analysis/cxx/object-evidence.js';
 import {CxxMemberIndex} from '../../../js/analysis/cxx/member-index.js';
-import {withCxxReturnedMemberPreference} from '../../../js/analysis/query/cxx-semantic-preference.js';
+import {withCxxReturnedMemberPreference,cxxSemanticViews,cxxSemanticScores} from '../../../js/analysis/query/cxx-semantic-preference.js';
 
 function returnedLocal() {
  const index=new CxxMemberIndex();
@@ -62,17 +62,30 @@ test('single-function retrieval rejects hidden return ambiguity, contradictions 
 });
 
 test('single-function retrieval accepts one computed-return member but vetoes a hidden second operand',()=>{
- const f=returnedLocal();f.publish(3n,16n,['computed-return-input']);
+ const f=returnedLocal();f.publish(3n,16n,['computed-return-input'],{returnedMemberCount:1});
  const local=f.local();local.top=local.candidates.find(c=>c.offset===12);
  const selection={source:'jev-retrieval',selectedAddress:3n,selectedClass:'Widget'},symbols={nameAt:()=> '_ZNK6Widget8getFlagsEv'};
  const preferred=withCxxReturnedMemberPreference(local,selection,symbols,f.index,{isCurrent:()=>true});
  assert.equal(preferred.top.offset,16);assert.equal(preferred.verdict,local.verdict);
  assert.equal(preferred.semanticPreference.verdict,'weak-preference');
- f.publish(3n,20n,['computed-return-input']);const full=f.local();
+ const view=cxxSemanticViews(local.candidates,symbols).find(v=>v.key===preferred.top.key);
+ assert.equal(view.functionContexts[0].returnedMemberCount,1);
+ assert.equal(cxxSemanticScores('widget flags',[view])[0].score,10,
+  'the deterministic comparator receives the same computed-return context as the remote path');
+ f.publish(3n,20n,['computed-return-input'],{returnedMemberCount:1});const full=f.local();
  const partial={...full,top:full.candidates.find(c=>c.offset===12),candidates:full.candidates.filter(c=>c.offset!==20)};
  assert.equal(withCxxReturnedMemberPreference(partial,selection,symbols,f.index,{isCurrent:()=>true,baseline:local}),partial);
- const g=returnedLocal();g.publish(3n,16n,['computed-return-input']);
+ const dropped=returnedLocal();
+ dropped.publish(3n,16n,['computed-return-input'],{returnedMemberCount:2});
+ const onlyPublished=dropped.local();
+ assert.equal(withCxxReturnedMemberPreference(onlyPublished,selection,symbols,dropped.index,{isCurrent:()=>true}),onlyPublished,
+  'the producer counted a second member even when publication omitted that operand');
+ const missing=returnedLocal();missing.publish(3n,16n,['computed-return-input']);const absentCount=missing.local();
+ assert.equal(withCxxReturnedMemberPreference(absentCount,selection,symbols,missing.index,{isCurrent:()=>true}),absentCount,
+  'computed-return context needs a closed producer count, not published-set uniqueness alone');
+ const g=returnedLocal();g.publish(3n,16n,['computed-return-input'],{returnedMemberCount:1});
  const baseline=g.local();baseline.top=baseline.candidates.find(c=>c.offset===12);
+ assert.equal(withCxxReturnedMemberPreference(baseline,selection,symbols,g.index,{isCurrent:()=>true}).top.offset,16);
  g.publish(3n,24n,[],{returnExpressionIncomplete:true});const current=g.local();
  current.top=current.candidates.find(c=>c.offset===12);
  current.candidates=current.candidates.filter(c=>c.offset!==24);
