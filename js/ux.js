@@ -10,6 +10,15 @@ import { installAutoReportIdentityBoundary } from './analysis/auto-report-identi
 import { installSharedWorkerBinaryIdentity } from './analysis/shared-binary-identity.js';
 import { installSymmetricWorkspaceDiff } from './diff/symmetric-workspace-runtime.js';
 
+// Optional external fonts must not block module execution or local-file workflows.
+// Activate only after the stylesheet arrives; CSS already provides fallback fonts.
+const optionalFonts = document.getElementById('hex-optional-fonts');
+if (optionalFonts) {
+  const activateFonts = () => { optionalFonts.media = 'all'; };
+  if (optionalFonts.sheet) activateFonts();
+  else optionalFonts.addEventListener('load', activateFonts, { once: true });
+}
+
 const LEGACY_ACTION_IDS = [
   'btn-help', 'btn-more',
   'btn-investigate', 'btn-tools', 'btn-functions',

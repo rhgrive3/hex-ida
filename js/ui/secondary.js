@@ -8,6 +8,29 @@ import { toast } from '../ui.js';
 
 function list() { return h('div', 'ui-list'); }
 
+function radioGroup(label, id, cls = 'ui-list') {
+  const root = h('div', cls);
+  root.dataset.settingGroup = id;
+  root.setAttribute('role', 'radiogroup');
+  root.setAttribute('aria-label', label);
+  root.addEventListener('keydown', (event) => {
+    const options = [...root.querySelectorAll('[role="radio"]')];
+    const current = options.indexOf(document.activeElement);
+    if (current < 0) return;
+    let target;
+    if (event.key === 'Home') target = 0;
+    else if (event.key === 'End') target = options.length - 1;
+    else if (['ArrowRight', 'ArrowDown'].includes(event.key)) target = (current + 1) % options.length;
+    else if (['ArrowLeft', 'ArrowUp'].includes(event.key)) target = (current + options.length - 1) % options.length;
+    else return;
+    event.preventDefault();
+    options[target].click();
+    // Language changes replace the whole route; other choices rebuild the body.
+    requestAnimationFrame(() => document.querySelector(`[data-setting-group="${id}"] [aria-checked="true"]`)?.focus({ preventScroll: true }));
+  });
+  return root;
+}
+
 /*
  * An option, not a link: a radio (or checkbox for `toggle`) mark and no
  * chevron. The old rows used a ✓ plus "›", which read as "opens a screen".
@@ -15,7 +38,12 @@ function list() { return h('div', 'ui-list'); }
 function choiceRow({ title, subtitle, selected, onClick, toggle = false, nested = false }) {
   const row = h('button', 'ui-list-row ui-choice-row' + (toggle ? ' toggle' : '') + (nested ? ' sub' : ''));
   row.type = 'button';
-  row.setAttribute('aria-pressed', String(!!selected));
+  if (toggle) row.setAttribute('aria-pressed', String(!!selected));
+  else {
+    row.setAttribute('role', 'radio');
+    row.setAttribute('aria-checked', String(!!selected));
+    row.tabIndex = selected ? 0 : -1;
+  }
   if (onClick) row.addEventListener('click', onClick);
   const mark = h('span', 'ui-choice-mark');
   mark.setAttribute('aria-hidden', 'true');
@@ -33,6 +61,8 @@ function renderSettings(app, router) {
   });
 
   const render = () => {
+    const focusedGroup = document.activeElement?.closest('[data-setting-group]')?.dataset.settingGroup;
+    const focusedToggle = document.activeElement?.matches('.ui-choice-row.toggle');
     s.body.replaceChildren();
 
     const explain = card(pick('解析の説明', 'Analysis explanation'), {
@@ -47,24 +77,26 @@ function renderSettings(app, router) {
       onClick: () => { app.setExplain(!app.prefs.explain); render(); },
     }));
     if (app.prefs.explain) {
+      const styles = radioGroup(pick('説明の形式', 'Explanation style'), 'note-style');
       for (const [key, ja, en] of [
         ['ja', '日本語の説明', 'Plain-language explanation'],
         ['pseudo', '疑似コード', 'Pseudocode'],
         ['both', '日本語 + 疑似コード', 'Explanation + pseudocode'],
       ]) {
-        explainRows.append(choiceRow({
+        styles.append(choiceRow({
           title: pick(ja, en),
           selected: (app.prefs.noteStyle || 'ja') === key,
           nested: true,
           onClick: () => { app.setNoteStyle(key); render(); },
         }));
       }
+      explainRows.append(styles);
     }
     explain.body.append(explainRows);
     s.body.append(explain.root);
 
     const appearance = card(pick('見た目', 'Appearance'));
-    const themes = list();
+    const themes = radioGroup(pick('テーマ', 'Theme'), 'theme');
     for (const [key, ja, en] of [
       ['system', '端末に合わせる', 'Follow system'],
       ['light', 'ライト', 'Light'],
@@ -77,19 +109,23 @@ function renderSettings(app, router) {
       }));
     }
     appearance.body.append(themes, sectionTitle(pick('文字サイズ', 'Text size')));
-    const sizes = h('div', 'ui-setting-chips');
+    const sizes = radioGroup(pick('文字サイズ', 'Text size'), 'text-size', 'ui-setting-chips');
     for (const [key, label] of [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']]) {
-      sizes.append(uiButton(label, {
+      const selected = (app.prefs.textSize || 'm') === key;
+      const option = uiButton(label, {
         cls: 'ui-secondary-action',
-        pressed: (app.prefs.textSize || 'm') === key,
         onClick: () => { app.setTextSize(key); render(); },
-      }));
+      });
+      option.setAttribute('role', 'radio');
+      option.setAttribute('aria-checked', String(selected));
+      option.tabIndex = selected ? 0 : -1;
+      sizes.append(option);
     }
     appearance.body.append(sizes);
     s.body.append(appearance.root);
 
     const hex = card(pick('16進表示', 'Hex display'));
-    const hexRows = list();
+    const hexRows = radioGroup(pick('バイトの区切り', 'Byte spacing'), 'hex-spacing');
     hexRows.append(choiceRow({
       title: 'F6 57 BD A9',
       subtitle: pick('1バイトずつ空けて表示', 'Space-separated bytes'),
@@ -108,7 +144,7 @@ function renderSettings(app, router) {
     const language = card(pick('言語', 'Language'), {
       subtitle: pick('変更すると現在の画面もその場で更新されます。', 'The current screen updates immediately.'),
     });
-    const languageRows = list();
+    const languageRows = radioGroup(pick('言語', 'Language'), 'language');
     for (const [key, label] of [['ja', '日本語'], ['en', 'English']]) {
       languageRows.append(choiceRow({
         title: label,
@@ -134,6 +170,8 @@ function renderSettings(app, router) {
       },
     }));
     s.body.append(about.root);
+    if (focusedGroup) s.body.querySelector(`[data-setting-group="${focusedGroup}"] [aria-checked="true"]`)?.focus({ preventScroll: true });
+    else if (focusedToggle) s.body.querySelector('.ui-choice-row.toggle')?.focus({ preventScroll: true });
   };
 
   render();

@@ -239,6 +239,62 @@ async function captureValueFlowAudit(page, browserName, viewportName, fn) {
   await closeTransient(page);
 }
 
+async function checkExplorerRestoration(page, browserName, viewportName) {
+  const prefix = `${browserName}/${viewportName}`;
+  await page.evaluate(() => window.__hexUi.router.navigate('/explorer/strings?q=Hex'));
+  await page.waitForFunction(() => !document.querySelector('.ui-explorer-content .ui-loading-state'));
+  const beforeStrings = await page.locator('.ui-explorer-content').innerText();
+  await page.evaluate(() => window.__hexUi.router.navigate('/code'));
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelector('.ui-search-field')?.value === 'Hex' && !document.querySelector('.ui-explorer-content .ui-loading-state'));
+  check(`${prefix}: string search and results survive browser back`, beforeStrings === await page.locator('.ui-explorer-content').innerText());
+
+  // Exercise the real view with a small canonical-query fixture. Unit tests
+  // separately verify the adapter's continuation/stale-snapshot semantics;
+  // real YWP dogfood binds this UI path to the large production binary.
+  await page.evaluate(() => {
+    const app = window.__app;
+    app.__explorerOriginalQueries = app.analysisQueries;
+    app.analysisQueries = {
+      async snapshot() { return {}; },
+      async functions(_snapshot, _filter, { offset, limit }) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        const end = Math.min(601, offset + limit);
+        const value = Array.from({length:Math.max(0, end - offset)}, (_, index) => ({ address:0x100004000n + BigInt(offset + index) * 4n, name:`needle-${offset + index}`, size:4n }));
+        return { value, completeness:'complete', page:{ offset, limit, returned:value.length, total:601, next:end < 601 ? end : null } };
+      },
+    };
+    window.__hexUi.router.navigate('/explorer/functions?q=needle');
+  });
+  try {
+    await page.waitForFunction(() => !!document.querySelector('.ui-explorer-pagination'));
+    await page.getByRole('button', {name:'次のページ', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('.ui-explorer-page')?.value === '2');
+    check(`${prefix}: functions after the first 200 are reachable`, await page.locator('.ui-explorer-content').innerText().then(value => value.includes('needle-200')));
+    await page.locator('.ui-virtual-list').evaluate(node => { node.scrollTop = 640; });
+    await page.waitForTimeout(30);
+    const before = await page.locator('.ui-virtual-list').innerText();
+    const scroll = await page.locator('.ui-virtual-list').evaluate(node => node.scrollTop);
+    await page.evaluate(() => window.__hexUi.router.navigate('/code'));
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('.ui-explorer-page')?.value === '2' && document.querySelector('.ui-search-field')?.value === 'needle');
+    check(`${prefix}: query, page and virtual scroll survive browser back`, before === await page.locator('.ui-virtual-list').innerText() && Math.abs(scroll - await page.locator('.ui-virtual-list').evaluate(node => node.scrollTop)) <= 1);
+    await page.getByRole('spinbutton', {name:'ページ番号', exact:true}).fill('4');
+    await page.locator('.ui-explorer-pagination').getByRole('button', {name:'移動', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('.ui-virtual-row .ui-list-row-title')?.textContent === 'needle-600');
+    check(`${prefix}: the final result is reachable by page number`, await page.getByRole('button', {name:'次のページ', exact:true}).isDisabled());
+    const overflow = await noOverflow(page);
+    check(`${prefix}: pagination stays inside the viewport`, overflow.body <= 1 && overflow.root <= 1);
+  } finally {
+    await page.evaluate(() => {
+      const app = window.__app;
+      app.analysisQueries = app.__explorerOriginalQueries;
+      delete app.__explorerOriginalQueries;
+      window.__hexUi.router.navigate('/code');
+    });
+  }
+}
+
 async function checkViewport(browserType, browserName, viewportName, width, height, baseUrl, screenshots = false) {
   const browser = await launchableOr(browserName, () => browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] }));
   if (!browser) return;
@@ -263,8 +319,20 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (sameOrigin(request.url())) errors.push(`request failed ${request.url()}: ${request.failure()?.errorText || 'unknown'}`);
   });
   try {
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    // Hold the optional remote font response until the real application has booted.
+    // This catches a render-blocking stylesheet even when the test runner is online.
+    const heldFonts = [];
+    let fontsReleased = false;
+    const fontResponse = { contentType: 'text/css', body: ':root { --hex-test-font-loaded: 1; }' };
+    await page.route('https://fonts.googleapis.com/**', (route) => fontsReleased ? route.fulfill(fontResponse) : heldFonts.push(route));
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
+    check(`${browserName}/${viewportName}: startup does not wait for remote fonts`, heldFonts.length > 0);
+    fontsReleased = true;
+    await Promise.all(heldFonts.map((route) => route.fulfill(fontResponse)));
+    await page.waitForFunction(() => document.getElementById('hex-optional-fonts')?.media === 'all'
+      && getComputedStyle(document.documentElement).getPropertyValue('--hex-test-font-loaded').trim() === '1');
+    check(`${browserName}/${viewportName}: optional font stylesheet activates after loading`, true);
     await page.waitForTimeout(350);
     await closeTransient(page);
     await checkUiRootContract(page, browserName, viewportName);
@@ -296,6 +364,26 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (screenshots) await shot(page, browserName, viewportName, 'landing-investigate');
 
     await openSample(page);
+    await page.evaluate(() => window.__hexUi.router.navigate('/investigate'));
+    const goalInput = page.locator('.ui-goal-form input');
+    await goalInput.fill('');
+    await page.locator('.ui-goal-form').getByRole('button', { name:'調べる', exact:true }).click();
+    check(`${browserName}/${viewportName}: empty goal submission focuses the question field`, await goalInput.evaluate(input => document.activeElement === input));
+    await goalInput.fill('通信している場所');
+    await page.locator('.ui-goal-form').getByRole('button', { name:'調べる', exact:true }).click();
+    await page.waitForFunction(() => !!window.__app.lastGoal && !!document.querySelector('#overlays .sheet:not(.parked)'));
+    check(`${browserName}/${viewportName}: clicking Investigate starts local goal analysis`, true);
+    await page.waitForFunction(() => !document.querySelector('#overlays .sheet:not(.parked) .analysis-progress'), null, { timeout: 20000 });
+    const goalResult = await page.locator('#overlays .sheet:not(.parked)').last().innerText();
+    check(`${browserName}/${viewportName}: local goal analysis completes without a presentation error`, !/解析に失敗しました|Analysis failed:/.test(goalResult));
+    await closeTransient(page);
+    const commandInput = page.locator('.ui-global-command');
+    await commandInput.fill('> settings');
+    const commandGo = page.locator('.ui-command-go');
+    if (await commandGo.isVisible()) await commandGo.click();
+    else await commandInput.press('Enter');
+    check(`${browserName}/${viewportName}: command submission reaches the requested screen`, await page.locator('[data-screen="settings"]').count() === 1);
+    await page.evaluate(() => window.__hexUi.router.navigate('/code'));
     const fn = await firstFunction(page);
     check(`${browserName}/${viewportName}: sample exposes a function`, !!fn);
     if (screenshots) await captureProgressAudit(page, browserName, viewportName);
@@ -303,6 +391,30 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
     await page.waitForTimeout(100);
     check(`${browserName}/${viewportName}: explorer route opens`, await page.locator('[data-screen="explorer"]').count() === 1);
+    await page.evaluate(() => {
+      const viewer = window.__app.viewer;
+      const original = viewer.scrollByRows;
+      window.__viewerKeyboardProbe = { original, calls:0 };
+      viewer.scrollByRows = function (...args) {
+        window.__viewerKeyboardProbe.calls++;
+        return original.apply(this, args);
+      };
+      document.querySelector('#ui-route-host').focus();
+    });
+    try {
+      await page.keyboard.press('ArrowDown');
+      check(`${browserName}/${viewportName}: explorer keyboard navigation does not move hidden Code`, await page.evaluate(() => window.__viewerKeyboardProbe.calls === 0));
+      await page.evaluate(() => { window.__hexUi.router.navigate('/code'); document.activeElement?.blur(); });
+      await page.keyboard.press('ArrowDown');
+      check(`${browserName}/${viewportName}: Code retains its own keyboard row navigation`, await page.evaluate(() => window.__viewerKeyboardProbe.calls === 1));
+    } finally {
+      await page.evaluate(() => {
+        window.__app.viewer.scrollByRows = window.__viewerKeyboardProbe.original;
+        delete window.__viewerKeyboardProbe;
+        window.__hexUi.router.navigate('/explorer/functions');
+      });
+      await page.waitForTimeout(100);
+    }
     check(`${browserName}/${viewportName}: explorer is windowed`, await page.locator('.ui-virtual-list').count() <= 1 && await page.locator('.ui-virtual-row').count() < 80);
     const functionCoverage = await page.evaluate(() => ({
       visibleSourceLength: window.__hexUi && document.querySelector('.ui-virtual-list')?.querySelector('.ui-virtual-spacer')?.style.height || '',
@@ -312,6 +424,16 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     overflow = await noOverflow(page);
     check(`${browserName}/${viewportName}: explorer no horizontal overflow`, overflow.body <= 1 && overflow.root <= 1);
     if (screenshots) await shot(page, browserName, viewportName, 'explorer');
+    await checkExplorerRestoration(page, browserName, viewportName);
+
+    await page.locator('.ui-bottom-nav [data-route-id="explorer"]').focus();
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(80);
+    check(`${browserName}/${viewportName}: Space activates navigation instead of scrolling hidden code`, await page.locator('[data-screen="explorer"]').count() === 1);
+    await page.evaluate(() => { window.__hexUi.router.navigate('/code'); document.activeElement?.blur(); });
+    await page.keyboard.press('/');
+    check(`${browserName}/${viewportName}: slash focuses the command field without opening a legacy search sheet`, await page.evaluate(() => document.activeElement?.matches('.ui-global-command') && !document.querySelector('#overlays .sheet:not(.parked)')));
+    await page.evaluate(() => document.activeElement?.blur());
 
     await page.evaluate(() => window.__hexUi.router.navigate('/code'));
     await page.waitForTimeout(100);
@@ -323,13 +445,42 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
         await page.evaluate(({ fn, tab }) => window.__hexUi.router.navigate(`/function/${fn}/${tab}`), { fn, tab });
         await page.waitForTimeout(tab === 'calls' ? 500 : 250);
         check(`${browserName}/${viewportName}: function/${tab} opens`, await page.locator('[data-screen="function"]').count() === 1);
+        check(`${browserName}/${viewportName}: function/${tab} panel is labelled by its selected tab`, await page.evaluate(() => {
+          const tab = document.querySelector('[data-screen="function"] [role="tab"][aria-selected="true"]');
+          const panel = document.getElementById(tab?.getAttribute('aria-controls'));
+          return panel?.getAttribute('role') === 'tabpanel' && panel.getAttribute('aria-labelledby') === tab.id;
+        }));
+        check(`${browserName}/${viewportName}: function/${tab} has a distinct browser title`, (await page.title()).includes(' — ' + (await page.locator('[data-screen="function"] [role="tab"][aria-selected="true"]').innerText()) + ' — Hex'));
+        if (tab === 'pseudocode') {
+          const wrap = page.getByRole('button', { name: /^(折り返し|Wrap)$/ });
+          await wrap.waitFor();
+          check(`${browserName}/${viewportName}: wrap starts as an unpressed toggle`, await wrap.getAttribute('aria-pressed') === 'false');
+          await wrap.click();
+          check(`${browserName}/${viewportName}: wrap reports its activated state`, await wrap.getAttribute('aria-pressed') === 'true');
+          const targets = await page.locator('.ui-pseudocode-line[role="button"]').evaluateAll((rows) => rows.map(row => ({w:row.getBoundingClientRect().width,h:row.getBoundingClientRect().height,y:row.getBoundingClientRect().y})).filter(r => r.w > 0 && r.h > 0));
+          check(`${browserName}/${viewportName}: pseudocode evidence actions have 24px targets`, targets.length > 0 && targets.every(r => r.w >= 24 && r.h >= 24), JSON.stringify(targets.slice(0, 3)));
+          check(`${browserName}/${viewportName}: pseudocode actions retain separate code lines`, targets.every((r, i) => i === 0 || r.y >= targets[i - 1].y + targets[i - 1].h - 1));
+          if (width < 600) {
+            const font = await page.locator('.ui-decompiler-provenance input').evaluate(input => parseFloat(getComputedStyle(input).fontSize));
+            check(`${browserName}/${viewportName}: provenance input avoids small-font iOS zoom`, font >= 16, String(font));
+          }
+        }
         if (tab === 'runtime') {
           check(`${browserName}/${viewportName}: runtime tab exposes Runtime Analysis Platform action`, await page.getByRole('button', { name: /ローカル実行で観測する|Run local observation/ }).count() === 1);
         }
         overflow = await noOverflow(page);
         check(`${browserName}/${viewportName}: function/${tab} no body overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
+        if (width < 900 && height <= 480 && width > height) {
+          const clear = await page.evaluate(() => document.querySelector('.ui-screen').getBoundingClientRect().right <= document.querySelector('.ui-bottom-nav').getBoundingClientRect().left);
+          check(`${browserName}/${viewportName}: function/${tab} clears the landscape navigation`, clear);
+        }
         if (screenshots) await shot(page, browserName, viewportName, `function-${tab}`);
       }
+
+      await page.locator('[data-screen="function"] [role="tab"][aria-selected="true"]').focus();
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForTimeout(100);
+      check(`${browserName}/${viewportName}: keyboard tab navigation retains focus on the replacement tab`, await page.evaluate(() => document.activeElement?.matches('[data-screen="function"] [role="tab"][aria-selected="true"]')));
 
       if (screenshots) await captureValueFlowAudit(page, browserName, viewportName, fn);
 
@@ -366,6 +517,33 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForTimeout(80);
     if (screenshots) await shot(page, browserName, viewportName, 'results');
     await page.evaluate(() => window.__hexUi.router.navigate('/settings'));
+    check(`${browserName}/${viewportName}: settings has a descriptive browser title`, /^(設定|Settings) — Hex$/.test(await page.title()));
+    const theme = page.locator('[data-setting-group="theme"]');
+    await theme.locator('[aria-checked="true"]').focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(100);
+    check(`${browserName}/${viewportName}: exclusive setting keyboard selection retains focus and one choice`, await page.evaluate(() => {
+      const group = document.querySelector('[data-setting-group="theme"]');
+      return group?.getAttribute('role') === 'radiogroup' && group.querySelectorAll('[aria-checked="true"]').length === 1
+        && document.activeElement === group.querySelector('[aria-checked="true"]');
+    }));
+    const explainToggle = page.locator('.ui-choice-row.toggle');
+    await explainToggle.focus();
+    const explanationBefore = await explainToggle.getAttribute('aria-pressed');
+    await page.keyboard.press('Space');
+    check(`${browserName}/${viewportName}: explanation toggle retains keyboard focus after rebuilding settings`, await page.evaluate((before) => {
+      const toggle = document.querySelector('.ui-choice-row.toggle');
+      return document.activeElement === toggle && toggle.getAttribute('aria-pressed') !== before;
+    }, explanationBefore));
+    await page.keyboard.press('Space');
+    await page.emulateMedia({ reducedMotion:'reduce' });
+    const reducedSpinner = await page.evaluate(async () => {
+      const { loadingState } = await import('/js/ui/primitives.js');
+      const node = loadingState('test'); document.querySelector('#ui-route-host').append(node);
+      const animation = getComputedStyle(node.querySelector('.ui-spinner')).animationName; node.remove(); return animation;
+    });
+    check(`${browserName}/${viewportName}: product spinner respects reduced motion`, reducedSpinner === 'none');
+    await page.emulateMedia({ reducedMotion:'no-preference' });
     await page.waitForTimeout(80);
     if (screenshots) await shot(page, browserName, viewportName, 'settings');
     await page.evaluate(() => window.__hexUi.router.navigate('/help'));
