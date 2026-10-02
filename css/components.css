@@ -219,6 +219,9 @@
   animation: ui-spin .8s linear infinite;
 }
 @keyframes ui-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .product-ui-ready .ui-spinner { animation: none; }
+}
 
 .product-ui-ready .ui-code-toolbar {
   position: sticky;
@@ -250,7 +253,7 @@
   -webkit-overflow-scrolling: touch;
 }
 .product-ui-ready .ui-pseudocode.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
-.product-ui-ready .ui-pseudocode-line[role="button"] { cursor: pointer; border-radius: 2px; }
+.product-ui-ready .ui-pseudocode-line[role="button"] { cursor: pointer; border-radius: 2px; display: block; min-height: 24px; min-width: 24px; }
 /* The code surface is dark in both themes; a light accent tint hid the text. */
 .product-ui-ready .ui-pseudocode-line.selected { background: color-mix(in srgb, var(--ui-accent) 55%, transparent); outline: 1px solid var(--ui-accent); }
 .product-ui-ready .ui-pseudocode-line:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
@@ -300,7 +303,8 @@
 }
 .product-ui-ready .ui-card-body > .ui-actions { margin-top: var(--ui-space-4); }
 .product-ui-ready .ui-setting-chips > .ui-secondary-action { min-width: 52px; }
-.product-ui-ready .ui-secondary-action[aria-pressed="true"] {
+.product-ui-ready .ui-secondary-action[aria-pressed="true"],
+.product-ui-ready .ui-secondary-action[aria-checked="true"] {
   border-color: var(--ui-accent);
   background: var(--ui-accent-soft);
   color: var(--ui-accent-strong);
@@ -380,8 +384,10 @@
   display: grid;
   place-items: center;
 }
-.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark { border-color: var(--ui-accent); }
-.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark::after {
+.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark,
+.product-ui-ready .ui-choice-row[aria-checked="true"] .ui-choice-mark { border-color: var(--ui-accent); }
+.product-ui-ready .ui-choice-row[aria-pressed="true"] .ui-choice-mark::after,
+.product-ui-ready .ui-choice-row[aria-checked="true"] .ui-choice-mark::after {
   content: "";
   width: 10px;
   height: 10px;
@@ -471,5 +477,5 @@
 .product-ui-ready .ui-decompile-notice p { margin: 0; }
 .product-ui-ready .ui-decompile-notice p + p { margin-top: 4px; }
 .product-ui-ready .ui-decompile-notice-raw { margin-top: 6px; }
-.product-ui-ready .ui-decompile-notice-raw > summary { cursor: pointer; }
+.product-ui-ready .ui-decompile-notice-raw > summary { cursor: pointer; min-height: 44px; }
 .product-ui-ready .ui-decompile-notice-raw pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ui-font-xs); }

@@ -4,7 +4,7 @@ import {
 } from './registry.js';
 import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
-  tabs, sectionTitle, listRow, VirtualList, scrollStrip,
+  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress, sizeText } from '../format.js';
@@ -547,7 +547,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
       'Browse functions, strings, types, data, external APIs and sections with one search.'),
   });
   const controls = h('div', 'ui-explorer-controls');
-  const scopes = tabs(EXPLORER_SCOPES, scope, (id) => router.navigate('/explorer/' + id + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')));
+  const scopes = tabs(EXPLORER_SCOPES, scope, (id) => router.navigate('/explorer/' + id + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')), { panelId: 'ui-explorer-panel', label: text('索引の種類', 'Explorer categories') });
   scopes.classList.add('ui-scope-tabs');
   scopes.setAttribute('aria-label', text('索引の種類', 'Explorer categories'));
   for (const button of scopes.querySelectorAll('button')) button.classList.add('ui-scope');
@@ -561,7 +561,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
   let pendingVirtualState = restored?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
-  const content = h('div', 'ui-explorer-content');
+  const content = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(content);
   let disposed = false;
   let virtual = null;
@@ -810,9 +810,9 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     ], r.left + r.width / 2, r.bottom + 4);
   } }));
   const s = screen(functionName(app, addr), { id: 'function', subtitle: addressText(addr), actions });
-  const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next));
+  const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
   s.body.append(tabbar);
-  const content = h('div', 'ui-workspace-content');
+  const content = tabPanel(tabbar, 'ui-workspace-content');
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
@@ -902,7 +902,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     let wrap = false;
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-      uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+      uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
       uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
     );
     content.replaceChildren(toolbar, code);
@@ -929,7 +929,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         let wrap = false;
         toolbar.append(
           uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
           uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
         );
         content.replaceChildren(toolbar, provenanceView.root);
@@ -1684,6 +1684,7 @@ export function installProductUI(app) {
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
       for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === route.route.id ? 'page' : 'false');
       if (route.route.id === 'code') {
+        updateScreenTitle(null);
         routeHost.hidden = true;
         const raw = route.params.address;
         if (raw) {
@@ -1722,6 +1723,7 @@ export function installProductUI(app) {
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
       else view = renderSecondaryRoute(app, router, route, routeContext);
       routeHost.append(view.root);
+      updateScreenTitle(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
       return {

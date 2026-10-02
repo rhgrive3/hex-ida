@@ -93,14 +93,25 @@ async function audit(page, label) {
     const invalidAria = [...document.querySelectorAll('[role="tab"]')]
       .filter((n) => !['true', 'false'].includes(n.getAttribute('aria-selected') || ''))
       .map((n) => n.textContent.trim());
+    const unlinkedTabs = [...document.querySelectorAll('.ui-tabs [role="tab"]')].filter((tab) => {
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      const group = tab.closest('[role="tablist"]');
+      return !group?.getAttribute('aria-label') || !tab.id || panel?.getAttribute('role') !== 'tabpanel'
+        || (tab.getAttribute('aria-selected') === 'true' && panel.getAttribute('aria-labelledby') !== tab.id);
+    }).map((tab) => tab.textContent.trim());
+    const invalidRadioGroups = [...document.querySelectorAll('[role="radiogroup"]')].filter((group) =>
+      !group.getAttribute('aria-label') || group.querySelectorAll('[role="radio"][aria-checked="true"]').length !== 1
+      || group.querySelectorAll('[role="radio"][tabindex="0"]').length !== 1).map((group) => group.getAttribute('aria-label'));
 
-    return { duplicates, unnamed, invalidRefs, hiddenFocusable, invalidAria };
+    return { duplicates, unnamed, invalidRefs, hiddenFocusable, invalidAria, unlinkedTabs, invalidRadioGroups };
   });
   check(`${label}: no duplicate IDs`, result.duplicates.length === 0, result.duplicates.join(', '));
   check(`${label}: visible interactive controls have names/labels`, result.unnamed.length === 0, result.unnamed.slice(0, 5).join(' | '));
   check(`${label}: ARIA references resolve`, result.invalidRefs.length === 0, result.invalidRefs.slice(0, 5).join(' | '));
   check(`${label}: no focusable controls inside non-inert aria-hidden regions`, result.hiddenFocusable.length === 0, result.hiddenFocusable.slice(0, 5).join(' | '));
   check(`${label}: tabs have valid aria-selected`, result.invalidAria.length === 0, result.invalidAria.join(', '));
+  check(`${label}: canonical tabs name their panel and selected panel names its tab`, result.unlinkedTabs.length === 0, result.unlinkedTabs.join(', '));
+  check(`${label}: settings radio groups are labelled with one selected, tabbable option`, result.invalidRadioGroups.length === 0, result.invalidRadioGroups.join(', '));
 }
 
 async function contrastAudit(page, theme) {
@@ -189,6 +200,8 @@ async function main() {
       await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
       await page.waitForTimeout(80);
       await audit(page, `${label}/explorer`);
+      await page.evaluate(() => window.__hexUi.router.navigate('/settings'));
+      await audit(page, `${label}/settings`);
       if (label === 'phone') {
         await contrastAudit(page, 'light');
         await contrastAudit(page, 'dark');

@@ -319,8 +319,20 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (sameOrigin(request.url())) errors.push(`request failed ${request.url()}: ${request.failure()?.errorText || 'unknown'}`);
   });
   try {
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    // Hold the optional remote font response until the real application has booted.
+    // This catches a render-blocking stylesheet even when the test runner is online.
+    const heldFonts = [];
+    let fontsReleased = false;
+    const fontResponse = { contentType: 'text/css', body: ':root { --hex-test-font-loaded: 1; }' };
+    await page.route('https://fonts.googleapis.com/**', (route) => fontsReleased ? route.fulfill(fontResponse) : heldFonts.push(route));
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
+    check(`${browserName}/${viewportName}: startup does not wait for remote fonts`, heldFonts.length > 0);
+    fontsReleased = true;
+    await Promise.all(heldFonts.map((route) => route.fulfill(fontResponse)));
+    await page.waitForFunction(() => document.getElementById('hex-optional-fonts')?.media === 'all'
+      && getComputedStyle(document.documentElement).getPropertyValue('--hex-test-font-loaded').trim() === '1');
+    check(`${browserName}/${viewportName}: optional font stylesheet activates after loading`, true);
     await page.waitForTimeout(350);
     await closeTransient(page);
     await checkUiRootContract(page, browserName, viewportName);
@@ -389,6 +401,26 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
         await page.evaluate(({ fn, tab }) => window.__hexUi.router.navigate(`/function/${fn}/${tab}`), { fn, tab });
         await page.waitForTimeout(tab === 'calls' ? 500 : 250);
         check(`${browserName}/${viewportName}: function/${tab} opens`, await page.locator('[data-screen="function"]').count() === 1);
+        check(`${browserName}/${viewportName}: function/${tab} panel is labelled by its selected tab`, await page.evaluate(() => {
+          const tab = document.querySelector('[data-screen="function"] [role="tab"][aria-selected="true"]');
+          const panel = document.getElementById(tab?.getAttribute('aria-controls'));
+          return panel?.getAttribute('role') === 'tabpanel' && panel.getAttribute('aria-labelledby') === tab.id;
+        }));
+        check(`${browserName}/${viewportName}: function/${tab} has a distinct browser title`, (await page.title()).includes(' — ' + (await page.locator('[data-screen="function"] [role="tab"][aria-selected="true"]').innerText()) + ' — Hex'));
+        if (tab === 'pseudocode') {
+          const wrap = page.getByRole('button', { name: /^(折り返し|Wrap)$/ });
+          await wrap.waitFor();
+          check(`${browserName}/${viewportName}: wrap starts as an unpressed toggle`, await wrap.getAttribute('aria-pressed') === 'false');
+          await wrap.click();
+          check(`${browserName}/${viewportName}: wrap reports its activated state`, await wrap.getAttribute('aria-pressed') === 'true');
+          const targets = await page.locator('.ui-pseudocode-line[role="button"]').evaluateAll((rows) => rows.map(row => ({w:row.getBoundingClientRect().width,h:row.getBoundingClientRect().height,y:row.getBoundingClientRect().y})).filter(r => r.w > 0 && r.h > 0));
+          check(`${browserName}/${viewportName}: pseudocode evidence actions have 24px targets`, targets.length > 0 && targets.every(r => r.w >= 24 && r.h >= 24), JSON.stringify(targets.slice(0, 3)));
+          check(`${browserName}/${viewportName}: pseudocode actions retain separate code lines`, targets.every((r, i) => i === 0 || r.y >= targets[i - 1].y + targets[i - 1].h - 1));
+          if (width < 600) {
+            const font = await page.locator('.ui-decompiler-provenance input').evaluate(input => parseFloat(getComputedStyle(input).fontSize));
+            check(`${browserName}/${viewportName}: provenance input avoids small-font iOS zoom`, font >= 16, String(font));
+          }
+        }
         if (tab === 'runtime') {
           check(`${browserName}/${viewportName}: runtime tab exposes Runtime Analysis Platform action`, await page.getByRole('button', { name: /ローカル実行で観測する|Run local observation/ }).count() === 1);
         }
@@ -441,6 +473,24 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForTimeout(80);
     if (screenshots) await shot(page, browserName, viewportName, 'results');
     await page.evaluate(() => window.__hexUi.router.navigate('/settings'));
+    check(`${browserName}/${viewportName}: settings has a descriptive browser title`, /^(設定|Settings) — Hex$/.test(await page.title()));
+    const theme = page.locator('[data-setting-group="theme"]');
+    await theme.locator('[aria-checked="true"]').focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(100);
+    check(`${browserName}/${viewportName}: exclusive setting keyboard selection retains focus and one choice`, await page.evaluate(() => {
+      const group = document.querySelector('[data-setting-group="theme"]');
+      return group?.getAttribute('role') === 'radiogroup' && group.querySelectorAll('[aria-checked="true"]').length === 1
+        && document.activeElement === group.querySelector('[aria-checked="true"]');
+    }));
+    await page.emulateMedia({ reducedMotion:'reduce' });
+    const reducedSpinner = await page.evaluate(async () => {
+      const { loadingState } = await import('/js/ui/primitives.js');
+      const node = loadingState('test'); document.querySelector('#ui-route-host').append(node);
+      const animation = getComputedStyle(node.querySelector('.ui-spinner')).animationName; node.remove(); return animation;
+    });
+    check(`${browserName}/${viewportName}: product spinner respects reduced motion`, reducedSpinner === 'none');
+    await page.emulateMedia({ reducedMotion:'no-preference' });
     await page.waitForTimeout(80);
     if (screenshots) await shot(page, browserName, viewportName, 'settings');
     await page.evaluate(() => window.__hexUi.router.navigate('/help'));
