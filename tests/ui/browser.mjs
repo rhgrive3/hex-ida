@@ -364,6 +364,26 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (screenshots) await shot(page, browserName, viewportName, 'landing-investigate');
 
     await openSample(page);
+    await page.evaluate(() => window.__hexUi.router.navigate('/investigate'));
+    const goalInput = page.locator('.ui-goal-form input');
+    await goalInput.fill('');
+    await page.locator('.ui-goal-form').getByRole('button', { name:'調べる', exact:true }).click();
+    check(`${browserName}/${viewportName}: empty goal submission focuses the question field`, await goalInput.evaluate(input => document.activeElement === input));
+    await goalInput.fill('通信している場所');
+    await page.locator('.ui-goal-form').getByRole('button', { name:'調べる', exact:true }).click();
+    await page.waitForFunction(() => !!window.__app.lastGoal && !!document.querySelector('#overlays .sheet:not(.parked)'));
+    check(`${browserName}/${viewportName}: clicking Investigate starts local goal analysis`, true);
+    await page.waitForFunction(() => !document.querySelector('#overlays .sheet:not(.parked) .analysis-progress'), null, { timeout: 20000 });
+    const goalResult = await page.locator('#overlays .sheet:not(.parked)').last().innerText();
+    check(`${browserName}/${viewportName}: local goal analysis completes without a presentation error`, !/解析に失敗しました|Analysis failed:/.test(goalResult));
+    await closeTransient(page);
+    const commandInput = page.locator('.ui-global-command');
+    await commandInput.fill('> settings');
+    const commandGo = page.locator('.ui-command-go');
+    if (await commandGo.isVisible()) await commandGo.click();
+    else await commandInput.press('Enter');
+    check(`${browserName}/${viewportName}: command submission reaches the requested screen`, await page.locator('[data-screen="settings"]').count() === 1);
+    await page.evaluate(() => window.__hexUi.router.navigate('/code'));
     const fn = await firstFunction(page);
     check(`${browserName}/${viewportName}: sample exposes a function`, !!fn);
     if (screenshots) await captureProgressAudit(page, browserName, viewportName);

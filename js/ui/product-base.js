@@ -168,6 +168,7 @@ function renderInvestigate(app, router) {
   input.placeholder = text('例: 戦闘終了時に経験値が増える場所', 'e.g. where experience increases after a battle');
   input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
   const submit = uiButton(text('調べる', 'Investigate'), { cls: 'ui-primary-action' });
+  submit.type = 'submit';
   form.append(input, submit);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -1575,6 +1576,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   const hint = h('span', 'ui-command-hint');
   hint.setAttribute('aria-live', 'polite');
   const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
+  go.type = 'submit';
   form.append(input, hint, go);
 
   const refreshHint = () => {
