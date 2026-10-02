@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {openProduct} from '../tools/validation/public-benchmark/product-host.mjs';
-import {recoverCxxMembersForQuery,recoverCxxMembersForSemanticQuery,cxxMemberIndexForApp} from '../js/analysis/query/app-adapter.js';
+import {recoverCxxMembersForQuery,recoverCxxMembersForSemanticQuery,recoverCxxMemberWithJev,cxxMemberIndexForApp} from '../js/analysis/query/app-adapter.js';
 import {CxxMemberIndex} from '../js/analysis/cxx/member-index.js';
 import {isCanonicalCppMemberEvidence,isCanonicalCppReceiverEvidence} from '../js/analysis/cxx/object-evidence.js';
 import {pinpointField,jevShortlist} from '../js/pinpoint.js';
@@ -15,12 +15,12 @@ import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect',selectionFile]=process.argv.slice(2);
 const arm="hex-value";
 if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4','semantic-retrieval-v5'].includes(planningPolicy)
-  ||!['collect','metadata-only','selected-replay'].includes(operation))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay] [DEVELOPMENT_SELECTION]');
+  ||!['collect','metadata-only','selected-replay','baseline-and-metadata','interactive-replay'].includes(operation))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay|baseline-and-metadata|interactive-replay] [DEVELOPMENT_SELECTION]');
 // A development replay decompiles the single function selected by a previously
 // recorded real API response. It neither reads a gold file nor makes another
 // API call. Exact production request bytes must agree before replaying it.
-const selectionBytes=operation==='selected-replay'?fs.readFileSync(selectionFile):null;
+const selectionBytes=['selected-replay','interactive-replay'].includes(operation)?fs.readFileSync(selectionFile):null;
 const selection=selectionBytes?JSON.parse(selectionBytes):null;
 if(selection&&(!selection.complete||selection.developmentOnly!==true
   ||selection.authorizesDefaultActivation!==false||planningPolicy!=='semantic-retrieval-v5'
@@ -64,22 +64,35 @@ try {
     if(operation==='metadata-only')continue;
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
-    const recovery=await recover(product.app,c.query,{enabled:true,
+    let recovery=await recover(product.app,c.query,{enabled:true,
       jevRetrieval:operation==='selected-replay',
       jevClient:replay?{call:async input=>{
         if(sha256(JSON.stringify(input.body))!==replay.bodySha256)
           throw new Error('development request projection drift');
         return replay.call?.error?null:replay.call?.response;
       }}:undefined,
-      planningPolicy:initialPlanningPolicy,
+      planningPolicy:['baseline-and-metadata','interactive-replay'].includes(operation)?'value-accessor-v3':initialPlanningPolicy,
       captureBaseline:async()=>{
         const initialHex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:cxxMemberIndexForApp(product.app),limit:400});
         return {verdict:initialHex.verdict,topKey:initialHex.top?.key??null};
       },
       maxFunctions:operation==='selected-replay'?1:policy.collection.maxFunctionsPerQuery,
       maxElapsedMs:policy.collection.maxElapsedMs});
+    let retrieval=null;
+    const capture=()=>pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:cxxMemberIndexForApp(product.app),limit:400});
+    const primaryHex=await capture(),primaryRecovery=recovery;
+    if(operation==='interactive-replay') {
+      retrieval=await recoverCxxMemberWithJev(product.app,c.query,{enabled:true,mode:c.mode,
+        captureBaseline:async()=>primaryHex,captureCurrent:capture,
+        jevClient:{call:async input=>{
+          if(sha256(JSON.stringify(input.body))!==replay.bodySha256)throw new Error('development request projection drift');
+          return replay.call?.error?null:replay.call?.response;
+        }},maxElapsedMs:policy.collection.maxElapsedMs});
+      recovery={...primaryRecovery,attempted:[...primaryRecovery.attempted,...(retrieval.recovery?.attempted??[])],
+        elapsedMs:primaryRecovery.elapsedMs+(retrieval.recovery?.elapsedMs??0),primary:primaryRecovery,extension:retrieval.recovery};
+    }
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
-    const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});
+    const hex=await capture();
     const hexLatencyMs=performance.now()-start;
     const preferenceStart=performance.now(),stable=withCxxSemanticPreference(c.query,hex,product.app.symbols);
     const preferenceLatencyMs=performance.now()-preferenceStart;
@@ -90,6 +103,10 @@ try {
       binarySha256,className:cls.name,offset:field.offset,size:field.size,recoveredType:field.recoveredType,conflict:field.conflict})));
     rows.push({id:c.id,binary:manifest.binaryKey,query:c.query,binarySha256,beforeCount,recovery,candidateCount:candidates.length,
       verdict:hex.verdict,topKey:hex.top?.key??null,stableTopKey:stable.top?.key??null,semanticPreference:stable.semanticPreference??null,trustedViews,preferenceLatencyMs,candidates,shortlist:jevShortlist(hex.candidates,{max:255}).map(s=>byKey.get(s.key)),
+      primaryTopKey:primaryHex.top?.key??null,primaryVerdict:primaryHex.verdict,
+      interactiveTopKey:retrieval?.result?.top?.key??null,interactiveVerdict:retrieval?.result?.verdict??null,
+      interactivePreference:retrieval?.result?.semanticPreference??null,interactiveReason:retrieval?.reason??null,
+      baselineIdentityInvalidated:retrieval?.baselineIdentityInvalidated??false,
       recovered:rawRecovered.slice(),published,hexLatencyMs,
       routed:c.mode==='partial'&&candidates.length>=2&&!['confirmed','likely'].includes(hex.verdict)});
     persistentWrite(`${destination}.checkpoint`,{complete:false,rows});
@@ -104,7 +121,7 @@ try {
   const root=new URL('../',import.meta.url);
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
     arm,planningPolicy,operation,
-    remoteRetrievalExecution:selection?'recorded real API response, primary repeat 0; one existing Fast function per query, no live API in collector':'none; deterministic modern recovery only',
+    remoteRetrievalExecution:selection?`recorded real API response, primary repeat 0; ${operation==='interactive-replay'?'unchanged primary recovery followed by at most one selected small Fast function':'one existing Fast function per query'}, no live API in collector`:'none; deterministic modern recovery only',
     selectionSha256:selectionBytes?sha256(selectionBytes):null,
     selectionMetadataProductSha:selection?.metadataProductSha??null,
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,

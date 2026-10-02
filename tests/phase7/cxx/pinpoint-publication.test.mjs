@@ -7,13 +7,52 @@ import { pinpoint, pinpointField, pinpointFunction, rerankWithJev } from '../../
 import { FieldIndex } from '../../../js/fields.js';
 import { parseGoal } from '../../../js/goals.js';
 import { openProduct } from '../../../tools/validation/public-benchmark/product-host.mjs';
-import { cxxMemberIndexForApp, recoverCxxMembersForQuery } from '../../../js/analysis/query/app-adapter.js';
+import { cxxMemberIndexForApp, recoverCxxMembersForQuery, recoverCxxMemberWithJev } from '../../../js/analysis/query/app-adapter.js';
 import { composePinpointFields } from '../../../js/pinpoint-fields.js';
 import { __investigationInternalsForTests } from '../../../js/analysis/investigation-service.js';
 import { proofText } from '../../../js/narrate.js';
 import { autoAnalyze } from '../../../js/auto.js';
 import { cxxSemanticViews, withCxxSemanticPreference } from '../../../js/analysis/query/cxx-semantic-preference.js';
 import { requestJevAlternative } from '../../../js/analysis/query/jev-advisory.js';
+
+test('single-function interactive extension preserves Hex on API failure and unknown or oversized extents',async()=>{
+ let decompiles=0,currentCaptures=0,calls=0;
+ const symbols={gen:1,names:['_ZNK6Widget8getCountEv','_ZNK6Widget7isReadyEv'],addrs:[1n,2n],funcs:[1n,2n],
+  declaredFunctionEnd:a=>a+(a===1n?1024n:28n)};
+ const backend={file:{},gen:1,binaryId:'extension-fixture',readAt:async()=>({found:false})};
+ const app={symbols,backend,store:{get:key=>({architecture:'arm64',sliceIndex:0})[key]},executableRegionFor:()=>({start:1n,end:2048n}),
+  analysisQueries:{snapshot:async()=>({snapshotId:'bound'}),decompile:async()=>{decompiles++;throw Error('unexpected analysis');}}};
+ const baseline={verdict:'none',top:null,candidates:[]};
+ const options={enabled:true,mode:'partial',captureBaseline:async()=>baseline,captureCurrent:async()=>{currentCaptures++;return baseline;},
+  jevClient:{call:async()=>{calls++;return null;}}};
+ assert.equal((await recoverCxxMemberWithJev(app,'widget count',options)).result,baseline);
+ assert.equal(decompiles,0);assert.equal(currentCaptures,0);assert.equal(calls,1);
+ const oversized={call:async input=>{
+  const choice='c'+input.choices.findIndex(row=>row.address===1n),answer={type:'choice',choice,confidence:1,probabilities:{[choice]:1}};
+  return {model:'openjev',answers:{object:answer,pick:answer}};
+ }};
+ assert.equal((await recoverCxxMemberWithJev(app,'widget count',{...options,jevClient:oversized})).result,baseline);
+ assert.equal(decompiles,0);assert.equal(currentCaptures,0);
+ symbols.declaredFunctionEnd=()=>null;symbols.gen++;
+ assert.equal((await recoverCxxMemberWithJev(app,'widget count',{...options,jevClient:oversized})).result,baseline);
+ assert.equal(decompiles,0);
+ for(const change of [{enabled:false},{mode:'exact'},{captureBaseline:async()=>({...baseline,verdict:'likely'})}]){
+  const before=calls;await recoverCxxMemberWithJev(app,'widget count',{...options,...change});assert.equal(calls,before);
+ }
+});
+
+test('single-function interactive extension cancels stale epochs instead of returning the captured result',async()=>{
+ const symbols={gen:1,names:['_ZNK6Widget8getCountEv','_ZNK6Widget7isReadyEv'],addrs:[1n,2n],funcs:[1n,2n],declaredFunctionEnd:a=>a+28n};
+ const backend={file:{},gen:1,binaryId:'extension-stale',readAt:async()=>({found:false})};
+ const app={symbols,backend,store:{get:key=>({architecture:'arm64',sliceIndex:0})[key]},executableRegionFor:()=>({start:1n,end:100n}),
+  analysisQueries:{snapshot:async()=>({snapshotId:'bound'}),decompile:async()=>{throw Error('stale query cannot analyse');}}};
+ const baseline={verdict:'none',top:null,candidates:[]};
+ await assert.rejects(()=>recoverCxxMemberWithJev(app,'widget count',{enabled:true,mode:'partial',captureBaseline:async()=>baseline,
+  captureCurrent:async()=>{throw Error('cannot capture stale state');},jevClient:{call:async()=>{backend.gen++;return null;}}}),/binding changed/);
+ const controller=new AbortController();controller.abort();
+ await assert.rejects(()=>recoverCxxMemberWithJev(app,'widget count',{enabled:true,mode:'partial',signal:controller.signal,
+  captureBaseline:async()=>{throw Error('cancelled query cannot capture');},captureCurrent:async()=>baseline}),/abort/i);
+});
 
 test('symbol epoch changes retire cached C++ publication before another semantic query',async()=>{
  const symbols={gen:1,names:['_ZN6WidgetC1Ev'],addrs:[1n],funcs:[1n]};

@@ -69,6 +69,27 @@ test('only outer ABI role tokens prove constructors, destructors or const member
 });
 const ir={functionId:'reader',values:[{id:'arg0',kind:'arg',reg:'x0',bits:64}],instructions:[
  {id:'read',op:'load',loc:{kind:'field',base:{id:'arg0'},disp:8n,size:4},dst:{id:'value',bits:32}}]};
+test('internal-linkage global functions bind an independently proven first object pointer',async()=>{
+ const raw='_ZL5localP6Widgetb';
+ const proof=createCppTypedArgumentEvidence({symbol:raw,functionAddress:1n});
+ assert.equal(proof.className,'Widget');assert.equal(proof.register,'x0');assert.equal(proof.parameterCount,2);
+ assert.equal(proof.internalLinkage,true);
+ const symbols={names:[raw,'_ZN6WidgetD1Ev'],addrs:[1n,2n],funcs:[1n,2n],nameAt:a=>a===1n?raw:'_ZN6WidgetD1Ev'};
+ const provider=createCxxEvidenceProvider({symbols,read:()=>null,snapshotId:'local-argument',cacheKey:'local-argument',
+  cache:{get:async()=>({classes:[],pointerBytes:8})}});await provider.build();
+ assert.equal(provider.projectForFunction({functionAddress:1n,functionId:'reader',ir,enableTypedArguments:true})?.receiver.classIdentity.className,'Widget');
+ assert.equal(provider.memberIndex().fieldCount,1);
+ const planner=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'semantic-retrieval-v5'});
+ assert.equal(planner.choices('widget').find(row=>row.address===1n).proof,'release-typed-object-argument');
+ const noClass={...symbols,names:[raw],addrs:[1n],funcs:[1n]};
+ assert.deepEqual(createCxxQueryPlanner({symbols:noClass,isExecutable:()=>true,planningPolicy:'semantic-retrieval-v5'}).choices('widget'),[],
+  'a named pointee without independent class evidence still proves no owner');
+});
+test('internal-linkage argument decoding rejects local scopes, qualified names, repeated linkage and unknown signatures',()=>{
+ for(const raw of ['_ZLL5localP6Widgetb','_ZLN6Widget5localEP6Widget','_ZZ5outervE5localP6Widget',
+  '_ZL5localI6WidgetEvPT_','_ZL5localP6Widgetv','_ZL5localP6WidgetbBAD','_ZL5localP6WidgetJ'])
+  assert.equal(createCppTypedArgumentEvidence({symbol:raw,functionAddress:1n}),null,raw);
+});
 test('display renames cannot create C++ ownership or enter binary-derived Jev contexts',async()=>{
  const forged='_ZNK6Oracle11secretFieldEv';
  const raw='_Z4readv';

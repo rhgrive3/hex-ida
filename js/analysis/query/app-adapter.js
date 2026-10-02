@@ -6,6 +6,8 @@ import { irFor } from '../../ir.js';
 import { createCxxEvidenceProvider } from '../cxx/project.js';
 import { createCxxQueryPlanner, recoverCxxQueryMembers, recoverCxxQueryStages } from '../cxx/query-recovery.js';
 import { selectJevRecoveryPlan } from './jev-recovery.js';
+import { withCxxReturnedMemberPreference } from './cxx-semantic-preference.js';
+import { jevShortlist } from '../../pinpoint.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -65,8 +67,19 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     client:options.jevClient,signal:options.signal,timeoutMs:options.jevTimeoutMs,maxFunctions,
     isCurrent:()=>{checkBinding();return true;}});
   checkBinding();
-  const plan=options.unpublishedOwnersOnly===true?cached.planner.plan(phrase,{maxFunctions,
+  let plan=options.unpublishedOwnersOnly===true?cached.planner.plan(phrase,{maxFunctions,
     excludeOwners:new Set([...entry.provider.memberIndex().classes.values()].map(cls=>cls.name))}):selection.plan;
+  // An extension after a captured local result has no deterministic fallback
+  // work to do: API failure must leave the existing Hex result unchanged.
+  if(options.requireJevSelection===true&&selection.source!=='jev-retrieval')plan=[];
+  if(options.maxDeclaredSizeBytes!=null) {
+    const bound=options.maxDeclaredSizeBytes;
+    if(!Number.isSafeInteger(bound)||bound<4||bound>16384)throw new Error('invalid C++ selected-function extent budget');
+    // Unknown extents fail closed; the declared extent is scheduling metadata,
+    // never proof of a member, ownership, type, or source layout.
+    plan=plan.filter(row=>typeof row.declaredSizeBytes==='bigint'&&row.declaredSizeBytes>0n
+      &&row.declaredSizeBytes<=BigInt(bound));
+  }
   const beforeCount=entry.provider.memberIndex().fieldCount,beforeRevision=entry.provider.memberIndex().revision;
   if(options.planOnly===true)return {status:'planned',attempted:[],elapsedMs:0,plan,
     retrievalSource:selection.source,selectedAddress:selection.selectedAddress,selectedClass:selection.selectedClass,
@@ -80,6 +93,55 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
     selectedClass:selection.selectedClass,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
     afterCount:index.fieldCount,afterRevision:index.revision,candidateCount:index.fieldCount};
+}
+
+// Prospective interactive extension. Still explicitly opt-in: evaluation must
+// justify any default activation. A real selector may request one small existing
+// Fast function; only canonical publication can create the resulting members.
+export async function recoverCxxMemberWithJev(app,phrase,options={}) {
+  if(typeof options.captureBaseline!=='function'||typeof options.captureCurrent!=='function')
+    throw new Error('bound local result callbacks required');
+  const symbols=app?.symbols,generation=symbols?.gen,index=cxxMemberIndexForApp(app),backend=app?.backend;
+  const backendGeneration=backend?.gen??backend?.analysisEpoch??null,slice=storeValue(app,'sliceIndex')??0,
+    source=backend?.file??storeValue(app,'file'),queryOwner=app?.analysisQueries,architecture=architectureOf(app);
+  let boundIndex=index;
+  const current=()=>app?.symbols===symbols&&symbols?.gen===generation&&app?.backend===backend
+    &&(backend?.gen??backend?.analysisEpoch??null)===backendGeneration
+    &&(storeValue(app,'sliceIndex')??0)===slice&&(backend?.file??storeValue(app,'file'))===source
+    &&app?.analysisQueries===queryOwner&&architectureOf(app)===architecture
+    &&(!boundIndex||cxxMemberIndexForApp(app)===boundIndex);
+  const check=()=>{if(options.signal?.aborted)throw options.signal.reason instanceof Error?options.signal.reason:new DOMException('Aborted','AbortError');
+    if(!current())throw new Error('C++ semantic retrieval binding changed');};
+  check();const baseline=await options.captureBaseline();check();
+  const unchanged=reason=>({result:baseline,recovery:null,reason});
+  if(options.enabled!==true||options.mode!=='partial'||typeof options.jevClient?.call!=='function')
+    return unchanged('disabled-or-unsupported-mode');
+  if(!baseline||['confirmed','likely'].includes(baseline.verdict)
+    ||!Array.isArray(baseline.candidates)
+    ||baseline.candidates.some(c=>c.source!=='cxx'||c.anonymous!==true||c.askedByName))
+    return unchanged('preserve-local-result');
+  const recovery=await recoverCxxMembersForQuery(app,phrase,{...options,enabled:true,
+    planningPolicy:'semantic-retrieval-v5',jevRetrieval:true,requireJevSelection:true,
+    maxFunctions:1,maxDeclaredSizeBytes:256});
+  check();
+  boundIndex=cxxMemberIndexForApp(app);
+  if(!recovery.attempted.length)return {result:baseline,recovery,reason:'no-selected-function-analysis'};
+  const local=await options.captureCurrent();check();
+  // Additional canonical observations remain published, including genuine
+  // contradictions. Keep the captured top only while its current identity
+  // remains valid; never silently mask conflicting new binary evidence.
+  const prior=baseline.top&&local.candidates?.find(c=>c.key===baseline.top.key
+    &&c.offset===baseline.top.offset&&c.size===baseline.top.size&&!c.field?.conflict);
+  const retained=prior&&!['confirmed','likely'].includes(local.verdict)
+    ?{...local,top:prior,candidates:[prior,...local.candidates.filter(c=>c!==prior)],
+      runnerUp:local.candidates.find(c=>c!==prior)??null,margin:null,marginRatio:null,
+      changeSites:prior.sites??[]}:local;
+  const result=withCxxReturnedMemberPreference(retained,{source:recovery.retrievalSource,
+    selectedAddress:recovery.selectedAddress,selectedClass:recovery.selectedClass},symbols,cxxMemberIndexForApp(app),
+    {baseline,mode:options.mode,isCurrent:current,shortlist:jevShortlist(local.candidates,{max:255})});
+  check();
+  return {result,recovery,reason:result===retained?'no-unique-canonical-return':'selected-canonical-return',
+    baselineIdentityInvalidated:Boolean(baseline.top&&!prior)};
 }
 
 export async function recoverCxxMembersForSemanticQuery(app,phrase,options={}) {

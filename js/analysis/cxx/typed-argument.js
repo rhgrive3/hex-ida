@@ -1,6 +1,8 @@
 // A deliberately small Itanium ABI subset: a global, ordinary function with
 // a first pointer-to-named-object parameter. Qualified functions may be
 // static members; templates may encode return types. Neither is accepted.
+// A single top-level L marks internal linkage of an otherwise ordinary global
+// function; it does not introduce an implicit receiver or move argument zero.
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { demangleCxx } from '../../rtti.js';
 
@@ -9,10 +11,11 @@ export const isCanonicalCppTypedArgumentEvidence = value => value !== null
   && typeof value === 'object' && canonical.has(value);
 
 export function createCppTypedArgumentEvidence({symbol,functionAddress,architecture='arm64'}={}) {
-  if(typeof symbol!=='string'||symbol.length>1024||!/^_Z[1-9]/.test(symbol)
+  if(typeof symbol!=='string'||symbol.length>1024||!/^_ZL?[1-9]/.test(symbol)
     ||!['arm64','arm64_32'].includes(architecture)
     ||typeof functionAddress!=='bigint'||functionAddress<0n)return null;
-  let position=2;
+  const internalLinkage=symbol[2]==='L';
+  let position=internalLinkage?3:2;
   const sourceName=()=>{
     const start=position;
     while(position<symbol.length&&/[0-9]/.test(symbol[position]))position++;
@@ -77,5 +80,6 @@ export function createCppTypedArgumentEvidence({symbol,functionAddress,architect
   const record={schema:'cpp-typed-object-argument/v1',symbol,functionName,functionAddress,
     className:components.join('::'),pointeeConst,receiverRole:'typed-argument',
     architecture,argumentIndex:0,register:'x0',parameterCount,rule:'itanium-global-first-object-pointer-parameter'};
+  if(internalLinkage)record.internalLinkage=true;
   record.digest=stableDigest(record);const proof=deepFreeze(record);canonical.add(proof);return proof;
 }

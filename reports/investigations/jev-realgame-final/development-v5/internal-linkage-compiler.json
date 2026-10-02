@@ -1,0 +1,30 @@
+{
+  "complete": true,
+  "developmentOnly": true,
+  "authorizesDefaultActivation": false,
+  "compiler": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+  "checks": [
+    {
+      "symbol": "_ZL10localConstPKN4demo4ItemEj",
+      "compilerDemangled": "localConst(demo::Item const*, unsigned int)",
+      "className": "demo::Item",
+      "argumentIndex": 0,
+      "register": "x0",
+      "internalLinkage": true,
+      "oldEvidence": null
+    },
+    {
+      "symbol": "_ZL5localP6Widgetb",
+      "compilerDemangled": "local(Widget*, bool)",
+      "className": "Widget",
+      "argumentIndex": 0,
+      "register": "x0",
+      "internalLinkage": true,
+      "oldEvidence": null
+    }
+  ],
+  "sourceHashes": {
+    "js/analysis/cxx/typed-argument.js": "c16b9859cd82de016c1edb3f696e02057fd1e84c95166d8d05ea361ca486ec6a",
+    "js/analysis/cxx/project.js": "742c674dff1b06914afc6a5c7432ff09284c837260eb0cc833a162b74c5b5ce1"
+  }
+}

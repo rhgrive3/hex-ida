@@ -2,7 +2,7 @@
 // The scoring formula is the pre-frozen real-game deterministic comparator.
 import { demangleCxx } from '../../rtti.js';
 import { cxxQueryTokens, cxxRecoveryTokens } from '../cxx/query-recovery.js';
-import { isCxxMemberField } from '../cxx/member-index.js';
+import { isCxxMemberField, isCxxMemberIndex } from '../cxx/member-index.js';
 import { isCanonicalCppMemberEvidence, isCanonicalCppReceiverEvidence, cxxBinarySymbolNameAt } from '../cxx/object-evidence.js';
 
 export function cxxSemanticScores(query, views) {
@@ -105,4 +105,59 @@ export function withCxxSemanticPreference(query, local, symbols, {policy='legacy
   } catch (_) {
     return local;
   }
+}
+
+// A prospective single-function retrieval result can express only a weak
+// preference for the one existing member feeding that function's return.
+// Inspect the complete published owner, not merely the ranked shortlist: a
+// second return-linked member outside that shortlist still makes it ambiguous.
+// This helper does no analysis, publication, HTTP, or semantic-name recovery.
+export function withCxxReturnedMemberPreference(local, selection, symbols, index,
+  { baseline=local, mode='partial', isCurrent=()=>false, shortlist=local?.candidates }={}) {
+  try {
+    if (mode!=='partial' || isCurrent()!==true || selection?.source!=='jev-retrieval'
+      || !isCxxMemberIndex(index) || !local || !baseline
+      || ['confirmed','likely'].includes(baseline.verdict)
+      || ['confirmed','likely'].includes(local.verdict)
+      || !Array.isArray(local.candidates) || !local.candidates.length
+      || local.candidates.some(c=>c.source!=='cxx'||c.anonymous!==true||c.askedByName)
+      || baseline.candidates?.some(c=>c.source!=='cxx'||c.anonymous!==true||c.askedByName)) return local;
+    if (!Array.isArray(shortlist) || shortlist.length>255 || !shortlist.length
+      || new Set(shortlist.map(c=>c.key)).size!==shortlist.length
+      || shortlist.some(c=>!local.candidates.includes(c))) return local;
+    const address=BigInt(selection.selectedAddress), owner=index.classInfo(selection.selectedClass);
+    if (!owner || typeof selection.selectedClass!=='string' || address<0n
+      || owner.ivars.length>400) return local;
+    const views=cxxSemanticViews(local.candidates,symbols);
+    if (!views || views.some(view=>!view)) return local;
+    // Never reuse a stale baseline top after a genuine layout contradiction.
+    if (baseline.top) {
+      const current=local.candidates.find(c=>c.key===baseline.top.key);
+      if (!current || current.field.conflict || current.offset!==baseline.top.offset
+        || current.size!==baseline.top.size) return local;
+    }
+    const returned=[];
+    for (const field of owner.ivars) {
+      if (!isCxxMemberField(field,owner) || field.conflict || field.provenanceTruncated
+        || field.memberNamesTruncated || !field.anonymous) return local;
+      const linked=field.provenance.some(({receiver,member})=>
+        isCanonicalCppReceiverEvidence(receiver) && isCanonicalCppMemberEvidence(member)
+        && receiver.completeness==='complete' && receiver.snapshotId===index.snapshotId
+        && receiver.classIdentity?.className===selection.selectedClass
+        && receiver.functionAddress===address && member.functionId===receiver.functionId
+        && member.snapshotId===receiver.snapshotId && member.receiverDigest===receiver.digest
+        && member.offsetBytes===BigInt(field.offset) && member.sizeBytes===field.size
+        && member.readCount>0 && member.accessRoles?.includes('return-input'));
+      if (linked) returned.push(field);
+    }
+    if (returned.length!==1) return local;
+    const top=local.candidates.find(c=>c.field===returned[0]);
+    if (!top || !shortlist.includes(top) || isCurrent()!==true) return local;
+    const candidates=[top,...local.candidates.filter(c=>c!==top)];
+    return {...local,top,runnerUp:candidates[1]??null,candidates,margin:null,marginRatio:null,
+      changeSites:top===local.top?local.changeSites:(top.sites??[]),
+      semanticPreference:Object.freeze({source:'jev-selected-release-accessor',verdict:'weak-preference',
+        evidenceTopKey:baseline.top?.key??null,selectedKey:top.key,
+        selectedAddress:String(address),selectedClass:selection.selectedClass})};
+  } catch (_) { return local; }
 }

@@ -1,0 +1,70 @@
+{
+  "schema": "hex-jev-development-v5-selected-function-validation/v1",
+  "complete": true,
+  "developmentOnly": true,
+  "authorizesDefaultActivation": false,
+  "productSha": "281ceb4e8f39dfc0ef96c63d5d5dc8fc377c0ce5",
+  "runId": 36947422392,
+  "url": "https://github.com/rhgrive3/actions/actions/runs/36947422392",
+  "records": [
+    {
+      "id": "SV4-OP-04",
+      "binary": "openttd",
+      "selectedClass": "Company",
+      "selectedAddress": "5259252",
+      "matchingStructuralMemberPublished": false,
+      "matches": [],
+      "uniqueReturnLinkedCandidate": false,
+      "selectedFunctionFastMs": 1907.7458570000017,
+      "snapshotSha256": "cad9e40a664f73ce2947598154fc5b78e0d62bced8a280b7c836fef9ee7b8488",
+      "artifactId": 11202716714,
+      "zipSha256": "9107ffb042b701ad36d716b0cb4b759fdba2595c285eb41ef2d29788903f44bf"
+    },
+    {
+      "id": "SV4-OP-20",
+      "binary": "openttd",
+      "selectedClass": "Ship",
+      "selectedAddress": "6682288",
+      "matchingStructuralMemberPublished": false,
+      "matches": [],
+      "uniqueReturnLinkedCandidate": false,
+      "selectedFunctionFastMs": 2420.3661839999986,
+      "snapshotSha256": "cad9e40a664f73ce2947598154fc5b78e0d62bced8a280b7c836fef9ee7b8488",
+      "artifactId": 11202716714,
+      "zipSha256": "9107ffb042b701ad36d716b0cb4b759fdba2595c285eb41ef2d29788903f44bf"
+    },
+    {
+      "id": "SV4-MW-10",
+      "binary": "openmw",
+      "selectedClass": "MWMechanics::MechanicsManager",
+      "selectedAddress": "14025408",
+      "matchingStructuralMemberPublished": false,
+      "matches": [],
+      "uniqueReturnLinkedCandidate": false,
+      "selectedFunctionFastMs": 1480.6221709999954,
+      "snapshotSha256": "f4b547450c3fdf8a8137d72bf9f5dbdc2e44575ccb2a54b6af95f7f8a4812cca",
+      "artifactId": 11203260066,
+      "zipSha256": "2457c9f5c2617d606736979eaac1bea5d8570a281f45978ec31effd2d782dce9"
+    },
+    {
+      "id": "SV4-MW-16",
+      "binary": "openmw",
+      "selectedClass": "MWMechanics::CreatureStats",
+      "selectedAddress": "14096384",
+      "matchingStructuralMemberPublished": true,
+      "matches": [
+        {
+          "className": "MWMechanics::CreatureStats",
+          "offset": 508,
+          "size": 4
+        }
+      ],
+      "uniqueReturnLinkedCandidate": true,
+      "selectedFunctionFastMs": 295.3750069999951,
+      "snapshotSha256": "f4b547450c3fdf8a8137d72bf9f5dbdc2e44575ccb2a54b6af95f7f8a4812cca",
+      "artifactId": 11203260066,
+      "zipSha256": "2457c9f5c2617d606736979eaac1bea5d8570a281f45978ec31effd2d782dce9"
+    }
+  ],
+  "scope": "4 previously judged development queries, repeat0 real API reply replay; canonical recovery and publication measured, NOT unchanged baseline accuracy or final judge"
+}

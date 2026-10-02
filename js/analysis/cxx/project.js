@@ -208,7 +208,7 @@ function indexFromReport(report, symbols, architecture, snapshotId) {
   for(let i=0;i<(symbols?.names?.length??0);i++) {
     const address=symbols.addrs?.[i];if(address==null)continue;
     const key=String(address),name=symbols.names[i];
-    const argumentProof=/^_Z\d/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
+    const argumentProof=/^_ZL?[1-9]/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
     if(!firstSymbol.has(key)){
       firstSymbol.set(key,name);if(argumentProof)typedArguments.set(key,argumentProof);continue;
     }

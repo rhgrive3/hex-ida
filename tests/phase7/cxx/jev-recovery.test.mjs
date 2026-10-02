@@ -5,6 +5,76 @@ import { jevRecoveryRequest, selectJevRecoveryPlan, createJevRecoveryClient } fr
 import { jevValueFlowRequest,jevSemanticRoute,jevMemberContextSignature,rerankAnonymousCxx,createJevMemberClient } from '../../../js/analysis/query/jev-advisory.js';
 import {createCppReceiverEvidence,createCppMemberEvidence} from '../../../js/analysis/cxx/object-evidence.js';
 import {CxxMemberIndex} from '../../../js/analysis/cxx/member-index.js';
+import {withCxxReturnedMemberPreference} from '../../../js/analysis/query/cxx-semantic-preference.js';
+
+function returnedLocal() {
+ const index=new CxxMemberIndex();
+ const publish=(address,offset,roles)=>{
+  const receiver=createCppReceiverEvidence({functionId:String(address),functionAddress:address,canonicalValueId:'arg0',
+   classIdentity:{kind:'named',className:'Widget'},receiverRole:'this',nonStaticProof:{rule:'vtable-slot'},
+   abiBinding:{register:'x0',argumentIndex:0,architecture:'arm64'},snapshotId:'bound',completeness:'complete'});
+  index.publish({receiver,members:[createCppMemberEvidence({functionId:receiver.functionId,receiverDigest:receiver.digest,
+   snapshotId:'bound',offsetBytes:offset,sizeBytes:4,category:'int32',typeLabel:'int32_t',rule:'width-32',
+   readCount:1,writeCount:0,accessRoles:roles})]});
+ };
+ publish(1n,8n,['return-input']);publish(2n,12n,['comparison-input']);
+ const local=()=>{
+  const candidates=[...index.classes.values()].flatMap(cls=>cls.ivars.map(field=>({key:field.key,source:'cxx',
+   anonymous:field.anonymous,className:cls.name,field,offset:field.offset,size:field.size,provenance:field.provenance}))).reverse();
+  return {top:candidates[0],candidates,verdict:'ambiguous'};
+ };
+ return {index,publish,local};
+}
+
+test('single-function retrieval selects one canonical returned member without upgrading facts or verdicts',()=>{
+ const fixture=returnedLocal(),local=fixture.local(),symbols={nameAt:a=>a===1n?'_ZNK6Widget8getCountEv':'_ZNK6Widget7isReadyEv'};
+ const selection={source:'jev-retrieval',selectedAddress:1n,selectedClass:'Widget'};
+ const preferred=withCxxReturnedMemberPreference(local,selection,symbols,fixture.index,{isCurrent:()=>true});
+ assert.equal(preferred.top.offset,8);assert.equal(local.top.offset,12);assert.equal(preferred.verdict,local.verdict);
+ assert.equal(preferred.semanticPreference.verdict,'weak-preference');assert.equal(preferred.margin,null);
+ assert.ok(local.candidates.includes(preferred.top));assert.equal(fixture.index.fieldCount,2);
+ for(const change of [{source:'hex'},{selectedAddress:99n},{selectedClass:'Invented'}])
+  assert.equal(withCxxReturnedMemberPreference(local,{...selection,...change},symbols,fixture.index,{isCurrent:()=>true}),local);
+ for(const option of [{mode:'exact'},{isCurrent:()=>false}])
+  assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,fixture.index,{isCurrent:()=>true,...option}),local);
+ const strong={...local,verdict:'confirmed'};
+ assert.equal(withCxxReturnedMemberPreference(strong,selection,symbols,fixture.index,{isCurrent:()=>true}),strong);
+ assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,{...fixture.index},{isCurrent:()=>true}),local);
+ const forged={...local,candidates:local.candidates.map(c=>({...c,field:{...c.field}}))};
+ assert.equal(withCxxReturnedMemberPreference(forged,selection,symbols,fixture.index,{isCurrent:()=>true}),forged);
+});
+
+test('single-function retrieval rejects hidden return ambiguity, contradictions and changed baseline identity',()=>{
+ const f=returnedLocal(),baseline=f.local(),selection={source:'jev-retrieval',selectedAddress:1n,selectedClass:'Widget'},symbols={nameAt:()=> '_ZNK6Widget8getCountEv'};
+ f.publish(1n,16n,['return-input']);
+ const full=f.local(),partial={...full,candidates:full.candidates.filter(c=>c.offset!==16)};
+ assert.equal(withCxxReturnedMemberPreference(partial,selection,symbols,f.index,{isCurrent:()=>true,baseline}),partial,
+  'a returned member outside the ranking shortlist still vetoes the preference');
+ const g=returnedLocal(),local=g.local();
+ assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,g.index,{isCurrent:()=>true,
+  baseline:{...local,top:{...local.top,size:8}}}),local);
+ const receiver=createCppReceiverEvidence({functionId:'3',functionAddress:3n,canonicalValueId:'arg0',classIdentity:{kind:'named',className:'Widget'},
+  receiverRole:'this',nonStaticProof:{rule:'vtable-slot'},abiBinding:{register:'x0',argumentIndex:0,architecture:'arm64'},snapshotId:'bound',completeness:'complete'});
+ g.index.publish({receiver,members:[createCppMemberEvidence({functionId:'3',receiverDigest:receiver.digest,snapshotId:'bound',
+  offsetBytes:8n,sizeBytes:8,category:'int64',typeLabel:'int64_t',rule:'width-64',readCount:1,writeCount:0})]});
+ const contradicted=g.local();
+ assert.equal(withCxxReturnedMemberPreference(contradicted,selection,symbols,g.index,{isCurrent:()=>true,baseline:local}),contradicted);
+});
+
+test('single-function retrieval cannot select outside the 255 member shortlist or scan an unbounded owner',()=>{
+ const f=returnedLocal(),selection={source:'jev-retrieval',selectedAddress:1n,selectedClass:'Widget'},symbols={nameAt:()=> '_ZNK6Widget8getCountEv'};
+ for(let i=0;i<298;i++)f.publish(2n,BigInt(16+4*i),['comparison-input']);
+ const local=f.local(),options={isCurrent:()=>true};assert.equal(local.candidates.length,300);
+ assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,f.index,options),local,'oversized implicit shortlist fails closed');
+ assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,f.index,{...options,shortlist:local.candidates.slice(0,255)}),local);
+ const kept=local.candidates.slice(-255),preferred=withCxxReturnedMemberPreference(local,selection,symbols,f.index,{...options,shortlist:kept});
+ assert.equal(preferred.top.offset,8);assert.ok(kept.includes(preferred.top));
+ assert.equal(withCxxReturnedMemberPreference(local,selection,symbols,f.index,{...options,shortlist:kept.map(c=>({...c}))}),local,
+  'a copied/invented shortlist cannot admit an otherwise omitted candidate');
+ for(let i=298;i<399;i++)f.publish(2n,BigInt(16+4*i),['comparison-input']);
+ const bounded={...local,candidates:local.candidates.slice(-255)};
+ assert.equal(withCxxReturnedMemberPreference(bounded,selection,symbols,f.index,{...options,shortlist:bounded.candidates}),bounded);
+});
 
 function anonymousLocal(sameContext=false) {
  const receiver=createCppReceiverEvidence({functionId:'1',functionAddress:1n,canonicalValueId:'arg0',

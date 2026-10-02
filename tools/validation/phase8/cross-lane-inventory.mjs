@@ -19,6 +19,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // Only Phase 8-owned paths reach its canonical validator.
   "integration/jev-realgame-final": Object.freeze([
     "reports/investigations/jev-realgame-final/development-v5/compiler-evidence.json.gz",
+    "reports/investigations/jev-realgame-final/development-v5/selected-function-validation.json",
+    "reports/investigations/jev-realgame-final/development-v5/internal-linkage-compiler.json",
     "reports/investigations/jev-realgame-final/development-v5/queries-openttd.json",
     "reports/investigations/jev-realgame-final/development-v5/queries-openmw.json",
     "reports/investigations/jev-realgame-final/development-v5/source-review.md",
