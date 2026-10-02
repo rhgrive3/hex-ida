@@ -33,6 +33,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "reports/investigations/jev-realgame-final/development-v5/fast-cpu-profile.json",
     "reports/investigations/jev-realgame-final/development-v5/member-only-interactive-validation.json",
     "reports/investigations/jev-realgame-final/development-v5/parallel-development-freeze.json",
+    "reports/investigations/jev-realgame-final/development-v5/parallel-compact-execution-receipt.json",
+    "reports/investigations/jev-realgame-final/development-v5/parallel-execution-receipt.json",
     "reports/investigations/jev-realgame-final/development-v5/compact-execution-receipt.json",
     "reports/investigations/jev-realgame-final/development-v5/compact-interactive-validation.json",
     "reports/investigations/jev-realgame-final/development-v5/compact-source-review-parent.json",
