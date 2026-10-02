@@ -1,0 +1,26 @@
+{
+  "schema": "hex-jev-integration-release-floor/v1",
+  "reason": "Prevent release counter rollback when importing current main; both immutable parent states must survive generated-output reconciliation.",
+  "mainMergeSha": "e07c0ed2f9ec0a02d6fe17fe53def99cbf7f3da3",
+  "parents": [
+    {
+      "productSha": "c0612fc0e19e9dccd228bbd37582b9acbea03518",
+      "releaseStateSha256": "6088e1bf742ea5f650840638b8c2b2ca41964325474ed943415a88f5b1e0ee12",
+      "releaseState": {
+        "serial": 2322242302,
+        "releaseIdentity": "d374662407ab28d71ae628bea240d215f8dcf3e3a08113d8b638b99fbf065618",
+        "buildId": "af21c600e7e64820d2f6236e"
+      }
+    },
+    {
+      "productSha": "f3f62c48781d202abb40fad48580ce6508239ee1",
+      "releaseStateSha256": "fc58ee5917385e48c15960b2b9efe941519c3c43b30ab27b2701944a7c449eac",
+      "releaseState": {
+        "serial": 2322242268,
+        "releaseIdentity": "bc70a45ef15ef7b6d77a289a14ddb9670e75a12ca12d9dab121fd80fc5622a08",
+        "buildId": "6393e47b1f6a37d950b7d7dc"
+      }
+    }
+  ],
+  "minimumPriorSerial": 2322242302
+}

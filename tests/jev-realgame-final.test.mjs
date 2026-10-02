@@ -279,3 +279,14 @@ test('recovery replay rejects gold, build, candidate selection and oracle payloa
     mutate(copy);assert.throws(()=>verifyRecoveryEvidence(copy));
   }
 });
+
+
+test('integration generated release never rolls back either imported parent', () => {
+  const floor=JSON.parse(fs.readFileSync(new URL('../reports/investigations/jev-realgame-final/main-release-floor.json',import.meta.url)));
+  assert.equal(floor.schema,'hex-jev-integration-release-floor/v1');assert.equal(floor.parents.length,2);
+  for(const parent of floor.parents){assert.match(parent.productSha,/^[a-f0-9]{40}$/);assert.match(parent.releaseStateSha256,/^[a-f0-9]{64}$/);assert(Number.isSafeInteger(parent.releaseState.serial)&&parent.releaseState.serial>0);}
+  const prior=floor.parents.map(p=>p.releaseState).sort((a,b)=>b.serial-a.serial)[0];assert.equal(floor.minimumPriorSerial,prior.serial);
+  const current=JSON.parse(fs.readFileSync(new URL('../userscript/release-version.json',import.meta.url)));
+  assert(current.serial>=prior.serial,'generated serial must retain the highest imported parent');
+  if(current.releaseIdentity!==prior.releaseIdentity||current.buildId!==prior.buildId)assert(current.serial>prior.serial,'changed merged runtime requires a newer release');
+});
