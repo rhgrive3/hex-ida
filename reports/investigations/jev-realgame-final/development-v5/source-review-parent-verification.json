@@ -1,0 +1,30 @@
+{
+  "schema": "hex-jev-v5-source-review-parent/v1",
+  "reviewedHead": "9b4dc9e8dff700427c11103a8e8b7a82dafb7e1c",
+  "sourceHashes": {
+    "js/analysis/cxx/object-evidence.js": "b29b1bde75b174a6b36523605e3c822d51e1c303359122c70d1337579b40d137",
+    "js/analysis/cxx/project.js": "91ed342efb76c94e8e408568098d2aca7e34b38312e2350ed6a6a5b4e9618ae0",
+    "js/analysis/query/cxx-semantic-preference.js": "58cb9cd07be847b3ddfa1ca54f1d30a22e42b251fdd4b2bc082482d4aaf0c667",
+    "js/analysis/query/app-adapter.js": "a5f93c411b8dc3149829658f00af80dc79bab206a19f0d055f22d43dff3f7aec",
+    "scripts/collect-jev-context-development.mjs": "89786c205c44230b54e870dcd7944b97d04b743797ecd5d30210af75c7abbd92",
+    "tests/phase7/cxx/typed-argument-binding.test.mjs": "4e7b04de766519277e136e1ab532e3815e5b88bc396bf303d6ba1f1b1202f4f6",
+    "tests/phase7/cxx/pinpoint-publication.test.mjs": "3af4c4e2ab00f737573103abce0b45828ff26c524bbb2d8550a23dba48d89127",
+    "js/rtti.js": "74f18fffd7c2d7c0c920958172d8a7a855bd7f6354b670040fba4e0a661b3e35",
+    "js/analysis/cxx/query-recovery.js": "daae83d634391a328f0921dd7ddb257270627a15e9c82d1f32cb165d1d189dc6"
+  },
+  "allHashesMatchGitBlobAndCurrent": true,
+  "sourceOnly": true,
+  "sourceBlockers": 0,
+  "productionAuthorized": false,
+  "endToEndRecoveryPipelineUnfinished": true,
+  "notes": [
+    "Earlier literal/shortlist subset checked separately; subsequent safety receipt binds all7changed safety files.",
+    "Design prefix-preservation and stale fallback claims corrected at parent request.",
+    "No member-recall/default-quality claim follows from release-symbol metadata eligibility."
+  ],
+  "receiptHashes": {
+    "recovery-v5-design.md": "a24a253abf9b163852e838b87d6f9afd00757bab140d8f2077dd16775e310d0d",
+    "recovery-v5-delta.md": "85d0fb4b1efb970746257205bba4fb85fbb3e81ee50b52a05c3a5fa13797600d",
+    "recovery-v5-safety.md": "1fa9636522718e5966355530723043249e69e5d6b36250c3a153cfb78e16bed1"
+  }
+}

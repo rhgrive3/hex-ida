@@ -12,11 +12,19 @@ import {parseGoal} from '../js/goals.js';
 import {recoverySnapshot} from './jev-realgame-recovery-contract.mjs';
 import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
-const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect']=process.argv.slice(2);
+const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect',selectionFile]=process.argv.slice(2);
 const arm="hex-value";
 if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4','semantic-retrieval-v5'].includes(planningPolicy)
-  ||!['collect','metadata-only'].includes(operation))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only]');
+  ||!['collect','metadata-only','selected-replay'].includes(operation))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay] [DEVELOPMENT_SELECTION]');
+// A development replay decompiles the single function selected by a previously
+// recorded real API response. It neither reads a gold file nor makes another
+// API call. Exact production request bytes must agree before replaying it.
+const selectionBytes=operation==='selected-replay'?fs.readFileSync(selectionFile):null;
+const selection=selectionBytes?JSON.parse(selectionBytes):null;
+if(selection&&(!selection.complete||selection.developmentOnly!==true
+  ||selection.authorizesDefaultActivation!==false||planningPolicy!=='semantic-retrieval-v5'
+  ||!Array.isArray(selection.records)))throw new Error('development selection binding failure');
 const initialPlanningPolicy=planningPolicy==='staged-object-v4'?'value-accessor-v3':planningPolicy;
 const queryBytes=fs.readFileSync(queriesFile),manifest=JSON.parse(queryBytes),bytes=fs.readFileSync(binaryPath);
 const binarySha256=sha256(bytes);
@@ -41,24 +49,35 @@ try {
   };
   const rows=[],metadataRows=[];
   for(const c of manifest.cases) {
+    const replay=selection?.records.find(row=>row.id===c.id&&row.repeat===0);
+    if(selection&&(!replay||replay.query!==c.query||replay.binarySha256!==binarySha256))
+      throw new Error('development selection query/binary binding failure');
     if(arm==='hex-value') {
       let choices=[],body=null;
       const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
         planningPolicy:initialPlanningPolicy,jevRetrieval:true,
         jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
       metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
+      if(replay&&sha256(JSON.stringify(body))!==replay.bodySha256)
+        throw new Error('development request projection drift');
     }
     if(operation==='metadata-only')continue;
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
     const recovery=await recover(product.app,c.query,{enabled:true,
-      jevRetrieval:false,
+      jevRetrieval:operation==='selected-replay',
+      jevClient:replay?{call:async input=>{
+        if(sha256(JSON.stringify(input.body))!==replay.bodySha256)
+          throw new Error('development request projection drift');
+        return replay.call?.error?null:replay.call?.response;
+      }}:undefined,
       planningPolicy:initialPlanningPolicy,
       captureBaseline:async()=>{
         const initialHex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:cxxMemberIndexForApp(product.app),limit:400});
         return {verdict:initialHex.verdict,topKey:initialHex.top?.key??null};
       },
-      maxFunctions:policy.collection.maxFunctionsPerQuery,maxElapsedMs:policy.collection.maxElapsedMs});
+      maxFunctions:operation==='selected-replay'?1:policy.collection.maxFunctionsPerQuery,
+      maxElapsedMs:policy.collection.maxElapsedMs});
     const index=cxxMemberIndexForApp(product.app),start=performance.now();
     const hex=await pinpointField({goal:parseGoal(c.query),fields:product.app.fields,cxxFields:index,limit:400});
     const hexLatencyMs=performance.now()-start;
@@ -80,11 +99,14 @@ try {
   const collection={beforeCount:0,afterCount:fields.length,named:fields.filter(f=>!f.anonymous).length,unnamed:fields.filter(f=>f.anonymous).length,
     classCount:index?.classCount??0,keyCollisions:fields.length-new Set(fields.map(f=>f.key)).size,
     analyzedFunctions:new Set(rows.flatMap(r=>r.recovery.attempted.map(a=>a.address))).size,profile:product.profile};
-  if(collection.keyCollisions||(operation==='collect'&&rows.length!==manifest.cases.length)
+  if(collection.keyCollisions||(operation!=='metadata-only'&&rows.length!==manifest.cases.length)
     ||(operation==='metadata-only'&&(rows.length||metadataRows.length!==manifest.cases.length)))throw new Error('invalid recovery collection');
   const root=new URL('../',import.meta.url);
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
-    arm,planningPolicy,operation,remoteRetrievalExecution:'none; deterministic modern recovery only',
+    arm,planningPolicy,operation,
+    remoteRetrievalExecution:selection?'recorded real API response, primary repeat 0; one existing Fast function per query, no live API in collector':'none; deterministic modern recovery only',
+    selectionSha256:selectionBytes?sha256(selectionBytes):null,
+    selectionMetadataProductSha:selection?.metadataProductSha??null,
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
       ['scripts/collect-jev-context-development.mjs','js/rtti.js','js/analysis/cxx/member-index.js','js/analysis/query/jev-advisory.js','js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
