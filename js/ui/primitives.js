@@ -102,6 +102,22 @@ export function screen(title, { subtitle, actions, id } = {}) {
   return { root, head, body, heading };
 }
 
+export function updateScreenTitle(root) {
+  const heading = root?.querySelector('.ui-screen-title')?.textContent;
+  const selected = root?.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+  document.title = [heading || (isJa() ? 'コード' : 'Code'), selected, 'Hex'].filter(Boolean).join(' — ');
+}
+
+export function tabPanel(tabbar, cls) {
+  const root = h('div', cls);
+  const selected = tabbar.querySelector('[aria-selected="true"]');
+  root.id = selected.getAttribute('aria-controls');
+  root.setAttribute('role', 'tabpanel');
+  root.setAttribute('aria-labelledby', selected.id);
+  root.tabIndex = 0;
+  return root;
+}
+
 export function card(title, { subtitle, className = '' } = {}) {
   const root = h('section', ('ui-card ' + className).trim());
   if (title) root.append(h('h2', 'ui-card-title', title));
@@ -153,17 +169,30 @@ export function evidenceBadge(status, { ja = true, detail } = {}) {
   return node;
 }
 
-export function tabs(items, active, onChange, { orientation = 'horizontal' } = {}) {
+export function tabs(items, active, onChange, { orientation = 'horizontal', label, panelId } = {}) {
   const root = h('div', 'ui-tabs');
   root.setAttribute('role', 'tablist');
+  if (label) root.setAttribute('aria-label', label);
   root.setAttribute('aria-orientation', orientation === 'vertical' ? 'vertical' : 'horizontal');
   const buttons = [];
   const activate = (index, { focus = true } = {}) => {
     const button = buttons[index];
     const item = items[index];
     if (!button || !item || button.disabled) return;
+    const focusHost = root.closest?.('main, [role="dialog"]') || root.parentElement;
+    const groupIndex = focusHost ? [...focusHost.querySelectorAll('[role="tablist"]')].indexOf(root) : -1;
     if (typeof onChange === 'function') onChange(item.id);
-    if (focus) button.focus({ preventScroll: true });
+    if (focus) {
+      if (root.isConnected !== false) button.focus({ preventScroll: true });
+      else if (focusHost?.isConnected && groupIndex >= 0) {
+        // Product navigation replaces the tab bar synchronously. Move focus
+        // to its replacement after the route host's own focus callback.
+        requestAnimationFrame(() => {
+          const replacement = focusHost.querySelectorAll('[role="tablist"]')[groupIndex];
+          replacement?.querySelector('[aria-selected="true"]')?.focus({ preventScroll:true });
+        });
+      }
+    }
   };
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
@@ -176,8 +205,8 @@ export function tabs(items, active, onChange, { orientation = 'horizontal' } = {
     b.setAttribute('aria-selected', String(selected));
     b.tabIndex = selected ? 0 : -1;
     if (item.disabled) b.disabled = true;
-    if (item.tabId) b.id = String(item.tabId);
-    if (item.panelId) b.setAttribute('aria-controls', String(item.panelId));
+    if (item.tabId || panelId) b.id = String(item.tabId || `${panelId}-${item.id}-tab`);
+    if (item.panelId || panelId) b.setAttribute('aria-controls', String(item.panelId || panelId));
     buttons.push(b);
     root.append(b);
   }

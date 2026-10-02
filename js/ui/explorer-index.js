@@ -20,17 +20,29 @@ function attachQueryStatus(rows, result) {
   return rows;
 }
 
-export async function queryFunctions(app, query, { signal, limit = 200 } = {}) {
+export async function queryFunctions(app, query, { signal, offset = 0, limit = 200 } = {}) {
   if (!app?.analysisQueries) return [];
   const q = String(query || '').trim().toLowerCase();
   if (signal?.aborted) throw abortError();
-  const snapshot = await app.analysisQueries.snapshot({ signal });
   const addressMatch = /^sub_?([0-9a-f]+)$/i.exec(q);
   const filter = addressMatch ? { address:BigInt('0x' + addressMatch[1]) } : (q ? { text:q } : {});
-  const result = await app.analysisQueries.functions(snapshot, filter, { offset:0, limit }, { signal });
+  let result;
+  // Lazy function discovery can advance the canonical identity during the
+  // first query. Re-snapshot once; never display or accept the stale result.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) throw abortError();
+    const snapshot = await app.analysisQueries.snapshot({ signal });
+    try {
+      result = await app.analysisQueries.functions(snapshot, filter, { offset, limit }, { signal });
+      break;
+    } catch (error) {
+      if (signal?.aborted) throw abortError();
+      if (attempt || error?.code !== 'analysis-snapshot-stale') throw error;
+    }
+  }
   const rows = (result?.value || []).map((row) => {
     const addr = BigInt(row.address ?? row.startAddress ?? row.start ?? row.id);
-    return { addr, name:row.name || `sub_${addr.toString(16).toUpperCase()}` };
+    return { addr, name:row.name || `sub_${addr.toString(16).toUpperCase()}`, size:row.size ?? null };
   });
   rows.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
   return attachQueryStatus(rows, result);
@@ -59,17 +71,26 @@ export function stringQueryIndexStats(rows) {
   const state = stringCache.get(rows || []);
   return { normalizedRows:state?.normalized || 0, estimatedHeapBytes:state?.heapBytes || 0 };
 }
-export async function queryStrings(rows, query, { signal, limit = 200 } = {}) {
+export async function queryStrings(rows, query, { signal, offset = 0, limit = 200 } = {}) {
   const sourceRows = rows || [];
   const q = String(query || '').trim().toLowerCase();
   if (!q) return sourceRows;
   const state = stringIndexState(sourceRows);
   const out = [];
+  let matched = 0;
+  let scanned = 0;
   for (let i = 0; i < sourceRows.length && out.length < limit; i++) {
     if (signal?.aborted) throw abortError();
     const record = await normalizedStringRecord(sourceRows, state, i, signal);
-    if (record.lower.includes(q)) out.push(record.row);
+    scanned = i + 1;
+    if (!record.lower.includes(q)) continue;
+    if (matched++ < offset) continue;
+    out.push(record.row);
   }
+  const hasMore = scanned < sourceRows.length;
+  Object.defineProperty(out, 'queryPage', { value:{ offset, limit, returned:out.length,
+    total:hasMore || sourceRows.complete === false ? null : matched,
+    next:hasMore ? offset + out.length : null }, configurable:true });
   for (const key of ['complete','truncated','truncationReason','scannedBytes','unscannedRegions']) {
     if (key in sourceRows) Object.defineProperty(out, key, { value:sourceRows[key], enumerable:false, configurable:true });
   }

@@ -4,7 +4,7 @@ import {
 } from './registry.js';
 import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
-  tabs, sectionTitle, listRow, VirtualList, scrollStrip,
+  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress, sizeText } from '../format.js';
@@ -168,6 +168,7 @@ function renderInvestigate(app, router) {
   input.placeholder = text('例: 戦闘終了時に経験値が増える場所', 'e.g. where experience increases after a battle');
   input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
   const submit = uiButton(text('調べる', 'Investigate'), { cls: 'ui-primary-action' });
+  submit.type = 'submit';
   form.append(input, submit);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -547,20 +548,21 @@ function renderExplorer(app, router, route, routeContext = {}) {
       'Browse functions, strings, types, data, external APIs and sections with one search.'),
   });
   const controls = h('div', 'ui-explorer-controls');
-  const scopes = h('div', 'ui-scope-tabs');
-  scopes.setAttribute('role', 'tablist');
-  for (const item of EXPLORER_SCOPES) {
-    const b = uiButton(item.label, { cls: 'ui-scope' + (item.id === scope ? ' active' : ''), onClick: () => router.navigate('/explorer/' + item.id) });
-    b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(item.id === scope));
-    scopes.append(b);
-  }
-  scrollStrip(scopes);
+  const scopes = tabs(EXPLORER_SCOPES, scope, (id) => router.navigate('/explorer/' + id + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')), { panelId: 'ui-explorer-panel', label: text('索引の種類', 'Explorer categories') });
+  scopes.classList.add('ui-scope-tabs');
+  scopes.setAttribute('aria-label', text('索引の種類', 'Explorer categories'));
+  for (const button of scopes.querySelectorAll('button')) button.classList.add('ui-scope');
   const search = h('input', 'ui-search-field');
   search.type = 'search'; search.placeholder = text('名前・文字列・アドレスで検索', 'Search names, strings or addresses');
-  search.value = route.query.get('q') || '';
+  search.setAttribute('aria-label', text('索引を検索', 'Search explorer'));
+  const restored = routeContext.restoredState;
+  search.value = restored?.query ?? route.query.get('q') ?? '';
+  const pageSize = 200;
+  let queryOffset = Number.isSafeInteger(restored?.offset) && restored.offset >= 0 ? restored.offset : 0;
+  let pendingVirtualState = restored?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
-  const content = h('div', 'ui-explorer-content');
+  const content = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(content);
   let disposed = false;
   let virtual = null;
@@ -573,10 +575,51 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const showRows = (items, renderRow, emptyText, emptyAction = null) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
+    const page = items?.queryPage;
+    if (page) {
+      const status = h('p', 'ui-hint');
+      status.setAttribute('role', 'status');
+      const start = items.length ? page.offset + 1 : 0;
+      const end = page.offset + items.length;
+      const total = Number.isSafeInteger(page.total) && page.total >= 0 ? page.total : null;
+      const continuation = Number.isSafeInteger(page.next) && page.next > page.offset;
+      status.textContent = !items.length ? text('0 件', '0 results') : total != null
+        ? text(`${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()} 件`, `${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()} results`)
+        : text(`${start.toLocaleString()}–${end.toLocaleString()} 件${continuation ? '（続きがあります）' : ''}`, `${start.toLocaleString()}–${end.toLocaleString()} results${continuation ? ' (more available)' : ''}`);
+      content.append(status);
+      if (continuation || page.offset > 0) {
+        const pager = h('form', 'ui-explorer-pagination');
+        pager.setAttribute('aria-label', text('索引のページ移動', 'Explorer pagination'));
+        const go = (offset) => { queryOffset = offset; pendingVirtualState = null; void update(); };
+        const previous = uiButton(text('前のページ', 'Previous page'), { cls:'ui-secondary-action', onClick:() => go(Math.max(0, page.offset - pageSize)) });
+        previous.disabled = page.offset === 0;
+        const next = uiButton(text('次のページ', 'Next page'), { cls:'ui-secondary-action', onClick:() => go(page.next) });
+        next.disabled = !continuation;
+        const number = h('input', 'ui-explorer-page');
+        number.type = 'number'; number.min = '1'; number.step = '1';
+        number.setAttribute('aria-label', text('ページ番号', 'Page number'));
+        number.value = String(Math.floor(page.offset / pageSize) + 1);
+        if (total != null) number.max = String(Math.max(1, Math.ceil(total / pageSize)));
+        const jump = uiButton(text('移動', 'Go'), { cls:'ui-secondary-action' });
+        jump.type = 'submit';
+        pager.append(previous, next, number, jump);
+        pager.addEventListener('submit', (event) => {
+          event.preventDefault();
+          if (!number.reportValidity()) return;
+          const offset = (Number(number.value) - 1) * pageSize;
+          if (Number.isSafeInteger(offset) && offset >= 0) go(offset);
+        });
+        content.append(pager);
+      }
+    }
+    if (items?.completeness && items.completeness !== 'complete') {
+      content.append(h('p', 'ui-partial-note', text('索引は一部です。未解析の領域を「該当なし」とは扱いません。', 'The index is partial; unanalysed regions are not treated as having no matches.')));
+    }
+    if (items?.complete === false) content.append(h('p', 'ui-partial-note', text('結果は一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial; unscanned regions are not treated as having no matches.')));
     if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
-    if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
+    if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
   };
 
   const update = async () => {
@@ -591,9 +634,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
       return;
     }
     if (scope === 'functions') {
-      if (q) content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
+      content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal: signal, limit: 200 });
+        const items = await matchingFunctionItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
           // A word that is not a function name is often in a string: offer that search.
@@ -620,10 +663,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
-        const items = await stringItems(app, q, { signal: signal, limit: 200 });
+        const items = await stringItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
-        if (items?.complete === false) content.prepend(h('p', 'ui-partial-note', text('結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial within the memory budget; unscanned regions are not treated as negative evidence.')));
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
@@ -650,12 +692,16 @@ function renderExplorer(app, router, route, routeContext = {}) {
     }
   };
 
-  search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(update, 120); });
+  search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
   return {
     root: s.root,
-    getState: () => ({ query: search.value, virtual: virtual?.getState() || null }),
-    restoreState: (state) => { if (state?.query != null) search.value = state.query; setTimeout(() => virtual?.restoreState(state?.virtual), 0); },
+    getState: () => ({ query: search.value, offset:queryOffset, virtual: virtual?.getState() || null }),
+    restoreState: (state) => {
+      if (!state) return;
+      if (virtual) virtual.restoreState(state.virtual);
+      else pendingVirtualState = state.virtual ?? null;
+    },
     dispose: () => { disposed = true; queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
   };
 }
@@ -743,8 +789,9 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     /* Keep the tab bar: this used to replace the whole workspace, so the user
        was stuck on one tab with only a reason code and no way forward. */
     const s=screen(functionName(app,addr),{id:'function',subtitle:addressText(addr)});
-    s.body.append(tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next)));
-    const content=h('div','ui-workspace-content');
+    const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
+    s.body.append(tabbar);
+    const content=tabPanel(tabbar,'ui-workspace-content');
     content.append(errorState(
       text('関数境界を検証できません','Function boundary could not be verified'),
       verifiedRange.reason||'unverified-function-range',
@@ -765,9 +812,9 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     ], r.left + r.width / 2, r.bottom + 4);
   } }));
   const s = screen(functionName(app, addr), { id: 'function', subtitle: addressText(addr), actions });
-  const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next));
+  const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
   s.body.append(tabbar);
-  const content = h('div', 'ui-workspace-content');
+  const content = tabPanel(tabbar, 'ui-workspace-content');
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
@@ -857,7 +904,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     let wrap = false;
     toolbar.append(
       uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-      uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+      uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
       uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
     );
     content.replaceChildren(toolbar, code);
@@ -884,7 +931,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         let wrap = false;
         toolbar.append(
           uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
-          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
+          uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', pressed: false, onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
           uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
         );
         content.replaceChildren(toolbar, provenanceView.root);
@@ -1529,6 +1576,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   const hint = h('span', 'ui-command-hint');
   hint.setAttribute('aria-live', 'polite');
   const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
+  go.type = 'submit';
   form.append(input, hint, go);
 
   const refreshHint = () => {
@@ -1639,6 +1687,7 @@ export function installProductUI(app) {
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
       for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === route.route.id ? 'page' : 'false');
       if (route.route.id === 'code') {
+        updateScreenTitle(null);
         routeHost.hidden = true;
         const raw = route.params.address;
         if (raw) {
@@ -1677,6 +1726,7 @@ export function installProductUI(app) {
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
       else view = renderSecondaryRoute(app, router, route, routeContext);
       routeHost.append(view.root);
+      updateScreenTitle(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
       return {

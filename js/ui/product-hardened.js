@@ -1,7 +1,7 @@
 import { installProductUI as installBaseProductUI } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
-import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow, VirtualList, scrollStrip } from './primitives.js';
+import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
 import { addrHex } from '../format.js';
 
 import { uiRoot } from '../ui-root.js';
@@ -232,8 +232,9 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     return { root:s.root };
   }
   const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address) });
-  s.body.append(tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`)));
-  const content = h('div', 'ui-workspace-content');
+  const tabbar = tabs(FUNCTION_TABS, 'overview', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
+  s.body.append(tabbar);
+  const content = tabPanel(tabbar, 'ui-workspace-content');
   content.append(loadingState(text('分類根拠を統合しています…', 'Combining classification evidence…')));
   s.body.append(content);
 
@@ -408,22 +409,19 @@ function runAutomaticAnalysis(app, router) {
 function renderCanonicalStrings(app, router, route, meta, queries) {
   const s = screen(text('索引', 'Explorer'), { id:'explorer', subtitle:text('ファイルの中の文字列を探します。大きいファイルは少しずつ読み込みます。', 'Searches the canonical string artifact incrementally by region.') });
   const controls = h('div', 'ui-explorer-controls');
-  const scopes = h('div', 'ui-scope-tabs');
-  scopes.setAttribute('role', 'tablist');
-  for (const item of EXPLORER_SCOPES) {
-    const button = uiButton(item.label, { cls:'ui-scope' + (item.id === 'strings' ? ' active' : ''), onClick:() => router.navigate(`/explorer/${item.id}`) });
-    button.setAttribute('role', 'tab');
-    button.setAttribute('aria-selected', String(item.id === 'strings'));
-    scopes.append(button);
-  }
-  scrollStrip(scopes);
+  const scopes = tabs(EXPLORER_SCOPES, 'strings', (id) => router.navigate(`/explorer/${id}` + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')), { panelId:'ui-explorer-panel', label:text('索引の種類', 'Explorer categories') });
+  scopes.classList.add('ui-scope-tabs');
+  scopes.setAttribute('aria-label', text('索引の種類', 'Explorer categories'));
+  for (const button of scopes.querySelectorAll('button')) button.classList.add('ui-scope');
   const search = h('input', 'ui-search-field');
   search.type = 'search';
   search.placeholder = text('文字列を検索', 'Search strings');
-  search.value = route.query.get('q') || '';
+  search.setAttribute('aria-label', text('文字列を検索', 'Search strings'));
+  search.value = meta.restoredState?.query ?? route.query.get('q') ?? '';
+  let pendingVirtualState = meta.restoredState?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
-  const host = h('div', 'ui-explorer-content');
+  const host = tabPanel(scopes, 'ui-explorer-content');
   s.body.append(host);
   let disposed = false;
   let timer = 0;
@@ -460,17 +458,21 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
       }
       nodes.push(virtual.root);
       host.replaceChildren(...nodes);
+      if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
     } catch (error) {
       if (!signal.aborted && !disposed) host.replaceChildren(errorState(text('文字列を検索できませんでした', 'Could not search strings'), String(error?.message || error)));
     }
   };
 
-  search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 120); });
+  search.addEventListener('input', () => { pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(run, 120); });
   run();
   return {
     root:s.root,
     getState:() => ({ query:search.value, virtual:virtual?.getState?.() || null }),
-    restoreState:(state) => { if (state?.query != null) search.value = state.query; },
+    restoreState:(state) => {
+      if (virtual) virtual.restoreState(state?.virtual);
+      else pendingVirtualState = state?.virtual ?? null;
+    },
     dispose:() => { disposed = true; clearTimeout(timer); queryController?.abort('strings-view-disposed'); virtual?.dispose(); },
   };
 }
@@ -497,6 +499,7 @@ export function installHardenedProductUI(app) {
         ? renderCanonicalClaims(app, router, route, meta, queries)
         : renderCanonicalStrings(app, router, route, meta, queries);
     routeHost.append(view.root);
+    updateScreenTitle(view.root);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
     return wrapRouteView(view, routeHost);
   };

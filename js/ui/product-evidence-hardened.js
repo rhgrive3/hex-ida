@@ -1,5 +1,5 @@
 import { FUNCTION_TABS } from './registry.js';
-import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, listRow } from './primitives.js';
+import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow } from './primitives.js';
 import { addrHex } from '../format.js';
 import { uiRoot } from '../ui-root.js';
 
@@ -118,8 +118,9 @@ function renderCanonicalEvidence(app, router, route, meta, actions) {
     id:'function',
     subtitle:addressText(address),
   });
-  s.body.append(tabs(FUNCTION_TABS, 'evidence', (next) => router.navigate(`/function/${address.toString()}/${next}`)));
-  const content = h('div', 'ui-workspace-content');
+  const tabbar = tabs(FUNCTION_TABS, 'evidence', (next) => router.navigate(`/function/${address.toString()}/${next}`), { panelId:'ui-function-panel', label:text('関数の表示', 'Function views') });
+  s.body.append(tabbar);
+  const content = tabPanel(tabbar, 'ui-workspace-content');
   content.append(loadingState(text('根拠を集めています…', 'Collecting evidence…')));
   s.body.append(content);
 
@@ -201,6 +202,7 @@ export function installCanonicalProductEvidence(app, installed) {
     prepareRouteShell(appRoot, routeHost, route);
     const view = renderCanonicalEvidence(app, router, route, meta, installed.actions);
     routeHost.append(view.root);
+    updateScreenTitle(view.root);
     requestAnimationFrame(() => routeHost.focus({ preventScroll:true }));
     return wrapRouteView(view, routeHost);
   };

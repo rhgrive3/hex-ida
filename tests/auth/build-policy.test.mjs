@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from '../../scripts/auth-build-policy.mjs';
-import { parseJsonc, validateAuthConfig, parseCliArgs } from '../../scripts/validate-auth-config.mjs';
+import { LOCAL_D1_ID, parseJsonc, validateAuthConfig, parseCliArgs } from '../../scripts/validate-auth-config.mjs';
 test('privileged-only edits update release identity without changing runtime content ID; deterministic DAG', () => {
   const runtime = 'a'.repeat(24), first = privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1');
   assert.deepEqual(privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1'), first);
@@ -94,7 +94,7 @@ test('local D1 configuration is usable but production sentinel is explicitly rej
   // Deployment can already have a real UUID. Exercise the local sentinel
   // explicitly instead of assuming the checked-in deployment is unconfigured.
   const local = structuredClone(configured);
-  local.d1_databases.find((binding) => binding.binding === 'AUTH_DB').database_id = '00000000-0000-0000-0000-000000000000';
+  local.d1_databases.find((binding) => binding.binding === 'AUTH_DB').database_id = LOCAL_D1_ID;
   assert.equal(validateAuthConfig(local, { local: true }), true);
   assert.throws(() => validateAuthConfig(local), /sentinel/);
   const production = structuredClone(local); production.d1_databases.find((binding) => binding.binding === 'AUTH_DB').database_id = '11111111-2222-3333-4444-555555555555';
