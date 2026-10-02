@@ -261,6 +261,49 @@ test('disabled, stale, HTTP failure, malformed, invented choices and real timeou
     client:{call:async()=>{current=false;return payload('c0','c0');}}});assert.equal(stale.source,'hex');
 });
 
+test('parallel retrieval asks independent owner and accessor questions in one bounded request',async()=>{
+ const p=planner(),query='widget count',choices=p.choices(query,{maxChoices:254});
+ const owners=[...new Set(choices.map(row=>row.className))];
+ const selected=choices.findIndex(row=>row.className==='Widget');let calls=0;
+ const requestPolicy='parallel-accessor-v5';
+ const body=jevRecoveryRequest(query,choices.map(row=>({...row,oracleFieldName:'forbidden_oracle_label'})),{requestPolicy});
+ assert.deepEqual(Object.keys(body.questions),['object','pick']);
+ assert.equal(Object.keys(body.state.releaseFunctions).length,choices.length);
+ assert.equal(Object.keys(body.questions.object.criteria).length,owners.length+1);
+ assert.ok(body.questions.object.criteria.none&&body.questions.pick.criteria.none);
+ assert.ok(!JSON.stringify(body).includes('forbidden_oracle_label'));
+ const client=createJevRecoveryClient({apiKey:'test-key',fetchImpl:async(_url,input)=>{
+  calls++;assert.deepEqual(JSON.parse(input.body),body);
+  return {ok:true,json:async()=>payload(`o${owners.indexOf('Widget')}`,`c${selected}`)};
+ }});
+ const result=await selectJevRecoveryPlan(query,p,{enabled:true,isCurrent:()=>true,requestPolicy,client,maxFunctions:1});
+ assert.equal(calls,1);assert.equal(result.selectedClass,'Widget');assert.equal(result.selectedAddress,choices[selected].address);
+ assert.equal(result.plan.length,1);
+ const rows=Array.from({length:254},(_,i)=>({className:`Owner${i}`,methodName:`read${i}`,address:BigInt(i)}));
+ const boundary=jevRecoveryRequest(query,rows,{requestPolicy});
+ assert.equal(Object.keys(boundary.questions.object.criteria).length,255);
+ assert.equal(Object.keys(boundary.questions.pick.criteria).length,255);
+ assert.throws(()=>jevRecoveryRequest(query,[...rows,rows[0]],{requestPolicy}),/at most254/);
+});
+
+test('parallel retrieval rejects disagreement, missing answers, abstention and ambiguous owner labels',async()=>{
+ const p=planner(),query='widget count',choices=p.choices(query,{maxChoices:254});
+ const owners=[...new Set(choices.map(row=>row.className))],selected=choices.findIndex(row=>row.className==='Widget');
+ const valid=payload(`o${owners.indexOf('Widget')}`,`c${selected}`);
+ const options={enabled:true,isCurrent:()=>true,requestPolicy:'parallel-accessor-v5'};
+ const invalid=[payload(`o${owners.indexOf('Other')}`,`c${selected}`),payload('none',`c${selected}`),
+  payload(`o${owners.indexOf('Widget')}`,'none'),{model:'openjev',answers:{pick:valid.answers.pick}},
+  payload('o999',`c${selected}`),payload('c0',`c${selected}`),payload(`o${owners.indexOf('Widget')}`,'invented'),
+  {...valid,answers:{...valid.answers,object:{...valid.answers.object,probabilities:{[valid.answers.object.choice]:1,invented:0}}}}];
+ for(const response of invalid)assert.equal((await selectJevRecoveryPlan(query,p,{...options,client:{call:async()=>response}})).source,'hex');
+ assert.equal((await selectJevRecoveryPlan(query,p,{...options,timeoutMs:2,client:{call:()=>new Promise(()=>{})}})).source,'hex');
+ assert.equal((await selectJevRecoveryPlan(query,p,{...options,client:{call:async()=>{throw Error('http');}}})).source,'hex');
+ const stem='X'.repeat(160),rows=[{className:stem+'A',methodName:'readA',address:1n},
+  {className:stem+'B',methodName:'readB',address:2n}];let calls=0;
+ assert.equal((await selectJevRecoveryPlan(query,{...p,choices:()=>rows},{...options,client:{call:async()=>{calls++;}}})).source,'hex');
+ assert.equal(calls,0,'indistinguishable rendered owner labels cannot acquire separate identities');
+});
+
 test('compact retrieval provides an explicit abstention and never interprets it as a function', async()=>{
  const p=planner(),query='widget count',base=p.plan(query),requestPolicy='compact-accessor-v5';
  let body=null;
@@ -312,6 +355,31 @@ test('compact retrieval caps all protocol choices at255 and removes unanalysable
   assert.ok(!input.body.includes('secret_oracle_label'));return {ok:true,json:async()=>({model:'openjev',answers:{pick:answer('none')}})};
  }});
  await http.call({query:'count',choices:rows.slice(0,2),requestPolicy:options.requestPolicy,body:{oracle:'secret_oracle_label'}});
+});
+
+test('compact retrieval fills its bounded shortlist from eligible functions before applying255 limit',async()=>{
+ const names=[],funcs=[],sizes=new Map();
+ const add=(owner,method,size)=>{const address=BigInt(names.length+1)*8192n;
+  names.push(`_ZNK${owner.length}${owner}${method.length}${method}Ev`);funcs.push(address);
+  if(size!=null)sizes.set(address,size);};
+ for(let i=0;i<260;i++){const owner=`Object${i}`;add(owner,'getCount',4096n);add(owner,'read',28n);}
+ add('Unknown','getCount',null);add('Invalid','getCount',0n);
+ const symbols={names,addrs:funcs,funcs,declaredFunctionEnd:a=>sizes.has(a)?a+sizes.get(a):null};
+ const p=createCxxQueryPlanner({symbols,isExecutable:()=>true,planningPolicy:'semantic-retrieval-v5'});
+ assert.equal(p.choices('count',{maxChoices:254}).filter(r=>r.declaredSizeBytes>0n&&r.declaredSizeBytes<=256n).length,0,
+  'post-shortlist filtering used to discard every slot despite260 eligible release functions');
+ const options={maxChoices:254,maxDeclaredSizeBytes:256};
+ const eligible=p.choices('count',options);assert.equal(eligible.length,254);
+ assert.equal(new Set(eligible.map(r=>String(r.address))).size,254);
+ assert.ok(eligible.every(r=>r.methodName==='read'&&r.declaredSizeBytes===28n));
+ assert.equal(p.functionCount,522,'scheduling leaves the proven-owner inventory unchanged');
+ assert.throws(()=>p.choices('count',{...options,maxDeclaredSizeBytes:0}),/extent budget/);
+ const selected=await selectJevRecoveryPlan('count',p,{enabled:true,isCurrent:()=>true,
+  requestPolicy:'compact-accessor-v5',maxDeclaredSizeBytes:256,client:{call:async input=>{
+   assert.deepEqual(input.choices,eligible);assert.equal(Object.keys(input.body.questions.pick.criteria).length,255);
+   return {model:'openjev',answers:{pick:answer('c253')}};
+  }}});
+ assert.equal(selected.selectedAddress,eligible[253].address);
 });
 
 test('the 255 boundary and ambiguous aliases never grant an external selector extra identities', () => {

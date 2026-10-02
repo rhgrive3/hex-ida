@@ -14,12 +14,14 @@ import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
 const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect',selectionFile]=process.argv.slice(2);
 const arm="hex-value";
-const interactiveReplay=['interactive-replay','compact-interactive-replay','compact-members-replay'].includes(operation);
-const evidenceOnly=operation==='compact-members-replay';
-const jevRequestPolicy=['compact-interactive-replay','compact-members-replay'].includes(operation)?'compact-accessor-v5':'legacy';
+const interactiveReplay=['interactive-replay','compact-interactive-replay','compact-members-replay','parallel-members-replay'].includes(operation);
+const metadataOnly=['metadata-only','compact-members-metadata','parallel-members-metadata'].includes(operation);
+const evidenceOnly=['compact-members-replay','parallel-members-replay','compact-members-metadata','parallel-members-metadata'].includes(operation);
+const jevRequestPolicy=operation.startsWith('parallel-members-')?'parallel-accessor-v5'
+  :['compact-interactive-replay','compact-members-replay','compact-members-metadata'].includes(operation)?'compact-accessor-v5':'legacy';
 if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4','semantic-retrieval-v5'].includes(planningPolicy)
-  ||!['collect','metadata-only','selected-replay','baseline-and-metadata','interactive-replay','compact-interactive-replay','compact-members-replay'].includes(operation))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay|baseline-and-metadata|interactive-replay|compact-interactive-replay|compact-members-replay] [DEVELOPMENT_SELECTION]');
+  ||!['collect','metadata-only','selected-replay','baseline-and-metadata','interactive-replay','compact-interactive-replay','compact-members-replay','compact-members-metadata','parallel-members-metadata','parallel-members-replay'].includes(operation))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY OPERATION [DEVELOPMENT_SELECTION]; development only');
 // A development replay decompiles the single function selected by a previously
 // recorded real API response. It neither reads a gold file nor makes another
 // API call. Exact production request bytes must agree before replaying it.
@@ -59,13 +61,21 @@ try {
       let choices=[],body=null;
       const recovery=await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
         planningPolicy:initialPlanningPolicy,jevRetrieval:true,
-        jevRequestPolicy,maxDeclaredSizeBytes:jevRequestPolicy==='compact-accessor-v5'?256:undefined,
+        jevRequestPolicy,maxDeclaredSizeBytes:['compact-accessor-v5','parallel-accessor-v5'].includes(jevRequestPolicy)?256:undefined,
         jevClient:{call:async input=>{choices=input.choices;body=input.body;return null;}}});
-      metadataRows.push({id:c.id,query:c.query,recovery,choices,body});
+      const row={id:c.id,query:c.query,recovery,choices,body};
+      if(operation==='parallel-members-metadata'){
+        // Paired development comparator, same actual release/planner/extent
+        // budget. These transport stubs capture production requests only.
+        await recoverCxxMembersForQuery(product.app,c.query,{enabled:true,planOnly:true,
+          planningPolicy:initialPlanningPolicy,jevRetrieval:true,jevRequestPolicy:'compact-accessor-v5',maxDeclaredSizeBytes:256,
+          jevClient:{call:async input=>{row.compactChoices=input.choices;row.compactBody=input.body;return null;}}});
+      }
+      metadataRows.push(row);
       if(replay&&sha256(JSON.stringify(body))!==replay.bodySha256)
         throw new Error('development request projection drift');
     }
-    if(operation==='metadata-only')continue;
+    if(metadataOnly)continue;
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
     let recovery=await recover(product.app,c.query,{enabled:true,evidenceOnly,

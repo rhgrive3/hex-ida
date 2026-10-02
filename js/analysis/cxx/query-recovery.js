@@ -131,10 +131,16 @@ export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>fa
     planningPolicy,
     // Existing release functions only. Round-robin owners prevent one large
     // class from consuming the external selector's entire 255-choice budget.
-    choices(phrase,{maxChoices=255}={}) {
+    choices(phrase,{maxChoices=255,maxDeclaredSizeBytes=null}={}) {
       if(!Number.isSafeInteger(maxChoices)||maxChoices<1||maxChoices>255)throw new Error('C++ recovery choice budget must be 1..255');
+      if(maxDeclaredSizeBytes!=null&&(!Number.isSafeInteger(maxDeclaredSizeBytes)
+        ||maxDeclaredSizeBytes<4||maxDeclaredSizeBytes>16384))throw new Error('invalid C++ recovery choice extent budget');
       const groups=new Map();
       for(const row of scoreRows(phrase)) {
+        // Scheduling eligibility precedes the finite shortlist. Oversized or
+        // unknown functions must not consume slots later discarded by callers.
+        if(maxDeclaredSizeBytes!=null&&(typeof row.declaredSizeBytes!=='bigint'
+          ||row.declaredSizeBytes<=0n||row.declaredSizeBytes>BigInt(maxDeclaredSizeBytes)))continue;
         const group=groups.get(row.className)??[];group.push(row);groups.set(row.className,group);
       }
       const result=[],seen=new Set();
