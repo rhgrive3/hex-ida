@@ -370,6 +370,15 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     if (screenshots) await shot(page, browserName, viewportName, 'explorer');
     await checkExplorerRestoration(page, browserName, viewportName);
 
+    await page.locator('.ui-bottom-nav [data-route-id="explorer"]').focus();
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(80);
+    check(`${browserName}/${viewportName}: Space activates navigation instead of scrolling hidden code`, await page.locator('[data-screen="explorer"]').count() === 1);
+    await page.evaluate(() => { window.__hexUi.router.navigate('/code'); document.activeElement?.blur(); });
+    await page.keyboard.press('/');
+    check(`${browserName}/${viewportName}: slash focuses the command field without opening a legacy search sheet`, await page.evaluate(() => document.activeElement?.matches('.ui-global-command') && !document.querySelector('#overlays .sheet:not(.parked)')));
+    await page.evaluate(() => document.activeElement?.blur());
+
     await page.evaluate(() => window.__hexUi.router.navigate('/code'));
     await page.waitForTimeout(100);
     check(`${browserName}/${viewportName}: code viewer route restores virtualized viewer`, await page.locator('#viewport').count() === 1 && await page.locator('#ui-route-host[hidden]').count() === 1);

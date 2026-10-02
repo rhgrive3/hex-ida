@@ -470,8 +470,9 @@ export class App {
   }
 
   onKey(e) {
+    if (e.defaultPrevented) return;
     const target = e.target;
-    const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
     if (e.key === 'Escape') {
       if (closeMenu() || closeTopSheet()) { e.preventDefault(); return; }
       if (this.viewer.rangeMode) { this.viewer.clearRange(); e.preventDefault(); }
@@ -486,9 +487,12 @@ export class App {
       if (!this.store.get('currentRegion')) return;
       e.preventDefault(); showJump(this); return;
     }
-    if (typing) return;
+    if (typing || target?.closest?.('button, a, [role="button"], [role="tab"]')) return;
     if (e.key === '?') { e.preventDefault(); showHelp(this); return; }
     if (!this.store.get('currentRegion')) return;
+    // Viewer shortcuts must not consume native button activation or scroll
+    // the hidden code view while a product screen owns keyboard focus.
+    if (uiRoot()?.classList.contains('ui-screen-route')) return;
 
     if (meta && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault(); this.viewer.selectAllRows(); return;
@@ -502,7 +506,9 @@ export class App {
     const v = this.viewer;
     switch (e.key) {
       case 'g': case 'G': e.preventDefault(); showJump(this); break;
-      case '/': e.preventDefault(); showSearch(this); break;
+      case '/':
+        if (uiRoot()?.classList.contains('product-ui-ready')) return;
+        e.preventDefault(); showSearch(this); break;
       case 'e': case 'E': e.preventDefault(); this.setExplain(!this.prefs.explain); break;
       case 'ArrowDown': e.preventDefault(); shift ? v.extendByRows(1) : v.scrollByRows(1); break;
       case 'ArrowUp': e.preventDefault(); shift ? v.extendByRows(-1) : v.scrollByRows(-1); break;
