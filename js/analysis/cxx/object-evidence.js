@@ -21,6 +21,8 @@ export const CPP_CLASS_IDENTITY_SCHEMA = 'cpp-class-identity/v1';
 export const CPP_VTABLE_SCHEMA = 'cpp-vtable-evidence/v1';
 export const CPP_VIRTUAL_SLOT_SCHEMA = 'cpp-virtual-slot-evidence/v1';
 export const CPP_CANONICAL_MEMBER_SCHEMA = 'cpp-canonical-member-evidence/v1';
+export const CPP_MEMBER_ACCESS_ROLES = Object.freeze(['return-input','computed-return-input',
+  'comparison-input','arithmetic-input','address-base','constant-written','argument-written','zero-written','one-written']);
 
 // Read the release symbol table rather than a user's display rename. Small
 // first-party hosts that expose only nameAt keep their existing contract.
@@ -425,8 +427,10 @@ export function createCppMemberEvidence(input = {}) {
   const writeCount = Number.isSafeInteger(input.writeCount) && input.writeCount >= 0 ? input.writeCount : 0;
   if (readCount + writeCount === 0) fail('cpp-member-access-count-required');
   const accessRoles=input.accessRoles??[];
-  if(!Array.isArray(accessRoles)||accessRoles.length>8||accessRoles.some(role=>
-    !['return-input','comparison-input','arithmetic-input','address-base','constant-written','argument-written','zero-written','one-written'].includes(role)))fail('cpp-member-access-role-invalid');
+  if(!Array.isArray(accessRoles)||accessRoles.length>CPP_MEMBER_ACCESS_ROLES.length
+    ||accessRoles.some(role=>!CPP_MEMBER_ACCESS_ROLES.includes(role)))fail('cpp-member-access-role-invalid');
+  if(input.returnExpressionIncomplete!=null&&typeof input.returnExpressionIncomplete!=='boolean')
+    fail('cpp-member-return-expression-status-invalid');
   const writtenArgumentRegisters=input.writtenArgumentRegisters??[];
   if(!Array.isArray(writtenArgumentRegisters)||writtenArgumentRegisters.length>8
     ||writtenArgumentRegisters.some(register=>typeof register!=='string'||!/^x[0-7]$/.test(register)))fail('cpp-member-argument-register-invalid');
@@ -459,6 +463,7 @@ export function createCppMemberEvidence(input = {}) {
     readCount,
     writeCount,
     ...(accessRoles.length ? {accessRoles:Object.freeze([...new Set(accessRoles)].sort())} : {}),
+    ...(input.returnExpressionIncomplete===true?{returnExpressionIncomplete:true}:{}),
     ...(writtenArgumentRegisters.length ? {writtenArgumentRegisters:Object.freeze([...new Set(writtenArgumentRegisters)].sort())} : {}),
     ...(writtenArgumentBits.length ? {writtenArgumentBits:Object.freeze([...new Set(writtenArgumentBits)].sort())} : {}),
     ...(input.writtenArgumentBitsTruncated===true ? {writtenArgumentBitsTruncated:true} : {}),

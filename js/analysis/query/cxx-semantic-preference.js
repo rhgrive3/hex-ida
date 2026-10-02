@@ -108,7 +108,8 @@ export function withCxxSemanticPreference(query, local, symbols, {policy='legacy
 }
 
 // A prospective single-function retrieval result can express only a weak
-// preference for the one existing member feeding that function's return.
+// preference for the one existing member feeding that function's return,
+// directly or through a closed bounded scalar expression.
 // Inspect the complete published owner, not merely the ranked shortlist: a
 // second return-linked member outside that shortlist still makes it ambiguous.
 // This helper does no analysis, publication, HTTP, or semantic-name recovery.
@@ -140,6 +141,10 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
     for (const field of owner.ivars) {
       if (!isCxxMemberField(field,owner) || field.conflict || field.provenanceTruncated
         || field.memberNamesTruncated || !field.anonymous) return local;
+      if(field.provenance.some(({receiver,member})=>isCanonicalCppReceiverEvidence(receiver)
+        &&isCanonicalCppMemberEvidence(member)&&receiver.functionAddress===address
+        &&member.receiverDigest===receiver.digest&&member.snapshotId===index.snapshotId
+        &&member.returnExpressionIncomplete===true))return local;
       const linked=field.provenance.some(({receiver,member})=>
         isCanonicalCppReceiverEvidence(receiver) && isCanonicalCppMemberEvidence(member)
         && receiver.completeness==='complete' && receiver.snapshotId===index.snapshotId
@@ -147,7 +152,8 @@ export function withCxxReturnedMemberPreference(local, selection, symbols, index
         && receiver.functionAddress===address && member.functionId===receiver.functionId
         && member.snapshotId===receiver.snapshotId && member.receiverDigest===receiver.digest
         && member.offsetBytes===BigInt(field.offset) && member.sizeBytes===field.size
-        && member.readCount>0 && member.accessRoles?.includes('return-input'));
+        && member.readCount>0 && (member.accessRoles?.includes('return-input')
+          ||member.accessRoles?.includes('computed-return-input')));
       if (linked) returned.push(field);
     }
     if (returned.length!==1) return local;

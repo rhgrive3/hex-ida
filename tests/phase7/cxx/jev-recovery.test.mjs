@@ -9,13 +9,13 @@ import {withCxxReturnedMemberPreference} from '../../../js/analysis/query/cxx-se
 
 function returnedLocal() {
  const index=new CxxMemberIndex();
- const publish=(address,offset,roles)=>{
+ const publish=(address,offset,roles,extra={})=>{
   const receiver=createCppReceiverEvidence({functionId:String(address),functionAddress:address,canonicalValueId:'arg0',
    classIdentity:{kind:'named',className:'Widget'},receiverRole:'this',nonStaticProof:{rule:'vtable-slot'},
    abiBinding:{register:'x0',argumentIndex:0,architecture:'arm64'},snapshotId:'bound',completeness:'complete'});
   index.publish({receiver,members:[createCppMemberEvidence({functionId:receiver.functionId,receiverDigest:receiver.digest,
    snapshotId:'bound',offsetBytes:offset,sizeBytes:4,category:'int32',typeLabel:'int32_t',rule:'width-32',
-   readCount:1,writeCount:0,accessRoles:roles})]});
+   readCount:1,writeCount:0,accessRoles:roles,...extra})]});
  };
  publish(1n,8n,['return-input']);publish(2n,12n,['comparison-input']);
  const local=()=>{
@@ -59,6 +59,25 @@ test('single-function retrieval rejects hidden return ambiguity, contradictions 
   offsetBytes:8n,sizeBytes:8,category:'int64',typeLabel:'int64_t',rule:'width-64',readCount:1,writeCount:0})]});
  const contradicted=g.local();
  assert.equal(withCxxReturnedMemberPreference(contradicted,selection,symbols,g.index,{isCurrent:()=>true,baseline:local}),contradicted);
+});
+
+test('single-function retrieval accepts one computed-return member but vetoes a hidden second operand',()=>{
+ const f=returnedLocal();f.publish(3n,16n,['computed-return-input']);
+ const local=f.local();local.top=local.candidates.find(c=>c.offset===12);
+ const selection={source:'jev-retrieval',selectedAddress:3n,selectedClass:'Widget'},symbols={nameAt:()=> '_ZNK6Widget8getFlagsEv'};
+ const preferred=withCxxReturnedMemberPreference(local,selection,symbols,f.index,{isCurrent:()=>true});
+ assert.equal(preferred.top.offset,16);assert.equal(preferred.verdict,local.verdict);
+ assert.equal(preferred.semanticPreference.verdict,'weak-preference');
+ f.publish(3n,20n,['computed-return-input']);const full=f.local();
+ const partial={...full,top:full.candidates.find(c=>c.offset===12),candidates:full.candidates.filter(c=>c.offset!==20)};
+ assert.equal(withCxxReturnedMemberPreference(partial,selection,symbols,f.index,{isCurrent:()=>true,baseline:local}),partial);
+ const g=returnedLocal();g.publish(3n,16n,['computed-return-input']);
+ const baseline=g.local();baseline.top=baseline.candidates.find(c=>c.offset===12);
+ g.publish(3n,24n,[],{returnExpressionIncomplete:true});const current=g.local();
+ current.top=current.candidates.find(c=>c.offset===12);
+ current.candidates=current.candidates.filter(c=>c.offset!==24);
+ assert.equal(withCxxReturnedMemberPreference(current,selection,symbols,g.index,{isCurrent:()=>true,baseline}),current,
+  'an untraced returned root vetoes the function even when its marker is outside the ranked lattice');
 });
 
 test('single-function retrieval cannot select outside the 255 member shortlist or scan an unbounded owner',()=>{

@@ -157,6 +157,50 @@ test('direct SSA uses retain member roles even without an intermediate copy',()=
   assert.deepEqual(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}).fields[0].accessRoles,['return-input']);
 });
 
+test('closed computed returns keep machine type unchanged and retain every contributing member',()=>{
+ const base={id:1},left={id:2,bits:32},right={id:3,bits:32},constant={id:4,bits:32},result={id:5,bits:32};
+ const load=(dst,offset)=>({op:'load',dst,loc:{kind:'field',base,disp:BigInt(offset),size:4}});
+ const instructions=[load(left,8),{op:'const',dst:constant,extra:{value:3n}},
+  {op:'bin',sub:'and',dst:result,args:[left,constant]},{op:'ret',args:[result]}];
+ const read=()=>recoverMemberTypeEvidence({ir:{instructions},isReceiverBase:v=>v===base});
+ const field=read().fields[0];assert.ok(field.accessRoles.includes('computed-return-input'));
+ assert.equal(field.category,'int32');assert.equal(field.widthOnly,true);assert.equal(field.memberName,undefined);
+ instructions.splice(1,1,load(right,12));instructions[2]={op:'bin',sub:'add',dst:result,args:[left,right]};
+ assert.ok(read().fields.every(f=>f.accessRoles.includes('computed-return-input')),
+  'both returned member operands remain visible to the uniqueness veto');
+ const machine=recoverMemberTypeEvidence({ir:createIr(['ldr w1, [x0, #8]','and w0, w1, #3','ret']),isReceiverBase:allBases});
+ assert.ok(fieldAt(machine,8).accessRoles.includes('computed-return-input'),'real ARM64 lifting reaches the bounded observation');
+ const direct=recoverMemberTypeEvidence({ir:createIr(['ldr w0, [x0, #8]','ret']),isReceiverBase:allBases});
+ assert.ok(fieldAt(direct,8).accessRoles.includes('return-input'));assert.notEqual(fieldAt(direct,8).returnExpressionIncomplete,true);
+});
+
+test('computed return observations fail closed on unknown roots, constant annihilation, invalid locations and budgets',()=>{
+ const base={id:1},loaded={id:2,bits:64},unknown={id:3,bits:64},result={id:4,bits:64};
+ const load={op:'load',dst:loaded,loc:{kind:'field',base,disp:8n,size:8}};
+ const closed=[load,{op:'const',dst:unknown,extra:{value:8n}},
+  {op:'bin',sub:'add',dst:result,args:[loaded,unknown]},{op:'ret',args:[result]}];
+ const read=(instructions,options={})=>recoverMemberTypeEvidence({ir:{instructions},isReceiverBase:v=>v===base,...options});
+ for(const definition of [{op:'call',dst:unknown,args:[loaded]},
+  {op:'load',dst:unknown,loc:{kind:'global',size:8}}, {op:'phi',dst:unknown,args:[loaded]},
+  {op:'const',dst:unknown,extra:{value:0n}}]) {
+  const ir=closed.slice();ir[1]=definition;if(definition.op==='const')ir[2]={...ir[2],sub:'mul'};
+  assert.equal(read(ir).fields[0].accessRoles.includes('computed-return-input'),false);
+  assert.equal(read(ir).fields[0].returnExpressionIncomplete,true);
+ }
+ const cancelled=closed.slice();cancelled[2]={...cancelled[2],sub:'sub',args:[loaded,loaded]};
+ assert.equal(read(cancelled).fields[0].accessRoles.includes('computed-return-input'),false);
+ assert.equal(read(closed,{maxInstructions:3}).fields[0].accessRoles.includes('computed-return-input'),false);
+ const mixed=closed.slice();mixed.splice(1,0,{...load,dst:{id:9},loc:{...load.loc,size:4}});
+ assert.equal(read(mixed).fields[0].accessRoles.includes('computed-return-input'),false);
+ const duplicates=closed.slice();duplicates.splice(1,0,{op:'const',dst:result,extra:{value:10n}});
+ assert.equal(read(duplicates).fields[0].accessRoles.includes('computed-return-input'),false);
+ const unknownInstruction=closed.slice();unknownInstruction.splice(1,0,{op:'unknown'});
+ assert.equal(read(unknownInstruction).fields[0].returnExpressionIncomplete,true);
+ // Arithmetic address use cannot become pointer proof through this new graph.
+ const addressed=closed.slice();addressed.splice(3,0,{op:'load',dst:{id:10},loc:{kind:'unknown',base:result,size:8}});
+ const field=read(addressed).fields[0];assert.equal(field.category,'int64');assert.equal(field.widthOnly,true);
+});
+
 test('stored constants and bounded argument flows remain machine context without naming members',()=>{
   const base={id:'object'},argument={id:'input',kind:'arg',reg:'x1'},one={id:'one'},copy={id:'copy'};
   const ir={values:[argument],instructions:[

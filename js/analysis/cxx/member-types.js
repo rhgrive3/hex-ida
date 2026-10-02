@@ -122,6 +122,7 @@ function buildChains(ir, maxInstructions) {
   const conditionValues = new Set();
   const addressUsed = new Set();
   const returnInputs = new Set(), comparisonInputs = new Set(), arithmeticInputs = new Set();
+  const definitions = new Map(), duplicateDefinitions = new Set();
   const instructions = [];
   let scanned = 0;
 
@@ -140,6 +141,11 @@ function buildChains(ir, maxInstructions) {
   }
 
   for (const inst of instructions) {
+    const definitionId=valueId(inst.dst);
+    if(definitionId!=null){
+      if(definitions.has(definitionId))duplicateDefinitions.add(definitionId);
+      else definitions.set(definitionId,inst);
+    }
     if(inst.dst&&inst.op==='bin'&&inst.sub==='and'&&inst.args?.length===2) {
       masks.set(valueId(inst.dst),inst.args.map(argument=>valueId(argument?.value??argument)));
       if(Number.isSafeInteger(inst.dst.bits)&&inst.dst.bits>0&&inst.dst.bits<=64)
@@ -201,7 +207,53 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, copies, copyWidths, copyConversions, masks, maskWidths, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs };
+  return { sources, copies, copyWidths, copyConversions, masks, maskWidths, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs, definitions, duplicateDefinitions,
+    returnFlowUnknown:instructions.some(inst=>inst.op==='unknown') };
+}
+
+// A closed, bounded return-expression walk is context only. It does not feed
+// type classification, establish a logical ABI port, or infer a source name.
+// Unknown calls/loads/merges veto the whole computed-return observation rather
+// than hiding another possible member behind an untraced expression.
+function computedReturnMembers(chains,memberLoads,argumentIds,{complete}) {
+  const unavailable=()=>({members:new Set(),incomplete:true});
+  if(!complete||chains.returnFlowUnknown||chains.returnInputs.size>32)return unavailable();
+  const binaryOps=new Set(['add','sub','mul','and','or','xor','shl','shr','sar','lsr','asr','udiv','sdiv']);
+  const members=new Set(),active=new Set();
+  let visits=0,hasComputation=false;
+  const walk=(id,depth)=>{
+    if(id==null||depth>MAX_CHAIN_DEPTH||++visits>256||active.has(id)
+      ||chains.duplicateDefinitions.has(id))return false;
+    if(memberLoads.has(id)){
+      const entry=memberLoads.get(id);
+      if(entry.offset>BigInt(Number.MAX_SAFE_INTEGER)
+        ||entry.accesses.some(access=>!Number.isSafeInteger(access.size)||access.size<1||access.size>64||access.indexed)
+        ||new Set(entry.accesses.map(access=>access.size)).size!==1)return false;
+      members.add(id);return true;
+    }
+    if(chains.constants.has(id)||argumentIds.has(id))return true;
+    const definition=chains.definitions.get(id);
+    if(!definition)return false;
+    const args=(definition.args??[]).map(arg=>valueId(arg?.value??arg));
+    active.add(id);
+    let valid=false;
+    if(definition.op==='mov'&&args.length===1
+      &&(definition.sub==null||['copy','trunc','zext','sext'].includes(definition.sub))) {
+      valid=walk(args[0],depth+1);
+    }else if(definition.op==='un'&&args.length===1
+      &&['neg','not','zext','sext','trunc'].includes(definition.sub)) {
+      hasComputation=true;valid=walk(args[0],depth+1);
+    }else if(definition.op==='bin'&&args.length===2&&binaryOps.has(definition.sub)) {
+      const constant=args.map(arg=>chains.constants.get(arg));
+      const annihilated=['and','mul'].includes(definition.sub)&&constant.includes(0n)
+        ||['xor','sub'].includes(definition.sub)&&args[0]===args[1]
+        ||['udiv','sdiv'].includes(definition.sub)&&constant[1]===0n;
+      if(!annihilated){hasComputation=true;valid=args.every(arg=>walk(arg,depth+1));}
+    }
+    active.delete(id);return valid;
+  };
+  for(const root of chains.returnInputs)if(!walk(root,0))return unavailable();
+  return {members:hasComputation?members:new Set(),incomplete:false};
 }
 
 // Exact 0/1 writes may follow copies, never arbitrary unary operations.
@@ -349,6 +401,7 @@ export function recoverMemberTypeEvidence({
       return [valueId(value),{register:register.replace(/^w/,'x'),bits}];
     }));
   const byOffset = new Map();
+  const memberLoads=new Map();
   let accesses = 0;
   let truncated = false;
   let scanned = 0;
@@ -408,6 +461,8 @@ export function recoverMemberTypeEvidence({
       byOffset.set(offset, entry);
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
+    if(inst.op==='load'&&!indexed&&loadValueId!=null&&Number.isSafeInteger(size)&&size>0)
+      memberLoads.set(loadValueId,entry);
     if(storedRole)entry.accessRoles.add(storedRole);
     if(inst.op==='store') {
       if(argumentBit)entry.writtenArgumentBits.add(argumentBit);
@@ -427,6 +482,9 @@ export function recoverMemberTypeEvidence({
     accesses++;
   }
 
+  const returned=computedReturnMembers(chains,memberLoads,argumentIds,{complete:!truncated});
+  for(const id of returned.members)
+    memberLoads.get(id).accessRoles.add('computed-return-input');
   const fields = [];
   for (const entry of [...byOffset.values()].sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0))) {
     const widths = [...new Set(entry.accesses.map((access) => access.size).filter((size) => Number.isSafeInteger(size) && size > 0))];
@@ -468,6 +526,7 @@ export function recoverMemberTypeEvidence({
       readCount: entry.readCount,
       writeCount: entry.writeCount,
       accessRoles: Object.freeze([...entry.accessRoles].sort()),
+      ...(returned.incomplete?{returnExpressionIncomplete:true}:{}),
       writtenArgumentRegisters: Object.freeze([...entry.writtenArgumentRegisters].sort()),
       writtenArgumentBits: Object.freeze([...entry.writtenArgumentBits].sort().slice(0,8)),
       writtenArgumentBitsTruncated: entry.writtenArgumentBits.size>8,

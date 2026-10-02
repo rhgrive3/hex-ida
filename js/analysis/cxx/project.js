@@ -161,6 +161,7 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         readCount: field.readCount,
         writeCount: field.writeCount,
         accessRoles: field.accessRoles,
+        returnExpressionIncomplete: field.returnExpressionIncomplete,
         writtenArgumentRegisters: field.writtenArgumentRegisters,
         writtenArgumentBits: field.writtenArgumentBits,
         writtenArgumentBitsTruncated: field.writtenArgumentBitsTruncated,
