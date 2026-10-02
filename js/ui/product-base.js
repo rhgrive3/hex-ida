@@ -788,8 +788,9 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     /* Keep the tab bar: this used to replace the whole workspace, so the user
        was stuck on one tab with only a reason code and no way forward. */
     const s=screen(functionName(app,addr),{id:'function',subtitle:addressText(addr)});
-    s.body.append(tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next)));
-    const content=h('div','ui-workspace-content');
+    const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
+    s.body.append(tabbar);
+    const content=tabPanel(tabbar,'ui-workspace-content');
     content.append(errorState(
       text('関数境界を検証できません','Function boundary could not be verified'),
       verifiedRange.reason||'unverified-function-range',
