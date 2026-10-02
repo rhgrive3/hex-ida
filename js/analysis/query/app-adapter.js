@@ -65,6 +65,7 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
   const maxFunctions=options.maxFunctions??8;
   const selection=await selectJevRecoveryPlan(phrase,cached.planner,{enabled:options.jevRetrieval===true,
     client:options.jevClient,signal:options.signal,timeoutMs:options.jevTimeoutMs,maxFunctions,
+    requestPolicy:options.jevRequestPolicy,maxDeclaredSizeBytes:options.maxDeclaredSizeBytes,
     isCurrent:()=>{checkBinding();return true;}});
   checkBinding();
   let plan=options.unpublishedOwnersOnly===true?cached.planner.plan(phrase,{maxFunctions,

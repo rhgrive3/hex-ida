@@ -229,6 +229,59 @@ test('disabled, stale, HTTP failure, malformed, invented choices and real timeou
     client:{call:async()=>{current=false;return payload('c0','c0');}}});assert.equal(stale.source,'hex');
 });
 
+test('compact retrieval provides an explicit abstention and never interprets it as a function', async()=>{
+ const p=planner(),query='widget count',base=p.plan(query),requestPolicy='compact-accessor-v5';
+ let body=null;
+ const options={enabled:true,isCurrent:()=>true,requestPolicy,client:{call:async input=>{
+  body=input.body;assert.equal(input.requestPolicy,requestPolicy);
+  return {model:'openjev',answers:{pick:answer('none')}};
+ }}};
+ const abstained=await selectJevRecoveryPlan(query,p,options);
+ assert.equal(abstained.source,'hex');assert.deepEqual(abstained.plan,base);
+ assert.deepEqual(Object.keys(body.questions),['pick']);assert.ok(body.questions.pick.criteria.none);
+ assert.ok(!JSON.stringify(body).includes('receiver evidence:'));
+ for(const pick of [answer('c254'),answer('invented'),{...answer('c0'),probabilities:{c0:1,invented:0}},
+  {...answer('none'),confidence:NaN}]) {
+  assert.equal((await selectJevRecoveryPlan(query,p,{...options,client:{call:async()=>({model:'openjev',answers:{pick}})}})).source,'hex');
+ }
+ const choices=p.choices(query),index=choices.findIndex(c=>c.className==='Widget');
+ const selected=await selectJevRecoveryPlan(query,p,{...options,maxFunctions:1,
+  client:{call:async()=>({model:'openjev',answers:{pick:answer(`c${index}`)}})}});
+ assert.equal(selected.source,'jev-retrieval');assert.equal(selected.plan.length,1);
+ assert.equal(selected.selectedAddress,choices[index].address);
+});
+
+test('compact retrieval caps all protocol choices at255 and removes unanalysable or indistinguishable entries', async()=>{
+ const rows=Array.from({length:300},(_,i)=>({address:BigInt(i+1),className:'Widget',methodName:`getValue${i}`,
+  symbolName:null,proof:'non-static-symbol',declaredSizeBytes:28n}));
+ const p={choices:(_query,{maxChoices})=>rows.slice(0,maxChoices),plan:()=>[],
+  planOwner:(_query,_owner,{firstAddress})=>rows.filter(r=>r.address===firstAddress)};
+ const options={enabled:true,isCurrent:()=>true,requestPolicy:'compact-accessor-v5',maxDeclaredSizeBytes:256};
+ let calls=0;
+ const client={call:async input=>{
+  calls++;assert.equal(input.choices.length,254);assert.equal(Object.keys(input.body.questions.pick.criteria).length,255);
+  return {model:'openjev',answers:{pick:answer('c253')}};
+ }};
+ assert.equal((await selectJevRecoveryPlan('count',p,{...options,client})).selectedAddress,254n);
+ assert.equal(calls,1);assert.throws(()=>jevRecoveryRequest('count',rows.slice(0,255),options),/at most254/);
+ const duplicate=[{...rows[0],methodName:'same'}, {...rows[1],methodName:'same'},
+  {...rows[2],declaredSizeBytes:257n},{...rows[3],declaredSizeBytes:null},rows[4],rows[5]];
+ const filtered=await selectJevRecoveryPlan('count',{...p,choices:()=>duplicate},{...options,client:{call:async input=>{
+  assert.deepEqual(input.choices.map(r=>r.address),[5n,6n]);
+  return {model:'openjev',answers:{pick:answer('c0')}};
+ }}});
+ assert.equal(filtered.selectedAddress,5n);
+ let forbiddenCalls=0;
+ for(const change of [{maxDeclaredSizeBytes:0},{requestPolicy:'invented'}])
+  assert.equal((await selectJevRecoveryPlan('count',p,{...options,...change,client:{call:async()=>{forbiddenCalls++;}}})).source,'hex');
+ assert.equal(forbiddenCalls,0);
+ const http=createJevRecoveryClient({apiKey:'test-key',fetchImpl:async(_url,input)=>{
+  const body=JSON.parse(input.body);assert.deepEqual(Object.keys(body.questions),['pick']);assert.ok(body.questions.pick.criteria.none);
+  assert.ok(!input.body.includes('secret_oracle_label'));return {ok:true,json:async()=>({model:'openjev',answers:{pick:answer('none')}})};
+ }});
+ await http.call({query:'count',choices:rows.slice(0,2),requestPolicy:options.requestPolicy,body:{oracle:'secret_oracle_label'}});
+});
+
 test('the 255 boundary and ambiguous aliases never grant an external selector extra identities', () => {
   const funcs=Array.from({length:300},(_,i)=>BigInt(i));
   const names=funcs.map(()=> '_ZNK6Widget8GetCountEv');
