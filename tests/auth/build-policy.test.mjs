@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from '../../scripts/auth-build-policy.mjs';
-import { parseJsonc, validateAuthConfig, parseCliArgs } from '../../scripts/validate-auth-config.mjs';
+import { LOCAL_D1_ID, parseJsonc, validateAuthConfig, parseCliArgs } from '../../scripts/validate-auth-config.mjs';
 test('privileged-only edits update release identity without changing runtime content ID; deterministic DAG', () => {
   const runtime = 'a'.repeat(24), first = privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1');
   assert.deepEqual(privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1'), first);
@@ -91,7 +91,9 @@ test('privileged graph kind discriminator fails closed', () => {
 test('local D1 configuration is usable but production sentinel is explicitly rejected', async () => {
   const config = JSON.parse(await readFile(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
   assert.equal(validateAuthConfig(config, { local: true }), true);
-  assert.throws(() => validateAuthConfig(config), /sentinel/);
+  const local = structuredClone(config); local.d1_databases[0].database_id = LOCAL_D1_ID;
+  assert.equal(validateAuthConfig(local, { local: true }), true);
+  assert.throws(() => validateAuthConfig(local), /sentinel/);
   const production = structuredClone(config); production.d1_databases[0].database_id = '11111111-2222-3333-4444-555555555555';
   assert.equal(validateAuthConfig(production), true);
   production.assets.run_worker_first = false; assert.throws(() => validateAuthConfig(production), /Worker|worker/);
@@ -197,4 +199,3 @@ test('#9193 validate-auth-config CLI argument validation rejects unknown options
   assert.equal(validLocalResult.status, 0, 'supported --local must succeed against default config');
   assert.match(validLocalResult.stdout, /Auth deployment configuration validated/);
 });
-

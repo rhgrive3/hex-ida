@@ -492,7 +492,7 @@ export class App {
     if (!this.store.get('currentRegion')) return;
     // Viewer shortcuts must not consume native button activation or scroll
     // the hidden code view while a product screen owns keyboard focus.
-    if (uiRoot()?.classList.contains('ui-screen-route')) return;
+    if (document.getElementById('app')?.classList.contains('ui-screen-route')) return;
 
     if (meta && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault(); this.viewer.selectAllRows(); return;

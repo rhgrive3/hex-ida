@@ -391,6 +391,30 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
     await page.waitForTimeout(100);
     check(`${browserName}/${viewportName}: explorer route opens`, await page.locator('[data-screen="explorer"]').count() === 1);
+    await page.evaluate(() => {
+      const viewer = window.__app.viewer;
+      const original = viewer.scrollByRows;
+      window.__viewerKeyboardProbe = { original, calls:0 };
+      viewer.scrollByRows = function (...args) {
+        window.__viewerKeyboardProbe.calls++;
+        return original.apply(this, args);
+      };
+      document.querySelector('#ui-route-host').focus();
+    });
+    try {
+      await page.keyboard.press('ArrowDown');
+      check(`${browserName}/${viewportName}: explorer keyboard navigation does not move hidden Code`, await page.evaluate(() => window.__viewerKeyboardProbe.calls === 0));
+      await page.evaluate(() => { window.__hexUi.router.navigate('/code'); document.activeElement?.blur(); });
+      await page.keyboard.press('ArrowDown');
+      check(`${browserName}/${viewportName}: Code retains its own keyboard row navigation`, await page.evaluate(() => window.__viewerKeyboardProbe.calls === 1));
+    } finally {
+      await page.evaluate(() => {
+        window.__app.viewer.scrollByRows = window.__viewerKeyboardProbe.original;
+        delete window.__viewerKeyboardProbe;
+        window.__hexUi.router.navigate('/explorer/functions');
+      });
+      await page.waitForTimeout(100);
+    }
     check(`${browserName}/${viewportName}: explorer is windowed`, await page.locator('.ui-virtual-list').count() <= 1 && await page.locator('.ui-virtual-row').count() < 80);
     const functionCoverage = await page.evaluate(() => ({
       visibleSourceLength: window.__hexUi && document.querySelector('.ui-virtual-list')?.querySelector('.ui-virtual-spacer')?.style.height || '',
