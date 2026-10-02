@@ -62,6 +62,7 @@ function renderSettings(app, router) {
 
   const render = () => {
     const focusedGroup = document.activeElement?.closest('[data-setting-group]')?.dataset.settingGroup;
+    const focusedToggle = document.activeElement?.matches('.ui-choice-row.toggle');
     s.body.replaceChildren();
 
     const explain = card(pick('解析の説明', 'Analysis explanation'), {
@@ -170,6 +171,7 @@ function renderSettings(app, router) {
     }));
     s.body.append(about.root);
     if (focusedGroup) s.body.querySelector(`[data-setting-group="${focusedGroup}"] [aria-checked="true"]`)?.focus({ preventScroll: true });
+    else if (focusedToggle) s.body.querySelector('.ui-choice-row.toggle')?.focus({ preventScroll: true });
   };
 
   render();

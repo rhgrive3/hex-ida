@@ -483,6 +483,15 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
       return group?.getAttribute('role') === 'radiogroup' && group.querySelectorAll('[aria-checked="true"]').length === 1
         && document.activeElement === group.querySelector('[aria-checked="true"]');
     }));
+    const explainToggle = page.locator('.ui-choice-row.toggle');
+    await explainToggle.focus();
+    const explanationBefore = await explainToggle.getAttribute('aria-pressed');
+    await page.keyboard.press('Space');
+    check(`${browserName}/${viewportName}: explanation toggle retains keyboard focus after rebuilding settings`, await page.evaluate((before) => {
+      const toggle = document.querySelector('.ui-choice-row.toggle');
+      return document.activeElement === toggle && toggle.getAttribute('aria-pressed') !== before;
+    }, explanationBefore));
+    await page.keyboard.press('Space');
     await page.emulateMedia({ reducedMotion:'reduce' });
     const reducedSpinner = await page.evaluate(async () => {
       const { loadingState } = await import('/js/ui/primitives.js');
