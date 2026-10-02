@@ -831,3 +831,217 @@ symbol-generation cache binding (SB-1) and raw-release-symbol proof provenance p
 semantic contexts (SB-2). The `metadata-only` collector option is syntactically sound and not
 executed here. Sources are stationary at `9b4dc9e8d`. No holdout or results were read; no production
 authorization; parent verification required.
+
+
+---
+
+# Single-accessor successor review (source hashes bound to 3a6fe3c2ced21721f1b31fb1fcdc25877c0061e7)
+
+# recovery-v5-successor-review — independent source-only successor delta review
+
+**Lane:** jev-realgame-final recovery v5 successor delta (independent source review).
+**Mode:** READ-ONLY. 0 API calls, 0 extra agents, 0 product edits, **exactly two** focused named test commands run.
+`TMPDIR/TMP/TEMP=/mnt/workspace/.dev-state/agent-work/scratch` set on every command.
+**No oracle / no holdout:** no game gold, results, snapshots, collector output, or README metrics were read.
+The only external evidence read is the synthetic ABI compiler receipt
+`internal-linkage-v5/compiler-verification.json` (g++ 11.4.0), which is **not** a holdout or oracle.
+**Default-OFF:** this receipt records source scope only. It is **not** activation approval; no default-on
+decision is made or authorized here.
+**Root:** `/mnt/workspace/.dev-state/agent-work/checkouts/jev-realgame-final/hex-ida`
+**HEAD:** `281ceb4e8f39dfc0ef96c63d5d5dc8fc377c0ce5` (working tree dirty; reviewed delta is uncommitted and stationary).
+**Original receipt preserved:** `recovery-v5-pipeline-review.md` sha256
+`71589982975ff89ea86f86d8cf37f734801ed8fd56e96f02240dfb8e9a2d5063` (untouched; this is a separate successor file).
+
+---
+
+## 0. Exact reviewed source hashes (sha256, working tree)
+
+| path | sha256 |
+|---|---|
+| `js/analysis/query/app-adapter.js` | `503657277c4a8f93f4fa222928a6cbc065f60be6a5dc662cad63b8ade42a1d2e` |
+| `js/analysis/query/cxx-semantic-preference.js` | `4f7c66b9f3066c3dff83dc2611039c8eb30c942525bafc7d4ffdde9410da2ee7` |
+| `js/analysis/cxx/typed-argument.js` | `c16b9859cd82de016c1edb3f696e02057fd1e84c95166d8d05ea361ca486ec6a` |
+| `js/analysis/cxx/project.js` | `742c674dff1b06914afc6a5c7432ff09284c837260eb0cc833a162b74c5b5ce1` |
+| `js/pinpoint.js` | `9f80701fb298e2bac1028fd8e7182b3a525cfde41b179957c8676e7870ec7f2f` |
+| `tests/phase7/cxx/jev-recovery.test.mjs` | `628623f1d7338f6cd7565e40fbedbff942cd54cf49f7c4bc64f662425e4eb718` |
+| `tests/phase7/cxx/pinpoint-publication.test.mjs` | `0e00acde05085a55edd4b7b61226fd0f19d70526ffddc74644cd877f1f814e5b` |
+| `tests/phase7/cxx/typed-argument-binding.test.mjs` | `8bb265db7f7a98e71143224142ee40faf98e509981bbb05dad6f1852c143a0aa` |
+
+Static context (unchanged, read for the call graph only):
+
+| path | sha256 |
+|---|---|
+| `js/analysis/cxx/query-recovery.js` | `daae83d634391a328f0921dd7ddb257270627a15e9c82d1f32cb165d1d189dc6` |
+| `js/analysis/cxx/member-index.js` | `a9763ca25965695e2d3a86e15f7fe3b99794e7c4de5d097facf7fa716ea74628` |
+| `js/analysis/query/jev-recovery.js` | `dddcef89cddb9352fddcfbed34b0449501d6064ccfd42aa85f9fd4ccc118f393` |
+
+**Compiler-evidence binding:** `internal-linkage-v5/compiler-verification.json` declares
+`sourceHashes.typed-argument.js = c16b9859…` and `sourceHashes.project.js = 742c674d…`; both equal the
+working-tree files above, so the synthetic ABI receipt is bound to the reviewed revision. That receipt:
+`complete:true`, `developmentOnly:true`, `authorizesDefaultActivation:false`, compiler
+`g++ (Ubuntu 11.4.0)`, **two positive checks only** (`_ZL10localConstPKN4demo4ItemEj` → `demo::Item`,
+`_ZL5localP6Widgetb` → `Widget`; `oldEvidence:null`), each `internalLinkage:true`, `argumentIndex:0`,
+`register:x0`. Compiler receipt sha256 `d4b5cd27b8f2df598099868da3b2dcd9715e96c1a3925001e782b858d321514e`.
+
+---
+
+## 1. Focused test commands and results (exactly two)
+
+```
+node --test --test-name-pattern="single-function retrieval" tests/phase7/cxx/jev-recovery.test.mjs
+node --test --test-name-pattern="single-function interactive extension|internal-linkage" \
+  tests/phase7/cxx/pinpoint-publication.test.mjs tests/phase7/cxx/typed-argument-binding.test.mjs
+```
+
+| test | file | result |
+|---|---|---|
+| `single-function retrieval selects one canonical returned member without upgrading facts or verdicts` | `jev-recovery.test.mjs` | ✔ |
+| `single-function retrieval rejects hidden return ambiguity, contradictions and changed baseline identity` | `jev-recovery.test.mjs` | ✔ |
+| `single-function retrieval cannot select outside the 255 member shortlist or scan an unbounded owner` | `jev-recovery.test.mjs` | ✔ |
+| `single-function interactive extension preserves Hex on API failure and unknown or oversized extents` | `pinpoint-publication.test.mjs` | ✔ |
+| `single-function interactive extension cancels stale epochs instead of returning the captured result` | `pinpoint-publication.test.mjs` | ✔ |
+| `internal-linkage global functions bind an independently proven first object pointer` | `typed-argument-binding.test.mjs` | ✔ |
+| `internal-linkage argument decoding rejects local scopes, qualified names, repeated linkage and unknown signatures` | `typed-argument-binding.test.mjs` | ✔ |
+
+`7 tests / pass 7 / fail 0`. No suite, typecheck, build, API, binary, or collector run in this lane.
+
+---
+
+## 2. Successor delta A — production ≤255 member shortlist gate
+
+**Requirement:** the elected returned member must belong to the authentic production ≤255 member shortlist,
+not merely the ≤400 candidate lobby.
+
+**What changed (verified):**
+
+- `app-adapter.js` `recoverCxxMemberWithJev` now imports canonical `jevShortlist` (`js/pinpoint.js:100`) and
+  passes `shortlist: jevShortlist(local.candidates, { max: 255 })` into the helper.
+- `cxx-semantic-preference.js` `withCxxReturnedMemberPreference` now takes `shortlist` (default
+  `local?.candidates`) and fails closed unless:
+  `Array.isArray(shortlist) && 1 ≤ length ≤ 255 && unique keys && every shortlist member is identity-present in
+  local.candidates`; and the elected `top` must be `shortlist.includes(top)` (object identity preserved by
+  `jevShortlist`'s `.slice(0,max)`).
+- Owner-work bound: `owner.ivars.length > 400 → return local`.
+
+**Boundary test coverage (new named test):**
+- oversized implicit shortlist (300 candidates, no `shortlist` option → default length 300 > 255) → reject;
+- explicit ≤255 shortlist that omits the returned member → reject;
+- a copied/cloned shortlist (`kept.map(c=>({...c}))`) → reject (identity check);
+- owner with 401 ivars → reject (bounded work).
+
+**Assessment:** the requirement is now enforced at the helper boundary and the wrapper derives the shortlist
+from the canonical producer. Behavior remains fail-closed and the earlier findings still hold.
+
+**Residual boundary (not a regression, a scope limit):** the helper can validate cardinality, uniqueness,
+lattice-membership and object identity, but it **cannot prove the shortlist was derived by `jevShortlist`** — a
+caller could hand it any ≤255 identity-subset of `local.candidates` and it would pass. Authenticity is
+established only at the wrapper call site. If the parent wants enforcement rather than convention, the
+shortlist should carry an unforgeable binding (or the helper should take only the full lattice and compute
+`jevShortlist` itself, which would require resolving the `app-adapter → pinpoint` import direction).
+
+**Layering note:** `app-adapter.js` now imports `jevShortlist` from `js/pinpoint.js`, an upward (facade) import.
+No cycle was found (`pinpoint.js` does not import `app-adapter.js`) and the focused tests pass; the parent may
+prefer moving `jevShortlist` to a leaf module shared by both.
+
+---
+
+## 3. Successor delta B — generic internal-linkage (`_ZL`) support
+
+**Requirement:** exactly one top-level `_ZL` before an ordinary global source-name; qualified/local
+scopes/templates/unknown signatures stay rejected; independent class evidence remains required.
+
+**`js/analysis/cxx/typed-argument.js` (verified):**
+- Admission regex is now `/^_ZL?[1-9]/` for `_Z` optionally followed by a **single** `L`; `internalLinkage = symbol[2]==='L'`
+  and parsing resumes at position 3 (else 2). `_ZLL…` is rejected by the regex (`L` is not `[1-9]`).
+- The **function** name must be a plain source-name (`[A-Za-z_][A-Za-z0-9_]*`, length 1..240, `[1-9][0-9]{0,2}`);
+  a qualified/`N…E`, local `Z`, or template `I…E` function head fails at the next required `P`, so local scopes,
+  qualified names and function templates cannot be admitted.
+- The first parameter is `P [K] (<N-scope ≥2 components> | <single source-name>)`; unknown/short signatures and
+  `v` (void) trailing encodings are rejected; trailing types are fully validated (builtins, `P/R/O/K/V`,
+  source-names, `N…E`, complete `S…` substitution with a successful `demangleCxx`), bounded to 16 params/depth 8.
+- `internalLinkage` is annotation only: `receiverRole` stays `'typed-argument'`, `argumentIndex:0`, `register:'x0'`;
+  internal linkage neither creates a receiver nor moves argument zero. The flag is folded into `stableDigest`.
+
+**`js/analysis/cxx/project.js` (verified):** the argument-proof gate now mirrors the decoder
+(`/^_ZL?[1-9]/`), so `_ZL` symbols reach `createCppTypedArgumentEvidence` and the projection path. Independent
+class evidence is still required **twice**: (i) the planner only emits `release-typed-object-argument` rows whose
+`className` is in `typedClassNames` (`classEvidence` + `buildCppClassTypeIndex`), and (ii) the projection only
+builds a typed-argument receiver when `index.typedClasses.has(className)` or `classTypeFor(className)` (RTTI-derived)
+resolves; otherwise `argumentOwner` is `null` and no receiver is published. The test's no-class case asserts
+`choices()` is empty for a named pointee without independent class evidence.
+
+**Compiler evidence:** two positive internal-linkage identities only (`_ZL10localConstPKN4demo4ItemEj`,
+`_ZL5localP6Widgetb`), matching the reviewed source hashes. Negative forms (`_ZLL…`, local scope, qualified head,
+template, void/unknown trailer, `BAD` suffix, `J`) are **parser-asserted in the test, not compiler-emitted** — a
+compiler cannot emit those, so this is a self-consistency gap, not a correctness gap.
+
+**Assessment:** the internal-linkage decoder is bounded, fail-closed, and additive to proof-backed eligibility;
+it grants no ownership and cannot widen a receiver proof. The independent-class-evidence requirement holds at
+both the planner and the projection.
+
+---
+
+## 4. Corrected claims (overclaim fixes — no softening)
+
+The original receipt must **not** be read as proving answer preservation or quality. Corrections:
+
+- **A weak preference CAN destroy a correct baseline answer.** The preference replaces the result `top` with the
+  member the selected function returns. If the remote selection is wrong, a correct baseline `top1` is replaced by
+  a wrong member — the weak preference is not monotone toward correctness. **Immutable/frozen inputs prove only
+  that no canonical record is mutated; they do NOT prove the published answer is preserved.** Remove any reading
+  that immutability implies answer preservation. (The wrapper's `retained` step and the helper's reorder both
+  change `top`.)
+- **Lexical-trap resistance, fair-comparator behavior, and latency success are NOT established by these source
+  tests.** The tests assert fail-closed boundaries and rejection of malformed/impossible inputs; they do not
+  benchmark ranking fairness or wall-clock latency.
+- **The 256-byte extent filter is a scheduling budget, not a hard wall or deadline.** It filters on
+  `declaredFunctionEnd - address` (declared metadata); it does not bound actual decompile time. Real cost is
+  bounded only by the existing Fast budgets (`decompilerTimeBudgetMs:1500`, `maxElapsedMs`) and
+  `selectJevRecoveryPlan`'s timeout.
+- **Same-budget comparator: unproven.** No Hex-only vs retrieval-enabled, same-budget comparison was run here.
+- **Stability: unproven.** No repeated-run stability measurement was made.
+- **Real latency: unproven.** No timing beyond the ms-scale unit-test durations was measured.
+- **Quality/recall/ranking: unproven.** No oracle or holdout was read; the compiler JSON is a synthetic ABI
+  identity oracle, not evidence of retrieval quality.
+- **Final gates: NOT approved.** `intent classification`, default activation, and product promotion remain
+  unproven and unapproved. Default OFF.
+
+---
+
+## 5. Blockers / explicit scope limits
+
+- **BL-Q (quality unproven).** Retrieval quality / reranking benefit is not measured in this lane; no oracle or
+  holdout was consumed.
+- **BL-COMP (comparator unproven).** Same-budget Hex-vs-retrieval comparison not run.
+- **BL-STAB (stability unproven).** Not measured.
+- **BL-LAT (latency unproven).** Real latency unknown; 256-byte is scheduling metadata, not a deadline.
+- **BL-PRES (answer preservation unproven).** A wrong remote selection can destroy a correct baseline top; the
+  weak preference is not proven safe for answer correctness — only for canonical-record immutability.
+- **BL-AUTH (shortlist authenticity is convention).** The helper validates cardinality/uniqueness/identity-subset,
+  not canonical derivation; only the wrapper calls `jevShortlist`.
+- **BL-LAYER (import direction).** `app-adapter → pinpoint` is an upward import (no cycle found, tests pass).
+- **BL-SUITE (source-only).** Only the two focused named commands above were run; no full suite/typecheck/build.
+- **BL-COMPILER (fixture asymmetry).** Internal-linkage compiler receipt has positives only; negatives are
+  parser-asserted.
+- **BL-ACT (no authorization).** No default activation, no production promotion, no holdout claim.
+
+**Explicitly NOT reviewed in this lane:** `reports/investigations/jev-realgame-final/README.md` (metrics),
+`reports/investigations/.../development-v5/*.json` (results), `scripts/collect-jev-context-development.mjs`
+(collector; its only non-test `recoverCxxMemberWithJev` caller, passing `enabled:true` explicitly — development
+tooling, not a product default), and any game gold/holdout/oracle/results.
+
+---
+
+## 6. Verdict
+
+The successor delta is **fail-closed and additive** as reviewed: the ≤255 production member shortlist is now
+required (canonical `jevShortlist` in the wrapper; cardinality/unique-key/lattice-identity/top-membership checks
+in the helper), the owner ambiguity scan is bounded to ≤400 ivars, and the internal-linkage decoder admits
+exactly one top-level `_ZL` before an ordinary global source-name while rejecting scopes/templates/unknown
+signatures and still requiring independent class evidence at both planner and projection. Seven focused tests
+pass. **Parent retains final responsibility and must independently verify.**
+
+**Scope/no-oracle declaration:** no holdout, gold, oracle, game results, snapshots, or README metrics were read;
+the only external evidence is the synthetic g++ ABI receipt bound to the reviewed source hashes. **Default OFF.**
+This document is **not** activation approval, not a quality/recall/stability/latency claim, and not proof that a
+correct baseline answer is preserved.

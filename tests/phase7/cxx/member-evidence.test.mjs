@@ -147,5 +147,8 @@ test('machine access roles are bounded and cannot carry semantic labels',()=>{
   const a=member({accessRoles:['return-input','return-input']});
   assert.deepEqual(a.accessRoles,['return-input']);
   assert.throws(()=>member({accessRoles:['cur_speed']}),/cpp-member-access-role-invalid/);
-  assert.throws(()=>member({accessRoles:Array(5).fill('return-input')}),/cpp-member-access-role-invalid/);
+  const roles=['return-input','comparison-input','arithmetic-input','address-base',
+    'constant-written','argument-written','zero-written','one-written'];
+  assert.deepEqual(member({accessRoles:roles}).accessRoles,roles.slice().sort());
+  assert.throws(()=>member({accessRoles:Array(9).fill('return-input')}),/cpp-member-access-role-invalid/);
 });
