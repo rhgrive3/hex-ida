@@ -377,3 +377,34 @@ test('member-only interactive recovery routes only its explicit opt-in and needs
   await assert.rejects(()=>recoverCxxMembersForQuery(app,'widget count',{enabled:true,evidenceOnly:true,maxFunctions:1}),/producer unavailable/);
   assert.equal(presentations,1,'missing member-only producer must not silently restore expensive rendering');
 });
+
+test('all metadata-only development routes complete without recovering or publishing members',async()=>{
+  const fs=await import('node:fs/promises'),path=await import('node:path');
+  const {createHash}=await import('node:crypto'),{execFile}=await import('node:child_process');
+  const {promisify}=await import('node:util');
+  // Explicit persistent storage also works when a runner's default temp is
+  // volatile. This test exercises the real CLI/compiled fixture, no API/oracle.
+  const scratch='/mnt/workspace/.dev-state/agent-work/scratch/jev-realgame-final';
+  await fs.mkdir(scratch,{recursive:true});assert.equal(await fs.realpath(scratch),scratch);
+  const directory=await fs.mkdtemp(path.join(scratch,'metadata-route-'));
+  try{
+    const binary=fileURLToPath(new URL('../../fixtures/cxx-dwarf-holdout/holdout.stripped.elf',import.meta.url));
+    const binarySha256=createHash('sha256').update(await fs.readFile(binary)).digest('hex');
+    const queryFile=path.join(directory,'queries.json');
+    await fs.writeFile(queryFile,JSON.stringify({binaryKey:'compiled-stripped-fixture',binarySha256,
+      cases:[{id:'metadata-control',query:'Which count is stored in the object?',mode:'partial'}]}));
+    for(const operation of ['metadata-only','compact-members-metadata','parallel-members-metadata']){
+      const destination=path.join(directory,operation+'.json');
+      await promisify(execFile)(process.execPath,['scripts/collect-jev-context-development.mjs',binary,queryFile,
+        destination,'semantic-retrieval-v5',operation],{timeout:60000,maxBuffer:1024*1024});
+      const collection=JSON.parse(await fs.readFile(destination,'utf8'));
+      const metadata=JSON.parse(await fs.readFile(destination+'.metadata.json','utf8'));
+      assert.equal(collection.complete,true);assert.equal(collection.authorizesDefaultActivation,false);
+      assert.equal(collection.collection.afterCount,0);assert.deepEqual(collection.rows,[]);
+      assert.equal(metadata.complete,true);assert.equal(metadata.rows.length,1);
+      assert.equal(metadata.rows[0].id,'metadata-control');assert.equal(metadata.binarySha256,binarySha256);
+      assert.deepEqual(metadata.rows[0].recovery.attempted,[]);
+      assert.equal(metadata.rows[0].recovery.afterCount,0);
+    }
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
+});

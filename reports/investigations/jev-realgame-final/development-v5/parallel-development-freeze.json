@@ -34,8 +34,7 @@
   "sourceHashes": {
     "js/analysis/cxx/query-recovery.js": "16e9d40c31a7c71e6f55da97171f5a1d7d715cbe8fb8f0dca032b50403ff858e",
     "js/analysis/query/jev-recovery.js": "0fbe0ee4e855ef31b237a8dece7a1390c2226028f615c41a0e349618a1e28392",
-    "scripts/collect-jev-context-development.mjs": "e17aa4b9cff6d97cd87a2e5c553f49247e2d5814407261b3c0de97c1d020c3d3"
+    "scripts/collect-jev-context-development.mjs": "38e9b51b113aafe4b1de3857428460485f3ce8db33043b9430c58ce1589bf17a"
   },
-  "runtimeSourceCommit": "687da3cadb26e67ea6bc3e04d19e9172c4bdabf8",
-  "freezeCorrection": "Before new live calls: bind final paired metadata capture implementation; decision instructions, cases, budgets and criteria unchanged."
+  "freezeCorrection": "Before any of16 new live calls: source hashes bind final paired metadata capture and repaired metadata-only denominator guard; queries, decision instructions, budgets and criteria unchanged. Each new collection binds its exact pushed product SHA."
 }

@@ -141,8 +141,8 @@ try {
   const collection={beforeCount:0,afterCount:fields.length,named:fields.filter(f=>!f.anonymous).length,unnamed:fields.filter(f=>f.anonymous).length,
     classCount:index?.classCount??0,keyCollisions:fields.length-new Set(fields.map(f=>f.key)).size,
     analyzedFunctions:new Set(rows.flatMap(r=>r.recovery.attempted.map(a=>a.address))).size,profile:product.profile};
-  if(collection.keyCollisions||(operation!=='metadata-only'&&rows.length!==manifest.cases.length)
-    ||(operation==='metadata-only'&&(rows.length||metadataRows.length!==manifest.cases.length)))throw new Error('invalid recovery collection');
+  if(collection.keyCollisions||(!metadataOnly&&rows.length!==manifest.cases.length)
+    ||(metadataOnly&&(rows.length||metadataRows.length!==manifest.cases.length)))throw new Error('invalid recovery collection');
   const root=new URL('../',import.meta.url);
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
     arm,planningPolicy,operation,
