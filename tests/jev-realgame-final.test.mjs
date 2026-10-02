@@ -8,7 +8,7 @@ import { rerankWithJev, jevShortlist } from '../js/pinpoint.js';
 import { parsePtypeOutput } from '../scripts/extract-jev-realgame-layout.mjs';
 import { isGoldMatch } from '../scripts/run-jev-realgame-eval.mjs';
 import { resolveStructuralGold } from '../scripts/audit-jev-realgame-gold.mjs';
-import { recoveryRequestBody,deterministicRecoveryPick } from '../scripts/jev-realgame-recovery-contract.mjs';
+import { recoveryRequestBody,deterministicRecoveryPick,recoveryScoringBaseline } from '../scripts/jev-realgame-recovery-contract.mjs';
 import { verifyRecoveryEvidence } from '../scripts/verify-jev-realgame-recovery.mjs';
 import { summarize } from '../scripts/evaluate-jev-realgame-final.mjs';
 import { verifyEvidence } from '../scripts/verify-jev-realgame-final.mjs';
@@ -128,6 +128,25 @@ test('anonymous scoring uses exact build/class/offset/width and verified type, n
     { binarySha256: 'binary-a', className: 'Vehicle', offset: 400, size: 2 }] }), true);
   assert.equal(isGoldMatch({...c,fieldName:'cur_speed'},{class:'Vehicle',field:'cur_speed'}),false);
   assert.equal(isGoldMatch(c,gold),true);
+});
+
+test('baseline scoring survives a later publication contradiction and retains the destruction denominator',()=>{
+  const correct=member('prior-correct');
+  correct.field={conflict:false,readCount:1,writeCount:0};
+  correct.provenance=[];correct.oracleName='forbidden_oracle';
+  const local={top:correct,candidates:[correct],verdict:'ambiguous'};
+  const before=recoveryScoringBaseline(local,null,correct.binarySha256);
+  assert.equal(structuralMatch(before.candidates[0],gold),true);
+  assert.ok(!JSON.stringify(before).includes('forbidden_oracle'));
+  // The real index can acquire a conflicting access width after another
+  // function is analyzed. That must not retroactively erase baseline success.
+  correct.field.conflict=true;correct.size=4;
+  const after=recoveryScoringBaseline(local,null,correct.binarySha256);
+  assert.equal(structuralMatch(after.candidates[0],gold),false);
+  assert.equal(structuralMatch(before.candidates[0],gold),true);
+  const baselineCorrect=before.candidates.filter(c=>c.key===before.topKey&&structuralMatch(c,gold)).length;
+  const currentCorrect=after.candidates.some(c=>c.key===after.topKey&&structuralMatch(c,gold));
+  assert.equal(baselineCorrect,1);assert.equal(baselineCorrect&&!currentCorrect, true);
 });
 
 test('unqualified class labels require verified qualification and cannot guess a namespace',()=>{

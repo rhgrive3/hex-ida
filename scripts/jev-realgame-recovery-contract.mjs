@@ -1,5 +1,5 @@
 // Supplementary recovery experiment: separate from the already-used70 freeze.
-import {snapshotCandidate,requestBody,describeCandidate} from './jev-realgame-final-contract.mjs';
+import {snapshotCandidate,requestBody,describeCandidate,evidenceJSON} from './jev-realgame-final-contract.mjs';
 import {demangleCxx} from '../js/rtti.js';
 import {cxxQueryTokens} from '../js/analysis/cxx/query-recovery.js';
 
@@ -10,6 +10,14 @@ export function recoverySnapshot(c,symbols,binarySha256) {
   snapshot.functionContexts=snapshot.functionContexts.map((ctx,i)=>({...ctx,
     accessRoles:(provenance[i]?.member?.accessRoles??[]).filter(role=>ROLES.has(role)).slice(0,4)}));
   return snapshot;
+}
+
+// Evaluation baseline must survive later canonical publication, including a
+// real contradiction that marks the original field conflicted. Score the
+// previously observed result, not a key looked up in the final mutable index.
+export function recoveryScoringBaseline(local,symbols,binarySha256) {
+  return JSON.parse(evidenceJSON({topKey:local?.top?.key??null,verdict:local?.verdict??null,
+    candidates:(local?.candidates??[]).map(candidate=>recoverySnapshot(candidate,symbols,binarySha256))}));
 }
 export const RECOVERY_INSTRUCTION='Select only an existing candidate. Identify the main object and requested value in the phrase separately from actions and related helper objects. Prefer evidence for that object and value over an unrelated class with a matching word. Machine use roles and method names are context, not proof of a source field name. A shared method may access several different members. This is a weak ranking preference, never binary proof.';
 export function recoveryRequestBody(query,candidates,arm) {
