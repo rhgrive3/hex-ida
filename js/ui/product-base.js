@@ -547,17 +547,18 @@ function renderExplorer(app, router, route, routeContext = {}) {
       'Browse functions, strings, types, data, external APIs and sections with one search.'),
   });
   const controls = h('div', 'ui-explorer-controls');
-  const scopes = h('div', 'ui-scope-tabs');
-  scopes.setAttribute('role', 'tablist');
-  for (const item of EXPLORER_SCOPES) {
-    const b = uiButton(item.label, { cls: 'ui-scope' + (item.id === scope ? ' active' : ''), onClick: () => router.navigate('/explorer/' + item.id) });
-    b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(item.id === scope));
-    scopes.append(b);
-  }
-  scrollStrip(scopes);
+  const scopes = tabs(EXPLORER_SCOPES, scope, (id) => router.navigate('/explorer/' + id + (search.value.trim() ? '?q=' + encodeURIComponent(search.value.trim()) : '')));
+  scopes.classList.add('ui-scope-tabs');
+  scopes.setAttribute('aria-label', text('索引の種類', 'Explorer categories'));
+  for (const button of scopes.querySelectorAll('button')) button.classList.add('ui-scope');
   const search = h('input', 'ui-search-field');
   search.type = 'search'; search.placeholder = text('名前・文字列・アドレスで検索', 'Search names, strings or addresses');
-  search.value = route.query.get('q') || '';
+  search.setAttribute('aria-label', text('索引を検索', 'Search explorer'));
+  const restored = routeContext.restoredState;
+  search.value = restored?.query ?? route.query.get('q') ?? '';
+  const pageSize = 200;
+  let queryOffset = Number.isSafeInteger(restored?.offset) && restored.offset >= 0 ? restored.offset : 0;
+  let pendingVirtualState = restored?.virtual ?? null;
   controls.append(scopes, search);
   s.body.append(controls);
   const content = h('div', 'ui-explorer-content');
@@ -573,10 +574,51 @@ function renderExplorer(app, router, route, routeContext = {}) {
   const showRows = (items, renderRow, emptyText, emptyAction = null) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
+    const page = items?.queryPage;
+    if (page) {
+      const status = h('p', 'ui-hint');
+      status.setAttribute('role', 'status');
+      const start = items.length ? page.offset + 1 : 0;
+      const end = page.offset + items.length;
+      const total = Number.isSafeInteger(page.total) && page.total >= 0 ? page.total : null;
+      const continuation = Number.isSafeInteger(page.next) && page.next > page.offset;
+      status.textContent = !items.length ? text('0 件', '0 results') : total != null
+        ? text(`${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()} 件`, `${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()} results`)
+        : text(`${start.toLocaleString()}–${end.toLocaleString()} 件${continuation ? '（続きがあります）' : ''}`, `${start.toLocaleString()}–${end.toLocaleString()} results${continuation ? ' (more available)' : ''}`);
+      content.append(status);
+      if (continuation || page.offset > 0) {
+        const pager = h('form', 'ui-explorer-pagination');
+        pager.setAttribute('aria-label', text('索引のページ移動', 'Explorer pagination'));
+        const go = (offset) => { queryOffset = offset; pendingVirtualState = null; void update(); };
+        const previous = uiButton(text('前のページ', 'Previous page'), { cls:'ui-secondary-action', onClick:() => go(Math.max(0, page.offset - pageSize)) });
+        previous.disabled = page.offset === 0;
+        const next = uiButton(text('次のページ', 'Next page'), { cls:'ui-secondary-action', onClick:() => go(page.next) });
+        next.disabled = !continuation;
+        const number = h('input', 'ui-explorer-page');
+        number.type = 'number'; number.min = '1'; number.step = '1';
+        number.setAttribute('aria-label', text('ページ番号', 'Page number'));
+        number.value = String(Math.floor(page.offset / pageSize) + 1);
+        if (total != null) number.max = String(Math.max(1, Math.ceil(total / pageSize)));
+        const jump = uiButton(text('移動', 'Go'), { cls:'ui-secondary-action' });
+        jump.type = 'submit';
+        pager.append(previous, next, number, jump);
+        pager.addEventListener('submit', (event) => {
+          event.preventDefault();
+          if (!number.reportValidity()) return;
+          const offset = (Number(number.value) - 1) * pageSize;
+          if (Number.isSafeInteger(offset) && offset >= 0) go(offset);
+        });
+        content.append(pager);
+      }
+    }
+    if (items?.completeness && items.completeness !== 'complete') {
+      content.append(h('p', 'ui-partial-note', text('索引は一部です。未解析の領域を「該当なし」とは扱いません。', 'The index is partial; unanalysed regions are not treated as having no matches.')));
+    }
+    if (items?.complete === false) content.append(h('p', 'ui-partial-note', text('結果は一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial; unscanned regions are not treated as having no matches.')));
     if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText, emptyAction)); return; }
-    if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
+    if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
   };
 
   const update = async () => {
@@ -591,9 +633,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
       return;
     }
     if (scope === 'functions') {
-      if (q) content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
+      content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal: signal, limit: 200 });
+        const items = await matchingFunctionItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
           // A word that is not a function name is often in a string: offer that search.
@@ -620,10 +662,9 @@ function renderExplorer(app, router, route, routeContext = {}) {
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
-        const items = await stringItems(app, q, { signal: signal, limit: 200 });
+        const items = await stringItems(app, q, { signal, offset:queryOffset, limit:pageSize });
         if (!current()) return;
         showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
-        if (items?.complete === false) content.prepend(h('p', 'ui-partial-note', text('結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial within the memory budget; unscanned regions are not treated as negative evidence.')));
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
@@ -650,12 +691,16 @@ function renderExplorer(app, router, route, routeContext = {}) {
     }
   };
 
-  search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(update, 120); });
+  search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
   return {
     root: s.root,
-    getState: () => ({ query: search.value, virtual: virtual?.getState() || null }),
-    restoreState: (state) => { if (state?.query != null) search.value = state.query; setTimeout(() => virtual?.restoreState(state?.virtual), 0); },
+    getState: () => ({ query: search.value, offset:queryOffset, virtual: virtual?.getState() || null }),
+    restoreState: (state) => {
+      if (!state) return;
+      if (virtual) virtual.restoreState(state.virtual);
+      else pendingVirtualState = state.virtual ?? null;
+    },
     dispose: () => { disposed = true; queryScope.abort('explorer-disposed'); fallbackRouteController?.abort('explorer-disposed'); clearTimeout(timer); virtual?.dispose(); },
   };
 }

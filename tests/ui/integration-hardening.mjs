@@ -6,6 +6,7 @@ import { VirtualList } from '../../js/ui/primitives.js';
 import { loadCanonicalClaims } from '../../js/ui/product-hardened.js';
 import { presentationBasicBlocks } from '../../js/ui/function-analysis-presentation.js';
 import { createAppRuntimeIO } from '../../js/runtime/app-runtime.js';
+import './explorer-query-regressions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');

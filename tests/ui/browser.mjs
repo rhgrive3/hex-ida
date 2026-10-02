@@ -239,6 +239,62 @@ async function captureValueFlowAudit(page, browserName, viewportName, fn) {
   await closeTransient(page);
 }
 
+async function checkExplorerRestoration(page, browserName, viewportName) {
+  const prefix = `${browserName}/${viewportName}`;
+  await page.evaluate(() => window.__hexUi.router.navigate('/explorer/strings?q=Hex'));
+  await page.waitForFunction(() => !document.querySelector('.ui-explorer-content .ui-loading-state'));
+  const beforeStrings = await page.locator('.ui-explorer-content').innerText();
+  await page.evaluate(() => window.__hexUi.router.navigate('/code'));
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelector('.ui-search-field')?.value === 'Hex' && !document.querySelector('.ui-explorer-content .ui-loading-state'));
+  check(`${prefix}: string search and results survive browser back`, beforeStrings === await page.locator('.ui-explorer-content').innerText());
+
+  // Exercise the real view with a small canonical-query fixture. Unit tests
+  // separately verify the adapter's continuation/stale-snapshot semantics;
+  // real YWP dogfood binds this UI path to the large production binary.
+  await page.evaluate(() => {
+    const app = window.__app;
+    app.__explorerOriginalQueries = app.analysisQueries;
+    app.analysisQueries = {
+      async snapshot() { return {}; },
+      async functions(_snapshot, _filter, { offset, limit }) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        const end = Math.min(601, offset + limit);
+        const value = Array.from({length:Math.max(0, end - offset)}, (_, index) => ({ address:0x100004000n + BigInt(offset + index) * 4n, name:`needle-${offset + index}`, size:4n }));
+        return { value, completeness:'complete', page:{ offset, limit, returned:value.length, total:601, next:end < 601 ? end : null } };
+      },
+    };
+    window.__hexUi.router.navigate('/explorer/functions?q=needle');
+  });
+  try {
+    await page.waitForFunction(() => !!document.querySelector('.ui-explorer-pagination'));
+    await page.getByRole('button', {name:'次のページ', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('.ui-explorer-page')?.value === '2');
+    check(`${prefix}: functions after the first 200 are reachable`, await page.locator('.ui-explorer-content').innerText().then(value => value.includes('needle-200')));
+    await page.locator('.ui-virtual-list').evaluate(node => { node.scrollTop = 640; });
+    await page.waitForTimeout(30);
+    const before = await page.locator('.ui-virtual-list').innerText();
+    const scroll = await page.locator('.ui-virtual-list').evaluate(node => node.scrollTop);
+    await page.evaluate(() => window.__hexUi.router.navigate('/code'));
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('.ui-explorer-page')?.value === '2' && document.querySelector('.ui-search-field')?.value === 'needle');
+    check(`${prefix}: query, page and virtual scroll survive browser back`, before === await page.locator('.ui-virtual-list').innerText() && Math.abs(scroll - await page.locator('.ui-virtual-list').evaluate(node => node.scrollTop)) <= 1);
+    await page.getByRole('spinbutton', {name:'ページ番号', exact:true}).fill('4');
+    await page.locator('.ui-explorer-pagination').getByRole('button', {name:'移動', exact:true}).click();
+    await page.waitForFunction(() => document.querySelector('.ui-virtual-row .ui-list-row-title')?.textContent === 'needle-600');
+    check(`${prefix}: the final result is reachable by page number`, await page.getByRole('button', {name:'次のページ', exact:true}).isDisabled());
+    const overflow = await noOverflow(page);
+    check(`${prefix}: pagination stays inside the viewport`, overflow.body <= 1 && overflow.root <= 1);
+  } finally {
+    await page.evaluate(() => {
+      const app = window.__app;
+      app.analysisQueries = app.__explorerOriginalQueries;
+      delete app.__explorerOriginalQueries;
+      window.__hexUi.router.navigate('/code');
+    });
+  }
+}
+
 async function checkViewport(browserType, browserName, viewportName, width, height, baseUrl, screenshots = false) {
   const browser = await launchableOr(browserName, () => browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] }));
   if (!browser) return;
@@ -312,6 +368,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     overflow = await noOverflow(page);
     check(`${browserName}/${viewportName}: explorer no horizontal overflow`, overflow.body <= 1 && overflow.root <= 1);
     if (screenshots) await shot(page, browserName, viewportName, 'explorer');
+    await checkExplorerRestoration(page, browserName, viewportName);
 
     await page.evaluate(() => window.__hexUi.router.navigate('/code'));
     await page.waitForTimeout(100);
@@ -328,8 +385,17 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
         }
         overflow = await noOverflow(page);
         check(`${browserName}/${viewportName}: function/${tab} no body overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
+        if (width < 900 && height <= 480 && width > height) {
+          const clear = await page.evaluate(() => document.querySelector('.ui-screen').getBoundingClientRect().right <= document.querySelector('.ui-bottom-nav').getBoundingClientRect().left);
+          check(`${browserName}/${viewportName}: function/${tab} clears the landscape navigation`, clear);
+        }
         if (screenshots) await shot(page, browserName, viewportName, `function-${tab}`);
       }
+
+      await page.locator('[data-screen="function"] [role="tab"][aria-selected="true"]').focus();
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForTimeout(100);
+      check(`${browserName}/${viewportName}: keyboard tab navigation retains focus on the replacement tab`, await page.evaluate(() => document.activeElement?.matches('[data-screen="function"] [role="tab"][aria-selected="true"]')));
 
       if (screenshots) await captureValueFlowAudit(page, browserName, viewportName, fn);
 

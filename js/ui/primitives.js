@@ -162,8 +162,20 @@ export function tabs(items, active, onChange, { orientation = 'horizontal' } = {
     const button = buttons[index];
     const item = items[index];
     if (!button || !item || button.disabled) return;
+    const focusHost = root.closest?.('main, [role="dialog"]') || root.parentElement;
+    const groupIndex = focusHost ? [...focusHost.querySelectorAll('[role="tablist"]')].indexOf(root) : -1;
     if (typeof onChange === 'function') onChange(item.id);
-    if (focus) button.focus({ preventScroll: true });
+    if (focus) {
+      if (root.isConnected !== false) button.focus({ preventScroll: true });
+      else if (focusHost?.isConnected && groupIndex >= 0) {
+        // Product navigation replaces the tab bar synchronously. Move focus
+        // to its replacement after the route host's own focus callback.
+        requestAnimationFrame(() => {
+          const replacement = focusHost.querySelectorAll('[role="tablist"]')[groupIndex];
+          replacement?.querySelector('[aria-selected="true"]')?.focus({ preventScroll:true });
+        });
+      }
+    }
   };
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
