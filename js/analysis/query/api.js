@@ -419,6 +419,12 @@ export class AnalysisQueryAPI {
     return this.#query("evidence", snapshot, [query, page], options);
   }
 
+  // Explicit C++ member recovery uses the existing function/IR producer and
+  // canonical publication, without producing presentation or proof output.
+  async cxxMembers(snapshot, functionId, options = {}) {
+    return this.#query("cxxMembers", snapshot, [functionId], options);
+  }
+
   /**
    * Decompile a function at a specified address or symbol within the snapshot.
    *

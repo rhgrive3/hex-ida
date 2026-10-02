@@ -225,7 +225,9 @@ export async function recoverCxxQueryMembers({enabled=false,plan=[],snapshot,dec
     // ordinary decompiler budgets. A stale snapshot is not a recoverable miss.
     const result=await decompile(snapshot,entry.address,{profile:'fast',signal,decompilerTimeBudgetMs:1500});
     attempted.push({address:key,className:entry.className,status:result?.status??null,
-      pseudocode:Boolean(result?.value?.pseudocode)});
+      pseudocode:Boolean(result?.value?.pseudocode),
+      ...(result?.value?.schema==='analysis-query-cxx-members/v1'?{memberProjection:result.value.projected===true}:{}),
+    });
     onProgress({phase:'cxx-query-recovery',done:attempted.length,all:Math.min(plan.length,maxFunctions)});
   }
   if(now()-started>=maxElapsedMs)status='budget-exhausted';
@@ -233,7 +235,7 @@ export async function recoverCxxQueryMembers({enabled=false,plan=[],snapshot,dec
 }
 
 export function cxxRecoveryMadeProgress(result) {
-  return result?.attempted?.some(r=>r.pseudocode===true)===true
+  return result?.attempted?.some(r=>r.pseudocode===true||r.memberProjection===true)===true
     &&Number.isSafeInteger(result.beforeRevision)&&Number.isSafeInteger(result.afterRevision)
     &&result.afterRevision>result.beforeRevision;
 }

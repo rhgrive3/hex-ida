@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { CxxMemberIndex } from '../../../js/analysis/cxx/member-index.js';
-import { createCppReceiverEvidence, createCppMemberEvidence } from '../../../js/analysis/cxx/object-evidence.js';
+import { createCppReceiverEvidence, createCppMemberEvidence,isCanonicalCppReceiverEvidence,isCanonicalCppMemberEvidence } from '../../../js/analysis/cxx/object-evidence.js';
 import { pinpoint, pinpointField, pinpointFunction, rerankWithJev } from '../../../js/pinpoint.js';
 import { FieldIndex } from '../../../js/fields.js';
 import { parseGoal } from '../../../js/goals.js';
@@ -323,4 +323,57 @@ test('production Fast decompile publishes existing C++ recovery to Pinpoint and 
     product.app.backend.advanceEpoch();
     assert.equal(cxxMemberIndexForApp(product.app), null);
   } finally { await product.close(); }
+});
+
+test('member-only scoped recovery publishes the same compiler-produced facts without a presentation result',async()=>{
+  const binary=fileURLToPath(new URL('../../fixtures/cxx-dwarf-holdout/holdout.stripped.elf',import.meta.url));
+  const facts=index=>[...index.classes.values()].flatMap(cls=>cls.ivars.map(field=>({
+    key:field.key,offset:field.offset,size:field.size,conflict:field.conflict,recoveredType:field.recoveredType,
+    provenance:field.provenance.map(({receiver,member})=>({receiverDigest:receiver.digest,memberDigest:member.digest})),
+  }))).sort((a,b)=>a.key.localeCompare(b.key));
+  let expected;
+  const rendered=await openProduct(binary);
+  try {
+    const address=rendered.app.symbols.addrs[rendered.app.symbols.names.indexOf('_ZNK5Thing6updateEi')];
+    const result=await rendered.query.decompile(await rendered.query.snapshot(),address,{profile:'fast'});
+    assert.ok(result.value.pseudocode);expected=facts(cxxMemberIndexForApp(rendered.app));assert.ok(expected.length>=2);
+  } finally {await rendered.close();}
+  const product=await openProduct(binary);
+  try {
+    product.app.getDecompile=()=>{throw new Error('member-only recovery must not request presentation');};
+    const address=product.app.symbols.addrs[product.app.symbols.names.indexOf('_ZNK5Thing6updateEi')];
+    const snapshot=await product.query.snapshot();
+    const result=await product.query.cxxMembers(snapshot,address,{profile:'fast'});
+    assert.equal(result.value.schema,'analysis-query-cxx-members/v1');assert.equal(result.value.projected,true);
+    assert.equal(result.value.memberCount,expected.length);assert.equal(Object.hasOwn(result.value,'pseudocode'),false);
+    assert.equal(isCanonicalCppMemberEvidence(result.value),false,'a detached query DTO is not canonical proof');
+    const index=cxxMemberIndexForApp(product.app);assert.deepEqual(facts(index),expected);
+    for(const cls of index.classes.values())for(const field of cls.ivars)for(const {receiver,member}of field.provenance){
+      assert.ok(isCanonicalCppReceiverEvidence(receiver));assert.ok(isCanonicalCppMemberEvidence(member));
+    }
+    const controller=new AbortController();controller.abort();const revision=index.revision;
+    await assert.rejects(()=>product.query.cxxMembers(snapshot,address,{signal:controller.signal}),/abort/i);
+    assert.equal(index.revision,revision);
+    product.app.backend.advanceEpoch();assert.equal(cxxMemberIndexForApp(product.app),null);
+    await assert.rejects(()=>product.query.cxxMembers(snapshot,address),/stale/i);
+    assert.equal(cxxMemberIndexForApp(product.app),null,'a stale snapshot cannot republish retired facts');
+  } finally {await product.close();}
+});
+
+test('member-only interactive recovery routes only its explicit opt-in and needs actual publication progress',async()=>{
+  const symbols={gen:1,names:['_ZNK6Widget8getCountEv','_ZNK6Widget7isReadyEv'],addrs:[1n,2n],funcs:[1n,2n]};
+  const backend={file:{},gen:1,binaryId:'member-only-routing',readAt:async()=>({found:false})};
+  let presentations=0,memberQueries=0;
+  const app={symbols,backend,store:{get:key=>({architecture:'arm64',sliceIndex:0})[key]},executableRegionFor:()=>({}),
+    analysisQueries:{snapshot:async()=>({snapshotId:'bound'}),
+      decompile:async()=>{presentations++;return {value:{pseudocode:'unchanged ordinary result'},status:{completeness:'complete'}};},
+      cxxMembers:async()=>{memberQueries++;return {value:{schema:'analysis-query-cxx-members/v1',projected:true,memberCount:0},status:{completeness:'complete'}};}}};
+  await recoverCxxMembersForQuery(app,'widget count',{evidenceOnly:true});assert.equal(memberQueries,0);
+  const recovery=await recoverCxxMembersForQuery(app,'widget count',{enabled:true,evidenceOnly:true,maxFunctions:1});
+  assert.equal(memberQueries,1);assert.equal(presentations,0);assert.equal(recovery.attempted[0].memberProjection,true);
+  assert.equal(recovery.attempted[0].pseudocode,false);assert.equal(recovery.afterRevision,recovery.beforeRevision);
+  await recoverCxxMembersForQuery(app,'widget count',{enabled:true,maxFunctions:1});assert.equal(presentations,1);
+  delete app.analysisQueries.cxxMembers;
+  await assert.rejects(()=>recoverCxxMembersForQuery(app,'widget count',{enabled:true,evidenceOnly:true,maxFunctions:1}),/producer unavailable/);
+  assert.equal(presentations,1,'missing member-only producer must not silently restore expensive rendering');
 });

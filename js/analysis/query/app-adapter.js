@@ -87,8 +87,14 @@ export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
     functionCount:cached.planner.functionCount,beforeCount,beforeRevision,afterCount:beforeCount,
     afterRevision:beforeRevision,candidateCount:beforeCount};
   const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
-    decompile:async(bound,address,queryOptions)=>{checkBinding();const value=await query.decompile(bound,address,
-      {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy)});checkBinding();return value;}});
+    decompile:async(bound,address,queryOptions)=>{
+      checkBinding();
+      const method=options.evidenceOnly===true?'cxxMembers':'decompile';
+      if(typeof query[method]!=='function')throw new Error('scoped C++ recovery producer unavailable');
+      const value=await query[method](bound,address,
+        {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy)});
+      checkBinding();return value;
+    }});
   checkBinding();
   const index=cxxMemberIndexForApp(app);
   return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
@@ -890,6 +896,31 @@ export function createAppAnalysisQueryAdapter(app) {
     return produceFunction(id, options);
   };
 
+  // Shared by ordinary decompilation and explicit member-only recovery. The
+  // same IR and canonical producer establish every published binary fact.
+  const projectCxxFunction = async (result, id, options = {}) => {
+    const address=addressOf(id)??result?.value?.startAddr??result?.value?.startAddress;
+    const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
+    let projectionIr=null,cxxEvidence=null;
+    if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
+      try {projectionIr=irFor(result.value.model,returnsValue?{returnsValue}:{});} catch {projectionIr=null;}
+      if(projectionIr){
+        const entry=ensureCxxEvidenceProviderForApp(app);
+        if(entry){
+          await entry.buildPromise;
+          throwIfAborted(options.signal);
+          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+          try {
+            cxxEvidence=entry.provider.projectForFunction({functionAddress:address!=null?BigInt(address):null,
+              functionName:address==null?null:app?.symbols?.nameAt?.(address),ir:projectionIr,
+              enableTypedArguments:options.typedArgumentRecovery===true});
+          } catch {cxxEvidence=null;}
+        }
+      }
+    }
+    return {address,returnsValue,projectionIr,cxxEvidence};
+  };
+
   const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
@@ -1254,6 +1285,16 @@ export function createAppAnalysisQueryAdapter(app) {
       return rows.length ? paged(rows, page, completeness) : unsupported(rawTarget, 'evidence-store-unavailable');
     },
 
+    async cxxMembers(_snapshot, id, options = {}) {
+      if(!supportsArm64SemanticAnalysis(architectureOf(app)))return unsupported(id,'cxx-member-producer-unsupported-architecture');
+      const result=await loadFunction(id,options);
+      if(!result?.value?.model)return unsupported(id,'cxx-member-ir-unavailable');
+      const {cxxEvidence}=await projectCxxFunction(result,id,options);
+      return wrap({schema:'analysis-query-cxx-members/v1',projected:cxxEvidence!=null,
+        memberCount:cxxEvidence?.members?.length??0,projectionStatus:cxxEvidence?.status??'unproven'},
+        result.status?.completeness,{reason:result.status?.reason??null});
+    },
+
     async decompile(_snapshot, id, options = {}) {
       // Every producer result crosses the same explicit DTO boundary, so the
       // canonical semantic path, an app-owned getDecompile() and the legacy
@@ -1296,26 +1337,7 @@ export function createAppAnalysisQueryAdapter(app) {
       let cxxEvidence = options.cxxEvidence ?? null;
       let projectionIr = null;
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
-        try { projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {}); } catch { projectionIr = null; }
-        // The C++ producer needs canonical SSA values to bind argument 0 as
-        // `this`. Without a compatibility IR it can produce no usable
-        // evidence, so leave the per-slice index unbuilt for this function.
-        if (projectionIr) {
-          const entry = ensureCxxEvidenceProviderForApp(app);
-          if (entry) {
-            await entry.buildPromise;
-            try {
-              cxxEvidence = entry.provider.projectForFunction({
-                functionAddress: address != null ? BigInt(address) : null,
-                functionName: address == null ? null : app?.symbols?.nameAt?.(address),
-                ir:projectionIr,
-                enableTypedArguments:options.typedArgumentRecovery===true,
-              });
-            } catch {
-              cxxEvidence = null;
-            }
-          }
-        }
+        ({projectionIr,cxxEvidence}=await projectCxxFunction(result,id,options));
       }
       const projection = decompile(result.value.model, {
         ...decompilerOptionsFromQuery(options),

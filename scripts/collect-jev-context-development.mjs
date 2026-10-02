@@ -14,11 +14,12 @@ import {persistentWrite,sha256} from './jev-realgame-final-contract.mjs';
 
 const [binaryPath,queriesFile,destination,planningPolicy='value-accessor-v3',operation='collect',selectionFile]=process.argv.slice(2);
 const arm="hex-value";
-const interactiveReplay=['interactive-replay','compact-interactive-replay'].includes(operation);
-const jevRequestPolicy=operation==='compact-interactive-replay'?'compact-accessor-v5':'legacy';
+const interactiveReplay=['interactive-replay','compact-interactive-replay','compact-members-replay'].includes(operation);
+const evidenceOnly=operation==='compact-members-replay';
+const jevRequestPolicy=['compact-interactive-replay','compact-members-replay'].includes(operation)?'compact-accessor-v5':'legacy';
 if(!binaryPath||!queriesFile||!destination||!['value-accessor-v3','object-context-v4','staged-object-v4','semantic-retrieval-v5'].includes(planningPolicy)
-  ||!['collect','metadata-only','selected-replay','baseline-and-metadata','interactive-replay','compact-interactive-replay'].includes(operation))
-  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay|baseline-and-metadata|interactive-replay|compact-interactive-replay] [DEVELOPMENT_SELECTION]');
+  ||!['collect','metadata-only','selected-replay','baseline-and-metadata','interactive-replay','compact-interactive-replay','compact-members-replay'].includes(operation))
+  throw new Error('usage: RELEASE_BINARY PLAIN_QUERIES OUTPUT PLANNING_POLICY [collect|metadata-only|selected-replay|baseline-and-metadata|interactive-replay|compact-interactive-replay|compact-members-replay] [DEVELOPMENT_SELECTION]');
 // A development replay decompiles the single function selected by a previously
 // recorded real API response. It neither reads a gold file nor makes another
 // API call. Exact production request bytes must agree before replaying it.
@@ -67,7 +68,7 @@ try {
     if(operation==='metadata-only')continue;
     const beforeCount=cxxMemberIndexForApp(product.app)?.fieldCount??0;
     const recover=planningPolicy==='staged-object-v4'?recoverCxxMembersForSemanticQuery:recoverCxxMembersForQuery;
-    let recovery=await recover(product.app,c.query,{enabled:true,
+    let recovery=await recover(product.app,c.query,{enabled:true,evidenceOnly,
       jevRetrieval:operation==='selected-replay',
       jevClient:replay?{call:async input=>{
         if(sha256(JSON.stringify(input.body))!==replay.bodySha256)
@@ -92,7 +93,7 @@ try {
     let replayDrift=false;
     if(interactiveReplay) {
       retrieval=await recoverCxxMemberWithJev(product.app,c.query,{enabled:true,mode:c.mode,
-        jevRequestPolicy,
+        jevRequestPolicy,evidenceOnly,
         captureBaseline:async()=>primaryHex,captureCurrent:capture,
         jevClient:{call:async input=>{
           if(sha256(JSON.stringify(input.body))!==replay.bodySha256){replayDrift=true;throw new Error('development request projection drift');}
@@ -136,13 +137,13 @@ try {
   persistentWrite(destination,{schema:'hex-jev-context-development/v4',complete:true,developmentOnly:true,authorizesDefaultActivation:false,
     arm,planningPolicy,operation,
     remoteRetrievalExecution:selection?`recorded real API response, primary repeat 0; ${interactiveReplay?'unchanged primary recovery followed by at most one selected small Fast function':'one existing Fast function per query'}, no live API in collector`:'none; deterministic modern recovery only',
-    jevRequestPolicy,
+    jevRequestPolicy,evidenceOnly,
     selectionSha256:selectionBytes?sha256(selectionBytes):null,
     selectionMetadataProductSha:selection?.metadataProductSha??null,
     productSha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),binaryKey:manifest.binaryKey,binarySha256,
     queriesSha256:sha256(queryBytes),policySha256:sha256(policyBytes),sourceHashes:Object.fromEntries(
       ['scripts/collect-jev-context-development.mjs','js/rtti.js','js/analysis/cxx/member-index.js','js/analysis/query/jev-advisory.js','js/analysis/cxx/class-type.js','js/analysis/cxx/typed-argument.js','js/analysis/query/jev-recovery.js','js/analysis/cxx/primary-owner.js','scripts/jev-realgame-stability-contract.mjs','js/pinpoint.js','js/analysis/query/cxx-semantic-preference.js','scripts/jev-realgame-recovery-contract.mjs','js/analysis/cxx/query-recovery.js',
-        'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/cxx/project.js','js/analysis/query/app-adapter.js',
+        'js/analysis/cxx/member-types.js','js/analysis/cxx/object-evidence.js','js/analysis/cxx/project.js','js/analysis/query/app-adapter.js','js/analysis/query/api.js',
         'js/decompiler/pipeline-core.js','js/decompiler/value-dependency.js']
         .map(f=>[f,sha256(fs.readFileSync(new URL(f,root)))])),collection,rows});
   if(metadataRows.length)persistentWrite(`${destination}.metadata.json`,{
