@@ -1,0 +1,3607 @@
+{
+  "ClientNetworkGameSocketHandler": {
+    "status": "resolved",
+    "className": "ClientNetworkGameSocketHandler",
+    "declaration": "class ClientNetworkGameSocketHandler",
+    "size": 152,
+    "members": [
+      {
+        "path": "_vptr.ZeroedMemoryAllocator",
+        "topLevel": "_vptr.ZeroedMemoryAllocator",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "ZeroedMemoryAllocator",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "ZeroedMemoryAllocator",
+            "offset": 0,
+            "size": 8
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "_vptr.NetworkSocketHandler",
+        "topLevel": "_vptr.NetworkSocketHandler",
+        "offset": 8,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "NetworkSocketHandler",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          },
+          {
+            "className": "NetworkSocketHandler",
+            "offset": 8,
+            "size": 16
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "has_quit",
+        "topLevel": "has_quit",
+        "offset": 16,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "NetworkSocketHandler",
+        "owningOffset": 8,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          },
+          {
+            "className": "NetworkSocketHandler",
+            "offset": 8,
+            "size": 16
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "packet_queue",
+        "topLevel": "packet_queue",
+        "offset": 24,
+        "size": 8,
+        "type": "Packet *",
+        "owningClassName": "NetworkTCPSocketHandler",
+        "owningOffset": 16,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "packet_recv",
+        "topLevel": "packet_recv",
+        "offset": 32,
+        "size": 8,
+        "type": "Packet *",
+        "owningClassName": "NetworkTCPSocketHandler",
+        "owningOffset": 24,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "sock",
+        "topLevel": "sock",
+        "offset": 40,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "NetworkTCPSocketHandler",
+        "owningOffset": 32,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "writable",
+        "topLevel": "writable",
+        "offset": 44,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "NetworkTCPSocketHandler",
+        "owningOffset": 36,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          },
+          {
+            "className": "NetworkTCPSocketHandler",
+            "offset": 8,
+            "size": 40
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "info",
+        "topLevel": "info",
+        "offset": 48,
+        "size": 8,
+        "type": "NetworkClientInfo *",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 40,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "is_pending_deletion",
+        "topLevel": "is_pending_deletion",
+        "offset": 56,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 48,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "client_id",
+        "topLevel": "client_id",
+        "offset": 60,
+        "size": 4,
+        "type": "ClientID",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 52,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "last_frame",
+        "topLevel": "last_frame",
+        "offset": 64,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 56,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "last_frame_server",
+        "topLevel": "last_frame_server",
+        "offset": 68,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 60,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "incoming_queue",
+        "topLevel": "incoming_queue",
+        "offset": 72,
+        "size": 24,
+        "type": "CommandQueue",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 64,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "last_packet",
+        "topLevel": "last_packet",
+        "offset": 96,
+        "size": 8,
+        "type": "std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1, 1000000000> > >",
+        "owningClassName": "NetworkGameSocketHandler",
+        "owningOffset": 88,
+        "inheritance": [
+          {
+            "className": "NetworkGameSocketHandler",
+            "offset": 8,
+            "size": 96
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "connection_string",
+        "topLevel": "connection_string",
+        "offset": 104,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "ClientNetworkGameSocketHandler",
+        "owningOffset": 104,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "savegame",
+        "topLevel": "savegame",
+        "offset": 136,
+        "size": 8,
+        "type": "PacketReader *",
+        "owningClassName": "ClientNetworkGameSocketHandler",
+        "owningOffset": 136,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "token",
+        "topLevel": "token",
+        "offset": 144,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "ClientNetworkGameSocketHandler",
+        "owningOffset": 144,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "status",
+        "topLevel": "status",
+        "offset": 148,
+        "size": 4,
+        "type": "ClientNetworkGameSocketHandler::ServerStatus",
+        "owningClassName": "ClientNetworkGameSocketHandler",
+        "owningOffset": 148,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "ZeroedMemoryAllocator",
+        "offset": 0,
+        "size": 8
+      },
+      {
+        "className": "NetworkGameSocketHandler",
+        "offset": 8,
+        "size": 96
+      }
+    ]
+  },
+  "Company": {
+    "status": "resolved",
+    "className": "Company",
+    "declaration": "class Company",
+    "size": 8608,
+    "members": [
+      {
+        "path": "name_2",
+        "topLevel": "name_2",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "name_1",
+        "topLevel": "name_1",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 4,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "name",
+        "topLevel": "name",
+        "offset": 8,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 8,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "president_name_1",
+        "topLevel": "president_name_1",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 40,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "president_name_2",
+        "topLevel": "president_name_2",
+        "offset": 44,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 44,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "president_name",
+        "topLevel": "president_name",
+        "offset": 48,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 48,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "face",
+        "topLevel": "face",
+        "offset": 80,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 80,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "money",
+        "topLevel": "money",
+        "offset": 88,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 88,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "money_fraction",
+        "topLevel": "money_fraction",
+        "offset": 96,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 96,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "current_loan",
+        "topLevel": "current_loan",
+        "offset": 104,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 104,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "colour",
+        "topLevel": "colour",
+        "offset": 112,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 112,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "block_preview",
+        "topLevel": "block_preview",
+        "offset": 113,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 113,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "location_of_HQ",
+        "topLevel": "location_of_HQ",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 116,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "last_build_coordinate",
+        "topLevel": "last_build_coordinate",
+        "offset": 120,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 120,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "share_owners",
+        "topLevel": "share_owners",
+        "offset": 124,
+        "size": 4,
+        "type": "std::array<Owner, 4>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 124,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "inaugurated_year",
+        "topLevel": "inaugurated_year",
+        "offset": 128,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 128,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "months_of_bankruptcy",
+        "topLevel": "months_of_bankruptcy",
+        "offset": 132,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 132,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_asked",
+        "topLevel": "bankrupt_asked",
+        "offset": 134,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 134,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_timeout",
+        "topLevel": "bankrupt_timeout",
+        "offset": 136,
+        "size": 2,
+        "type": "short",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 136,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_value",
+        "topLevel": "bankrupt_value",
+        "offset": 144,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 144,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "terraform_limit",
+        "topLevel": "terraform_limit",
+        "offset": 152,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 152,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "clear_limit",
+        "topLevel": "clear_limit",
+        "offset": 156,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 156,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "tree_limit",
+        "topLevel": "tree_limit",
+        "offset": 160,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 160,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "build_object_limit",
+        "topLevel": "build_object_limit",
+        "offset": 164,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 164,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "is_ai",
+        "topLevel": "is_ai",
+        "offset": 168,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 168,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "yearly_expenses",
+        "topLevel": "yearly_expenses",
+        "offset": 176,
+        "size": 312,
+        "type": "Money [3][13]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 176,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "cur_economy",
+        "topLevel": "cur_economy",
+        "offset": 488,
+        "size": 288,
+        "type": "CompanyEconomyEntry",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 488,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "old_economy",
+        "topLevel": "old_economy",
+        "offset": 776,
+        "size": 6912,
+        "type": "CompanyEconomyEntry [24]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 776,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "num_valid_stat_ent",
+        "topLevel": "num_valid_stat_ent",
+        "offset": 7688,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7688,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "livery",
+        "topLevel": "livery",
+        "offset": 7689,
+        "size": 69,
+        "type": "Livery [23]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7689,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "engine_renew_list",
+        "topLevel": "engine_renew_list",
+        "offset": 7760,
+        "size": 8,
+        "type": "EngineRenew *",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7760,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "settings",
+        "topLevel": "settings",
+        "offset": 7768,
+        "size": 20,
+        "type": "CompanySettings",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7768,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "index",
+        "topLevel": "index",
+        "offset": 7788,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Pool<Company, Owner, 1, 15, (PoolType)1, false, true>::PoolItem<&_company_pool>",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "Pool<Company, Owner, 1, 15, (PoolType)1, false, true>::PoolItem<&_company_pool>",
+            "offset": 7788,
+            "size": 1
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "avail_railtypes",
+        "topLevel": "avail_railtypes",
+        "offset": 7792,
+        "size": 8,
+        "type": "RailTypes",
+        "owningClassName": "Company",
+        "owningOffset": 7792,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "avail_roadtypes",
+        "topLevel": "avail_roadtypes",
+        "offset": 7800,
+        "size": 8,
+        "type": "RoadTypes",
+        "owningClassName": "Company",
+        "owningOffset": 7800,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "ai_instance",
+        "topLevel": "ai_instance",
+        "offset": 7808,
+        "size": 8,
+        "type": "AIInstance *",
+        "owningClassName": "Company",
+        "owningOffset": 7808,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "ai_info",
+        "topLevel": "ai_info",
+        "offset": 7816,
+        "size": 8,
+        "type": "AIInfo *",
+        "owningClassName": "Company",
+        "owningOffset": 7816,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "group_all",
+        "topLevel": "group_all",
+        "offset": 7824,
+        "size": 128,
+        "type": "GroupStatistics [4]",
+        "owningClassName": "Company",
+        "owningOffset": 7824,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "group_default",
+        "topLevel": "group_default",
+        "offset": 7952,
+        "size": 128,
+        "type": "GroupStatistics [4]",
+        "owningClassName": "Company",
+        "owningOffset": 7952,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "infrastructure",
+        "topLevel": "infrastructure",
+        "offset": 8080,
+        "size": 524,
+        "type": "CompanyInfrastructure",
+        "owningClassName": "Company",
+        "owningOffset": 8080,
+        "inheritance": [],
+        "isAggregate": true
+      }
+    ],
+    "bases": [
+      {
+        "className": "CompanyProperties",
+        "offset": 0,
+        "size": 7792
+      },
+      {
+        "className": "Pool<Company, Owner, 1, 15, (PoolType)1, false, true>::PoolItem<&_company_pool>",
+        "offset": 7788,
+        "size": 1
+      }
+    ]
+  },
+  "CompanyProperties": {
+    "status": "resolved",
+    "className": "CompanyProperties",
+    "declaration": "class CompanyProperties",
+    "size": 7792,
+    "members": [
+      {
+        "path": "name_2",
+        "topLevel": "name_2",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 0,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "name_1",
+        "topLevel": "name_1",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 4,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "name",
+        "topLevel": "name",
+        "offset": 8,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "president_name_1",
+        "topLevel": "president_name_1",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 40,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "president_name_2",
+        "topLevel": "president_name_2",
+        "offset": 44,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 44,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "president_name",
+        "topLevel": "president_name",
+        "offset": 48,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 48,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "face",
+        "topLevel": "face",
+        "offset": 80,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 80,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "money",
+        "topLevel": "money",
+        "offset": 88,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 88,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "money_fraction",
+        "topLevel": "money_fraction",
+        "offset": 96,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 96,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "current_loan",
+        "topLevel": "current_loan",
+        "offset": 104,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 104,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "colour",
+        "topLevel": "colour",
+        "offset": 112,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 112,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "block_preview",
+        "topLevel": "block_preview",
+        "offset": 113,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 113,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "location_of_HQ",
+        "topLevel": "location_of_HQ",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 116,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "last_build_coordinate",
+        "topLevel": "last_build_coordinate",
+        "offset": 120,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 120,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "share_owners",
+        "topLevel": "share_owners",
+        "offset": 124,
+        "size": 4,
+        "type": "std::array<Owner, 4>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 124,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "inaugurated_year",
+        "topLevel": "inaugurated_year",
+        "offset": 128,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 128,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "months_of_bankruptcy",
+        "topLevel": "months_of_bankruptcy",
+        "offset": 132,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 132,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_asked",
+        "topLevel": "bankrupt_asked",
+        "offset": 134,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 134,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_timeout",
+        "topLevel": "bankrupt_timeout",
+        "offset": 136,
+        "size": 2,
+        "type": "short",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 136,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "bankrupt_value",
+        "topLevel": "bankrupt_value",
+        "offset": 144,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 144,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "terraform_limit",
+        "topLevel": "terraform_limit",
+        "offset": 152,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 152,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "clear_limit",
+        "topLevel": "clear_limit",
+        "offset": 156,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 156,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "tree_limit",
+        "topLevel": "tree_limit",
+        "offset": 160,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 160,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "build_object_limit",
+        "topLevel": "build_object_limit",
+        "offset": 164,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 164,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "is_ai",
+        "topLevel": "is_ai",
+        "offset": 168,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 168,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "yearly_expenses",
+        "topLevel": "yearly_expenses",
+        "offset": 176,
+        "size": 312,
+        "type": "Money [3][13]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 176,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cur_economy",
+        "topLevel": "cur_economy",
+        "offset": 488,
+        "size": 288,
+        "type": "CompanyEconomyEntry",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 488,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "old_economy",
+        "topLevel": "old_economy",
+        "offset": 776,
+        "size": 6912,
+        "type": "CompanyEconomyEntry [24]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 776,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "num_valid_stat_ent",
+        "topLevel": "num_valid_stat_ent",
+        "offset": 7688,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7688,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "livery",
+        "topLevel": "livery",
+        "offset": 7689,
+        "size": 69,
+        "type": "Livery [23]",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7689,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "engine_renew_list",
+        "topLevel": "engine_renew_list",
+        "offset": 7760,
+        "size": 8,
+        "type": "EngineRenew *",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7760,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "settings",
+        "topLevel": "settings",
+        "offset": 7768,
+        "size": 20,
+        "type": "CompanySettings",
+        "owningClassName": "CompanyProperties",
+        "owningOffset": 7768,
+        "inheritance": [],
+        "isAggregate": true
+      }
+    ],
+    "bases": []
+  },
+  "DiagonalTileIterator": {
+    "status": "resolved",
+    "className": "DiagonalTileIterator",
+    "declaration": "class DiagonalTileIterator",
+    "size": 40,
+    "members": [
+      {
+        "path": "_vptr.TileIterator",
+        "topLevel": "_vptr.TileIterator",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "TileIterator",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "TileIterator",
+            "offset": 0,
+            "size": 16
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "tile",
+        "topLevel": "tile",
+        "offset": 8,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "TileIterator",
+        "owningOffset": 8,
+        "inheritance": [
+          {
+            "className": "TileIterator",
+            "offset": 0,
+            "size": 16
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "base_x",
+        "topLevel": "base_x",
+        "offset": 12,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 12,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "base_y",
+        "topLevel": "base_y",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 16,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "a_cur",
+        "topLevel": "a_cur",
+        "offset": 20,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 20,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "b_cur",
+        "topLevel": "b_cur",
+        "offset": 24,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "a_max",
+        "topLevel": "a_max",
+        "offset": 28,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 28,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "b_max",
+        "topLevel": "b_max",
+        "offset": 32,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "DiagonalTileIterator",
+        "owningOffset": 32,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "TileIterator",
+        "offset": 0,
+        "size": 16
+      }
+    ]
+  },
+  "GRFConfig": {
+    "status": "resolved",
+    "className": "GRFConfig",
+    "declaration": "class GRFConfig",
+    "size": 688,
+    "members": [
+      {
+        "path": "_vptr.ZeroedMemoryAllocator",
+        "topLevel": "_vptr.ZeroedMemoryAllocator",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "ZeroedMemoryAllocator",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "ZeroedMemoryAllocator",
+            "offset": 0,
+            "size": 8
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "ident",
+        "topLevel": "ident",
+        "offset": 8,
+        "size": 20,
+        "type": "GRFIdentifier",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "original_md5sum",
+        "topLevel": "original_md5sum",
+        "offset": 28,
+        "size": 16,
+        "type": "uint8 [16]",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 28,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "filename",
+        "topLevel": "filename",
+        "offset": 48,
+        "size": 8,
+        "type": "char *",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 48,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "name",
+        "topLevel": "name",
+        "offset": 56,
+        "size": 16,
+        "type": "std::shared_ptr<std::vector<GRFText, std::allocator<GRFText> > >",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 56,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "info",
+        "topLevel": "info",
+        "offset": 72,
+        "size": 16,
+        "type": "std::shared_ptr<std::vector<GRFText, std::allocator<GRFText> > >",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 72,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "url",
+        "topLevel": "url",
+        "offset": 88,
+        "size": 16,
+        "type": "std::shared_ptr<std::vector<GRFText, std::allocator<GRFText> > >",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 88,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "error",
+        "topLevel": "error",
+        "offset": 104,
+        "size": 8,
+        "type": "GRFError *",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 104,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "version",
+        "topLevel": "version",
+        "offset": 112,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 112,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "min_loadable_version",
+        "topLevel": "min_loadable_version",
+        "offset": 116,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 116,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "flags",
+        "topLevel": "flags",
+        "offset": 120,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 120,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "status",
+        "topLevel": "status",
+        "offset": 124,
+        "size": 4,
+        "type": "GRFStatus",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 124,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "grf_bugs",
+        "topLevel": "grf_bugs",
+        "offset": 128,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 128,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "param",
+        "topLevel": "param",
+        "offset": 132,
+        "size": 512,
+        "type": "uint32 [128]",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 132,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "num_params",
+        "topLevel": "num_params",
+        "offset": 644,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 644,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "num_valid_params",
+        "topLevel": "num_valid_params",
+        "offset": 645,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 645,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "palette",
+        "topLevel": "palette",
+        "offset": 646,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 646,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "param_info",
+        "topLevel": "param_info",
+        "offset": 648,
+        "size": 24,
+        "type": "std::vector<GRFParameterInfo*, std::allocator<GRFParameterInfo*> >",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 648,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "has_param_defaults",
+        "topLevel": "has_param_defaults",
+        "offset": 672,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 672,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "next",
+        "topLevel": "next",
+        "offset": 680,
+        "size": 8,
+        "type": "GRFConfig *",
+        "owningClassName": "GRFConfig",
+        "owningOffset": 680,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "ZeroedMemoryAllocator",
+        "offset": 0,
+        "size": 8
+      }
+    ]
+  },
+  "GroundVehicleCache": {
+    "status": "resolved",
+    "className": "GroundVehicleCache",
+    "declaration": "class GroundVehicleCache",
+    "size": 32,
+    "members": [
+      {
+        "path": "cached_weight",
+        "topLevel": "cached_weight",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 0,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_slope_resistance",
+        "topLevel": "cached_slope_resistance",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 4,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_max_te",
+        "topLevel": "cached_max_te",
+        "offset": 8,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_axle_resistance",
+        "topLevel": "cached_axle_resistance",
+        "offset": 12,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 12,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_max_track_speed",
+        "topLevel": "cached_max_track_speed",
+        "offset": 14,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 14,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_power",
+        "topLevel": "cached_power",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 16,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_air_drag",
+        "topLevel": "cached_air_drag",
+        "offset": 20,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 20,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_total_length",
+        "topLevel": "cached_total_length",
+        "offset": 24,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "first_engine",
+        "topLevel": "first_engine",
+        "offset": 26,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 26,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_veh_length",
+        "topLevel": "cached_veh_length",
+        "offset": 28,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 28,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_speed",
+        "topLevel": "last_speed",
+        "offset": 30,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "GroundVehicleCache",
+        "owningOffset": 30,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": []
+  },
+  "Group": {
+    "status": "resolved",
+    "className": "Group",
+    "declaration": "class Group",
+    "size": 88,
+    "members": [
+      {
+        "path": "index",
+        "topLevel": "index",
+        "offset": 0,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Pool<Group, unsigned short, 16, 64000, (PoolType)1, false, true>::PoolItem<&_group_pool>",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "Pool<Group, unsigned short, 16, 64000, (PoolType)1, false, true>::PoolItem<&_group_pool>",
+            "offset": 0,
+            "size": 2
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "name",
+        "topLevel": "name",
+        "offset": 8,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "Group",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "owner",
+        "topLevel": "owner",
+        "offset": 40,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Group",
+        "owningOffset": 40,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "vehicle_type",
+        "topLevel": "vehicle_type",
+        "offset": 41,
+        "size": 1,
+        "type": "VehicleType",
+        "owningClassName": "Group",
+        "owningOffset": 41,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "flags",
+        "topLevel": "flags",
+        "offset": 42,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Group",
+        "owningOffset": 42,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "livery",
+        "topLevel": "livery",
+        "offset": 43,
+        "size": 3,
+        "type": "Livery",
+        "owningClassName": "Group",
+        "owningOffset": 43,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "statistics",
+        "topLevel": "statistics",
+        "offset": 48,
+        "size": 32,
+        "type": "GroupStatistics",
+        "owningClassName": "Group",
+        "owningOffset": 48,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "folded",
+        "topLevel": "folded",
+        "offset": 80,
+        "size": 1,
+        "type": "bool",
+        "owningClassName": "Group",
+        "owningOffset": 80,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "parent",
+        "topLevel": "parent",
+        "offset": 82,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Group",
+        "owningOffset": 82,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "Pool<Group, unsigned short, 16, 64000, (PoolType)1, false, true>::PoolItem<&_group_pool>",
+        "offset": 0,
+        "size": 2
+      }
+    ]
+  },
+  "Industry": {
+    "status": "resolved",
+    "className": "Industry",
+    "declaration": "class Industry",
+    "size": 512,
+    "members": [
+      {
+        "path": "index",
+        "topLevel": "index",
+        "offset": 0,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Pool<Industry, unsigned short, 64, 64000, (PoolType)1, false, true>::PoolItem<&_industry_pool>",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "Pool<Industry, unsigned short, 64, 64000, (PoolType)1, false, true>::PoolItem<&_industry_pool>",
+            "offset": 0,
+            "size": 2
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "location",
+        "topLevel": "location",
+        "offset": 4,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "Industry",
+        "owningOffset": 4,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "town",
+        "topLevel": "town",
+        "offset": 16,
+        "size": 8,
+        "type": "Town *",
+        "owningClassName": "Industry",
+        "owningOffset": 16,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "neutral_station",
+        "topLevel": "neutral_station",
+        "offset": 24,
+        "size": 8,
+        "type": "Station *",
+        "owningClassName": "Industry",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "produced_cargo",
+        "topLevel": "produced_cargo",
+        "offset": 32,
+        "size": 16,
+        "type": "CargoID [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 32,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "produced_cargo_waiting",
+        "topLevel": "produced_cargo_waiting",
+        "offset": 48,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 48,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "incoming_cargo_waiting",
+        "topLevel": "incoming_cargo_waiting",
+        "offset": 80,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 80,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "production_rate",
+        "topLevel": "production_rate",
+        "offset": 112,
+        "size": 16,
+        "type": "byte [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 112,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "prod_level",
+        "topLevel": "prod_level",
+        "offset": 128,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 128,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "accepts_cargo",
+        "topLevel": "accepts_cargo",
+        "offset": 129,
+        "size": 16,
+        "type": "CargoID [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 129,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "this_month_production",
+        "topLevel": "this_month_production",
+        "offset": 146,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 146,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "this_month_transported",
+        "topLevel": "this_month_transported",
+        "offset": 178,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 178,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_month_pct_transported",
+        "topLevel": "last_month_pct_transported",
+        "offset": 210,
+        "size": 16,
+        "type": "byte [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 210,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_month_production",
+        "topLevel": "last_month_production",
+        "offset": 226,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 226,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_month_transported",
+        "topLevel": "last_month_transported",
+        "offset": 258,
+        "size": 32,
+        "type": "uint16 [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 258,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "counter",
+        "topLevel": "counter",
+        "offset": 290,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Industry",
+        "owningOffset": 290,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "type",
+        "topLevel": "type",
+        "offset": 292,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 292,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "owner",
+        "topLevel": "owner",
+        "offset": 293,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Industry",
+        "owningOffset": 293,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "random_colour",
+        "topLevel": "random_colour",
+        "offset": 294,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 294,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_prod_year",
+        "topLevel": "last_prod_year",
+        "offset": 296,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "Industry",
+        "owningOffset": 296,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "was_cargo_delivered",
+        "topLevel": "was_cargo_delivered",
+        "offset": 300,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 300,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "ctlflags",
+        "topLevel": "ctlflags",
+        "offset": 301,
+        "size": 1,
+        "type": "IndustryControlFlags",
+        "owningClassName": "Industry",
+        "owningOffset": 301,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "part_of_subsidy",
+        "topLevel": "part_of_subsidy",
+        "offset": 302,
+        "size": 1,
+        "type": "PartOfSubsidy",
+        "owningClassName": "Industry",
+        "owningOffset": 302,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "stations_near",
+        "topLevel": "stations_near",
+        "offset": 304,
+        "size": 48,
+        "type": "std::set<Station*, StationCompare, std::allocator<Station*> >",
+        "owningClassName": "Industry",
+        "owningOffset": 304,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "cached_name",
+        "topLevel": "cached_name",
+        "offset": 352,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "Industry",
+        "owningOffset": 352,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "founder",
+        "topLevel": "founder",
+        "offset": 384,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Industry",
+        "owningOffset": 384,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "construction_date",
+        "topLevel": "construction_date",
+        "offset": 388,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "Industry",
+        "owningOffset": 388,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "construction_type",
+        "topLevel": "construction_type",
+        "offset": 392,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 392,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_cargo_accepted_at",
+        "topLevel": "last_cargo_accepted_at",
+        "offset": 396,
+        "size": 64,
+        "type": "Date [16]",
+        "owningClassName": "Industry",
+        "owningOffset": 396,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "selected_layout",
+        "topLevel": "selected_layout",
+        "offset": 460,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Industry",
+        "owningOffset": 460,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "exclusive_supplier",
+        "topLevel": "exclusive_supplier",
+        "offset": 461,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Industry",
+        "owningOffset": 461,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "exclusive_consumer",
+        "topLevel": "exclusive_consumer",
+        "offset": 462,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "Industry",
+        "owningOffset": 462,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "text",
+        "topLevel": "text",
+        "offset": 464,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "Industry",
+        "owningOffset": 464,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "random",
+        "topLevel": "random",
+        "offset": 496,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Industry",
+        "owningOffset": 496,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "psa",
+        "topLevel": "psa",
+        "offset": 504,
+        "size": 8,
+        "type": "PersistentStorage *",
+        "owningClassName": "Industry",
+        "owningOffset": 504,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "Pool<Industry, unsigned short, 64, 64000, (PoolType)1, false, true>::PoolItem<&_industry_pool>",
+        "offset": 0,
+        "size": 2
+      }
+    ]
+  },
+  "SQRefCounted": {
+    "status": "resolved",
+    "className": "SQRefCounted",
+    "declaration": "class SQRefCounted",
+    "size": 32,
+    "members": [
+      {
+        "path": "_vptr.SQRefCounted",
+        "topLevel": "_vptr.SQRefCounted",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "SQRefCounted",
+        "owningOffset": 0,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "_uiRef",
+        "topLevel": "_uiRef",
+        "offset": 8,
+        "size": 8,
+        "type": "unsigned long long",
+        "owningClassName": "SQRefCounted",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "_weakref",
+        "topLevel": "_weakref",
+        "offset": 16,
+        "size": 8,
+        "type": "SQWeakRef *",
+        "owningClassName": "SQRefCounted",
+        "owningOffset": 16,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "size",
+        "topLevel": "size",
+        "offset": 24,
+        "size": 8,
+        "type": "unsigned long",
+        "owningClassName": "SQRefCounted",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": []
+  },
+  "SpriteLoaderGrf": {
+    "status": "resolved",
+    "className": "SpriteLoaderGrf",
+    "declaration": "class SpriteLoaderGrf",
+    "size": 16,
+    "members": [
+      {
+        "path": "_vptr.SpriteLoader",
+        "topLevel": "_vptr.SpriteLoader",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "SpriteLoader",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "SpriteLoader",
+            "offset": 0,
+            "size": 8
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "container_ver",
+        "topLevel": "container_ver",
+        "offset": 8,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "SpriteLoaderGrf",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "SpriteLoader",
+        "offset": 0,
+        "size": 8
+      }
+    ]
+  },
+  "Station": {
+    "status": "resolved",
+    "className": "Station",
+    "declaration": "class Station",
+    "size": 9128,
+    "members": [
+      {
+        "path": "index",
+        "topLevel": "index",
+        "offset": 8,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "Pool<BaseStation, unsigned short, 32, 64000, (PoolType)1, false, true>::PoolItem<&_station_pool>",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "Pool<BaseStation, unsigned short, 32, 64000, (PoolType)1, false, true>::PoolItem<&_station_pool>",
+            "offset": 8,
+            "size": 2
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "_vptr.BaseStation",
+        "topLevel": "_vptr.BaseStation",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "BaseStation",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "xy",
+        "topLevel": "xy",
+        "offset": 12,
+        "size": 4,
+        "type": "TileIndex",
+        "owningClassName": "BaseStation",
+        "owningOffset": 12,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "sign",
+        "topLevel": "sign",
+        "offset": 16,
+        "size": 16,
+        "type": "TrackedViewportSign",
+        "owningClassName": "BaseStation",
+        "owningOffset": 16,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "delete_ctr",
+        "topLevel": "delete_ctr",
+        "offset": 32,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "BaseStation",
+        "owningOffset": 32,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "name",
+        "topLevel": "name",
+        "offset": 40,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "BaseStation",
+        "owningOffset": 40,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "string_id",
+        "topLevel": "string_id",
+        "offset": 72,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "BaseStation",
+        "owningOffset": 72,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_name",
+        "topLevel": "cached_name",
+        "offset": 80,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "BaseStation",
+        "owningOffset": 80,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "town",
+        "topLevel": "town",
+        "offset": 112,
+        "size": 8,
+        "type": "Town *",
+        "owningClassName": "BaseStation",
+        "owningOffset": 112,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "owner",
+        "topLevel": "owner",
+        "offset": 120,
+        "size": 1,
+        "type": "Owner",
+        "owningClassName": "BaseStation",
+        "owningOffset": 120,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "facilities",
+        "topLevel": "facilities",
+        "offset": 121,
+        "size": 1,
+        "type": "StationFacility",
+        "owningClassName": "BaseStation",
+        "owningOffset": 121,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "speclist",
+        "topLevel": "speclist",
+        "offset": 128,
+        "size": 24,
+        "type": "std::vector<StationSpecList, std::allocator<StationSpecList> >",
+        "owningClassName": "BaseStation",
+        "owningOffset": 128,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "build_date",
+        "topLevel": "build_date",
+        "offset": 152,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "BaseStation",
+        "owningOffset": 152,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "random_bits",
+        "topLevel": "random_bits",
+        "offset": 156,
+        "size": 2,
+        "type": "unsigned short",
+        "owningClassName": "BaseStation",
+        "owningOffset": 156,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "waiting_triggers",
+        "topLevel": "waiting_triggers",
+        "offset": 158,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "BaseStation",
+        "owningOffset": 158,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_anim_triggers",
+        "topLevel": "cached_anim_triggers",
+        "offset": 159,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "BaseStation",
+        "owningOffset": 159,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "cached_cargo_triggers",
+        "topLevel": "cached_cargo_triggers",
+        "offset": 160,
+        "size": 8,
+        "type": "unsigned long long",
+        "owningClassName": "BaseStation",
+        "owningOffset": 160,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "train_station",
+        "topLevel": "train_station",
+        "offset": 168,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "BaseStation",
+        "owningOffset": 168,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "rect",
+        "topLevel": "rect",
+        "offset": 176,
+        "size": 16,
+        "type": "StationRect",
+        "owningClassName": "BaseStation",
+        "owningOffset": 176,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "bus_stops",
+        "topLevel": "bus_stops",
+        "offset": 192,
+        "size": 8,
+        "type": "RoadStop *",
+        "owningClassName": "Station",
+        "owningOffset": 192,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "bus_station",
+        "topLevel": "bus_station",
+        "offset": 200,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "Station",
+        "owningOffset": 200,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "truck_stops",
+        "topLevel": "truck_stops",
+        "offset": 208,
+        "size": 8,
+        "type": "RoadStop *",
+        "owningClassName": "Station",
+        "owningOffset": 208,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "truck_station",
+        "topLevel": "truck_station",
+        "offset": 216,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "Station",
+        "owningOffset": 216,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "airport",
+        "topLevel": "airport",
+        "offset": 224,
+        "size": 32,
+        "type": "Airport",
+        "owningClassName": "Station",
+        "owningOffset": 224,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "ship_station",
+        "topLevel": "ship_station",
+        "offset": 256,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "Station",
+        "owningOffset": 256,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "docking_station",
+        "topLevel": "docking_station",
+        "offset": 264,
+        "size": 8,
+        "type": "OrthogonalTileArea",
+        "owningClassName": "Station",
+        "owningOffset": 264,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "indtype",
+        "topLevel": "indtype",
+        "offset": 272,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Station",
+        "owningOffset": 272,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "catchment_tiles",
+        "topLevel": "catchment_tiles",
+        "offset": 280,
+        "size": 48,
+        "type": "BitmapTileArea",
+        "owningClassName": "Station",
+        "owningOffset": 280,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "had_vehicle_of_type",
+        "topLevel": "had_vehicle_of_type",
+        "offset": 328,
+        "size": 1,
+        "type": "StationHadVehicleOfType",
+        "owningClassName": "Station",
+        "owningOffset": 328,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "time_since_load",
+        "topLevel": "time_since_load",
+        "offset": 329,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Station",
+        "owningOffset": 329,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "time_since_unload",
+        "topLevel": "time_since_unload",
+        "offset": 330,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Station",
+        "owningOffset": 330,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "last_vehicle_type",
+        "topLevel": "last_vehicle_type",
+        "offset": 331,
+        "size": 1,
+        "type": "unsigned char",
+        "owningClassName": "Station",
+        "owningOffset": 331,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "loading_vehicles",
+        "topLevel": "loading_vehicles",
+        "offset": 336,
+        "size": 24,
+        "type": "std::__cxx11::list<Vehicle*, std::allocator<Vehicle*> >",
+        "owningClassName": "Station",
+        "owningOffset": 336,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "goods",
+        "topLevel": "goods",
+        "offset": 360,
+        "size": 8704,
+        "type": "GoodsEntry [64]",
+        "owningClassName": "Station",
+        "owningOffset": 360,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "always_accepted",
+        "topLevel": "always_accepted",
+        "offset": 9064,
+        "size": 8,
+        "type": "unsigned long long",
+        "owningClassName": "Station",
+        "owningOffset": 9064,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "industries_near",
+        "topLevel": "industries_near",
+        "offset": 9072,
+        "size": 48,
+        "type": "std::set<IndustryListEntry, IndustryCompare, std::allocator<IndustryListEntry> >",
+        "owningClassName": "Station",
+        "owningOffset": 9072,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "industry",
+        "topLevel": "industry",
+        "offset": 9120,
+        "size": 8,
+        "type": "Industry *",
+        "owningClassName": "Station",
+        "owningOffset": 9120,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "SpecializedStation<Station, false>",
+        "offset": 0,
+        "size": 192
+      }
+    ]
+  },
+  "StationResolverObject": {
+    "status": "resolved",
+    "className": "StationResolverObject",
+    "declaration": "class StationResolverObject",
+    "size": 136,
+    "members": [
+      {
+        "path": "_vptr.ResolverObject",
+        "topLevel": "_vptr.ResolverObject",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "default_scope",
+        "topLevel": "default_scope",
+        "offset": 8,
+        "size": 16,
+        "type": "ScopeResolver",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 8,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": true
+      },
+      {
+        "path": "callback",
+        "topLevel": "callback",
+        "offset": 24,
+        "size": 4,
+        "type": "CallbackID",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 24,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "callback_param1",
+        "topLevel": "callback_param1",
+        "offset": 28,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 28,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "callback_param2",
+        "topLevel": "callback_param2",
+        "offset": 32,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 32,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "last_value",
+        "topLevel": "last_value",
+        "offset": 36,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 36,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "waiting_triggers",
+        "topLevel": "waiting_triggers",
+        "offset": 40,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 40,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "used_triggers",
+        "topLevel": "used_triggers",
+        "offset": 44,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 44,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "reseed",
+        "topLevel": "reseed",
+        "offset": 48,
+        "size": 12,
+        "type": "uint32 [3]",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 48,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "grffile",
+        "topLevel": "grffile",
+        "offset": 64,
+        "size": 8,
+        "type": "const GRFFile *",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 64,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "root_spritegroup",
+        "topLevel": "root_spritegroup",
+        "offset": 72,
+        "size": 8,
+        "type": "const SpriteGroup *",
+        "owningClassName": "ResolverObject",
+        "owningOffset": 72,
+        "inheritance": [
+          {
+            "className": "ResolverObject",
+            "offset": 0,
+            "size": 80
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "station_scope",
+        "topLevel": "station_scope",
+        "offset": 80,
+        "size": 48,
+        "type": "StationScopeResolver",
+        "owningClassName": "StationResolverObject",
+        "owningOffset": 80,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "town_scope",
+        "topLevel": "town_scope",
+        "offset": 128,
+        "size": 8,
+        "type": "TownScopeResolver *",
+        "owningClassName": "StationResolverObject",
+        "owningOffset": 128,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "ResolverObject",
+        "offset": 0,
+        "size": 80
+      }
+    ]
+  },
+  "TCPConnecter": {
+    "status": "resolved",
+    "className": "TCPConnecter",
+    "declaration": "class TCPConnecter",
+    "size": 360,
+    "members": [
+      {
+        "path": "_vptr.TCPConnecter",
+        "topLevel": "_vptr.TCPConnecter",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 0,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "resolve_thread",
+        "topLevel": "resolve_thread",
+        "offset": 8,
+        "size": 8,
+        "type": "std::thread",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "status",
+        "topLevel": "status",
+        "offset": 16,
+        "size": 4,
+        "type": "std::atomic<TCPConnecter::Status>",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 16,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "killed",
+        "topLevel": "killed",
+        "offset": 20,
+        "size": 1,
+        "type": "std::atomic<bool>",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 20,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "ai",
+        "topLevel": "ai",
+        "offset": 24,
+        "size": 8,
+        "type": "addrinfo *",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "addresses",
+        "topLevel": "addresses",
+        "offset": 32,
+        "size": 24,
+        "type": "std::vector<addrinfo*, std::allocator<addrinfo*> >",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 32,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "sock_to_address",
+        "topLevel": "sock_to_address",
+        "offset": 56,
+        "size": 48,
+        "type": "std::map<int, NetworkAddress, std::less<int>, std::allocator<std::pair<int const, NetworkAddress> > >",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 56,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "current_address",
+        "topLevel": "current_address",
+        "offset": 104,
+        "size": 8,
+        "type": "unsigned long",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 104,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "sockets",
+        "topLevel": "sockets",
+        "offset": 112,
+        "size": 24,
+        "type": "std::vector<int, std::allocator<int> >",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 112,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "last_attempt",
+        "topLevel": "last_attempt",
+        "offset": 136,
+        "size": 8,
+        "type": "std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1, 1000000000> > >",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 136,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "connection_string",
+        "topLevel": "connection_string",
+        "offset": 144,
+        "size": 32,
+        "type": "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 144,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "bind_address",
+        "topLevel": "bind_address",
+        "offset": 176,
+        "size": 176,
+        "type": "NetworkAddress",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 176,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "family",
+        "topLevel": "family",
+        "offset": 352,
+        "size": 4,
+        "type": "int",
+        "owningClassName": "TCPConnecter",
+        "owningOffset": 352,
+        "inheritance": [],
+        "isAggregate": false
+      }
+    ],
+    "bases": []
+  },
+  "TarScanner": {
+    "status": "resolved",
+    "className": "TarScanner",
+    "declaration": "class TarScanner",
+    "size": 16,
+    "members": [
+      {
+        "path": "_vptr.FileScanner",
+        "topLevel": "_vptr.FileScanner",
+        "offset": 0,
+        "size": 8,
+        "type": "int (**)(void)",
+        "owningClassName": "FileScanner",
+        "owningOffset": 0,
+        "inheritance": [
+          {
+            "className": "FileScanner",
+            "offset": 0,
+            "size": 16
+          }
+        ],
+        "isAggregate": false
+      },
+      {
+        "path": "subdir",
+        "topLevel": "subdir",
+        "offset": 8,
+        "size": 4,
+        "type": "Subdirectory",
+        "owningClassName": "FileScanner",
+        "owningOffset": 8,
+        "inheritance": [
+          {
+            "className": "FileScanner",
+            "offset": 0,
+            "size": 16
+          }
+        ],
+        "isAggregate": false
+      }
+    ],
+    "bases": [
+      {
+        "className": "FileScanner",
+        "offset": 0,
+        "size": 16
+      }
+    ]
+  },
+  "TownCache": {
+    "status": "resolved",
+    "className": "TownCache",
+    "declaration": "class TownCache",
+    "size": 1880,
+    "members": [
+      {
+        "path": "num_houses",
+        "topLevel": "num_houses",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "TownCache",
+        "owningOffset": 0,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "population",
+        "topLevel": "population",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int",
+        "owningClassName": "TownCache",
+        "owningOffset": 4,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "sign",
+        "topLevel": "sign",
+        "offset": 8,
+        "size": 16,
+        "type": "TrackedViewportSign",
+        "owningClassName": "TownCache",
+        "owningOffset": 8,
+        "inheritance": [],
+        "isAggregate": true
+      },
+      {
+        "path": "part_of_subsidy",
+        "topLevel": "part_of_subsidy",
+        "offset": 24,
+        "size": 1,
+        "type": "PartOfSubsidy",
+        "owningClassName": "TownCache",
+        "owningOffset": 24,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "squared_town_zone_radius",
+        "topLevel": "squared_town_zone_radius",
+        "offset": 28,
+        "size": 20,
+        "type": "uint32 [5]",
+        "owningClassName": "TownCache",
+        "owningOffset": 28,
+        "inheritance": [],
+        "isAggregate": false
+      },
+      {
+        "path": "building_counts",
+        "topLevel": "building_counts",
+        "offset": 48,
+        "size": 1830,
+        "type": "BuildingCounts<unsigned short>",
+        "owningClassName": "TownCache",
+        "owningOffset": 48,
+        "inheritance": [],
+        "isAggregate": true
+      }
+    ],
+    "bases": []
+  }
+}

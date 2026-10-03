@@ -1,0 +1,18 @@
+{
+  "schema": "hex-jev-default-execution-freeze/v3",
+  "frozenAtUtc": "2026-10-01T03:01:18.235462+00:00",
+  "noFinalJevCallsBeforeFreeze": true,
+  "policySha256": "1a17f2480cc8678a626093f62450d05ce8f148dfe8ce93909081e1f10586cdbd",
+  "structuralCasesSha256": "a69bf4bae93741b910a866410f2b25dd33737b779882b5ca1d8dddee8f25f96a",
+  "sourceHashes": {
+    "scripts/evaluate-jev-default-v3.mjs": "3f0c92c4a92ca36cd4954d9074fc13a2d36bc60459938f3b1f4c6edb82417c30",
+    "scripts/collect-jev-default-v3.mjs": "acde21b5349bb1f5139301a4337611002d702477721b10fe1444a8e5e205e67f",
+    "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07",
+    "scripts/jev-realgame-final-contract.mjs": "5c27813bf8d2d4c0b9a76989e1b17dffc82944787dd04cd2983239c93ae89e7e",
+    "scripts/jev-realgame-recovery-contract.mjs": "e2f3f168feed368fc14e1d095c53590bb46f747075e364d67b71c3c01e3e3939",
+    "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
+    "scripts/evaluate-jev-realgame-final.mjs": "0d54249845b8ac82354dcf0181af534d8099957cbebbbb7ee80cd6872ebe1f3a"
+  },
+  "unsafeConfidentDefinition": "unchanged canonical summarize: unsupported strong committed verdict; remote high confidence errors (pick>=0.9 and unique>=0.9) reported separately, never promoted to proof",
+  "optionalJ": "not part of default S authorization; development retrieval evidence retained separately"
+}

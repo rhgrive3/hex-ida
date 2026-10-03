@@ -1,0 +1,22 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "evaluationPurpose": "independent-final-v3",
+  "cases": [
+    {
+      "id": "SV3-MW-09",
+      "query": "Which movement capabilities does this creature currently have enabled?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-10",
+      "query": "Which actor identifier do these creature statistics belong to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-19",
+      "query": "Is the custom mouse cursor currently enabled?",
+      "mode": "partial"
+    }
+  ]
+}

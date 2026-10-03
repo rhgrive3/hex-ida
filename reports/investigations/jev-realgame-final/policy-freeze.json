@@ -1,0 +1,69 @@
+{
+  "schema": "hex-jev-realgame-final-policy/v1",
+  "frozenAtUtc": "2026-09-30T07:53:24.151759+00:00",
+  "caseSha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+  "promptTuning": false,
+  "collection": {
+    "sample": 30,
+    "selector": "existing canonical owner-only uniform address sampler from C++ publication validation",
+    "profile": "fast",
+    "maxCandidates": 400,
+    "oracleAccessibleToCollector": false
+  },
+  "arms": {
+    "A": "Hex baseline",
+    "DET": "best previously frozen 168-point lexical comparator exact=0 extra=.5 classMatch=0 suffix=2",
+    "current": "unchanged prospective Jev fieldName/name/key representation and prompt",
+    "B": "ClassName.member_0xOFFSET (release names only when independently present)",
+    "C": "class/offset/size/recovered type category",
+    "D": "C + existing read/write counts and <=8 proven receiver/access function contexts; no new analysis"
+  },
+  "primaryArm": "D",
+  "routing": "interactive partial, >=2 candidates, no confirmed/likely baseline; preserve strong; API errors unchanged; max255",
+  "repeats": 3,
+  "retries": {
+    "maxAttempts": 2,
+    "timeoutMs": 15000,
+    "retryable": [
+      "timeout",
+      "network",
+      "429",
+      "5xx"
+    ]
+  },
+  "comparatorParameters": {
+    "exact": 0,
+    "extra": 0.5,
+    "classMatch": 0,
+    "suffix": 2
+  },
+  "metrics": [
+    "candidateRecall",
+    "structuralRecovery",
+    "shortlistRetention",
+    "hexTop1",
+    "jevTop1",
+    "reachableAccuracy",
+    "rescue",
+    "regression",
+    "netRescue",
+    "regressionRescueRatio",
+    "baselineDestruction",
+    "falseStrong",
+    "unsafeConfident",
+    "abstainBehavior",
+    "latencyP50P95P99",
+    "errorsTimeoutsRetries",
+    "repeatedCallInstability"
+  ],
+  "scoring": "exact binary SHA + independently verified owning class + offset + width; verified recovered type compatibility; no name matching for C++",
+  "oraclePolicy": "exact build-ID/debug package/code identity; unverified cases excluded with reason; original70 queries and original binaries mandatory; source/RTTI alone insufficient",
+  "decisionOrder": [
+    "NO_GO if no independent game net gain, semantic/recovery ceiling prevents demonstrated gain, new unsafe strong, or external failure rate >5%",
+    "DEFAULT_ON only if BOTH games independently improve, recovery>=50%, regression/rescue<=.10, baseline destruction<=1%, no safety failures, API p95<=1000ms, no destructive repeated-call instability",
+    "SELECTIVE_DEFAULT_ON only on pre-frozen independently validated generic routing scope with net gain, zero regressions and same safety/latency constraints; no eligible scope is introduced from holdout outcomes",
+    "OPTIONAL_ADVISORY if independent game net gain remains but default bars fail; otherwise NO_GO"
+  ],
+  "semanticEvidencePolicy": "offset/count/type alone do not identify speed/health/money; classify insufficient binary context separately; oracle words never supply context",
+  "postResultChanges": "representation/prompt/threshold tuning requires a different untouched holdout; all failure analysis here is diagnostic only"
+}

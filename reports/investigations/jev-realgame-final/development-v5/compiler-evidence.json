@@ -1,0 +1,269 @@
+{
+  "schema": "hex-cxx-v5-compiler-evidence-index/v1",
+  "claim": "metadata coverage and independent compiler identity only; no member recall or production activation",
+  "officialAbiAuthority": "https://itanium-cxx-abi.github.io/cxx-abi/abi.html#expression",
+  "fullEvidence": "compiler-evidence.json.gz",
+  "originalSha256": "4fa94346a5bd6a0e9e114bcbf3e850631b1f6e7837b0443eb577d22008d51869",
+  "compressedSha256": "64712406fb82102f2ab2d0319f6ca974851432243c11c18e49bfd7ce46901c7b",
+  "files": {
+    "release-coverage.json": {
+      "sha256": "1f50e9ecf56d8937a711485813b2e62d22136664103212091b746695ff201798",
+      "games": {
+        "openttd": {
+          "definedNestedFunctionSymbols": 4514,
+          "lostOwners": 0,
+          "correctedOwners": 0,
+          "additionalVerifiedNames": 0,
+          "additionalNonStaticRoleNames": null
+        },
+        "openmw": {
+          "definedNestedFunctionSymbols": 25034,
+          "lostOwners": 0,
+          "correctedOwners": 796,
+          "additionalVerifiedNames": 0,
+          "additionalNonStaticRoleNames": null
+        }
+      }
+    },
+    "compiler-extended-verification.json": {
+      "sha256": "65dc5a3d9fdc2d0655bd506acb699577aa9216a643b88430ab963c0ed3460426",
+      "data": {
+        "complete": true,
+        "independentCompiler": "g++11.4",
+        "positiveCount": 5,
+        "malformedNegativeCount": 5,
+        "checks": [
+          {
+            "symbol": "_ZNK3BoxIN3abc1XEE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "Box<abc::X>",
+              "methodName": "get",
+              "demangled": "Box<abc::X>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            }
+          },
+          {
+            "symbol": "_ZNK3abc6WidgetIN3def1XEE3getIN3ghi1YEEEiv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "abc::Widget<def::X>",
+              "methodName": "get<ghi::Y>",
+              "demangled": "abc::Widget<def::X>::get<ghi::Y>(int, void) const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            }
+          },
+          {
+            "symbol": "_ZNK6Widget3getIN3abc1XEEEiv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "Widget",
+              "methodName": "get<abc::X>",
+              "demangled": "Widget::get<abc::X>(int, void) const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            }
+          },
+          {
+            "symbol": "_ZNK8OperatorclEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "Operator",
+              "methodName": "operator()",
+              "demangled": "Operator::operator()() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            }
+          },
+          {
+            "symbol": "_ZNK8OperatorlsEi",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "Operator",
+              "methodName": "operator<<",
+              "demangled": "Operator::operator<<(int) const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            }
+          }
+        ],
+        "negatives": [
+          {
+            "symbol": "_ZNK3BoxIN3abc1XEE3getEvBAD",
+            "result": {
+              "isCxx": false,
+              "reason": "cxx-demangle-failed"
+            }
+          },
+          {
+            "symbol": "_ZNK3abc6WidgetIN3def1XEE3getIN3ghi1YEEEivBAD",
+            "result": {
+              "isCxx": false,
+              "reason": "cxx-demangle-failed"
+            }
+          },
+          {
+            "symbol": "_ZNK6Widget3getIN3abc1XEEEivBAD",
+            "result": {
+              "isCxx": false,
+              "reason": "cxx-demangle-failed"
+            }
+          },
+          {
+            "symbol": "_ZNK8OperatorclEvBAD",
+            "result": {
+              "isCxx": false,
+              "reason": "cxx-demangle-failed"
+            }
+          },
+          {
+            "symbol": "_ZNK8OperatorlsEiBAD",
+            "result": {
+              "isCxx": false,
+              "reason": "cxx-demangle-failed"
+            }
+          }
+        ]
+      }
+    },
+    "literal-release-coverage.json": {
+      "sha256": "6d29f3a837e527e847e9bf852c1d6094be0d89e3f8ac9988f4062ab94b6e852c",
+      "games": {
+        "openttd": {
+          "definedNestedFunctionSymbols": 4514,
+          "lostOwners": 0,
+          "correctedOwners": 0,
+          "additionalVerifiedNames": 246,
+          "additionalNonStaticRoleNames": 29
+        },
+        "openmw": {
+          "definedNestedFunctionSymbols": 25034,
+          "lostOwners": 0,
+          "correctedOwners": 796,
+          "additionalVerifiedNames": 1145,
+          "additionalNonStaticRoleNames": 470
+        }
+      }
+    },
+    "compiler-literals-verification.json": {
+      "sha256": "28230ba531c1a5a5937d54954559643dde9756f526f743c2ac49f8198890c879",
+      "data": {
+        "complete": true,
+        "independentCompiler": "g++11.4",
+        "positiveCount": 5,
+        "checks": [
+          {
+            "symbol": "_ZNK6IntBoxILi2EE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "IntBox<2>",
+              "methodName": "get",
+              "demangled": "IntBox<2>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            },
+            "compilerDisplay": "IntBox<2>::get() const"
+          },
+          {
+            "symbol": "_ZNK6IntBoxILin2EE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "IntBox<-2>",
+              "methodName": "get",
+              "demangled": "IntBox<-2>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            },
+            "compilerDisplay": "IntBox<-2>::get() const"
+          },
+          {
+            "symbol": "_ZNK7BoolBoxILb0EE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "BoolBox<false>",
+              "methodName": "get",
+              "demangled": "BoolBox<false>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            },
+            "compilerDisplay": "BoolBox<false>::get() const"
+          },
+          {
+            "symbol": "_ZNK7BoolBoxILb1EE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "BoolBox<true>",
+              "methodName": "get",
+              "demangled": "BoolBox<true>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            },
+            "compilerDisplay": "BoolBox<true>::get() const"
+          },
+          {
+            "symbol": "_ZNK7ModeBoxILN3abc4KindE1EE3getEv",
+            "result": {
+              "isCxx": true,
+              "isMember": true,
+              "isFreeFunction": false,
+              "className": "ModeBox<(abc::Kind)1>",
+              "methodName": "get",
+              "demangled": "ModeBox<(abc::Kind)1>::get() const",
+              "isConstructor": false,
+              "isDestructor": false,
+              "isConstMember": true
+            },
+            "compilerDisplay": "ModeBox<(abc::Kind)1>::get() const"
+          }
+        ]
+      }
+    },
+    "regression-receipt.json": {
+      "sha256": "72cc0475e7d3da7524f3a24050f4e6e731ed5756895c8768e9a5dd3444e1b929",
+      "data": {
+        "oldSource": "92f7c880d",
+        "oldSourceTestExit": 1,
+        "repairedSourceRestored": true
+      }
+    },
+    "rename-epoch-negative-receipt.json": {
+      "sha256": "3886ffaac999b07ee1b60293178eea9c4e8952cece2d9da89c78c52944f91d46",
+      "data": {
+        "oldSource": "92f7c880d",
+        "expectedFailingTests": 2,
+        "sealedSourceRestoredClean": true,
+        "activeSourceNotMutated": true,
+        "presentationCorrection": "Initial verifier expected TAP; actual output spec. Existing log confirms both semantic assertions, no rerun."
+      }
+    }
+  }
+}

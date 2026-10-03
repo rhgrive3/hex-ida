@@ -1,0 +1,131 @@
+{
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "cases": [
+    {
+      "id": "FH-OP-01",
+      "query": "The calendar year in which this vehicle was built.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-02",
+      "query": "The unit number shown for this vehicle in the vehicle list.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-03",
+      "query": "The engine model this vehicle was built from.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-04",
+      "query": "The livery colour scheme used when this vehicle is drawn.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-05",
+      "query": "The identifier of the vehicle group this vehicle belongs to.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-06",
+      "query": "How full this vehicle has been during the trip it is currently making, in percent.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-07",
+      "query": "How long the cargo currently on board has been carried by this vehicle.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-08",
+      "query": "How many ticks this vehicle still needs to finish loading or unloading at its current stop.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-09",
+      "query": "How long a vehicle should wait at the stop this order describes, in ticks.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-10",
+      "query": "The travel time in ticks scheduled between this order and the next one.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-11",
+      "query": "The cargo type this order refits the vehicle to when it is executed.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-12",
+      "query": "The kind of instruction this order represents, such as going to a station, loading or unloading.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-13",
+      "query": "The date on which this station was built.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-14",
+      "query": "The type of the vehicle that most recently called at this station.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-15",
+      "query": "The date on which this industry was constructed.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-16",
+      "query": "The last year in which this industry produced cargo.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-17",
+      "query": "The kind of industry this is, such as a coal mine or a steel mill.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-18",
+      "query": "Whether this vehicle group is currently collapsed in the group list.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-19",
+      "query": "The number that tells apart windows of the same kind.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-OP-20",
+      "query": "The portrait graphic used for this company\u2019s president.",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-02",
+      "query": "What is the air temperature inside this vehicle passenger cabin?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-05",
+      "query": "What is the player character\u2019s blood oxygen saturation?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-06",
+      "query": "What is the odometer reading of this road vehicle?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-07",
+      "query": "How many seats does the station\u2019s waiting lounge have?",
+      "mode": "partial"
+    },
+    {
+      "id": "FH-CTL-08",
+      "query": "How many months remain until this company\u2019s next tax audit?",
+      "mode": "partial"
+    }
+  ]
+}

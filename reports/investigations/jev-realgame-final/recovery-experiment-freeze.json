@@ -1,0 +1,22 @@
+{
+  "schema": "hex-jev-recovery-experiment-freeze/v1",
+  "frozenAtUtc": "2026-09-30T10:35:40.076555+00:00",
+  "policySha256": "e242fa93b08e3ea00666bb326f403f72a78f9a84d50e4d048adc7d1cee92008d",
+  "corpora": {
+    "development-original70": {
+      "caseSha256": "58bdbb1dfd683b85b283e65890f97e88871168168cb03bfac323edcaf7ea4a62",
+      "originalUnchangedQueryCorpusSha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+      "role": "already-used development only",
+      "policySha256": "8aabe4fc144e1317fde0a39d7605c7299a45b91234d50664f5cdbf2f5c0514f5"
+    },
+    "untouched-final": {
+      "caseSha256": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+      "independentHoldoutSha256": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+      "policySha256": "e242fa93b08e3ea00666bb326f403f72a78f9a84d50e4d048adc7d1cee92008d",
+      "queriesUnchanged": true,
+      "verified": 40,
+      "controls": 10
+    }
+  },
+  "finalFrozenAtUtc": "2026-09-30T11:01:52.545643+00:00"
+}

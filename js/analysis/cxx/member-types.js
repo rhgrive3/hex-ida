@@ -35,6 +35,9 @@ const FP_REGISTER = /^[vsdq]\d+$/;
 // (byte -> word -> doubleword -> register move -> truncate), so the chain walk
 // must cover normal codegen without becoming unbounded.
 const MAX_CHAIN_DEPTH = 8;
+// Semantic IR expands register copies and truncations into separate nodes.
+// Exact input/constant tracing follows one path and retains an explicit cap.
+const MAX_INPUT_CHAIN_DEPTH = 32;
 
 function toBigInt(value) {
   if (typeof value === 'bigint') return value;
@@ -108,11 +111,18 @@ const WIDTH_ONLY = new Set(['int8', 'int16', 'int32', 'int64']);
 
 function buildChains(ir, maxInstructions) {
   const sources = new Map();
+  const copies = new Map();
+  const copyWidths = new Map();
+  const copyConversions = new Map();
+  const masks = new Map();
+  const maskWidths = new Map();
   const consumers = new Map();
   const constants = new Map();
   const vectorTargets = new Set();
   const conditionValues = new Set();
   const addressUsed = new Set();
+  const returnInputs = new Set(), comparisonInputs = new Set(), arithmeticInputs = new Set();
+  const definitions = new Map(), duplicateDefinitions = new Set();
   const instructions = [];
   let scanned = 0;
 
@@ -131,11 +141,38 @@ function buildChains(ir, maxInstructions) {
   }
 
   for (const inst of instructions) {
+    const definitionId=valueId(inst.dst);
+    if(definitionId!=null){
+      if(definitions.has(definitionId))duplicateDefinitions.add(definitionId);
+      else definitions.set(definitionId,inst);
+    }
+    if(inst.dst&&inst.op==='bin'&&inst.sub==='and'&&inst.args?.length===2) {
+      masks.set(valueId(inst.dst),inst.args.map(argument=>valueId(argument?.value??argument)));
+      if(Number.isSafeInteger(inst.dst.bits)&&inst.dst.bits>0&&inst.dst.bits<=64)
+        maskWidths.set(valueId(inst.dst),inst.dst.bits);
+    }
+    const roleTargets = ['ret','return'].includes(inst.op) ? returnInputs
+      : ['cmp','cbr'].includes(inst.op) ? comparisonInputs : ['bin','binary'].includes(inst.op) ? arithmeticInputs : null;
+    if (roleTargets) for (const arg of inst.args || []) {
+      const id=valueId(arg?.value ?? arg);if(id!=null)roleTargets.add(id);
+    }
     const dstId = valueId(inst.dst);
     if (dstId != null && (inst.op === 'mov' || inst.op === 'un') && inst.args?.length) {
       const source = valueId(inst.args[0]?.value ?? inst.args[0]);
       if (source != null) {
         sources.set(dstId, source);
+        if(inst.op==='mov'&&(inst.sub==null||['copy','trunc','zext','sext'].includes(inst.sub))) {
+          const sourceValue=inst.args[0]?.value??inst.args[0];
+          const widths=[inst.dst?.bits,sourceValue?.bits].filter(bits=>Number.isSafeInteger(bits)&&bits>0&&bits<=64);
+          const malformedWidth=[inst.dst?.bits,sourceValue?.bits].some(bits=>bits!=null
+            &&(!Number.isSafeInteger(bits)||bits<1||bits>64));
+          if(!malformedWidth&&(inst.sub==null||inst.sub==='copy'||widths.length===2)) {
+            copies.set(dstId,source);
+            copyWidths.set(dstId,widths.length?Math.min(...widths):64);
+            if(['trunc','zext','sext'].includes(inst.sub))
+              copyConversions.set(dstId,{kind:inst.sub,sourceBits:sourceValue.bits,destinationBits:inst.dst.bits});
+          }
+        }
         const list = consumers.get(source);
         if (list) list.push(dstId); else consumers.set(source, [dstId]);
       }
@@ -170,7 +207,73 @@ function buildChains(ir, maxInstructions) {
     const baseId = valueId(inst.loc?.base ?? inst.addr?.base);
     if (baseId != null) addressUsed.add(baseId);
   }
-  return { sources, consumers, constants, vectorTargets, conditionValues, addressUsed };
+  return { sources, copies, copyWidths, copyConversions, masks, maskWidths, consumers, constants, vectorTargets, conditionValues, addressUsed, returnInputs, comparisonInputs, arithmeticInputs, definitions, duplicateDefinitions,
+    returnFlowUnknown:instructions.some(inst=>inst.op==='unknown') };
+}
+
+// A closed, bounded return-expression walk is context only. It does not feed
+// type classification, establish a logical ABI port, or infer a source name.
+// Unknown calls/loads/merges veto the whole computed-return observation rather
+// than hiding another possible member behind an untraced expression.
+function computedReturnMembers(chains,memberLoads,argumentIds,{complete}) {
+  const unavailable=()=>({members:new Set(),memberCount:null,incomplete:true});
+  if(!complete||chains.returnFlowUnknown||chains.returnInputs.size>32)return unavailable();
+  const binaryOps=new Set(['add','sub','mul','and','or','xor','shl','shr','sar','lsr','asr','udiv','sdiv']);
+  const members=new Set(),active=new Set();
+  let visits=0,hasComputation=false;
+  const walk=(id,depth)=>{
+    if(id==null||depth>MAX_CHAIN_DEPTH||++visits>256||active.has(id)
+      ||chains.duplicateDefinitions.has(id))return false;
+    if(memberLoads.has(id)){
+      const entry=memberLoads.get(id);
+      if(entry.offset>BigInt(Number.MAX_SAFE_INTEGER)
+        ||entry.accesses.some(access=>!Number.isSafeInteger(access.size)||access.size<1||access.size>64||access.indexed)
+        ||new Set(entry.accesses.map(access=>access.size)).size!==1)return false;
+      members.add(id);return true;
+    }
+    if(chains.constants.has(id)||argumentIds.has(id))return true;
+    const definition=chains.definitions.get(id);
+    if(!definition)return false;
+    const args=(definition.args??[]).map(arg=>valueId(arg?.value??arg));
+    active.add(id);
+    let valid=false;
+    if(definition.op==='mov'&&args.length===1
+      &&(definition.sub==null||['copy','trunc','zext','sext'].includes(definition.sub))) {
+      valid=walk(args[0],depth+1);
+    }else if(definition.op==='un'&&args.length===1
+      &&['neg','not','zext','sext','trunc'].includes(definition.sub)) {
+      hasComputation=true;valid=walk(args[0],depth+1);
+    }else if(definition.op==='bin'&&args.length===2&&binaryOps.has(definition.sub)) {
+      const constant=args.map(arg=>chains.constants.get(arg));
+      const annihilated=['and','mul'].includes(definition.sub)&&constant.includes(0n)
+        ||['xor','sub'].includes(definition.sub)&&args[0]===args[1]
+        ||['udiv','sdiv'].includes(definition.sub)&&constant[1]===0n;
+      if(!annihilated){hasComputation=true;valid=args.every(arg=>walk(arg,depth+1));}
+    }
+    active.delete(id);return valid;
+  };
+  for(const root of chains.returnInputs)if(!walk(root,0))return unavailable();
+  return {members:hasComputation?members:new Set(),
+    memberCount:new Set([...members].map(id=>memberLoads.get(id).offset)).size,incomplete:false};
+}
+
+// Exact 0/1 writes may follow copies, never arbitrary unary operations.
+function storedBitConstant(seed,chains) {
+  const seen=new Set(),conversions=[];let id=seed;
+  for(let depth=0;depth<MAX_INPUT_CHAIN_DEPTH&&id!=null;depth++) {
+    if(seen.has(id))return null;seen.add(id);
+    if(chains.constants.has(id)) {
+      let value=chains.constants.get(id);
+      for(const conversion of conversions.reverse()) {
+        const bits=conversion.kind==='trunc'?conversion.destinationBits:conversion.sourceBits;
+        value=conversion.kind==='sext'?BigInt.asIntN(bits,value):BigInt.asUintN(bits,value);
+      }
+      return value;
+    }
+    const conversion=chains.copyConversions.get(id);if(conversion)conversions.push(conversion);
+    id=chains.copies.get(id);
+  }
+  return null;
 }
 
 /** Breadth-first walk over mov/unary chains, bounded by MAX_CHAIN_DEPTH. */
@@ -207,6 +310,69 @@ function constantValueOf(seedId, chains) {
   return null;
 }
 
+function isStoredArgument(seedId, argumentIds, chains) {
+  const visited=new Set();let current=seedId;
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
+    if(argumentIds.has(current))return true;
+    if(visited.has(current))return false;
+    visited.add(current);current=chains.sources.get(current)??null;
+  }
+  return false;
+}
+
+function storedArgumentRegister(seedId, argumentRegisters, chains, requiredBits=1) {
+  if(!Number.isSafeInteger(requiredBits)||requiredBits<1||requiredBits>64)return null;
+  const seen=new Set();let current=seedId;
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
+    if(seen.has(current))return null;seen.add(current);
+    const argument=argumentRegisters.get(current);
+    if(argument)return argument.bits>=requiredBits?argument.register:null;
+    const maskOperands=chains.masks.get(current);
+    if(maskOperands) {
+      if((chains.maskWidths.get(current)??0)<requiredBits)return null;
+      const requiredMask=(1n<<BigInt(requiredBits))-1n;
+      const constantIndex=maskOperands.findIndex(operand=>{
+        const mask=storedBitConstant(operand,chains);
+        return mask!=null&&(mask&requiredMask)===requiredMask;
+      });
+      if(constantIndex<0)return null;
+      // Masking away bits outside the stored width leaves every stored bit
+      // identical to the caller's value. This proves a machine source only.
+      current=maskOperands[1-constantIndex];continue;
+    }
+    // An arbitrary unary expression is argument-derived, but cannot claim
+    // the unmodified parameter source. Copy/truncation stores remain explicit
+    // machine observations; they do not establish declared field types.
+    if((chains.copyWidths.get(current)??0)<requiredBits)return null;
+    current=chains.copies.get(current)??null;
+  }
+  return null;
+}
+
+function storedArgumentBit(seedId, argumentRegisters, chains, storeSize) {
+  if(!Number.isSafeInteger(storeSize)||storeSize<1||storeSize>8)return null;
+  const seen=new Set();let current=seedId,preservedBits=storeSize*8;
+  for(let depth=0;current!=null&&depth<MAX_INPUT_CHAIN_DEPTH;depth++) {
+    if(seen.has(current))return null;seen.add(current);
+    const operands=chains.masks.get(current);
+    if(operands) {
+      for(let index=0;index<2;index++) {
+        const mask=storedBitConstant(operands[index],chains);
+        if(mask==null||mask<=0n||mask>0xffffffffffffffffn||(mask&(mask-1n))!==0n)continue;
+        let bit=0;for(let value=mask;value>1n;value>>=1n)bit++;
+        if(bit>=preservedBits||bit>=64||bit>=(chains.maskWidths.get(current)??0))return null;
+        const register=storedArgumentRegister(operands[1-index],argumentRegisters,chains,bit+1);
+        return register?`${register}:${bit}`:null;
+      }
+      return null;
+    }
+    preservedBits=Math.min(preservedBits,chains.copyWidths.get(current)??0);
+    if(preservedBits<1)return null;
+    current=chains.copies.get(current)??null;
+  }
+  return null;
+}
+
 /**
  * Recovers per-offset member type evidence for accesses through a receiver.
  *
@@ -224,7 +390,19 @@ export function recoverMemberTypeEvidence({
 } = {}) {
   if (typeof isReceiverBase !== 'function') throw new TypeError('cpp-member-type-receiver-predicate-required');
   const chains = buildChains(ir, maxInstructions);
+  const argumentIds=new Set((ir?.values??[]).slice(0,maxInstructions)
+    .filter(value=>value.kind==='arg').map(value=>valueId(value)).filter(id=>id!=null));
+  const argumentRegisters=new Map((ir?.values??[]).slice(0,maxInstructions)
+    .filter(value=>value.kind==='arg'&&/^[xw][0-7]$/.test(value.reg??value.label??'')&&valueId(value)!=null)
+    .filter(value=>value.bits==null||Number.isSafeInteger(value.bits)&&value.bits>0&&value.bits<=64)
+    .map(value=>{
+      const register=value.reg??value.label;
+      const bits=Number.isSafeInteger(value.bits)&&value.bits>0&&value.bits<=64
+        ?value.bits:register.startsWith('w')?32:64;
+      return [valueId(value),{register:register.replace(/^w/,'x'),bits}];
+    }));
   const byOffset = new Map();
+  const memberLoads=new Map();
   let accesses = 0;
   let truncated = false;
   let scanned = 0;
@@ -252,7 +430,7 @@ export function recoverMemberTypeEvidence({
 
     let fp = false;
     let boolLike = false;
-    let pointerUse = false;
+    let pointerUse = false,storedRole=null,argumentBit=null;
     if (inst.op === 'load') {
       fp = flowsInto(loadValueId, chains.vectorTargets, chains.consumers);
       pointerUse = size === 8 && !indexed && loadValueId != null && (
@@ -262,7 +440,13 @@ export function recoverMemberTypeEvidence({
     } else {
       const storedId = valueId(inst.args?.[0]?.value ?? inst.args?.[0]);
       const storedConstant = constantValueOf(storedId, chains);
-      if (size === 1 && storedConstant != null && (storedConstant === 0n || storedConstant === 1n)) boolLike = true;
+      if(storedConstant!=null)storedRole='constant-written';
+      else if(isStoredArgument(storedId,argumentIds,chains))storedRole='argument-written';
+      const exactStoredConstant=storedBitConstant(storedId,chains);
+      argumentBit=storedArgumentBit(storedId,argumentRegisters,chains,size);
+      if(argumentBit)storedRole='argument-written';
+      if (size === 1 && (exactStoredConstant === 0n || exactStoredConstant === 1n)) boolLike = true;
+      if(size===1&&argumentBit?.endsWith(':0'))boolLike=true;
       const storedSource = storedId != null ? chains.sources.get(storedId) : null;
       if (size <= 8) {
         // A store of a value that came straight out of a vector register is
@@ -274,14 +458,34 @@ export function recoverMemberTypeEvidence({
     let entry = byOffset.get(offset);
     if (!entry) {
       if (byOffset.size >= maxFields) { truncated = true; continue; }
-      entry = { offset, accesses: [], readCount: 0, writeCount: 0 };
+      entry = { offset, accesses: [], readCount: 0, writeCount: 0, accessRoles:new Set(),writtenArgumentRegisters:new Set(),writtenArgumentBits:new Set() };
       byOffset.set(offset, entry);
     }
     entry.accesses.push({ size, signed, fp, pointerUse, indexed, scale, boolLike });
+    if(inst.op==='load'&&!indexed&&loadValueId!=null&&Number.isSafeInteger(size)&&size>0)
+      memberLoads.set(loadValueId,entry);
+    if(storedRole)entry.accessRoles.add(storedRole);
+    if(inst.op==='store') {
+      if(argumentBit)entry.writtenArgumentBits.add(argumentBit);
+      const argumentRegister=storedArgumentRegister(valueId(inst.args?.[0]?.value??inst.args?.[0]),argumentRegisters,chains,size*8);
+      if(argumentRegister)entry.writtenArgumentRegisters.add(argumentRegister);
+      const literal=storedBitConstant(valueId(inst.args?.[0]?.value??inst.args?.[0]),chains);
+      if(literal===0n)entry.accessRoles.add('zero-written');
+      if(literal===1n)entry.accessRoles.add('one-written');
+    }
+    // A bounded extension of the already-built SSA copy/unary chains. These
+    // are machine use roles, never source names or semantic field labels.
+    if(inst.op==='load')for(const [role,targets] of [['return-input',chains.returnInputs],
+      ['comparison-input',chains.comparisonInputs],['arithmetic-input',chains.arithmeticInputs],['address-base',chains.addressUsed]]) {
+      if(targets.has(loadValueId)||flowsInto(loadValueId,targets,chains.consumers))entry.accessRoles.add(role);
+    }
     if (inst.op === 'load') entry.readCount++; else entry.writeCount++;
     accesses++;
   }
 
+  const returned=computedReturnMembers(chains,memberLoads,argumentIds,{complete:!truncated});
+  for(const id of returned.members)
+    memberLoads.get(id).accessRoles.add('computed-return-input');
   const fields = [];
   for (const entry of [...byOffset.values()].sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0))) {
     const widths = [...new Set(entry.accesses.map((access) => access.size).filter((size) => Number.isSafeInteger(size) && size > 0))];
@@ -322,6 +526,12 @@ export function recoverMemberTypeEvidence({
       mixedWidths,
       readCount: entry.readCount,
       writeCount: entry.writeCount,
+      accessRoles: Object.freeze([...entry.accessRoles].sort()),
+      ...(returned.incomplete?{returnExpressionIncomplete:true}:{}),
+      ...(returned.memberCount!=null?{returnedMemberCount:returned.memberCount}:{}),
+      writtenArgumentRegisters: Object.freeze([...entry.writtenArgumentRegisters].sort()),
+      writtenArgumentBits: Object.freeze([...entry.writtenArgumentBits].sort().slice(0,8)),
+      writtenArgumentBitsTruncated: entry.writtenArgumentBits.size>8,
       indexed: representative.indexed,
       category: kind,
       typeLabel: classification.label,

@@ -1,0 +1,98 @@
+{
+  "schema": "hex-jev-development-v5-metadata-comparison/v1",
+  "complete": true,
+  "developmentOnly": true,
+  "authorizesDefaultActivation": false,
+  "scope": "4 previously judged development queries; metadata eligibility only, no member recall or ranking accuracy",
+  "productSha": "9b4dc9e8dff700427c11103a8e8b7a82dafb7e1c",
+  "runId": 36876865851,
+  "runUrl": "https://github.com/rhgrive3/actions/actions/runs/36876865851",
+  "jobs": [
+    {
+      "id": 110418422188,
+      "conclusion": "success"
+    },
+    {
+      "id": 110418508025,
+      "conclusion": "success"
+    },
+    {
+      "id": 110418508643,
+      "conclusion": "success"
+    }
+  ],
+  "games": {
+    "openmw": {
+      "metadataSha256": "380bc60cebe268abdb5d906dd6d0ee0db510b7a30ea86c240446c278d91386fe",
+      "snapshotSha256": "d867b26d8cc70ab99ea61125f5db4dd3235cfe2e34f19b0bfbdd70868ba706b3",
+      "artifactId": 11168789298,
+      "zipSha256": "fdc427927ec7d62914da61a2d5865c7495fa9a2dbb830f04aaab871ade82220b",
+      "rows": [
+        {
+          "id": "SV4-MW-10",
+          "queryUnchanged": true,
+          "diagnosticOwner": "MWGui::WaitDialog",
+          "oldOwnerMethods": 0,
+          "newOwnerMethods": 0,
+          "choiceCount": 255,
+          "publishedMembers": 0
+        },
+        {
+          "id": "SV4-MW-16",
+          "queryUnchanged": true,
+          "diagnosticOwner": "MWMechanics::CreatureStats",
+          "oldOwnerMethods": 1,
+          "newOwnerMethods": 43,
+          "choiceCount": 255,
+          "publishedMembers": 0
+        }
+      ],
+      "profile": {
+        "binaryReadMs": 19.93294099999997,
+        "binaryHashMs": 16.137650000000008,
+        "binaryOpenMs": 224880.381863,
+        "binaryIdentityMs": 947.1952269999892,
+        "symbolAnalysisMs": 3848.190895000007,
+        "functionDiscoveryMs": 2753.9962229999946,
+        "programConstructionMs": 4873.208700999996,
+        "totalSetupMs": 237366.3357
+      }
+    },
+    "openttd": {
+      "metadataSha256": "63fef39153038cec91334ddaecd72700c3bf386227d1879d9068ad7b19aa67c3",
+      "snapshotSha256": "8414fd9e340d9e9eda44f292e776dd7492ada2173db39320ccc0477250949f22",
+      "artifactId": 11169972214,
+      "zipSha256": "8c8bb45506655ed9eecbee57a54b21ee515cbe82313fef4fa374bc98884aa653",
+      "rows": [
+        {
+          "id": "SV4-OP-04",
+          "queryUnchanged": true,
+          "diagnosticOwner": "Company",
+          "oldOwnerMethods": 1,
+          "newOwnerMethods": 15,
+          "choiceCount": 255,
+          "publishedMembers": 0
+        },
+        {
+          "id": "SV4-OP-20",
+          "queryUnchanged": true,
+          "diagnosticOwner": "DisasterVehicle",
+          "oldOwnerMethods": 1,
+          "newOwnerMethods": 1,
+          "choiceCount": 255,
+          "publishedMembers": 0
+        }
+      ],
+      "profile": {
+        "binaryReadMs": 15.732810000000029,
+        "binaryHashMs": 6.161923999999999,
+        "binaryOpenMs": 18312.291433,
+        "binaryIdentityMs": 297.92914499999824,
+        "symbolAnalysisMs": 1441.7615010000009,
+        "functionDiscoveryMs": 1442.7268660000009,
+        "programConstructionMs": 1823.216252000002,
+        "totalSetupMs": 23351.619032000002
+      }
+    }
+  }
+}

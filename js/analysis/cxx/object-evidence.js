@@ -10,7 +10,9 @@
  */
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
-import { demangleCxx, readableName, isMangled } from '../../rtti.js';
+import { demangleCxx, readableName, isMangled, cxxAbiFunctionIdentity } from '../../rtti.js';
+import { isCanonicalCppTypedArgumentEvidence } from './typed-argument.js';
+import { isCanonicalCppClassTypeEvidence } from './class-type.js';
 
 export const CPP_OBJECT_EVIDENCE_VERSION = '1.0.0';
 
@@ -19,6 +21,23 @@ export const CPP_CLASS_IDENTITY_SCHEMA = 'cpp-class-identity/v1';
 export const CPP_VTABLE_SCHEMA = 'cpp-vtable-evidence/v1';
 export const CPP_VIRTUAL_SLOT_SCHEMA = 'cpp-virtual-slot-evidence/v1';
 export const CPP_CANONICAL_MEMBER_SCHEMA = 'cpp-canonical-member-evidence/v1';
+export const CPP_MEMBER_ACCESS_ROLES = Object.freeze(['return-input','computed-return-input',
+  'comparison-input','arithmetic-input','address-base','constant-written','argument-written','zero-written','one-written']);
+
+// Read the release symbol table rather than a user's display rename. Small
+// first-party hosts that expose only nameAt keep their existing contract.
+export function cxxBinarySymbolNameAt(symbols,address){
+  const names=symbols?.names,addrs=symbols?.addrs;
+  if(names&&addrs){
+    if(!Number.isSafeInteger(names.length)||names.length!==addrs.length)return null;
+    let left=0,right=addrs.length;
+    while(left<right){const middle=Math.floor((left+right)/2);
+      if(addrs[middle]<=address)left=middle+1;else right=middle;}
+    return left&&addrs[left-1]===address?names[left-1]??null:null;
+  }
+  if(symbols?.nameEvidence?.(address)?.manual===true)return null;
+  return symbols?.nameAt?.(address)??null;
+}
 
 const canonicalCppReceiverEvidence = new WeakSet();
 const canonicalCppVirtualSlotEvidence = new WeakSet();
@@ -26,6 +45,37 @@ const canonicalCppMemberEvidence = new WeakSet();
 
 export function isCanonicalCppReceiverEvidence(value) {
   return value !== null && typeof value === 'object' && canonicalCppReceiverEvidence.has(value);
+}
+
+// A typed input object is a separate ABI role. It does not establish that a
+// free function is a member, and consumers of `this` must keep rejecting it.
+export function createCppTypedArgumentReceiverEvidence(input = {}) {
+  const proof=input.argumentProof;
+  if(!isCanonicalCppTypedArgumentEvidence(proof))fail('cpp-typed-argument-proof-required');
+  // Itanium named types include enums. A pointer signature alone therefore
+  // cannot establish a class: require an independent primary vtable identity,
+  // or exact constructor/destructor class-type evidence from this snapshot.
+  const owner=input.classIdentity;
+  const classTypeProof=input.classTypeProof;
+  const lifetimeClass=isCanonicalCppClassTypeEvidence(classTypeProof)
+    &&classTypeProof.className===proof.className&&classTypeProof.snapshotId===input.snapshotId;
+  if(owner?.kind!=='named'||owner.className!==proof.className||owner.offsetToTop!==0n
+    ||!lifetimeClass&&(typeof owner.vtableAddress!=='bigint'||owner.vtableAddress<=0n))fail('cpp-typed-argument-class-proof-required');
+  const functionId=typeof input.functionId==='string'&&input.functionId.trim()
+    ?input.functionId.trim():fail('cpp-receiver-function-id-required');
+  const functionAddress=nonNegativeBigInt(input.functionAddress,'cpp-receiver-function-address');
+  if(functionAddress!==proof.functionAddress)fail('cpp-typed-argument-function-binding');
+  if(input.canonicalValueId==null||!['string','number'].includes(typeof input.canonicalValueId))fail('cpp-receiver-canonical-value-id-required');
+  const snapshotId=typeof input.snapshotId==='string'&&input.snapshotId.trim()
+    ?input.snapshotId.trim():fail('cpp-receiver-snapshot-id-required');
+  const record={schema:CPP_RECEIVER_SCHEMA,functionId,functionAddress,
+    canonicalValueId:input.canonicalValueId,receiverRole:'typed-argument',
+    classIdentity:createCppClassIdentity(owner),
+    argumentProof:proof,classTypeProof:lifetimeClass?classTypeProof:null,nonStaticProof:null,
+    abiBinding:{architecture:proof.architecture,register:proof.register,argumentIndex:proof.argumentIndex},
+    completeness:'complete',snapshotId,uncertainty:null};
+  record.digest=stableDigest(record);
+  const canonical=deepFreeze(record);canonicalCppReceiverEvidence.add(canonical);return canonical;
 }
 
 export function isCanonicalCppVirtualSlotEvidence(value) {
@@ -315,8 +365,10 @@ export function createCppVirtualSlotEvidence(input = {}) {
  * - `typeProven`: the access shape proves a *type category*. It is false for a
  *   width-only or contradictory access, and a consumer that renders a type must
  *   require it rather than defaulting to one;
- * - the record never carries a field *name*. A proven offset and a proven type
- *   do not make `this->health` correct, so no name is minted here.
+ * - the record never *infers* a field name. A proven offset and a proven type
+ *   do not make `this->health` correct, so no name is minted here. A producer
+ *   that already owns the name may supply `memberName`; it is carried through
+ *   verbatim and is null otherwise.
  *
  * `receiverDigest` and `functionId` bind the member to the exact receiver
  * evidence it was derived from, so a member set cannot be replayed against
@@ -333,6 +385,11 @@ export function createCppMemberEvidence(input = {}) {
 
   const snapshotId = typeof input.snapshotId === 'string' && input.snapshotId.trim()
     ? input.snapshotId.trim() : fail('cpp-member-snapshot-id-required');
+
+  // An optional producer-supplied name is carried through verbatim. It is never
+  // derived from the offset/type, and a blank value is the same as no name.
+  const memberName = typeof input.memberName === 'string' && input.memberName.trim()
+    ? input.memberName.trim() : null;
 
   // A member without a location cannot be binary-grounded, and `nonNegativeBigInt`
   // returns null rather than throwing for a missing value, so an absent offset
@@ -369,19 +426,37 @@ export function createCppMemberEvidence(input = {}) {
   const readCount = Number.isSafeInteger(input.readCount) && input.readCount >= 0 ? input.readCount : 0;
   const writeCount = Number.isSafeInteger(input.writeCount) && input.writeCount >= 0 ? input.writeCount : 0;
   if (readCount + writeCount === 0) fail('cpp-member-access-count-required');
+  const accessRoles=input.accessRoles??[];
+  if(!Array.isArray(accessRoles)||accessRoles.length>CPP_MEMBER_ACCESS_ROLES.length
+    ||accessRoles.some(role=>!CPP_MEMBER_ACCESS_ROLES.includes(role)))fail('cpp-member-access-role-invalid');
+  if(input.returnExpressionIncomplete!=null&&typeof input.returnExpressionIncomplete!=='boolean')
+    fail('cpp-member-return-expression-status-invalid');
+  if(input.returnedMemberCount!=null&&(!Number.isSafeInteger(input.returnedMemberCount)
+    ||input.returnedMemberCount<0||input.returnedMemberCount>256))
+    fail('cpp-member-return-member-count-invalid');
+  const writtenArgumentRegisters=input.writtenArgumentRegisters??[];
+  if(!Array.isArray(writtenArgumentRegisters)||writtenArgumentRegisters.length>8
+    ||writtenArgumentRegisters.some(register=>typeof register!=='string'||!/^x[0-7]$/.test(register)))fail('cpp-member-argument-register-invalid');
+  const writtenArgumentBits=input.writtenArgumentBits??[];
+  if(!Array.isArray(writtenArgumentBits)||writtenArgumentBits.length>8
+    ||writtenArgumentBits.some(value=>typeof value!=='string'||!/^x[0-7]:(?:0|[1-9][0-9]?)$/.test(value)
+      ||Number(value.split(':')[1])>=Math.min(64,sizeBytes*8)))fail('cpp-member-argument-bit-invalid');
+  if(input.writtenArgumentBitsTruncated!=null&&typeof input.writtenArgumentBitsTruncated!=='boolean')
+    fail('cpp-member-argument-bit-truncation-invalid');
 
   const record = {
     schema: CPP_CANONICAL_MEMBER_SCHEMA,
     functionId,
     receiverDigest,
     snapshotId,
+    memberName,
     offsetBytes,
     sizeBytes,
     accessProven: true,
     typeProven,
     category,
     typeLabel,
-    signedness: input.signedness ? String(input.signedness) : null,
+    signedness: input.signedness === false ? 'false' : input.signedness ? String(input.signedness) : null,
     categoryCandidates: Array.isArray(input.categoryCandidates)
       ? Object.freeze([...new Set(input.categoryCandidates.map(String))].sort())
       : Object.freeze([]),
@@ -390,6 +465,12 @@ export function createCppMemberEvidence(input = {}) {
     indexed: input.indexed === true,
     readCount,
     writeCount,
+    ...(accessRoles.length ? {accessRoles:Object.freeze([...new Set(accessRoles)].sort())} : {}),
+    ...(input.returnExpressionIncomplete===true?{returnExpressionIncomplete:true}:{}),
+    ...(input.returnedMemberCount!=null?{returnedMemberCount:input.returnedMemberCount}:{}),
+    ...(writtenArgumentRegisters.length ? {writtenArgumentRegisters:Object.freeze([...new Set(writtenArgumentRegisters)].sort())} : {}),
+    ...(writtenArgumentBits.length ? {writtenArgumentBits:Object.freeze([...new Set(writtenArgumentBits)].sort())} : {}),
+    ...(input.writtenArgumentBitsTruncated===true ? {writtenArgumentBitsTruncated:true} : {}),
     rule,
     reason,
   };
@@ -402,7 +483,7 @@ export function createCppMemberEvidence(input = {}) {
 /**
  * Parses C++ function symbol and determines member role and class identity.
  */
-function analyzeFunctionSymbol(name, rawMangled = null) {
+export function analyzeFunctionSymbol(name, rawMangled = null) {
   const sym = rawMangled || name;
   if (!sym || typeof sym !== 'string') return { isCxx: false, reason: 'no-symbol' };
 
@@ -427,23 +508,19 @@ function analyzeFunctionSymbol(name, rawMangled = null) {
     return { isCxx: true, isFreeFunction: true, isMember: false, demangled, reason: 'cxx-free-function' };
   }
 
-  // Nested member: _ZN...
-  // Parse class name and method name
-  const paren = demangled.indexOf('(');
-  const fullSignature = paren > 0 ? demangled.slice(0, paren).trim() : demangled.trim();
-  const parts = fullSignature.split('::');
-
-  if (parts.length < 2) {
-    return { isCxx: true, isFreeFunction: true, isMember: false, demangled, reason: 'no-class-qualifier' };
+  const abiRole = cxxAbiFunctionIdentity(sym);
+  if (!abiRole?.owner) {
+    return { isCxx: true, isFreeFunction: true, isMember: false, demangled,
+      isConstructor:false,isDestructor:false,isConstMember:false,
+      reason: abiRole ? 'no-class-qualifier' : 'unverified-function-name' };
   }
-
-  const methodName = parts[parts.length - 1];
-  const className = parts.slice(0, -1).join('::');
+  const methodName = abiRole.method;
+  const className = abiRole.owner;
 
   // Check constructor / destructor / const qualifier
-  const isConstructor = /_ZN.*C[123]E/.test(stripped) || methodName === parts[parts.length - 2];
-  const isDestructor = /_ZN.*D[012]E/.test(stripped) || methodName.startsWith('~');
-  const isConstMember = /_ZNK/.test(stripped) || demangled.endsWith(' const');
+  const isConstructor = abiRole?.kind === 'constructor';
+  const isDestructor = abiRole?.kind === 'destructor';
+  const isConstMember = abiRole?.constQualified === true;
 
   return {
     isCxx: true,
@@ -475,7 +552,28 @@ export function extractCppObjectEvidence(context = {}) {
     metadata = {},
     snapshotId = 'snapshot_default',
     architecture = 'arm64',
+    typedArgumentProof = null,
+    typedArgumentClassIdentity = null,
+    typedArgumentClassTypeProof = null,
   } = context;
+
+  if(isCanonicalCppTypedArgumentEvidence(typedArgumentProof)
+    &&typedArgumentProof.architecture===architecture
+    &&typedArgumentProof.symbol===(rawSymbol||functionName)
+    &&typedArgumentProof.functionAddress===functionAddress
+    &&metadata.isStatic!==true&&metadata.memberKind!=='static'&&metadata.isAdjustedThunk!==true
+    &&vtables.length===0) {
+    const argumentsAtX0=ir?.values?.filter(v=>v.kind==='arg'
+      &&(v.reg==null||v.reg==='x0')&&(v.reg==='x0'||v.label==='x0'))??[];
+    const arg0=argumentsAtX0.length===1?argumentsAtX0[0]:null;
+    if(arg0) {
+      const receiver=createCppTypedArgumentReceiverEvidence({argumentProof:typedArgumentProof,
+        classIdentity:typedArgumentClassIdentity,classTypeProof:typedArgumentClassTypeProof,
+        functionId,functionAddress,canonicalValueId:arg0.id,snapshotId});
+      return deepFreeze({schema:'cpp-object-evidence-report/v1',functionId,receiver,
+        vtables:[],virtualSlots:[],completeness:'complete',status:'verified-cpp-typed-argument',reason:null});
+    }
+  }
 
   // 1. Symbol and membership analysis
   const symInfo = analyzeFunctionSymbol(functionName || rawSymbol, rawSymbol || functionName);

@@ -1,0 +1,132 @@
+{
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "evaluationPurpose": "independent-final-v3",
+  "cases": [
+    {
+      "id": "SV3-OP-01",
+      "query": "What kind of vehicles is this group allowed to contain?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-02",
+      "query": "Is this company controlled by the computer instead of a human player?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-03",
+      "query": "How many historical entries of this company's financial record are valid?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-04",
+      "query": "Where is the list of engines this company has queued for automatic replacement?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-05",
+      "query": "Does any part of this town currently take part in a subsidy route?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-06",
+      "query": "Where does the chain of bus stops belonging to this station begin?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-07",
+      "query": "What kind of industry is this station attached to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-08",
+      "query": "Which company holds the exclusive right to supply cargo to this industry?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-09",
+      "query": "Which construction style was used when this industry was placed on the map?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-10",
+      "query": "Does this NewGRF carry default values for its configuration parameters?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-11",
+      "query": "How many of this NewGRF's configuration parameters are actually in use?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-12",
+      "query": "Which identifier did the server assign to this client?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-13",
+      "query": "Where is the record of server-side information about this client held?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-14",
+      "query": "What is the iterator's current position along the first diagonal axis?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-15",
+      "query": "Which callback identifier is this station's newgrf resolver currently handling?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-16",
+      "query": "How many strong engine references currently keep this script object alive?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-17",
+      "query": "Which container format version describes the sprite file loaded here?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-18",
+      "query": "Which subdirectory is this tar scanner currently recording files for?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-19",
+      "query": "Which address family is this pending network connection using?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-20",
+      "query": "What axle resistance value has been cached for this ground vehicle?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-01",
+      "query": "What is the average passenger satisfaction rating of this bus route?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-02",
+      "query": "How many litres of paint were used to respray this train?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-03",
+      "query": "What is the surname of the station master at this station?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-04",
+      "query": "How many cups of coffee does this company's president drink each day?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-05",
+      "query": "What is the octane rating of the diesel burned by this road vehicle?",
+      "mode": "partial"
+    }
+  ]
+}

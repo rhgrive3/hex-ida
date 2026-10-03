@@ -110,6 +110,19 @@ Entity* readTarget(Entity* e) { return e->target; }
 bool isAlive(Player* p) { return p->alive; }
 char readNameChar(Player* p, int index) { return p->name[index]; }
 
+// A class with no RTTI/vtable: only its exact out-of-line constructor symbol
+// can distinguish this named ABI type from an enum. Repeated pointer parameters
+// exercise real compiler-generated Itanium substitution encodings.
+class PlainCounter {
+public:
+  explicit PlainCounter(int initial);
+  int value;
+};
+PlainCounter::PlainCounter(int initial) : value(initial) {}
+int readPlainCounter(PlainCounter* first, PlainCounter* second) {
+  return first->value + second->value;
+}
+
 // The implementation label deliberately carries no C++ class syntax. The
 // only binary evidence that ties this function to a class is its unique slot
 // in OpaqueSlot's emitted vtable.

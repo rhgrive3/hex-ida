@@ -1,0 +1,36 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "RG51",
+      "query": "current health of the player character",
+      "mode": "partial"
+    },
+    {
+      "id": "RG52",
+      "query": "current stamina or endurance remaining for actor actions",
+      "mode": "partial"
+    },
+    {
+      "id": "RG53",
+      "query": "magical spellcasting energy pool currently available to actor",
+      "mode": "partial"
+    },
+    {
+      "id": "RG54",
+      "query": "overall character progression level",
+      "mode": "partial"
+    },
+    {
+      "id": "RG55",
+      "query": "player controlled object",
+      "mode": "partial"
+    },
+    {
+      "id": "RG70",
+      "query": "spaceship hyperdrive cooling radiator fluid temperature",
+      "mode": "partial"
+    }
+  ]
+}

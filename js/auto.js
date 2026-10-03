@@ -298,7 +298,7 @@ export async function autoAnalyze(opts) {
   const functionBudget = budgetOption(o.pinpointFunctionBudget, 12);
   const budget = { left: startBudget };
   const memo = o.analyze ? memoize(o.analyze) : null;
-  const hasClasses = !!(fields && fields.classCount);
+  const hasClasses = !!(fields?.classCount || o.cxxFields?.fieldCount);
 
   const pinProbability = (p) => p?.top?.fusion ? p.top.fusion.probability : 0;
   const pinIdentifying = (p) => p?.top?.fusion ? (p.top.fusion.identifying || 0) : 0;
@@ -357,6 +357,7 @@ export async function autoAnalyze(opts) {
       const ranked = entry ? entry.ranked.candidates : [];
       const common = {
         goal, fields, program, symbols, strings, region, map: report.map,
+        cxxFields: o.cxxFields || null,
         shapes: o.shapes || null, analyze: memo, scanAccess: o.scanAccess || null,
         isCancelled: cancelled, limit: 12,
       };
@@ -383,7 +384,7 @@ export async function autoAnalyze(opts) {
       const canFindFunction = memo && ranked.length;
       if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
         let fieldHint = null;
-        const named = alternatives.find((p) => p && p.kind === 'field' && p.top && settledPin(p));
+        const named = alternatives.find((p) => p && p.kind === 'field' && p.top && p.top.source !== 'cxx' && settledPin(p));
         if (named) fieldHint = { offset: named.top.offset, className: named.top.className, plain: named.top.plain, name: named.top.field?.name };
         const fnPin = await runWithBudget(functionBudget,
           (purse) => pinpointFunction({ ...common, ranked, budget: purse, functionCount: symbols ? symbols.functionCount : 0, field: fieldHint }),

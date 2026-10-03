@@ -64,6 +64,44 @@ test('CircleCI derives the Phase 8 subset through the exact route helper', () =>
 
 console.log('phase8 cross-lane ownership routing: PASS');
 
+test('Jev real-game integration projects its native repair and rejects foreign drift', () => {
+  const branch = 'integration/jev-realgame-final';
+  const owned = [
+    '.github/workflows/phase8-ownership.yml',
+    'js/decompiler/pipeline-core.js',
+    'js/decompiler/value-dependency.js',
+    'package.json',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+    'userscript/hex.user.template.js',
+    'userscript/release-version.json',
+  ];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  assert.ok(foreign.includes('js/analysis/cxx/query-recovery.js'));
+  assert.ok(foreign.includes('reports/investigations/jev-realgame-final/recovery-integrity.json'));
+  assert.deepEqual(validateCrossLaneInventory(branch, [...owned, ...foreign]),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))));
+  assert.throws(() => validateCrossLaneInventory(branch, [...owned, ...foreign, 'js/ui/unreviewed-jev.js']),
+    /unexpected foreign paths/);
+  assert.throws(() => validateCrossLaneInventory(branch + '-similar', [...owned, ...foreign]),
+    /no exact Phase 8 cross-lane route/);
+  assert.throws(() => validateCrossLaneInventory(branch, foreign), /no Phase 8-owned paths/);
+});
+
+test('Jev real-game ownership uses the same projection in CircleCI and GitHub fallback', () => {
+  const branch = 'integration/jev-realgame-final';
+  const route = CONFIG.indexOf(`            elif [ "\${CIRCLE_BRANCH:-}" = '${branch}' ]; then`);
+  assert.ok(route >= 0);
+  const helper = CONFIG.indexOf('node tools/validation/phase8/cross-lane-inventory.mjs', route);
+  const validator = CONFIG.indexOf('node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"', route);
+  assert.ok(helper > route && validator > helper);
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  const fallbackRoute = fallback.indexOf(`elif [[ "$HEAD_REF" == "${branch}" ]]`);
+  const fallbackHelper = fallback.indexOf('node tools/validation/phase8/cross-lane-inventory.mjs', fallbackRoute);
+  const fallbackValidator = fallback.indexOf('node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"', fallbackRoute);
+  assert.ok(fallbackRoute >= 0 && fallbackHelper > fallbackRoute && fallbackValidator > fallbackHelper);
+});
+
 
 test('#8936 issue batch uses an exact Phase 8 cross-lane route', () => {
   const branch = 'fix/batch-10-issues-20260915';

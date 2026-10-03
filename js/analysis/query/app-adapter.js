@@ -4,6 +4,10 @@ import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
 import { irFor } from '../../ir.js';
 import { createCxxEvidenceProvider } from '../cxx/project.js';
+import { createCxxQueryPlanner, recoverCxxQueryMembers, recoverCxxQueryStages } from '../cxx/query-recovery.js';
+import { selectJevRecoveryPlan } from './jev-recovery.js';
+import { withCxxReturnedMemberPreference } from './cxx-semantic-preference.js';
+import { jevShortlist } from '../../pinpoint.js';
 import { buildCTranslationUnit } from './translation-unit.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
@@ -29,6 +33,153 @@ const DECOMPILER_QUERY_OPTION_KEYS = Object.freeze([
 // also records the reader and SymbolIndex identities because either can be
 // replaced while an app object or source wrapper is reused.
 const SLICE_CXX_PROVIDERS = new WeakMap();
+const CXX_QUERY_PLANNERS = new WeakMap();
+
+// An explicit interactive operation, separate from ordinary Fast decompilation
+// and candidate enumeration. It reuses the scoped query owner's existing
+// analysis; the canonical producer remains the sole publication authority.
+export async function recoverCxxMembersForQuery(app, phrase, options = {}) {
+  if (options.enabled !== true) return {status:'disabled',attempted:[],elapsedMs:0};
+  if(options.unpublishedOwnersOnly===true&&options.jevRetrieval===true)
+    throw new Error('unpublished-owner extension cannot use remote retrieval');
+  if (!supportsArm64SemanticAnalysis(architectureOf(app))) return {status:'unsupported',attempted:[],elapsedMs:0};
+  const query=app?.analysisQueries;
+  if (!query?.snapshot || !query?.decompile) throw new Error('scoped C++ recovery owner unavailable');
+  const snapshot=await query.snapshot({signal:options.signal});
+  const entry=ensureCxxEvidenceProviderForApp(app);
+  if (!entry) return {status:'unsupported',attempted:[],elapsedMs:0};
+  await entry.buildPromise;
+  const symbolsGen=app.symbols.gen;
+  const checkBinding=()=>{
+    if (cxxMemberIndexForApp(app)!==entry.provider.memberIndex() || app.symbols.gen!==symbolsGen) throw new Error('C++ recovery binding changed');
+    if (options.signal?.aborted) throw options.signal.reason instanceof Error ? options.signal.reason : new DOMException('Aborted','AbortError');
+  };
+  checkBinding();
+  let cached=CXX_QUERY_PLANNERS.get(entry.provider);
+  const planningPolicy=options.planningPolicy??'legacy';
+  if (!cached || cached.symbolsGen!==app.symbols.gen || cached.planner.planningPolicy!==planningPolicy) {
+    const planner=createCxxQueryPlanner({symbols:app.symbols,classEvidence:entry.provider.classEvidence(),
+      isExecutable:address=>Boolean(app.executableRegionFor?.(address)),planningPolicy});
+    cached={symbolsGen:app.symbols.gen,planner};CXX_QUERY_PLANNERS.set(entry.provider,cached);
+  }
+  const maxFunctions=options.maxFunctions??8;
+  const selection=await selectJevRecoveryPlan(phrase,cached.planner,{enabled:options.jevRetrieval===true,
+    client:options.jevClient,signal:options.signal,timeoutMs:options.jevTimeoutMs,maxFunctions,
+    requestPolicy:options.jevRequestPolicy,maxDeclaredSizeBytes:options.maxDeclaredSizeBytes,
+    isCurrent:()=>{checkBinding();return true;}});
+  checkBinding();
+  let plan=options.unpublishedOwnersOnly===true?cached.planner.plan(phrase,{maxFunctions,
+    excludeOwners:new Set([...entry.provider.memberIndex().classes.values()].map(cls=>cls.name))}):selection.plan;
+  // An extension after a captured local result has no deterministic fallback
+  // work to do: API failure must leave the existing Hex result unchanged.
+  if(options.requireJevSelection===true&&selection.source!=='jev-retrieval')plan=[];
+  if(options.maxDeclaredSizeBytes!=null) {
+    const bound=options.maxDeclaredSizeBytes;
+    if(!Number.isSafeInteger(bound)||bound<4||bound>16384)throw new Error('invalid C++ selected-function extent budget');
+    // Unknown extents fail closed; the declared extent is scheduling metadata,
+    // never proof of a member, ownership, type, or source layout.
+    plan=plan.filter(row=>typeof row.declaredSizeBytes==='bigint'&&row.declaredSizeBytes>0n
+      &&row.declaredSizeBytes<=BigInt(bound));
+  }
+  const beforeCount=entry.provider.memberIndex().fieldCount,beforeRevision=entry.provider.memberIndex().revision;
+  if(options.planOnly===true)return {status:'planned',attempted:[],elapsedMs:0,plan,
+    retrievalSource:selection.source,selectedAddress:selection.selectedAddress,selectedClass:selection.selectedClass,
+    functionCount:cached.planner.functionCount,beforeCount,beforeRevision,afterCount:beforeCount,
+    afterRevision:beforeRevision,candidateCount:beforeCount};
+  const result=await recoverCxxQueryMembers({...options,plan,snapshot,maxFunctions,
+    decompile:async(bound,address,queryOptions)=>{
+      checkBinding();
+      const method=options.evidenceOnly===true?'cxxMembers':'decompile';
+      if(typeof query[method]!=='function')throw new Error('scoped C++ recovery producer unavailable');
+      const value=await query[method](bound,address,
+        {...queryOptions,typedArgumentRecovery:['value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy)});
+      checkBinding();return value;
+    }});
+  checkBinding();
+  const index=cxxMemberIndexForApp(app);
+  return {...result,plan,retrievalSource:selection.source,selectedAddress:selection.selectedAddress,
+    selectedClass:selection.selectedClass,functionCount:cached.planner.functionCount,beforeCount,beforeRevision,
+    afterCount:index.fieldCount,afterRevision:index.revision,candidateCount:index.fieldCount};
+}
+
+// Prospective interactive extension. Still explicitly opt-in: evaluation must
+// justify any default activation. A real selector may request one small existing
+// Fast function; only canonical publication can create the resulting members.
+export async function recoverCxxMemberWithJev(app,phrase,options={}) {
+  if(typeof options.captureBaseline!=='function'||typeof options.captureCurrent!=='function')
+    throw new Error('bound local result callbacks required');
+  const symbols=app?.symbols,generation=symbols?.gen,index=cxxMemberIndexForApp(app),backend=app?.backend;
+  const backendGeneration=backend?.gen??backend?.analysisEpoch??null,slice=storeValue(app,'sliceIndex')??0,
+    source=backend?.file??storeValue(app,'file'),queryOwner=app?.analysisQueries,architecture=architectureOf(app);
+  let boundIndex=index;
+  const current=()=>app?.symbols===symbols&&symbols?.gen===generation&&app?.backend===backend
+    &&(backend?.gen??backend?.analysisEpoch??null)===backendGeneration
+    &&(storeValue(app,'sliceIndex')??0)===slice&&(backend?.file??storeValue(app,'file'))===source
+    &&app?.analysisQueries===queryOwner&&architectureOf(app)===architecture
+    &&(!boundIndex||cxxMemberIndexForApp(app)===boundIndex);
+  const check=()=>{if(options.signal?.aborted)throw options.signal.reason instanceof Error?options.signal.reason:new DOMException('Aborted','AbortError');
+    if(!current())throw new Error('C++ semantic retrieval binding changed');};
+  check();const baseline=await options.captureBaseline();check();
+  const unchanged=reason=>({result:baseline,recovery:null,reason});
+  if(options.enabled!==true||options.mode!=='partial'||typeof options.jevClient?.call!=='function')
+    return unchanged('disabled-or-unsupported-mode');
+  if(!baseline||['confirmed','likely'].includes(baseline.verdict)
+    ||!Array.isArray(baseline.candidates)
+    ||baseline.candidates.some(c=>c.source!=='cxx'||c.anonymous!==true||c.askedByName))
+    return unchanged('preserve-local-result');
+  const recovery=await recoverCxxMembersForQuery(app,phrase,{...options,enabled:true,
+    planningPolicy:'semantic-retrieval-v5',jevRetrieval:true,requireJevSelection:true,
+    maxFunctions:1,maxDeclaredSizeBytes:256});
+  check();
+  boundIndex=cxxMemberIndexForApp(app);
+  if(!recovery.attempted.length)return {result:baseline,recovery,reason:'no-selected-function-analysis'};
+  const local=await options.captureCurrent();check();
+  // Additional canonical observations remain published, including genuine
+  // contradictions. Keep the captured top only while its current identity
+  // remains valid; never silently mask conflicting new binary evidence.
+  const prior=baseline.top&&local.candidates?.find(c=>c.key===baseline.top.key
+    &&c.offset===baseline.top.offset&&c.size===baseline.top.size&&!c.field?.conflict);
+  const retained=prior&&!['confirmed','likely'].includes(local.verdict)
+    ?{...local,top:prior,candidates:[prior,...local.candidates.filter(c=>c!==prior)],
+      runnerUp:local.candidates.find(c=>c!==prior)??null,margin:null,marginRatio:null,
+      changeSites:prior.sites??[]}:local;
+  const result=withCxxReturnedMemberPreference(retained,{source:recovery.retrievalSource,
+    selectedAddress:recovery.selectedAddress,selectedClass:recovery.selectedClass},symbols,cxxMemberIndexForApp(app),
+    {baseline,mode:options.mode,isCurrent:current,shortlist:jevShortlist(local.candidates,{max:255})});
+  check();
+  return {result,recovery,reason:result===retained?'no-unique-canonical-return':'selected-canonical-return',
+    baselineIdentityInvalidated:Boolean(baseline.top&&!prior)};
+}
+
+export async function recoverCxxMembersForSemanticQuery(app,phrase,options={}) {
+  const symbols=app?.symbols,symbolsGen=symbols?.gen;
+  let index=null;
+  return recoverCxxQueryStages({enabled:options.enabled===true,query:phrase,
+    maxElapsedMs:options.maxElapsedMs??15000,
+    primary:async()=>{
+      const result=await recoverCxxMembersForQuery(app,phrase,{...options,planningPolicy:'value-accessor-v3',jevRetrieval:false});
+      index=cxxMemberIndexForApp(app);return result;
+    },
+    captureBaseline:options.captureBaseline,
+    owners:()=>[...(index?.classes.values()??[])].filter(cls=>cls.ivars.some(field=>!field.conflict)).map(cls=>cls.name),
+    extend:(_priorOwners,remaining)=>recoverCxxMembersForQuery(app,phrase,{...options,planningPolicy:'object-context-v4',
+      jevRetrieval:false,unpublishedOwnersOnly:true,maxElapsedMs:remaining}),
+    isCurrent:()=>app?.symbols===symbols&&symbols?.gen===symbolsGen&&cxxMemberIndexForApp(app)===index});
+}
+
+// Publication only: a Pinpoint request must not build an index or reanalyze
+// functions. The existing decompile producer fills the member lattice.
+export function cxxMemberIndexForApp(app) {
+  const backend = app?.backend;
+  const source = backend?.file ?? storeValue(app, 'file');
+  const key = source && (typeof source === 'object' || typeof source === 'function') ? source : backend;
+  const entry = key && SLICE_CXX_PROVIDERS.get(key)?.get(String(storeValue(app, 'sliceIndex') ?? 0));
+  if (!entry || entry.backend !== backend || entry.symbols !== app?.symbols
+    || entry.symbolsGeneration !== (app?.symbols?.gen ?? null)
+    || entry.backendGeneration !== (backend?.gen ?? backend?.analysisEpoch ?? null)
+    || entry.architecture !== (architectureOf(app) ?? 'arm64')) return null;
+  return entry.provider.memberIndex();
+}
 
 function ensureCxxEvidenceProviderForApp(app) {
   const symbols = app?.symbols ?? null;
@@ -49,8 +200,9 @@ function ensureCxxEvidenceProviderForApp(app) {
   }
   const sliceKey = String(sliceIndex);
   const backendGeneration = backend.gen ?? backend.analysisEpoch ?? null;
+  const symbolsGeneration = symbols.gen ?? null;
   let entry = slices.get(sliceKey);
-  if (entry && (entry.backend !== backend || entry.symbols !== symbols
+  if (entry && (entry.backend !== backend || entry.symbols !== symbols || entry.symbolsGeneration !== symbolsGeneration
     || entry.backendGeneration !== backendGeneration
     || entry.architecture !== architecture || entry.pointerBytes !== pointerBytes)) entry = null;
   if (!entry) {
@@ -73,7 +225,7 @@ function ensureCxxEvidenceProviderForApp(app) {
       maxReads: 8192,
     });
     const buildPromise = provider.build().catch(() => null);
-    entry = { provider, buildPromise, backend, symbols, backendGeneration, architecture, pointerBytes };
+    entry = { provider, buildPromise, backend, symbols, symbolsGeneration, backendGeneration, architecture, pointerBytes };
     slices.set(sliceKey, entry);
   }
   return entry;
@@ -744,6 +896,31 @@ export function createAppAnalysisQueryAdapter(app) {
     return produceFunction(id, options);
   };
 
+  // Shared by ordinary decompilation and explicit member-only recovery. The
+  // same IR and canonical producer establish every published binary fact.
+  const projectCxxFunction = async (result, id, options = {}) => {
+    const address=addressOf(id)??result?.value?.startAddr??result?.value?.startAddress;
+    const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
+    let projectionIr=null,cxxEvidence=null;
+    if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
+      try {projectionIr=irFor(result.value.model,returnsValue?{returnsValue}:{});} catch {projectionIr=null;}
+      if(projectionIr){
+        const entry=ensureCxxEvidenceProviderForApp(app);
+        if(entry){
+          await entry.buildPromise;
+          throwIfAborted(options.signal);
+          if(cxxMemberIndexForApp(app)!==entry.provider.memberIndex())throw new Error('C++ recovery binding changed');
+          try {
+            cxxEvidence=entry.provider.projectForFunction({functionAddress:address!=null?BigInt(address):null,
+              functionName:address==null?null:app?.symbols?.nameAt?.(address),ir:projectionIr,
+              enableTypedArguments:options.typedArgumentRecovery===true});
+          } catch {cxxEvidence=null;}
+        }
+      }
+    }
+    return {address,returnsValue,projectionIr,cxxEvidence};
+  };
+
   const adapter = {
     async currentIdentity(options = {}) {
       if (options.signal?.aborted) {
@@ -1108,6 +1285,16 @@ export function createAppAnalysisQueryAdapter(app) {
       return rows.length ? paged(rows, page, completeness) : unsupported(rawTarget, 'evidence-store-unavailable');
     },
 
+    async cxxMembers(_snapshot, id, options = {}) {
+      if(!supportsArm64SemanticAnalysis(architectureOf(app)))return unsupported(id,'cxx-member-producer-unsupported-architecture');
+      const result=await loadFunction(id,options);
+      if(!result?.value?.model)return unsupported(id,'cxx-member-ir-unavailable');
+      const {cxxEvidence}=await projectCxxFunction(result,id,options);
+      return wrap({schema:'analysis-query-cxx-members/v1',projected:cxxEvidence!=null,
+        memberCount:cxxEvidence?.members?.length??0,projectionStatus:cxxEvidence?.status??'unproven'},
+        result.status?.completeness,{reason:result.status?.reason??null});
+    },
+
     async decompile(_snapshot, id, options = {}) {
       // Every producer result crosses the same explicit DTO boundary, so the
       // canonical semantic path, an app-owned getDecompile() and the legacy
@@ -1150,25 +1337,7 @@ export function createAppAnalysisQueryAdapter(app) {
       let cxxEvidence = options.cxxEvidence ?? null;
       let projectionIr = null;
       if (!cxxEvidence && supportsArm64SemanticAnalysis(architectureOf(app))) {
-        try { projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {}); } catch { projectionIr = null; }
-        // The C++ producer needs canonical SSA values to bind argument 0 as
-        // `this`. Without a compatibility IR it can produce no usable
-        // evidence, so leave the per-slice index unbuilt for this function.
-        if (projectionIr) {
-          const entry = ensureCxxEvidenceProviderForApp(app);
-          if (entry) {
-            await entry.buildPromise;
-            try {
-              cxxEvidence = entry.provider.projectForFunction({
-                functionAddress: address != null ? BigInt(address) : null,
-                functionName: address == null ? null : app?.symbols?.nameAt?.(address),
-                ir:projectionIr,
-              });
-            } catch {
-              cxxEvidence = null;
-            }
-          }
-        }
+        ({projectionIr,cxxEvidence}=await projectCxxFunction(result,id,options));
       }
       const projection = decompile(result.value.model, {
         ...decompilerOptionsFromQuery(options),

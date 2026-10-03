@@ -1,0 +1,59 @@
+{
+  "schema": "hex-jev-stability-execution-freeze/v2",
+  "frozenAtUtc": "2026-09-30T17:51:22.878727+00:00",
+  "networkCallsBeforeFreeze": 0,
+  "collectionProductSha": "77984276ef1ef4f4e09eb00bbcfe13836498c2dc",
+  "policySha256": "a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59",
+  "sourceHashes": {
+    "scripts/evaluate-jev-realgame-stability.mjs": "26714f56e5fff80b6946601fd9e2f3d2f7532696c006b015ec576bf5c951eb5e",
+    "scripts/verify-jev-realgame-stability.mjs": "4f6245c34b2248871776aec32dd53130ee2bc36149c36cb785d051d7c486822a",
+    "scripts/run-jev-stability-controls.mjs": "948cfce8734ac4e403a858664e7564df064c52402e8dc02b82afb4f4c76406c4",
+    "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
+    "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07",
+    "scripts/jev-stability-execution-guard.mjs": "c1c3bdd1ef5eb5ab0e3de6b5828d487de4033bbfd4a89b1eb5e3a7a66443391e"
+  },
+  "maxAttempts": 1,
+  "totalTimeoutMs": 15000,
+  "primaryRepeat": 0,
+  "repeats": 3,
+  "controlRepeats": 5,
+  "verifierHardeningBeforeFinalEvaluation": {
+    "atUtc": "2026-09-30T17:55:43.845763+00:00",
+    "priorVerifierSha256": "5f9d433856f3f7e0675ec354f177ce2234c3fff82a67b4a7c0ca047df53a5f04",
+    "changes": "require source binding, replay latency/verdict/recovery, independently rebuild unchanged frozen decision criteria",
+    "finalHoldoutCallsBeforeChange": 0,
+    "controlCallsAlreadyCompleted": 15,
+    "promptAndCriteriaChanged": false
+  },
+  "perArmShortlistInstrumentation": {
+    "atUtc": "2026-09-30T18:03:02.633581+00:00",
+    "finalHoldoutCallsBeforeChange": 0,
+    "criteriaAndRepresentationUnchanged": true
+  },
+  "executionGuardRepair": {
+    "atUtc": "2026-09-30T18:17:20.631989+00:00",
+    "reviewBlocker": "B1 documentary execution freeze was not runtime enforced",
+    "priorExecutionFreezeSha256": "fa46a0f830d4fb1fc0dfad15f8a640033e9d02ff7bddf021af861008975baf32",
+    "preGuardCompletedCases": 50,
+    "preGuardCalls": 471,
+    "preGuardOutcomesInspected": false,
+    "policyAndPromptChanged": false,
+    "releaseEvaluationWillRerun": true,
+    "retainedEvidenceDirectory": "/mnt/workspace/.dev-state/agent-work/evidence/jev-realgame-final/stability-v2-results-before-execution-guard",
+    "priorRawSha256": "be96edba585a90704abe0d11683471f12fc88db141bb810cfaeefaea6e93e4f1"
+  },
+  "verifierSourceHistory": [
+    {
+      "commit": "18d7d7436",
+      "sha256": "5f9d433856f3f7e0675ec354f177ce2234c3fff82a67b4a7c0ca047df53a5f04"
+    },
+    {
+      "commit": "505bf3500",
+      "sha256": "e7bd8cc27e8bf446db999b0f067452eb14f9e05bdd576ddfd334f0684dcdeeff"
+    },
+    {
+      "commit": "7e32114cf",
+      "sha256": "00c82f97f76e707af06bea3cf759f7f5b92f8ef3b924ec4b29eee9232f382b48"
+    }
+  ]
+}

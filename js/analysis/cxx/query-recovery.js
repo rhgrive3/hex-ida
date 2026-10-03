@@ -1,0 +1,247 @@
+// Explicit interactive recovery planning. This module does not recover,
+// publish, prove ownership, read binary bytes or call an external model.
+import { analyzeFunctionSymbol } from './object-evidence.js';
+import { createPrimaryOwnerResolver } from './primary-owner.js';
+import { createCppTypedArgumentEvidence } from './typed-argument.js';
+import { buildCppClassTypeIndex } from './class-type.js';
+
+const STOP = new Set('a an and are as at be being by current field find for from has have in is it member of on or stored that the this to used value what where which with'.split(' '));
+export function cxxQueryTokens(text) {
+  const words=String(text??'').slice(0,4096).replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase().match(/[a-z][a-z0-9]*/g)??[];
+  return [...new Set(words.filter(w=>w.length>1&&!STOP.has(w)).map(w=>w.length>4&&w.endsWith('s')&&!w.endsWith('ss')?w.slice(0,-1):w))];
+}
+
+// Keep the published V2 tokenizer stable for historical replay. Recovery V3
+// also separates acronym boundaries in release symbols (SDLDevice -> SDL Device).
+export function cxxRecoveryTokens(text) {
+  return cxxQueryTokens(String(text??'').replace(/([A-Z]+)([A-Z][a-z])/g,'$1 $2'));
+}
+
+function ownerScopeName(name){
+  let depth=0,result='';
+  for(const character of String(name).slice(0,4096)){
+    if(character==='<')depth++;
+    else if(character==='>'){if(!depth)return null;depth--;}
+    else if(!depth)result+=character;
+  }
+  return depth?null:result;
+}
+
+export function createCxxQueryPlanner({symbols,classEvidence,isExecutable=()=>false,planningPolicy='legacy'}={}) {
+  if(!['legacy','value-accessor-v3','object-context-v4','semantic-retrieval-v5'].includes(planningPolicy))throw new Error('unknown C++ recovery planning policy');
+  const valueAccessors=planningPolicy!=='legacy';
+  const tokensFor=valueAccessors?cxxRecoveryTokens:cxxQueryTokens;
+  const typedClassNames=new Set((classEvidence?.classes??[]).map(cls=>cls.className).filter(Boolean));
+  if(valueAccessors)for(const name of buildCppClassTypeIndex({symbols,snapshotId:'planning-only'}).keys())typedClassNames.add(name);
+  const extentFor=address=>{
+    if(!valueAccessors)return null;
+    const end=symbols?.declaredFunctionEnd?.(address);
+    return typeof end==='bigint'&&end>address?end-address:null;
+  };
+  const starts=new Set(Array.from(symbols?.funcs??[],String));
+  const primaryOwnerFor=createPrimaryOwnerResolver(classEvidence?.classes??[]);
+  const owners=new Map();
+  for(const cls of classEvidence?.classes??[]) {
+    if(!cls.className)continue;
+    for(const slot of cls.slots??[]) {
+      if(slot.address==null||slot.unresolved||!starts.has(String(slot.address)))continue;
+      const key=String(slot.address);const names=owners.get(key)??new Set();names.add(cls.className);owners.set(key,names);
+    }
+  }
+  const records=new Map(),blocked=new Set(),argumentAliases=new Map();
+  for(let i=0;i<(symbols?.names?.length??0);i++) {
+    const address=symbols.addrs[i];if(address==null||!starts.has(String(address)))continue;
+    if(blocked.has(String(address)))continue;
+    const argumentProof=valueAccessors?createCppTypedArgumentEvidence({symbol:symbols.names[i],functionAddress:BigInt(address)}):null;
+    if(valueAccessors) {
+      const key=String(address),kind=argumentProof?.className??null;
+      if(argumentAliases.has(key)&&argumentAliases.get(key)!==kind&&(kind||argumentAliases.get(key))) {
+        blocked.add(key);records.delete(key);continue;
+      }
+      argumentAliases.set(key,kind);
+    }
+    const info=analyzeFunctionSymbol(symbols.names[i]);const names=owners.get(String(address));
+    // Planning never resolves conflicting ownership or treats an ordinary
+    // qualified symbol as proof that a method is non-static.
+    const declaringOwner=names?.size>1&&!info.isAdjustedThunk?primaryOwnerFor(BigInt(address),info.className):null;
+    if(info.isAdjustedThunk||names?.size>1&&!declaringOwner){blocked.add(String(address));records.delete(String(address));continue;}
+    const symbolProof=info.isConstructor||info.isDestructor||info.isConstMember;
+    if(!symbolProof&&names?.size!==1&&!declaringOwner&&!argumentProof)continue;
+    const className=declaringOwner?.className??(names?.size===1?[...names][0]:argumentProof?.className??info.className);
+    if(!className||info.className&&info.className!==className||!isExecutable(address)){blocked.add(String(address));records.delete(String(address));continue;}
+    const methodName=argumentProof?.functionName??info.methodName??'';
+    const row={address:BigInt(address),className,methodName,symbolName:symbols.names[i],
+      ...(planningPolicy==='object-context-v4'?{isConstructor:info.isConstructor===true}:{}),
+      proof:argumentProof?'release-typed-object-argument':declaringOwner?'declaring-primary-vtable-owner':symbolProof?'non-static-symbol':'unique-vtable-owner',
+      classTokens:tokensFor(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(className)??'':className),methodTokens:info.isConstructor||info.isDestructor?[]:tokensFor(methodName),
+      declaredSizeBytes:extentFor(BigInt(address))};
+    const previous=records.get(String(address));
+    if(previous&&previous.className!==className){blocked.add(String(address));records.delete(String(address));continue;}
+    records.set(String(address),row);
+  }
+  // Slots with no symbol can still be planned by their unique proven owner.
+  for(const [key,names] of owners) {
+    if(records.has(key)||blocked.has(key)||names.size!==1||!isExecutable(BigInt(key)))continue;
+    const className=[...names][0];records.set(key,{address:BigInt(key),className,methodName:'',symbolName:null,
+      proof:'unique-vtable-owner',classTokens:tokensFor(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(className)??'':className),methodTokens:[],declaredSizeBytes:extentFor(BigInt(key))});
+  }
+  const rows=[...records.values()].map(row=>Object.freeze({...row,
+    classTokens:Object.freeze(row.classTokens),methodTokens:Object.freeze(row.methodTokens)}))
+    .filter(row=>row.proof!=='release-typed-object-argument'
+      ||typedClassNames.has(row.className));
+  const scoreRows=phrase=>{
+    const tokens=new Set(tokensFor(phrase));
+    return rows.map(row=>{
+      const classHits=row.classTokens.filter(t=>tokens.has(t));const methodHits=row.methodTokens.filter(t=>tokens.has(t)&&!row.classTokens.includes(t));
+      const leaf=(planningPolicy==='semantic-retrieval-v5'?ownerScopeName(row.className)??'':row.className).split('::').at(-1);
+      const exactObject=tokensFor(leaf).length===1&&tokens.has(leaf.toLowerCase());
+      return {...row,score:2*classHits.length+4*methodHits.length+(exactObject?2:0),classHits,methodHits,
+        objectMatches:planningPolicy==='object-context-v4'?tokensFor(leaf).filter(token=>tokens.has(token)).length:0,
+        specificity:classHits.length/Math.max(1,row.classTokens.length)};
+    }).sort((a,b)=>{
+      const object=b.objectMatches-a.objectMatches;if(object)return object;
+      if(planningPolicy==='object-context-v4') {
+        // A matching accessor remains first. When no method identifies the
+        // requested property, construction can expose caller-supplied values
+        // on a related/base owner instead of spending the whole budget on
+        // short unrelated routines of the top lexical owner.
+        const accessor=Number(b.methodHits.length>0)-Number(a.methodHits.length>0);
+        if(accessor)return accessor;
+        const constructor=Number(b.isConstructor===true)-Number(a.isConstructor===true);
+        if(constructor)return constructor;
+      }
+      const score=b.score-a.score;
+      if(score)return score;
+      const method=b.methodHits.length-a.methodHits.length;
+      const owner=b.specificity-a.specificity;
+      const relevance=valueAccessors?method||owner:owner||method;
+      if(relevance)return relevance;
+      // A smaller independently declared extent is cheaper to attempt. Unknown
+      // or large functions stay eligible; this is scheduling, never ownership.
+      if(valueAccessors&&a.declaredSizeBytes!==b.declaredSizeBytes) {
+        if(a.declaredSizeBytes==null)return 1;
+        if(b.declaredSizeBytes==null)return -1;
+        return a.declaredSizeBytes<b.declaredSizeBytes?-1:1;
+      }
+      return a.address<b.address?-1:a.address>b.address?1:0;
+    });
+  };
+  return Object.freeze({
+    functionCount:rows.length,
+    planningPolicy,
+    // Existing release functions only. Round-robin owners prevent one large
+    // class from consuming the external selector's entire 255-choice budget.
+    choices(phrase,{maxChoices=255,maxDeclaredSizeBytes=null}={}) {
+      if(!Number.isSafeInteger(maxChoices)||maxChoices<1||maxChoices>255)throw new Error('C++ recovery choice budget must be 1..255');
+      if(maxDeclaredSizeBytes!=null&&(!Number.isSafeInteger(maxDeclaredSizeBytes)
+        ||maxDeclaredSizeBytes<4||maxDeclaredSizeBytes>16384))throw new Error('invalid C++ recovery choice extent budget');
+      const groups=new Map();
+      for(const row of scoreRows(phrase)) {
+        // Scheduling eligibility precedes the finite shortlist. Oversized or
+        // unknown functions must not consume slots later discarded by callers.
+        if(maxDeclaredSizeBytes!=null&&(typeof row.declaredSizeBytes!=='bigint'
+          ||row.declaredSizeBytes<=0n||row.declaredSizeBytes>BigInt(maxDeclaredSizeBytes)))continue;
+        const group=groups.get(row.className)??[];group.push(row);groups.set(row.className,group);
+      }
+      const result=[],seen=new Set();
+      if(planningPolicy==='semantic-retrieval-v5'){
+        // Reserve half the finite choice budget for depth within up to eight
+        // query-matching owners. The remaining half still explores owners.
+        // A one-method-per-class list can otherwise hide the requested
+        // accessor even when its proven owner is already present.
+        const focused=[...groups.values()].filter(group=>group[0].classHits.length>0)
+          .sort((a,b)=>b[0].classHits.length-a[0].classHits.length||b[0].specificity-a[0].specificity)
+          .slice(0,8);
+        const focusedBudget=Math.floor(maxChoices/2);
+        for(let depth=0;result.length<focusedBudget;depth++){
+          let added=false;
+          for(const group of focused){
+            if(group[depth]){const row=group[depth];result.push(Object.freeze(row));seen.add(String(row.address));added=true;}
+            if(result.length===focusedBudget)break;
+          }
+          if(!added)break;
+        }
+      }
+      for(let depth=0;result.length<maxChoices;depth++) {
+        let added=false;
+        for(const group of groups.values()) {
+          if(group[depth]&&!seen.has(String(group[depth].address))){
+            const row=group[depth];result.push(Object.freeze(row));seen.add(String(row.address));added=true;
+          }
+          if(result.length===maxChoices)break;
+        }
+        // A depth containing only previously focused rows is not exhaustion:
+        // deeper rows of those owners may still fill the global budget.
+        if(!added&&![...groups.values()].some(group=>group.length>depth+1))break;
+      }
+      return Object.freeze(result);
+    },
+    planOwner(phrase,className,{maxFunctions=8,firstAddress=null}={}) {
+      if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
+      const selected=scoreRows(phrase).filter(row=>row.className===className);
+      const first=selected.find(row=>row.address===firstAddress);
+      if(first)selected.splice(selected.indexOf(first),1);
+      return Object.freeze((first?[first,...selected]:selected).slice(0,maxFunctions).map(Object.freeze));
+    },
+    plan(phrase,{maxFunctions=8,excludeOwners=new Set()}={}) {
+      if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32)throw new Error('C++ recovery function budget must be 1..32');
+      if(!(excludeOwners instanceof Set))throw new Error('C++ recovery owner exclusions must be a set');
+      return Object.freeze(scoreRows(phrase).filter(row=>row.score>0&&!excludeOwners.has(row.className)).slice(0,maxFunctions).map(Object.freeze));
+    },
+  });
+}
+
+// An explicit interactive extension never reanalyses an already recovered
+// owner. Keeping its canonical fields intact also keeps the captured local
+// baseline intact; more recovery is not counted as remote reranking gain.
+export async function recoverCxxQueryStages({enabled=false,query,primary,captureBaseline,owners,extend,
+  maxElapsedMs=15000,now=()=>performance.now(),isCurrent=()=>true}={}) {
+  if(!enabled)return {status:'disabled',attempted:[],elapsedMs:0};
+  if(![primary,captureBaseline,owners,extend,isCurrent].every(value=>typeof value==='function')
+    ||!Number.isFinite(maxElapsedMs)||maxElapsedMs<=0||maxElapsedMs>120000)throw new Error('bound interactive C++ stages required');
+  const start=now(),initial=await primary();
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  const baseline=await captureBaseline();
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  const priorOwners=new Set(owners()),tokens=new Set(cxxRecoveryTokens(query));
+  const represented=[...priorOwners].some(owner=>cxxRecoveryTokens(owner.split('::').at(-1)).some(token=>tokens.has(token)));
+  const remaining=maxElapsedMs-(now()-start);
+  const reason=['confirmed','likely'].includes(baseline?.verdict)?'strong-local-result'
+    :represented?'requested-object-already-represented':remaining<=0?'recovery-budget-exhausted':null;
+  const extra=reason?null:await extend(priorOwners,remaining);
+  if(isCurrent()!==true)throw new Error('C++ staged recovery binding changed');
+  return {status:extra?.status??initial.status,attempted:[...(initial.attempted??[]),...(extra?.attempted??[])],
+    elapsedMs:now()-start,initial,extra,baseline,extensionReason:reason??'missing-requested-object'};
+}
+
+// Reuses the existing scoped Fast decompiler. Callers supply the bound query
+// owner; no model or evidence is forged here. Default is off, even with a plan.
+export async function recoverCxxQueryMembers({enabled=false,plan=[],snapshot,decompile,signal,
+  maxFunctions=8,maxElapsedMs=15000,now=()=>performance.now(),onProgress=()=>{}}={}) {
+  if(!enabled)return {status:'disabled',attempted:[],elapsedMs:0};
+  if(!snapshot||typeof decompile!=='function')throw new Error('bound C++ recovery query required');
+  if(!Number.isSafeInteger(maxFunctions)||maxFunctions<1||maxFunctions>32
+    ||!Number.isFinite(maxElapsedMs)||maxElapsedMs<=0||maxElapsedMs>120000)throw new Error('invalid C++ recovery budget');
+  const started=now(),attempted=[],seen=new Set();let status='complete';
+  for(const entry of plan) {
+    if(signal?.aborted)throw signal.reason instanceof Error?signal.reason:new DOMException('Aborted','AbortError');
+    if(attempted.length>=maxFunctions||now()-started>=maxElapsedMs){status='budget-exhausted';break;}
+    const key=String(entry.address);if(seen.has(key))continue;seen.add(key);
+    // The scoped owner must enforce snapshot binding, cancellation and the
+    // ordinary decompiler budgets. A stale snapshot is not a recoverable miss.
+    const result=await decompile(snapshot,entry.address,{profile:'fast',signal,decompilerTimeBudgetMs:1500});
+    attempted.push({address:key,className:entry.className,status:result?.status??null,
+      pseudocode:Boolean(result?.value?.pseudocode),
+      ...(result?.value?.schema==='analysis-query-cxx-members/v1'?{memberProjection:result.value.projected===true}:{}),
+    });
+    onProgress({phase:'cxx-query-recovery',done:attempted.length,all:Math.min(plan.length,maxFunctions)});
+  }
+  if(now()-started>=maxElapsedMs)status='budget-exhausted';
+  return {status,attempted,elapsedMs:now()-started};
+}
+
+export function cxxRecoveryMadeProgress(result) {
+  return result?.attempted?.some(r=>r.pseudocode===true||r.memberProjection===true)===true
+    &&Number.isSafeInteger(result.beforeRevision)&&Number.isSafeInteger(result.afterRevision)
+    &&result.afterRevision>result.beforeRevision;
+}

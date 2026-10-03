@@ -1,0 +1,26 @@
+{
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "cases": [
+    {
+      "id": "SV2-OP-03",
+      "query": "How high above the map is this vehicle drawn at the moment?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-06",
+      "query": "What kind of road surface is this road vehicle running on at the moment?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-09",
+      "query": "Which instruction follows this one in the schedule list?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-OP-15",
+      "query": "Which window opened this one?",
+      "mode": "partial"
+    }
+  ]
+}

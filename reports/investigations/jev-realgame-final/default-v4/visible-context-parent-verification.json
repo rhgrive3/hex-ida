@@ -1,0 +1,33 @@
+{
+  "reviewedHead": "c2aaeb2f0610af3c241a22a9c2ad72acd1f89f96",
+  "currentHead": "22d5ed9aa35228104bc274a2c2d8e53d1da9ec6e",
+  "verifiedSourceHashes": {
+    "js/analysis/query/jev-advisory.js": {
+      "sha256": "71d0af8e741b0429a4fd34be07dd8e8c0e6974b7d367a0de87dda50b28bc4e8c",
+      "worktreeEqualsReviewedCommit": true
+    },
+    "tests/phase7/cxx/jev-recovery.test.mjs": {
+      "sha256": "fa6b17ee8605f1751f35feda251355fa8e5e283dd6db90a3df0216ffb02a05d4",
+      "worktreeEqualsReviewedCommit": true
+    },
+    "scripts/evaluate-jev-default-v4.mjs": {
+      "sha256": "817e0677d36c694e91504194cda27d423210cd286ad03e67d480b7ba5d075124",
+      "worktreeEqualsReviewedCommit": true
+    },
+    "scripts/verify-jev-default-v4.mjs": {
+      "sha256": "d9124f03c3a927a13194f5ba32ef44a0f6e0062502ca64bfe759fe753c4d84e6",
+      "worktreeEqualsReviewedCommit": true
+    },
+    "tests/phase7/cxx/object-context-ranking.test.mjs": {
+      "sha256": "1b205ce7f77193cf933c1ef349b58a613e05e3c774291c044834cb97b631c497",
+      "worktreeEqualsReviewedCommit": true
+    }
+  },
+  "receiptSha256": "820ef5ae0526cddd0786156376a5117951f8863fb8d7da200d18f0e3dfe057f8",
+  "completionMarkerSha256": "90ee037c6b800d2ed8ad205a488f72caa2c64fea525a49e41ab581b81aca4917",
+  "openBlockers": 0,
+  "liveMissingProjectionRegressionReproducedBeforeRepair": true,
+  "authorizesDefaultActivation": false,
+  "reviewSourceOnly": true,
+  "parentClarification": "Review addendum calls layout-openttd an Actions collection output; it is evaluation-only independently re-extracted GDB oracle metadata. Reviewed five source files were not changed."
+}

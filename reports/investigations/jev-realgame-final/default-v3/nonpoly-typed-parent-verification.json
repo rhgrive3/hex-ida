@@ -1,0 +1,14 @@
+{
+  "review": "nonpoly-typed-review.md",
+  "hashesVerified": {
+    "js/analysis/cxx/class-type.js": "5a81669720cd827167cb70301ede789dde6ed77f0f1c1735eadbd00020ec6467",
+    "js/analysis/cxx/typed-argument.js": "19ff08fd9800aeefbd7a8846c8df83ef33856e4a6164567c453b0baa76e703de",
+    "js/analysis/cxx/object-evidence.js": "e38b73f379d1e9cc600ff9079b0fa79d66e06d7fac59ceca8550cc49207dbb0e",
+    "js/analysis/cxx/project.js": "f9bf69437b3c961659c782aed38a8f174c215687f8c485c0bf2160be817c964e",
+    "js/analysis/cxx/query-recovery.js": "7be8ceb9794e27801162da0ffd346ecac2464b359bd63326deb419763e16c487",
+    "tests/phase7/cxx/class-type.test.mjs": "ec1119ac600556ddecca1bfedffac412dd4fe98e5aebe378e2d0bef333d3955f",
+    "tests/phase7/cxx/typed-argument.test.mjs": "8f76e8acf3f93e984d42f447aca7fbcc47ba8fd12b2937032b3729c632940641"
+  },
+  "target": "2db94a9a8",
+  "laterArgumentContextDeltaNotCovered": true
+}

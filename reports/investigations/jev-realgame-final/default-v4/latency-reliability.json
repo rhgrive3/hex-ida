@@ -1,0 +1,232 @@
+{
+  "schema": "hex-jev-v4-latency-reliability/v1",
+  "totalApiCalls": 750,
+  "apiErrors": 0,
+  "repeats": 3,
+  "primaryRepeat": 0,
+  "majorityVoting": false,
+  "apiPerArm": {
+    "A0": {
+      "apiCalls": 0,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "unstableCases": [],
+      "destructiveUnstableCases": []
+    },
+    "A": {
+      "apiCalls": 0,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "unstableCases": [],
+      "destructiveUnstableCases": []
+    },
+    "R1": {
+      "apiCalls": 0,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "unstableCases": [],
+      "destructiveUnstableCases": []
+    },
+    "O4": {
+      "apiCalls": 0,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "unstableCases": [],
+      "destructiveUnstableCases": []
+    },
+    "current": {
+      "apiCalls": 150,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 150,
+        "p50": 727.501236000011,
+        "p95": 994.4341399999976,
+        "p99": 1370.0565569999962
+      },
+      "unstableCases": [
+        "SV4-OP-03",
+        "SV4-OP-10",
+        "SV4-OP-15",
+        "SV4-MW-17",
+        "SV4-MW-18",
+        "SV4-CTL-06",
+        "SV4-CTL-10"
+      ],
+      "destructiveUnstableCases": []
+    },
+    "B": {
+      "apiCalls": 150,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 150,
+        "p50": 460.97360199998366,
+        "p95": 720.1267890000017,
+        "p99": 806.7821230000118
+      },
+      "unstableCases": [
+        "SV4-OP-02",
+        "SV4-MW-04",
+        "SV4-MW-13",
+        "SV4-MW-17",
+        "SV4-MW-20",
+        "SV4-CTL-10"
+      ],
+      "destructiveUnstableCases": []
+    },
+    "C": {
+      "apiCalls": 150,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 150,
+        "p50": 654.6866779999982,
+        "p95": 801.4412109999976,
+        "p99": 1315.329543000029
+      },
+      "unstableCases": [
+        "SV4-OP-14",
+        "SV4-MW-02",
+        "SV4-MW-04",
+        "SV4-MW-13",
+        "SV4-MW-18",
+        "SV4-CTL-09"
+      ],
+      "destructiveUnstableCases": []
+    },
+    "V4": {
+      "apiCalls": 150,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 150,
+        "p50": 760.3352429999941,
+        "p95": 1066.940441999992,
+        "p99": 1433.7630290000016
+      },
+      "unstableCases": [
+        "SV4-OP-02",
+        "SV4-OP-03",
+        "SV4-OP-15",
+        "SV4-CTL-06"
+      ],
+      "destructiveUnstableCases": []
+    },
+    "S4": {
+      "apiCalls": 150,
+      "apiFailures": 0,
+      "timeouts": 0,
+      "retries": 0,
+      "apiAddedLatency": {
+        "count": 150,
+        "p50": 770.9488799999817,
+        "p95": 1183.8785740000021,
+        "p99": 1368.5384269999922
+      },
+      "unstableCases": [
+        "SV4-OP-02",
+        "SV4-OP-03",
+        "SV4-OP-17",
+        "SV4-MW-06",
+        "SV4-MW-14",
+        "SV4-MW-16",
+        "SV4-CTL-05",
+        "SV4-CTL-10"
+      ],
+      "destructiveUnstableCases": []
+    }
+  },
+  "hexWarmQueryLatency": {
+    "count": 50,
+    "p50": 2.229178999958094,
+    "p95": 3.343405999999959,
+    "p99": 6.80692399997497
+  },
+  "coldRecoveryLatency": {
+    "count": 50,
+    "p50": 11579.498659999983,
+    "p95": 27959.07872400002,
+    "p99": 31734.007920999982
+  },
+  "collectionSetup": [
+    {
+      "binary": "openttd",
+      "beforeCount": 0,
+      "afterCount": 149,
+      "named": 0,
+      "unnamed": 149,
+      "classCount": 36,
+      "keyCollisions": 0,
+      "analyzedFunctions": 146,
+      "profile": {
+        "binaryReadMs": 12.014989000000014,
+        "binaryHashMs": 5.690741000000003,
+        "binaryOpenMs": 14352.984775,
+        "binaryIdentityMs": 333.19743500000004,
+        "symbolAnalysisMs": 1186.274437,
+        "functionDiscoveryMs": 1132.3366600000008,
+        "programConstructionMs": 1670.8353519999982,
+        "totalSetupMs": 18704.199956999997
+      }
+    },
+    {
+      "binary": "openmw",
+      "beforeCount": 0,
+      "afterCount": 166,
+      "named": 0,
+      "unnamed": 166,
+      "classCount": 44,
+      "keyCollisions": 0,
+      "analyzedFunctions": 168,
+      "profile": {
+        "binaryReadMs": 14.47670400000004,
+        "binaryHashMs": 16.856379000000004,
+        "binaryOpenMs": 183844.926103,
+        "binaryIdentityMs": 746.1313369999989,
+        "symbolAnalysisMs": 3944.143213000003,
+        "functionDiscoveryMs": 2677.0124570000044,
+        "programConstructionMs": 4438.071269000007,
+        "totalSetupMs": 195707.213006
+      }
+    }
+  ],
+  "latencyLimitExceededByV4": true,
+  "notes": [
+    "Warm ranking latency excludes binary setup and query-triggered existing Fast analysis.",
+    "Cold recovery p95 27959ms exceeds the cooperative 15000ms admission budget; a running Fast function can overrun.",
+    "S4 routes all50 queries on every repeat, so its current route provides no API-call saving."
+  ]
+}

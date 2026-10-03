@@ -21,6 +21,7 @@ import {
   groupSites,
 } from './pinpoint-legacy.js';
 import { fuse, decide, explain, starsOf } from './evidence.js';
+import { withCxxSemanticPreference } from './analysis/query/cxx-semantic-preference.js';
 
 export * from './pinpoint-legacy.js';
 
@@ -84,7 +85,10 @@ export function narrowedPriorCount(candidates, universe) {
  */
 export function byRecallLane(a, b) {
   return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))
-    || (b.fusion.logOdds - a.fusion.logOdds);
+    || (b.fusion.logOdds - a.fusion.logOdds)
+    || (a.source === 'cxx' || b.source === 'cxx'
+      ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+      : 0);
 }
 
 /**
@@ -112,6 +116,26 @@ export function jevShortlist(candidates, opts = {}) {
     const keyB = String(b?.key ?? b?.id ?? b?.addr ?? b?.fieldName ?? '');
     return keyA.localeCompare(keyB);
   }).slice(0, max);
+}
+
+async function boundedJevCall(client, input, opts) {
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new RangeError('Invalid Jev timeout');
+  if (opts.signal?.aborted) throw new Error('Jev query cancelled');
+  const controller = new AbortController();
+  let timer;
+  let abort;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error('Jev query timeout')); }, timeoutMs);
+    abort = () => { controller.abort(); reject(new Error('Jev query cancelled')); };
+    opts.signal?.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => client.call({ ...input, signal: controller.signal })), deadline]);
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', abort);
+  }
 }
 
 /**
@@ -154,21 +178,44 @@ export async function rerankWithJev(query, hexResult, opts = {}) {
     const client = opts?.client;
     if (!client || typeof client.call !== 'function') return fallback;
 
-    const jevResponse = await client.call({
+    const lattice = hexResult.candidates;
+    const top = hexResult.top;
+    const keys = lattice.map(c => c.key ?? c.id);
+    if (new Set(keys).size !== keys.length) return fallback;
+    if (opts.isCurrent != null && (typeof opts.isCurrent !== 'function' || opts.isCurrent() !== true)) return fallback;
+
+    const jevResponse = await boundedJevCall(client, {
       query: typeof query === 'string' ? query : (query?.text ?? query?.query ?? ''),
       mode,
       candidates: shortlist,
-    });
+    }, opts);
+
+    // The response belongs to the exact candidate view that was sent. An
+    // interactive query owner can additionally bind its snapshot/revision.
+    if (hexResult.candidates !== lattice || hexResult.top !== top
+      || lattice.length !== keys.length || lattice.some((c, i) => (c.key ?? c.id) !== keys[i])
+      || opts.signal?.aborted || (opts.isCurrent != null && opts.isCurrent() !== true)) return fallback;
 
     if (!jevResponse || typeof jevResponse !== 'object') return fallback;
 
-    const choiceKey = jevResponse.selectedKey ?? null;
-    const choiceIndex = Number.isInteger(jevResponse.choiceIndex) ? jevResponse.choiceIndex : null;
+    const hasKey = Object.hasOwn(jevResponse, 'selectedKey');
+    const hasIndex = Object.hasOwn(jevResponse, 'choiceIndex');
+    const choiceKey = hasKey ? jevResponse.selectedKey : null;
+    const choiceIndex = hasIndex ? jevResponse.choiceIndex : null;
+
+    // Two identities cannot contradict each other. A malformed supplied
+    // identity is rejected instead of being hidden by the other valid one.
+    if ((!hasKey && !hasIndex)
+      || (hasKey && (typeof choiceKey !== 'string' || !choiceKey.length))
+      || (hasIndex && (!Number.isInteger(choiceIndex) || choiceIndex < 0 || choiceIndex >= shortlist.length))) {
+      return fallback;
+    }
 
     let chosenCandidate = null;
-    if (choiceIndex !== null && choiceIndex >= 0 && choiceIndex < shortlist.length) {
+    if (hasIndex) {
       chosenCandidate = shortlist[choiceIndex];
-    } else if (choiceKey !== null) {
+      if (hasKey && (chosenCandidate.key ?? chosenCandidate.id) !== choiceKey) return fallback;
+    } else if (hasKey) {
       chosenCandidate = shortlist.find((c) => (c.key ?? c.id) === choiceKey) ?? null;
     }
 
@@ -180,7 +227,8 @@ export async function rerankWithJev(query, hexResult, opts = {}) {
     }
 
     // Candidate must belong to existing Hex candidate lattice
-    const inLattice = hexResult.candidates.find((c) => (c.key ?? c.id) === (chosenCandidate.key ?? chosenCandidate.id));
+    const matching = hexResult.candidates.filter((c) => (c.key ?? c.id) === (chosenCandidate.key ?? chosenCandidate.id));
+    const inLattice = matching.length === 1 ? matching[0] : null;
     if (!inLattice) {
       return {
         ...fallback,
@@ -202,6 +250,18 @@ export async function rerankWithJev(query, hexResult, opts = {}) {
   } catch (_err) {
     return fallback;
   }
+}
+
+// An optional remote suggestion is separated from the committed local result.
+// This removes remote-driven destruction and effective decision instability;
+// it does not claim that the underlying model's suggestions became stable.
+export async function adviseWithJev(query, localResult, opts = {}) {
+  const proposal = await rerankWithJev(query, localResult, opts);
+  return {
+    ...proposal, top1: localResult?.top ?? null, source: 'hex', hexResult: localResult,
+    advisory: { ...proposal.advisory, advisoryOnly: true,
+      candidate: proposal.source === 'jev' ? proposal.top1 : null },
+  };
 }
 
 // The public facade accepts only safe, non-negative integer limits. Explicit
@@ -455,6 +515,7 @@ function shapeMutationSites(shapes, offset) {
 /* Shape sites are only a fallback when the exhaustive batched access scan did
  * not produce a change site. Never replace stronger full-scan evidence. */
 function hydrateShapeChangeSites(pin, opts) {
+  if (pin?.top?.source === 'cxx') return pin;
   if (!pin?.top || opts?.shapes == null || pin.changeSites?.length) return pin;
   const sites = shapeMutationSites(opts.shapes, pin.top.offset);
   if (!sites.length) return pin;
@@ -497,12 +558,14 @@ export async function pinpointField(opts = {}) {
     margin: decision.margin,
     marginRatio: decision.marginRatio,
     missing: decision.missing,
-    candidates: ranked.slice(0, requestedLimit),
+    candidates: ranked,
     priorCandidates,
     priorStableAcrossVerification: true,
     changeSites: oldTopKey === newTopKey ? raw.changeSites : ((decision.top && decision.top.sites) || []),
   };
-  return hydrateShapeChangeSites(result, opts);
+  const preferred = opts.binaryContextPreference === true
+    ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols) : result;
+  return hydrateShapeChangeSites({ ...preferred, candidates: preferred.candidates.slice(0, requestedLimit) }, opts);
 }
 
 export async function pinpointLocation(opts = {}) {

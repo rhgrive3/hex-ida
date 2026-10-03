@@ -1,0 +1,132 @@
+{
+  "schema": "hex-jev-blind-query-manifest/v4",
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "SV4-MW-01",
+      "query": "Is the water level recorded in this cell meant for an interior?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-02",
+      "query": "Is the player currently prevented from switching between first and third person?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-03",
+      "query": "On which day of the month was this journal entry written?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-04",
+      "query": "How far is the local map zoomed in?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-05",
+      "query": "Where is the renderer that draws this interface's local map?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-06",
+      "query": "How many map cells does this local map cover?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-07",
+      "query": "Where is the drag-and-drop helper used by this interface?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-08",
+      "query": "Which actor is currently highlighted as the enemy on this interface?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-09",
+      "query": "Where is the non-interactive message box owned by the message box manager?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-10",
+      "query": "How many hours has the player chosen to rest for?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-11",
+      "query": "How much fade time is left before this wait dialog disappears?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-12",
+      "query": "Where is the action manager used by the controller input handler?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-13",
+      "query": "Was a joystick the last input device the player used?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-14",
+      "query": "Has this actor's queue of AI actions finished?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-15",
+      "query": "How much gold does this creature carry?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-16",
+      "query": "How many times has this creature been struck by a friend?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-17",
+      "query": "Where is the pathgrid data this navigation graph was built from?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-18",
+      "query": "Is this actor currently walking on the surface of water?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-19",
+      "query": "Has this cell store recorded any changes to its cell yet?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-MW-20",
+      "query": "What phase is this animation blend controller currently at?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-06",
+      "query": "What is the name of this shopkeeper's pet cat?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-07",
+      "query": "What is the temperature of the water in this cell?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-08",
+      "query": "Which song is the bard in this tavern currently composing?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-09",
+      "query": "How many keys are on this guard's keyring?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV4-CTL-10",
+      "query": "What is the serial number stamped on this iron dagger?",
+      "mode": "partial"
+    }
+  ]
+}

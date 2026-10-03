@@ -1,0 +1,3745 @@
+{
+  "schema": "hex-jev-stability-holdout-v2/v1",
+  "createdAtUtc": "2026-09-30T16:58:00.571Z",
+  "frozenBeforeAnyEvaluatorRun": true,
+  "independentOfParentImplementation": true,
+  "author": "Freebuff independent query/oracle author (stability-holdout-v2 lane). Blind to Jev outcomes, to the v2 stability/routing implementation, to stability-design-v2.md, and to all candidate/ranking results; no question was tuned against any candidate or metric.",
+  "purpose": "Independent prospective holdout for a stability/routing revision of the C++ game-member retrieval product. Oracle information stays in this evidence package and must never be copied into production candidate descriptions.",
+  "corpus": {
+    "exactBuilds": [
+      {
+        "binary": "openttd",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "sourceLabel": "Ubuntu noble exact build",
+        "package": {
+          "version": "13.4-1build3",
+          "debugPackageSha256": "09930c29507c3d5e02b8c1aa5c25dd9f44ad3f8975b00ce0b37adabce91d3b40",
+          "sourceUrl": "https://ddebs.ubuntu.com/pool/universe/o/openttd/openttd-dbgsym_13.4-1build3_arm64.ddeb",
+          "control": "Package: openttd-dbgsym\nVersion: 13.4-1build3\nArchitecture: arm64"
+        },
+        "layoutMethod": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177"
+      },
+      {
+        "binary": "openmw",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "sourceLabel": "Ubuntu noble exact build",
+        "package": {
+          "version": "0.48.0-1ubuntu5",
+          "debugPackageSha256": "77272a82a9311d0a41d403a55c6ead13e7ae7f40455559c1005557047dbe41ef",
+          "sourceUrl": "https://ddebs.ubuntu.com/pool/universe/o/openmw/openmw-dbgsym_0.48.0-1ubuntu5_arm64.ddeb",
+          "control": "Package: openmw-dbgsym\nVersion: 0.48.0-1ubuntu5\nArchitecture: arm64"
+        },
+        "layoutMethod": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177"
+      }
+    ],
+    "identityChecks": [
+      {
+        "binary": "openttd",
+        "parent": "layout-openttd.json",
+        "fresh": "fresh-layout-openttd.json",
+        "sameBinarySha256": true,
+        "sameBuildId": true,
+        "sameDebugSha256": true
+      },
+      {
+        "binary": "openmw",
+        "parent": "layout-openmw.json",
+        "fresh": "fresh-layout-openmw.json",
+        "sameBinarySha256": true,
+        "sameBuildId": true,
+        "sameDebugSha256": true
+      }
+    ],
+    "authorityFiles": [
+      {
+        "role": "independent oracle authority",
+        "path": "reports/investigations/jev-realgame-final/oracle-authority.json",
+        "sha256": "38665f5657573bf281e71b4a2b7f50805862eca19448c86f1ff904e549833844",
+        "bytes": 1098
+      },
+      {
+        "role": "exact parent layout extract (openttd)",
+        "path": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "sha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "bytes": 356640
+      },
+      {
+        "role": "exact parent layout extract (openmw)",
+        "path": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "sha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "bytes": 42212
+      },
+      {
+        "role": "independent fresh layout extract (openttd)",
+        "path": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+        "sha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+        "bytes": 88578
+      },
+      {
+        "role": "independent fresh layout extract (openmw)",
+        "path": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "sha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "bytes": 108387
+      }
+    ],
+    "rejectedSemanticAlternativesRespected": [
+      {
+        "className": "CreatureStats",
+        "fieldName": "mSpells",
+        "reason": "Exact-build DWARF declares MWMechanics::Spells, a known-spell container; this cannot prove the magical-energy pool in the frozen query. No replacement gold is supplied."
+      }
+    ],
+    "excludedTopics": [
+      "health pool",
+      "fatigue/stamina pool",
+      "magicka/spell-energy pool (CreatureStats.mSpells rejected by oracle authority)"
+    ]
+  },
+  "distribution": {
+    "total": 50,
+    "verified": 40,
+    "control": 10,
+    "openttdVerified": 20,
+    "openmwVerified": 20,
+    "openttdControl": 5,
+    "openmwControl": 5,
+    "verifiedWidthHistogram": {
+      "1": 12,
+      "2": 5,
+      "4": 13,
+      "8": 10
+    },
+    "distinctOwningClasses": 36,
+    "note": "OpenMW exact-build metadata contains no 2-byte members at all; 2-byte coverage is supplied entirely by OpenTTD cases."
+  },
+  "cases": [
+    {
+      "id": "SV2-OP-01",
+      "binary": "openttd",
+      "query": "Which game tick was recorded as the moment this vehicle's timetable began?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "BaseConsist.timetable_start",
+      "className": "BaseConsist",
+      "field": "timetable_start",
+      "qualifiedName": "BaseConsist::timetable_start",
+      "owningClassName": "BaseConsist",
+      "owningOffset": 48,
+      "offset": 48,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct BaseConsist.timetable_start (offset 48, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class BaseConsist",
+        "classSize": 64,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "BaseConsist",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseConsist",
+          "declaringOffset": 48,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "DisasterVehicle",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseConsist",
+          "declaringOffset": 48,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "BaseConsist",
+              "offset": 0,
+              "size": 64
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "RoadVehicle",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseConsist",
+          "declaringOffset": 48,
+          "inheritance": [
+            {
+              "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 576
+            },
+            {
+              "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "BaseConsist",
+              "offset": 0,
+              "size": 64
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "Ship",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseConsist",
+          "declaringOffset": 48,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "BaseConsist",
+              "offset": 0,
+              "size": 64
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "Vehicle",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseConsist",
+          "declaringOffset": 48,
+          "inheritance": [
+            {
+              "className": "BaseConsist",
+              "offset": 0,
+              "size": 64
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "lateness_counter",
+          "offset": 44,
+          "size": 4,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "service_interval",
+          "offset": 52,
+          "size": 2,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Timetable start point on the shared consist base. Independent of the original lateness and service-interval gold (different member, different meaning) and absent from prior fresh identities.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-02",
+      "binary": "openttd",
+      "query": "Which status flags is this vehicle carrying right now, such as stopped, loading, or waiting at a waypoint?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Vehicle.vehstatus",
+      "className": "Vehicle",
+      "field": "vehstatus",
+      "qualifiedName": "Vehicle::vehstatus",
+      "owningClassName": "Vehicle",
+      "owningOffset": 374,
+      "offset": 374,
+      "size": 1,
+      "type": "unsigned char",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Vehicle.vehstatus (offset 374, type unsigned char)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Vehicle",
+        "classSize": 544,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Vehicle",
+          "offset": 374,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 374,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "DisasterVehicle",
+          "offset": 374,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 374,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "RoadVehicle",
+          "offset": 374,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 374,
+          "inheritance": [
+            {
+              "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 576
+            },
+            {
+              "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "Ship",
+          "offset": 374,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 374,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "running_ticks",
+          "offset": 373,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "current_order",
+          "offset": 376,
+          "size": 24,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Vehicle status byte owned directly by Vehicle; width-1 flag coverage in the core vehicle class. No prior case targets any status member.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-03",
+      "binary": "openttd",
+      "query": "How high above the map is this vehicle drawn at the moment?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Vehicle.z_pos",
+      "className": "Vehicle",
+      "field": "z_pos",
+      "qualifiedName": "Vehicle::z_pos",
+      "owningClassName": "Vehicle",
+      "owningOffset": 244,
+      "offset": 244,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Vehicle.z_pos (offset 244, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Vehicle",
+        "classSize": 544,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Vehicle",
+          "offset": 244,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 244,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "DisasterVehicle",
+          "offset": 244,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 244,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "RoadVehicle",
+          "offset": 244,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 244,
+          "inheritance": [
+            {
+              "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 576
+            },
+            {
+              "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "Ship",
+          "offset": 244,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 244,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "y_pos",
+          "offset": 240,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "direction",
+          "offset": 248,
+          "size": 1,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Vertical draw position. Distinct physical member from the original tile/destination tile gold, covering the height axis rather than map-tile identity.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-04",
+      "binary": "openttd",
+      "query": "What cargo capacity will this vehicle have once its ordered refit is applied?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Vehicle.refit_cap",
+      "className": "Vehicle",
+      "field": "refit_cap",
+      "qualifiedName": "Vehicle::refit_cap",
+      "owningClassName": "Vehicle",
+      "owningOffset": 308,
+      "offset": 308,
+      "size": 2,
+      "type": "unsigned short",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Vehicle.refit_cap (offset 308, type unsigned short)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Vehicle",
+        "classSize": 544,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Vehicle",
+          "offset": 308,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 308,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "DisasterVehicle",
+          "offset": 308,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 308,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "RoadVehicle",
+          "offset": 308,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 308,
+          "inheritance": [
+            {
+              "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 576
+            },
+            {
+              "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "Ship",
+          "offset": 308,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Vehicle",
+          "declaringOffset": 308,
+          "inheritance": [
+            {
+              "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+              "offset": 0,
+              "size": 544
+            },
+            {
+              "className": "Vehicle",
+              "offset": 0,
+              "size": 544
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "cargo_cap",
+          "offset": 306,
+          "size": 2,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "cargo",
+          "offset": 312,
+          "size": 56,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Post-refit capacity, a different member from the original current-capacity gold; the question targets pending refit semantics, not maximum capacity.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-05",
+      "binary": "openttd",
+      "query": "Which facing rotation is this ship currently turned to?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Ship.rotation",
+      "className": "Ship",
+      "field": "rotation",
+      "qualifiedName": "Ship::rotation",
+      "owningClassName": "Ship",
+      "owningOffset": 624,
+      "offset": 624,
+      "size": 1,
+      "type": "Direction",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Ship.rotation (offset 624, type Direction)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Ship",
+        "classSize": 632,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "Ship",
+          "offset": 624,
+          "size": 1,
+          "type": "Direction",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Ship",
+          "declaringOffset": 624,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "path",
+          "offset": 544,
+          "size": 80,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "rotation_x_pos",
+          "offset": 626,
+          "size": 2,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Ship-specific member beyond the shared vehicle base, giving subtype coverage with a 1-byte enumeration.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-06",
+      "binary": "openttd",
+      "query": "What kind of road surface is this road vehicle running on at the moment?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "RoadVehicle.roadtype",
+      "className": "RoadVehicle",
+      "field": "roadtype",
+      "qualifiedName": "RoadVehicle::roadtype",
+      "owningClassName": "RoadVehicle",
+      "owningOffset": 745,
+      "offset": 745,
+      "size": 1,
+      "type": "RoadType",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct RoadVehicle.roadtype (offset 745, type RoadType)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class RoadVehicle",
+        "classSize": 760,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "RoadVehicle",
+          "offset": 745,
+          "size": 1,
+          "type": "RoadType",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "RoadVehicle",
+          "declaringOffset": 745,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "reverse_ctr",
+          "offset": 744,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "compatible_roadtypes",
+          "offset": 752,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Road-vehicle-specific road surface kind; distinct owner and subsystem from all train/vehicle-cache gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-07",
+      "binary": "openttd",
+      "query": "What is the precomputed overall length of this train's entire consist?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "GroundVehicleCache.cached_total_length",
+      "className": "GroundVehicleCache",
+      "field": "cached_total_length",
+      "qualifiedName": "GroundVehicleCache::cached_total_length",
+      "owningClassName": "GroundVehicleCache",
+      "owningOffset": 24,
+      "offset": 24,
+      "size": 2,
+      "type": "unsigned short",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct GroundVehicleCache.cached_total_length (offset 24, type unsigned short)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class GroundVehicleCache",
+        "classSize": 32,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "GroundVehicleCache",
+          "offset": 24,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "GroundVehicleCache",
+          "declaringOffset": 24,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "cached_air_drag",
+          "offset": 20,
+          "size": 4,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "first_engine",
+          "offset": 26,
+          "size": 2,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Length quantity from the ground-vehicle physics cache; original gold in this class covered weight, power, tractive effort, drag and top speed only, never length.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-08",
+      "binary": "openttd",
+      "query": "Which station or stop is this schedule instruction pointed at?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Order.dest",
+      "className": "Order",
+      "field": "dest",
+      "qualifiedName": "Order::dest",
+      "owningClassName": "Order",
+      "owningOffset": 6,
+      "offset": 6,
+      "size": 2,
+      "type": "unsigned short",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Order.dest (offset 6, type unsigned short)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Order",
+        "classSize": 24,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Order",
+          "offset": 6,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Order",
+          "declaringOffset": 6,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "flags",
+          "offset": 5,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "refit_cargo",
+          "offset": 8,
+          "size": 1,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Order destination member; prior order gold covered wait/travel time, refit cargo and instruction kind, never the destination.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-09",
+      "binary": "openttd",
+      "query": "Which instruction follows this one in the schedule list?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Order.next",
+      "className": "Order",
+      "field": "next",
+      "qualifiedName": "Order::next",
+      "owningClassName": "Order",
+      "owningOffset": 16,
+      "offset": 16,
+      "size": 8,
+      "type": "Order *",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Order.next (offset 16, type Order *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Order",
+        "classSize": 24,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Order",
+          "offset": 16,
+          "size": 8,
+          "type": "Order *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Order",
+          "declaringOffset": 16,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "max_speed",
+          "offset": 14,
+          "size": 2,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Pointer-width link member giving linked-structure coverage in the schedule subsystem; no prior pointer gold in Order.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-10",
+      "binary": "openttd",
+      "query": "Which town is this station part of?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "BaseStation.town",
+      "className": "BaseStation",
+      "field": "town",
+      "qualifiedName": "BaseStation::town",
+      "owningClassName": "BaseStation",
+      "owningOffset": 112,
+      "offset": 112,
+      "size": 8,
+      "type": "Town *",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct BaseStation.town (offset 112, type Town *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+        "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:28:43.078Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "aca006cbf153cf221767f322af177195c6835f75a5d5cf077ee54dba6e4af9f2",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class BaseStation",
+        "classSize": 192,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "BaseStation",
+          "offset": 112,
+          "size": 8,
+          "type": "Town *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseStation",
+          "declaringOffset": 112,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openttd.json"
+        },
+        {
+          "className": "Station",
+          "offset": 112,
+          "size": 8,
+          "type": "Town *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "BaseStation",
+          "declaringOffset": 112,
+          "inheritance": [
+            {
+              "className": "SpecializedStation<Station, false>",
+              "offset": 0,
+              "size": 192
+            },
+            {
+              "className": "BaseStation",
+              "offset": 0,
+              "size": 192
+            }
+          ],
+          "sourceLayout": "fresh-layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "cached_name",
+          "offset": 80,
+          "size": 32,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "owner",
+          "offset": 120,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Pointer member declared on the station base class; prior station gold covered build date and last vehicle type only.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-11",
+      "binary": "openttd",
+      "query": "Which cargo types does this station accept no matter what its industries currently need?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Station.always_accepted",
+      "className": "Station",
+      "field": "always_accepted",
+      "qualifiedName": "Station::always_accepted",
+      "owningClassName": "Station",
+      "owningOffset": 9064,
+      "offset": 9064,
+      "size": 8,
+      "type": "unsigned long long",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Station.always_accepted (offset 9064, type unsigned long long)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Station",
+        "classSize": 9128,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Station",
+          "offset": 9064,
+          "size": 8,
+          "type": "unsigned long long",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Station",
+          "declaringOffset": 9064,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "goods",
+          "offset": 360,
+          "size": 8704,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "industries_near",
+          "offset": 9072,
+          "size": 48,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "64-bit cargo acceptance bitset at the tail of the station class; distinct owner and width from all prior station gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-12",
+      "binary": "openttd",
+      "query": "What countdown drives this industry's next production update?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Industry.counter",
+      "className": "Industry",
+      "field": "counter",
+      "qualifiedName": "Industry::counter",
+      "owningClassName": "Industry",
+      "owningOffset": 290,
+      "offset": 290,
+      "size": 2,
+      "type": "unsigned short",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Industry.counter (offset 290, type unsigned short)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Industry",
+        "classSize": 512,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Industry",
+          "offset": 290,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Industry",
+          "declaringOffset": 290,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "last_month_transported",
+          "offset": 258,
+          "size": 32,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "type",
+          "offset": 292,
+          "size": 1,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Production scheduling countdown; prior industry gold covered construction date, output year, industry kind and founder.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-13",
+      "binary": "openttd",
+      "query": "Which of this industry type's possible map layouts is this particular site using?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Industry.selected_layout",
+      "className": "Industry",
+      "field": "selected_layout",
+      "qualifiedName": "Industry::selected_layout",
+      "owningClassName": "Industry",
+      "owningOffset": 460,
+      "offset": 460,
+      "size": 1,
+      "type": "unsigned char",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Industry.selected_layout (offset 460, type unsigned char)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Industry",
+        "classSize": 512,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Industry",
+          "offset": 460,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Industry",
+          "declaringOffset": 460,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "last_cargo_accepted_at",
+          "offset": 396,
+          "size": 64,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "exclusive_supplier",
+          "offset": 461,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Layout variant byte for the placed industry; a different subsystem (map presentation) from prior industry gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-14",
+      "binary": "openttd",
+      "query": "Which group does this group sit underneath in the group hierarchy?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Group.parent",
+      "className": "Group",
+      "field": "parent",
+      "qualifiedName": "Group::parent",
+      "owningClassName": "Group",
+      "owningOffset": 82,
+      "offset": 82,
+      "size": 2,
+      "type": "unsigned short",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Group.parent (offset 82, type unsigned short)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Group",
+        "classSize": 88,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Group",
+          "offset": 82,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Group",
+          "declaringOffset": 82,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "folded",
+          "offset": 80,
+          "size": 1,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Hierarchy link of the vehicle group tree; prior group gold only covered the collapsed-in-list GUI flag.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-15",
+      "binary": "openttd",
+      "query": "Which window opened this one?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Window.parent",
+      "className": "Window",
+      "field": "parent",
+      "qualifiedName": "Window::parent",
+      "owningClassName": "Window",
+      "owningOffset": 176,
+      "offset": 176,
+      "size": 8,
+      "type": "Window *",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Window.parent (offset 176, type Window *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Window",
+        "classSize": 192,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openttd.json",
+          "layoutFileSha256": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "Window",
+          "offset": 176,
+          "size": 8,
+          "type": "Window *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Window",
+          "declaringOffset": 176,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        },
+        {
+          "className": "LinkGraphLegendWindow",
+          "offset": 176,
+          "size": 8,
+          "type": "Window *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Window",
+          "declaringOffset": 176,
+          "inheritance": [
+            {
+              "className": "Window",
+              "offset": 0,
+              "size": 192
+            }
+          ],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mouse_capture_widget",
+          "offset": 168,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "z_position",
+          "offset": 184,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Pointer to the spawning window; prior window gold covered descriptor, class, screen number and horizontal position.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-16",
+      "binary": "openttd",
+      "query": "Which rail types is this company currently allowed to use?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Company.avail_railtypes",
+      "className": "Company",
+      "field": "avail_railtypes",
+      "qualifiedName": "Company::avail_railtypes",
+      "owningClassName": "Company",
+      "owningOffset": 7792,
+      "offset": 7792,
+      "size": 8,
+      "type": "RailTypes",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct Company.avail_railtypes (offset 7792, type RailTypes)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class Company",
+        "classSize": 8608,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "Company",
+          "offset": 7792,
+          "size": 8,
+          "type": "RailTypes",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "Company",
+          "declaringOffset": 7792,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "index",
+          "offset": 7788,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "avail_roadtypes",
+          "offset": 7800,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Company-owned bitset declared after the shared properties base; original company gold lived entirely inside the inherited properties region.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-17",
+      "binary": "openttd",
+      "query": "What is the current connection state of this multiplayer client session?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "ClientNetworkGameSocketHandler.status",
+      "className": "ClientNetworkGameSocketHandler",
+      "field": "status",
+      "qualifiedName": "ClientNetworkGameSocketHandler::status",
+      "owningClassName": "ClientNetworkGameSocketHandler",
+      "owningOffset": 148,
+      "offset": 148,
+      "size": 4,
+      "type": "ClientNetworkGameSocketHandler::ServerStatus",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct ClientNetworkGameSocketHandler.status (offset 148, type ClientNetworkGameSocketHandler::ServerStatus)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class ClientNetworkGameSocketHandler",
+        "classSize": 152,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "ClientNetworkGameSocketHandler",
+          "offset": 148,
+          "size": 4,
+          "type": "ClientNetworkGameSocketHandler::ServerStatus",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "ClientNetworkGameSocketHandler",
+          "declaringOffset": 148,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "token",
+          "offset": 144,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Connection/session state on the multiplayer client handler; a subsystem (networking) that no original or prior case touches.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-18",
+      "binary": "openttd",
+      "query": "Which colour scheme mode does this NewGRF request for its graphics?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "GRFConfig.palette",
+      "className": "GRFConfig",
+      "field": "palette",
+      "qualifiedName": "GRFConfig::palette",
+      "owningClassName": "GRFConfig",
+      "owningOffset": 646,
+      "offset": 646,
+      "size": 1,
+      "type": "unsigned char",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct GRFConfig.palette (offset 646, type unsigned char)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class GRFConfig",
+        "classSize": 688,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "GRFConfig",
+          "offset": 646,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "GRFConfig",
+          "declaringOffset": 646,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "num_valid_params",
+          "offset": 645,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "param_info",
+          "offset": 648,
+          "size": 24,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Graphics-extension configuration byte; NewGRF configuration members are absent from both original and prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-19",
+      "binary": "openttd",
+      "query": "At which x coordinate did this diagonal scan of the map begin?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "DiagonalTileIterator.base_x",
+      "className": "DiagonalTileIterator",
+      "field": "base_x",
+      "qualifiedName": "DiagonalTileIterator::base_x",
+      "owningClassName": "DiagonalTileIterator",
+      "owningOffset": 12,
+      "offset": 12,
+      "size": 4,
+      "type": "unsigned int",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct DiagonalTileIterator.base_x (offset 12, type unsigned int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class DiagonalTileIterator",
+        "classSize": 40,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "DiagonalTileIterator",
+          "offset": 12,
+          "size": 4,
+          "type": "unsigned int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "DiagonalTileIterator",
+          "declaringOffset": 12,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "tile",
+          "offset": 8,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "base_y",
+          "offset": 16,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Map-iteration start coordinate; the iterator subsystem appears in neither original nor prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-OP-20",
+      "binary": "openttd",
+      "query": "Which overlay does this link graph legend window use to draw its data?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "LinkGraphLegendWindow.overlay",
+      "className": "LinkGraphLegendWindow",
+      "field": "overlay",
+      "qualifiedName": "LinkGraphLegendWindow::overlay",
+      "owningClassName": "LinkGraphLegendWindow",
+      "owningOffset": 192,
+      "offset": 192,
+      "size": 8,
+      "type": "LinkGraphOverlay *",
+      "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+      "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+      "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+      "goldLabel": "DWARF struct LinkGraphLegendWindow.overlay (offset 192, type LinkGraphOverlay *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openttd.json",
+        "layoutFileSha256": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:28:43.078Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "layoutDeclaration": "class LinkGraphLegendWindow",
+        "classSize": 200,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "LinkGraphLegendWindow",
+          "offset": 192,
+          "size": 8,
+          "type": "LinkGraphOverlay *",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "declaringClass": "LinkGraphLegendWindow",
+          "declaringOffset": 192,
+          "inheritance": [],
+          "sourceLayout": "layout-openttd.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "z_position",
+          "offset": 184,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Member declared on a concrete derived window (after the 192-byte Window base), proving derived-class namespace and base-offset handling.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-01",
+      "binary": "openmw",
+      "query": "Which stance of weapon readiness is this actor's animation in right now?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWMechanics::CreatureStats.mDrawState",
+      "className": "MWMechanics::CreatureStats",
+      "field": "mDrawState",
+      "qualifiedName": "MWMechanics::CreatureStats::mDrawState",
+      "owningClassName": "MWMechanics::CreatureStats",
+      "owningOffset": 0,
+      "offset": 0,
+      "size": 4,
+      "type": "MWMechanics::DrawState",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWMechanics::CreatureStats.mDrawState (offset 0, type MWMechanics::DrawState)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWMechanics::CreatureStats",
+        "classSize": 712,
+        "crossCheck": {
+          "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+          "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+          "memberIdentical": true,
+          "sameBinarySha256": true,
+          "sameBuildId": true,
+          "sameDebugSha256": true
+        }
+      },
+      "identities": [
+        {
+          "className": "MWMechanics::CreatureStats",
+          "offset": 0,
+          "size": 4,
+          "type": "MWMechanics::DrawState",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWMechanics::CreatureStats",
+          "declaringOffset": 0,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        },
+        {
+          "className": "MWMechanics::NpcStats",
+          "offset": 0,
+          "size": 4,
+          "type": "MWMechanics::DrawState",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWMechanics::CreatureStats",
+          "declaringOffset": 0,
+          "inheritance": [
+            {
+              "className": "MWMechanics::CreatureStats",
+              "offset": 0,
+              "size": 712
+            }
+          ],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mAttributes",
+          "offset": 4,
+          "size": 96,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Leading member of the actor-stats object (offset 0, no vptr); prior actor gold covered death, knockdown, fall and conversation flags only.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-02",
+      "binary": "openmw",
+      "query": "What reputation score does this character currently hold?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWMechanics::NpcStats.mReputation",
+      "className": "MWMechanics::NpcStats",
+      "field": "mReputation",
+      "qualifiedName": "MWMechanics::NpcStats::mReputation",
+      "owningClassName": "MWMechanics::NpcStats",
+      "owningOffset": 1148,
+      "offset": 1148,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mReputation (offset 1148, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWMechanics::NpcStats",
+        "classSize": 1424,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWMechanics::NpcStats",
+          "offset": 1148,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWMechanics::NpcStats",
+          "declaringOffset": 1148,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mSkill",
+          "offset": 716,
+          "size": 432,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "mCrimeId",
+          "offset": 1152,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "NPC social-scope member distinct from disposition and bounty, both of which are already prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-03",
+      "binary": "openmw",
+      "query": "What kind of AI task was this actor running most recently?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWMechanics::AiSequence.mLastAiPackage",
+      "className": "MWMechanics::AiSequence",
+      "field": "mLastAiPackage",
+      "qualifiedName": "MWMechanics::AiSequence::mLastAiPackage",
+      "owningClassName": "MWMechanics::AiSequence",
+      "owningOffset": 44,
+      "offset": 44,
+      "size": 4,
+      "type": "MWMechanics::AiPackageTypeId",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWMechanics::AiSequence.mLastAiPackage (offset 44, type MWMechanics::AiPackageTypeId)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWMechanics::AiSequence",
+        "classSize": 56,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWMechanics::AiSequence",
+          "offset": 44,
+          "size": 4,
+          "type": "MWMechanics::AiPackageTypeId",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWMechanics::AiSequence",
+          "declaringOffset": 44,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mNumPursuitPackages",
+          "offset": 40,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mAiState",
+          "offset": 48,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "AI package type discriminator; prior AI gold covered only the combat-package counter, a different member and meaning.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-04",
+      "binary": "openmw",
+      "query": "Which world cell record was this path grid graph built for?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWMechanics::PathgridGraph.mCell",
+      "className": "MWMechanics::PathgridGraph",
+      "field": "mCell",
+      "qualifiedName": "MWMechanics::PathgridGraph::mCell",
+      "owningClassName": "MWMechanics::PathgridGraph",
+      "owningOffset": 0,
+      "offset": 0,
+      "size": 8,
+      "type": "const ESM::Cell *",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWMechanics::PathgridGraph.mCell (offset 0, type const ESM::Cell *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWMechanics::PathgridGraph",
+        "classSize": 104,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWMechanics::PathgridGraph",
+          "offset": 0,
+          "size": 8,
+          "type": "const ESM::Cell *",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWMechanics::PathgridGraph",
+          "declaringOffset": 0,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mPathgrid",
+          "offset": 8,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Pointer at offset 0 of the pathfinding graph object; the pathgrid subsystem is untouched by original and prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-05",
+      "binary": "openmw",
+      "query": "For how many consecutive physics frames has this actor been unable to move?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWPhysics::ActorFrameData.mStuckFrames",
+      "className": "MWPhysics::ActorFrameData",
+      "field": "mStuckFrames",
+      "qualifiedName": "MWPhysics::ActorFrameData::mStuckFrames",
+      "owningClassName": "MWPhysics::ActorFrameData",
+      "owningOffset": 100,
+      "offset": 100,
+      "size": 4,
+      "type": "unsigned int",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWPhysics::ActorFrameData.mStuckFrames (offset 100, type unsigned int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWPhysics::ActorFrameData",
+        "classSize": 112,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWPhysics::ActorFrameData",
+          "offset": 100,
+          "size": 4,
+          "type": "unsigned int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWPhysics::ActorFrameData",
+          "declaringOffset": 100,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mOldHeight",
+          "offset": 96,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mFlying",
+          "offset": 104,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Per-frame physics record counter; no prior gold exists in the physics subsystem.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-06",
+      "binary": "openmw",
+      "query": "Is the drawing of actor path overlays switched on?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWRender::ActorsPaths.mEnabled",
+      "className": "MWRender::ActorsPaths",
+      "field": "mEnabled",
+      "qualifiedName": "MWRender::ActorsPaths::mEnabled",
+      "owningClassName": "MWRender::ActorsPaths",
+      "owningOffset": 56,
+      "offset": 56,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWRender::ActorsPaths.mEnabled (offset 56, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWRender::ActorsPaths",
+        "classSize": 64,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWRender::ActorsPaths",
+          "offset": 56,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWRender::ActorsPaths",
+          "declaringOffset": 56,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mGroups",
+          "offset": 8,
+          "size": 48,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Render-overlay enable flag; width-1 coverage in the rendering subsystem with no prior counterpart.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-07",
+      "binary": "openmw",
+      "query": "Which cell store holds the cell that contains this world object?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWWorld::Ptr.mCell",
+      "className": "MWWorld::Ptr",
+      "field": "mCell",
+      "qualifiedName": "MWWorld::Ptr::mCell",
+      "owningClassName": "MWWorld::PtrBase<std::remove_const_t>",
+      "owningOffset": 8,
+      "offset": 8,
+      "size": 8,
+      "type": "MWWorld::PtrBase<std::remove_const_t>::CellStoreType *",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWWorld::Ptr.mCell (offset 8, type MWWorld::PtrBase<std::remove_const_t>::CellStoreType *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWWorld::Ptr",
+        "classSize": 24,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWWorld::Ptr",
+          "offset": 8,
+          "size": 8,
+          "type": "MWWorld::PtrBase<std::remove_const_t>::CellStoreType *",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWWorld::PtrBase<std::remove_const_t>",
+          "declaringOffset": 8,
+          "inheritance": [
+            {
+              "className": "MWWorld::PtrBase<std::remove_const_t>",
+              "offset": 0,
+              "size": 24
+            }
+          ],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mRef",
+          "offset": 0,
+          "size": 8,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mContainerStore",
+          "offset": 16,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Second pointer of the object handle, declared on the injected base class PtrBase at offset 0; the original gold for this class targeted the first pointer only.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-08",
+      "binary": "openmw",
+      "query": "Is the list of items recharging inside this cell still reliable?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWWorld::CellStore.mRechargingItemsUpToDate",
+      "className": "MWWorld::CellStore",
+      "field": "mRechargingItemsUpToDate",
+      "qualifiedName": "MWWorld::CellStore::mRechargingItemsUpToDate",
+      "owningClassName": "MWWorld::CellStore",
+      "owningOffset": 728,
+      "offset": 728,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWWorld::CellStore.mRechargingItemsUpToDate (offset 728, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWWorld::CellStore",
+        "classSize": 736,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWWorld::CellStore",
+          "offset": 728,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWWorld::CellStore",
+          "declaringOffset": 728,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mRechargingItems",
+          "offset": 704,
+          "size": 24,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Validity flag at the tail of the cell store; prior cell-store gold covered load state and water level only.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-09",
+      "binary": "openmw",
+      "query": "Which day number does this timestamp point to?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWWorld::TimeStamp.mDay",
+      "className": "MWWorld::TimeStamp",
+      "field": "mDay",
+      "qualifiedName": "MWWorld::TimeStamp::mDay",
+      "owningClassName": "MWWorld::TimeStamp",
+      "owningOffset": 4,
+      "offset": 4,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWWorld::TimeStamp.mDay (offset 4, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWWorld::TimeStamp",
+        "classSize": 8,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWWorld::TimeStamp",
+          "offset": 4,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWWorld::TimeStamp",
+          "declaringOffset": 4,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mHour",
+          "offset": 0,
+          "size": 4,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Second scalar of the timestamp pair; prior gold used the hour member only, so this is a distinct physical member of the same tiny class.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-10",
+      "binary": "openmw",
+      "query": "Which running number is used to mint fresh unique references inside this cell record?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "ESM::Cell.mRefNumCounter",
+      "className": "ESM::Cell",
+      "field": "mRefNumCounter",
+      "qualifiedName": "ESM::Cell::mRefNumCounter",
+      "owningClassName": "ESM::Cell",
+      "owningOffset": 184,
+      "offset": 184,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct ESM::Cell.mRefNumCounter (offset 184, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class ESM::Cell",
+        "classSize": 240,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "ESM::Cell",
+          "offset": 184,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "ESM::Cell",
+          "declaringOffset": 184,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mMapColor",
+          "offset": 180,
+          "size": 4,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mLeasedRefs",
+          "offset": 192,
+          "size": 24,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Reference-number allocator in the saved-game cell record; prior cell gold covered only the map colour.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-11",
+      "binary": "openmw",
+      "query": "What category of journal entry does this record represent?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "ESM::JournalEntry.mType",
+      "className": "ESM::JournalEntry",
+      "field": "mType",
+      "qualifiedName": "ESM::JournalEntry::mType",
+      "owningClassName": "ESM::JournalEntry",
+      "owningOffset": 0,
+      "offset": 0,
+      "size": 4,
+      "type": "int",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct ESM::JournalEntry.mType (offset 0, type int)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class ESM::JournalEntry",
+        "classSize": 152,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "ESM::JournalEntry",
+          "offset": 0,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "ESM::JournalEntry",
+          "declaringOffset": 0,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mTopic",
+          "offset": 8,
+          "size": 32,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Leading discriminator of the journal record; prior journal gold covered only the day-of-month component.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-12",
+      "binary": "openmw",
+      "query": "Has this game state been set so the player cannot draw a weapon?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "ESM::ControlsState.mWeaponDrawingDisabled",
+      "className": "ESM::ControlsState",
+      "field": "mWeaponDrawingDisabled",
+      "qualifiedName": "ESM::ControlsState::mWeaponDrawingDisabled",
+      "owningClassName": "ESM::ControlsState",
+      "owningOffset": 5,
+      "offset": 5,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct ESM::ControlsState.mWeaponDrawingDisabled (offset 5, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class ESM::ControlsState",
+        "classSize": 7,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "ESM::ControlsState",
+          "offset": 5,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "ESM::ControlsState",
+          "declaringOffset": 5,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mVanityModeDisabled",
+          "offset": 4,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mSpellDrawingDisabled",
+          "offset": 6,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Fifth of seven one-byte control switches; prior gold used only the jumping switch, so this is a distinct member of the same packed struct.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-13",
+      "binary": "openmw",
+      "query": "Is the player shown as asleep while this dialog counts down the hours?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWGui::WaitDialog.mSleeping",
+      "className": "MWGui::WaitDialog",
+      "field": "mSleeping",
+      "qualifiedName": "MWGui::WaitDialog::mSleeping",
+      "owningClassName": "MWGui::WaitDialog",
+      "owningOffset": 256,
+      "offset": 256,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWGui::WaitDialog.mSleeping (offset 256, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWGui::WaitDialog",
+        "classSize": 432,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWGui::WaitDialog",
+          "offset": 256,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWGui::WaitDialog",
+          "declaringOffset": 256,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mTimeAdvancer",
+          "offset": 160,
+          "size": 96,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        },
+        {
+          "path": "mHours",
+          "offset": 260,
+          "size": 4,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Dialog phase flag placed just before the previously used hours member; distinct meaning (visual state) from the chosen-hours gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-14",
+      "binary": "openmw",
+      "query": "What speed setting controls how quickly message boxes pop up on screen?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWGui::MessageBoxManager.mMessageBoxSpeed",
+      "className": "MWGui::MessageBoxManager",
+      "field": "mMessageBoxSpeed",
+      "qualifiedName": "MWGui::MessageBoxManager::mMessageBoxSpeed",
+      "owningClassName": "MWGui::MessageBoxManager",
+      "owningOffset": 64,
+      "offset": 64,
+      "size": 4,
+      "type": "float",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWGui::MessageBoxManager.mMessageBoxSpeed (offset 64, type float)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWGui::MessageBoxManager",
+        "classSize": 80,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWGui::MessageBoxManager",
+          "offset": 64,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWGui::MessageBoxManager",
+          "declaringOffset": 64,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mStaticMessageBox",
+          "offset": 56,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mLastButtonPressed",
+          "offset": 68,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Float presentation setting; prior message-box gold covered only the visibility flag.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-15",
+      "binary": "openmw",
+      "query": "Which HUD widget draws the aiming crosshair?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWGui::HUD.mCrosshair",
+      "className": "MWGui::HUD",
+      "field": "mCrosshair",
+      "qualifiedName": "MWGui::HUD::mCrosshair",
+      "owningClassName": "MWGui::HUD",
+      "owningOffset": 576,
+      "offset": 576,
+      "size": 8,
+      "type": "MyGUI::ImageBox *",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWGui::HUD.mCrosshair (offset 576, type MyGUI::ImageBox *)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWGui::HUD",
+        "classSize": 792,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWGui::HUD",
+          "offset": 576,
+          "size": 8,
+          "type": "MyGUI::ImageBox *",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWGui::HUD",
+          "declaringOffset": 576,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mMinimap",
+          "offset": 568,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mCellNameBox",
+          "offset": 584,
+          "size": 8,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Pointer member in the middle of the HUD widget table; prior HUD gold covered only the map-visibility flag at the tail. Health/magicka/stamina widget pointers were deliberately avoided.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-16",
+      "binary": "openmw",
+      "query": "Can the device's motion sensors be used to steer the camera here?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "MWInput::ControllerManager.mGyroAvailable",
+      "className": "MWInput::ControllerManager",
+      "field": "mGyroAvailable",
+      "qualifiedName": "MWInput::ControllerManager::mGyroAvailable",
+      "owningClassName": "MWInput::ControllerManager",
+      "owningOffset": 33,
+      "offset": 33,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct MWInput::ControllerManager.mGyroAvailable (offset 33, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/fresh-layout-openmw.json",
+        "layoutFileSha256": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+        "layoutSchema": null,
+        "layoutSchemaFromPairedExtract": "hex-jev-realgame-struct-layout/v1",
+        "sourceLabel": "Ubuntu noble exact build (independently re-extracted; identity bound to parent extract)",
+        "extractedAtUtc": null,
+        "extractedAtUtcFromPairedExtract": "2026-09-30T08:31:31.289Z",
+        "method": "Independent parent rerun of exact-build GDB Type.fields; same audited release/debug build-ID",
+        "extractorSha256": null,
+        "parentLayoutSha256": "7c78dc069f52eeb0d584236a7171e01a9fafad2b18d92811470c22872a44319d",
+        "gdb": "GNU gdb 12.1 (recorded in parent extract)",
+        "debugFile": null,
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class MWInput::ControllerManager",
+        "classSize": 48,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "MWInput::ControllerManager",
+          "offset": 33,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "MWInput::ControllerManager",
+          "declaringOffset": 33,
+          "inheritance": [],
+          "sourceLayout": "fresh-layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mJoystickEnabled",
+          "offset": 32,
+          "size": 1,
+          "inOriginalOrPriorGold": true,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "mGamepadCursorSpeed",
+          "offset": 36,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Capability flag adjacent to, but distinct from, the joystick-enable byte used by prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-17",
+      "binary": "openmw",
+      "query": "How many blend cycles per second does this animation controller run at?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Nif::bhkBlendController.frequency",
+      "className": "Nif::bhkBlendController",
+      "field": "frequency",
+      "qualifiedName": "Nif::bhkBlendController::frequency",
+      "owningClassName": "Nif::Controller",
+      "owningOffset": 68,
+      "offset": 68,
+      "size": 4,
+      "type": "float",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct Nif::bhkBlendController.frequency (offset 68, type float)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class Nif::bhkBlendController",
+        "classSize": 96,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "Nif::bhkBlendController",
+          "offset": 68,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "Nif::Controller",
+          "declaringOffset": 68,
+          "inheritance": [
+            {
+              "className": "Nif::Controller",
+              "offset": 0,
+              "size": 96
+            }
+          ],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "flags",
+          "offset": 64,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        },
+        {
+          "path": "phase",
+          "offset": 72,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Declared on the inherited Nif::Controller base at offset 0 (record base offset proven in DWARF); mesh-animation subsystem has no prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-18",
+      "binary": "openmw",
+      "query": "Has the software cursor system finished its initial setup?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "SDLUtil::SDLCursorManager.mInitialized",
+      "className": "SDLUtil::SDLCursorManager",
+      "field": "mInitialized",
+      "qualifiedName": "SDLUtil::SDLCursorManager::mInitialized",
+      "owningClassName": "SDLUtil::SDLCursorManager",
+      "owningOffset": 89,
+      "offset": 89,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct SDLUtil::SDLCursorManager.mInitialized (offset 89, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class SDLUtil::SDLCursorManager",
+        "classSize": 96,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "SDLUtil::SDLCursorManager",
+          "offset": 89,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "SDLUtil::SDLCursorManager",
+          "declaringOffset": 89,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mEnabled",
+          "offset": 88,
+          "size": 1,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Second byte of the cursor-manager state pair; no prior gold exists in this class.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-19",
+      "binary": "openmw",
+      "query": "Does the engine classify this skinned mesh as part of a creature's body?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "SceneUtil::RigGeometryHolder.mIsBodyPart",
+      "className": "SceneUtil::RigGeometryHolder",
+      "field": "mIsBodyPart",
+      "qualifiedName": "SceneUtil::RigGeometryHolder::mIsBodyPart",
+      "owningClassName": "SceneUtil::RigGeometryHolder",
+      "owningOffset": 380,
+      "offset": 380,
+      "size": 1,
+      "type": "bool",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct SceneUtil::RigGeometryHolder.mIsBodyPart (offset 380, type bool)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class SceneUtil::RigGeometryHolder",
+        "classSize": 384,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "SceneUtil::RigGeometryHolder",
+          "offset": 380,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "SceneUtil::RigGeometryHolder",
+          "declaringOffset": 380,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mLastFrameNumber",
+          "offset": 376,
+          "size": 4,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": false
+        }
+      ],
+      "explanation": "Trailing flag of the rigged-geometry holder near the 384-byte class end; skeleton/mesh subsystem is absent from all prior gold.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-MW-20",
+      "binary": "openmw",
+      "query": "Which table of local variables does this compiled output refer to?",
+      "mode": "partial",
+      "status": "verified",
+      "semanticLabel": "Compiler::Output.mLocals",
+      "className": "Compiler::Output",
+      "field": "mLocals",
+      "qualifiedName": "Compiler::Output::mLocals",
+      "owningClassName": "Compiler::Output",
+      "owningOffset": 96,
+      "offset": 96,
+      "size": 8,
+      "type": "Compiler::Locals &",
+      "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+      "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+      "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+      "goldLabel": "DWARF struct Compiler::Output.mLocals (offset 96, type Compiler::Locals &)",
+      "authority": {
+        "layoutFile": "reports/investigations/jev-realgame-final/layout-openmw.json",
+        "layoutFileSha256": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+        "layoutSchema": "hex-jev-realgame-struct-layout/v1",
+        "layoutSchemaFromPairedExtract": null,
+        "sourceLabel": "Ubuntu noble exact build",
+        "extractedAtUtc": "2026-09-30T08:31:31.289Z",
+        "extractedAtUtcFromPairedExtract": null,
+        "method": "GDB Python compiler/DWARF Type.fields, byte offsets, actual sizeof, declared owner, and recursive base adjustments",
+        "extractorSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+        "parentLayoutSha256": null,
+        "gdb": "gdb",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "layoutDeclaration": "class Compiler::Output",
+        "classSize": 104,
+        "crossCheck": null
+      },
+      "identities": [
+        {
+          "className": "Compiler::Output",
+          "offset": 96,
+          "size": 8,
+          "type": "Compiler::Locals &",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "declaringClass": "Compiler::Output",
+          "declaringOffset": 96,
+          "inheritance": [],
+          "sourceLayout": "layout-openmw.json"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "path": "mCode",
+          "offset": 72,
+          "size": 24,
+          "inOriginalOrPriorGold": false,
+          "aggregateOrArray": true
+        }
+      ],
+      "explanation": "Reference-width member of the script compiler output, giving compiler-subsystem and reference-type coverage with no prior counterpart.",
+      "independence": {
+        "absentFromOriginal70PhysicalGold": true,
+        "absentFromPriorFresh50PhysicalGold": true,
+        "notAPriorSemanticLabel": true,
+        "distinctFromPriorQueryText": true
+      },
+      "excludedFromOriginal70": true,
+      "excludedFromFresh50": true
+    },
+    {
+      "id": "SV2-CTL-01",
+      "binary": "openttd",
+      "query": "How many millimetres of rain have fallen on this station today?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-02",
+      "binary": "openttd",
+      "query": "What is the licence plate number of this road vehicle?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-03",
+      "binary": "openttd",
+      "query": "How much noise, in decibels, does this aircraft produce during take-off?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-04",
+      "binary": "openttd",
+      "query": "Which real-world city has a street layout most similar to this town?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-05",
+      "binary": "openttd",
+      "query": "How many days of paid holiday does this company's president receive each year?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-06",
+      "binary": "openmw",
+      "query": "How many pages does the book this character is reading contain?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-07",
+      "binary": "openmw",
+      "query": "What is this character's favourite colour?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-08",
+      "binary": "openmw",
+      "query": "How many languages can this character speak fluently?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-09",
+      "binary": "openmw",
+      "query": "How many fish are currently swimming in this lake?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    },
+    {
+      "id": "SV2-CTL-10",
+      "binary": "openmw",
+      "query": "How long would it take to boil water at this location's altitude?",
+      "mode": "partial",
+      "status": "control",
+      "semanticLabel": "unanswerable-control",
+      "explanation": "Abstain/control question: no member of the exact-build layout authority (and no game-state datum these binaries track) can answer it; the correct behaviour is abstention."
+    }
+  ]
+}

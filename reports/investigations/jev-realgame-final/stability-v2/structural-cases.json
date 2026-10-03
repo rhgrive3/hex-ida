@@ -1,0 +1,1316 @@
+[
+  {
+    "id": "SV2-OP-01",
+    "binary": "openttd",
+    "query": "Which game tick was recorded as the moment this vehicle's timetable began?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct BaseConsist.timetable_start (offset 48, type int)",
+    "identities": [
+      {
+        "className": "BaseConsist",
+        "offset": 48,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 48,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "DisasterVehicle",
+        "offset": 48,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 48,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "RoadVehicle",
+        "offset": 48,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 48,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "Ship",
+        "offset": 48,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 48,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "Vehicle",
+        "offset": 48,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 48,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-02",
+    "binary": "openttd",
+    "query": "Which status flags is this vehicle carrying right now, such as stopped, loading, or waiting at a waypoint?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Vehicle.vehstatus (offset 374, type unsigned char)",
+    "identities": [
+      {
+        "className": "Vehicle",
+        "offset": 374,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 374,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "DisasterVehicle",
+        "offset": 374,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 374,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "RoadVehicle",
+        "offset": 374,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 374,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "Ship",
+        "offset": 374,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 374,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-03",
+    "binary": "openttd",
+    "query": "How high above the map is this vehicle drawn at the moment?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Vehicle.z_pos (offset 244, type int)",
+    "identities": [
+      {
+        "className": "Vehicle",
+        "offset": 244,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 244,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "DisasterVehicle",
+        "offset": 244,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 244,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "RoadVehicle",
+        "offset": 244,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 244,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "Ship",
+        "offset": 244,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 244,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-04",
+    "binary": "openttd",
+    "query": "What cargo capacity will this vehicle have once its ordered refit is applied?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Vehicle.refit_cap (offset 308, type unsigned short)",
+    "identities": [
+      {
+        "className": "Vehicle",
+        "offset": 308,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 308,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "DisasterVehicle",
+        "offset": 308,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 308,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "RoadVehicle",
+        "offset": 308,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 308,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "Ship",
+        "offset": 308,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 308,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-05",
+    "binary": "openttd",
+    "query": "Which facing rotation is this ship currently turned to?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Ship.rotation (offset 624, type Direction)",
+    "identities": [
+      {
+        "className": "Ship",
+        "offset": 624,
+        "size": 1,
+        "type": "Direction",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Ship",
+        "declaringOffset": 624,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-06",
+    "binary": "openttd",
+    "query": "What kind of road surface is this road vehicle running on at the moment?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct RoadVehicle.roadtype (offset 745, type RoadType)",
+    "identities": [
+      {
+        "className": "RoadVehicle",
+        "offset": 745,
+        "size": 1,
+        "type": "RoadType",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "RoadVehicle",
+        "declaringOffset": 745,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-07",
+    "binary": "openttd",
+    "query": "What is the precomputed overall length of this train's entire consist?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct GroundVehicleCache.cached_total_length (offset 24, type unsigned short)",
+    "identities": [
+      {
+        "className": "GroundVehicleCache",
+        "offset": 24,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "GroundVehicleCache",
+        "declaringOffset": 24,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-08",
+    "binary": "openttd",
+    "query": "Which station or stop is this schedule instruction pointed at?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Order.dest (offset 6, type unsigned short)",
+    "identities": [
+      {
+        "className": "Order",
+        "offset": 6,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Order",
+        "declaringOffset": 6,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-09",
+    "binary": "openttd",
+    "query": "Which instruction follows this one in the schedule list?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Order.next (offset 16, type Order *)",
+    "identities": [
+      {
+        "className": "Order",
+        "offset": 16,
+        "size": 8,
+        "type": "Order *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Order",
+        "declaringOffset": 16,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-10",
+    "binary": "openttd",
+    "query": "Which town is this station part of?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct BaseStation.town (offset 112, type Town *)",
+    "identities": [
+      {
+        "className": "BaseStation",
+        "offset": 112,
+        "size": 8,
+        "type": "Town *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseStation",
+        "declaringOffset": 112,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openttd.json"
+      },
+      {
+        "className": "Station",
+        "offset": 112,
+        "size": 8,
+        "type": "Town *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "BaseStation",
+        "declaringOffset": 112,
+        "inheritance": [
+          {
+            "className": "SpecializedStation<Station, false>",
+            "offset": 0,
+            "size": 192
+          },
+          {
+            "className": "BaseStation",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "sourceLayout": "fresh-layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-11",
+    "binary": "openttd",
+    "query": "Which cargo types does this station accept no matter what its industries currently need?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Station.always_accepted (offset 9064, type unsigned long long)",
+    "identities": [
+      {
+        "className": "Station",
+        "offset": 9064,
+        "size": 8,
+        "type": "unsigned long long",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Station",
+        "declaringOffset": 9064,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-12",
+    "binary": "openttd",
+    "query": "What countdown drives this industry's next production update?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Industry.counter (offset 290, type unsigned short)",
+    "identities": [
+      {
+        "className": "Industry",
+        "offset": 290,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Industry",
+        "declaringOffset": 290,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-13",
+    "binary": "openttd",
+    "query": "Which of this industry type's possible map layouts is this particular site using?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Industry.selected_layout (offset 460, type unsigned char)",
+    "identities": [
+      {
+        "className": "Industry",
+        "offset": 460,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Industry",
+        "declaringOffset": 460,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-14",
+    "binary": "openttd",
+    "query": "Which group does this group sit underneath in the group hierarchy?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Group.parent (offset 82, type unsigned short)",
+    "identities": [
+      {
+        "className": "Group",
+        "offset": 82,
+        "size": 2,
+        "type": "unsigned short",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Group",
+        "declaringOffset": 82,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-15",
+    "binary": "openttd",
+    "query": "Which window opened this one?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Window.parent (offset 176, type Window *)",
+    "identities": [
+      {
+        "className": "Window",
+        "offset": 176,
+        "size": 8,
+        "type": "Window *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Window",
+        "declaringOffset": 176,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      },
+      {
+        "className": "LinkGraphLegendWindow",
+        "offset": 176,
+        "size": 8,
+        "type": "Window *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Window",
+        "declaringOffset": 176,
+        "inheritance": [
+          {
+            "className": "Window",
+            "offset": 0,
+            "size": 192
+          }
+        ],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-16",
+    "binary": "openttd",
+    "query": "Which rail types is this company currently allowed to use?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Company.avail_railtypes (offset 7792, type RailTypes)",
+    "identities": [
+      {
+        "className": "Company",
+        "offset": 7792,
+        "size": 8,
+        "type": "RailTypes",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "Company",
+        "declaringOffset": 7792,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-17",
+    "binary": "openttd",
+    "query": "What is the current connection state of this multiplayer client session?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct ClientNetworkGameSocketHandler.status (offset 148, type ClientNetworkGameSocketHandler::ServerStatus)",
+    "identities": [
+      {
+        "className": "ClientNetworkGameSocketHandler",
+        "offset": 148,
+        "size": 4,
+        "type": "ClientNetworkGameSocketHandler::ServerStatus",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "ClientNetworkGameSocketHandler",
+        "declaringOffset": 148,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-18",
+    "binary": "openttd",
+    "query": "Which colour scheme mode does this NewGRF request for its graphics?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct GRFConfig.palette (offset 646, type unsigned char)",
+    "identities": [
+      {
+        "className": "GRFConfig",
+        "offset": 646,
+        "size": 1,
+        "type": "unsigned char",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "GRFConfig",
+        "declaringOffset": 646,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-19",
+    "binary": "openttd",
+    "query": "At which x coordinate did this diagonal scan of the map begin?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct DiagonalTileIterator.base_x (offset 12, type unsigned int)",
+    "identities": [
+      {
+        "className": "DiagonalTileIterator",
+        "offset": 12,
+        "size": 4,
+        "type": "unsigned int",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "DiagonalTileIterator",
+        "declaringOffset": 12,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-OP-20",
+    "binary": "openttd",
+    "query": "Which overlay does this link graph legend window use to draw its data?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct LinkGraphLegendWindow.overlay (offset 192, type LinkGraphOverlay *)",
+    "identities": [
+      {
+        "className": "LinkGraphLegendWindow",
+        "offset": 192,
+        "size": 8,
+        "type": "LinkGraphOverlay *",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "declaringClass": "LinkGraphLegendWindow",
+        "declaringOffset": 192,
+        "inheritance": [],
+        "sourceLayout": "layout-openttd.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-01",
+    "binary": "openmw",
+    "query": "Which stance of weapon readiness is this actor's animation in right now?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWMechanics::CreatureStats.mDrawState (offset 0, type MWMechanics::DrawState)",
+    "identities": [
+      {
+        "className": "MWMechanics::CreatureStats",
+        "offset": 0,
+        "size": 4,
+        "type": "MWMechanics::DrawState",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 0,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      },
+      {
+        "className": "MWMechanics::NpcStats",
+        "offset": 0,
+        "size": 4,
+        "type": "MWMechanics::DrawState",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWMechanics::CreatureStats",
+        "declaringOffset": 0,
+        "inheritance": [
+          {
+            "className": "MWMechanics::CreatureStats",
+            "offset": 0,
+            "size": 712
+          }
+        ],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-02",
+    "binary": "openmw",
+    "query": "What reputation score does this character currently hold?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWMechanics::NpcStats.mReputation (offset 1148, type int)",
+    "identities": [
+      {
+        "className": "MWMechanics::NpcStats",
+        "offset": 1148,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWMechanics::NpcStats",
+        "declaringOffset": 1148,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-03",
+    "binary": "openmw",
+    "query": "What kind of AI task was this actor running most recently?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWMechanics::AiSequence.mLastAiPackage (offset 44, type MWMechanics::AiPackageTypeId)",
+    "identities": [
+      {
+        "className": "MWMechanics::AiSequence",
+        "offset": 44,
+        "size": 4,
+        "type": "MWMechanics::AiPackageTypeId",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWMechanics::AiSequence",
+        "declaringOffset": 44,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-04",
+    "binary": "openmw",
+    "query": "Which world cell record was this path grid graph built for?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWMechanics::PathgridGraph.mCell (offset 0, type const ESM::Cell *)",
+    "identities": [
+      {
+        "className": "MWMechanics::PathgridGraph",
+        "offset": 0,
+        "size": 8,
+        "type": "const ESM::Cell *",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWMechanics::PathgridGraph",
+        "declaringOffset": 0,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-05",
+    "binary": "openmw",
+    "query": "For how many consecutive physics frames has this actor been unable to move?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWPhysics::ActorFrameData.mStuckFrames (offset 100, type unsigned int)",
+    "identities": [
+      {
+        "className": "MWPhysics::ActorFrameData",
+        "offset": 100,
+        "size": 4,
+        "type": "unsigned int",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWPhysics::ActorFrameData",
+        "declaringOffset": 100,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-06",
+    "binary": "openmw",
+    "query": "Is the drawing of actor path overlays switched on?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWRender::ActorsPaths.mEnabled (offset 56, type bool)",
+    "identities": [
+      {
+        "className": "MWRender::ActorsPaths",
+        "offset": 56,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWRender::ActorsPaths",
+        "declaringOffset": 56,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-07",
+    "binary": "openmw",
+    "query": "Which cell store holds the cell that contains this world object?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWWorld::Ptr.mCell (offset 8, type MWWorld::PtrBase<std::remove_const_t>::CellStoreType *)",
+    "identities": [
+      {
+        "className": "MWWorld::Ptr",
+        "offset": 8,
+        "size": 8,
+        "type": "MWWorld::PtrBase<std::remove_const_t>::CellStoreType *",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWWorld::PtrBase<std::remove_const_t>",
+        "declaringOffset": 8,
+        "inheritance": [
+          {
+            "className": "MWWorld::PtrBase<std::remove_const_t>",
+            "offset": 0,
+            "size": 24
+          }
+        ],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-08",
+    "binary": "openmw",
+    "query": "Is the list of items recharging inside this cell still reliable?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWWorld::CellStore.mRechargingItemsUpToDate (offset 728, type bool)",
+    "identities": [
+      {
+        "className": "MWWorld::CellStore",
+        "offset": 728,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWWorld::CellStore",
+        "declaringOffset": 728,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-09",
+    "binary": "openmw",
+    "query": "Which day number does this timestamp point to?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWWorld::TimeStamp.mDay (offset 4, type int)",
+    "identities": [
+      {
+        "className": "MWWorld::TimeStamp",
+        "offset": 4,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWWorld::TimeStamp",
+        "declaringOffset": 4,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-10",
+    "binary": "openmw",
+    "query": "Which running number is used to mint fresh unique references inside this cell record?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct ESM::Cell.mRefNumCounter (offset 184, type int)",
+    "identities": [
+      {
+        "className": "ESM::Cell",
+        "offset": 184,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "ESM::Cell",
+        "declaringOffset": 184,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-11",
+    "binary": "openmw",
+    "query": "What category of journal entry does this record represent?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct ESM::JournalEntry.mType (offset 0, type int)",
+    "identities": [
+      {
+        "className": "ESM::JournalEntry",
+        "offset": 0,
+        "size": 4,
+        "type": "int",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "ESM::JournalEntry",
+        "declaringOffset": 0,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-12",
+    "binary": "openmw",
+    "query": "Has this game state been set so the player cannot draw a weapon?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct ESM::ControlsState.mWeaponDrawingDisabled (offset 5, type bool)",
+    "identities": [
+      {
+        "className": "ESM::ControlsState",
+        "offset": 5,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "ESM::ControlsState",
+        "declaringOffset": 5,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-13",
+    "binary": "openmw",
+    "query": "Is the player shown as asleep while this dialog counts down the hours?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWGui::WaitDialog.mSleeping (offset 256, type bool)",
+    "identities": [
+      {
+        "className": "MWGui::WaitDialog",
+        "offset": 256,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWGui::WaitDialog",
+        "declaringOffset": 256,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-14",
+    "binary": "openmw",
+    "query": "What speed setting controls how quickly message boxes pop up on screen?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWGui::MessageBoxManager.mMessageBoxSpeed (offset 64, type float)",
+    "identities": [
+      {
+        "className": "MWGui::MessageBoxManager",
+        "offset": 64,
+        "size": 4,
+        "type": "float",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWGui::MessageBoxManager",
+        "declaringOffset": 64,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-15",
+    "binary": "openmw",
+    "query": "Which HUD widget draws the aiming crosshair?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWGui::HUD.mCrosshair (offset 576, type MyGUI::ImageBox *)",
+    "identities": [
+      {
+        "className": "MWGui::HUD",
+        "offset": 576,
+        "size": 8,
+        "type": "MyGUI::ImageBox *",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWGui::HUD",
+        "declaringOffset": 576,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-16",
+    "binary": "openmw",
+    "query": "Can the device's motion sensors be used to steer the camera here?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct MWInput::ControllerManager.mGyroAvailable (offset 33, type bool)",
+    "identities": [
+      {
+        "className": "MWInput::ControllerManager",
+        "offset": 33,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "MWInput::ControllerManager",
+        "declaringOffset": 33,
+        "inheritance": [],
+        "sourceLayout": "fresh-layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-17",
+    "binary": "openmw",
+    "query": "How many blend cycles per second does this animation controller run at?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Nif::bhkBlendController.frequency (offset 68, type float)",
+    "identities": [
+      {
+        "className": "Nif::bhkBlendController",
+        "offset": 68,
+        "size": 4,
+        "type": "float",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "Nif::Controller",
+        "declaringOffset": 68,
+        "inheritance": [
+          {
+            "className": "Nif::Controller",
+            "offset": 0,
+            "size": 96
+          }
+        ],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-18",
+    "binary": "openmw",
+    "query": "Has the software cursor system finished its initial setup?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct SDLUtil::SDLCursorManager.mInitialized (offset 89, type bool)",
+    "identities": [
+      {
+        "className": "SDLUtil::SDLCursorManager",
+        "offset": 89,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "SDLUtil::SDLCursorManager",
+        "declaringOffset": 89,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-19",
+    "binary": "openmw",
+    "query": "Does the engine classify this skinned mesh as part of a creature's body?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct SceneUtil::RigGeometryHolder.mIsBodyPart (offset 380, type bool)",
+    "identities": [
+      {
+        "className": "SceneUtil::RigGeometryHolder",
+        "offset": 380,
+        "size": 1,
+        "type": "bool",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "SceneUtil::RigGeometryHolder",
+        "declaringOffset": 380,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-MW-20",
+    "binary": "openmw",
+    "query": "Which table of local variables does this compiled output refer to?",
+    "mode": "partial",
+    "status": "verified",
+    "semanticLabel": "DWARF struct Compiler::Output.mLocals (offset 96, type Compiler::Locals &)",
+    "identities": [
+      {
+        "className": "Compiler::Output",
+        "offset": 96,
+        "size": 8,
+        "type": "Compiler::Locals &",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "declaringClass": "Compiler::Output",
+        "declaringOffset": 96,
+        "inheritance": [],
+        "sourceLayout": "layout-openmw.json"
+      }
+    ]
+  },
+  {
+    "id": "SV2-CTL-01",
+    "binary": "openttd",
+    "query": "How many millimetres of rain have fallen on this station today?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-02",
+    "binary": "openttd",
+    "query": "What is the licence plate number of this road vehicle?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-03",
+    "binary": "openttd",
+    "query": "How much noise, in decibels, does this aircraft produce during take-off?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-04",
+    "binary": "openttd",
+    "query": "Which real-world city has a street layout most similar to this town?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-05",
+    "binary": "openttd",
+    "query": "How many days of paid holiday does this company's president receive each year?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-06",
+    "binary": "openmw",
+    "query": "How many pages does the book this character is reading contain?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-07",
+    "binary": "openmw",
+    "query": "What is this character's favourite colour?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-08",
+    "binary": "openmw",
+    "query": "How many languages can this character speak fluently?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-09",
+    "binary": "openmw",
+    "query": "How many fish are currently swimming in this lake?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  },
+  {
+    "id": "SV2-CTL-10",
+    "binary": "openmw",
+    "query": "How long would it take to boil water at this location's altitude?",
+    "mode": "partial",
+    "status": "control",
+    "semanticLabel": "unanswerable-control",
+    "identities": []
+  }
+]

@@ -1,0 +1,68 @@
+{
+  "schema": "hex-evidence-packaging/v1",
+  "artifacts": [
+    {
+      "path": "raw-results.jsonl.gz",
+      "uncompressedSha256": "dc5569ad68b7f55b2a879438056e63e8b7a88f671cae7b15a8046dd8da2f005f",
+      "compressedSha256": "276c3def513ec587867d299e1e27178e2eb011d91a237fe0b96ad78b42e99b6c",
+      "uncompressedBytes": 7393271,
+      "compressedBytes": 388851
+    },
+    {
+      "path": "production-snapshots/openttd.json.gz",
+      "uncompressedSha256": "9219e55dd1f3f62c4d46c0846d757e996de1394ab4ab27efe8d6f872bcf6e31c",
+      "compressedSha256": "2bcd073db8c5efde4626fa6187dfd2b0ced85417860b7b6d0ce95c6d1095505f",
+      "uncompressedBytes": 14114729,
+      "compressedBytes": 721749
+    },
+    {
+      "path": "production-snapshots/openmw.json.gz",
+      "uncompressedSha256": "a90cbf251aad0ecf67ea526c48be61bd380a867578c2169ece1510ba8b00c96d",
+      "compressedSha256": "ef414003224a010c0ae23a7f0849551c61a66dda6fb83791d9be583ca380350e",
+      "uncompressedBytes": 565587,
+      "compressedBytes": 33173
+    },
+    {
+      "path": "recovery-results/development-original70/raw-results.jsonl.gz",
+      "uncompressedSha256": "3308693602bf0b037638787bc7e6043d5b30d2839ce94d8a287cfeb61a1f2629",
+      "compressedSha256": "b3b5a0d42a98834a9bf74815e38895a72aee04ff74c8cbbf152ad72617302936",
+      "uncompressedBytes": 8586479,
+      "compressedBytes": 680768
+    },
+    {
+      "path": "recovery-snapshots/development-original70/openttd.json.gz",
+      "uncompressedSha256": "3f421a280ae7651836e937da3074c31bf312000883df7e619da86f30e7376b1b",
+      "compressedSha256": "e0643b7de1a2454fe388e6e96bebb775ec59a782f3307769313f69a865283b44",
+      "uncompressedBytes": 60841432,
+      "compressedBytes": 2204069
+    },
+    {
+      "path": "recovery-snapshots/development-original70/openmw.json.gz",
+      "uncompressedSha256": "32c9ec91883559539d2b36f92bc129fad3f90b650ef022b2204369294cf1a27c",
+      "compressedSha256": "c2af3f2d48c501e428dc30625d4c8ca4df492b2df1fcf5d1903460de6610aa9b",
+      "uncompressedBytes": 1674754,
+      "compressedBytes": 66617
+    },
+    {
+      "path": "recovery-results/untouched-final/raw-results.jsonl.gz",
+      "uncompressedSha256": "dda59f9d8cd68d9c71247cba7bc8e84b1234294ca727d459baa754fc4dd183db",
+      "compressedSha256": "319023160b557936543942b2597c769d26518836ff2d1032515dc518ce1ae136",
+      "uncompressedBytes": 7439465,
+      "compressedBytes": 410504
+    },
+    {
+      "path": "recovery-snapshots/untouched-final/openttd.json.gz",
+      "uncompressedSha256": "d329b21a5f90fdc21ca4fe40ac7d7adae3e265a6c3fd5d4434007fce630f5256",
+      "compressedSha256": "67baebeb73a1545f6c5bb59e231914c11d9fd7c18dc309eefb1ca61f85bef3fa",
+      "uncompressedBytes": 13062949,
+      "compressedBytes": 491686
+    },
+    {
+      "path": "recovery-snapshots/untouched-final/openmw.json.gz",
+      "uncompressedSha256": "1e9aba09db7c1757df81cbabe859744fec5bd8ede8529221fbbe58e5b4fb93ee",
+      "compressedSha256": "379a7b0021f51450240ac12da338e2f09a826a0fc78d1185cfb025c10f67fbc3",
+      "uncompressedBytes": 13752764,
+      "compressedBytes": 586680
+    }
+  ]
+}

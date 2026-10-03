@@ -1,0 +1,70 @@
+{
+  "schema": "hex-jev-stability-policy/v2",
+  "frozenAtUtc": "2026-09-30T17:35:29.801599+00:00",
+  "holdoutSha256": "d17d8f8ef6a5c60daf8e3ba24ab6bffe0aea3d4329c7a3ae1cc2f3d29fd9a1e4",
+  "independentQueryFreezeSha256": "37b09b40346975b1ef70b5ee56b2fd9055db7c4aa4322f390b48bbe7af1d3070",
+  "contractSha256": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
+  "rankingSourceSha256": "0cb3730c500ef1c211140f59f65a155e2deafdf9c2d9b1cd5dabbb9d661b0434",
+  "routerSourceSha256": "9f80701fb298e2bac1028fd8e7182b3a525cfde41b179957c8676e7870ec7f2f",
+  "collection": {
+    "explicitInteractiveRecovery": true,
+    "maxFunctionsPerQuery": 8,
+    "maxElapsedMs": 15000,
+    "selection": "release canonical owner functions only; query method token hits4 excluding repeated class tokens, class token hits2, exact single-token object class2; constructor method tokens ignored; class specificity, method hits and address ties",
+    "profile": "fast",
+    "highCostNewPass": false,
+    "metadata": "bounded machine return/comparison/arithmetic/address-base use roles in existing member-type chain walk"
+  },
+  "repeats": 3,
+  "primaryRepeat": 0,
+  "majorityVoting": false,
+  "arms": [
+    "A",
+    "R1",
+    "current",
+    "E",
+    "E2",
+    "G",
+    "ADVISORY"
+  ],
+  "primaryRemote": "E2",
+  "G": "remote compares only equal positive-score members of one owner with a matching method context; otherwise R1 unchanged",
+  "ADVISORY": "committed top1 always R1; score raw suggestion separately; never count preserved committed top1 as remote rescue",
+  "metrics": [
+    "candidate recall",
+    "shortlist retention",
+    "Hex top1",
+    "R1 top1",
+    "remote top1",
+    "rescue",
+    "regression",
+    "net rescue",
+    "regression/rescue",
+    "baseline-correct destruction",
+    "false strong",
+    "unsafe confident",
+    "abstain",
+    "p50/p95/p99 latency",
+    "timeouts",
+    "retries",
+    "errors",
+    "raw repeated instability",
+    "committed repeated instability"
+  ],
+  "decisions": {
+    "localPromotion": "positive net gain overall and in each game, zero regression, zero fact/verdict change; ObjC/mixed/named/strong unchanged by scope",
+    "DEFAULT_ON": "remote gains at least 2 over R1 in each game, candidate lattice recall >=50%, zero regression in every repeat, no unsafe/false strong, at least15 baseline-correct cases including5 C++ weak, added p95<=1000ms, errors<=5%, zero destructive instability",
+    "SELECTIVE_DEFAULT_ON": "G gains at least1 over R1 in each game, zero regression every repeat, same preservation denominator and latency/safety bars; only pre-frozen G route",
+    "OPTIONAL_ADVISORY": "E2 has at least1 reachable-member rescue over R1 overall; committed result preserved under every observed/invalid response; explicit interactive request only; raw uncertainty and external disclosure retained",
+    "NO_GO": "otherwise remote remains evaluation-only; stable local improvements may ship independently"
+  },
+  "developmentCorpora": [
+    "original70",
+    "V1 fresh50; now used development only"
+  ],
+  "oracleLeakageForbidden": true,
+  "noNewHeavyAnalysis": true,
+  "controls": "SP08/SP33/XA40 five real calls each plus committed guard replay; no special cases",
+  "abstain": "weak preference not semantic abstention; controls scored explicitly; no unsupported strong result",
+  "timeouts": "15s total wrapper bound, error preserves local; distinguish started and skipped calls"
+}

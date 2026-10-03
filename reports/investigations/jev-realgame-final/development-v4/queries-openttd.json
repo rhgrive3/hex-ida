@@ -1,0 +1,22 @@
+{
+  "binaryKey": "openttd",
+  "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+  "evaluationPurpose": "independent-final-v3",
+  "cases": [
+    {
+      "id": "SV3-OP-02",
+      "query": "Is this company controlled by the computer instead of a human player?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-06",
+      "query": "Where does the chain of bus stops belonging to this station begin?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-OP-20",
+      "query": "What axle resistance value has been cached for this ground vehicle?",
+      "mode": "partial"
+    }
+  ]
+}

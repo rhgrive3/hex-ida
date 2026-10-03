@@ -8,6 +8,7 @@ import {
   memberTypeResolver,
   recoverMemberTypeEvidence,
 } from '../../../js/analysis/cxx/member-types.js';
+import {createCppMemberEvidence} from '../../../js/analysis/cxx/object-evidence.js';
 
 function createIr(lines) {
   const rows = lines.map((text, row) => {
@@ -32,9 +33,212 @@ function createIr(lines) {
 
 const allBases = () => true;
 
+test('single-bit masked input stores retain caller provenance and reject transformed or oversized masks',()=>{
+  const ir=createIr(['and w2, w1, #1','strb w2, [x0, #4]','mov w2, #1','strb w2, [x0, #5]','ret']);
+  const report=recoverMemberTypeEvidence({ir,isReceiverBase:allBases});
+  assert.deepEqual(fieldAt(report,4).writtenArgumentBits,['x1:0']);
+  assert.deepEqual(fieldAt(report,4).writtenArgumentRegisters,[]);
+  assert.ok(fieldAt(report,4).accessRoles.includes('argument-written'));
+  assert.deepEqual(fieldAt(report,5).writtenArgumentBits,[]);
+  assert.ok(fieldAt(report,5).accessRoles.includes('one-written'));
+  assert.equal(fieldAt(report,4).memberName,undefined);
+  const base={id:'b'},argument={id:'a',kind:'arg',reg:'x1'},mask={id:'m'},masked={id:'v',bits:64};
+  const toy={values:[argument],instructions:[{op:'const',dst:mask,extra:{value:1n}},
+    {op:'bin',sub:'and',dst:masked,args:[argument,mask]},
+    {op:'store',args:[masked],loc:{kind:'field',base,disp:4n,size:1}}]};
+  const read=()=>recoverMemberTypeEvidence({ir:toy,isReceiverBase:v=>v===base}).fields[0].writtenArgumentBits;
+  assert.deepEqual(read(),['x1:0']);
+  masked.bits=8;toy.instructions[0].extra.value=1n<<9n;toy.instructions[2].loc.size=2;
+  assert.deepEqual(read(),[],'a bit outside the AND operation width is unavailable');
+  masked.bits=undefined;toy.instructions[0].extra.value=1n;
+  assert.deepEqual(read(),[],'unknown operation width cannot establish a selected input bit');
+  masked.bits=64;toy.instructions[2].loc.size=1;
+  for(const value of [0n,-1n,3n,256n,1n<<128n]) {
+    toy.instructions[0].extra.value=value;assert.deepEqual(read(),[]);
+  }
+  toy.instructions[0].extra.value=1n;
+  toy.instructions.splice(1,0,{op:'un',sub:'neg',dst:{id:'neg'},args:[argument]});
+  toy.instructions[2].args[0]={id:'neg'};
+  assert.deepEqual(read(),[],'transformed inputs cannot claim an entry argument bit');
+  const many={values:[argument],instructions:Array.from({length:16},(_,bit)=>[
+    {op:'const',dst:{id:`mask${bit}`},extra:{value:1n<<BigInt(bit)}},
+    {op:'bin',sub:'and',dst:{id:`bit${bit}`,bits:64},args:[argument,{id:`mask${bit}`}]},
+    {op:'store',args:[{id:`bit${bit}`}],loc:{kind:'field',base,disp:4n,size:2}}]).flat()};
+  const field=recoverMemberTypeEvidence({ir:many,isReceiverBase:v=>v===base}).fields[0];
+  assert.equal(field.writeCount,16);assert.equal(field.writtenArgumentBits.length,8);
+  assert.equal(field.writtenArgumentBitsTruncated,true);
+  const canonical=createCppMemberEvidence({...field,functionId:'f',receiverDigest:'r',snapshotId:'s',offsetBytes:field.offset,sizeBytes:field.size});
+  assert.equal(canonical.accessProven,true,'bounded descriptions must not remove the member');
+  assert.equal(canonical.writtenArgumentBitsTruncated,true);
+  const input={id:'wide-input',kind:'arg',reg:'x1',bits:64};
+  const narrow={id:'narrow',bits:8},wide={id:'wide',bits:64};
+  const widthMask={id:'width-mask'},widthMasked={id:'width-masked',bits:64};
+  const widths={values:[input],instructions:[
+    {op:'mov',sub:'trunc',dst:narrow,args:[input]},
+    {op:'mov',sub:'zext',dst:wide,args:[narrow]},
+    {op:'const',dst:widthMask,extra:{value:1n<<9n}},
+    {op:'bin',sub:'and',dst:widthMasked,args:[wide,widthMask]},
+    {op:'store',args:[widthMasked],loc:{kind:'field',base,disp:4n,size:2}},
+    {op:'store',args:[wide],loc:{kind:'field',base,disp:5n,size:2}},
+    {op:'store',args:[wide],loc:{kind:'field',base,disp:6n,size:1}}]};
+  const widthReport=()=>recoverMemberTypeEvidence({ir:widths,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,[],
+    'bit 9 was lost by truncation and cannot be attributed to the input');
+  assert.deepEqual(fieldAt(widthReport(),5).writtenArgumentRegisters,[],
+    'zero extension does not restore the removed input bits');
+  assert.deepEqual(fieldAt(widthReport(),6).writtenArgumentRegisters,['x1']);
+  widths.instructions[2].extra.value=1n<<7n;
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,['x1:7']);
+  // Copies after the mask preserve only the surviving low bits too.
+  widths.instructions.splice(4,0,{op:'mov',sub:'trunc',dst:{id:'masked-byte',bits:8},args:[widthMasked]},
+    {op:'mov',sub:'zext',dst:{id:'masked-wide',bits:64},args:[{id:'masked-byte',bits:8}]});
+  widths.instructions[6].args=[{id:'masked-wide',bits:64}];
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,['x1:7']);
+  widths.instructions[2].extra.value=1n<<9n;
+  assert.deepEqual(fieldAt(widthReport(),4).writtenArgumentBits,[]);
+  widths.instructions[0].sub='neg';
+  assert.deepEqual(fieldAt(widthReport(),6).writtenArgumentRegisters,[],
+    'non-identity MOV operations cannot claim an exact caller source');
+  input.bits=8;
+  widths.instructions.push({op:'store',args:[input],loc:{kind:'field',base,disp:7n,size:8}});
+  assert.deepEqual(fieldAt(widthReport(),7).writtenArgumentRegisters,[],
+    'entry argument width must cover every attributed stored bit');
+  const constant={id:'constant-wide',bits:64},byte={id:'constant-byte',bits:8};
+  const converted={id:'constant-converted',bits:64},maskedConstant={id:'constant-result'};
+  const constantIr={values:[argument],instructions:[
+    {op:'const',dst:constant,extra:{value:512n}},
+    {op:'mov',sub:'trunc',dst:byte,args:[constant]},
+    {op:'mov',sub:'zext',dst:converted,args:[byte]},
+    {op:'bin',sub:'and',dst:maskedConstant,args:[argument,converted]},
+    {op:'store',args:[maskedConstant],loc:{kind:'field',base,disp:4n,size:2}},
+    {op:'store',args:[converted],loc:{kind:'field',base,disp:5n,size:1}}]};
+  const constants=()=>recoverMemberTypeEvidence({ir:constantIr,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(constants(),4).writtenArgumentBits,[],
+    'a mask truncated to zero cannot claim its original high bit');
+  assert.ok(fieldAt(constants(),5).accessRoles.includes('zero-written'));
+  constantIr.instructions[0].extra.value=1n;
+  byte.bits=1;constantIr.instructions[2].sub='sext';
+  assert.equal(fieldAt(constants(),5).accessRoles.includes('one-written'),false,
+    'sign extension of one signed bit is minus one, not a literal one');
+  const maskedByte=createIr(['and w1, w1, #0xff','strb w1, [x0, #4]','strh w1, [x0, #6]','ret']);
+  const byteReport=recoverMemberTypeEvidence({ir:maskedByte,isReceiverBase:allBases});
+  assert.deepEqual(fieldAt(byteReport,4).writtenArgumentRegisters,['x1'],
+    'masking only discarded bits preserves the full stored byte');
+  assert.deepEqual(fieldAt(byteReport,6).writtenArgumentRegisters,[],
+    'the same mask does not preserve a stored halfword');
+  const longCopies=Array.from({length:40},(_,i)=>({op:'mov',dst:{id:`copy-${i}`,bits:64},
+    args:[i?{id:`copy-${i-1}`,bits:64}:argument]}));
+  const overBudget={values:[argument],instructions:[...longCopies,
+    {op:'store',args:[longCopies.at(-1).dst],loc:{kind:'field',base,disp:4n,size:1}}]};
+  const boundedSource=fieldAt(recoverMemberTypeEvidence({ir:overBudget,isReceiverBase:v=>v===base}),4);
+  assert.deepEqual(boundedSource.writtenArgumentRegisters,[],'long input chains fail closed at their fixed cap');
+  input.bits=128;
+  assert.deepEqual(fieldAt(widthReport(),7).writtenArgumentRegisters,[],
+    'malformed argument widths cannot fall back to a register-width assumption');
+});
+
 function fieldAt(report, offset) {
   return report.fields.find((field) => field.offset === BigInt(offset)) ?? null;
 }
+
+test('member access roles distinguish returned and compared loads without naming or strengthening the field type', () => {
+  const ir=createIr(['ldr w1, [x0, #0x38]','cmp w1, #0x3','ldr w0, [x0, #0x40]','ret']);
+  const report=recoverMemberTypeEvidence({ir,isReceiverBase:allBases});
+  assert.ok(fieldAt(report,56).accessRoles.includes('comparison-input'));
+  assert.equal(fieldAt(report,56).accessRoles.includes('return-input'),false);
+  assert.deepEqual(fieldAt(report,64).accessRoles,['return-input']);
+  assert.equal(fieldAt(report,64).category,'int32');assert.equal(fieldAt(report,64).widthOnly,true);
+  assert.equal(fieldAt(report,64).memberName,undefined);
+});
+
+test('direct SSA uses retain member roles even without an intermediate copy',()=>{
+  const base={id:1},loaded={id:2};
+  const ir={instructions:[{op:'load',dst:loaded,loc:{kind:'field',base,disp:8n,size:4}},{op:'ret',args:[loaded]}]};
+  assert.deepEqual(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}).fields[0].accessRoles,['return-input']);
+});
+
+test('closed computed returns keep machine type unchanged and retain every contributing member',()=>{
+ const base={id:1},left={id:2,bits:32},right={id:3,bits:32},constant={id:4,bits:32},result={id:5,bits:32};
+ const load=(dst,offset)=>({op:'load',dst,loc:{kind:'field',base,disp:BigInt(offset),size:4}});
+ const instructions=[load(left,8),{op:'const',dst:constant,extra:{value:3n}},
+  {op:'bin',sub:'and',dst:result,args:[left,constant]},{op:'ret',args:[result]}];
+ const read=()=>recoverMemberTypeEvidence({ir:{instructions},isReceiverBase:v=>v===base});
+ const field=read().fields[0];assert.ok(field.accessRoles.includes('computed-return-input'));
+ assert.equal(field.returnedMemberCount,1);
+ assert.equal(field.category,'int32');assert.equal(field.widthOnly,true);assert.equal(field.memberName,undefined);
+ instructions.splice(1,1,load(right,12));instructions[2]={op:'bin',sub:'add',dst:result,args:[left,right]};
+ assert.ok(read().fields.every(f=>f.accessRoles.includes('computed-return-input')),
+  'both returned member operands remain visible to the uniqueness veto');
+ assert.ok(read().fields.every(f=>f.returnedMemberCount===2),
+  'the complete producer count survives subsequent per-member publication losses');
+ instructions[1].loc.disp=8n;
+ assert.equal(read().fields[0].returnedMemberCount,1,'two reads of the same structural member count once');
+ const machine=recoverMemberTypeEvidence({ir:createIr(['ldr w1, [x0, #8]','and w0, w1, #3','ret']),isReceiverBase:allBases});
+ assert.ok(fieldAt(machine,8).accessRoles.includes('computed-return-input'),'real ARM64 lifting reaches the bounded observation');
+ const direct=recoverMemberTypeEvidence({ir:createIr(['ldr w0, [x0, #8]','ret']),isReceiverBase:allBases});
+ assert.ok(fieldAt(direct,8).accessRoles.includes('return-input'));assert.notEqual(fieldAt(direct,8).returnExpressionIncomplete,true);
+ assert.equal(fieldAt(direct,8).returnedMemberCount,1);
+});
+
+test('computed return observations fail closed on unknown roots, constant annihilation, invalid locations and budgets',()=>{
+ const base={id:1},loaded={id:2,bits:64},unknown={id:3,bits:64},result={id:4,bits:64};
+ const load={op:'load',dst:loaded,loc:{kind:'field',base,disp:8n,size:8}};
+ const closed=[load,{op:'const',dst:unknown,extra:{value:8n}},
+  {op:'bin',sub:'add',dst:result,args:[loaded,unknown]},{op:'ret',args:[result]}];
+ const read=(instructions,options={})=>recoverMemberTypeEvidence({ir:{instructions},isReceiverBase:v=>v===base,...options});
+ for(const definition of [{op:'call',dst:unknown,args:[loaded]},
+  {op:'load',dst:unknown,loc:{kind:'global',size:8}}, {op:'phi',dst:unknown,args:[loaded]},
+  {op:'const',dst:unknown,extra:{value:0n}}]) {
+  const ir=closed.slice();ir[1]=definition;if(definition.op==='const')ir[2]={...ir[2],sub:'mul'};
+  assert.equal(read(ir).fields[0].accessRoles.includes('computed-return-input'),false);
+  assert.equal(read(ir).fields[0].returnExpressionIncomplete,true);
+ }
+ const cancelled=closed.slice();cancelled[2]={...cancelled[2],sub:'sub',args:[loaded,loaded]};
+ assert.equal(read(cancelled).fields[0].accessRoles.includes('computed-return-input'),false);
+ assert.equal(read(closed,{maxInstructions:3}).fields[0].accessRoles.includes('computed-return-input'),false);
+ const mixed=closed.slice();mixed.splice(1,0,{...load,dst:{id:9},loc:{...load.loc,size:4}});
+ assert.equal(read(mixed).fields[0].accessRoles.includes('computed-return-input'),false);
+ const duplicates=closed.slice();duplicates.splice(1,0,{op:'const',dst:result,extra:{value:10n}});
+ assert.equal(read(duplicates).fields[0].accessRoles.includes('computed-return-input'),false);
+ const unknownInstruction=closed.slice();unknownInstruction.splice(1,0,{op:'unknown'});
+ assert.equal(read(unknownInstruction).fields[0].returnExpressionIncomplete,true);
+ // Arithmetic address use cannot become pointer proof through this new graph.
+ const addressed=closed.slice();addressed.splice(3,0,{op:'load',dst:{id:10},loc:{kind:'unknown',base:result,size:8}});
+ const field=read(addressed).fields[0];assert.equal(field.category,'int64');assert.equal(field.widthOnly,true);
+});
+
+test('stored constants and bounded argument flows remain machine context without naming members',()=>{
+  const base={id:'object'},argument={id:'input',kind:'arg',reg:'x1'},one={id:'one'},copy={id:'copy'};
+  const ir={values:[argument],instructions:[
+    {op:'const',dst:one,extra:{value:1n}},
+    {op:'mov',dst:copy,args:[argument]},
+    {op:'store',args:[copy],loc:{kind:'field',base,disp:8n,size:1}},
+    {op:'store',args:[one],loc:{kind:'field',base,disp:9n,size:1}}]};
+  const result=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(result,8).accessRoles,['argument-written']);
+  assert.deepEqual(fieldAt(result,8).writtenArgumentRegisters,['x1']);
+  assert.deepEqual(fieldAt(result,9).writtenArgumentRegisters,[]);
+  assert.deepEqual(fieldAt(result,9).accessRoles,['constant-written','one-written']);
+  assert.equal(fieldAt(result,8).category,'int8');
+  assert.equal(fieldAt(result,9).category,'bool-like');
+  assert.equal(fieldAt(result,9).memberName,undefined);
+  ir.instructions[1]={op:'mov',dst:copy,args:[copy]};
+  assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).accessRoles,[]);
+  assert.deepEqual(fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),8).writtenArgumentRegisters,[]);
+  ir.instructions.splice(1,0,{op:'un',dst:{id:'negated'},args:[one],extra:{kind:'not'}},
+    {op:'store',args:[{id:'negated'}],loc:{kind:'field',base,disp:10n,size:1}},
+    {op:'const',dst:{id:'zero'},extra:{value:0n}},
+    {op:'store',args:[{id:'zero'}],loc:{kind:'field',base,disp:11n,size:1}});
+  const literalResult=recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base});
+  assert.deepEqual(fieldAt(literalResult,10).accessRoles,['constant-written']);
+  assert.equal(fieldAt(literalResult,10).category,'int8','arbitrary unary operations cannot prove a 0/1 store');
+  assert.deepEqual(fieldAt(literalResult,11).accessRoles,['constant-written','zero-written']);
+  ir.instructions.push({op:'un',dst:{id:'modified-input'},args:[argument],extra:{kind:'not'}},
+    {op:'store',args:[{id:'modified-input'}],loc:{kind:'field',base,disp:12n,size:1}});
+  const modified=fieldAt(recoverMemberTypeEvidence({ir,isReceiverBase:v=>v===base}),12);
+  assert.ok(modified.accessRoles.includes('argument-written'));
+  assert.deepEqual(modified.writtenArgumentRegisters,[],'unary argument-derived values cannot claim an unmodified entry source');
+});
 
 // ── pure classifier ────────────────────────────────────────────────────────
 

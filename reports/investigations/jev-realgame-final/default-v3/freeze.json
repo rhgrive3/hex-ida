@@ -1,0 +1,75 @@
+{
+  "schema": "hex-jev-v3-holdout-freeze/v1",
+  "revision": "final-after-exposure-correction",
+  "createdAtUtc": "2026-10-01T02:42:25Z",
+  "holdoutSha256": "16106dc5900e40c24200664c19d9b2f26cdaf44b0eaae86ceb844d266c3a9b16",
+  "authorityFileSha256": {
+    "layout-openttd.json": "3b85b9add5a47858d35959d582c49f6ce1b49707011f905f86abafd4227ba5a2",
+    "fresh-layout-openttd.json": "325f53923ffee0800d9974f7d84fd895ce11f0f9bd3f0ffc977b8d27c11f8e4e",
+    "layout-openmw.json": "2d07d1240d93bcbaf5f278cb5c15b03d16d7e0e4593731bc1fbe86797ea64cb3",
+    "fresh-layout-openmw.json": "51d19c47bf4165df9182e2f7c234ca3df6689c82be7a417765562fbde1f5a181",
+    "oracle-authority.json": "38665f5657573bf281e71b4a2b7f50805862eca19448c86f1ff904e549833844"
+  },
+  "priorCaseFileSha256": {
+    "original70-holdout-cases.json": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+    "original70-structural-gold.json": "873838d84844ca77b52b52635b52fbd7f2d1f8b7d09ce8fc6da57da754c0f909",
+    "fresh50-holdout.json": "31a0247628db0e651da39a1108c80f4f2e667b9f7d7d569cefd6611153a2c397",
+    "fresh50-structural-cases.json": "1846809a9c453e625db18fb0c994d4554ef585b1120db1fa75c1e5b4a9e15b8c",
+    "v2-holdout.json": "d17d8f8ef6a5c60daf8e3ba24ab6bffe0aea3d4329c7a3ae1cc2f3d29fd9a1e4",
+    "v2-structural-cases.json": "1ded64a8ef549f2188328f8c56d7e3bdc7d26b0346cce26f2906f8f0d6c23c0a"
+  },
+  "preservedDraftFileSha256": {
+    "holdout.draft-v1.json": "d663172fa099e35641b499d9d8ee557cfd1a0a27787d361e9d5c7de7a9cce57b",
+    "freeze.draft-v1.json": "f995a2ac9b92f23a24e2ebba2efd2a6d02a6aca5143a2b0adb1f2d8f65c88d16",
+    "authority.draft-v1.md": "f1e8434ea2e8d132914750b3fa42da4bf10065397199618d15d0416aff1dfa36"
+  },
+  "distribution": {
+    "total": 50,
+    "verified": 40,
+    "control": 10,
+    "verifiedOpenttd": 20,
+    "verifiedOpenmw": 20,
+    "controlOpenttd": 5,
+    "controlOpenmw": 5
+  },
+  "overlapAudit": {
+    "excludedPhysicalIdentityCount": 268,
+    "verifiedOverlapCount": 0,
+    "aliasOverlapCount": 0,
+    "controlIdentityCount": 0,
+    "exposedDraftFieldsPresentInFinal": 0
+  },
+  "parentExposure": {
+    "occurred": true,
+    "mechanism": "Parent ran a filename-scoped rg over the in-progress draft authority.md.",
+    "exposedReportLabels": [
+      "Company identity colour stored on the company property block",
+      "ClientNetworkGameSocketHandler::sock offset 40 size 4"
+    ],
+    "exposedDraftCaseIds": [
+      "SV3-OP-01",
+      "SV3-OP-13"
+    ],
+    "queryTextExposed": false,
+    "otherCaseLabelsExposed": false,
+    "outcomesOrCandidateDataExposed": false,
+    "tuningFromExposure": false,
+    "remediation": "Both exposed physical fields were dropped and replaced by independently selected never-used verified identities (Group.vehicle_type for SV3-OP-01; ClientNetworkGameSocketHandler.info for SV3-OP-13). No exposed identity is present in the final holdout.",
+    "draftPreservedAs": [
+      "holdout.draft-v1.json",
+      "freeze.draft-v1.json",
+      "authority.draft-v1.md"
+    ]
+  },
+  "declarations": {
+    "noProductionOrResultsInspected": true,
+    "noPolicyOrV3DevelopmentOutcomeInspected": true,
+    "noQueryTextOrGoldSentToParent": true,
+    "parentDidSeeTwoDraftReportLabels": true,
+    "zeroParentExposureClaimIsFalse": true,
+    "exposedFieldsReplacedIndependently": true,
+    "candidateRecoveryConsidered": false,
+    "reducedFromRequiredDenominator": false
+  },
+  "note": "Final after integrity correction: the draft is preserved byte-identical as *.draft-v1.* and this final replaces the two exposed identities. Zero parent exposure to the draft is NOT claimed."
+}

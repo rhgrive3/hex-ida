@@ -1,0 +1,55 @@
+{
+  "schema": "hex-jev-recovery-policy/v1",
+  "frozenAtUtc": "2026-09-30T10:33:19.462541+00:00",
+  "original70Status": "already used; supplementary development regression only, never an untouched final judge after changes",
+  "finalHoldout": "separately generated exact-build fields not in original70; independent agent blind to candidate recovery and prior Jev outcomes; separate hash freeze",
+  "collection": {
+    "explicitInteractiveRecovery": true,
+    "maxFunctionsPerQuery": 8,
+    "maxElapsedMs": 15000,
+    "selection": "release canonical owner functions only; query method token hits4 excluding repeated class tokens, class token hits2, exact single-token object class2; constructor method tokens ignored; class specificity, method hits and address ties",
+    "profile": "fast",
+    "highCostNewPass": false,
+    "metadata": "bounded machine return/comparison/arithmetic/address-base use roles in existing member-type chain walk"
+  },
+  "arms": [
+    "Hex",
+    "DET",
+    "B",
+    "E"
+  ],
+  "primaryArm": "E",
+  "representation": "class,anonymous offset,size,type category,read/write counts,up to8 demangled release method contexts and proven machine use roles",
+  "promptSha256": "e2f3f168feed368fc14e1d095c53590bb46f747075e364d67b71c3c01e3e3939",
+  "repeats": 3,
+  "firstRepeatPrimary": true,
+  "majorityVoting": false,
+  "scoring": "exact audited binary,class,offset,size; inherited aliases only compiler-proven declaring owner and base displacement; unverified excluded",
+  "oracleLeakageForbidden": true,
+  "routing": "existing partial weak interactive router; preserve strong/exact; candidate IDs <=255; external failures Hex unchanged",
+  "decisionOrder": [
+    "NO_GO if no independent gain in both games or semantic/recovery ceiling prevents demonstrated net gain; new unsafe strong or API error>5% blocks",
+    "DEFAULT_ON only both games netgain, lattice recall>=50%, regression/rescue<=.10, baseline destruction<=1%, no unsafe, API added p95<=1000ms, no destructive instability",
+    "SELECTIVE_DEFAULT_ON only pre-frozen independently validated generic scope, positive gain and zero regressions; no post-result confidence threshold",
+    "OPTIONAL_ADVISORY only demonstrated reachable-member netgain and no severe baseline destruction; otherwise NO_GO"
+  ],
+  "controls": "SP08/SP33/XA40 tuning regression set retained; separately rerun5 repeats; no query exceptions",
+  "metrics": [
+    "raw recovery",
+    "lattice",
+    "shortlist",
+    "top1",
+    "rescue",
+    "regression",
+    "net",
+    "destruction",
+    "false strong",
+    "unsafe confident",
+    "abstain",
+    "API latency p50 p95 p99",
+    "cold recovery latency",
+    "error timeout retry",
+    "repeat instability"
+  ],
+  "comparator": "weak C++ preference:2*matching class tokens + maximum context 4*matching method tokens excluding repeated class tokens*(2 if canonical return-input else1); conflict candidates0; stable original-order ties; no evidence/verdict upgrade"
+}

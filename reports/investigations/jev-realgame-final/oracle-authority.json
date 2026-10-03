@@ -1,0 +1,24 @@
+{
+  "schema": "hex-jev-realgame-independent-oracle-authority/v1",
+  "rejectedSemanticAlternatives": [
+    {
+      "className": "CreatureStats",
+      "fieldName": "mSpells",
+      "reason": "Exact-build DWARF declares MWMechanics::Spells, a known-spell container; this cannot prove the magical-energy pool in the frozen query. No replacement gold is supplied."
+    }
+  ],
+  "packages": {
+    "openttd": {
+      "version": "13.4-1build3",
+      "debugPackageSha256": "09930c29507c3d5e02b8c1aa5c25dd9f44ad3f8975b00ce0b37adabce91d3b40",
+      "sourceUrl": "https://ddebs.ubuntu.com/pool/universe/o/openttd/openttd-dbgsym_13.4-1build3_arm64.ddeb",
+      "control": "Package: openttd-dbgsym\nVersion: 13.4-1build3\nArchitecture: arm64"
+    },
+    "openmw": {
+      "version": "0.48.0-1ubuntu5",
+      "debugPackageSha256": "77272a82a9311d0a41d403a55c6ead13e7ae7f40455559c1005557047dbe41ef",
+      "sourceUrl": "https://ddebs.ubuntu.com/pool/universe/o/openmw/openmw-dbgsym_0.48.0-1ubuntu5_arm64.ddeb",
+      "control": "Package: openmw-dbgsym\nVersion: 0.48.0-1ubuntu5\nArchitecture: arm64"
+    }
+  }
+}

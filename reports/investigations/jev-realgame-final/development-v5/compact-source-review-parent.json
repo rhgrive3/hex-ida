@@ -1,0 +1,21 @@
+{
+  "schema": "hex-jev-compact-source-review-parent/v1",
+  "reviewedHead": "36d8451afc37bd001b878fe35358e3162c81b867",
+  "receiptSha256": "0a09f1683911fb6218a705903cf1600dd82057f9471ede1e7654327f0d496389",
+  "verifiedSourceFiles": 6,
+  "focusedTests": {
+    "command": "node --test --test-name-pattern='compact retrieval|semantic retrieval selects|disabled, stale' tests/phase7/cxx/jev-recovery.test.mjs",
+    "ran": 1,
+    "tests": 4,
+    "pass": 4,
+    "fail": 0,
+    "names": [
+      "semantic retrieval selects only existing proven release functions and agrees on owning object",
+      "disabled, stale, HTTP failure, malformed, invented choices and real timeout preserve the deterministic plan",
+      "compact retrieval provides an explicit abstention and never interprets it as a function",
+      "compact retrieval caps all protocol choices at255 and removes unanalysable or indistinguishable entries"
+    ]
+  },
+  "productionActivationAuthorized": false,
+  "scope": "source-only opt-in representation; no blocking code findings. Single-question owner-agreement removal has unproven precision. Parent separately measured8 live calls; not untouched quality evidence."
+}

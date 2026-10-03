@@ -1,0 +1,4335 @@
+[
+  {
+    "id": "RG01",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.cur_speed",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 274,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 274,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 274,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 274,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 274,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 274,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 274,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 30,
+        "size": 2,
+        "type": "unsigned short"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "cur_speed",
+        "alternatives": [
+          {
+            "class": "GroundVehicleCache",
+            "field": "last_speed"
+          }
+        ]
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 274,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [
+      {
+        "status": "verified",
+        "label": {
+          "class": "GroundVehicleCache",
+          "field": "last_speed"
+        },
+        "identity": {
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "className": "GroundVehicleCache",
+          "offset": 30,
+          "size": 2,
+          "type": "unsigned short"
+        },
+        "authority": {
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "layoutDeclaration": "class GroundVehicleCache"
+        }
+      }
+    ],
+    "originalAnnotation": "DWARF struct Vehicle.cur_speed (offset 306, uint16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "current vehicle speed",
+    "mode": "partial"
+  },
+  {
+    "id": "RG02",
+    "binary": "openttd",
+    "semanticLabel": "GroundVehicleCache.cached_max_track_speed",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 14,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Order",
+        "offset": 14,
+        "size": 2,
+        "type": "unsigned short"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "GroundVehicleCache",
+        "field": "cached_max_track_speed",
+        "alternatives": [
+          {
+            "class": "Order",
+            "field": "max_speed"
+          }
+        ]
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 14,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class GroundVehicleCache"
+      }
+    },
+    "alternativesAudit": [
+      {
+        "status": "verified",
+        "label": {
+          "class": "Order",
+          "field": "max_speed"
+        },
+        "identity": {
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "className": "Order",
+          "offset": 14,
+          "size": 2,
+          "type": "unsigned short"
+        },
+        "authority": {
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "layoutDeclaration": "class Order"
+        }
+      }
+    ],
+    "originalAnnotation": "DWARF struct GroundVehicleCache.cached_max_track_speed (offset 574, uint16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "vehicle maximum speed",
+    "mode": "partial"
+  },
+  {
+    "id": "RG03",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.cargo",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 312,
+        "size": 56,
+        "type": "VehicleCargoList"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 312,
+        "size": 56,
+        "type": "VehicleCargoList",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 312,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 312,
+        "size": 56,
+        "type": "VehicleCargoList",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 312,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 312,
+        "size": 56,
+        "type": "VehicleCargoList",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 312,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "cargo"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 312,
+        "size": 56,
+        "type": "VehicleCargoList"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.cargo (offset 336, VehicleCargoList)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "amount of cargo currently carried",
+    "mode": "partial"
+  },
+  {
+    "id": "RG04",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.cargo_cap",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 306,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 306,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 306,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 306,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 306,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 306,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 306,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "cargo_cap"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 306,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.cargo_cap (offset 402, uint16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "maximum cargo carrying capacity",
+    "mode": "partial"
+  },
+  {
+    "id": "RG05",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.cargo_type",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 304,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 304,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 304,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 304,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 304,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 304,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 304,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "cargo_type"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 304,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.cargo_type (offset 400, CargoType)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "commodity cargo category loaded on the transport",
+    "mode": "partial"
+  },
+  {
+    "id": "RG06",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.owner",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 249,
+        "size": 1,
+        "type": "Owner"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 249,
+        "size": 1,
+        "type": "Owner",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 249,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 249,
+        "size": 1,
+        "type": "Owner",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 249,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 249,
+        "size": 1,
+        "type": "Owner",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 249,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "owner"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 249,
+        "size": 1,
+        "type": "Owner"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.owner (offset 289, Owner)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "player company owning this vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG07",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.tile",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 112,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 112,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 112,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 112,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 112,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 112,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 112,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "tile"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 112,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.tile (offset 144, TileIndex)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "current map tile position of the vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG08",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.dest_tile",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 116,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 116,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 116,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "dest_tile"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.dest_tile (offset 148, TileIndex)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "destination assigned to this vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG09",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.profit_this_year",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 120,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 120,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 120,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 120,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 120,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 120,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 120,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "profit_this_year"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 120,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.profit_this_year (offset 152, Money)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "annual financial earnings made by this vehicle so far",
+    "mode": "partial"
+  },
+  {
+    "id": "RG10",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.profit_last_year",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 128,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 128,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 128,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 128,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 128,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 128,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 128,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "profit_last_year"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 128,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.profit_last_year (offset 160, Money)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "financial profit achieved by this vehicle in previous year",
+    "mode": "partial"
+  },
+  {
+    "id": "RG11",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.value",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 136,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 136,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 136,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 136,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 136,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 136,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 136,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "value"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 136,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.value (offset 168, Money)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "current estimated monetary value of the vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG12",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.reliability",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 228,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 228,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 228,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 228,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 228,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 228,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 228,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "reliability"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 228,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.reliability (offset 268, uint16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "mechanical reliability rating of the vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG13",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.breakdown_ctr",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 232,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 232,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 232,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 232,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 232,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 232,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 232,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "breakdown_ctr"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 232,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.breakdown_ctr (offset 272, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "counter tracking vehicle breakdown duration",
+    "mode": "partial"
+  },
+  {
+    "id": "RG14",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.breakdown_delay",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 233,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 233,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 233,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 233,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 233,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 233,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 233,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "breakdown_delay"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 233,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.breakdown_delay (offset 273, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "cooldown delay before a broken down vehicle can resume motion",
+    "mode": "partial"
+  },
+  {
+    "id": "RG15",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.date_of_last_service",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 224,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 224,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 224,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 224,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 224,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 224,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 224,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "date_of_last_service"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 224,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.date_of_last_service (offset 260, Date)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "calendar date when the vehicle last visited a maintenance depot",
+    "mode": "partial"
+  },
+  {
+    "id": "RG16",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.breakdowns_since_last_service",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 234,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 234,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 234,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 234,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 234,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 234,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 234,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "breakdowns_since_last_service"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 234,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.breakdowns_since_last_service (offset 274, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "total count of mechanical breakdowns since the previous inspection",
+    "mode": "partial"
+  },
+  {
+    "id": "RG17",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.direction",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 248,
+        "size": 1,
+        "type": "Direction"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 248,
+        "size": 1,
+        "type": "Direction",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 248,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 248,
+        "size": 1,
+        "type": "Direction",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 248,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 248,
+        "size": 1,
+        "type": "Direction",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 248,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "direction"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 248,
+        "size": 1,
+        "type": "Direction"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.direction (offset 288, Direction)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "current vehicle heading direction",
+    "mode": "partial"
+  },
+  {
+    "id": "RG18",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.acceleration",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 277,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 277,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 277,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 277,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 277,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 277,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 277,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "acceleration"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 277,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.acceleration (offset 309, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "acceleration rate applied when vehicle increases speed",
+    "mode": "partial"
+  },
+  {
+    "id": "RG19",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.motion_counter",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 280,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 280,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 280,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 280,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 280,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 280,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 280,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "motion_counter"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 280,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.motion_counter (offset 312, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "internal movement step counter advancing vehicle progress",
+    "mode": "partial"
+  },
+  {
+    "id": "RG20",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.age",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 216,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 216,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 216,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 216,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 216,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 216,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 216,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "age"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 216,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.age (offset 248, Date)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "total operating time elapsed since vehicle was constructed",
+    "mode": "partial"
+  },
+  {
+    "id": "RG21",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.max_age",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 220,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 220,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 220,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 220,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 220,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 220,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 220,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "max_age"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 220,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.max_age (offset 256, Date)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "maximum operational life expectancy before vehicle replacement is required",
+    "mode": "partial"
+  },
+  {
+    "id": "RG22",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.current_order",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 376,
+        "size": 24,
+        "type": "Order"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 376,
+        "size": 24,
+        "type": "Order",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 376,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 376,
+        "size": 24,
+        "type": "Order",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 376,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 376,
+        "size": 24,
+        "type": "Order",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 376,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "current_order"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 376,
+        "size": 24,
+        "type": "Order"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.current_order (offset 416, Order)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "currently active order",
+    "mode": "partial"
+  },
+  {
+    "id": "RG23",
+    "binary": "openttd",
+    "semanticLabel": "Vehicle.last_station_visited",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 288,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 288,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 288,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 288,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 288,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 288,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "Vehicle",
+        "declaringOffset": 288,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Vehicle",
+        "field": "last_station_visited"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 288,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Vehicle"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Vehicle.last_station_visited (offset 320, StationID)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "stop or station facility most recently called at by this vehicle",
+    "mode": "partial"
+  },
+  {
+    "id": "RG24",
+    "binary": "openttd",
+    "semanticLabel": "BaseConsist.cur_real_order_index",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 54,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 54,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 54,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 54,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "BaseConsist",
+        "field": "cur_real_order_index"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 54,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class BaseConsist"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct BaseConsist.cur_real_order_index (offset 78, VehicleOrderID)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "zero-based index pointing to current instruction in the schedule",
+    "mode": "partial"
+  },
+  {
+    "id": "RG25",
+    "binary": "openttd",
+    "semanticLabel": "BaseConsist.service_interval",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 52,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 52,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 52,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 52,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "BaseConsist",
+        "field": "service_interval"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 52,
+        "size": 2,
+        "type": "unsigned short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class BaseConsist"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct BaseConsist.service_interval (offset 76, uint16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "frequency interval in days for automatic depot servicing",
+    "mode": "partial"
+  },
+  {
+    "id": "RG26",
+    "binary": "openttd",
+    "semanticLabel": "BaseConsist.lateness_counter",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 44,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "DisasterVehicle",
+        "offset": 44,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 44,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<DisasterVehicle, (VehicleType)5>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "RoadVehicle",
+        "offset": 44,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 44,
+        "inheritance": [
+          {
+            "className": "GroundVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 576
+          },
+          {
+            "className": "SpecializedVehicle<RoadVehicle, (VehicleType)1>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Ship",
+        "offset": 44,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 44,
+        "inheritance": [
+          {
+            "className": "SpecializedVehicle<Ship, (VehicleType)2>",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "Vehicle",
+            "offset": 0,
+            "size": 544
+          },
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Vehicle",
+        "offset": 44,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "BaseConsist",
+        "declaringOffset": 44,
+        "inheritance": [
+          {
+            "className": "BaseConsist",
+            "offset": 0,
+            "size": 64
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "BaseConsist",
+        "field": "lateness_counter"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "BaseConsist",
+        "offset": 44,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class BaseConsist"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct BaseConsist.lateness_counter (offset 44, Ticks)",
+    "annotationOffsetMismatch": false,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "amount of time this consist is lagging behind its timetable schedule",
+    "mode": "partial"
+  },
+  {
+    "id": "RG27",
+    "binary": "openttd",
+    "semanticLabel": "GroundVehicleCache.cached_weight",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "GroundVehicleCache",
+        "field": "cached_weight"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class GroundVehicleCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct GroundVehicleCache.cached_weight (offset 560, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "total calculated weight of train consist",
+    "mode": "partial"
+  },
+  {
+    "id": "RG28",
+    "binary": "openttd",
+    "semanticLabel": "GroundVehicleCache.cached_power",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "GroundVehicleCache",
+        "field": "cached_power"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 16,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class GroundVehicleCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct GroundVehicleCache.cached_power (offset 576, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "total propulsion power output produced across consist",
+    "mode": "partial"
+  },
+  {
+    "id": "RG29",
+    "binary": "openttd",
+    "semanticLabel": "GroundVehicleCache.cached_max_te",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 8,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "GroundVehicleCache",
+        "field": "cached_max_te"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 8,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class GroundVehicleCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct GroundVehicleCache.cached_max_te (offset 568, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "maximum tractive effort force generated by locomotive traction",
+    "mode": "partial"
+  },
+  {
+    "id": "RG30",
+    "binary": "openttd",
+    "semanticLabel": "GroundVehicleCache.cached_air_drag",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 20,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "GroundVehicleCache",
+        "field": "cached_air_drag"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "GroundVehicleCache",
+        "offset": 20,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class GroundVehicleCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct GroundVehicleCache.cached_air_drag (offset 580, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "aerodynamic drag resistance coefficient applied at high speeds",
+    "mode": "partial"
+  },
+  {
+    "id": "RG31",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.money",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 88,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 88,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 88,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "money"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 88,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.money (offset 152, Money)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "money available to the company/player",
+    "mode": "partial"
+  },
+  {
+    "id": "RG32",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.current_loan",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 104,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 104,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 104,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "current_loan"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 104,
+        "size": 8,
+        "type": "OverflowSafeInt<long long>"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.current_loan (offset 168, Money)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "outstanding borrowed loan balance owed to the bank",
+    "mode": "partial"
+  },
+  {
+    "id": "RG33",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.max_loan",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "max_loan"
+      },
+      "reason": "Named member absent from exact-build DWARF; no source/RTTI guess"
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.max_loan (offset 176, Money)",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "maximum debt borrowing threshold allowed by economic policy",
+    "mode": "partial"
+  },
+  {
+    "id": "RG34",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.location_of_HQ",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 116,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "location_of_HQ"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 116,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.location_of_HQ (offset 188, TileIndex)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "map coordinates of company headquarters",
+    "mode": "partial"
+  },
+  {
+    "id": "RG35",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.last_build_coordinate",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 120,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 120,
+        "size": 4,
+        "type": "TileIndex",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 120,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "last_build_coordinate"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 120,
+        "size": 4,
+        "type": "TileIndex"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.last_build_coordinate (offset 192, TileIndex)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "tile location of player's most recent construction",
+    "mode": "partial"
+  },
+  {
+    "id": "RG36",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.inaugurated_year",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 128,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 128,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 128,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "inaugurated_year"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 128,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.inaugurated_year (offset 196, Year)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "founding calendar year in which the transport firm began business",
+    "mode": "partial"
+  },
+  {
+    "id": "RG37",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.months_of_bankruptcy",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 132,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 132,
+        "size": 1,
+        "type": "unsigned char",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 132,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "months_of_bankruptcy"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 132,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.months_of_bankruptcy (offset 205, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "number of consecutive months company has been in financial insolvency",
+    "mode": "partial"
+  },
+  {
+    "id": "RG38",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.bankrupt_timeout",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 136,
+        "size": 2,
+        "type": "short"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 136,
+        "size": 2,
+        "type": "short",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 136,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "bankrupt_timeout"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 136,
+        "size": 2,
+        "type": "short"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.bankrupt_timeout (offset 208, int16_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "cooldown remaining before company closure due to bankruptcy",
+    "mode": "partial"
+  },
+  {
+    "id": "RG39",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.terraform_limit",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 152,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 152,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 152,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "terraform_limit"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 152,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.terraform_limit (offset 224, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "remaining monthly quota limit for terraforming terrain modifications",
+    "mode": "partial"
+  },
+  {
+    "id": "RG40",
+    "binary": "openttd",
+    "semanticLabel": "CompanyProperties.clear_limit",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 156,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 156,
+        "size": 4,
+        "type": "unsigned int",
+        "declaringClass": "CompanyProperties",
+        "declaringOffset": 156,
+        "inheritance": [
+          {
+            "className": "CompanyProperties",
+            "offset": 0,
+            "size": 7792
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "CompanyProperties",
+        "field": "clear_limit"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "CompanyProperties",
+        "offset": 156,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class CompanyProperties"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct CompanyProperties.clear_limit (offset 228, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "remaining monthly quota limit for clearing land obstacles and trees",
+    "mode": "partial"
+  },
+  {
+    "id": "RG41",
+    "binary": "openttd",
+    "semanticLabel": "Company.ai_instance",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 7808,
+        "size": 8,
+        "type": "AIInstance *"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Company",
+        "field": "ai_instance"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Company",
+        "offset": 7808,
+        "size": 8,
+        "type": "AIInstance *"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Company"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Company.ai_instance (offset 7880, std::unique_ptr<AIInstance>)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "current AI state",
+    "mode": "partial"
+  },
+  {
+    "id": "RG42",
+    "binary": "openttd",
+    "semanticLabel": "Window.window_desc",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 32,
+        "size": 8,
+        "type": "WindowDesc *"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "LinkGraphLegendWindow",
+        "offset": 32,
+        "size": 8,
+        "type": "WindowDesc *",
+        "declaringClass": "Window",
+        "declaringOffset": 32,
+        "inheritance": [
+          {
+            "className": "Window",
+            "offset": 0,
+            "size": 192
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Window",
+        "field": "window_desc"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 32,
+        "size": 8,
+        "type": "WindowDesc *"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Window"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Window.window_desc (offset 40, WindowDesc&)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "object responsible for this window",
+    "mode": "partial"
+  },
+  {
+    "id": "RG43",
+    "binary": "openttd",
+    "semanticLabel": "Window.window_class",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 44,
+        "size": 4,
+        "type": "WindowClass"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "LinkGraphLegendWindow",
+        "offset": 44,
+        "size": 4,
+        "type": "WindowClass",
+        "declaringClass": "Window",
+        "declaringOffset": 44,
+        "inheritance": [
+          {
+            "className": "Window",
+            "offset": 0,
+            "size": 192
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Window",
+        "field": "window_class"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 44,
+        "size": 4,
+        "type": "WindowClass"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Window"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Window.window_class (offset 50, WindowClass)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "category classification of GUI window",
+    "mode": "partial"
+  },
+  {
+    "id": "RG44",
+    "binary": "openttd",
+    "semanticLabel": "Window.scale",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "Window",
+        "field": "scale"
+      },
+      "reason": "Named member absent from exact-build DWARF; no source/RTTI guess"
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Window.scale (offset 56, int)",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "visual display scaling factor for UI elements",
+    "mode": "partial"
+  },
+  {
+    "id": "RG45",
+    "binary": "openttd",
+    "semanticLabel": "Window.left",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 56,
+        "size": 4,
+        "type": "int"
+      },
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "LinkGraphLegendWindow",
+        "offset": 56,
+        "size": 4,
+        "type": "int",
+        "declaringClass": "Window",
+        "declaringOffset": 56,
+        "inheritance": [
+          {
+            "className": "Window",
+            "offset": 0,
+            "size": 192
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Window",
+        "field": "left"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Window",
+        "offset": 56,
+        "size": 4,
+        "type": "int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Window"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Window.left (offset 64, int)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "screen horizontal pixel offset where window is drawn",
+    "mode": "partial"
+  },
+  {
+    "id": "RG46",
+    "binary": "openttd",
+    "semanticLabel": "TownCache.population",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "TownCache",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "TownCache",
+        "field": "population"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "TownCache",
+        "offset": 4,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class TownCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct TownCache.population (offset 12, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "number of urban residents living in this municipality",
+    "mode": "partial"
+  },
+  {
+    "id": "RG47",
+    "binary": "openttd",
+    "semanticLabel": "TownCache.num_houses",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "TownCache",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "TownCache",
+        "field": "num_houses"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "TownCache",
+        "offset": 0,
+        "size": 4,
+        "type": "unsigned int"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class TownCache"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct TownCache.num_houses (offset 8, uint32_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "total residential housing structure count in this city",
+    "mode": "partial"
+  },
+  {
+    "id": "RG48",
+    "binary": "openttd",
+    "semanticLabel": "Industry.prod_level",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 128,
+        "size": 1,
+        "type": "unsigned char"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Industry",
+        "field": "prod_level"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 128,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Industry"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Industry.prod_level (offset 88, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "production rate scaling tier of the industrial plant",
+    "mode": "partial"
+  },
+  {
+    "id": "RG49",
+    "binary": "openttd",
+    "semanticLabel": "Industry.founder",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 384,
+        "size": 1,
+        "type": "Owner"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Industry",
+        "field": "founder"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Industry",
+        "offset": 384,
+        "size": 1,
+        "type": "Owner"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Industry"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Industry.founder (offset 184, Owner)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "entity or player company that originally paid to establish this factory",
+    "mode": "partial"
+  },
+  {
+    "id": "RG50",
+    "binary": "openttd",
+    "semanticLabel": "Station.time_since_load",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 329,
+        "size": 1,
+        "type": "unsigned char"
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "Station",
+        "field": "time_since_load"
+      },
+      "identity": {
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "className": "Station",
+        "offset": 329,
+        "size": 1,
+        "type": "unsigned char"
+      },
+      "authority": {
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "layoutDeclaration": "class Station"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "DWARF struct Station.time_since_load (offset 441, uint8_t)",
+    "annotationOffsetMismatch": true,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "elapsed ticks since freight was loaded onto a transport at this stop",
+    "mode": "partial"
+  },
+  {
+    "id": "RG51",
+    "binary": "openmw",
+    "semanticLabel": "ActorStats.health",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "ActorStats",
+        "field": "health",
+        "alternatives": [
+          {
+            "class": "CreatureStats",
+            "field": "mHealth"
+          }
+        ]
+      },
+      "reason": "Class layout unresolved in exact-build DWARF"
+    },
+    "alternativesAudit": [
+      {
+        "status": "unverified",
+        "label": {
+          "class": "CreatureStats",
+          "field": "mHealth"
+        },
+        "reason": "Class layout unresolved in exact-build DWARF"
+      }
+    ],
+    "originalAnnotation": "OpenMW source & RTTI ActorStats.health / CreatureStats.mHealth",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "current health of the player character",
+    "mode": "partial"
+  },
+  {
+    "id": "RG52",
+    "binary": "openmw",
+    "semanticLabel": "ActorStats.fatigue",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "ActorStats",
+        "field": "fatigue",
+        "alternatives": [
+          {
+            "class": "CreatureStats",
+            "field": "mFatigue"
+          }
+        ]
+      },
+      "reason": "Class layout unresolved in exact-build DWARF"
+    },
+    "alternativesAudit": [
+      {
+        "status": "unverified",
+        "label": {
+          "class": "CreatureStats",
+          "field": "mFatigue"
+        },
+        "reason": "Class layout unresolved in exact-build DWARF"
+      }
+    ],
+    "originalAnnotation": "OpenMW source & RTTI ActorStats.fatigue / CreatureStats.mFatigue",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "current stamina or endurance remaining for actor actions",
+    "mode": "partial"
+  },
+  {
+    "id": "RG53",
+    "binary": "openmw",
+    "semanticLabel": "ActorStats.magicka",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "ActorStats",
+        "field": "magicka",
+        "alternatives": [
+          {
+            "class": "CreatureStats",
+            "field": "mSpells"
+          }
+        ]
+      },
+      "reason": "Class layout unresolved in exact-build DWARF"
+    },
+    "alternativesAudit": [
+      {
+        "status": "unverified",
+        "label": {
+          "class": "CreatureStats",
+          "field": "mSpells"
+        },
+        "reason": "Exact-build DWARF declares MWMechanics::Spells, a known-spell container; this cannot prove the magical-energy pool in the frozen query. No replacement gold is supplied."
+      }
+    ],
+    "originalAnnotation": "OpenMW source & RTTI ActorStats.magicka / CreatureStats.mSpells",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "magical spellcasting energy pool currently available to actor",
+    "mode": "partial"
+  },
+  {
+    "id": "RG54",
+    "binary": "openmw",
+    "semanticLabel": "CreatureStats.mLevel",
+    "status": "unverified",
+    "identities": [],
+    "primaryAudit": {
+      "status": "unverified",
+      "label": {
+        "class": "CreatureStats",
+        "field": "mLevel"
+      },
+      "reason": "Class layout unresolved in exact-build DWARF"
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "OpenMW source & RTTI CreatureStats.mLevel",
+    "annotationOffsetMismatch": null,
+    "reason": "No acceptable frozen gold identity proven; excluded from answerable denominator",
+    "query": "overall character progression level",
+    "mode": "partial"
+  },
+  {
+    "id": "RG55",
+    "binary": "openmw",
+    "semanticLabel": "MWWorld::Ptr.mRef",
+    "status": "verified",
+    "identities": [
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWWorld::Ptr",
+        "offset": 0,
+        "size": 8,
+        "type": "MWWorld::PtrBase<std::remove_const_t>::LiveCellRefBaseType *"
+      },
+      {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWWorld::Ptr",
+        "offset": 0,
+        "size": 8,
+        "type": "MWWorld::PtrBase<std::remove_const_t>::LiveCellRefBaseType *",
+        "declaringClass": "MWWorld::PtrBase<std::remove_const_t>",
+        "declaringOffset": 0,
+        "inheritance": [
+          {
+            "className": "MWWorld::PtrBase<std::remove_const_t>",
+            "offset": 0,
+            "size": 24
+          }
+        ]
+      }
+    ],
+    "primaryAudit": {
+      "status": "verified",
+      "label": {
+        "class": "MWWorld::Ptr",
+        "field": "mRef"
+      },
+      "identity": {
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "className": "MWWorld::Ptr",
+        "offset": 0,
+        "size": 8,
+        "type": "MWWorld::PtrBase<std::remove_const_t>::LiveCellRefBaseType *"
+      },
+      "authority": {
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "debugSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "layoutDeclaration": "class MWWorld::Ptr"
+      }
+    },
+    "alternativesAudit": [],
+    "originalAnnotation": "OpenMW RTTI typeinfo for void (MWWorld::Ptr)",
+    "annotationOffsetMismatch": null,
+    "reason": "Exact-build structural identity; semantic label preserved for reporting only",
+    "query": "player controlled object",
+    "mode": "partial"
+  },
+  {
+    "id": "RG56",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No dietary survival or hunger mechanics in OpenTTD",
+    "identities": [],
+    "query": "player hunger level requiring food consumption",
+    "mode": "partial"
+  },
+  {
+    "id": "RG57",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No weapon combat or reload mechanics in OpenTTD",
+    "identities": [],
+    "query": "cooldown remaining before weapon reload animation finishes",
+    "mode": "partial"
+  },
+  {
+    "id": "RG58",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No satellite positioning or space orbit mechanics in OpenTTD",
+    "identities": [],
+    "query": "GPS satellite orbital telemetry constellation",
+    "mode": "partial"
+  },
+  {
+    "id": "RG59",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No pneumatic tire pressure simulation in OpenTTD",
+    "identities": [],
+    "query": "current tire pressure across automotive wheel axles",
+    "mode": "partial"
+  },
+  {
+    "id": "RG60",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No atmospheric wind drift physics in OpenTTD",
+    "identities": [],
+    "query": "ambient wind velocity affecting flight aerodynamic drift",
+    "mode": "partial"
+  },
+  {
+    "id": "RG61",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No bodily temperature or hypothermia mechanics in OpenTTD",
+    "identities": [],
+    "query": "character body temperature and hypothermia status",
+    "mode": "partial"
+  },
+  {
+    "id": "RG62",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No social media platform features in OpenTTD",
+    "identities": [],
+    "query": "social media influence follower count for advertising campaign",
+    "mode": "partial"
+  },
+  {
+    "id": "RG63",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No stealth camouflage system in OpenTTD",
+    "identities": [],
+    "query": "stealth invisibility cloak camouflage percentage",
+    "mode": "partial"
+  },
+  {
+    "id": "RG64",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No firearm ballistic ammunition counter in OpenTTD",
+    "identities": [],
+    "query": "ammunition rounds remaining in active firearm magazine",
+    "mode": "partial"
+  },
+  {
+    "id": "RG65",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No magical shielding systems in OpenTTD",
+    "identities": [],
+    "query": "mana shield absorption percentage absorbing incoming spell damage",
+    "mode": "partial"
+  },
+  {
+    "id": "RG66",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No interstellar warp drive systems in OpenTTD",
+    "identities": [],
+    "query": "spaceship warp drive hyperdrive fuel reserve",
+    "mode": "partial"
+  },
+  {
+    "id": "RG67",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No real-world retail banking card authorization in OpenTTD",
+    "identities": [],
+    "query": "credit card payment transaction processing authorization code",
+    "mode": "partial"
+  },
+  {
+    "id": "RG68",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No cryptocurrency blockchain wallet keys in OpenTTD",
+    "identities": [],
+    "query": "cryptographic private key seed phrase used for wallet authentication",
+    "mode": "partial"
+  },
+  {
+    "id": "RG69",
+    "binary": "openttd",
+    "status": "control",
+    "reason": "No drilling depth geological metric in OpenTTD",
+    "identities": [],
+    "query": "subsurface oil well drilling depth in meters underground",
+    "mode": "partial"
+  },
+  {
+    "id": "RG70",
+    "binary": "openmw",
+    "status": "control",
+    "reason": "No space vessel cooling physics in fantasy RPG OpenMW",
+    "identities": [],
+    "query": "spaceship hyperdrive cooling radiator fluid temperature",
+    "mode": "partial"
+  }
+]

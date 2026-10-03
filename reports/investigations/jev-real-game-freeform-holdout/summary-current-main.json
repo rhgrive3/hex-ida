@@ -1,0 +1,24 @@
+{
+  "schema": "hex-jev-realgame-evaluation-summary/v1",
+  "evaluatedAtUtc": "2026-09-29T18:22:45.068Z",
+  "gitCommit": "test/jev-real-game-freeform-holdout",
+  "caseSha256": "05def989cdf8df4728bbdee5201f069e37a4e2a0c0d8bd6a91055cd10895df9a",
+  "routerSha256": "62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173",
+  "totalCases": 70,
+  "answerable": 55,
+  "abstain": 15,
+  "candidateRecall": {
+    "goldInLattice": 0,
+    "candidateRecallRate": 0,
+    "goldInShortlist": 0,
+    "latticePresentRetention": null,
+    "allAnswerableRetention": 0
+  },
+  "baseline": {
+    "top1Correct": 0,
+    "top1Accuracy": 0,
+    "routedCases": 0
+  },
+  "evaluationStatus": "EVALUATION_IMPOSSIBLE_CURRENT_MAIN_CANDIDATE_RECALL_ZERO",
+  "note": "Current main branch lacks C++ member candidate projection, resulting in candidateCount=0 for all C++ binaries. Jev reranking cannot be executed on current main because candidate recall is 0. Once the parallel C++ candidate publication branch is merged/rebased, rerun this script against the same frozen holdout."
+}

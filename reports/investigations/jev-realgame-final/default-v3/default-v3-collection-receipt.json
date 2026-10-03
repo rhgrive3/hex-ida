@@ -1,0 +1,21 @@
+{
+  "runId": 36808254949,
+  "productSha": "752d06c541dd71a51767d96b74346e1f7880bd9c",
+  "wholeRun": "success",
+  "artifacts": [
+    {
+      "artifactId": 11138518581,
+      "game": "openmw",
+      "sha256": "2bc211480d4c5819658530aa6f8f3e1a2bd40dffdc15f11e9160eae117d7954d",
+      "completeRows": 25,
+      "wholeJob": "success"
+    },
+    {
+      "artifactId": 11138319817,
+      "game": "openttd",
+      "sha256": "9bba563ac3382a22be5b3e18a22c34bca32e88ae282882b2fe3996c9575858aa",
+      "completeRows": 25,
+      "wholeJob": "success"
+    }
+  ]
+}

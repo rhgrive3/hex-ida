@@ -1,0 +1,32 @@
+{
+  "schema": "hex-jev-stability-execution-freeze/v2",
+  "frozenAtUtc": "2026-09-30T17:51:22.878727+00:00",
+  "networkCallsBeforeFreeze": 0,
+  "collectionProductSha": "77984276ef1ef4f4e09eb00bbcfe13836498c2dc",
+  "policySha256": "a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59",
+  "sourceHashes": {
+    "scripts/evaluate-jev-realgame-stability.mjs": "e5431b7229878f242c33319b00ce08cd0fdb80d6b9cb4b3c0d5c01d254dfe651",
+    "scripts/verify-jev-realgame-stability.mjs": "00c82f97f76e707af06bea3cf759f7f5b92f8ef3b924ec4b29eee9232f382b48",
+    "scripts/run-jev-stability-controls.mjs": "ca4ea6fec73659e6d922451abedc3b840326df86eefc854ddf99aca070d7d265",
+    "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
+    "scripts/jev-realgame-final-client.mjs": "cf0776f062811e6b8f5bded82edd1b6daf58e5e0a2c5df45431730d38a9a9d07"
+  },
+  "maxAttempts": 1,
+  "totalTimeoutMs": 15000,
+  "primaryRepeat": 0,
+  "repeats": 3,
+  "controlRepeats": 5,
+  "verifierHardeningBeforeFinalEvaluation": {
+    "atUtc": "2026-09-30T17:55:43.845763+00:00",
+    "priorVerifierSha256": "5f9d433856f3f7e0675ec354f177ce2234c3fff82a67b4a7c0ca047df53a5f04",
+    "changes": "require source binding, replay latency/verdict/recovery, independently rebuild unchanged frozen decision criteria",
+    "finalHoldoutCallsBeforeChange": 0,
+    "controlCallsAlreadyCompleted": 15,
+    "promptAndCriteriaChanged": false
+  },
+  "perArmShortlistInstrumentation": {
+    "atUtc": "2026-09-30T18:03:02.633581+00:00",
+    "finalHoldoutCallsBeforeChange": 0,
+    "criteriaAndRepresentationUnchanged": true
+  }
+}

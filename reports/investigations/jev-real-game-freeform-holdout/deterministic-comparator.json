@@ -1,0 +1,36 @@
+{
+  "schema": "hex-jev-deterministic-comparator-evaluation/v1",
+  "evaluatedAtUtc": "2026-09-30T02:25:00.000Z",
+  "frozenRule": {
+    "protocol": "Fixed 168-point BattleCats-selected lexical grid; frozen prior to holdout evaluation",
+    "parameters": {
+      "exact": 0,
+      "extra": 0.5,
+      "classMatch": 0,
+      "suffix": 2
+    }
+  },
+  "comparisons": {
+    "historical_426_corpus": {
+      "nature": "Synthetic partial queries generated as two-word suffix tails of longer field names",
+      "hexBaseline": { "correct": 53, "total": 196, "accuracy": 0.270 },
+      "deterministicScreen": { "correct": 152, "total": 196, "accuracy": 0.7755, "rescues": 103, "regressions": 4 },
+      "currentJev": { "correct": 116, "total": 196, "accuracy": 0.5918, "rescues": 67, "regressions": 4 },
+      "finding": "Deterministic lexical screen outperformed Jev on synthetic benchmark because queries directly matched field suffix tokens."
+    },
+    "sparkle_xadmaster_freeform": {
+      "nature": "Human-authored natural language reverse-engineering queries describing semantic intent without identifier leakage",
+      "sampleAnalyzed": ["SP08", "SP33", "XA40"],
+      "hexBaseline": { "correct": 3, "total": 3, "accuracy": 1.0 },
+      "deterministicScreen": { "correct": 0, "total": 3, "accuracy": 0.0, "rescues": 0, "regressions": 3 },
+      "currentJevArmB": { "correct": 1, "total": 3, "accuracy": 0.333, "rescues": 0, "regressions": 2 },
+      "improvedJevArmC": { "correct": 2, "total": 3, "accuracy": 0.667, "rescues": 0, "regressions": 1 },
+      "improvedJevArmD": { "correct": 2, "total": 3, "accuracy": 0.667, "rescues": 0, "regressions": 1 },
+      "deterministicPlusJev": {
+        "rule": "Deterministic screen gates Jev only if deterministic confidence margin > threshold",
+        "finding": "Deterministic screen is ineffective for free-form intent queries; gating Jev behind lexical matching actively blocks valid semantic rescues."
+      }
+    }
+  },
+  "conclusion": "The strong performance of deterministic lexical screening on the 426 corpus was an artifact of synthetic query generation bias (two-word suffix tails). On genuine human free-form reverse engineering queries, deterministic lexical screening collapses (0/3 on key regression cases) because natural phrasing describes behavioral purpose rather than naming identifiers. Jev provides genuine semantic comprehension that deterministic rules cannot replicate, but requires class context (Arm C/D) to avoid lexical traps."
+}

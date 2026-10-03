@@ -1,0 +1,17 @@
+{
+  "complete": true,
+  "independentMethod": "Freebuff3 DeepSeekV4.1Flash high",
+  "productSha": "b3aa6b59c063bf36e2f7f679e56a87242595e707",
+  "reportSha256": "fbf213efd1779df80225eb4649662b6e8dffec73ce27f1c99001f4ec7655895d",
+  "verifiedSourceHashes": {
+    "js/analysis/cxx/member-types.js": "f6604b92002d62bbcd368eb6a06229e9b5f904413d6a3dffdc3ea877b80dc8f5",
+    "js/analysis/cxx/object-evidence.js": "6172d877b2943c76061add023f410f456f9358f4eacaa156c1d1da7d2a8ea26b",
+    "js/analysis/cxx/project.js": "a70a569cb3e2896f7c99c96ab8519f3d94ceb2c41f0a9fb183aeecd435df0d7c",
+    "js/analysis/query/cxx-semantic-preference.js": "aa3761dd6ec595a09f9e8b1923bcde35fbe0d175b81928a504dc49d764a806f1",
+    "tests/phase7/cxx/member-types.test.mjs": "3fc6f188cdd4c60fb8ccb673fc183c3440326de289b7a7b47900aed6a9ce47e6",
+    "tests/phase7/cxx/member-evidence.test.mjs": "4f6bf02509370bf1494cad75923496304ac9e442ee0210b9af35b158167d609e",
+    "tests/phase7/cxx/jev-recovery.test.mjs": "2bf359b4e8a823249a7f0f80cd1b0c980be9ba2f1cecd6637518ec939f1f7e0f"
+  },
+  "testResult": "tests 4, pass 4, fail 0, cancelled 0, skipped 0, duration 8694ms",
+  "scope": "source and four focused tests, no real-game/default authorization"
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "hex-jev-recovery-integrity/v1",
+  "productSha": "1c274ec00d8006354a01db415a8c91b86f3a2dc0",
+  "collectionRun": "https://github.com/rhgrive3/actions/actions/runs/36723696486",
+  "independentReplays": [
+    {
+      "role": "development-original70",
+      "cases": 70,
+      "verified": 49,
+      "calls": 420,
+      "valid": true
+    },
+    {
+      "role": "untouched-final",
+      "cases": 50,
+      "verified": 40,
+      "calls": 450,
+      "valid": true
+    }
+  ],
+  "verifierSha256": "5a317b0295e37c3333d9da3e98144ddb46f21e2022ba65c1420619e31d0befa4",
+  "controlsSha256": "d1affdbb2425f5bec95afae326efc1dae070cca7c42a725aba874c4bc12943cb",
+  "packagedArtifacts": [
+    {
+      "path": "recovery-results/development-original70/raw-results.jsonl.gz",
+      "uncompressedSha256": "3308693602bf0b037638787bc7e6043d5b30d2839ce94d8a287cfeb61a1f2629",
+      "compressedSha256": "b3b5a0d42a98834a9bf74815e38895a72aee04ff74c8cbbf152ad72617302936",
+      "uncompressedBytes": 8586479,
+      "compressedBytes": 680768
+    },
+    {
+      "path": "recovery-snapshots/development-original70/openttd.json.gz",
+      "uncompressedSha256": "3f421a280ae7651836e937da3074c31bf312000883df7e619da86f30e7376b1b",
+      "compressedSha256": "e0643b7de1a2454fe388e6e96bebb775ec59a782f3307769313f69a865283b44",
+      "uncompressedBytes": 60841432,
+      "compressedBytes": 2204069
+    },
+    {
+      "path": "recovery-snapshots/development-original70/openmw.json.gz",
+      "uncompressedSha256": "32c9ec91883559539d2b36f92bc129fad3f90b650ef022b2204369294cf1a27c",
+      "compressedSha256": "c2af3f2d48c501e428dc30625d4c8ca4df492b2df1fcf5d1903460de6610aa9b",
+      "uncompressedBytes": 1674754,
+      "compressedBytes": 66617
+    },
+    {
+      "path": "recovery-results/untouched-final/raw-results.jsonl.gz",
+      "uncompressedSha256": "dda59f9d8cd68d9c71247cba7bc8e84b1234294ca727d459baa754fc4dd183db",
+      "compressedSha256": "319023160b557936543942b2597c769d26518836ff2d1032515dc518ce1ae136",
+      "uncompressedBytes": 7439465,
+      "compressedBytes": 410504
+    },
+    {
+      "path": "recovery-snapshots/untouched-final/openttd.json.gz",
+      "uncompressedSha256": "d329b21a5f90fdc21ca4fe40ac7d7adae3e265a6c3fd5d4434007fce630f5256",
+      "compressedSha256": "67baebeb73a1545f6c5bb59e231914c11d9fd7c18dc309eefb1ca61f85bef3fa",
+      "uncompressedBytes": 13062949,
+      "compressedBytes": 491686
+    },
+    {
+      "path": "recovery-snapshots/untouched-final/openmw.json.gz",
+      "uncompressedSha256": "1e9aba09db7c1757df81cbabe859744fec5bd8ede8529221fbbe58e5b4fb93ee",
+      "compressedSha256": "379a7b0021f51450240ac12da338e2f09a826a0fc78d1185cfb025c10f67fbc3",
+      "uncompressedBytes": 13752764,
+      "compressedBytes": 586680
+    }
+  ],
+  "collectionPolicy": "Two pre-frozen policies, identical collection parameters; distinct development/final arm sets.",
+  "runtimeRepairDisclosure": "Partial retrieval and deterministic outcomes were inspected before a runtime-only SSA walk repair. No final prompt, scoring, query, or ranking changes followed final outcomes."
+}

@@ -28,12 +28,17 @@
 
 import {
   createCppMemberEvidence,
+  analyzeFunctionSymbol,
   extractCppObjectEvidence,
   isCanonicalCppMemberEvidence,
   isCanonicalCppReceiverEvidence,
   isCanonicalCppVirtualSlotEvidence,
 } from './object-evidence.js';
 import { recoverMemberTypeEvidence } from './member-types.js';
+import { CxxMemberIndex } from './member-index.js';
+import { createPrimaryOwnerResolver } from './primary-owner.js';
+import { createCppTypedArgumentEvidence } from './typed-argument.js';
+import { buildCppClassTypeIndex } from './class-type.js';
 import {
   buildCxxClassEvidence,
   vtableEvidenceFor,
@@ -89,9 +94,10 @@ function receiverBasePredicate(receiver, ir) {
     for (const inst of instructions) {
       const dst = inst?.dst ?? null;
       if (dst?.id == null) continue;
-      if (inst.op === 'mov' || inst.op === 'copy' || inst.op === 'un' || inst.op === 'unary') {
+      if (inst.op === 'mov' || inst.op === 'copy') {
         const source = inst.args?.[0]?.value ?? inst.args?.[0] ?? null;
         if (source?.id == null || !aliasIds.has(String(source.id))) continue;
+        // Unary negation/not is not a receiver alias even at the same width.
         // A width-changing copy is a different value, not an alias of `this`.
         if (dst.bits != null && source.bits != null && dst.bits !== source.bits) continue;
       } else if (inst.op === 'load') {
@@ -154,6 +160,12 @@ function projectMembers({ receiver, ir, functionId, snapshotId, maxFields }) {
         indexed: field.indexed,
         readCount: field.readCount,
         writeCount: field.writeCount,
+        accessRoles: field.accessRoles,
+        returnExpressionIncomplete: field.returnExpressionIncomplete,
+        returnedMemberCount: field.returnedMemberCount,
+        writtenArgumentRegisters: field.writtenArgumentRegisters,
+        writtenArgumentBits: field.writtenArgumentBits,
+        writtenArgumentBitsTruncated: field.writtenArgumentBitsTruncated,
         rule: field.rule,
         reason: field.reason,
       }));
@@ -189,8 +201,35 @@ const EMPTY_INDEX = Object.freeze({ empty: true, report: null, vtables: Object.f
  * point at, so per-function lookup is O(1) instead of scanning every slot of
  * every class.
  */
-function indexFromReport(report) {
-  const vtables = [];
+function indexFromReport(report, symbols, architecture, snapshotId) {
+  // Only aliased addresses need extra ownership scrutiny. This one metadata
+  // walk never reads code or runs an analysis pass; name parsing is restricted
+  // to duplicates. Raw names are retained so presentation renames cannot
+  // create a receiver proof or change the owner of an existing proof.
+  const symbolOwners = new Map(),firstSymbol = new Map(),typedArguments=new Map();
+  for(let i=0;i<(symbols?.names?.length??0);i++) {
+    const address=symbols.addrs?.[i];if(address==null)continue;
+    const key=String(address),name=symbols.names[i];
+    const argumentProof=/^_ZL?[1-9]/.test(name)?createCppTypedArgumentEvidence({symbol:name,functionAddress:BigInt(address),architecture}):null;
+    if(!firstSymbol.has(key)){
+      firstSymbol.set(key,name);if(argumentProof)typedArguments.set(key,argumentProof);continue;
+    }
+    const priorArgument=typedArguments.get(key);
+    if(priorArgument&&(!argumentProof||argumentProof.className!==priorArgument.className))typedArguments.delete(key);
+    const names=symbolOwners.get(key)??new Set();
+    for(const value of [firstSymbol.get(key),name]) {
+      const info=analyzeFunctionSymbol(value);if(info.className)names.add(info.className);
+    }
+    if(names.size)symbolOwners.set(key,names);
+  }
+  const vtables = [],typedClasses=new Map();
+  // Keep the new lifetime metadata walk off ordinary Fast projection. It is
+  // needed only when an explicit typed-input recovery query requests it.
+  let classTypes=null;
+  const classTypeFor=className=>{
+    if(!classTypes)classTypes=buildCppClassTypeIndex({symbols,snapshotId});
+    return classTypes.get(className);
+  };
   const vtableClassNames = [];
   const bySlotAddress = new Map();
   let slotCount = 0;
@@ -201,6 +240,13 @@ function indexFromReport(report) {
     const vtableIndex = vtables.length;
     vtables.push(vtable);
     vtableClassNames.push(typeof record.className === 'string' ? record.className : null);
+    if(record.className&&vtable.offsetToTop===0n) {
+      const owner={kind:'named',className:record.className,vtableAddress:vtable.vtableAddress,
+        typeinfoAddress:vtable.typeinfo??null,offsetToTop:0n};
+      if(!typedClasses.has(record.className))typedClasses.set(record.className,owner);
+      else if(typedClasses.get(record.className)?.vtableAddress!==owner.vtableAddress
+        ||typedClasses.get(record.className)?.typeinfoAddress!==owner.typeinfoAddress)typedClasses.set(record.className,null);
+    }
     for (const slot of vtable.slots) {
       if (slot.address == null) continue;
       slotCount++;
@@ -220,6 +266,12 @@ function indexFromReport(report) {
     vtables: Object.freeze(vtables),
     vtableClassNames: Object.freeze(vtableClassNames),
     bySlotAddress,
+    primaryOwnerFor: createPrimaryOwnerResolver(report.classes),
+    symbolOwners,
+    symbolNameFor:address=>firstSymbol.get(String(address))??null,
+    typedArguments,
+    typedClasses,
+    classTypeFor,
     slotCount,
   });
 }
@@ -266,6 +318,10 @@ export function createCxxEvidenceProvider(input = {}) {
   let memberFields = 0;
   let typedMemberFields = 0;
   let lastAttempt = null;
+  // Every canonical projection this provider creates is also published into a
+  // member lattice so Pinpoint can enumerate the same proven members without a
+  // second analysis pass. Publication is pure bookkeeping: it reads no bytes.
+  const memberIndex = new CxxMemberIndex();
 
   function producerInput() {
     return {
@@ -297,7 +353,7 @@ export function createCxxEvidenceProvider(input = {}) {
         const report = cache
           ? await cache.get(producerInput(), cacheKey)
           : await buildCxxClassEvidence(producerInput());
-        index = report ? indexFromReport(report) : EMPTY_INDEX;
+        index = report ? indexFromReport(report,symbols,architecture,snapshotId) : EMPTY_INDEX;
         return index;
       })();
       try {
@@ -322,6 +378,7 @@ export function createCxxEvidenceProvider(input = {}) {
         rawSymbol = null,
         ir = null,
         metadata = {},
+        enableTypedArguments = false,
       } = request;
       if (index) attempts++;
 
@@ -341,6 +398,7 @@ export function createCxxEvidenceProvider(input = {}) {
       if (!index) return bind(null);
       if (index.empty) return bind(null);
       if (functionId == null && functionAddress == null) return bind(null);
+      const binarySymbol=index.symbolNameFor?.(functionAddress)??null;
 
       // Only the vtables that actually reference this address can prove
       // membership, so a function is never attributed to an unrelated class.
@@ -361,19 +419,50 @@ export function createCxxEvidenceProvider(input = {}) {
         }
       }
 
+      // Base implementations may occur in several derived primary tables.
+      // Existing RTTI must prove every referencing owner reaches that base
+      // through one non-virtual path at zero offset before selecting its table.
+      if (new Set(vtableClassNames).size > 1) {
+        const symbol = binarySymbol;
+        const info = analyzeFunctionSymbol(symbol);
+        const owner = !info.isAdjustedThunk
+          ? index.primaryOwnerFor(BigInt(functionAddress), info.className) : null;
+        const aliases = index.symbolOwners?.get(String(functionAddress));
+        if (owner && (!aliases?.size || aliases.size === 1 && aliases.has(owner.className))) {
+          for (let i = vtables.length - 1; i >= 0; i--) {
+            if (vtableClassNames[i] !== owner.className) { vtables.splice(i, 1); vtableClassNames.splice(i, 1); }
+          }
+        }
+      }
+
       let report;
       try {
+        const typed=index.typedArguments?.get(String(functionAddress));
+        const symbol=binarySymbol;
+        const lifetimeClass=enableTypedArguments===true&&typed?index.classTypeFor?.(typed.className):null;
+        // A conflicting primary-vtable identity cannot be repaired by a name.
+        const argumentOwner=index.typedClasses?.has(typed?.className)
+          ?index.typedClasses.get(typed.className)
+          :lifetimeClass?{kind:'named',className:typed.className,offsetToTop:0n}:null;
+        if(enableTypedArguments===true&&typed&&vtables.length) {
+          unproven++;return bind(null); // folded global/virtual identities stay ambiguous
+        }
+        const currentArgument=enableTypedArguments===true&&typed&&argumentOwner
+          ?createCppTypedArgumentEvidence({symbol,functionAddress:BigInt(functionAddress),architecture}):null;
         report = extractCppObjectEvidence({
           functionId: functionId != null ? String(functionId) : `sub_${BigInt(functionAddress).toString(16)}`,
           functionAddress,
-          functionName,
-          rawSymbol,
+          functionName:binarySymbol,
+          rawSymbol:binarySymbol,
           ir,
           vtables,
           vtableClassNames,
           metadata,
           snapshotId,
           architecture,
+          typedArgumentProof:currentArgument?.className===typed?.className?currentArgument:null,
+          typedArgumentClassIdentity:argumentOwner??null,
+          typedArgumentClassTypeProof:lifetimeClass??null,
         });
       } catch {
         unproven++;
@@ -407,6 +496,19 @@ export function createCxxEvidenceProvider(input = {}) {
         status: report.status ?? 'verified-cpp-object',
         reason: report.reason ?? null,
       });
+      // Publication must never be able to invalidate an already-proven
+      // projection, so a rejected/duplicate publish is simply a no-op.
+      // A shared slot with contradictory/unknown class names does not prove
+      // one owner. The decompiler's conservative anonymous projection remains
+      // available, but it cannot mint a member of the first table for Pinpoint.
+      const owner = receiver.classIdentity;
+      const symbolOwners=functionAddress!=null?index.symbolOwners?.get(String(functionAddress)):null;
+      const symbolBindingValid=!symbolOwners?.size||(symbolOwners.size===1&&symbolOwners.has(owner?.className));
+      const publishOwner = symbolBindingValid && (owner?.kind === 'named'
+        || (vtables.length === 1 && vtableClassNames.every((name) => !name)));
+      if (publishOwner) {
+        try { memberIndex.publish(projection); } catch { /* publication only */ }
+      }
       return bind(projection);
     },
 
@@ -432,6 +534,16 @@ export function createCxxEvidenceProvider(input = {}) {
       return index?.report ?? null;
     },
 
+    /**
+     * The published C++ member lattice for this slice.
+     *
+     * Reading it never builds the index or reanalyzes a function: it is filled
+     * only by projections this provider already produced during decompilation.
+     */
+    memberIndex() {
+      return memberIndex;
+    },
+
     stats() {
       return Object.freeze({
         ready: index != null,
@@ -452,6 +564,7 @@ export function createCxxEvidenceProvider(input = {}) {
       index = null;
       pending = null;
       lastAttempt = null;
+      memberIndex.clear();
     },
   };
 

@@ -28,6 +28,8 @@ function finishFunctionArgs(p,out){const args=readArgs(p);if(args==null)return n
 function readName(p,isSub=true){const c=p.s[p.i],two=p.s.slice(p.i,p.i+2);if(OPERATORS[two]&&!/\d/.test(c||'')){p.i+=2;return OPERATORS[two];}if(c==='N'){p.i++;return readNested(p,isSub);}if(c==='S'){if(two==='St'){p.i+=2;const tail=readName(p,false);if(!tail)return null;const out=`std::${tail}`;if(isSub)p.subs.push(out);return out;}return readSubstitution(p);}if(/\d/.test(c||''))return readSourceName(p,isSub);if(c==='L'){p.i++;return readName(p,isSub);}return null;}
 function readNested(p,isSub=true){
   const parts=[];
+  const captureRole=p.captureFunctionRole===true&&p.i===3;
+  let finalRole='ordinary';
   let cvr='',cvMask=0,cvLast=-1,currentPrefix='',lastUnqualified=null;
   while(p.i<p.s.length&&/[rVK]/.test(p.s[p.i])){
     const code=p.s[p.i],rank=code==='r'?0:code==='V'?1:2,bit=1<<rank;
@@ -36,10 +38,11 @@ function readNested(p,isSub=true){
   }
   while(p.i<p.s.length&&p.s[p.i]!=='E'){
     const c=p.s[p.i];let part=null,isSubst=false,updatesName=false;
+    finalRole='ordinary';
     if(/\d/.test(c)){part=readSourceName(p,false);updatesName=true;}
     else if(c==='S'){part=readSubstitution(p);isSubst=true;updatesName=true;}
-    else if(c==='C'){if(p.i+2>p.s.length)return null;p.i+=2;part=lastUnqualified||'ctor';}
-    else if(c==='D'){if(p.i+2>p.s.length)return null;p.i+=2;part='~'+(lastUnqualified||'dtor');}
+    else if(c==='C'){if(p.i+2>p.s.length||captureRole&&!/[123]/.test(p.s[p.i+1]))return null;p.i+=2;part=lastUnqualified||'ctor';finalRole='constructor';}
+    else if(c==='D'){if(p.i+2>p.s.length||captureRole&&!/[012]/.test(p.s[p.i+1]))return null;p.i+=2;part='~'+(lastUnqualified||'dtor');finalRole='destructor';}
     else if(OPERATORS[p.s.slice(p.i,p.i+2)]){part=OPERATORS[p.s.slice(p.i,p.i+2)];p.i+=2;}
     else if(c==='I')part=readTemplateArgs(p);
     else return null;
@@ -51,12 +54,71 @@ function readNested(p,isSub=true){
     if(!isSubst){if(p.s[p.i]!=='E')p.subs.push(currentPrefix);else if(isSub)p.subs.push(currentPrefix);}
   }
   if(p.s[p.i]!=='E'||!parts.length)return null;
+  if(captureRole){
+    p.functionRole={kind:parts.length>=2?finalRole:'ordinary',constQualified:(cvMask&4)!==0};
+    // Preserve ABI name-component boundaries. A namespace inside a template
+    // argument belongs to that argument, never to the function's owner.
+    const components=[];
+    for(const part of parts){
+      if(part.startsWith('<')){
+        if(!components.length)return null;
+        components[components.length-1]+=part;
+      }else components.push(part);
+    }
+    p.functionIdentity={owner:components.length>=2?components.slice(0,-1).join('::'):null,
+      method:components.at(-1)};
+  }
   p.i++;
   return parts.reduce((a,b)=>b.startsWith('<')?a+b:(a?`${a}::${b}`:b),'')+cvr;
 }
+// Decode role tokens at the outer function-name boundary. Identifier bytes,
+// argument type names and demangled name resemblance cannot prove a `this`.
+export function cxxAbiFunctionRole(name){
+  const identity=cxxAbiFunctionIdentity(name);
+  return identity?Object.freeze({kind:identity.kind,constQualified:identity.constQualified}):null;
+}
+// An exact outer ABI function name, not a split of a display signature.
+// Unsupported/malformed encodings cannot provide owner identity.
+export function cxxAbiFunctionIdentity(name){
+  if(typeof name!=='string'||name.length>4096)return null;
+  const s=name.startsWith('__Z')?name.slice(1):name;
+  if(!s.startsWith('_ZN'))return null;
+  const p={s,i:2,subs:[],captureFunctionRole:true};
+  try{
+    if(!readName(p,false)||!p.functionRole||p.i>=s.length)return null;
+    if(readArgs(p)==null||p.i!==s.length)return null;
+    return Object.freeze({...p.functionRole,...p.functionIdentity});
+  }catch{return null;}
+}
 function readSourceName(p,isSub=true){let n='';while(p.i<p.s.length&&/\d/.test(p.s[p.i]))n+=p.s[p.i++];const len=Number(n);if(!Number.isSafeInteger(len)||len<=0||p.i+len>p.s.length)return null;const out=p.s.slice(p.i,p.i+len);p.i+=len;if(isSub)p.subs.push(out);return out;}
 function readSubstitution(p){const two=p.s.slice(p.i,p.i+2);if(SUBSTITUTIONS[two]){p.i+=2;return SUBSTITUTIONS[two];}p.i++;let idx='';while(p.i<p.s.length&&p.s[p.i]!=='_')idx+=p.s[p.i++];if(p.s[p.i]!=='_'||(idx&&!/^[0-9A-Z]+$/i.test(idx)))return null;p.i++;const n=idx===''?0:parseInt(idx,36)+1;return Number.isSafeInteger(n)?(p.subs[n]||null):null;}
-function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
+function readTemplateArgs(p){p.i++;const args=[];for(let guard=0;p.i<p.s.length&&p.s[p.i]!=='E'&&guard<64;guard++){const before=p.i,t=p.s[p.i]==='L'?readIntegralTemplateArgument(p):readType(p);if(!t||p.i<=before)return null;args.push(t);}if(p.s[p.i]!=='E'||!args.length)return null;p.i++;return `<${args.join(', ')}>`;}
+// Itanium ABI 5.1.6.1: L <type> <number> E. Support only bounded
+// integral/enum literals. Floating, pointer, external-name and expression
+// encodings remain unsupported; no literal supplies a member type or layout.
+function readIntegralTemplateArgument(p){
+  p.i++;const code=p.s[p.i];
+  const builtin=/^[bcahstijlmxyno]$/.test(code??'');
+  if(!builtin&&!/^[1-9NS]$/.test(code??''))return null;
+  const type=readType(p);
+  if(!type||!builtin&&!/^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$/.test(type))return null;
+  const negative=p.s[p.i]==='n';if(negative)p.i++;
+  const match=/^(0|[1-9][0-9]{0,38})E/.exec(p.s.slice(p.i));
+  if(!match||negative&&(match[1]==='0'||/^[bhtjmyo]$/.test(code)))return null;
+  const magnitude=BigInt(match[1]);
+  const bits={b:1,c:8,a:8,h:8,s:16,t:16,i:32,j:32,l:64,m:64,x:64,y:64,n:128,o:128}[code];
+  if(bits!=null){
+    const unsigned=/^[bhtjmyo]$/.test(code);
+    const limit=code==='b'?1n:unsigned?(1n<<BigInt(bits))-1n:(1n<<BigInt(bits-1))-(negative?0n:1n);
+    if(magnitude>limit)return null;
+  }else if(magnitude>=(1n<<128n))return null;
+  p.i+=match[0].length;
+  const value=(negative?'-':'')+match[1];
+  if(code==='b')return magnitude===0n?'false':'true';
+  if(code==='i')return value;
+  const suffix={j:'u',l:'l',m:'ul',x:'ll',y:'ull'}[code];
+  return suffix?value+suffix:`(${type})${value}`;
+}
 function readArgs(p){const args=[];for(let guard=0;p.i<p.s.length;guard++){if(guard>=64)return null;const before=p.i,t=readType(p);if(!t||p.i<=before)return null;args.push(t);}if(!args.length)return null;return args.length===1&&args[0]==='void'?'':args.join(', ');}
 function readType(p){const c=p.s[p.i];if(!c)return null;if(c==='P'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} *`;p.subs.push(res);return res;}if(c==='R'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &`;p.subs.push(res);return res;}if(c==='O'){p.i++;const t=readType(p);if(!t)return null;const res=`${t} &&`;p.subs.push(res);return res;}if(c==='K'){p.i++;const t=readType(p);if(!t)return null;const res=`const ${t}`;p.subs.push(res);return res;}if(c==='V'){p.i++;const t=readType(p);if(!t)return null;const res=`volatile ${t}`;p.subs.push(res);return res;}if(c==='N'){p.i++;return readNested(p,true);}if(c==='S')return readSubstitution(p);if(c==='I')return readTemplateArgs(p);if(/\d/.test(c))return readSourceName(p,true);const two=p.s.slice(p.i,p.i+2);if(two.length===2&&BUILTIN[two]){p.i+=2;return BUILTIN[two];}if(BUILTIN[c]){p.i++;return BUILTIN[c];}return null;}
 

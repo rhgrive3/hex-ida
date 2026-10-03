@@ -1,0 +1,1604 @@
+{
+  "schema": "hex-jev-fresh-holdout/v1",
+  "createdAtUtc": "2026-09-30T10:48:00.830Z",
+  "frozenBeforeParentEvaluatorRun": true,
+  "independentOfParentImplementation": true,
+  "author": "Freebuff4 (fresh-holdout lane; blind to parent recovery implementation and to all prior Jev outcomes)",
+  "corpus": {
+    "exactBuilds": [
+      {
+        "binary": "openttd",
+        "binaryPath": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/deb-root/openttd/usr/games/openttd",
+        "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+        "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+        "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+        "sourceLabel": "Ubuntu noble exact build",
+        "package": "openttd-dbgsym (Ubuntu noble ddebs, 13.4-1build3 arm64)"
+      },
+      {
+        "binary": "openmw",
+        "binaryPath": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/deb-root/openmw/usr/games/openmw",
+        "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+        "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+        "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+        "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+        "sourceLabel": "Ubuntu noble exact build",
+        "package": "openmw-dbgsym (Ubuntu noble multiverse, 0.48.0-1ubuntu5 arm64)"
+      }
+    ],
+    "extraction": {
+      "retainedScript": "scripts/jev-realgame-gdb-layout.py",
+      "retainedScriptSha256": "c554bd4412c4fdd8697ad9f5b151d80e82f0ad920f6a67648810b7b611170177",
+      "gdb": "GNU gdb 12.1 (Ubuntu 12.1-0ubuntu1~22.04.2)",
+      "myArtifacts": {
+        "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-verify-layout.json",
+        "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-extra-layout.json",
+        "dwarfNameCatalogs": [
+          "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt",
+          "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt"
+        ]
+      },
+      "parentExactBuildLayoutsUsedAsCrossCheck": [
+        "evidence/jev-realgame-final/layout-openttd.json",
+        "evidence/jev-realgame-final/layout-openmw.json"
+      ]
+    },
+    "original70Exclusion": {
+      "source": "checkpoints/jev-realgame-final/case-inventory.txt (case labels only)",
+      "casesSeen": 70,
+      "excludedGoldAndAlternativeIdentities": [
+        "ActorStats.fatigue",
+        "ActorStats.health",
+        "ActorStats.magicka",
+        "BaseConsist.cur_real_order_index",
+        "BaseConsist.lateness_counter",
+        "BaseConsist.service_interval",
+        "Company.ai_instance",
+        "CompanyProperties.bankrupt_timeout",
+        "CompanyProperties.clear_limit",
+        "CompanyProperties.current_loan",
+        "CompanyProperties.inaugurated_year",
+        "CompanyProperties.last_build_coordinate",
+        "CompanyProperties.location_of_HQ",
+        "CompanyProperties.max_loan",
+        "CompanyProperties.money",
+        "CompanyProperties.months_of_bankruptcy",
+        "CompanyProperties.terraform_limit",
+        "CreatureStats.mFatigue",
+        "CreatureStats.mHealth",
+        "CreatureStats.mLevel",
+        "CreatureStats.mSpells",
+        "GroundVehicleCache.cached_air_drag",
+        "GroundVehicleCache.cached_max_te",
+        "GroundVehicleCache.cached_max_track_speed",
+        "GroundVehicleCache.cached_power",
+        "GroundVehicleCache.cached_weight",
+        "GroundVehicleCache.last_speed",
+        "Industry.founder",
+        "Industry.prod_level",
+        "MWWorld::Ptr.mRef",
+        "Order.max_speed",
+        "Station.time_since_load",
+        "TownCache.num_houses",
+        "TownCache.population",
+        "Vehicle.acceleration",
+        "Vehicle.age",
+        "Vehicle.breakdown_ctr",
+        "Vehicle.breakdown_delay",
+        "Vehicle.breakdowns_since_last_service",
+        "Vehicle.cargo",
+        "Vehicle.cargo_cap",
+        "Vehicle.cargo_type",
+        "Vehicle.cur_speed",
+        "Vehicle.current_order",
+        "Vehicle.date_of_last_service",
+        "Vehicle.dest_tile",
+        "Vehicle.direction",
+        "Vehicle.last_station_visited",
+        "Vehicle.max_age",
+        "Vehicle.motion_counter",
+        "Vehicle.owner",
+        "Vehicle.profit_last_year",
+        "Vehicle.profit_this_year",
+        "Vehicle.reliability",
+        "Vehicle.tile",
+        "Vehicle.value",
+        "Window.left",
+        "Window.scale",
+        "Window.window_class",
+        "Window.window_desc"
+      ],
+      "excludedBareFieldNames": [
+        "acceleration",
+        "age",
+        "ai_instance",
+        "bankrupt_timeout",
+        "breakdown_ctr",
+        "breakdown_delay",
+        "breakdowns_since_last_service",
+        "cached_air_drag",
+        "cached_max_te",
+        "cached_max_track_speed",
+        "cached_power",
+        "cached_weight",
+        "cargo",
+        "cargo_cap",
+        "cargo_type",
+        "clear_limit",
+        "cur_real_order_index",
+        "cur_speed",
+        "current_loan",
+        "current_order",
+        "date_of_last_service",
+        "dest_tile",
+        "direction",
+        "fatigue",
+        "founder",
+        "health",
+        "inaugurated_year",
+        "last_build_coordinate",
+        "last_speed",
+        "last_station_visited",
+        "lateness_counter",
+        "left",
+        "location_of_HQ",
+        "mFatigue",
+        "mHealth",
+        "mLevel",
+        "mRef",
+        "mSpells",
+        "magicka",
+        "max_age",
+        "max_loan",
+        "max_speed",
+        "money",
+        "months_of_bankruptcy",
+        "motion_counter",
+        "num_houses",
+        "owner",
+        "population",
+        "prod_level",
+        "profit_last_year",
+        "profit_this_year",
+        "reliability",
+        "scale",
+        "service_interval",
+        "terraform_limit",
+        "tile",
+        "time_since_load",
+        "value",
+        "window_class",
+        "window_desc"
+      ],
+      "overlapFound": false
+    },
+    "selection": {
+      "verifiedPerGame": {
+        "openttd": 20,
+        "openmw": 20
+      },
+      "controls": 10,
+      "constraints": [
+        "scalar (non-aggregate, non-vptr, non-container) members only",
+        "understandable gameplay/UI/session semantics",
+        "fully qualified compiler class identity with offset, size, type and exact binary SHA",
+        "human-natural query text, never a source field spelling or offset",
+        "no field or query taken from the original70 case set",
+        "no preference for anything already recovered elsewhere (recovery outputs were never read)"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "FH-OP-01",
+      "binary": "openttd",
+      "query": "The calendar year in which this vehicle was built.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-lifecycle",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::build_year",
+          "field": "build_year",
+          "offset": 212,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.build_year (offset 212, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-02",
+      "binary": "openttd",
+      "query": "The unit number shown for this vehicle in the vehicle list.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-identity",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::unitnumber",
+          "field": "unitnumber",
+          "offset": 272,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.unitnumber (offset 272, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-03",
+      "binary": "openttd",
+      "query": "The engine model this vehicle was built from.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-identity",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::engine_type",
+          "field": "engine_type",
+          "offset": 258,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "Vehicle.spritenum (drawing sprite, not the engine model)"
+        }
+      ],
+      "goldLabel": "DWARF struct Vehicle.engine_type (offset 258, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-04",
+      "binary": "openttd",
+      "query": "The livery colour scheme used when this vehicle is drawn.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-appearance",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::colourmap",
+          "field": "colourmap",
+          "offset": 208,
+          "size": 4,
+          "type": "unsigned int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.colourmap (offset 208, type unsigned int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-05",
+      "binary": "openttd",
+      "query": "The identifier of the vehicle group this vehicle belongs to.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-organization",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::group_id",
+          "field": "group_id",
+          "offset": 410,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.group_id (offset 410, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-06",
+      "binary": "openttd",
+      "query": "How full this vehicle has been during the trip it is currently making, in percent.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-load",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::trip_occupancy",
+          "field": "trip_occupancy",
+          "offset": 370,
+          "size": 1,
+          "type": "signed char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.trip_occupancy (offset 370, type signed char)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-07",
+      "binary": "openttd",
+      "query": "How long the cargo currently on board has been carried by this vehicle.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-cargo",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::cargo_age_counter",
+          "field": "cargo_age_counter",
+          "offset": 368,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.cargo_age_counter (offset 368, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-08",
+      "binary": "openttd",
+      "query": "How many ticks this vehicle still needs to finish loading or unloading at its current stop.",
+      "mode": "partial",
+      "semanticLabel": "vehicle-schedule",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Vehicle",
+          "qualifiedName": "Vehicle::load_unload_ticks",
+          "field": "load_unload_ticks",
+          "offset": 408,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Vehicle.load_unload_ticks (offset 408, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-09",
+      "binary": "openttd",
+      "query": "How long a vehicle should wait at the stop this order describes, in ticks.",
+      "mode": "partial",
+      "semanticLabel": "order-timetable",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Order",
+          "qualifiedName": "Order::wait_time",
+          "field": "wait_time",
+          "offset": 10,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Order.wait_time (offset 10, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-10",
+      "binary": "openttd",
+      "query": "The travel time in ticks scheduled between this order and the next one.",
+      "mode": "partial",
+      "semanticLabel": "order-timetable",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Order",
+          "qualifiedName": "Order::travel_time",
+          "field": "travel_time",
+          "offset": 12,
+          "size": 2,
+          "type": "unsigned short",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Order.travel_time (offset 12, type unsigned short)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-11",
+      "binary": "openttd",
+      "query": "The cargo type this order refits the vehicle to when it is executed.",
+      "mode": "partial",
+      "semanticLabel": "order-instruction",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Order",
+          "qualifiedName": "Order::refit_cargo",
+          "field": "refit_cargo",
+          "offset": 8,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Order.refit_cargo (offset 8, type unsigned char)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-12",
+      "binary": "openttd",
+      "query": "The kind of instruction this order represents, such as going to a station, loading or unloading.",
+      "mode": "partial",
+      "semanticLabel": "order-instruction",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Order",
+          "qualifiedName": "Order::type",
+          "field": "type",
+          "offset": 4,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Order.type (offset 4, type unsigned char)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-13",
+      "binary": "openttd",
+      "query": "The date on which this station was built.",
+      "mode": "partial",
+      "semanticLabel": "station-history",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "BaseStation",
+          "qualifiedName": "BaseStation::build_date",
+          "field": "build_date",
+          "offset": 152,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [
+        {
+          "compilerClass": "Station",
+          "qualifiedName": "Station::build_date",
+          "offset": 152,
+          "size": 4,
+          "type": "int",
+          "note": "identical offset: BaseStation is reached through SpecializedStation<Station,false> at offset 0 inside Station",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5"
+        }
+      ],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct BaseStation.build_date (offset 152, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-14",
+      "binary": "openttd",
+      "query": "The type of the vehicle that most recently called at this station.",
+      "mode": "partial",
+      "semanticLabel": "station-operations",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Station",
+          "qualifiedName": "Station::last_vehicle_type",
+          "field": "last_vehicle_type",
+          "offset": 331,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "Station.had_vehicle_of_type (bit mask of every vehicle type that ever used the station, different field)"
+        }
+      ],
+      "goldLabel": "DWARF struct Station.last_vehicle_type (offset 331, type unsigned char)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-15",
+      "binary": "openttd",
+      "query": "The date on which this industry was constructed.",
+      "mode": "partial",
+      "semanticLabel": "industry-history",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Industry",
+          "qualifiedName": "Industry::construction_date",
+          "field": "construction_date",
+          "offset": 388,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "Industry.founder (who paid for it, original70 gold)"
+        },
+        {
+          "note": "Industry.construction_type (how it was built)"
+        }
+      ],
+      "goldLabel": "DWARF struct Industry.construction_date (offset 388, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-16",
+      "binary": "openttd",
+      "query": "The last year in which this industry produced cargo.",
+      "mode": "partial",
+      "semanticLabel": "industry-production",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Industry",
+          "qualifiedName": "Industry::last_prod_year",
+          "field": "last_prod_year",
+          "offset": 296,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Industry.last_prod_year (offset 296, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-17",
+      "binary": "openttd",
+      "query": "The kind of industry this is, such as a coal mine or a steel mill.",
+      "mode": "partial",
+      "semanticLabel": "industry-identity",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Industry",
+          "qualifiedName": "Industry::type",
+          "field": "type",
+          "offset": 292,
+          "size": 1,
+          "type": "unsigned char",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "Industry.construction_type, Industry.selected_layout (different meanings)"
+        }
+      ],
+      "goldLabel": "DWARF struct Industry.type (offset 292, type unsigned char)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-18",
+      "binary": "openttd",
+      "query": "Whether this vehicle group is currently collapsed in the group list.",
+      "mode": "partial",
+      "semanticLabel": "group-gui",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Group",
+          "qualifiedName": "Group::folded",
+          "field": "folded",
+          "offset": 80,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Group.folded (offset 80, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-19",
+      "binary": "openttd",
+      "query": "The number that tells apart windows of the same kind.",
+      "mode": "partial",
+      "semanticLabel": "gui-window",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "Window",
+          "qualifiedName": "Window::window_number",
+          "field": "window_number",
+          "offset": 48,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct Window.window_number (offset 48, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-OP-20",
+      "binary": "openttd",
+      "query": "The portrait graphic used for this company’s president.",
+      "mode": "partial",
+      "semanticLabel": "company-identity",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "CompanyProperties",
+          "qualifiedName": "CompanyProperties::face",
+          "field": "face",
+          "offset": 80,
+          "size": 4,
+          "type": "unsigned int",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5",
+          "buildId": "d878fe2573ea43be2209d5ea5afef0b476f39d70",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openttd-dbgsym/usr/lib/debug/.build-id/d8/78fe2573ea43be2209d5ea5afef0b476f39d70.debug",
+          "debugFileSha256": "9f7cbd3075c4ad5c388a11ff8ba17a2c661195e06f7297616f8c0fe0312db5be",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openttd.json (identical)"
+        }
+      ],
+      "alternatives": [
+        {
+          "compilerClass": "Company",
+          "qualifiedName": "Company::face",
+          "offset": 80,
+          "size": 4,
+          "type": "unsigned int",
+          "note": "identical offset: CompanyProperties is the first base of Company at offset 0",
+          "binarySha256": "8f1686353f2b1325a1bcf78a9db0d4be3a1fcce3151cf242a87ce3e063fa9bd5"
+        }
+      ],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct CompanyProperties.face (offset 80, type unsigned int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-01",
+      "binary": "openmw",
+      "query": "Whether this actor is dead at this moment.",
+      "mode": "partial",
+      "semanticLabel": "actor-state",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::CreatureStats",
+          "qualifiedName": "MWMechanics::CreatureStats::mDead",
+          "field": "mDead",
+          "offset": 504,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openmw.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "mDied, mMurdered, mDeathAnimationFinished (neighbouring one-byte flags with different meanings)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWMechanics::CreatureStats.mDead (offset 504, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-02",
+      "binary": "openmw",
+      "query": "Whether this actor has already been spoken to.",
+      "mode": "partial",
+      "semanticLabel": "actor-dialogue",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::CreatureStats",
+          "qualifiedName": "MWMechanics::CreatureStats::mTalkedTo",
+          "field": "mTalkedTo",
+          "offset": 512,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openmw.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::CreatureStats.mTalkedTo (offset 512, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-03",
+      "binary": "openmw",
+      "query": "Whether this actor is knocked down right now.",
+      "mode": "partial",
+      "semanticLabel": "actor-state",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::CreatureStats",
+          "qualifiedName": "MWMechanics::CreatureStats::mKnockdown",
+          "field": "mKnockdown",
+          "offset": 515,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openmw.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "mKnockdownOneFrame, mKnockdownOverOneFrame (single-frame knockdown bookkeeping)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWMechanics::CreatureStats.mKnockdown (offset 515, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-04",
+      "binary": "openmw",
+      "query": "The height of the fall this actor most recently took.",
+      "mode": "partial",
+      "semanticLabel": "actor-physics",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::CreatureStats",
+          "qualifiedName": "MWMechanics::CreatureStats::mFallHeight",
+          "field": "mFallHeight",
+          "offset": 524,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "cross-checked against layout-openmw.json (identical)"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::CreatureStats.mFallHeight (offset 524, type float)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-05",
+      "binary": "openmw",
+      "query": "The disposition this NPC currently has toward the player.",
+      "mode": "partial",
+      "semanticLabel": "npc-social",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::NpcStats",
+          "qualifiedName": "MWMechanics::NpcStats::mDisposition",
+          "field": "mDisposition",
+          "offset": 712,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "ESM::NpcStats::mDisposition (different class: saved-game record, not live actor state)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mDisposition (offset 712, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-06",
+      "binary": "openmw",
+      "query": "The gold bounty carried on this character’s head for crimes.",
+      "mode": "partial",
+      "semanticLabel": "npc-crime",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::NpcStats",
+          "qualifiedName": "MWMechanics::NpcStats::mBounty",
+          "field": "mBounty",
+          "offset": 1156,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mBounty (offset 1156, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-07",
+      "binary": "openmw",
+      "query": "How far this character has progressed toward reaching the next level.",
+      "mode": "partial",
+      "semanticLabel": "actor-progression",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::NpcStats",
+          "qualifiedName": "MWMechanics::NpcStats::mLevelProgress",
+          "field": "mLevelProgress",
+          "offset": 1312,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "MWMechanics::CreatureStats::mLevel (current level, original70 gold; different concept)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mLevelProgress (offset 1312, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-08",
+      "binary": "openmw",
+      "query": "How many seconds remain before this character starts to drown.",
+      "mode": "partial",
+      "semanticLabel": "actor-survival",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::NpcStats",
+          "qualifiedName": "MWMechanics::NpcStats::mTimeToStartDrowning",
+          "field": "mTimeToStartDrowning",
+          "offset": 1416,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mTimeToStartDrowning (offset 1416, type float)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-09",
+      "binary": "openmw",
+      "query": "Whether this character is currently in werewolf form.",
+      "mode": "partial",
+      "semanticLabel": "actor-form",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::NpcStats",
+          "qualifiedName": "MWMechanics::NpcStats::mIsWerewolf",
+          "field": "mIsWerewolf",
+          "offset": 1420,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::NpcStats.mIsWerewolf (offset 1420, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-10",
+      "binary": "openmw",
+      "query": "How many combat orders are lined up in this actor’s AI queue.",
+      "mode": "partial",
+      "semanticLabel": "actor-ai",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWMechanics::AiSequence",
+          "qualifiedName": "MWMechanics::AiSequence::mNumCombatPackages",
+          "field": "mNumCombatPackages",
+          "offset": 36,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWMechanics::AiSequence.mNumCombatPackages (offset 36, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-11",
+      "binary": "openmw",
+      "query": "The hour of the day recorded by this timestamp.",
+      "mode": "partial",
+      "semanticLabel": "session-time",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWWorld::TimeStamp",
+          "qualifiedName": "MWWorld::TimeStamp::mHour",
+          "field": "mHour",
+          "offset": 0,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWWorld::TimeStamp.mHour (offset 0, type float)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-12",
+      "binary": "openmw",
+      "query": "How much of this cell is currently loaded into the running game.",
+      "mode": "partial",
+      "semanticLabel": "world-cell-state",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWWorld::CellStore",
+          "qualifiedName": "MWWorld::CellStore::mState",
+          "field": "mState",
+          "offset": 32,
+          "size": 4,
+          "type": "MWWorld::CellStore::State",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "MWWorld::CellStore::mHasState (whether cached state exists, different concept)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWWorld::CellStore.mState (offset 32, type MWWorld::CellStore::State)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-13",
+      "binary": "openmw",
+      "query": "The water level currently in effect for this cell.",
+      "mode": "partial",
+      "semanticLabel": "world-water",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWWorld::CellStore",
+          "qualifiedName": "MWWorld::CellStore::mWaterLevel",
+          "field": "mWaterLevel",
+          "offset": 64,
+          "size": 4,
+          "type": "float",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "ESM::Cell::mWater (the stored record value, different class)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWWorld::CellStore.mWaterLevel (offset 64, type float)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-14",
+      "binary": "openmw",
+      "query": "The colour used to paint this place on the map.",
+      "mode": "partial",
+      "semanticLabel": "world-map",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "ESM::Cell",
+          "qualifiedName": "ESM::Cell::mMapColor",
+          "field": "mMapColor",
+          "offset": 180,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct ESM::Cell.mMapColor (offset 180, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-15",
+      "binary": "openmw",
+      "query": "The day of the month on which this journal entry was recorded.",
+      "mode": "partial",
+      "semanticLabel": "journal-time",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "ESM::JournalEntry",
+          "qualifiedName": "ESM::JournalEntry::mDayOfMonth",
+          "field": "mDayOfMonth",
+          "offset": 144,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "ESM::JournalEntry::mDay (ordinal day count of the entry, different field)"
+        },
+        {
+          "note": "ESM::JournalEntry::mMonth"
+        }
+      ],
+      "goldLabel": "DWARF struct ESM::JournalEntry.mDayOfMonth (offset 144, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-16",
+      "binary": "openmw",
+      "query": "Whether jumping is switched off in this game state.",
+      "mode": "partial",
+      "semanticLabel": "controls-state",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "ESM::ControlsState",
+          "qualifiedName": "ESM::ControlsState::mJumpingDisabled",
+          "field": "mJumpingDisabled",
+          "offset": 2,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "ESM::ControlsState::mViewSwitchDisabled, mLookingDisabled and the other single-byte switches"
+        }
+      ],
+      "goldLabel": "DWARF struct ESM::ControlsState.mJumpingDisabled (offset 2, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-17",
+      "binary": "openmw",
+      "query": "The number of hours the player has chosen to wait.",
+      "mode": "partial",
+      "semanticLabel": "ui-wait",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWGui::WaitDialog",
+          "qualifiedName": "MWGui::WaitDialog::mHours",
+          "field": "mHours",
+          "offset": 260,
+          "size": 4,
+          "type": "int",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [
+        {
+          "note": "MWGui::WaitDialog::mManualHours (hours waited manually)"
+        }
+      ],
+      "goldLabel": "DWARF struct MWGui::WaitDialog.mHours (offset 260, type int)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-18",
+      "binary": "openmw",
+      "query": "Whether a message box is currently on screen.",
+      "mode": "partial",
+      "semanticLabel": "ui-messagebox",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWGui::MessageBoxManager",
+          "qualifiedName": "MWGui::MessageBoxManager::mVisible",
+          "field": "mVisible",
+          "offset": 72,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWGui::MessageBoxManager.mVisible (offset 72, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-19",
+      "binary": "openmw",
+      "query": "Whether the map overlay is currently shown on the HUD.",
+      "mode": "partial",
+      "semanticLabel": "ui-hud",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWGui::HUD",
+          "qualifiedName": "MWGui::HUD::mMapVisible",
+          "field": "mMapVisible",
+          "offset": 764,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWGui::HUD.mMapVisible (offset 764, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-MW-20",
+      "binary": "openmw",
+      "query": "Whether joystick input is currently enabled.",
+      "mode": "partial",
+      "semanticLabel": "input-device",
+      "status": "verified",
+      "identities": [
+        {
+          "compilerClass": "MWInput::ControllerManager",
+          "qualifiedName": "MWInput::ControllerManager::mJoystickEnabled",
+          "field": "mJoystickEnabled",
+          "offset": 32,
+          "size": 1,
+          "type": "bool",
+          "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+          "buildId": "eef0625b6b9af7971e72c4fc8260258b50dcae43",
+          "debugFile": "/mnt/workspace/.dev-state/agent-work/checkpoints/jev-realgame-final/openmw-dbgsym/usr/lib/debug/.build-id/ee/f0625b6b9af7971e72c4fc8260258b50dcae43.debug",
+          "debugFileSha256": "deed9ba59bad9cf0e3ba4446e9f77ece20887929ffd06be0410f4cae76b74b41",
+          "source": "exact-build DWARF via retained scripts/jev-realgame-gdb-layout.py + gdb 12.1",
+          "crossCheck": "parent exact-build layout does not contain this class; identity proven by my own retained-script extraction"
+        }
+      ],
+      "alternatives": [],
+      "neighbouringFieldsConsidered": [],
+      "goldLabel": "DWARF struct MWInput::ControllerManager.mJoystickEnabled (offset 32, type bool)",
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-01",
+      "binary": "openmw",
+      "query": "How much fuel is currently left in this vehicle’s tank?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "fuel"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "openmw catalog: 0 occurrences. openttd catalog: 1 occurrence, STR_NEWS_PLANE_CRASH_OUT_OF_FUEL (a news string, not a member).",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-02",
+      "binary": "openttd",
+      "query": "What is the air temperature inside this vehicle passenger cabin?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "temperatur"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"temperatur\" (the only near hits are TEMPERATE climate identifiers, which are a different concept).",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-03",
+      "binary": "openmw",
+      "query": "How much wear is left on this vehicle’s brake pads?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "brake"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "openmw catalog: 0 occurrences. openttd catalog: 2 occurrences (AMED_BRAKE / AS_BRAKE string-table identifiers, no member describes brake wear).",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-04",
+      "binary": "openmw",
+      "query": "What is this character’s blood alcohol level?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "alcohol"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"alcohol\".",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-05",
+      "binary": "openttd",
+      "query": "What is the player character’s blood oxygen saturation?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "oxygen"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"oxygen\".",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-06",
+      "binary": "openttd",
+      "query": "What is the odometer reading of this road vehicle?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "odometer"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"odometer\".",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-07",
+      "binary": "openttd",
+      "query": "How many seats does the station’s waiting lounge have?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "lounge",
+          "seat"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "\"lounge\": 0 occurrences in both catalogs. \"seat\": openttd 1 occurrence (IsSeaTile substring), openmw 0.",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-08",
+      "binary": "openttd",
+      "query": "How many months remain until this company’s next tax audit?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "audit",
+          "tax"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "\"audit\": 0 occurrences in both catalogs. \"tax\": only TAXIWAY_BUSY_block (openttd) and SYNTAX/NTAX string-table identifiers (openmw), none a member.",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-09",
+      "binary": "openmw",
+      "query": "How much caffeine is in the potion this character just drank?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "caffeine"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"caffeine\".",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    },
+    {
+      "id": "FH-CTL-10",
+      "binary": "openmw",
+      "query": "How long until the next solar eclipse in this region?",
+      "mode": "partial",
+      "semanticLabel": "unanswerable-control",
+      "status": "control",
+      "identities": [],
+      "absenceEvidence": {
+        "tokens": [
+          "eclipse"
+        ],
+        "catalogs": {
+          "openttd": "scratch/jev-realgame-final/fresh-holdout/openttd-all-dwarf-names.txt (77248 DWARF identifiers)",
+          "openmw": "scratch/jev-realgame-final/fresh-holdout/openmw-all-dwarf-names.txt (186320 DWARF identifiers)"
+        },
+        "review": "both catalogs: 0 occurrences of \"eclipse\".",
+        "assessment": "no member or field of any struct in the exact-build DWARF describes this concept"
+      },
+      "excludedFromOriginal70": true
+    }
+  ]
+}

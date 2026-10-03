@@ -1,0 +1,21 @@
+{
+  "schema": "hex-jev-recovery-runtime-repair/v1",
+  "recordedAtUtc": "2026-09-30T13:39:04.273896+00:00",
+  "failedRuns": [
+    36704088595,
+    36706200791,
+    36713822895,
+    36720421982
+  ],
+  "diagnosedProductSha": "13d80f83cde09637d7218b81764799d3acc41cd5",
+  "diagnosis": "CPU bottom-up profile and transparent actual collector show recursive valueDependsOnAny revisits shared SSA dependency branches after canonical member publication; OpenMW sub_e07210 does not complete in600s process watchdog. Failed/incomplete runs are never passing evidence.",
+  "repair": "Replace recursive path-local visitation with iterative per-query object visitation;12000-node/96000-edge caps and cooperative cancellation return unknown. Either unknown dependency or unknown absence retains original return-spill stores. No new binary pass or inference is added.",
+  "evaluationBoundary": "Before any fresh-holdout Jev call. Frozen prompt, representation, selection, scoring, query bodies and decision criteria remain unchanged. Partial OpenTTD recovery and deterministic summaries were inspected before the runtime repair; this is disclosed, not represented as a wholly unseen retrieval experiment. No case-specific or game-specific code is introduced.",
+  "promptSha256": "e2f3f168feed368fc14e1d095c53590bb46f747075e364d67b71c3c01e3e3939",
+  "sourceHashes": {
+    "js/decompiler/pipeline-core.js": "4d9d06926723927c6460113a0052bffcaf8b0a6a5dc40ae9ca60298245dff492",
+    "js/decompiler/value-dependency.js": "1136e2de7f7deee6fcfc413ad70a23e1cce03117dca665fcbc9b5309d104924e"
+  },
+  "focusedTests": "SSA diamonds/cycles and unknown budget/cancellation:2 passing; existing actual core return-spill suppression:1 passing",
+  "validation": "Full exact-SHA re-collection in both games required; old snapshots are historical only."
+}

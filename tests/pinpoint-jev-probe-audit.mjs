@@ -21,6 +21,52 @@ const heuristic = json('heuristic-results.json');
 const b = json('oracle-budget-results.json').rows;
 const a = json('oracle-unbounded-results.json').rows;
 
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const CURRENT_ROUTER_SHA = '9f80701fb298e2bac1028fd8e7182b3a525cfde41b179957c8676e7870ec7f2f';
+const PUBLICATION_ROUTER_SHA = 'c94629ce03c6da9190c944928fa26ad8d467f812f4bbb545224b8a6423207d4e';
+const FROZEN_ROUTER_SHA = '62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173';
+// The historical study remains bound to its immutable source and artifacts.
+// Preserve the exact pre-Jev publication product separately from the V2 router.
+// The new router is bound to its prospectively frozen evaluation manifest;
+// neither version is relabelled as the other's measured product.
+const CXX_ROUTER_DELTAS = [
+  {
+    current: [
+      'export function byRecallLane(a, b) {',
+      '  return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))',
+      '    || (b.fusion.logOdds - a.fusion.logOdds)',
+      "    || (a.source === 'cxx' || b.source === 'cxx'",
+      "      ? Number(a.source === 'cxx') - Number(b.source === 'cxx') || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)",
+      '      : 0);',
+      '}',
+    ].join('\n'),
+    frozen: [
+      'export function byRecallLane(a, b) {',
+      '  return ((a.recallLane ? 1 : 0) - (b.recallLane ? 1 : 0))',
+      '    || (b.fusion.logOdds - a.fusion.logOdds);',
+      '}',
+    ].join('\n'),
+  },
+  {
+    current: "function hydrateShapeChangeSites(pin, opts) {\n  if (pin?.top?.source === 'cxx') return pin;\n",
+    frozen: 'function hydrateShapeChangeSites(pin, opts) {\n',
+  },
+];
+
+function assertRouterContinuity(source, currentSha = CURRENT_ROUTER_SHA) {
+  assert.equal(sha256(source), currentSha, 'current exact router bytes');
+  const policyBytes = fs.readFileSync(path.join(ROOT, 'reports/investigations/jev-realgame-final/stability-v2/policy-freeze.json'));
+  assert.equal(sha256(policyBytes), 'a43b48fde7d15f6863c7c7483757a1223313cea5796352706a9183a6670d4d59', 'prospective V2 policy bytes');
+  assert.equal(currentSha, JSON.parse(policyBytes).routerSourceSha256, 'current router must match the independently evaluated V2 source');
+  let frozen = execFileSync('git', ['show', '827e74798f036f4f95c0b2d7a06c75a977ac8086:js/pinpoint.js'], { cwd: ROOT, encoding: 'utf8' });
+  assert.equal(sha256(frozen), PUBLICATION_ROUTER_SHA, 'exact historical C++ publication router');
+  for (const delta of CXX_ROUTER_DELTAS) {
+    assert.equal(frozen.split(delta.current).length, 2, 'exactly one approved C++ router delta');
+    frozen = frozen.replace(delta.current, delta.frozen);
+  }
+  assert.equal(sha256(frozen), FROZEN_ROUTER_SHA, 'unchanged frozen router body outside approved C++ deltas');
+}
+
 test('audit manifest binds the exact source and artifact bytes', () => {
   const manifest = json('audit-manifest.json');
   const hash = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -34,10 +80,11 @@ test('audit manifest binds the exact source and artifact bytes', () => {
     });
     assert.equal(hashBytes(historicalBlob), expected, `${relative} (historical commit ${historicalCommit})`);
 
-    // In addition, verify that the current frozen Jev router SHA is intact
+    // Verify both the exact current product and unchanged historical router
+    // body around the two approved C++ publication deltas. Never relabel the
+    // historical study as an evaluation of the new candidate universe.
     if (relative === 'js/pinpoint.js') {
-      const currentRouterFrozenSha = '62f3c7eb561218527db146b658f3394a1a6e12469b465b88b848e3f8cddb2173';
-      assert.equal(hash(path.join(ROOT, relative)), currentRouterFrozenSha, `${relative} (current frozen router)`);
+      assertRouterContinuity(fs.readFileSync(path.join(ROOT, relative), 'utf8'));
     }
   }
 
@@ -45,6 +92,20 @@ test('audit manifest binds the exact source and artifact bytes', () => {
   for (const [relative, expected] of Object.entries(manifest.artifactSha256)) {
     assert.equal(hash(path.join(OUT, relative)), expected, relative);
   }
+});
+
+test('router freeze rejects policy drift and unapproved C++ edits even after refreshing the product hash', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'js/pinpoint.js'), 'utf8');
+  assertRouterContinuity(source);
+  const policyDrift = source.replace('max: opts?.maxChoices ?? 255', 'max: opts?.maxChoices ?? 254');
+  assert.notEqual(policyDrift, source);
+  assert.throws(() => assertRouterContinuity(policyDrift, sha256(policyDrift)), /current router must match the independently evaluated V2 source/);
+  const cxxDrift = source.replace("if (pin?.top?.source === 'cxx') return pin;", "if (pin?.top?.source === 'objc') return pin;");
+  assert.notEqual(cxxDrift, source);
+  assert.throws(() => assertRouterContinuity(cxxDrift, sha256(cxxDrift)), /current router must match the independently evaluated V2 source/);
+  const duplicatedGuard = source.replace(CXX_ROUTER_DELTAS[1].current, CXX_ROUTER_DELTAS[1].current + "  if (pin?.top?.source === 'cxx') return pin;\n");
+  assert.notEqual(duplicatedGuard, source);
+  assert.throws(() => assertRouterContinuity(duplicatedGuard, sha256(duplicatedGuard)), /current router must match the independently evaluated V2 source/);
 });
 
 test('focused denominator and production empty replay parity', () => {

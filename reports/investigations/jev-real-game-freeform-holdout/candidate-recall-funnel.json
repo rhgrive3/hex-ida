@@ -1,0 +1,66 @@
+{
+  "schema": "hex-jev-candidate-recall-funnel/v1",
+  "analyzedAtUtc": "2026-09-30T02:25:00.000Z",
+  "funnels": {
+    "historical_426_corpus": {
+      "name": "Historical 426 Game Corpus (BattleCats, TsumTsum, YWP)",
+      "totalCases": 426,
+      "answerable": 426,
+      "goldInLattice": 426,
+      "latticeRecallRate": 1.0,
+      "goldInShortlist": 426,
+      "shortlistRetentionRate": 1.0,
+      "hexTop1Correct": 282,
+      "hexTop1Accuracy": 0.662,
+      "jevTop1Correct": 321,
+      "jevTop1Accuracy": 0.7535,
+      "primaryBottleneck": "Hex baseline heuristic rank vs Jev preference; retrieval had 100% recall."
+    },
+    "sparkle_holdout": {
+      "name": "Sparkle 2.x Canonical Holdout",
+      "totalCases": 62,
+      "answerable": 50,
+      "abstain": 12,
+      "goldInLattice": 49,
+      "latticeRecallRate": 0.98,
+      "goldInShortlist": 49,
+      "shortlistRetentionRate": 0.98,
+      "hexTop1Correct": 6,
+      "hexTop1Accuracy": 0.12,
+      "jevTop1Correct": 40,
+      "jevTop1Accuracy": 0.80,
+      "primaryBottleneck": "Hex baseline low accuracy (12%) rescued by Jev to 80%; 1 retrieval miss (SP03)."
+    },
+    "xadmaster_holdout": {
+      "name": "XADMaster 1.10 Binary-Disjoint Holdout",
+      "totalCases": 72,
+      "answerable": 60,
+      "abstain": 12,
+      "goldInLattice": 51,
+      "latticeRecallRate": 0.85,
+      "goldInShortlist": 50,
+      "shortlistRetentionRate": 0.8333,
+      "hexTop1Correct": 4,
+      "hexTop1Accuracy": 0.0667,
+      "jevTop1Correct": 43,
+      "jevTop1Accuracy": 0.7167,
+      "primaryBottleneck": "9/60 answerable cases had zero candidates in lattice (retrieval ceiling = 85.0%); Jev reached 43/50 of shortlisted."
+    },
+    "new_realgame_current_main": {
+      "name": "New Real-Game Free-Form Holdout (OpenTTD & OpenMW on current main)",
+      "totalCases": 70,
+      "answerable": 55,
+      "abstain": 15,
+      "goldInLattice": 0,
+      "latticeRecallRate": 0.0,
+      "goldInShortlist": 0,
+      "shortlistRetentionRate": 0.0,
+      "hexTop1Correct": 0,
+      "hexTop1Accuracy": 0.0,
+      "jevTop1Correct": 0,
+      "jevTop1Accuracy": 0.0,
+      "primaryBottleneck": "C++ member candidate publication not merged into main; candidateCount=0 across all cases. Zero candidate recall completely blocks reranker execution.",
+      "status": "CANDIDATE_RETRIEVAL_FAILURE_AWAITING_CXX_BRANCH"
+    }
+  }
+}

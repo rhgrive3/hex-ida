@@ -93,6 +93,24 @@ async function rttiProbe() {
   return probe;
 }
 
+test('inherited virtual implementation publishes only its RTTI-proven primary declaring owner without new reads', async () => {
+  const probe = await rttiProbe(), provider = providerFor(probe);
+  await provider.build();
+  const address = symbolAddress(probe, '_ZN5Actor6updateEf');
+  assert.notEqual(address, null);
+  const before = provider.stats().reads;
+  const projection = provider.projectForFunction({ functionId: 'fn:actor-update', functionAddress: address,
+    functionName: '_ZN5Actor6updateEf', ir: memberIr([{ offset: 24, size: 4 }]) });
+  assert.ok(projection);
+  assert.equal(projection.receiver.classIdentity.className, 'Actor');
+  assert.equal(projection.receiver.classIdentity.offsetToTop, 0n);
+  assert.equal(isCanonicalCppReceiverEvidence(projection.receiver), true);
+  assert.equal(provider.memberIndex().fieldCount, 1);
+  assert.deepEqual([...provider.memberIndex().classes.keys()].length, 1);
+  assert.equal([...provider.memberIndex().classes.values()][0].name, 'Actor');
+  assert.equal(provider.stats().reads, before);
+});
+
 test('nothing is projected before the slice index is built', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);
@@ -216,6 +234,27 @@ test('a conflicting member symbol cannot type a shared vtable target', () => {
   assert.equal(report.receiver.classIdentity.className, null);
 });
 
+test('publication withholds members of a function shared by contradictory vtable owners', async () => {
+  const probe = await rttiProbe();
+  const original = providerFor(probe);
+  await original.build();
+  const report = original.classEvidence();
+  const player = report.classes.find((cls) => cls.className === 'Player');
+  assert.ok(player);
+  // Model linker identical-code folding: another class points at the same
+  // implementation. Its offset accesses do not establish either owner.
+  const folded = { ...player, className: 'Unrelated', vtableAddress: player.vtableAddress + 0x100000n };
+  const provider = providerFor(probe, { cache: { get: async () => ({ ...report, classes: [player, folded] }) } });
+  await provider.build();
+  const projection = provider.projectForFunction({
+    functionAddress: symbolAddress(probe, '_ZN6Player10takeDamageEi'),
+    ir: memberIr([{ offset: 8, size: 4 }]),
+  });
+  assert.ok(projection?.members.length, 'the existing decompiler projection is preserved');
+  assert.equal(projection.receiver.classIdentity.kind, 'anonymous');
+  assert.equal(provider.memberIndex().fieldCount, 0, 'ambiguous ownership cannot publish a field');
+});
+
 test('a constructor projects evidence from symbol syntax without a vtable slot', async () => {
   const probe = await rttiProbe();
   const provider = providerFor(probe);
@@ -252,6 +291,37 @@ test('a free function taking an object pointer projects nothing', async () => {
     ir: receiverIr(),
   }), null, 'x0 alone is never `this`');
   assert.equal(provider.stats().unproven >= 1, true);
+});
+
+test('typed ABI input recovery uses a real compiled global function without inventing this', async () => {
+  const probe=await rttiProbe(),provider=providerFor(probe);await provider.build();
+  const symbol='_Z10readHealthP6Entity',address=symbolAddress(probe,symbol);
+  assert.notEqual(address,null);
+  const beforeReads=provider.stats();
+  const projection=provider.projectForFunction({functionId:'fn:typed-health',functionAddress:address,
+    functionName:symbol,enableTypedArguments:true,ir:memberIr([{offset:8,size:4}])});
+  assert.ok(projection);assert.ok(isCanonicalCppReceiverEvidence(projection.receiver));
+  assert.equal(projection.receiver.receiverRole,'typed-argument');
+  assert.equal(projection.receiver.nonStaticProof,null);
+  assert.equal(projection.receiver.classIdentity.className,'Entity');
+  assert.equal(projection.members[0].offsetBytes,8n);
+  assert.equal(provider.memberIndex().fieldCount,1);
+  assert.equal(provider.stats().builds,beforeReads.builds,'projection must not rebuild class analysis');
+});
+
+test('non-polymorphic typed input uses actual compiler lifetime symbols and substitutions', async () => {
+  const probe=await rttiProbe(),provider=providerFor(probe);await provider.build();
+  const symbol='_Z16readPlainCounterP12PlainCounterS0_',address=symbolAddress(probe,symbol);
+  assert.notEqual(address,null,'the compiler must emit the repeated-pointer substitution');
+  assert.equal(provider.classEvidence().classes.some(cls=>cls.className==='PlainCounter'),false,
+    'this class must have no vtable proof');
+  const projection=provider.projectForFunction({functionId:'fn:plain-input',functionAddress:address,
+    functionName:symbol,enableTypedArguments:true,ir:memberIr([{offset:0,size:4}])});
+  assert.ok(projection);assert.equal(projection.receiver.classIdentity.className,'PlainCounter');
+  assert.equal(projection.receiver.classIdentity.vtableAddress,null);
+  assert.equal(projection.receiver.nonStaticProof,null);
+  assert.equal(projection.receiver.receiverRole,'typed-argument');
+  assert.equal(projection.members[0].offsetBytes,0n);
 });
 
 test('a proven member projects canonical member evidence for its field accesses', async () => {
@@ -653,4 +723,15 @@ test('a vtable that does not reference the address is never attached', async () 
     ir: receiverIr(),
   });
   assert.equal(projection, null);
+});
+
+
+test('publication withholds a member whose release address has contradictory named owners',async()=>{
+  const probe=await rttiProbe(),address=symbolAddress(probe,'_ZN6Player10takeDamageEi');
+  const symbols={addrs:[...probe.symbols.addrs,address],names:[...probe.symbols.names,'_ZNK5Other8GetCountEv']};
+  const provider=providerFor(probe,{symbols});await provider.build();
+  const projection=provider.projectForFunction({functionAddress:address,functionName:'_ZN6Player10takeDamageEi',
+    ir:memberIr([{offset:8,size:4}])});
+  assert.ok(projection?.members.length);
+  assert.equal(provider.memberIndex().fieldCount,0);
 });

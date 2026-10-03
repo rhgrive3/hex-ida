@@ -1,0 +1,26 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "cases": [
+    {
+      "id": "SV2-MW-02",
+      "query": "What reputation score does this character currently hold?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-09",
+      "query": "Which day number does this timestamp point to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-16",
+      "query": "Can the device's motion sensors be used to steer the camera here?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV2-MW-18",
+      "query": "Has the software cursor system finished its initial setup?",
+      "mode": "partial"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema": "hex-jev-v5-source-review-parent/v1",
+  "reviewedHead": "9b4dc9e8dff700427c11103a8e8b7a82dafb7e1c",
+  "sourceHashes": {
+    "js/analysis/cxx/object-evidence.js": "b29b1bde75b174a6b36523605e3c822d51e1c303359122c70d1337579b40d137",
+    "js/analysis/cxx/project.js": "91ed342efb76c94e8e408568098d2aca7e34b38312e2350ed6a6a5b4e9618ae0",
+    "js/analysis/query/cxx-semantic-preference.js": "58cb9cd07be847b3ddfa1ca54f1d30a22e42b251fdd4b2bc082482d4aaf0c667",
+    "js/analysis/query/app-adapter.js": "a5f93c411b8dc3149829658f00af80dc79bab206a19f0d055f22d43dff3f7aec",
+    "scripts/collect-jev-context-development.mjs": "89786c205c44230b54e870dcd7944b97d04b743797ecd5d30210af75c7abbd92",
+    "tests/phase7/cxx/typed-argument-binding.test.mjs": "4e7b04de766519277e136e1ab532e3815e5b88bc396bf303d6ba1f1b1202f4f6",
+    "tests/phase7/cxx/pinpoint-publication.test.mjs": "3af4c4e2ab00f737573103abce0b45828ff26c524bbb2d8550a23dba48d89127",
+    "js/rtti.js": "74f18fffd7c2d7c0c920958172d8a7a855bd7f6354b670040fba4e0a661b3e35",
+    "js/analysis/cxx/query-recovery.js": "daae83d634391a328f0921dd7ddb257270627a15e9c82d1f32cb165d1d189dc6"
+  },
+  "allHashesMatchGitBlobAndCurrent": true,
+  "sourceOnly": true,
+  "sourceBlockers": 0,
+  "productionAuthorized": false,
+  "endToEndRecoveryPipelineUnfinished": true,
+  "notes": [
+    "Earlier literal/shortlist subset checked separately; subsequent safety receipt binds all7changed safety files.",
+    "Design prefix-preservation and stale fallback claims corrected at parent request.",
+    "No member-recall/default-quality claim follows from release-symbol metadata eligibility."
+  ],
+  "receiptHashes": {
+    "recovery-v5-design.md": "a24a253abf9b163852e838b87d6f9afd00757bab140d8f2077dd16775e310d0d",
+    "recovery-v5-delta.md": "85d0fb4b1efb970746257205bba4fb85fbb3e81ee50b52a05c3a5fa13797600d",
+    "recovery-v5-safety.md": "1fa9636522718e5966355530723043249e69e5d6b36250c3a153cfb78e16bed1"
+  },
+  "singleAccessorSuccessor": {
+    "complete": true,
+    "productSha": "3a6fe3c2ced21721f1b31fb1fcdc25877c0061e7",
+    "receiptSha256": "fb7638c5c2b9434ce3188486022e38a37ef1167d761a1ae4ece48acc68e6db61",
+    "sourceHashes": {
+      "js/analysis/query/app-adapter.js": "503657277c4a8f93f4fa222928a6cbc065f60be6a5dc662cad63b8ade42a1d2e",
+      "js/analysis/query/cxx-semantic-preference.js": "4f7c66b9f3066c3dff83dc2611039c8eb30c942525bafc7d4ffdde9410da2ee7",
+      "js/analysis/cxx/typed-argument.js": "c16b9859cd82de016c1edb3f696e02057fd1e84c95166d8d05ea361ca486ec6a",
+      "js/analysis/cxx/project.js": "742c674dff1b06914afc6a5c7432ff09284c837260eb0cc833a162b74c5b5ce1",
+      "js/pinpoint.js": "9f80701fb298e2bac1028fd8e7182b3a525cfde41b179957c8676e7870ec7f2f",
+      "tests/phase7/cxx/jev-recovery.test.mjs": "628623f1d7338f6cd7565e40fbedbff942cd54cf49f7c4bc64f662425e4eb718",
+      "tests/phase7/cxx/pinpoint-publication.test.mjs": "0e00acde05085a55edd4b7b61226fd0f19d70526ffddc74644cd877f1f814e5b",
+      "tests/phase7/cxx/typed-argument-binding.test.mjs": "8bb265db7f7a98e71143224142ee40faf98e509981bbb05dad6f1852c143a0aa"
+    },
+    "gitBlobAndWorkingTreeEqual": true,
+    "scope": "source review only: shortlist/epoch/proof/internal-linkage safeguards; does not prove ranking preservation, quality, latency, comparator, final gates or default activation",
+    "parentChallenges": [
+      "immutable input does not imply correct-answer preservation",
+      "256-byte extent is not a hard wall-clock limit",
+      "same-budget comparator/real stability remain unproven"
+    ],
+    "acknowledgedLimits": [
+      "shortlist authenticity established at the production wrapper",
+      "upward import to existing canonical shortlist function has no observed cycle",
+      "compiler positives plus malformed parser negatives, not real-game accuracy"
+    ],
+    "defaultActivated": false
+  }
+}

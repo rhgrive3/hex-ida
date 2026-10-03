@@ -1,0 +1,256 @@
+{
+  "schema": "hex-jev-realgame-fast-cpu-profile/v1",
+  "complete": true,
+  "developmentOnly": true,
+  "authorizesDefaultActivation": false,
+  "productSha": "b3aa6b59c063bf36e2f7f679e56a87242595e707",
+  "runId": 36963330898,
+  "runConclusion": "success",
+  "artifactId": 11208903414,
+  "zipSha256": "a8f65148b8dc4fab43bbfd5fb06090bd9a52c23d23c7dd92b4fec05be5828475",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "snapshotSha256": "40bbc813666849d33877caafd29204f90ffc5b64d53b8f24a232d5a388fa0500",
+  "sourceHashes": {
+    "scripts/collect-jev-context-development.mjs": "b6b4d62b4286726b0a264b3d8a0527b71da8c2163d55fb7c7c5f4f37c2ad1341",
+    "js/rtti.js": "74f18fffd7c2d7c0c920958172d8a7a855bd7f6354b670040fba4e0a661b3e35",
+    "js/analysis/cxx/member-index.js": "a9763ca25965695e2d3a86e15f7fe3b99794e7c4de5d097facf7fa716ea74628",
+    "js/analysis/query/jev-advisory.js": "71d0af8e741b0429a4fd34be07dd8e8c0e6974b7d367a0de87dda50b28bc4e8c",
+    "js/analysis/cxx/class-type.js": "5a81669720cd827167cb70301ede789dde6ed77f0f1c1735eadbd00020ec6467",
+    "js/analysis/cxx/typed-argument.js": "c16b9859cd82de016c1edb3f696e02057fd1e84c95166d8d05ea361ca486ec6a",
+    "js/analysis/query/jev-recovery.js": "b64833196f578f59623e29fe2c78a5980649633156197e6a077c61daa977645c",
+    "js/analysis/cxx/primary-owner.js": "b7562d73359bc64d6bbb7c2ff52448e4fad175380df7bc2876473e9e3c60fd69",
+    "scripts/jev-realgame-stability-contract.mjs": "b598a99deccbd5233a96f8faeea37d5e479fdea7855dbb2025ed06c88a4ad9c2",
+    "js/pinpoint.js": "9f80701fb298e2bac1028fd8e7182b3a525cfde41b179957c8676e7870ec7f2f",
+    "js/analysis/query/cxx-semantic-preference.js": "aa3761dd6ec595a09f9e8b1923bcde35fbe0d175b81928a504dc49d764a806f1",
+    "scripts/jev-realgame-recovery-contract.mjs": "32c0b431625514c0a6c2ec0b9416b94db1c8378f1044555c214de31e8826c533",
+    "js/analysis/cxx/query-recovery.js": "daae83d634391a328f0921dd7ddb257270627a15e9c82d1f32cb165d1d189dc6",
+    "js/analysis/cxx/member-types.js": "f6604b92002d62bbcd368eb6a06229e9b5f904413d6a3dffdc3ea877b80dc8f5",
+    "js/analysis/cxx/object-evidence.js": "6172d877b2943c76061add023f410f456f9358f4eacaa156c1d1da7d2a8ea26b",
+    "js/analysis/cxx/project.js": "a70a569cb3e2896f7c99c96ab8519f3d94ceb2c41f0a9fb183aeecd435df0d7c",
+    "js/analysis/query/app-adapter.js": "72cac447eac5c0a54e1b19aa524eef6342f525de18aee9b4d839e6b3f1b8b0a8",
+    "js/decompiler/pipeline-core.js": "4d9d06926723927c6460113a0052bffcaf8b0a6a5dc40ae9ca60298245dff492",
+    "js/decompiler/value-dependency.js": "1136e2de7f7deee6fcfc413ad70a23e1cce03117dca665fcbc9b5309d104924e"
+  },
+  "windowMs": 30000.0,
+  "sampleMs": 30000.258,
+  "inclusiveScopedDecompileMs": 15288.680999999222,
+  "inclusivePresentationDecompileMs": 9668.225999999895,
+  "presentationShareOfScopedCpu": 0.6323780318263156,
+  "profiles": [
+    {
+      "file": "CPU.20261002.041114.5555.0.001.cpuprofile",
+      "sha256": "f06946f9595d42de6db49ca865573fde788438adcca8ef611ca7ff67c5959460"
+    },
+    {
+      "file": "CPU.20261002.041115.5555.1.002.cpuprofile",
+      "sha256": "264c7e3b5212fad36e0f27fd1a86b65d5221cdd95d6b6876535319ff1282119b"
+    },
+    {
+      "file": "CPU.20261002.041450.5555.2.003.cpuprofile",
+      "sha256": "1997607a0b74628375f4979b6e7431e0a6f83a1d9f1673b4472b9f12b02de15c"
+    }
+  ],
+  "self": [
+    {
+      "function": "(idle)",
+      "url": "",
+      "line": -1,
+      "ms": 8839.873999999994
+    },
+    {
+      "function": "(garbage collector)",
+      "url": "",
+      "line": -1,
+      "ms": 1677.2819999999963
+    },
+    {
+      "function": "matchesBodyCore",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 407,
+      "ms": 1635.9109999999882
+    },
+    {
+      "function": "fastJsonTextDigest",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/phase8/analysis-identity.js",
+      "line": 153,
+      "ms": 1516.7539999999997
+    },
+    {
+      "function": "capturePassState",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/passes/manager.js",
+      "line": 106,
+      "ms": 1455.0699999999977
+    },
+    {
+      "function": "ownDataEntries",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 80,
+      "ms": 1090.3550000000018
+    },
+    {
+      "function": "encode",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/phase8/analysis-identity.js",
+      "line": 214,
+      "ms": 1044.3240000000017
+    },
+    {
+      "function": "jsonSafe",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/index.js",
+      "line": 52,
+      "ms": 908.6070000000033
+    },
+    {
+      "function": "current",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 112,
+      "ms": 702.8730000000018
+    },
+    {
+      "function": "visit",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 246,
+      "ms": 594.0150000000015
+    },
+    {
+      "function": "readNested",
+      "url": "file:///home/runner/work/actions/actions/js/rtti.js",
+      "line": 28,
+      "ms": 538.2510000000005
+    },
+    {
+      "function": "isDeepImmutable",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/passes/manager.js",
+      "line": 46,
+      "ms": 531.4210000000008
+    },
+    {
+      "function": "eligible",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 200,
+      "ms": 442.46100000000024
+    },
+    {
+      "function": "stableStringify",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/index.js",
+      "line": 104,
+      "ms": 363.479
+    },
+    {
+      "function": "createCxxQueryPlanner",
+      "url": "file:///home/runner/work/actions/actions/js/analysis/cxx/query-recovery.js",
+      "line": 29,
+      "ms": 331.8890000000002
+    }
+  ],
+  "inclusive": [
+    {
+      "function": "(root)",
+      "url": "",
+      "line": -1,
+      "ms": 30000.257999997997
+    },
+    {
+      "function": "decompile",
+      "url": "file:///home/runner/work/actions/actions/js/analysis/query/app-adapter.js",
+      "line": 1256,
+      "ms": 15288.680999999222
+    },
+    {
+      "function": "decompile",
+      "url": "file:///home/runner/work/actions/actions/js/decompile.js",
+      "line": 23,
+      "ms": 9668.225999999895
+    },
+    {
+      "function": "decompile",
+      "url": "file:///home/runner/work/actions/actions/js/decompile-base.js",
+      "line": 569,
+      "ms": 9667.156999999894
+    },
+    {
+      "function": "finalize",
+      "url": "file:///home/runner/work/actions/actions/js/decompile-base.js",
+      "line": 61,
+      "ms": 8974.568999999994
+    },
+    {
+      "function": "(idle)",
+      "url": "",
+      "line": -1,
+      "ms": 8839.873999999994
+    },
+    {
+      "function": "enhanceSemanticDecompilation",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/pipeline.js",
+      "line": 516,
+      "ms": 8027.934000000057
+    },
+    {
+      "function": "irFor",
+      "url": "file:///home/runner/work/actions/actions/js/ir.js",
+      "line": 48,
+      "ms": 5557.393000000025
+    },
+    {
+      "function": "buildIR",
+      "url": "file:///home/runner/work/actions/actions/js/ir-base.js",
+      "line": 450,
+      "ms": 5556.284000000024
+    },
+    {
+      "function": "irFor",
+      "url": "file:///home/runner/work/actions/actions/js/ir-base.js",
+      "line": 461,
+      "ms": 5556.284000000024
+    },
+    {
+      "function": "buildIR",
+      "url": "file:///home/runner/work/actions/actions/js/ir-core.js",
+      "line": 1814,
+      "ms": 5546.593000000022
+    },
+    {
+      "function": "buildV2CompatFromLegacyModel",
+      "url": "file:///home/runner/work/actions/actions/js/ir-core.js",
+      "line": 1633,
+      "ms": 5546.593000000022
+    },
+    {
+      "function": "fullPhase8Projection",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/pipeline.js",
+      "line": 404,
+      "ms": 4259.682000000017
+    },
+    {
+      "function": "run",
+      "url": "file:///home/runner/work/actions/actions/js/core/identity/live-data.js",
+      "line": 22,
+      "ms": 4096.736000000003
+    },
+    {
+      "function": "buildSemanticV2CompatibilityPipeline",
+      "url": "file:///home/runner/work/actions/actions/js/semantics/compat/index.js",
+      "line": 690,
+      "ms": 3986.3730000000123
+    },
+    {
+      "function": "enhanceSemanticDecompilation",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/pipeline-core.js",
+      "line": 2077,
+      "ms": 3753.0810000000165
+    },
+    {
+      "function": "canonicalAnalysisIdentity",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/phase8/analysis-identity.js",
+      "line": 780,
+      "ms": 3628.8060000000046
+    },
+    {
+      "function": "applyPhase8Projection",
+      "url": "file:///home/runner/work/actions/actions/js/decompiler/phase8/projection.js",
+      "line": 677,
+      "ms": 3619.962000000002
+    }
+  ],
+  "interpretation": "Sampled CPU in last30s of actual OpenMW consumed development replay; inclusive stacks overlap and are not additive. Pseudocode/projection decompilation used about63% of scoped query sampled CPU; motivates explicit shared canonical member-only projection. CPU profiling adds overhead, not a latency acceptance benchmark."
+}

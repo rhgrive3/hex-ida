@@ -1,0 +1,132 @@
+{
+  "binaryKey": "openmw",
+  "binarySha256": "a2dcff8a8851e28b3477bc0c5a1317f40e914ae42796255d1283bcce99ccb8db",
+  "evaluationPurpose": "independent-final-v3",
+  "cases": [
+    {
+      "id": "SV3-MW-01",
+      "query": "What water height is recorded for this cell?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-02",
+      "query": "Are the player's movement controls currently switched off?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-03",
+      "query": "In which month was this journal entry written?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-04",
+      "query": "Where is the interactive message box the player is currently answering?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-05",
+      "query": "At which game hour should this rest be interrupted?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-06",
+      "query": "How fast does the virtual cursor travel when driven by a gamepad?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-07",
+      "query": "Where is the key-binding manager used by the controller input handler?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-08",
+      "query": "How many pursuit packages are queued in this actor's AI sequence?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-09",
+      "query": "Which movement capabilities does this creature currently have enabled?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-10",
+      "query": "Which actor identifier do these creature statistics belong to?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-11",
+      "query": "Which crime is currently recorded against this NPC?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-12",
+      "query": "How many kills has this NPC made while in werewolf form?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-13",
+      "query": "Has the pathfinding graph for this pathgrid been built yet?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-14",
+      "query": "Which strongly connected component index does this pathgrid graph use?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-15",
+      "query": "Which object is this actor currently standing on?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-16",
+      "query": "Where is the cell record that this store manages?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-17",
+      "query": "At what time parameter does this blend controller stop its animation?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-18",
+      "query": "Where is the transform that returns this rig to its origin pose?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-19",
+      "query": "Is the custom mouse cursor currently enabled?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-MW-20",
+      "query": "Where is the compass widget shown on this HUD?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-06",
+      "query": "How much does the sword this character is carrying weigh in grams?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-07",
+      "query": "What is this character's shoe size?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-08",
+      "query": "How many teeth does this creature have?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-09",
+      "query": "What is the title of the background song currently playing?",
+      "mode": "partial"
+    },
+    {
+      "id": "SV3-CTL-10",
+      "query": "How many stars are visible above this cell's night sky?",
+      "mode": "partial"
+    }
+  ]
+}
