@@ -1556,6 +1556,7 @@ export function showOverview(app) {
       box.done();
       if (cancelled || !sheet.root.isConnected) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
+      void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
     }).catch((err) => {
       box.done();
