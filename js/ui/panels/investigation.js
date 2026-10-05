@@ -102,6 +102,7 @@ function fieldLabel(target) {
 export function showCandidates(app, goal) {
   if (!goal) return null;
   app.lastGoal = goal;
+  void app.persistAnalysisSession?.(['lastGoal']);
   const controller = new AbortController();
   const sheet = new Sheet(goalLabel(goal), { onClose:() => controller.abort('candidate-sheet-closed') });
   const progress = progressView(sheet.body);
@@ -180,6 +181,7 @@ export function showOverview(app) {
     progress.done();
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     app.autoReport = { report:result.report, key:result.context.region?.id ?? null, gen:app.symbols?.gen, snapshotId:result.snapshotId };
+    void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
     appendCompleteness(host, result);
     const report = result.report;
     const summary = list();

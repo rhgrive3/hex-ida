@@ -38,6 +38,7 @@ import { ProductWorkspace } from './workspace.js';
 import { createLazyAppAnalysisQueryAPI } from './analysis/query/lazy-app-adapter.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
+import { AnalysisResumeStore, captureAppAnalysisState, applyAppAnalysisState } from './cache/analysis-resume.js';
 
 
 let _panelsModulePromise = null;
@@ -247,6 +248,7 @@ export class App {
     this.recognitionBusy = null;
     this.knowledge = new KnowledgeDB();
     this.symbolsReadyEpoch = -1;
+    this.analysisBaseSymbolsReady = null;
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
     this.noteAttachController = null;
@@ -336,6 +338,8 @@ export class App {
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
     this.analysisQueries = createLazyAppAnalysisQueryAPI(this);
+    this.analysisResume = new AnalysisResumeStore();
+    this.analysisResumeReady = Promise.resolve(false);
     this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');
@@ -350,7 +354,22 @@ export class App {
     this.layout();
     this.updateChrome();
 
-    if (!this.prefs.guideSeen) setTimeout(() => showWelcome(this), 300);
+    const startupRestore = this.restoreLastAnalysisFile().catch(() => false);
+    if (!this.prefs.guideSeen) setTimeout(() => {
+      startupRestore.then((restored) => {
+        if (!restored && !this.store.get('fileInfo')) showWelcome(this);
+      }).catch(() => {});
+    }, 300);
+    if (typeof window !== 'undefined') {
+      this._analysisResumePageHide = () => {
+        this.workspace?.autosave();
+        void this.persistAnalysisSession();
+      };
+      window.addEventListener('pagehide', this._analysisResumePageHide, { passive:true });
+      document?.addEventListener?.('visibilitychange', () => {
+        if (document.hidden) this._analysisResumePageHide();
+      }, { passive:true });
+    }
   }
 
   /* ── 文言 ─────────────────────────────────────────────────── */
@@ -740,6 +759,7 @@ export class App {
       this.objcBusyEpoch = -1;
       this.symbolsReady = null;
       this.symbolsReadyEpoch = -1;
+      this.analysisBaseSymbolsReady = null;
       this.lastGoal = null;
       clearAnalysisCache();
     }
@@ -775,6 +795,7 @@ export class App {
    * exact seedの正確さと一覧の網羅性は分離し、全region走査済みの時だけcompleteにする。
    */
   async ensureFunctions(region, onProgress) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     // A non-function progress observer must never reach the backend callback:
     // truthy junk (true, {}, []) would be invoked by the backend at the first
     // progress tick and abort discovery with a raw TypeError. Normalize the
@@ -816,11 +837,13 @@ export class App {
     sym.functionStartsComplete=complete;
     sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
     this.viewer.setSymbols(sym);
+    void this.persistAnalysisSession(['symbols']);
     return sym;
   }
 
   /** Build one global ProgramIndex from every executable region. */
   async ensureProgram(onProgress) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     const progressFn = typeof onProgress === 'function' ? onProgress : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     const regions=this.programRegions();
     if(!regions.length)return null;
@@ -854,6 +877,7 @@ export class App {
       if(epoch!==this.backend.gen)return null;
       const merged=mergeProgramScans(scans,{regions,reasons:failures,limits:PROGRAM_MERGE_LIMITS});
       this.programScan=merged;this.programKey=key;this.program=new ProgramIndex(merged,this.symbols,primary);
+      void this.persistAnalysisSession(['symbols', 'programScan', 'programKey']);
       return this.program;
     })().finally(()=>{if(this.programBusyEpoch===epoch){this.programBusy=null;this.programBusyEpoch=-1;}});
     return this.programBusy;
@@ -867,6 +891,7 @@ export class App {
    * ファイル単位でキャッシュする。
    */
   async ensureShapes(onProgress) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     if (this.shapes) return this.shapes;
     const epoch = this.backend.gen;
     if (this.shapesBusy && this.shapesBusyEpoch === epoch) return this.shapesBusy;
@@ -877,7 +902,10 @@ export class App {
       try {
         const scan = await this.backend.valueShapes(region.id,
           onProgress && ((p) => onProgress({ phase: 'shapes', done: p.done, all: p.all })));
-        if (epoch === this.backend.gen && scan && !scan.cancelled) this.shapes = foldShapes(scan);
+        if (epoch === this.backend.gen && scan && !scan.cancelled) {
+          this.shapes = foldShapes(scan);
+          void this.persistAnalysisSession(['shapes']);
+        }
       } catch {
         if (epoch === this.backend.gen) this.shapes = null;
       } finally {
@@ -899,6 +927,7 @@ export class App {
    * 文字列と呼び出し関係が要るので、先にそちらを用意してから走る。
    */
   async ensureSchemas(onProgress) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     const epoch = this.backend.gen;
     const maxSchemas = normalizeSchemaRecoveryLimit();
     const generation = schemaDependencyGeneration(this);
@@ -924,6 +953,7 @@ export class App {
           limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
         if (epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this)) {
           this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
+          void this.persistAnalysisSession(['schemas']);
         }
       } catch {
         if (epoch === this.backend.gen && generation === schemaDependencyGeneration(this)) {
@@ -946,6 +976,7 @@ export class App {
    * ファイル単位でキャッシュする（何度も走査しない）。
    */
   async ensureStrings(onProgress) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     // Positional `(onProgress)` is the canonical signature; an options object
     // with an `onProgress` field is tolerated exactly like ensureProgram so a
     // legacy caller can never register a non-function as the backend progress
@@ -1024,7 +1055,10 @@ export class App {
     out.skippedRegions = skipped.map((r) => ({ id: r.id, name: r.name, section: r.section, size: r.size }));
     out.unscannedRegions = out.skippedRegions;
     out.scannedBytes = scannedBytes;
-    if (epoch === this.backend.gen) this.stringIndex = out;
+    if (epoch === this.backend.gen) {
+      this.stringIndex = out;
+      void this.persistAnalysisSession(['strings']);
+    }
     return epoch === this.backend.gen ? out : null;
     })();
     return this.stringsBusy;
@@ -1089,12 +1123,56 @@ export class App {
     try{return BigInt(selectedFunction.start)===BigInt(targetFunction.start);}catch{return true;}
   }
 
+  /* ── 解析セッションの永続化 ───────────────────────────────── */
+
+  async persistAnalysisSession(fields = null) {
+    if (this.sampleOpen || !this.store.get('fileInfo')) return false;
+    const sliceIndex = this.store.get('sliceIndex');
+    if (!Number.isSafeInteger(sliceIndex) || sliceIndex < 0) return false;
+    let binaryId = this.backend?.binaryId || null;
+    if (!binaryId) {
+      try { binaryId = await this.backend.ensureBinaryId(); }
+      catch { return false; }
+    }
+    if (!binaryId || this.store.get('sliceIndex') !== sliceIndex) return false;
+    try {
+      return await this.analysisResume.save(binaryId, sliceIndex, captureAppAnalysisState(this, fields));
+    } catch {
+      return false;
+    }
+  }
+
+  async restoreAnalysisSession(binaryId, sliceIndex, epoch = this.backend.gen) {
+    if (!binaryId || !Number.isSafeInteger(sliceIndex) || sliceIndex < 0) return false;
+    try {
+      const snapshot = await this.analysisResume.load(binaryId, sliceIndex);
+      if (!snapshot || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
+      return applyAppAnalysisState(this, snapshot);
+    } catch {
+      return false;
+    }
+  }
+
+  async restoreLastAnalysisFile() {
+    if (this.store.get('fileInfo')) return false;
+    try {
+      const saved = await this.analysisResume.loadLastFile();
+      if (!saved?.file || this.store.get('fileInfo')) return false;
+      await this.openFile(saved.file, { restored:true });
+      return !!this.store.get('fileInfo');
+    } catch {
+      return false;
+    }
+  }
+
   /* ── ファイルを開く ───────────────────────────────────────── */
 
   async openFile(file, opts) {
     if (!file) return;
+    void this.persistAnalysisSession();
     if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
     const sampleOpen = !!(opts && opts.sample);
+    const restoredOpen = !!(opts && opts.restored);
     this.workspace?.autosave();
     this.setBusy(true, t('status.reading', { name:file.name }));
     let info;
@@ -1106,6 +1184,7 @@ export class App {
       return;
     }
     const openEpoch=this.backend.gen;
+    this.analysisResumeReady = Promise.resolve(false);
     this.workspace?.invalidate();
     this.activeProject=null;
     closeAllSheets();
@@ -1126,10 +1205,25 @@ export class App {
     this.patches=new PatchSet();
     this.setBusy(false);
     this.applySlice(sliceIndex,info);
-    void this.attachNotes(file,info,sliceIndex,openEpoch)
+    const projectReady = this.attachNotes(file,info,sliceIndex,openEpoch)
       .then(()=>this.workspace?.bind())
-      .then((project)=>{if(project)this.activeProject=project;})
-      .catch(()=>{});
+      .then((project)=>{if(project)this.activeProject=project; return project;})
+      .catch(()=>null);
+    const baseSymbolsReady = this.analysisBaseSymbolsReady || this.symbolsReady || Promise.resolve();
+    if (!sampleOpen) void this.analysisResume.saveLastFile(file, { sliceIndex }).catch(() => {});
+    this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
+      if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
+      let binaryId = this.backend.binaryId;
+      if (!binaryId) {
+        try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; }
+      }
+      if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
+      if (!sampleOpen) void this.analysisResume.saveLastFile(file, { binaryId, sliceIndex }).catch(() => {});
+      const restored = await this.restoreAnalysisSession(binaryId, sliceIndex, openEpoch);
+      if (!restored && !sampleOpen) void this.persistAnalysisSession(['symbols']);
+      if (restored && restoredOpen) toast(pick('前回の解析結果を復元しました', 'Restored the previous analysis results'));
+      return restored;
+    }).catch(() => false);
     if (info.warnings && info.warnings.length) toast(info.warnings[0]);
     const slice=this.currentSlice();
     if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
@@ -1212,8 +1306,8 @@ export class App {
     // 名前と関数の一覧はここで作る。失敗しても表示自体は続けられる。
     if (sliceIndex >= 0) {
       this.symbolsReadyEpoch = epoch;
-      this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
-        if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return;
+      const baseSymbolsReady = this.backend.analyze(sliceIndex).then((res) => {
+        if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
         // Backend symbol results are slice-global starts, but containment needs
         // the active slice's executable region boundaries. Bind them at the
         // replacement point so every consumer (ProgramIndex, panels, Script)
@@ -1223,6 +1317,11 @@ export class App {
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
+        return true;
+      });
+      this.analysisBaseSymbolsReady = baseSymbolsReady.catch(() => false);
+      this.symbolsReady = this.analysisBaseSymbolsReady.then((ready) => {
+        if (!ready || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
         // ObjC and whole-binary recognition are intentionally demand-driven.
         // Swift metadata may warm in the background, but recognition only starts
         // from an explicit consumer (Overview/Explorer/etc.).
@@ -1300,6 +1399,7 @@ export class App {
           this.symbols.addFunctions(model.names.map((n) => n.addr), { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.viewer.setSymbols(this.symbols);
           this.updateChrome();
+          void this.persistAnalysisSession(['symbols']);
           if (added) {
             toast(pick(
               model.count + ' 個のクラスから、' + added + ' 個の関数の名前と ' +
@@ -1365,7 +1465,7 @@ export class App {
         for (const type of model?.types || []) for (const method of type.methods || type.vtable || []) {
           if (method?.impl != null && exec.some((r) => method.impl >= r.vmAddr && method.impl < r.vmAddr + r.size)) names.push({ addr: method.impl, name: `${type.name || 'SwiftType'}::method_${method.index}`, source: 'swift-metadata' });
         }
-        if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); }
+        if (names.length) { this.symbols.addNames(names); this.symbols.addFunctions(names.map((x) => x.addr)); this.viewer.setSymbols(this.symbols); void this.persistAnalysisSession(['symbols']); }
         return model;
       } catch (error) {
         if (controller.signal.aborted || error?.name === 'AbortError') throw error;
@@ -1437,11 +1537,13 @@ export class App {
   async selectSlice(index) {
     const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
+    void this.persistAnalysisSession();
     this.workspace?.autosave();
     this.workspace?.invalidate();
     this.activeProject=null;
     this.noteAttachController?.abort();
     this.backend.advanceEpoch();
+    this.analysisResumeReady = Promise.resolve(false);
     this.forgetSemantics(true);
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
@@ -1449,10 +1551,20 @@ export class App {
     const file=this.store.get('file');
     const epoch=this.backend.gen;
     this.applySlice(index,info);
-    void this.attachNotes(file,info,index,epoch)
+    const projectReady = this.attachNotes(file,info,index,epoch)
       .then(()=>this.workspace?.bind())
-      .then((project)=>{if(project)this.activeProject=project;})
-      .catch(()=>{});
+      .then((project)=>{if(project)this.activeProject=project; return project;})
+      .catch(()=>null);
+    const baseSymbolsReady = this.analysisBaseSymbolsReady || this.symbolsReady || Promise.resolve();
+    this.analysisResumeReady = Promise.allSettled([projectReady, baseSymbolsReady]).then(async () => {
+      if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== index) return false;
+      let binaryId = this.backend.binaryId;
+      if (!binaryId) { try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; } }
+      if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== index) return false;
+      const restored = await this.restoreAnalysisSession(binaryId, index, epoch);
+      if (!restored) void this.persistAnalysisSession(['symbols']);
+      return restored;
+    }).catch(() => false);
   }
 
   async exportProjectFile(){
