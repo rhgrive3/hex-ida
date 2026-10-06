@@ -98,3 +98,121 @@ test('resume store fails soft when IndexedDB is unavailable and app hooks checkp
   assert.match(appSource, /saveLastFile\(file/);
   assert.match(panelSource, /persistAnalysisSession\?\.\(\['autoReport', 'lastGoal'\]\)/);
 });
+
+
+function createKeyValueIndexedDB() {
+  const records = new Map();
+  let created = false;
+  function request(result, tx = null) {
+    const req = { result:undefined, error:null, onsuccess:null, onerror:null };
+    queueMicrotask(() => {
+      req.result = result;
+      req.onsuccess?.();
+      if (tx) queueMicrotask(() => tx.oncomplete?.());
+    });
+    return req;
+  }
+  const db = {
+    objectStoreNames:{ contains:() => created },
+    createObjectStore(){ created = true; return {}; },
+    close(){},
+    transaction(){
+      const tx = { error:null, oncomplete:null, onabort:null, onerror:null };
+      tx.objectStore = () => ({
+        get(key){ return request(records.has(key) ? structuredClone(records.get(key)) : undefined, tx); },
+        put(value, key){ records.set(key, structuredClone(value)); return request(key, tx); },
+        delete(key){ records.delete(key); return request(undefined, tx); },
+        openKeyCursor(){
+          const keys = [...records.keys()];
+          let index = 0;
+          const req = { result:undefined, error:null, onsuccess:null, onerror:null };
+          const step = () => queueMicrotask(() => {
+            if (index >= keys.length) {
+              req.result = null;
+              req.onsuccess?.();
+              queueMicrotask(() => tx.oncomplete?.());
+              return;
+            }
+            const key = keys[index++];
+            req.result = {
+              primaryKey:key,
+              delete(){ records.delete(key); },
+              continue(){ step(); },
+            };
+            req.onsuccess?.();
+          });
+          step();
+          return req;
+        },
+      });
+      return tx;
+    },
+  };
+  return {
+    records,
+    open(){
+      const req = { result:db, error:null, onupgradeneeded:null, onsuccess:null, onerror:null, onblocked:null };
+      queueMicrotask(() => {
+        if (!created) req.onupgradeneeded?.();
+        req.onsuccess?.();
+      });
+      return req;
+    },
+  };
+}
+
+test('analysis identity rollover cannot bless stale phase data during the first new save', async () => {
+  const indexedDB = createKeyValueIndexedDB();
+  const oldStore = new AnalysisResumeStore({ indexedDB, analysisIdentity:'build-old', storage:null });
+  await oldStore.save('bin-a', 0, { stringIndex:{ items:[{ text:'stale' }] }, lastGoal:{ id:'old' } });
+
+  const newStore = new AnalysisResumeStore({ indexedDB, analysisIdentity:'build-new', storage:null });
+  await newStore.save('bin-a', 0, { lastGoal:{ id:'new' } });
+  const restored = await newStore.load('bin-a', 0);
+  assert.equal(restored.lastGoal.id, 'new');
+  assert.equal(Object.hasOwn(restored, 'stringIndex'), false, 'old-build phase data must not survive a new-build partial checkpoint');
+});
+
+test('corrupt compound snapshot is rejected atomically without partially replacing live analysis state', () => {
+  const source = sourceApp();
+  const snapshot = structuredClone(captureAppAnalysisState(source));
+  snapshot.programScan.callFrom = { length:1 };
+  const app = targetApp();
+  const sentinelSymbols = source.symbols;
+  app.symbols = sentinelSymbols;
+  app.stringIndex = { items:[{ text:'live' }] };
+  assert.equal(applyAppAnalysisState(app, snapshot), false);
+  assert.equal(app.symbols, sentinelSymbols);
+  assert.equal(app.stringIndex.items[0].text, 'live');
+  assert.equal(app.program, null);
+});
+
+test('last binary and session survive a fresh store instance and metadata update avoids losing the saved file', async () => {
+  const indexedDB = createKeyValueIndexedDB();
+  let persistCalls = 0;
+  const storage = { persisted:async () => false, persist:async () => { persistCalls++; return true; } };
+  const store = new AnalysisResumeStore({ indexedDB, analysisIdentity:'build-a', storage });
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const file = {
+    name:'game.bin', type:'application/octet-stream', size:bytes.byteLength, lastModified:123,
+    slice(start, end, type){ return new Blob([bytes.slice(start, end)], { type }); },
+  };
+  assert.equal(await store.saveLastFile(file, { sliceIndex:0 }), true);
+  assert.equal(await store.updateLastFileMeta({ binaryId:'hash-a', sliceIndex:0 }), true);
+  await store.save('hash-a', 0, { lastGoal:{ id:'resume-me' } });
+
+  const reloaded = new AnalysisResumeStore({ indexedDB, analysisIdentity:'build-a', storage });
+  const savedFile = await reloaded.loadLastFile();
+  const savedSession = await reloaded.load('hash-a', 0);
+  assert.equal(savedFile.name, 'game.bin');
+  assert.equal(savedFile.binaryId, 'hash-a');
+  assert.equal(savedFile.size, 4);
+  assert.equal(savedSession.lastGoal.id, 'resume-me');
+  assert.equal(persistCalls, 1);
+});
+
+test('app waits for resume completion before starting Swift metadata warmup', () => {
+  const appSource = fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /async ensureSwift\(options = \{\}\) \{\s*if \(this\.analysisResumeReady\)/);
+  assert.match(appSource, /updateLastFileMeta\(\{ binaryId, sliceIndex \}\)/);
+});

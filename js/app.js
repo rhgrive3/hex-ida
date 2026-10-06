@@ -1147,8 +1147,11 @@ export class App {
     try {
       const snapshot = await this.analysisResume.load(binaryId, sliceIndex);
       if (!snapshot || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
-      return applyAppAnalysisState(this, snapshot);
+      const restored = applyAppAnalysisState(this, snapshot);
+      if (!restored) await this.analysisResume.delete(binaryId, sliceIndex).catch(() => false);
+      return restored;
     } catch {
+      await this.analysisResume.delete(binaryId, sliceIndex).catch(() => false);
       return false;
     }
   }
@@ -1218,7 +1221,7 @@ export class App {
         try { binaryId = await this.backend.ensureBinaryId(); } catch { return false; }
       }
       if (openEpoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return false;
-      if (!sampleOpen) void this.analysisResume.saveLastFile(file, { binaryId, sliceIndex }).catch(() => {});
+      if (!sampleOpen) void this.analysisResume.updateLastFileMeta({ binaryId, sliceIndex }).catch(() => {});
       const restored = await this.restoreAnalysisSession(binaryId, sliceIndex, openEpoch);
       if (!restored && !sampleOpen) void this.persistAnalysisSession(['symbols']);
       if (restored && restoredOpen) toast(pick('前回の解析結果を復元しました', 'Restored the previous analysis results'));
@@ -1422,6 +1425,7 @@ export class App {
   }
 
   async ensureSwift(options = {}) {
+    if (this.analysisResumeReady) { try { await this.analysisResumeReady; } catch { /* best effort */ } }
     const epoch = this.backend.gen;
     if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
     if (this.swiftBusy && this.swiftBusyEpoch === epoch && this.swiftBusyState) return waitForAppProducer(this.swiftBusyState, options.signal ?? null);
