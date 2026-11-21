@@ -573,11 +573,11 @@ function buildIfElse({ lines, info, index, cond, target }) {
         if (depth < 0) return null;
       }
     }
-    if (depth !== 0) return null;
     thenLines.push(lines[end]);
-    if (info.uncond[end]) { tailIndex = end; end += 1; break; }
+    if (depth === 0 && info.uncond[end]) { tailIndex = end; end += 1; break; }
     if (end - index > MAX_REGION_WALK) return null;
   }
+  if (depth !== 0) return null;
   const tailJump = tailIndex >= 0 ? info.uncond[tailIndex] : null;
   if (!tailJump) return null;
   const joinLabel = info.labelLower[end] ?? null;
@@ -600,7 +600,7 @@ function buildIfElse({ lines, info, index, cond, target }) {
     if (info.blank[close]) continue;
     const name = info.labelLower[close];
     if (name != null) {
-      if (name === join) break;
+      if (name === join && depth === 0) break;
       return null;
     }
     if (info.caseLine[close] || info.indent[close] < base) return null;
@@ -611,10 +611,10 @@ function buildIfElse({ lines, info, index, cond, target }) {
         if (depth < 0) return null;
       }
     }
-    if (depth !== 0) return null;
     elseLines.push(lines[close]);
     if (close - end > MAX_REGION_WALK) return null;
   }
+  if (depth !== 0) return null;
   const endLabel = info.labelLower[close] ?? null;
   if (endLabel == null || endLabel !== join || !elseLines.length || !thenLines.length) return null;
   // Each region becomes the tail of a new compound statement, so neither may end

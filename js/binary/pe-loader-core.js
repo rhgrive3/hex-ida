@@ -548,6 +548,41 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
+function buildMergedOwnerIntervals(mappingOwners) {
+  const raw = [];
+  for (const owner of mappingOwners) {
+    if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+    raw.push({ start: owner.address, end: owner.address + owner.size });
+  }
+  if (raw.length <= 1) return raw;
+  raw.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+  const merged = [raw[0]];
+  for (let i = 1; i < raw.length; i += 1) {
+    const prev = merged[merged.length - 1];
+    const curr = raw[i];
+    if (curr.start <= prev.end) {
+      if (curr.end > prev.end) prev.end = curr.end;
+    } else {
+      merged.push(curr);
+    }
+  }
+  return merged;
+}
+function findMergedInterval(merged, address, hint) {
+  if (hint >= 0 && hint < merged.length) {
+    const interval = merged[hint];
+    if (address >= interval.start && address < interval.end) return hint;
+  }
+  let lo = 0, hi = merged.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const interval = merged[mid];
+    if (address < interval.start) hi = mid - 1;
+    else if (address >= interval.end) lo = mid + 1;
+    else return mid;
+  }
+  return -1;
+}
 function mappedBaseRelocationTarget(image, rva, mappingOwners = null) {
   if (!Number.isSafeInteger(rva) || rva < 0 || rva > 0xffffffff) return null;
   const sizeOfImage = image.metadata?.sizeOfImage;
@@ -597,6 +632,10 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
   let off=span.start;const end=span.spanEnd,allowed=allowedBaseRelocationTypes(machine);
   if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);return;}
   const mappingOwners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
+  const mergedOwners = buildMergedOwnerIntervals(mappingOwners);
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  const hasSizeOfImage = Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0;
+  let lastOwnerIdx = -1;
   while(off+8<=end){
     if((off&3)!==0){budget.partial('relocations:malformed-block',`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);break;}
     if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:32},'relocation-block'))break;
@@ -614,10 +653,17 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
         addend=BigInt(r.i16(off+8+(i+1)*2));
         i++;
       }
-      const targetRva=pageRva+within,address=mappedBaseRelocationTarget(image,targetRva,mappingOwners);
+      const targetRva=pageRva+within;
+      let address=null, intervalIdx=-1;
+      if(Number.isSafeInteger(targetRva)&&targetRva>=0&&targetRva<=0xffffffff&&(!hasSizeOfImage||targetRva<sizeOfImage)){
+        const candidate=image.imageBase+BigInt(targetRva);
+        intervalIdx=findMergedInterval(mergedOwners,candidate,lastOwnerIdx);
+        if(intervalIdx>=0){lastOwnerIdx=intervalIdx;address=candidate;}
+      }
       if(address===null){budget.partial('relocations:unmapped-target',`Ignored PE base relocation target outside loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
       const targetWidth=baseRelocationTargetWidth(machine,type);
-      if(!mappedBaseRelocationTargetSpan(image,targetRva,targetWidth,mappingOwners)){budget.partial('relocations:target-span',`Ignored PE base relocation whose ${targetWidth}-byte target field crosses the loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
+      const spanOk=Number.isSafeInteger(targetWidth)&&targetWidth>0&&(!hasSizeOfImage||targetRva<=sizeOfImage-targetWidth)&&(address+BigInt(targetWidth)<=mergedOwners[intervalIdx].end);
+      if(!spanOk){budget.partial('relocations:target-span',`Ignored PE base relocation whose ${targetWidth}-byte target field crosses the loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
       image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
