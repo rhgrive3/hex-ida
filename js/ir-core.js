@@ -500,6 +500,23 @@ function retainFacadeArgumentWrites(fields, history) {
   }
 }
 
+const combinedWriteListCache = new WeakMap();
+function combinedWriteList(first, second) {
+  if (!second || second.length === 0) return first;
+  if (!first || first.length === 0) return second;
+  if (!Object.isFrozen(first) || !Object.isFrozen(second)) {
+    return Object.freeze([...first, ...second]);
+  }
+  let bySecond = combinedWriteListCache.get(first);
+  if (!bySecond) combinedWriteListCache.set(first, bySecond = new WeakMap());
+  let combined = bySecond.get(second);
+  if (!combined) {
+    combined = Object.freeze([...first, ...second]);
+    bySecond.set(second, combined);
+  }
+  return combined;
+}
+
 function sealFacadeStateTransitions(projected, history) {
   if (!history?.source || history.unavailable || !history.writes.length) return;
   const source = history.source, writes = Object.freeze(history.writes);
@@ -511,7 +528,7 @@ function sealFacadeStateTransitions(projected, history) {
     const output = observeProjectedOperationData(projected, definitions);
     const isCurrent = Object.freeze(Object.assign(() => source.matchesThroughWrites(writes) && output(), {
       matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
-        && source.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+        && source.matchesThroughWrites(combinedWriteList(writes, following)) && output.matchesThroughWrites(following),
     }));
     if (!isCurrent()) return;
     const cached = new Map();
@@ -537,7 +554,7 @@ function sealFacadeProjectedOperations(projected, history, groups) {
           const current = Object.freeze(Object.assign(() => candidate.isCurrent.matchesThroughWrites(writes) && output(), {
             workItems:candidate.isCurrent.workItems + output.workItems + writes.length * 2,
             matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
-              && candidate.isCurrent.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+              && candidate.isCurrent.matchesThroughWrites(combinedWriteList(writes, following)) && output.matchesThroughWrites(following),
           }));
           checks.set(candidate.isCurrent, current() ? current : null);
         }
@@ -1242,7 +1259,7 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
         const observed = observer.observations.get(event), chain = Object.freeze(writes.writes.slice(observed.offset));
         const current = Object.freeze(Object.assign(() => observed.current.matchesThroughWrites(chain), {
           matchesThroughWrites:following => Array.isArray(following) && following.length + chain.length <= PROJECTION_LIMITS.nodes
-            && observed.current.matchesThroughWrites([...chain, ...following]),
+            && observed.current.matchesThroughWrites(combinedWriteList(chain, following)),
         }));
         if (!current()) continue;
         valid.push(event); checks.push(current);

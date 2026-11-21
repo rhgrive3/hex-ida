@@ -65,6 +65,8 @@ function token(value) {
 
 const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
 const NO_SKIPPED_KEYS = new Set();
+const SKIP_ARTIFACT_KEY = new Set(['artifact']);
+const SKIP_MFC_KEY = new Set(['memoryForwardingContext']);
 const DEEPLY_FROZEN_CACHE = new WeakMap();
 // Values in the existing validator's true-cache have only deeply immutable
 // own data properties (no Map/Set/Date/accessor children). Keep their exact
@@ -545,9 +547,11 @@ function fastJsonGraphDigest(root) {
         for (let i = 0; i < cachedChunks.length; i += 1) feedChunk(cachedChunks[i]);
         return;
       }
-      const chunks = buildFrozenChunks(value);
-      for (let i = 0; i < chunks.length; i += 1) feedChunk(chunks[i]);
-      return;
+      if (value !== root) {
+        const chunks = buildFrozenChunks(value);
+        for (let i = 0; i < chunks.length; i += 1) feedChunk(chunks[i]);
+        return;
+      }
     }
     active.add(value);
     try {
@@ -782,6 +786,37 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   if (typeof value === 'object') {
     const cached = digests.get(value);
     if (cached != null) return cached;
+    if (!trustedFrozen && !Array.isArray(value)) {
+      const proto = Object.getPrototypeOf(value);
+      if ((proto === Object.prototype || proto === null) && Object.hasOwn(value, 'memoryForwardingContext')) {
+        const ctxDesc = Object.getOwnPropertyDescriptor(value, 'memoryForwardingContext');
+        if (!ctxDesc || !('value' in ctxDesc) || !ctxDesc.enumerable) {
+          throw new TypeError('identity-unsupported-semantic-descriptor');
+        }
+        const ctx = ctxDesc.value;
+        if (ctx != null && typeof ctx === 'object' && !Array.isArray(ctx)) {
+          const ctxProto = Object.getPrototypeOf(ctx);
+          if ((ctxProto === Object.prototype || ctxProto === null) && Object.hasOwn(ctx, 'artifact')) {
+            const artDesc = Object.getOwnPropertyDescriptor(ctx, 'artifact');
+            if (!artDesc || !('value' in artDesc) || !artDesc.enumerable) {
+              throw new TypeError('identity-unsupported-semantic-descriptor');
+            }
+            const artifact = artDesc.value;
+            if (artifact != null && typeof artifact === 'object' && isDeeplyFrozenFinite(artifact)) {
+              const rest = semanticObject(value, new Set(), SKIP_MFC_KEY, path, memo);
+              const ctxFields = semanticObject(ctx, new Set([value]), SKIP_ARTIFACT_KEY, `${path}.memoryForwardingContext`, memo);
+              const digest = `metadata-forwarding:${fastJsonGraphDigest({
+                rest,
+                ctxFields,
+                artifactDigest: fastJsonGraphDigest(artifact),
+              })}`;
+              digests.set(value, digest);
+              return digest;
+            }
+          }
+        }
+      }
+    }
     // Ordinary Phase 8 metadata (`extra`, effect summaries, and proofs) is a
     // plain graph in the canonical IR.  Hashing it directly keeps the strict
     // rejection behavior while avoiding an intermediate semantic copy and the
@@ -880,16 +915,51 @@ function memoryLocationShape(location, memo, digests) {
   return shape;
 }
 
+function forwardingContextShape(definition, memo) {
+  const desc = Object.getOwnPropertyDescriptor(definition, 'memoryForwardingContext');
+  if (!desc || !('value' in desc) || !desc.enumerable) {
+    throw new TypeError('identity-unsupported-semantic-descriptor');
+  }
+  const ctx = desc.value;
+  const seen = new Set([definition]);
+  if (ctx != null && typeof ctx === 'object' && !Array.isArray(ctx)) {
+    const proto = Object.getPrototypeOf(ctx);
+    if ((proto === Object.prototype || proto === null) && Object.hasOwn(ctx, 'artifact')) {
+      const artDesc = Object.getOwnPropertyDescriptor(ctx, 'artifact');
+      if (!artDesc || !('value' in artDesc) || !artDesc.enumerable) {
+        throw new TypeError('identity-unsupported-semantic-descriptor');
+      }
+      const artifact = artDesc.value;
+      if (artifact != null && typeof artifact === 'object' && isDeeplyFrozenFinite(artifact)) {
+        if (seen.has(ctx)) throw new TypeError('identity-cyclic-semantic-ir:$.definition.memoryForwardingContext');
+        const fields = semanticObject(ctx, seen, SKIP_ARTIFACT_KEY, '$.definition.memoryForwardingContext', memo);
+        return {
+          kind: 'forwarding-context-ref',
+          fields,
+          artifactDigest: fastJsonGraphDigest(artifact),
+        };
+      }
+    }
+  }
+  return {
+    kind: 'forwarding-context-raw',
+    value: semanticObject(ctx, seen, NO_SKIPPED_KEYS, '$.definition.memoryForwardingContext', memo),
+  };
+}
+
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
   if (definition == null || typeof definition !== 'object') return null;
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
   const cached = definitionCache?.get(definition)?.get(cacheKey);
   if (cached != null) return cached;
+  const hasForwardingContext = !extraSkip.includes('memoryForwardingContext') && Object.hasOwn(definition, 'memoryForwardingContext');
   const shape = semanticObject(definition, new Set(), new Set([
     'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'returnTargetValue', 'extra', 'origin',
     'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
+    ...(hasForwardingContext ? ['memoryForwardingContext'] : []),
     ...NON_SEMANTIC_KEYS, ...extraSkip,
   ]), '$.definition', memo);
+  if (hasForwardingContext) shape.memoryForwardingContext = forwardingContextShape(definition, memo);
   shape.args = Array.isArray(definition.args) ? definition.args.map((argument) => argumentShape(argument, memo, digests)) : null;
   shape.incoming = Array.isArray(definition.incoming)
     ? definition.incoming.map((incoming) => incomingShape(incoming, memo, digests)) : null;

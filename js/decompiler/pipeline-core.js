@@ -8,7 +8,7 @@ import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, same
 import { RewriteEngine, createExpressionOriginHistoryRecorder } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { createProjectionIrObserver, createValidationBatch } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch, withoutValidationBatch } from '../core/identity/live-data.js';
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
@@ -741,7 +741,7 @@ function finishBuildSelection(expression, selection, state) {
       if (cacheable) state.buildOutputObservations.set(expression, output);
     }
     const deferred = state.stateHistoryTransaction?.observation === selection;
-    if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !withoutValidationBatch(() => output.matches())) throw new Error('build-selection-unavailable');
     observation = Object.freeze({ matches:() => selection.matches() && output.matches(),
       sourceMatches:selection.matches, outputMatches:output.matches, consumerMatches:output.matches,
       producerChecks:selection.producerChecks || Object.freeze([selection.matches]),
@@ -1101,7 +1101,23 @@ function recordCompatOperationSelection(value, expression, selected, state) {
 function buildCanonicalExpressions(state) {
   const batch = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
   if (!batch) {
-    for (const value of state.ir.values || []) buildValue(value, state);
+    const validation = createValidationBatch();
+    let staleObservations = 0;
+    try {
+      validation.run(() => {
+        for (const value of state.ir.values || []) buildValue(value, state);
+      });
+    } finally {
+      staleObservations = validation.settle();
+      if (staleObservations > 0 && state.buildHistories) {
+        for (const [key, records] of state.buildHistories) {
+          if (records.length > 0) {
+            consumerObservationBudget(state).reasons.add('compat-state-construction-stale');
+            state.buildHistories.set(key, Object.freeze([]));
+          }
+        }
+      }
+    }
     return state;
   }
   const transaction = { check:batch.isCurrent, initiallyCurrent:batch.isCurrent(), values:state.ir.values, observation:null };
