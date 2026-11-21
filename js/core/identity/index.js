@@ -50,13 +50,101 @@ function rejectUnsupportedCanonicalObject(value) {
   if (!isCanonicalPlainObject(value)) fail('identity-unsupported-object');
 }
 
-export function jsonSafe(value, seen = new WeakSet()) {
-  if (typeof value === 'bigint') return value.toString();
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
-  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+function sortKeysIfNeeded(keys) {
+  const len = keys.length;
+  if (len <= 1) return keys;
+  for (let i = 1; i < len; i += 1) {
+    if (keys[i - 1] > keys[i]) {
+      keys.sort();
+      return keys;
+    }
+  }
+  return keys;
+}
+
+function isArrayIndexKey(key) {
+  const len = key.length;
+  if (len === 0 || len > 10) return false;
+  const c0 = key.charCodeAt(0);
+  if (c0 < 0x30 || c0 > 0x39) return false;
+  if (c0 === 0x30) return len === 1;
+  let n = c0 - 0x30;
+  for (let i = 1; i < len; i += 1) {
+    const c = key.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) return false;
+    n = n * 10 + (c - 0x30);
+  }
+  return n < 0xffffffff;
+}
+
+// Matches OrdinaryOwnPropertyKeys order on the object produced by jsonSafe():
+// array-index keys first in ascending numeric order, followed by non-index keys
+// in lexicographical code-unit order (including when a Proxy returns out-of-order keys).
+function sortCanonicalJsonKeys(keys) {
+  const len = keys.length;
+  if (len <= 1) return keys;
+  let sawNonIndex = false;
+  let hasIndexAfterNonIndex = false;
+  let prevIndex = -1;
+  let indexOutOfOrder = false;
+  let nonIndexOutOfOrder = false;
+  let prevNonIndex = null;
+  let split = 0;
+  for (let i = 0; i < len; i += 1) {
+    const k = keys[i];
+    if (isArrayIndexKey(k)) {
+      if (sawNonIndex) { hasIndexAfterNonIndex = true; break; }
+      const n = Number(k);
+      if (n <= prevIndex) indexOutOfOrder = true;
+      prevIndex = n;
+      split = i + 1;
+    } else {
+      sawNonIndex = true;
+      if (prevNonIndex !== null && prevNonIndex > k) nonIndexOutOfOrder = true;
+      prevNonIndex = k;
+    }
+  }
+  if (!hasIndexAfterNonIndex && !indexOutOfOrder) {
+    if (!nonIndexOutOfOrder) return keys;
+    if (split === 0) { keys.sort(); return keys; }
+    const rest = keys.slice(split).sort();
+    for (let i = 0; i < rest.length; i += 1) keys[split + i] = rest[i];
+    return keys;
+  }
+  const indexKeys = [];
+  const otherKeys = [];
+  for (let i = 0; i < len; i += 1) {
+    const k = keys[i];
+    if (isArrayIndexKey(k)) indexKeys.push(k);
+    else otherKeys.push(k);
+  }
+  indexKeys.sort((a, b) => Number(a) - Number(b));
+  otherKeys.sort();
+  for (let i = 0; i < indexKeys.length; i += 1) keys[i] = indexKeys[i];
+  for (let i = 0; i < otherKeys.length; i += 1) keys[indexKeys.length + i] = otherKeys[i];
+  return keys;
+}
+
+export function jsonSafe(value, seen = null) {
+  if (value == null) return value;
+  const t = typeof value;
+  if (t === 'string' || t === 'boolean') return value;
+  if (t === 'number') return Number.isFinite(value) ? value : null;
+  if (t === 'bigint') return value.toString();
+  if (t === 'function' || t === 'symbol') return null;
+  if (t !== 'object') return String(value);
+  if (ArrayBuffer.isView(value)) {
+    const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const out = new Array(view.length);
+    for (let i = 0; i < view.length; i += 1) out[i] = view[i];
+    return out;
+  }
+  if (value instanceof ArrayBuffer) {
+    const view = new Uint8Array(value);
+    const out = new Array(view.length);
+    for (let i = 0; i < view.length; i += 1) out[i] = view[i];
+    return out;
+  }
   if (value instanceof Date) {
     // An invalid Date would throw a bare RangeError from toISOString() after
     // upstream strict-serializable validation had already accepted it. Fail
@@ -64,41 +152,61 @@ export function jsonSafe(value, seen = new WeakSet()) {
     if (!Number.isFinite(value.getTime())) fail('identity-invalid-date');
     return value.toISOString();
   }
-  if (typeof value !== 'object') return String(value);
-  if (seen.has(value)) fail('identity-cyclic-value');
-  seen.add(value);
+  const active = seen ?? new WeakSet();
+  if (active.has(value)) fail('identity-cyclic-value');
+  active.add(value);
   let out;
-  if (value instanceof Map) {
-    out = { $map: canonicalMapEntries(value, seen).map(({ key, value: entryValue }) => [
-      jsonSafe(key, seen),
-      jsonSafe(entryValue, seen),
-    ]) };
-  } else if (value instanceof Set) {
-    out = { $set: canonicalSetEntries(value, seen).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
-  } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
-  else {
-    rejectUnsupportedCanonicalObject(value);
-    out = {};
-    for (const key of Object.keys(value).sort()) {
-      const raw = value[key];
-      const normalized = jsonSafe(raw, seen);
-      if (normalized !== null || raw === null) {
-        // Assignment creates the same own data descriptor for a fresh key,
-        // without allocating a descriptor on every property. Inherited names
-        // (including __proto__, setters and non-writable prototype properties)
-        // still require DefineProperty: never invoke an inherited setter.
-        if (key in out) {
-          Object.defineProperty(out, key, {
-            value: normalized,
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          });
-        } else out[key] = normalized;
+  try {
+    if (Array.isArray(value)) {
+      const mapFn = value.map;
+      if (mapFn !== Array.prototype.map) {
+        out = mapFn.call(value, (item) => jsonSafe(item, active));
+      } else {
+        const len = value.length;
+        out = new Array(len);
+        for (let i = 0; i < len; i += 1) {
+          if (i in value) out[i] = jsonSafe(value[i], active);
+        }
+      }
+    } else if (value instanceof Map) {
+      const entries = canonicalMapEntries(value, active);
+      const pairs = new Array(entries.length);
+      for (let i = 0; i < entries.length; i += 1) {
+        pairs[i] = [entries[i].keyParts.normalized, entries[i].valueParts.normalized];
+      }
+      out = { $map: pairs };
+    } else if (value instanceof Set) {
+      const entries = canonicalSetEntries(value, active);
+      const items = new Array(entries.length);
+      for (let i = 0; i < entries.length; i += 1) items[i] = entries[i].parts.normalized;
+      out = { $set: items };
+    } else {
+      rejectUnsupportedCanonicalObject(value);
+      out = {};
+      const keys = sortKeysIfNeeded(Object.keys(value));
+      for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        const raw = value[key];
+        const normalized = jsonSafe(raw, active);
+        if (normalized !== null || raw === null) {
+          // Assignment creates the same own data descriptor for a fresh key,
+          // without allocating a descriptor on every property. Inherited names
+          // (including __proto__, setters and non-writable prototype properties)
+          // still require DefineProperty: never invoke an inherited setter.
+          if (key in out) {
+            Object.defineProperty(out, key, {
+              value: normalized,
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
+          } else out[key] = normalized;
+        }
       }
     }
+  } finally {
+    active.delete(value);
   }
-  seen.delete(value);
   return out;
 }
 
@@ -106,13 +214,173 @@ export function stableStringify(value) {
   return JSON.stringify(jsonSafe(value));
 }
 
-export function stableDigest(value) {
-  const text = stableStringify(value);
-  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
-}
-
 const FNV_OFFSET_LOW = 0x84222325;
 const FNV_OFFSET_HIGH = 0xcbf29ce4;
+
+export function stableDigest(value) {
+  if (value === undefined || (Array.isArray(value) && value.map !== Array.prototype.map)
+      || typeof Object.prototype.toJSON === 'function' || typeof Array.prototype.toJSON === 'function'
+      || typeof String.prototype.toJSON === 'function' || typeof Number.prototype.toJSON === 'function'
+      || typeof Boolean.prototype.toJSON === 'function') {
+    const text = stableStringify(value);
+    return fnv64Text(text) + fnv64Text(text, FNV_OFFSET_HIGH, FNV_OFFSET_LOW);
+  }
+  let aLow = FNV_OFFSET_LOW; let aHigh = FNV_OFFSET_HIGH;
+  let bLow = FNV_OFFSET_HIGH; let bHigh = FNV_OFFSET_LOW;
+  const feedCode = (code) => {
+    aLow ^= code;
+    const aCarry = ((aLow >>> 16) * 0x1b3 + (((aLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    aHigh = (Math.imul(aHigh, 0x1b3) + (aLow << 8) + aCarry) | 0;
+    aLow = Math.imul(aLow, 0x1b3);
+    bLow ^= code;
+    const bCarry = ((bLow >>> 16) * 0x1b3 + (((bLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    bHigh = (Math.imul(bHigh, 0x1b3) + (bLow << 8) + bCarry) | 0;
+    bLow = Math.imul(bLow, 0x1b3);
+  };
+  const feedStr = (str) => {
+    for (let i = 0; i < str.length; i += 1) feedCode(str.charCodeAt(i));
+  };
+  const feedByte = (byte) => {
+    if (byte >= 100) {
+      feedCode(0x30 + ((byte / 100) | 0));
+      feedCode(0x30 + (((byte / 10) | 0) % 10));
+      feedCode(0x30 + (byte % 10));
+    } else if (byte >= 10) {
+      feedCode(0x30 + ((byte / 10) | 0));
+      feedCode(0x30 + (byte % 10));
+    } else {
+      feedCode(0x30 + byte);
+    }
+  };
+  let seen = null;
+  const streamValue = (cur) => {
+    if (cur === null) { feedStr('null'); return; }
+    const t = typeof cur;
+    if (t === 'string') { feedStr(JSON.stringify(cur)); return; }
+    if (t === 'boolean') { feedStr(cur ? 'true' : 'false'); return; }
+    if (t === 'number') {
+      if (!Number.isFinite(cur)) { feedStr('null'); return; }
+      feedStr(Object.is(cur, -0) ? '0' : String(cur));
+      return;
+    }
+    if (t === 'bigint') {
+      feedCode(0x22);
+      feedStr(cur.toString());
+      feedCode(0x22);
+      return;
+    }
+    if (t === 'undefined' || t === 'function' || t === 'symbol') { feedStr('null'); return; }
+    if (t !== 'object') { feedStr(JSON.stringify(String(cur))); return; }
+    if (ArrayBuffer.isView(cur)) {
+      const view = new Uint8Array(cur.buffer, cur.byteOffset, cur.byteLength);
+      feedCode(0x5b);
+      for (let i = 0; i < view.length; i += 1) {
+        if (i !== 0) feedCode(0x2c);
+        feedByte(view[i]);
+      }
+      feedCode(0x5d);
+      return;
+    }
+    if (cur instanceof ArrayBuffer) {
+      const view = new Uint8Array(cur);
+      feedCode(0x5b);
+      for (let i = 0; i < view.length; i += 1) {
+        if (i !== 0) feedCode(0x2c);
+        feedByte(view[i]);
+      }
+      feedCode(0x5d);
+      return;
+    }
+    if (cur instanceof Date) {
+      if (!Number.isFinite(cur.getTime())) fail('identity-invalid-date');
+      feedStr(JSON.stringify(cur.toISOString()));
+      return;
+    }
+    if (seen === null) seen = new WeakSet();
+    if (seen.has(cur)) fail('identity-cyclic-value');
+    seen.add(cur);
+    try {
+      if (Array.isArray(cur)) {
+        const mapFn = cur.map;
+        if (mapFn !== Array.prototype.map) {
+          const mapped = mapFn.call(cur, (item) => jsonSafe(item, seen));
+          const text = JSON.stringify(mapped);
+          feedStr(text === undefined ? 'null' : text);
+        } else {
+          feedCode(0x5b);
+          const len = cur.length;
+          for (let i = 0; i < len; i += 1) {
+            if (i !== 0) feedCode(0x2c);
+            if (i in cur) streamValue(cur[i]);
+            else feedStr('null');
+          }
+          feedCode(0x5d);
+        }
+      } else if (cur instanceof Map) {
+        const entries = canonicalMapEntries(cur, seen);
+        feedStr('{"$map":[');
+        for (let i = 0; i < entries.length; i += 1) {
+          if (i !== 0) feedCode(0x2c);
+          feedCode(0x5b);
+          feedStr(entries[i].keyNormText ?? 'null');
+          feedCode(0x2c);
+          feedStr(entries[i].valueNormText ?? 'null');
+          feedCode(0x5d);
+        }
+        feedStr(']}');
+      } else if (cur instanceof Set) {
+        const entries = canonicalSetEntries(cur, seen);
+        feedStr('{"$set":[');
+        for (let i = 0; i < entries.length; i += 1) {
+          if (i !== 0) feedCode(0x2c);
+          feedStr(entries[i].normText ?? 'null');
+        }
+        feedStr(']}');
+      } else {
+        rejectUnsupportedCanonicalObject(cur);
+        feedCode(0x7b);
+        const keys = sortCanonicalJsonKeys(Object.keys(cur));
+        let first = true;
+        for (let i = 0; i < keys.length; i += 1) {
+          const key = keys[i];
+          const raw = cur[key];
+          if (raw === undefined) continue;
+          const rt = typeof raw;
+          if (rt === 'function' || rt === 'symbol') continue;
+          if (rt === 'number' && !Number.isFinite(raw)) continue;
+          if (Array.isArray(raw)) {
+            const mapFn = raw.map;
+            if (mapFn !== Array.prototype.map) {
+              if (seen.has(raw)) fail('identity-cyclic-value');
+              seen.add(raw);
+              let mapped;
+              try { mapped = mapFn.call(raw, (item) => jsonSafe(item, seen)); } finally { seen.delete(raw); }
+              if (mapped === null) continue;
+              const text = JSON.stringify(mapped);
+              if (text === undefined) continue;
+              if (!first) feedCode(0x2c);
+              first = false;
+              feedStr(JSON.stringify(key));
+              feedCode(0x3a);
+              feedStr(text);
+              continue;
+            }
+          }
+          if (!first) feedCode(0x2c);
+          first = false;
+          feedStr(JSON.stringify(key));
+          feedCode(0x3a);
+          streamValue(raw);
+        }
+        feedCode(0x7d);
+      }
+    } finally {
+      seen.delete(cur);
+    }
+  };
+  streamValue(value);
+  return fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
+}
 
 // Byte-native equivalent of `stableDigest(Array.from(bytes))`. It reproduces the
 // exact canonical decimal-JSON text of a byte array ("[b0,b1,...]") and folds it
@@ -142,11 +410,15 @@ export function stableDigestBytes(bytes, start = 0, end = bytes == null ? 0 : by
   for (let index = start; index < end; index += 1) {
     const byte = (index >= maskStart && index < maskEnd) ? 0 : bytes[index];
     if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) fail('identity-byte-invalid');
-    if (byte < 10) {
-      feed(0x30 + byte);
+    if (byte >= 100) {
+      feed(0x30 + ((byte / 100) | 0));
+      feed(0x30 + (((byte / 10) | 0) % 10));
+      feed(0x30 + (byte % 10));
+    } else if (byte >= 10) {
+      feed(0x30 + ((byte / 10) | 0));
+      feed(0x30 + (byte % 10));
     } else {
-      const digits = byte.toString();
-      for (let k = 0; k < digits.length; k += 1) feed(digits.charCodeAt(k));
+      feed(0x30 + byte);
     }
     if (index !== last) feed(0x2c); // ','
   }
@@ -171,27 +443,45 @@ export function sameCanonicalIdentityValue(left, right) {
 }
 
 function canonicalMapEntries(value, seen = new WeakSet()) {
-  const entries = [...value.entries()].map(([key, entryValue]) => ({
-    key,
-    value: entryValue,
-    keyParts: canonicalWitnessParts(key, seen),
-    valueParts: canonicalWitnessParts(entryValue, seen),
-  }));
+  const entries = [];
+  for (const [key, entryValue] of value.entries()) {
+    const keyParts = canonicalWitnessParts(key, seen);
+    const valueParts = canonicalWitnessParts(entryValue, seen);
+    entries.push({
+      key,
+      value: entryValue,
+      keyParts,
+      valueParts,
+      keyNormText: JSON.stringify(keyParts.normalized),
+      valueNormText: JSON.stringify(valueParts.normalized),
+      keyWitnessText: JSON.stringify(keyParts.witness),
+      valueWitnessText: JSON.stringify(valueParts.witness),
+    });
+  }
   entries.sort((left, right) => (
-    compareCanonicalText(stableStringify(left.keyParts.normalized), stableStringify(right.keyParts.normalized))
-    || compareCanonicalText(stableStringify(left.valueParts.normalized), stableStringify(right.valueParts.normalized))
-    || compareCanonicalText(stableStringify(left.keyParts.witness), stableStringify(right.keyParts.witness))
-    || compareCanonicalText(stableStringify(left.valueParts.witness), stableStringify(right.valueParts.witness))
+    compareCanonicalText(left.keyNormText, right.keyNormText)
+    || compareCanonicalText(left.valueNormText, right.valueNormText)
+    || compareCanonicalText(left.keyWitnessText, right.keyWitnessText)
+    || compareCanonicalText(left.valueWitnessText, right.valueWitnessText)
   ));
   return entries;
 }
 
 function canonicalSetEntries(value, seen = new WeakSet()) {
-  const entries = [...value].map((entryValue) => ({
-    value: entryValue,
-    parts: canonicalWitnessParts(entryValue, seen),
-  }));
-  entries.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
+  const entries = [];
+  for (const entryValue of value) {
+    const parts = canonicalWitnessParts(entryValue, seen);
+    entries.push({
+      value: entryValue,
+      parts,
+      normText: JSON.stringify(parts.normalized),
+      witnessText: JSON.stringify(parts.witness),
+    });
+  }
+  entries.sort((left, right) => (
+    compareCanonicalText(left.normText, right.normText)
+    || compareCanonicalText(left.witnessText, right.witnessText)
+  ));
   return entries;
 }
 
@@ -469,11 +759,13 @@ export function normalizeIdentity(value, code) {
   return witness ? { identity: normalized, identityTypes: witness } : normalized;
 }
 
-export function deepFreeze(value, seen = new WeakSet()) {
+export function deepFreeze(value, seen = null) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
+  const active = seen ?? new WeakSet();
+  if (active.has(value)) return value;
+  active.add(value);
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i += 1) deepFreeze(value[keys[i]], active);
   return Object.freeze(value);
 }
 
