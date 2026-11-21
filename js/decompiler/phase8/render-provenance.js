@@ -1,3 +1,4 @@
+import { createValidationBatch } from '../../core/identity/live-data.js';
 import { sourceOf } from '../ast/nodes.js';
 import { compatOperationEventCandidate } from '../pipeline-core.js';
 import { renderProvenanceRecord, MAX_EXPRESSION_CONSUMER_WITNESSES } from './contract.js';
@@ -483,6 +484,36 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (snapshotId != null && (typeof snapshotId !== 'string' || snapshotId.length === 0)) fail('phase8-render-provenance-snapshot-required');
   const resolvedBudget = validateBudget(budget);
   if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+  const validation = createValidationBatch();
+  let output;
+  let recheckLive = null;
+  validation.run(() => {
+    output = buildRenderProvenanceCore({
+      result,
+      snapshotId,
+      resolvedBudget,
+      shouldAbort,
+      onCaptureRecheck: (fn) => { recheckLive = fn; },
+    });
+  });
+  if (output?.completeness === 'cancelled') return output;
+  const staleCount = validation.settle();
+  if (staleCount > 0) {
+    const extraReasons = typeof recheckLive === 'function' ? recheckLive() : [];
+    const mergedReasons = [...new Set([
+      ...(output?.reasons || []),
+      ...(extraReasons.length > 0 ? extraReasons : ['stale-render-provenance-observation']),
+    ])];
+    return Object.freeze({
+      ...output,
+      completeness: 'incomplete',
+      reasons: Object.freeze(mergedReasons),
+    });
+  }
+  return output;
+}
+
+function buildRenderProvenanceCore({ result, snapshotId, resolvedBudget, shouldAbort, onCaptureRecheck }) {
 
   const reasons = new Set();
   const publicState = readPublicStateNormalization(result.ir);
@@ -852,17 +883,23 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
 
   let completeness = 'complete';
-  if (publicState && readPublicStateNormalization(result.ir) !== publicState) reasons.add('stale-public-state-history');
-  if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) reasons.add('stale-abi-state-history');
-  if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) reasons.add('stale-public-location-history');
-  if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) reasons.add('stale-typed-call-result-history');
-  if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) reasons.add('stale-stack-escape-history');
-  if (abiBinding && readFacadeAbiBindingHistory(result.ir) !== abiBinding) reasons.add('stale-abi-binding-history');
-  if (committedViews && readSemanticViewHistory(result.ir) !== committedViews) reasons.add('stale-committed-view-history');
-  if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
-  if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
-    reasons.add('stale-expression-binding');
-  }
+  const collectStaleReasons = () => {
+    const staleReasons = [];
+    if (publicState && readPublicStateNormalization(result.ir) !== publicState) staleReasons.push('stale-public-state-history');
+    if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) staleReasons.push('stale-abi-state-history');
+    if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) staleReasons.push('stale-public-location-history');
+    if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) staleReasons.push('stale-typed-call-result-history');
+    if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) staleReasons.push('stale-stack-escape-history');
+    if (abiBinding && readFacadeAbiBindingHistory(result.ir) !== abiBinding) staleReasons.push('stale-abi-binding-history');
+    if (committedViews && readSemanticViewHistory(result.ir) !== committedViews) staleReasons.push('stale-committed-view-history');
+    if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) staleReasons.push('stale-semantic-suppression-history');
+    if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
+      staleReasons.push('stale-expression-binding');
+    }
+    return staleReasons;
+  };
+  onCaptureRecheck?.(collectStaleReasons);
+  for (const r of collectStaleReasons()) reasons.add(r);
   if (snapshotId == null) {
     reasons.add('missing-snapshot');
   }

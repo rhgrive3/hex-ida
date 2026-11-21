@@ -142,6 +142,23 @@ function performView(ir, writer, source, operation, before, after, inputs, relat
   writer.selections.push({ selection, offset:event.offset });
 }
 
+const combinedWriteListCache = new WeakMap();
+function combinedWriteList(first, second) {
+  if (!second || second.length === 0) return first;
+  if (!first || first.length === 0) return second;
+  if (!Object.isFrozen(first) || !Object.isFrozen(second)) {
+    return Object.freeze([...first, ...second]);
+  }
+  let bySecond = combinedWriteListCache.get(first);
+  if (!bySecond) combinedWriteListCache.set(first, bySecond = new WeakMap());
+  let combined = bySecond.get(second);
+  if (!combined) {
+    combined = Object.freeze([...first, ...second]);
+    bySecond.set(second, combined);
+  }
+  return combined;
+}
+
 function sealViewWriter(ir, writer) {
   if (writer.unavailable || !writer.events.length && !writer.prior) return;
   try {
@@ -153,8 +170,8 @@ function sealViewWriter(ir, writer) {
     const priorCheck = writer.prior?.history.isCurrent;
     const matches = following => (following == null || Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes)
       && (following == null ? output() : output.matchesThroughWrites(following))
-      && (!priorCheck || priorCheck.matchesThroughWrites([...writes, ...(following || [])]))
-      && selections.every(item => item.selection.matchesThroughWrites([...item.writes, ...(following || [])]));
+      && (!priorCheck || priorCheck.matchesThroughWrites(combinedWriteList(writes, following)))
+      && selections.every(item => item.selection.matchesThroughWrites(combinedWriteList(item.writes, following)));
     const isCurrent = Object.freeze(Object.assign(() => matches(null), { matchesThroughWrites:matches }));
     if (!isCurrent()) return;
     const checks = new Map();
@@ -163,7 +180,7 @@ function sealViewWriter(ir, writer) {
       const original = record.isCurrent;
       if (!checks.has(original)) {
         const through = following => (following == null || Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes) && (original.matchesThroughWrites
-          ? original.matchesThroughWrites([...writes, ...(following || [])]) : original())
+          ? original.matchesThroughWrites(combinedWriteList(writes, following)) : original())
           && (following == null ? isCurrent() : isCurrent.matchesThroughWrites(following));
         const current = Object.freeze(Object.assign(() => through(null), { matchesThroughWrites:through }));
         checks.set(original, current() ? current : null);

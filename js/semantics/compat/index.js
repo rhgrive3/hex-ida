@@ -765,19 +765,47 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   let unsupportedInstructionCount = 0;
   const conditionalFalseTargetByBlock = new Map();
 
+  const blockNodeIdSets = new Map();
+  const blockOriginLists = new Map();
   function mergeBlock(fragmentBlock) {
     const prior = blocks.get(fragmentBlock.id);
     if (!prior) {
+      const nodeIds = fragmentBlock.nodeIds.slice();
       blocks.set(fragmentBlock.id, {
         id: fragmentBlock.id,
-        nodeIds: fragmentBlock.nodeIds.slice(),
+        nodeIds,
         ...(fragmentBlock.origin == null ? {} : { origin: fragmentBlock.origin }),
       });
+      blockNodeIdSets.set(fragmentBlock.id, new Set(nodeIds));
+      if (fragmentBlock.origin != null) blockOriginLists.set(fragmentBlock.id, [fragmentBlock.origin]);
       return;
     }
-    prior.nodeIds.push(...fragmentBlock.nodeIds.filter((id) => !prior.nodeIds.includes(id)));
-    if (prior.origin != null || fragmentBlock.origin != null) {
-      prior.origin = mergeOriginSets(prior.origin ?? createOriginSet({}), fragmentBlock.origin ?? createOriginSet({}));
+    let idSet = blockNodeIdSets.get(fragmentBlock.id);
+    if (!idSet) {
+      idSet = new Set(prior.nodeIds);
+      blockNodeIdSets.set(fragmentBlock.id, idSet);
+    }
+    for (let i = 0; i < fragmentBlock.nodeIds.length; i += 1) {
+      const id = fragmentBlock.nodeIds[i];
+      if (!idSet.has(id)) {
+        idSet.add(id);
+        prior.nodeIds.push(id);
+      }
+    }
+    if (fragmentBlock.origin != null || prior.origin != null || blockOriginLists.has(fragmentBlock.id)) {
+      let list = blockOriginLists.get(fragmentBlock.id);
+      if (!list) {
+        list = prior.origin != null ? [prior.origin] : [createOriginSet({})];
+        blockOriginLists.set(fragmentBlock.id, list);
+      }
+      list.push(fragmentBlock.origin ?? createOriginSet({}));
+    }
+  }
+  function finalizeMergedBlocks() {
+    for (const [blockId, list] of blockOriginLists) {
+      if (list.length > 1) {
+        blocks.get(blockId).origin = mergeOriginSets(...list);
+      }
     }
   }
 
@@ -890,6 +918,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
 
   if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');
   const functionOrigin = mergeOriginSets(...bundles.map((bundle) => bundle.origin));
+  finalizeMergedBlocks();
   for (const block of blockRecords) {
     const merged = blocks.get(block.id);
     if (merged && block.origin != null) merged.origin = mergeOriginSets(merged.origin ?? createOriginSet({}), block.origin);

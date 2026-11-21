@@ -459,14 +459,54 @@ export function buildIR(model, opts) {
 }
 
 const irCache = new WeakMap();
+const irNullCache = new WeakMap();
+function irForNullCacheKey(mode, opts) {
+  if (opts == null) return mode;
+  if (typeof opts !== 'object') return null;
+  const proto = Object.getPrototypeOf(opts);
+  if (proto !== Object.prototype && proto !== null) return null;
+  const keys = Object.keys(opts);
+  if (keys.length === 0) return mode;
+  let returnsValue = undefined;
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    const desc = Object.getOwnPropertyDescriptor(opts, k);
+    if (!desc || !Object.hasOwn(desc, 'value')) return null;
+    const v = desc.value;
+    if (v === undefined) continue;
+    if (k === 'returnsValue' && (typeof v === 'boolean' || v === null)) {
+      returnsValue = v;
+      continue;
+    }
+    return null;
+  }
+  return returnsValue === undefined ? mode : `${mode}:rv=${String(returnsValue)}`;
+}
+
 export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
-  const cacheable = opts == null || Object.keys(opts).length === 0;
   const mode = getSemanticMigrationMode();
+  const nullKey = irForNullCacheKey(mode, opts);
+  if (nullKey !== null && irNullCache.get(model)?.has(nullKey)) return null;
+  const cacheable = opts == null
+    || (typeof opts === 'object' && (Object.getPrototypeOf(opts) === Object.prototype || Object.getPrototypeOf(opts) === null) && Object.keys(opts).length === 0);
   const byMode = cacheable ? irCache.get(model) : null;
   if (byMode?.has(mode)) return byMode.get(mode);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
+  if (ir === null) {
+    if (nullKey !== null) {
+      let failed = irNullCache.get(model);
+      if (!failed) irNullCache.set(model, failed = new Set());
+      failed.add(nullKey);
+    }
+    if (cacheable) {
+      const next = byMode ?? new Map();
+      next.set(mode, null);
+      if (!byMode) irCache.set(model, next);
+    }
+    return null;
+  }
   if (cacheable) {
     const next = byMode ?? new Map();
     next.set(mode, ir);

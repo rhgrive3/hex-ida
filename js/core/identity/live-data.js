@@ -14,6 +14,11 @@ import { isReusableOriginSet } from './origin.js';
 // The batch is bound to one synchronous pass execution and is never retained
 // across decompiles, functions, passes or analysis epochs.
 let currentValidationBatch = null;
+export function withoutValidationBatch(fn) {
+  const previous = currentValidationBatch;
+  currentValidationBatch = null;
+  try { return fn(); } finally { currentValidationBatch = previous; }
+}
 export function createValidationBatch() {
   let running = false, settled = false;
   let results = new WeakMap();

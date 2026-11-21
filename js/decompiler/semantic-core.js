@@ -2440,7 +2440,7 @@ function runtimeFromOpts(opts) {
 /** Main IR-first entry point. */
 export function decompileSemantic(model, rawOpts = {}) {
   const opts = applyDecompilerProfile(rawOpts);
-  const ir = opts.ir || irFor(model, { rowOfAddress: opts.rowOfAddress });
+  const ir = opts.ir != null ? opts.ir : irFor(model, { rowOfAddress: opts.rowOfAddress });
   if (!ir || !ir.instructions?.length) return null;
   const runtime = runtimeFromOpts(opts);
   const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });
