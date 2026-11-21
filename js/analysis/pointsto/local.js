@@ -791,12 +791,34 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const irPrevious = new Map();
   const ssaPrevious = new Map();
 
-  const irGet = (id) => irState.get(String(id)) ?? topPointsTo('unsupported-operation');
-  const ssaGet = (id) => ssaState.get(String(id)) ?? topPointsTo('unsupported-operation');
+  const irDependents = new Map();
+  const ssaDependents = new Map();
+  let activeConsumer = null;
+  const recordDep = (table, key) => {
+    if (activeConsumer === null) return;
+    let bucket = table.get(key);
+    if (!bucket) {
+      bucket = new Set();
+      table.set(key, bucket);
+    }
+    bucket.add(activeConsumer);
+  };
+
+  const irGet = (id) => {
+    const key = String(id);
+    recordDep(irDependents, key);
+    return irState.get(key) ?? topPointsTo('unsupported-operation');
+  };
+  const ssaGet = (id) => {
+    const key = String(id);
+    recordDep(ssaDependents, key);
+    return ssaState.get(key) ?? topPointsTo('unsupported-operation');
+  };
 
   function transferLoadedPointer(id) {
     const candidate = memoryBoundary.candidates.get(String(id));
     if (!candidate) return { candidate: null, set: null };
+    recordDep(irDependents, candidate.storedValueId);
     const storedSet = irState.get(candidate.storedValueId);
     // The stored value may be visited later in this iteration. Keep the seed
     // at BOTTOM until it is available so a valid proof can converge without
@@ -1037,6 +1059,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     return topPointsTo('unsupported-operation');
   }
 
+  const dirtySsa = new Set(ssaOrder);
+  const dirtyIr = new Set(irOrder);
+  const markDependentsDirty = (table, id) => {
+    const bucket = table.get(id);
+    if (!bucket) return;
+    for (const consumer of bucket) {
+      if (consumer.charCodeAt(0) === 115) dirtySsa.add(consumer.slice(2));
+      else dirtyIr.add(consumer.slice(2));
+    }
+  };
+
   let iterations = 0;
   let changed = true;
   let stopReason = null;
@@ -1046,25 +1079,39 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     iterations += 1;
     changed = false;
     const widening = iterations > budget.widenAfterIterations;
+    if (iterations === budget.widenAfterIterations + 1) {
+      for (const id of ssaOrder) dirtySsa.add(id);
+      for (const id of irOrder) dirtyIr.add(id);
+    }
 
-    const step = (order, state, previous, transfer) => {
+    const step = (order, dirtySet, kindPrefix, dependentsTable, state, previous, transfer) => {
       for (const id of order) {
         if (options.signal?.aborted) {
           stopReason = 'cancelled';
           return;
         }
+        if (!dirtySet.has(id)) continue;
+        dirtySet.delete(id);
         const current = state.get(id);
-        const joined = joinPointsTo(current, transfer(id), budget);
+        activeConsumer = `${kindPrefix}:${id}`;
+        let transferred;
+        try {
+          transferred = transfer(id);
+        } finally {
+          activeConsumer = null;
+        }
+        const joined = joinPointsTo(current, transferred, budget);
         const next = widening ? widenPointsTo(previous.get(id) ?? current, joined, budget) : joined;
         if (!pointsToEqual(current, next)) {
           previous.set(id, current);
           state.set(id, next);
           changed = true;
+          markDependentsDirty(dependentsTable, id);
         }
       }
     };
-    step(ssaOrder, ssaState, ssaPrevious, transferSsa);
-    step(irOrder, irState, irPrevious, transferIr);
+    step(ssaOrder, dirtySsa, 's', ssaDependents, ssaState, ssaPrevious, transferSsa);
+    step(irOrder, dirtyIr, 'i', irDependents, irState, irPrevious, transferIr);
   }
 
   // Bottom is the fixed-point seed, never an answer. A value the solve never

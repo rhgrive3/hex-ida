@@ -676,12 +676,14 @@ export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
   if(!Number.isSafeInteger(tableBytes)||ptr+tableBytes>r.length){budget.partial('coff:symbol-table-span','PE COFF symbol table exceeds the input');return;}
   const strBase=ptr+tableBytes;if(strBase+4>r.length){budget.partial('coff:string-table-header','PE COFF string table header is missing');return;}
   const strSize=r.u32(strBase),strEnd=Math.min(r.length,strBase+Math.max(4,strSize));if(strBase+strSize>r.length)budget.partial('coff:string-table-span','PE COFF string table is truncated');
+  const sectionByIndex=new Map();
+  for(const s of image.sections||[]){if(peExactMappingOwner(s)&&!sectionByIndex.has(s.index))sectionByIndex.set(s.index,s);}
   let i=0;
   while(i<count){
     if(!budget.take({inputBytes:18,records:1,objects:2,operations:2,estimatedHeapBytes:256},'coff-symbol-record'))break;
     const p=ptr+i*18;let name;
     if(r.u32(p)===0){const noff=r.u32(p+4);name=noff>=4&&noff<strSize&&strBase+noff<strEnd?mappedCStringAtOffset(r,strBase+noff,strEnd,budget,'COFF symbol'):'';}else{name=r.ascii(p,8);if(name&&!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'coff-inline-name'))name='';}
-    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo&&peExactMappingOwner(s));const address=sec?sec.address+BigInt(value):0n;
+    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=sectionByIndex.get(secNo);const address=sec?sec.address+BigInt(value):0n;
     if(name){const derivedFunction=((type>>>4)&0x3)===2,valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
     if(aux>count-i-1){budget.partial('coff:aux-overrun','PE COFF auxiliary symbol records exceed declared symbol count');break;}i+=1+aux;
   }
