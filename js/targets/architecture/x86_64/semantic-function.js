@@ -35,6 +35,13 @@ function rejectDecoderRevalidation(error) {
   decoderRevalidationWorker = null;
 }
 
+export function releaseDecoderRevalidationWorker() {
+  if (!decoderRevalidationWorker || decoderRevalidationPending.size > 0) return false;
+  try { decoderRevalidationWorker.terminate?.(); } catch { /* best effort */ }
+  decoderRevalidationWorker = null;
+  return true;
+}
+
 function decoderWorker() {
   if (decoderRevalidationWorker) return decoderRevalidationWorker;
   if (typeof Worker !== 'function') throw new Error('x86-semantic-function-decoder-revalidation-unavailable');

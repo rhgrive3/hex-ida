@@ -6,7 +6,7 @@ import { hashByteSource } from './hash.js';
 import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
-import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
+import { analyzeDecodedSemanticFunction, releaseDecoderRevalidationWorker } from '../targets/architecture/x86_64/semantic-function.js';
 import { analyzeSemanticFunction } from '../analysis/semantic-function.js';
 import { resolveMachOPointer } from '../binary/macho-dyld.js';
 
@@ -184,7 +184,7 @@ async function handle(msg, signal) {
     case 'metadata': return metadataPage(msg, signal);
     case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
     case 'memoryStats': return memoryStats();
-    case 'cleanupMemory': source?.clear?.(); return memoryStats();
+    case 'cleanupMemory': source?.clear?.(); releaseDecoderRevalidationWorker(); return memoryStats();
     case 'probe': return { ok: true, capability: descriptor?.capability || null };
     default: throw new Error(`Unknown platform request: ${msg.t}`);
   }
@@ -325,7 +325,7 @@ async function getChunk({ regionId, chunk }, signal) {
   if (remaining <= 0n) return { regionId, chunk, bytes: new Uint8Array(0), mn: '', ops: '', rows: 0 };
   const length = chunkLength(remaining, CHUNK_BYTES);
   const bytes = await readFileRange(BigInt(region.fileOffset) + rel, length, signal);
-  const copy = bytes.slice();
+  const copy = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
 }
 
@@ -506,7 +506,8 @@ async function readAtAddress(msg, signal) {
   let available = image.fileSize - hit.offset;
   if (hit.region) available = BigInt(hit.region.fileOffset) + BigInt(hit.region.size) - hit.offset;
   const length = Number(available < BigInt(requested) ? available : BigInt(requested));
-  const bytes = (await readFileRange(hit.offset, length, signal)).slice();
+  const rawBytes = await readFileRange(hit.offset, length, signal);
+  const bytes = rawBytes.byteOffset === 0 && rawBytes.byteLength === rawBytes.buffer.byteLength ? rawBytes : rawBytes.slice();
   const result = { found: true, region: hit.region?.name || null, fileOffset: hit.offset, bytes,
     transferredOwnedBytes: true };
   if (msg.text) {
