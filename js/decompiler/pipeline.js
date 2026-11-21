@@ -290,32 +290,44 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
       return definitionId != null && fact.contributingDefinitionIds.includes(String(definitionId));
     }) || null;
   };
+  let stackLoadsByRow = null;
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
     if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
+    if (ret.row == null) continue;
+    if (!stackLoadsByRow) {
+      stackLoadsByRow = new Map();
+      for (const inst of result.ir.instructions || []) {
+        if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || inst.row >= ret.row) continue;
+        const rowKey = String(inst.row);
+        const bucket = stackLoadsByRow.get(rowKey);
+        if (bucket) bucket.push(inst);
+        else stackLoadsByRow.set(rowKey, [inst]);
+      }
+    }
     const current = sourceOf(node.source);
     const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
-    for (const inst of result.ir.instructions || []) {
-      if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
-      if (!sourceRows.has(String(inst.row))) continue;
-      const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
-      const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
-        canonicalMemoryForwardingContextForLoad(fact, inst,
-          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
-        ? contributingStore(inst.loc.key, fact)
-        : null);
-      if (!store || store.row == null) continue;
-      if (!sourceRows.has(String(store.row))) continue;
-      if (!load || inst.row > load.row) load = inst;
+    let spill = null;
+    for (const rowKey of sourceRows) {
+      const bucket = stackLoadsByRow.get(rowKey);
+      if (!bucket) continue;
+      for (const inst of bucket) {
+        const fact = inst.memoryForwarding ?? inst.extra?.memoryForwarding ?? null;
+        const store = inst.reachingStore || ((fact && isCanonicalExactMemoryForwarding(fact,
+          canonicalMemoryForwardingContextForLoad(fact, inst,
+            inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext)))
+          ? contributingStore(inst.loc.key, fact)
+          : null);
+        if (!store || store.row == null) continue;
+        if (!sourceRows.has(String(store.row))) continue;
+        if (!load || inst.row > load.row) {
+          load = inst;
+          spill = store;
+        }
+      }
     }
-    const spillFact = load?.memoryForwarding ?? load?.extra?.memoryForwarding ?? null;
-    const spill = load?.reachingStore || (isCanonicalExactMemoryForwarding(spillFact,
-      canonicalMemoryForwardingContextForLoad(spillFact, load,
-        load?.memoryForwardingContext ?? load?.extra?.memoryForwardingContext))
-      ? contributingStore(load.loc.key, spillFact)
-      : null);
     if (!load || !spill) continue;
     const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
