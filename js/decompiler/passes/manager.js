@@ -48,6 +48,23 @@ function isDeepImmutable(value) {
   if (value === null || typeof value !== 'object') return true;
   const cached = deepImmutableCache.get(value);
   if (cached !== undefined) return cached;
+  if (value instanceof Map || value instanceof Set || value instanceof Date
+      || value instanceof RegExp || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    deepImmutableCache.set(value, false);
+    return false;
+  }
+  const rootIsArr = Array.isArray(value);
+  if (!rootIsArr) {
+    const rootProto = Object.getPrototypeOf(value);
+    if (rootProto !== Object.prototype && rootProto !== null) {
+      deepImmutableCache.set(value, true);
+      return true;
+    }
+  }
+  if (!Object.isFrozen(value)) {
+    deepImmutableCache.set(value, false);
+    return false;
+  }
   const stack = [value];
   const seen = new Set();
   const parent = new WeakMap();
@@ -55,7 +72,7 @@ function isDeepImmutable(value) {
   let mutableWitness = null;
   while (stack.length) {
     const current = stack.pop();
-    if (current === null || typeof current !== 'object' || seen.has(current)) continue;
+    if (seen.has(current)) continue;
     seen.add(current);
     const known = deepImmutableCache.get(current);
     if (known === true) continue;
@@ -64,18 +81,25 @@ function isDeepImmutable(value) {
         || current instanceof RegExp || current instanceof ArrayBuffer || ArrayBuffer.isView(current)) {
       immutable = false; mutableWitness = current; break;
     }
-    const proto = Object.getPrototypeOf(current);
-    // Anything the traversal below would not snapshot is also not snapshotted
-    // here, so it can be ignored rather than forcing a conservative fallback.
-    if (!Array.isArray(current) && proto !== Object.prototype && proto !== null) continue;
+    const isArr = Array.isArray(current);
+    if (!isArr) {
+      const proto = Object.getPrototypeOf(current);
+      // Anything the traversal below would not snapshot is also not snapshotted
+      // here, so it can be ignored rather than forcing a conservative fallback.
+      if (proto !== Object.prototype && proto !== null) continue;
+    }
     if (!Object.isFrozen(current)) { immutable = false; mutableWitness = current; break; }
-    const descriptors = Object.getOwnPropertyDescriptors(current);
-    for (const key of Reflect.ownKeys(descriptors)) {
-      const descriptor = descriptors[key];
-      if ('value' in descriptor) {
+    const keys = Reflect.ownKeys(current);
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      if (isArr && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor && 'value' in descriptor) {
         const child = descriptor.value;
-        if (child !== null && typeof child === 'object' && !parent.has(child) && child !== value) parent.set(child, current);
-        stack.push(child);
+        if (child !== null && typeof child === 'object') {
+          if (!parent.has(child) && child !== value) parent.set(child, current);
+          stack.push(child);
+        }
       }
     }
   }
@@ -130,11 +154,27 @@ function capturePassState(state, shouldAbort = null) {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
     records.push({ value, proto, descriptors, entries, map, set, time:date ? value.getTime() : null });
-    for (const key of Reflect.ownKeys(descriptors)) {
-      if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+    const descKeys = Reflect.ownKeys(descriptors);
+    for (let i = 0; i < descKeys.length; i += 1) {
+      const desc = descriptors[descKeys[i]];
+      if ('value' in desc) {
+        const child = desc.value;
+        if (child !== null && typeof child === 'object' && !seen.has(child)) pending.push(child);
+      }
     }
-    if (map) for (const [key, entry] of entries) pending.push(key, entry);
-    if (set) for (const entry of entries) pending.push(entry);
+    if (map) {
+      for (let i = 0; i < entries.length; i += 1) {
+        const pair = entries[i];
+        if (pair[0] !== null && typeof pair[0] === 'object' && !seen.has(pair[0])) pending.push(pair[0]);
+        if (pair[1] !== null && typeof pair[1] === 'object' && !seen.has(pair[1])) pending.push(pair[1]);
+      }
+    }
+    if (set) {
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i];
+        if (entry !== null && typeof entry === 'object' && !seen.has(entry)) pending.push(entry);
+      }
+    }
   }
   if (globalThis.__hexPerfProbe) globalThis.__hexPerfProbe.recordCapturePassState?.(performance.now() - __t0, records.length); // PERF-PROBE
   return () => {

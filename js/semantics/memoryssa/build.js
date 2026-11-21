@@ -24,7 +24,10 @@ import {
   canonicalAccessProof,
   canonicalAccessBinding,
   canonicalAliasProof,
+  bindMemorySsaProducerVerifier,
+  canonicalIdentityDigest,
   canonicalMemorySsaDigest,
+  registerPublishedMemorySsaCaches,
   canonicalStoreValueProof,
   isCanonicalAccessProvider,
   MEMORY_SSA_PROOF_VERSION,
@@ -80,6 +83,7 @@ class CanonicalMemorySsaArtifact {
 export function isCanonicalMemorySsaProducerArtifact(artifact) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.has(artifact);
 }
+bindMemorySsaProducerVerifier(isCanonicalMemorySsaProducerArtifact);
 
 export function canonicalMemorySsaProducerMatchesSemanticIr(artifact, ir) {
   return !Array.isArray(artifact) && CanonicalMemorySsaArtifact.matchesSemanticIr(artifact, ir);
@@ -987,6 +991,14 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: MEMORY_SSA_BUILD_VERSION,
   }));
+  const identityDigest = canonicalIdentityDigest(identity);
+  const accessProofCache = new Map();
+  const cachedMemoryAccessProof = (descriptor) => {
+    if (accessProofCache.has(descriptor)) return accessProofCache.get(descriptor);
+    const proof = memoryAccessProof(descriptor, options, identity);
+    accessProofCache.set(descriptor, proof);
+    return proof;
+  };
 
   // The Semantic IR access provider is the canonical producer for the
   // decoder's intentionally-unknown ordinary-access qualifiers. Normalize the
@@ -1419,7 +1431,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             }),
             aliasProof: reaching.proof ?? null,
             aliasRelation: reaching.relation === 'no' ? 'unknown' : reaching.relation,
-            accessProof: memoryAccessProof(descriptor, options, identity),
+            accessProof: cachedMemoryAccessProof(descriptor),
             ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
               ? (() => {
                 const canonicalValue = descriptor.role === 'write'
@@ -1429,16 +1441,21 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
               })()
               : {}),
             origin: jsonSafe(descriptor.node.origin),
-            byteRange: memoryByteRange(region, descriptor.memory, descriptor.node),
-            rangeProof: memoryRangeProof(
-              id,
-              nodeId,
-              region.id,
-              memoryByteRange(region, descriptor.memory, descriptor.node),
-              descriptor.memory,
-              descriptor.node,
-              region,
-            ),
+            ...(() => {
+              const byteRange = memoryByteRange(region, descriptor.memory, descriptor.node);
+              return {
+                byteRange,
+                rangeProof: memoryRangeProof(
+                  id,
+                  nodeId,
+                  region.id,
+                  byteRange,
+                  descriptor.memory,
+                  descriptor.node,
+                  region,
+                ),
+              };
+            })(),
             order: nodeOrderById.get(nodeId) ?? null,
           });
         }
@@ -1468,7 +1485,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       }),
       aliasProof: event.aliasProof,
       aliasRelation: event.aliasRelation,
-      accessProof: memoryAccessProof(event.descriptor, options, identity),
+      accessProof: cachedMemoryAccessProof(event.descriptor),
       ...(event.descriptor.role === 'write'
         ? (() => {
           const canonicalValue = canonicalStoreOperand(
@@ -1485,31 +1502,43 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         })()
         : {}),
       origin: jsonSafe(event.descriptor.node.origin),
-      byteRange: memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
-      rangeProof: memoryRangeProof(
-        event.id,
-        event.descriptor.node.id,
-        event.regionId,
-        memoryByteRange(regionById.get(event.regionId), event.descriptor.memory, event.descriptor.node),
-        event.descriptor.memory,
-        event.descriptor.node,
-        regionById.get(event.regionId),
-      ),
+      ...(() => {
+        const eventRegion = regionById.get(event.regionId);
+        const byteRange = memoryByteRange(eventRegion, event.descriptor.memory, event.descriptor.node);
+        return {
+          byteRange,
+          rangeProof: memoryRangeProof(
+            event.id,
+            event.descriptor.node.id,
+            event.regionId,
+            byteRange,
+            event.descriptor.memory,
+            event.descriptor.node,
+            eventRegion,
+          ),
+        };
+      })(),
       order: nodeOrderById.get(event.descriptor.node.id) ?? null,
     });
   }
 
   const definitionByIdForCoverage = new Map(definitions.map((definition) => [definition.id, definition]));
+  const conservativeWriteRegionIds = new Set();
+  for (let i = 0; i < descriptors.length; i += 1) {
+    const descriptor = descriptors[i];
+    if (descriptor.role !== 'write') continue;
+    if (descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true) continue;
+    for (let j = 0; j < descriptor.regions.length; j += 1) {
+      conservativeWriteRegionIds.add(descriptor.regions[j].id);
+    }
+  }
   const byteCoverage = byteCoverageInputs.map((input) => {
     const region = regionById.get(input.regionId) ?? null;
     const loadRange = memoryByteRange(region, input.descriptor.memory, input.descriptor.node);
+    const stackRoot = input.descriptor.regions.some((r) => String(r.kind).startsWith('stack'));
     const regionAliases = regions.map((candidate) => {
       const alias = descriptorToRegionAlias(input.descriptor, candidate, 'load-byte-region');
-      const stackRoot = input.descriptor.regions.some((region) => String(region.kind).startsWith('stack'));
-      const hasConservativeStackWrite = descriptors.some((descriptor) => descriptor.role === 'write'
-        && descriptor.regions.some((region) => region.id === candidate.id)
-        && !(descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true));
-      if (stackRoot && candidate.kind === 'unknown' && !hasConservativeStackWrite) {
+      if (stackRoot && candidate.kind === 'unknown' && !conservativeWriteRegionIds.has(candidate.id)) {
         return {
           regionId: candidate.id,
           aliasRelation: 'no',
@@ -1552,7 +1581,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       nodeId: input.nodeId,
       regionId: input.regionId,
       loadRange,
-      identityDigest: stableDigest(identity),
+      identityDigest,
     };
     return {
       useId: input.useId,
@@ -1615,5 +1644,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
   const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished, irFunction));
+  registerPublishedMemorySsaCaches(published, unpublished.canonicalDigest, published.accessMetadata, published.canonicalAccessBindings);
   return published;
 }

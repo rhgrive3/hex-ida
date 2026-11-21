@@ -55,20 +55,91 @@ export function observeProjectedOperationData(projected, transitions) {
   const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
   const prototype = Object.getPrototypeOf(projected);
   const roots = rootKeys.map(key => own(projected, key));
-  const locations = [...new Set(transitions.flatMap(({ source, store, input, beforeInputs }) => [source, store, input?.def,
-    ...beforeInputs.map(value => value.def)]).filter(Boolean))].map(instruction => {
-    const blockIndex = projected.blocks.findIndex(block => block.index === instruction.block);
-    const block = projected.blocks[blockIndex], key = block?.phis?.includes(instruction) ? 'phis' : 'insts';
-    const list = block?.[key], index = list?.indexOf(instruction), flatIndex = projected.instructions.indexOf(instruction);
+  const blockById = new Map();
+  for (let i = 0; i < projected.blocks.length; i += 1) {
+    const b = projected.blocks[i];
+    if (!blockById.has(b.index)) blockById.set(b.index, { block: b, blockIndex: i, phiIndex: null, instIndex: null });
+  }
+  const flatIndexByInst = new Map();
+  for (let i = 0; i < projected.instructions.length; i += 1) {
+    const inst = projected.instructions[i];
+    if (!flatIndexByInst.has(inst)) flatIndexByInst.set(inst, i);
+  }
+  const valueIndexByVal = new Map();
+  for (let i = 0; i < projected.values.length; i += 1) {
+    const val = projected.values[i];
+    if (!valueIndexByVal.has(val)) valueIndexByVal.set(val, i);
+  }
+  const uniqueInsts = new Set();
+  const uniqueVals = new Set();
+  for (let i = 0; i < transitions.length; i += 1) {
+    const t = transitions[i];
+    if (t.source) {
+      uniqueInsts.add(t.source);
+      if (t.source.dst) uniqueVals.add(t.source.dst);
+    }
+    if (t.store) uniqueInsts.add(t.store);
+    if (t.input) {
+      uniqueVals.add(t.input);
+      if (t.input.def) uniqueInsts.add(t.input.def);
+    }
+    const bi = t.beforeInputs;
+    if (bi) {
+      for (let j = 0; j < bi.length; j += 1) {
+        const v = bi[j];
+        if (v) {
+          uniqueVals.add(v);
+          if (v.def) uniqueInsts.add(v.def);
+        }
+      }
+    }
+  }
+  const locations = [];
+  const blockListChecks = [];
+  const seenBlockList = new Map();
+  for (const instruction of uniqueInsts) {
+    const bInfo = blockById.get(instruction.block);
+    const block = bInfo?.block;
+    const blockIndex = bInfo ? bInfo.blockIndex : -1;
+    let key = 'insts';
+    let index = -1;
+    if (block) {
+      if (block.phis && block.phis.length > 0) {
+        if (bInfo.phiIndex === null) {
+          const m = new Map();
+          for (let i = 0; i < block.phis.length; i += 1) if (!m.has(block.phis[i])) m.set(block.phis[i], i);
+          bInfo.phiIndex = m;
+        }
+        const pi = bInfo.phiIndex.get(instruction);
+        if (pi !== undefined) { key = 'phis'; index = pi; }
+      }
+      if (index < 0 && block.insts) {
+        if (bInfo.instIndex === null) {
+          const m = new Map();
+          for (let i = 0; i < block.insts.length; i += 1) if (!m.has(block.insts[i])) m.set(block.insts[i], i);
+          bInfo.instIndex = m;
+        }
+        const ii = bInfo.instIndex.get(instruction);
+        if (ii !== undefined) index = ii;
+      }
+    }
+    const list = block?.[key];
+    const flatIndex = flatIndexByInst.get(instruction) ?? -1;
     if (!(index >= 0) || flatIndex < 0) throw new Error('compat-transition-definition-missing');
-    return { instruction, blockIndex, block, blockId:block.index, key, list, index, flatIndex };
-  });
-  const values = [...new Set(transitions.flatMap(({ source, input, beforeInputs }) => [source?.dst, input, ...beforeInputs]).filter(Boolean))]
-    .map(value => {
-      const index = projected.values.indexOf(value);
-      if (index < 0) throw new Error('compat-transition-value-missing');
-      return { value, index };
-    });
+    const blKey = `${blockIndex}:${key}`;
+    if (!seenBlockList.has(blKey)) {
+      const check = { blockIndex, block, blockId: block.index, key, list };
+      seenBlockList.set(blKey, check);
+      blockListChecks.push(check);
+    }
+    locations.push({ instruction, blockIndex, block, blockId: block.index, key, list, index, flatIndex });
+  }
+  const values = [];
+  for (const value of uniqueVals) {
+    const index = valueIndexByVal.get(value) ?? -1;
+    if (index < 0) throw new Error('compat-transition-value-missing');
+    values.push({ value, index });
+  }
   // Transition roots are vertices of one cyclic SSA graph. Observe every
   // mutable field by distance from these exact roots, with a fresh observer.
   // Immutable descriptions have separately bounded data certificates; origins
@@ -77,15 +148,31 @@ export function observeProjectedOperationData(projected, transitions) {
   // Unrelated projection members are not additional observation roots.
   const captured = createProjectionIrObserver().captureCertifiedDataGraph([projected.compat,
     ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
-  const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
-    && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
-    && values.every(({ value, index }) => own(roots[1], index) === value)
-    && locations.every(({ instruction, blockIndex, block, blockId, key, list, index, flatIndex }) =>
-      own(roots[2], blockIndex) === block && own(block, 'index') === blockId && own(block, key) === list && own(list, index) === instruction
-      && own(roots[0], flatIndex) === instruction)
-    && (writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
+  const matches = (writes = null) => {
+    if (writes != null && (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes)) return false;
+    if (Object.getPrototypeOf(projected) !== prototype) return false;
+    for (let i = 0; i < rootKeys.length; i += 1) {
+      if (own(projected, rootKeys[i]) !== roots[i]) return false;
+    }
+    const rootValues = roots[1];
+    for (let i = 0; i < values.length; i += 1) {
+      const v = values[i];
+      if (own(rootValues, v.index) !== v.value) return false;
+    }
+    const rootBlocks = roots[2];
+    for (let i = 0; i < blockListChecks.length; i += 1) {
+      const b = blockListChecks[i];
+      if (own(rootBlocks, b.blockIndex) !== b.block || own(b.block, 'index') !== b.blockId || own(b.block, b.key) !== b.list) return false;
+    }
+    const rootInsts = roots[0];
+    for (let i = 0; i < locations.length; i += 1) {
+      const loc = locations[i];
+      if (own(loc.list, loc.index) !== loc.instruction || own(rootInsts, loc.flatIndex) !== loc.instruction) return false;
+    }
+    return writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
       : captured.matchesThroughWrites(writes) || observedRangeAnnotationsMatch(projected,
-        { matchesThroughWrites:ranges => captured.matchesThroughWrites(combinedWriteList(writes, ranges)) }));
+        { matchesThroughWrites:ranges => captured.matchesThroughWrites(combinedWriteList(writes, ranges)) });
+  };
   // The ordinary predicate remains strict even if a caller passes arguments.
   // The separate method is only a pure-data comparison, never write authority.
   const workItems = captured.metrics.nodes + captured.metrics.edges + roots.length
@@ -219,11 +306,21 @@ function sealStateTransitions(projected, observer) {
     const valid = [...accepted];
     const observation = observeProjectedOperationData(projected, valid);
     const locations = projected.locations;
-    const mapped = valid.filter(event => event.path === 'locations:base').flatMap(event => {
-      const entries = [...Map.prototype.entries.call(locations)].filter(([, value]) => value === event.object);
-      if (!entries.length) throw new Error('state-alias-location-missing');
-      return entries;
-    });
+    const locBaseEvents = valid.filter(event => event.path === 'locations:base');
+    let mapped = [];
+    if (locBaseEvents.length > 0) {
+      const entriesByValue = new Map();
+      for (const entry of Map.prototype.entries.call(locations)) {
+        let bucket = entriesByValue.get(entry[1]);
+        if (!bucket) { bucket = []; entriesByValue.set(entry[1], bucket); }
+        bucket.push(entry);
+      }
+      for (let i = 0; i < locBaseEvents.length; i += 1) {
+        const entries = entriesByValue.get(locBaseEvents[i].object);
+        if (!entries || !entries.length) throw new Error('state-alias-location-missing');
+        for (let j = 0; j < entries.length; j += 1) mapped.push(entries[j]);
+      }
+    }
     const mappedCurrent = () => !mapped.length || own(projected, 'locations') === locations
       && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value);
     const isCurrent = () => observation() && mappedCurrent();

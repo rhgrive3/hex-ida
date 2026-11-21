@@ -71,10 +71,22 @@ const DEEPLY_FROZEN_CACHE = new WeakMap();
 // typed spelling weakly, and cap individual entries to avoid retaining giant
 // strings beside large live graphs. Mutable/unvalidated data always re-encodes.
 const FROZEN_IDENTITY_TEXT = new WeakMap();
+const FROZEN_IDENTITY_BYTES = new WeakMap();
 const FROZEN_STREAM_CHUNKS = new WeakMap();
+const FROZEN_GRAPH_DIGEST = new WeakMap();
 const DEEPLY_FROZEN_FINITE_CACHE = new WeakMap();
 const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
 const STREAM_CHUNK_TARGET = 64 * 1024;
+
+function encodeChunkForFastFeed(text) {
+  const len = text.length;
+  for (let i = 0; i < len; i += 1) {
+    if (text.charCodeAt(i) >= 256) return text;
+  }
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) bytes[i] = text.charCodeAt(i);
+  return bytes;
+}
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -83,10 +95,13 @@ const STREAM_CHUNK_TARGET = 64 * 1024;
  * non-enumerable `length` descriptor; all other descriptors are required to be
  * explicit enumerable data. */
 function semanticOwnKeys(value) {
+  const isArr = Array.isArray(value);
+  const rawKeys = Reflect.ownKeys(value);
   const keys = [];
-  for (const key of Reflect.ownKeys(value)) {
+  for (let i = 0; i < rawKeys.length; i += 1) {
+    const key = rawKeys[i];
     if (typeof key === 'symbol') throw new TypeError('identity-symbol-semantic-metadata');
-    if (Array.isArray(value) && key === 'length') continue;
+    if (isArr && key === 'length') continue;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
       throw new TypeError('identity-unsupported-semantic-descriptor');
@@ -122,23 +137,30 @@ const DERIVED_IR_KEYS = new Set([
 // nested array could still be changed after an identity was issued.  Rejecting
 // accessors and host containers also keeps hostile metadata on the strict path.
 function deeplyFrozen(value, active = new Set()) {
-  if (value == null || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return true;
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return false;
+  if (value == null) return true;
+  const t = typeof value;
+  if (t === 'string' || t === 'boolean' || t === 'number' || t === 'bigint') return true;
+  if (t !== 'object') return false;
   const cached = DEEPLY_FROZEN_CACHE.get(value);
   if (cached != null) return cached;
   if (!Object.isFrozen(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  const isArr = Array.isArray(value);
+  if (!isArr) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+  }
   if (active.has(value)) return false;
   active.add(value);
   let result = true;
   try {
-    for (const key of Reflect.ownKeys(value)) {
+    const rawKeys = Reflect.ownKeys(value);
+    for (let i = 0; i < rawKeys.length; i += 1) {
+      const key = rawKeys[i];
       if (typeof key === 'symbol') {
         result = false;
         break;
       }
-      if (Array.isArray(value) && key === 'length') continue;
+      if (isArr && key === 'length') continue;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable
           || !deeplyFrozen(descriptor.value, active)) {
@@ -155,18 +177,18 @@ function deeplyFrozen(value, active = new Set()) {
 }
 
 function fastJsonTextDigest(text) {
-  let hash0 = 0x811c9dc5;
-  let hash1 = 0x9e3779b9;
-  let hash2 = 0x243f6a88;
-  let hash3 = 0xb7e15162;
+  let hash0 = 0x811c9dc5 | 0;
+  let hash1 = 0x9e3779b9 | 0;
+  let hash2 = 0x243f6a88 | 0;
+  let hash3 = 0xb7e15162 | 0;
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
-    hash0 = Math.imul(hash0 ^ code, 0x01000193) >>> 0;
-    hash1 = Math.imul(hash1 ^ code, 0x85ebca6b) >>> 0;
-    hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35) >>> 0;
-    hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f) >>> 0;
+    hash0 = Math.imul(hash0 ^ code, 0x01000193);
+    hash1 = Math.imul(hash1 ^ code, 0x85ebca6b);
+    hash2 = Math.imul(hash2 ^ code, 0xc2b2ae35);
+    hash3 = Math.imul(hash3 ^ code, 0x27d4eb2f);
   }
-  return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  return [hash0 >>> 0, hash1 >>> 0, hash2 >>> 0, hash3 >>> 0].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
 function fastFrozenOriginDigest(value) {
@@ -281,44 +303,108 @@ function typedIdentityText(root) {
 }
 
 function fastJsonGraphDigest(root) {
-  let hash0 = 0x811c9dc5;
-  let hash1 = 0x9e3779b9;
-  let hash2 = 0x243f6a88;
-  let hash3 = 0xb7e15162;
+  const rootFrozen = root != null && typeof root === 'object'
+    && (DEEPLY_FROZEN_CACHE.get(root) === true || (Object.isFrozen(root) && deeplyFrozen(root)));
+  if (rootFrozen) {
+    const cachedDigest = FROZEN_GRAPH_DIGEST.get(root);
+    if (cachedDigest !== undefined) return cachedDigest;
+  }
+  let hash0 = 0x811c9dc5 | 0;
+  let hash1 = 0x9e3779b9 | 0;
+  let hash2 = 0x243f6a88 | 0;
+  let hash3 = 0xb7e15162 | 0;
   const feedText = (text) => {
     let h0 = hash0;
     let h1 = hash1;
     let h2 = hash2;
     let h3 = hash3;
-    for (let index = 0; index < text.length; index += 1) {
+    const len = text.length;
+    for (let index = 0; index < len; index += 1) {
       const code = text.charCodeAt(index);
-      h0 = Math.imul(h0 ^ code, 0x01000193) >>> 0;
-      h1 = Math.imul(h1 ^ code, 0x85ebca6b) >>> 0;
-      h2 = Math.imul(h2 ^ code, 0xc2b2ae35) >>> 0;
-      h3 = Math.imul(h3 ^ code, 0x27d4eb2f) >>> 0;
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
     }
     hash0 = h0;
     hash1 = h1;
     hash2 = h2;
     hash3 = h3;
   };
+  const feedBytes = (bytes) => {
+    let h0 = hash0;
+    let h1 = hash1;
+    let h2 = hash2;
+    let h3 = hash3;
+    const len = bytes.length;
+    const len4 = len - 3;
+    let i = 0;
+    for (; i < len4; i += 4) {
+      let c = bytes[i];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 1];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 2];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+      c = bytes[i + 3];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+    }
+    for (; i < len; i += 1) {
+      const c = bytes[i];
+      h0 = Math.imul(h0 ^ c, 0x01000193);
+      h1 = Math.imul(h1 ^ c, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ c, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ c, 0x27d4eb2f);
+    }
+    hash0 = h0;
+    hash1 = h1;
+    hash2 = h2;
+    hash3 = h3;
+  };
+  const feedChunk = (chunk) => {
+    if (typeof chunk === 'string') feedText(chunk);
+    else feedBytes(chunk);
+  };
   const active = new Set();
   const buildFrozenChunks = (target) => {
     const chunks = [];
     let buffer = '';
+    const flushBuffer = () => {
+      if (buffer.length > 0) {
+        chunks.push(encodeChunkForFastFeed(buffer));
+        buffer = '';
+      }
+    };
     const push = (text) => {
       if (text.length === 0) return;
       if (buffer.length + text.length >= STREAM_CHUNK_TARGET) {
-        if (buffer.length > 0) {
-          chunks.push(buffer);
-          buffer = '';
-        }
+        flushBuffer();
         if (text.length >= STREAM_CHUNK_TARGET) {
-          chunks.push(text);
+          chunks.push(encodeChunkForFastFeed(text));
           return;
         }
       }
       buffer += text;
+    };
+    const pushEncoded = (encoded) => {
+      if (typeof encoded === 'string') {
+        push(encoded);
+        return;
+      }
+      flushBuffer();
+      chunks.push(encoded);
     };
     const emitValue = (value) => {
       if (value === null) { push('null;'); return; }
@@ -340,12 +426,14 @@ function fastJsonGraphDigest(root) {
       if (cachedText !== undefined) { push(cachedText); return; }
       const cachedChunks = FROZEN_STREAM_CHUNKS.get(value);
       if (cachedChunks !== undefined) {
-        for (let i = 0; i < cachedChunks.length; i += 1) push(cachedChunks[i]);
+        for (let i = 0; i < cachedChunks.length; i += 1) pushEncoded(cachedChunks[i]);
         return;
       }
       if (value !== target && ((Array.isArray(value) && value.length >= 16) || (!Array.isArray(value) && Object.keys(value).length >= 2))) {
         const subChunks = buildFrozenChunks(value);
-        for (let i = 0; i < subChunks.length; i += 1) push(subChunks[i]);
+        const smallText = FROZEN_IDENTITY_TEXT.get(value);
+        if (smallText !== undefined) { push(smallText); return; }
+        for (let i = 0; i < subChunks.length; i += 1) pushEncoded(subChunks[i]);
         return;
       }
       active.add(value);
@@ -414,12 +502,14 @@ function fastJsonGraphDigest(root) {
       }
     };
     emitValue(target);
-    if (buffer.length > 0) chunks.push(buffer);
-    if (chunks.length === 1 && chunks[0].length <= MAX_CACHED_IDENTITY_TEXT) {
-      FROZEN_IDENTITY_TEXT.set(target, chunks[0]);
-    } else {
-      FROZEN_STREAM_CHUNKS.set(target, chunks);
+    if (chunks.length === 0 && buffer.length <= MAX_CACHED_IDENTITY_TEXT) {
+      FROZEN_IDENTITY_TEXT.set(target, buffer);
+      const encoded = encodeChunkForFastFeed(buffer);
+      FROZEN_IDENTITY_BYTES.set(target, encoded);
+      return [encoded];
     }
+    flushBuffer();
+    FROZEN_STREAM_CHUNKS.set(target, chunks);
     return chunks;
   };
   const stream = (value) => {
@@ -441,15 +531,22 @@ function fastJsonGraphDigest(root) {
     const certifiedFrozen = DEEPLY_FROZEN_CACHE.get(value) === true
       || (Object.isFrozen(value) && deeplyFrozen(value));
     if (certifiedFrozen) {
+      const cachedBytes = FROZEN_IDENTITY_BYTES.get(value);
+      if (cachedBytes !== undefined) { feedChunk(cachedBytes); return; }
       const cachedText = FROZEN_IDENTITY_TEXT.get(value);
-      if (cachedText !== undefined) { feedText(cachedText); return; }
+      if (cachedText !== undefined) {
+        const encoded = encodeChunkForFastFeed(cachedText);
+        FROZEN_IDENTITY_BYTES.set(value, encoded);
+        feedChunk(encoded);
+        return;
+      }
       const cachedChunks = FROZEN_STREAM_CHUNKS.get(value);
       if (cachedChunks !== undefined) {
-        for (let i = 0; i < cachedChunks.length; i += 1) feedText(cachedChunks[i]);
+        for (let i = 0; i < cachedChunks.length; i += 1) feedChunk(cachedChunks[i]);
         return;
       }
       const chunks = buildFrozenChunks(value);
-      for (let i = 0; i < chunks.length; i += 1) feedText(chunks[i]);
+      for (let i = 0; i < chunks.length; i += 1) feedChunk(chunks[i]);
       return;
     }
     active.add(value);
@@ -518,7 +615,9 @@ function fastJsonGraphDigest(root) {
     }
   };
   stream(root);
-  return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  const digest = [hash0 >>> 0, hash1 >>> 0, hash2 >>> 0, hash3 >>> 0].map((hash) => hash.toString(16).padStart(8, '0')).join('');
+  if (rootFrozen) FROZEN_GRAPH_DIGEST.set(root, digest);
+  return digest;
 }
 
 /**
