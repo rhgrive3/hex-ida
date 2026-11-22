@@ -66,7 +66,7 @@ function semanticIndexTerm(valueId, context, active) {
         origin: mergeOrigins(nested.origin, producer.origin, semanticValue?.origin),
       };
     }
-  } else if (producer.kind === 'binary' && producer.operator === 'shl' && producer.inputs.length === 2) {
+  } else if (producer.kind === 'binary' && (producer.operator === 'shl' || producer.operator === 'lsl') && producer.inputs.length === 2) {
     const nested = semanticIndexTerm(producer.inputs[0], context, active);
     const amountNode = producerByValueId.get(producer.inputs[1]) ?? null;
     const amount = amountNode?.kind === 'const' ? constantPayload(amountNode) : null;

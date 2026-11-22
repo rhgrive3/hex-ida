@@ -556,6 +556,7 @@ export function attachFallbackMemory(projected) {
 export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId) {
   if (!ssa) return;
   const phiDefinitions = ssa.definitions.filter((definition) => definition.kind === 'phi');
+  const phiInstructions = [];
   for (const definition of phiDefinitions) {
     const value = valuesById.get(definition.valueId);
     if (!value) continue;
@@ -603,7 +604,18 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
     value.reg = publicIdentity;
     value.def = inst;
     projected.blocks[block].phis.push(inst);
-    projected.instructions.unshift(inst);
+    phiInstructions.push(inst);
+  }
+  if (phiInstructions.length) {
+    const offset = phiInstructions.length;
+    const oldLength = projected.instructions.length;
+    projected.instructions.length = oldLength + offset;
+    for (let index = oldLength - 1; index >= 0; index -= 1) {
+      projected.instructions[index + offset] = projected.instructions[index];
+    }
+    for (let index = 0; index < offset; index += 1) {
+      projected.instructions[index] = phiInstructions[offset - 1 - index];
+    }
   }
 
   for (const definition of ssa.definitions) {
@@ -681,11 +693,18 @@ export function appendFunctionUnknowns(projected, ir) {
 export function assignInstructionIds(projected) {
   projected.instructions.forEach((inst, index) => { inst.id = index; });
   projected.byRow.clear();
-  for (const block of projected.blocks) block.insts = block.insts.filter((inst) => inst.op !== V1_OP.PHI);
+  const blockInstSets = projected.blocks.map((block) => {
+    block.insts = block.insts.filter((inst) => inst.op !== V1_OP.PHI);
+    return new Set(block.insts);
+  });
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.PHI) {
       const block = projected.blocks[inst.block];
-      if (block && !block.insts.includes(inst)) block.insts.push(inst);
+      const seen = blockInstSets[inst.block];
+      if (block && seen && !seen.has(inst)) {
+        seen.add(inst);
+        block.insts.push(inst);
+      }
     }
     let list = projected.byRow.get(inst.row);
     if (!list) { list = []; projected.byRow.set(inst.row, list); }

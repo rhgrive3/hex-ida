@@ -35,8 +35,10 @@ export function parseCHPELoadConfig(
   targetImage.arch = 'arm64ec';
 
   let chpeMetadataRva = null;
-  if (image.imageBase != null && chpePointerVa >= image.imageBase && chpePointerVa - image.imageBase <= 0xffffffffn) {
-    chpeMetadataRva = Number(chpePointerVa - image.imageBase);
+  if (image.imageBase != null) {
+    if (chpePointerVa >= image.imageBase && chpePointerVa - image.imageBase <= 0xffffffffn) {
+      chpeMetadataRva = Number(chpePointerVa - image.imageBase);
+    }
   } else if (chpePointerVa > 0n && chpePointerVa <= 0xffffffffn) {
     chpeMetadataRva = Number(chpePointerVa);
   }

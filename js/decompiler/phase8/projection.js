@@ -1042,10 +1042,19 @@ function applyPhase8ProjectionCore(result, analysis, opts = {}) {
     // polarity while using current variable spellings. The private producer
     // binding supplies inversion; caller metadata cannot grant it. The proved
     // condition path above has its own polarity and equivalence binding.
+    const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
+    if (renderOnly && regionPlan == null && candidates.length === 1 && keyword && node.semantic?.op === 'control-render') {
+      // Spelling-preserving render-only projection keeps the emitter's exact
+      // control text, while still binding the unambiguous condition consumer
+      // for the same canonical branch instruction.
+      const consumers = [...new Set(rows.map(row => conditionConsumers.get(row)).filter(Boolean))];
+      if (consumers.length === 1 && consumers[0].instructionId != null && consumers[0].instructionId === node.semantic?.ir) {
+        renderedConditions.set(node, consumers[0]);
+      }
+    }
     if (!renderOnly && candidates.length === 1) {
       const printed = printExpression(candidates[0]);
       const expression = controlSources[index]?.conditionInverted ? `!(${printed})` : printed;
-      const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
       if (keyword) {
         const beforeText = node.text, control = controlSources[index];
         let priorControl = null;

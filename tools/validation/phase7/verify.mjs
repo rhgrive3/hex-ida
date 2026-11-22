@@ -317,6 +317,9 @@ export function publish(report, outputDirectory) {
     ['phase7-release-evidence.md', renderMarkdown(report)],
   ]) {
     const target = path.join(outputDirectory, name);
+    if (fs.existsSync(target) && fs.readFileSync(target, 'utf8') === content) {
+      continue;
+    }
     const temporary = path.join(outputDirectory, `.${name}.${process.pid}.tmp`);
     fs.writeFileSync(temporary, content);
     if (fs.statSync(temporary).size === 0) {
@@ -338,7 +341,11 @@ if (isMain) {
   const expectedShaIndex = argv.indexOf('--expect-sha');
   const expectedSha = expectedShaIndex >= 0 ? argv[expectedShaIndex + 1] : null;
   const outputIndex = argv.indexOf('--out');
-  const outputDirectory = path.resolve(ROOT, outputIndex >= 0 ? argv[outputIndex + 1] : 'reports/phase7');
+  const hasExplicitOut = outputIndex >= 0;
+  const writeFlag = argv.includes('--write');
+  const noWriteFlag = argv.includes('--no-write');
+  const shouldPublish = !noWriteFlag && (writeFlag || hasExplicitOut || process.env.GITHUB_ACTIONS === 'true');
+  const outputDirectory = path.resolve(ROOT, hasExplicitOut ? argv[outputIndex + 1] : 'reports/phase7');
   let report = null;
   try {
     report = await verifyPhase7({ shadow, expectedSha, gates });
@@ -348,9 +355,16 @@ if (isMain) {
   }
   if (report) {
     try {
-      publish(report, outputDirectory);
-      console.log(`P7_VERDICT=${report.verdict}`);
-      console.log(`P7_EVIDENCE=${path.relative(ROOT, outputDirectory)}/phase7-release-evidence.json`);
+      if (shouldPublish) {
+        publish(report, outputDirectory);
+        console.log(`P7_VERDICT=${report.verdict}`);
+        console.log(`P7_EVIDENCE=${path.relative(ROOT, outputDirectory)}/phase7-release-evidence.json`);
+      } else {
+        const errors = validateEvidence(report);
+        if (errors.length) throw new Error(`Phase 7 evidence failed its own schema: ${errors.join('; ')}`);
+        console.log(`P7_VERDICT=${report.verdict}`);
+        console.log('P7_EVIDENCE=(check-only; pass --write or --out <dir> to publish)');
+      }
       console.log(renderMarkdown(report));
       // Shadow mode reports the truth without failing the surrounding job, so
       // the verifier can run from the very first checkpoint.

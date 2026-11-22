@@ -52,9 +52,11 @@ export const AGGREGATE_SUMMARY_VERSION = 1;
 export const AGGREGATE_KINDS = Object.freeze([
   'struct', 'array', 'array-of-struct', 'struct-of-array', 'union', 'embedded-object', 'object', 'unknown',
 ]);
+const AGGREGATE_KIND_SET = new Set(AGGREGATE_KINDS);
 
 /** Certainty ladder. Nothing climbs it on soft evidence alone. */
 export const CERTAINTIES = Object.freeze(['candidate', 'supported', 'confirmed']);
+const CERTAINTY_SET = new Set(CERTAINTIES);
 
 const DEFAULT_LIMITS = Object.freeze({ maxAccesses: 4096, maxRegions: 256, maxCopyChain: 8 });
 
@@ -653,10 +655,10 @@ export function forcedContradictions(facts) {
       if (entry.certainty === 'confirmed' && !entry.support.some((fact) => fact.tier === 'hard')) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'confirmed-without-hard-evidence', detail: 'certainty was reached on soft evidence alone' });
       }
-      if (!CERTAINTIES.includes(entry.certainty)) {
+      if (!CERTAINTY_SET.has(entry.certainty)) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'unknown-certainty', detail: String(entry.certainty) });
       }
-      if (!AGGREGATE_KINDS.includes(entry.kind)) {
+      if (!AGGREGATE_KIND_SET.has(entry.kind)) {
         forced.push({ regionKey: region.regionKey, kind: entry.kind, problem: 'unknown-kind', detail: String(entry.kind) });
       }
     }

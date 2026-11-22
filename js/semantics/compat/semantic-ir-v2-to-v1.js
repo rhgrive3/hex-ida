@@ -517,22 +517,42 @@ function abiRegisterDescriptors(argument) {
   return argument.regs.filter(Boolean).map((reg) => ({ reg: String(reg), bits: Number(argument.bits ?? 0) || null }));
 }
 
-function projectedAbiArgumentValue(argument, inst, projected) {
+function buildValuesByRegIndex(projected) {
+  const valuesByReg = new Map();
+  for (const value of projected.values) {
+    if (value.reg == null) continue;
+    let bucket = valuesByReg.get(value.reg);
+    if (!bucket) {
+      bucket = [];
+      valuesByReg.set(value.reg, bucket);
+    }
+    bucket.push(value);
+  }
+  for (const bucket of valuesByReg.values()) {
+    bucket.sort((left, right) => {
+      if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
+      return (right.id ?? 0) - (left.id ?? 0);
+    });
+  }
+  return valuesByReg;
+}
+
+function projectedAbiArgumentValue(argument, inst, projected, valuesByReg) {
   if (argument && typeof argument === 'object' && Array.isArray(argument.uses) && argument.kind) {
     return valueDominatesInstruction(argument, inst, projected) ? argument : null;
   }
   const descriptors = abiRegisterDescriptors(argument);
   for (const descriptor of descriptors) {
-    const candidates = projected.values
-      .filter((value) => value.reg === descriptor.reg && valueDominatesInstruction(value, inst, projected))
-      .sort((left, right) => {
-        const leftWidth = descriptor.bits != null && left.bits === descriptor.bits ? 1 : 0;
-        const rightWidth = descriptor.bits != null && right.bits === descriptor.bits ? 1 : 0;
-        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
-        return (right.id ?? 0) - (left.id ?? 0);
-      });
-    if (candidates.length) return candidates[0];
+    const bucket = valuesByReg.get(descriptor.reg);
+    if (!bucket) continue;
+    let fallback = null;
+    for (let i = 0; i < bucket.length; i += 1) {
+      const value = bucket[i];
+      if (!valueDominatesInstruction(value, inst, projected)) continue;
+      if (descriptor.bits == null || value.bits === descriptor.bits) return value;
+      if (fallback == null) fallback = value;
+    }
+    if (fallback != null) return fallback;
   }
   return null;
 }
@@ -551,13 +571,15 @@ function projectedAbiArgumentValue(argument, inst, projected) {
  * exists would sever the real def-use edge and allow its producer to disappear.
  */
 function attachAbiProjectedArguments(projected) {
+  let valuesByReg = null;
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    if (valuesByReg == null) valuesByReg = buildValuesByRegIndex(projected);
     const existing = (inst.args || []).map((argument) => argument?.value).filter(Boolean);
     const seen = new Set(existing.map((value) => value.id));
     const values = existing.slice();
     for (const argument of inst.callArguments) {
-      const value = projectedAbiArgumentValue(argument, inst, projected);
+      const value = projectedAbiArgumentValue(argument, inst, projected, valuesByReg);
       if (!value || seen.has(value.id)) continue;
       seen.add(value.id);
       values.push(value);

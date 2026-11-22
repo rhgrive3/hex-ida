@@ -93,22 +93,6 @@ export function createAppAnalysisQueryAdapter(app) {
       const baseResult = await base.evidence(snapshot, query, { offset: upstreamOffset, limit: upstreamLimit }, options);
       const baseRows = (Array.isArray(baseResult?.value) ? baseResult.value : []).map((item) => projectEvidence('evidence', item));
 
-      let functionResult = null;
-      const suffix = [];
-      if (address != null) {
-        functionResult = await base.functionById(snapshot, address, options);
-        const value = functionResult?.value ?? null;
-        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
-        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
-      }
-
-      // Preserve the existing supplemental row budget without applying it to
-      // upstream pagination. The old global cap made upstream row 5001+ forever
-      // unreachable; now only locally materialized supplemental evidence is capped.
-      const supplementalCapped = prefix.length + suffix.length > MAX_EVIDENCE_ROWS;
-      if (supplementalCapped) suffix.length = Math.max(0, MAX_EVIDENCE_ROWS - prefix.length);
-
       const rawBaseNext = baseResult?.page?.next ?? null;
       const parsedBaseNext = rawBaseNext == null ? null : pageOffset(rawBaseNext);
       const baseContinuationInvalid = rawBaseNext != null && (parsedBaseNext == null || parsedBaseNext <= upstreamOffset);
@@ -126,18 +110,39 @@ export function createAppAnalysisQueryAdapter(app) {
         remaining = requested.limit - value.length;
       }
 
-      let upstreamTotal = null;
-      if (!baseHasNext && !baseContinuationInvalid) {
-        upstreamTotal = baseTotal ?? (upstreamOffset + baseRows.length);
-        if (remaining > 0) {
-          const suffixStart = prefix.length + upstreamTotal;
-          const localCursor = requested.offset + value.length;
-          const suffixOffset = Math.max(0, localCursor - suffixStart);
-          value.push(...suffix.slice(suffixOffset, suffixOffset + remaining));
-        }
+      const upstreamTotal = (!baseHasNext && !baseContinuationInvalid)
+        ? (baseTotal ?? (upstreamOffset + baseRows.length))
+        : null;
+      const localCursorBeforeSuffix = requested.offset + value.length;
+      const needsSuffix = address != null
+        && !baseHasNext
+        && !baseContinuationInvalid
+        && (remaining > 0 || localCursorBeforeSuffix >= prefix.length + upstreamTotal);
+
+      let functionResult = null;
+      const suffix = [];
+      if (needsSuffix) {
+        functionResult = await base.functionById(snapshot, address, options);
+        const value = functionResult?.value ?? null;
+        for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
+        for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
       }
 
-      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext || baseContinuationInvalid);
+      // Preserve the existing supplemental row budget without applying it to
+      // upstream pagination. The old global cap made upstream row 5001+ forever
+      // unreachable; now only locally materialized supplemental evidence is capped.
+      const supplementalCapped = prefix.length + suffix.length > MAX_EVIDENCE_ROWS;
+      if (supplementalCapped) suffix.length = Math.max(0, MAX_EVIDENCE_ROWS - prefix.length);
+
+      if (needsSuffix && remaining > 0) {
+        const suffixStart = prefix.length + upstreamTotal;
+        const suffixOffset = Math.max(0, localCursorBeforeSuffix - suffixStart);
+        value.push(...suffix.slice(suffixOffset, suffixOffset + remaining));
+      }
+
+      const suffixDeferred = address != null && !needsSuffix;
+      let completeness = combinedCompleteness(baseResult, functionResult, baseHasNext || baseContinuationInvalid || suffixDeferred);
       if (supplementalCapped) completeness = 'truncated';
       if ((prefix.length || baseRows.length || suffix.length) && completeness === 'unsupported') completeness = 'partial';
 

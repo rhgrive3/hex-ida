@@ -35,6 +35,14 @@ const UPSTREAM_BUDGET_EXHAUSTED = 'budget-exhausted';
 // the observed bytes cannot be trusted either way. Callers must retry rather
 // than fail-closed to a miss, mirroring the parent's own epoch retry.
 const UPSTREAM_MUTATED = 'mutated';
+const DEFAULT_MAX_IDENTITY_PROOFS = 4096;
+const DEFAULT_MAX_EPOCHS = 4096;
+
+function positiveBound(value, fallback, errorCode) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new TypeError(errorCode);
+  return value;
+}
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -77,11 +85,21 @@ export class ArtifactStore {
   #retiredDependencyRegistries = new Set();
   #readReceipts = new WeakMap();
   #quarantined = new Map();
+  #maxIdentityProofs;
+  #maxEpochs;
 
-  constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
+  constructor({
+    backend = createArtifactBackend(),
+    hotCache = new ArtifactHotCache(),
+    corruptionPolicy = 'delete',
+    maxIdentityProofs = DEFAULT_MAX_IDENTITY_PROOFS,
+    maxEpochs = DEFAULT_MAX_EPOCHS,
+  } = {}) {
     const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
     const hotCacheHooks = snapshotCallableHooks(hotCache, ['get', 'put', 'delete', 'clear', 'stats'], 'artifact-hot-cache-invalid');
     if (!['delete', 'retain'].includes(corruptionPolicy)) throw new TypeError('artifact-corruption-policy-invalid');
+    this.#maxIdentityProofs = positiveBound(maxIdentityProofs, DEFAULT_MAX_IDENTITY_PROOFS, 'artifact-identity-proofs-bound-invalid');
+    this.#maxEpochs = positiveBound(maxEpochs, DEFAULT_MAX_EPOCHS, 'artifact-epochs-bound-invalid');
     this.backend = backend;
     this.hotCache = hotCache;
     this.#backendHooks = backendHooks;
@@ -166,13 +184,45 @@ export class ArtifactStore {
     return this.capabilities().persistent ? 'persistent' : 'memory';
   }
 
+  #recordIdentityProof(artifactId, record) {
+    const id = requireArtifactId(artifactId);
+    this.#identityProofs.delete(id);
+    this.#identityProofs.set(id, record);
+    while (this.#identityProofs.size > this.#maxIdentityProofs) {
+      const oldest = this.#identityProofs.keys().next().value;
+      if (oldest === undefined) break;
+      this.#identityProofs.delete(oldest);
+    }
+  }
+
+  #getIdentityProof(artifactId) {
+    const id = requireArtifactId(artifactId);
+    if (!this.#identityProofs.has(id)) return null;
+    const record = this.#identityProofs.get(id);
+    this.#identityProofs.delete(id);
+    this.#identityProofs.set(id, record);
+    return record;
+  }
+
+  #pruneEpochs() {
+    if (this.epochs.size <= this.#maxEpochs) return;
+    for (const key of this.epochs.keys()) {
+      if (this.epochs.size <= this.#maxEpochs) break;
+      if (this.mutations.has(key)) continue;
+      this.epochs.delete(key);
+    }
+  }
+
   #epoch(artifactId) {
     return this.epochs.get(requireArtifactId(artifactId)) || 0;
   }
 
   #bumpEpoch(artifactId) {
     const id = requireArtifactId(artifactId);
-    this.epochs.set(id, this.#epoch(id) + 1);
+    const next = this.#epoch(id) + 1;
+    this.epochs.delete(id);
+    this.epochs.set(id, next);
+    this.#pruneEpochs();
   }
 
   async #waitForMutation(artifactId) {
@@ -281,7 +331,7 @@ export class ArtifactStore {
           { record:validated.record, payloadBytes:validated.payloadBytes },
           artifactHotEntrySize(validated.record, validated.payloadBytes),
         );
-        this.#identityProofs.set(artifactId, validated.record);
+        this.#recordIdentityProof(artifactId, validated.record);
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
         return this.#observedHit(source, artifactId, validated, epoch, options);
@@ -402,9 +452,9 @@ export class ArtifactStore {
           // store is authoritative.
           validateUpstreamRecordIdentity(validated.record, {
             expectedArtifactId:upstreamId,
-            provenIdentity:this.#identityProofs.get(upstreamId) ?? null,
+            provenIdentity:this.#getIdentityProof(upstreamId),
           });
-          this.#identityProofs.set(upstreamId, validated.record);
+          this.#recordIdentityProof(upstreamId, validated.record);
           this.metrics.readBytes += validated.payloadBytes.byteLength;
           const upstreamStatus = await this.#upstreamsValid(validated.record, options, ctx);
           if (upstreamStatus !== UPSTREAM_VALID) return upstreamStatus;
@@ -594,7 +644,7 @@ export class ArtifactStore {
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
         artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
       );
-      this.#identityProofs.set(artifactId, canonicalRecord);
+      this.#recordIdentityProof(artifactId, canonicalRecord);
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;
       if (writeResult?.duplicate) this.metrics.duplicatePuts++;
@@ -643,6 +693,9 @@ export class ArtifactStore {
     const pending = [...this.mutations.values()];
     if (pending.length) await Promise.allSettled(pending);
     this.#hotCacheHooks.clear();
+    this.#identityProofs.clear();
+    this.epochs.clear();
+    this.#quarantined.clear();
     this.#dependencyRegistries.clear();
     this.#retiredDependencyRegistries.clear();
     await this.#backendHooks.close();
@@ -662,5 +715,11 @@ export class ArtifactStore {
 export function createArtifactStore(options = {}) {
   const backend = options.backend ?? createArtifactBackend(options);
   const hotCache = options.hotCache ?? new ArtifactHotCache(options.hotCacheOptions);
-  return new ArtifactStore({ backend, hotCache, corruptionPolicy:options.corruptionPolicy });
+  return new ArtifactStore({
+    backend,
+    hotCache,
+    corruptionPolicy:options.corruptionPolicy,
+    maxIdentityProofs:options.maxIdentityProofs,
+    maxEpochs:options.maxEpochs,
+  });
 }

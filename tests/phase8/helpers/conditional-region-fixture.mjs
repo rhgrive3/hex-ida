@@ -7,8 +7,17 @@ import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/d
 import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
 import { prepareConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 
+function defaultArmEffect(builder, value) {
+  const store = builder.store(value, { locKind:'global', locKey:'g', bits:8 });
+  Object.assign(store.loc, { address:16n, addressSpace:'data' });
+  store.extra = { completeness:'complete', addressPrecise:true, memoryAccess:{
+    addressSpace:'data', widthBits:8, volatility:false, atomic:false,
+    ordering:'unknown', endian:'little', faults:[],
+  } };
+}
+
 export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', after = null, loopCount = 2,
-  mutate = () => {}, armEffect = () => {} } = {}) {
+  mutate = () => {}, armEffect = defaultArmEffect } = {}) {
   const f = fixture('reachability'); f.block(0);
   const input = f.opaque(8); input.reg = 'x0'; input.index = 0;
   const value = typeof predicate === 'function' ? predicate(f, input)
@@ -26,8 +35,8 @@ export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', afte
     f.block(5); f.ret();
   } else if (after === 'branch' || after === 'loop') {
     f.conditionalBranch(input, 4, 5);
-    f.block(4); if (after === 'loop') f.branch(3); else f.branch(6);
-    f.block(5); if (after === 'loop') f.ret(); else { f.branch(6); f.block(6); f.ret(); }
+    f.block(4); if (after === 'loop') f.branch(3); else { defaultArmEffect(f, input); f.branch(6); }
+    f.block(5); if (after === 'loop') f.ret(); else { defaultArmEffect(f, input); f.branch(6); f.block(6); f.ret(); }
   } else { if (after === 'call') f.call(8); f.ret(); }
   const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => [...block.phis, ...block.insts]);
   ir.instructions.forEach((inst, index) => { inst.id = `reach_${index}`; inst.row = index; inst.address = 0x1000n + BigInt(index * 4); });

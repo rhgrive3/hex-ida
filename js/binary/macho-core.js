@@ -824,6 +824,10 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     markMachOMetadataPartial(image, 'symbol-table-truncated');
     image.warnings.push('Mach-O symbol table is truncated'); return;
   }
+  const knownSectionOrdinals = new Set();
+  for (const section of image.sections) {
+    if (section && section.index >= 1) knownSectionOrdinals.add(section.index);
+  }
   for (let i = 0; i < st.nsyms; i++) {
     if (!budget.take({ inputBytes:ent, records:1,objects:1,operations:2,estimatedHeapBytes:224 }, 'symbol-record')) break;
     const p = st.symoff + i * ent;
@@ -897,7 +901,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       continue;
     }
     const isUndefinedType = ntype === 0;
-    const sectionOrdinalKnown = sect >= 1 && image.sections.some((section) => section.index === sect);
+    const sectionOrdinalKnown = sect >= 1 && knownSectionOrdinals.has(sect);
     if (ntype === N_SECT && !sectionOrdinalKnown) {
       // Keep the newer specific reason while retaining the historical reason
       // consumed by the phase12 adversarial contract.
