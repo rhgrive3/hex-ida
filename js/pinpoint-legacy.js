@@ -30,6 +30,7 @@
  */
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
+  extractCallableLeaf, numericSymbolRole,
 } from './goals.js';
 import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT } from './evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
@@ -1309,9 +1310,12 @@ function buildFunctionCandidate(c, goal, o) {
     if (cm) ev.push(evidence('fn-owner-class', cm.score, { className: owner.className }));
   }
   if (c.name && matchName(goal, c.name)) {
-    const norm = normalizeFieldName(c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
+    const leaf = extractCallableLeaf(c.name).leaf;
+    const norm = normalizeFieldName(leaf || c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
     const m = matchField(goal, norm);
-    if (m && m.exact) ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+    if ((m && m.exact) || numericSymbolRole(goal, c.name) === 'value') {
+      ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+    }
   }
 
   return {
@@ -1399,13 +1403,12 @@ async function verifyFunctionCandidate(c, goal, o) {
   /* 目的が期待している命令の形が、本当にあるか（統計ではなく実物で） */
   const expects = goal.expects || {};
   const insns = model.instructions || [];
-  if (expects.store) {
+  if (!field && expects.store) {
     const { set } = selfRegisters(model);
     const stores = insns.filter((i) => i.memory && i.memory.kind === 'store' &&
       !i.memory.stack && set.has(i.memory.base));
     if (stores.length) {
-      c.evidence.push(evidence('fn-writes-field', 0.55, { n: stores.length, self: true }));
-      c.verified = true;
+      c.evidence.push(evidence('fn-store-observed', 0.55, { n: stores.length, self: true }));
     }
   }
   if (!field && expects.numeric) {
