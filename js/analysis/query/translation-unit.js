@@ -11,7 +11,13 @@
  * named in `unresolved`.
  */
 
-import { isFixedWidthPreludeDeclaration } from '../../decompiler/c-output-closure.js';
+import {
+  isFixedWidthPreludeDeclaration,
+  isSynthesizedStructPreludeDeclaration,
+  parseSynthesizedStructPreludeDeclaration,
+  isStandaloneGlobalPreludeComment,
+  isStandaloneGlobalPreludeDeclaration,
+} from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
   ['int8', 'int8_t'], ['uint8', 'uint8_t'],
@@ -134,6 +140,7 @@ function signatureFromText(text) {
   for (const rawLine of String(text ?? '').split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith('/*') || line.startsWith('//') || line.startsWith('#')) continue;
+    if (isAllowedBodyPrefixLine(line)) continue;
     if (looksLikeSignature(line)) return line;
     // The signature, when present, precedes the function body.
     if (line === '{' || line.endsWith('{')) break;
@@ -179,20 +186,81 @@ function isReemittedPreludeDeclaration(text) {
 }
 
 function isAllowedBodyPrefixLine(trimmed) {
-  return !trimmed || skipBodyTrivia(trimmed, 0) === trimmed.length || isReemittedPreludeDeclaration(trimmed);
+  return !trimmed
+    || skipBodyTrivia(trimmed, 0) === trimmed.length
+    || isReemittedPreludeDeclaration(trimmed)
+    || isSynthesizedStructPreludeDeclaration(trimmed)
+    || isStandaloneGlobalPreludeDeclaration(trimmed);
+}
+
+/* Strip standalone external global prelude blocks emitted by c-output-closure
+ * before the signature so the translation unit packager keeps its own
+ * evidence-backed / byte-array fallback global contract. */
+function stripStandaloneGlobalPreludeLines(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const out = [];
+  let inStandaloneGlobals = false;
+  let sawSignature = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!sawSignature) {
+      if (isStandaloneGlobalPreludeComment(trimmed)) {
+        inStandaloneGlobals = true;
+        continue;
+      }
+      if (inStandaloneGlobals) {
+        if (isStandaloneGlobalPreludeDeclaration(trimmed)) continue;
+        inStandaloneGlobals = false;
+      }
+      if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) {
+        sawSignature = true;
+      }
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+/* Extract synthesized member-base struct typedefs emitted before the signature
+ * so buildCTranslationUnit can hoist and deduplicate/merge them cleanly. */
+function extractSynthesizedStructTypedefs(text) {
+  const structs = [];
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    const parsed = parseSynthesizedStructPreludeDeclaration(trimmed);
+    if (parsed) {
+      structs.push(parsed);
+      continue;
+    }
+    if (looksLikeSignature(trimmed) || trimmed === '{' || trimmed.endsWith('{')) break;
+  }
+  return structs;
 }
 
 /* The same rule over the whole prefix at once, so a comment cannot open on
  * one line and hide the lines after it. */
 function isAccountedBodyPrefix(prefix) {
   let pos = 0;
+  let sawStandaloneGlobalsMarker = false;
   while (pos < prefix.length) {
+    const triviaStart = pos;
     pos = skipBodyTrivia(prefix, pos);
     if (pos < 0) return false;
+    if (pos > triviaStart) {
+      const skipped = prefix.slice(triviaStart, pos);
+      for (const rawLine of skipped.split(/\r?\n/)) {
+        if (isStandaloneGlobalPreludeComment(rawLine)) sawStandaloneGlobalsMarker = true;
+      }
+    }
     if (pos >= prefix.length) return true;
     const lineEnd = prefix.indexOf('\n', pos);
     const end = lineEnd < 0 ? prefix.length : lineEnd;
-    if (!isReemittedPreludeDeclaration(prefix.slice(pos, end))) return false;
+    const line = prefix.slice(pos, end);
+    const ok = isReemittedPreludeDeclaration(line)
+      || isSynthesizedStructPreludeDeclaration(line)
+      || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line));
+    if (!ok) return false;
     pos = end;
   }
   return true;
@@ -391,7 +459,7 @@ function identifierIsCovered(name, context) {
   return false;
 }
 
-function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames }) {
+function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map() }) {
   const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
   const prototypeNames = new Set();
   const variadicPrototypes = new Set();
@@ -412,7 +480,11 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     fallbackNames.add(match[1]);
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
-  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values()]);
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...synthesizedStructs.keys()]);
+  const synthesizedStructFields = new Set();
+  for (const fieldMap of synthesizedStructs.values()) {
+    for (const fieldName of fieldMap.keys()) synthesizedStructFields.add(fieldName);
+  }
   const unprototypedFallbacks = new Set();
   for (const name of fallbackNames) unprototypedFallbacks.add(name);
   // A selected definition whose recovered signature carries no parameter
@@ -424,7 +496,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   const declaredLocals = new Set();
   // Selected definitions with a known recovered arity, filled by the caller.
   const knownAritySelected = new Set();
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, declaredLocals, selectedNames };
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -495,7 +567,10 @@ function faithfulBodyEligibility(fn, context) {
   }
   for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
     const name = match[1];
-    if (!identifierIsCovered(name, context)) return { eligible:false, reason:`uncovered-identifier:${name}` };
+    if (identifierIsCovered(name, context)) continue;
+    const before = codeText.slice(0, match.index).trimEnd();
+    if ((before.endsWith('->') || before.endsWith('.')) && context.synthesizedStructFields?.has(name)) continue;
+    return { eligible:false, reason:`uncovered-identifier:${name}` };
   }
   return { eligible:true, reason:null, bodyText, signature };
 }
@@ -619,7 +694,7 @@ function globalRecords(fn, symbolFor) {
     remember(address, symbol, type, explicit?.provenance ?? (recovered ? 'recovered-location-type' : 'global-memory-location'), explicit?.size ?? loc?.size ?? inst?.size ?? null);
   }
 
-  for (const match of String(fn?.pseudocode ?? '').matchAll(/\bglobal_([0-9A-Fa-f]+)\b/g)) {
+  for (const match of stripStandaloneGlobalPreludeLines(fn?.pseudocode ?? '').matchAll(/\bglobal_([0-9A-Fa-f]+)\b/g)) {
     const address = BigInt(`0x${match[1]}`);
     const explicit = explicitGlobalEvidence(fn, address, match[0]);
     remember(address, match[0], normalizedType(explicit?.type ?? explicit?.cType ?? ''), explicit?.provenance ?? 'rendered-global-reference', explicit?.size ?? null, true);
@@ -714,6 +789,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   const symbolFor = typeof options.symbolFor === 'function' ? options.symbolFor : () => null;
   const headers = new Set();
   const typeDeclarations = new Set();
+  const synthesizedStructs = new Map();
   const fallbackDeclarations = [];
   const fallbackNames = new Set();
   const selectedDefinitionRows = [];
@@ -733,10 +809,21 @@ export function buildCTranslationUnit(functions, options = {}) {
     const safeSignature = safeSignatureDeclaration(originalSignature);
     const emittedSignature = safeSignature ? safeSignature.slice(0, -1) : `void ${emittedName}(void)`;
     const signature = emittedSignature;
+    for (const structDef of extractSynthesizedStructTypedefs(originalPseudocode)) {
+      let fieldMap = synthesizedStructs.get(structDef.name);
+      if (!fieldMap) {
+        fieldMap = new Map();
+        synthesizedStructs.set(structDef.name, fieldMap);
+      }
+      for (const field of structDef.fields) {
+        if (!fieldMap.has(field.name)) fieldMap.set(field.name, field.type);
+      }
+    }
+    const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
     // A function's own typedef lines are never emitted (a faithful body is
     // the text after its signature), so they cannot stand in for the contract.
-    aliasContractsForText(originalPseudocode, headers, typeDeclarations, { ownTypedefsEmitted:false });
-    headersForText(originalPseudocode, headers);
+    aliasContractsForText(strippedPseudocode, headers, typeDeclarations, { ownTypedefsEmitted:false });
+    headersForText(strippedPseudocode, headers);
     return {
       ...fn, index, address:functionAddress(fn), name:emittedName,
       // The original body remains the evidence surface. The emitted
@@ -821,7 +908,8 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
 
-    for (const name of callLikeCallees(fn.pseudocode)) {
+    const fnScanSource = stripStandaloneGlobalPreludeLines(fn.pseudocode);
+    for (const name of callLikeCallees(fnScanSource)) {
       if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
@@ -848,7 +936,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       }
     }
 
-    for (const name of globalLikeNames(fn.pseudocode)) {
+    for (const name of globalLikeNames(fnScanSource)) {
       if (selectedNames.has(name)) continue;
       const address = globalAddressForName(globalMap, name);
       if (address == null) {
@@ -921,9 +1009,25 @@ export function buildCTranslationUnit(functions, options = {}) {
    * every placeholder stays recorded as `syntax-only-function-body` so a
    * placeholder can never be counted as a parsed recovered function.
    */
+  const synthesizedStructDecls = [...synthesizedStructs.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([structName, fieldMap]) => {
+      const fieldsText = [...fieldMap.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([fieldName, fieldType]) => `${fieldType} ${fieldName};`)
+        .join(' ');
+      return `typedef struct { ${fieldsText} } ${structName};`;
+    });
+  if (synthesizedStructDecls.length) {
+    const structDeclText = synthesizedStructDecls.join('\n');
+    aliasContractsForText(structDeclText, headers, typeDeclarations, { ownTypedefsEmitted:false });
+    headersForText(structDeclText, headers);
+  }
+
   const eligibilityContext = bodyEligibilityContext({
     prototypes, globals,
     fallbackDeclarations, selectedNames,
+    synthesizedStructs,
   });
   // A selected definition whose recovered signature carries no parameter
   // spellings is emitted unprototyped; an arity-unknown call to it cannot
@@ -959,7 +1063,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   }
   const unresolvedList = unresolvedRows.slice().sort((a, b) => `${a.kind}:${a.subject}`.localeCompare(`${b.kind}:${b.subject}`));
   const includes = [...headers].sort();
-  const typeDecls = [...typeDeclarations].sort();
+  const typeDecls = [...[...typeDeclarations].sort(), ...synthesizedStructDecls];
   const fallbacks = fallbackDeclarations.slice().sort();
   const orderedFunctions = normalizedFunctions.slice().sort((a, b) => compareAddressThenName(a, b) || a.index - b.index);
 

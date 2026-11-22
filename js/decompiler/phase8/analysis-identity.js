@@ -97,6 +97,11 @@ function encodeChunkForFastFeed(text) {
  * non-enumerable `length` descriptor; all other descriptors are required to be
  * explicit enumerable data. */
 function semanticOwnKeys(value) {
+  // Objects certified in DEEPLY_FROZEN_CACHE are frozen plain objects/arrays
+  // whose own properties were already verified to be non-symbol enumerable data
+  // properties; Object.keys returns the exact same key list without allocating
+  // a property descriptor per key.
+  if (DEEPLY_FROZEN_CACHE.get(value) === true) return Object.keys(value);
   const isArr = Array.isArray(value);
   const rawKeys = Reflect.ownKeys(value);
   const keys = [];
@@ -261,18 +266,21 @@ function typedIdentityText(root) {
     try {
       const keys = semanticOwnKeys(value);
       const properties = (propertyKeys) => propertyKeys.length === 0 ? '' : `properties:${propertyKeys.length}{${propertyKeys.sort()
-        .map((key) => {
-          const descriptor = Object.getOwnPropertyDescriptor(value, key);
-          return `key:${key.length}:${key};${visit(descriptor.value)}`;
-        }).join('')}}`;
+        .map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
       if (Array.isArray(value)) {
+        const len = value.length;
+        if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+          let items = '';
+          for (let index = 0; index < len; index += 1) items += visit(value[index]);
+          return `array:${len}[${items}]`;
+        }
         const ownKeys = new Set(keys);
         let items = '';
-        for (let index = 0; index < value.length; index += 1) {
+        for (let index = 0; index < len; index += 1) {
           const key = String(index);
-          items += ownKeys.has(key) ? visit(Object.getOwnPropertyDescriptor(value, key).value) : 'hole;';
+          items += ownKeys.has(key) ? visit(value[key]) : 'hole;';
         }
-        return `array:${value.length}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
+        return `array:${len}[${items}]${properties(keys.filter((key) => !arrayIndexKey(key)))}`;
       }
       if (value instanceof Map) {
         const entries = [...value.entries()]
@@ -293,10 +301,7 @@ function typedIdentityText(root) {
         throw new TypeError('identity-unsupported-semantic-metadata');
       }
       const sortedKeys = keys.sort();
-      return `object:${sortedKeys.length}{${sortedKeys.map((key) => {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        return `key:${key.length}:${key};${visit(descriptor.value)}`;
-      }).join('')}}`;
+      return `object:${sortedKeys.length}{${sortedKeys.map((key) => `key:${key.length}:${key};${visit(value[key])}`).join('')}}`;
     } finally {
       active.delete(value);
     }
@@ -321,7 +326,31 @@ function fastJsonGraphDigest(root) {
     let h2 = hash2;
     let h3 = hash3;
     const len = text.length;
-    for (let index = 0; index < len; index += 1) {
+    const len4 = len - 3;
+    let index = 0;
+    for (; index < len4; index += 4) {
+      let code = text.charCodeAt(index);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 1);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 2);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+      code = text.charCodeAt(index + 3);
+      h0 = Math.imul(h0 ^ code, 0x01000193);
+      h1 = Math.imul(h1 ^ code, 0x85ebca6b);
+      h2 = Math.imul(h2 ^ code, 0xc2b2ae35);
+      h3 = Math.imul(h3 ^ code, 0x27d4eb2f);
+    }
+    for (; index < len; index += 1) {
       const code = text.charCodeAt(index);
       h0 = Math.imul(h0 ^ code, 0x01000193);
       h1 = Math.imul(h1 ^ code, 0x85ebca6b);
@@ -385,7 +414,7 @@ function fastJsonGraphDigest(root) {
     let buffer = '';
     const flushBuffer = () => {
       if (buffer.length > 0) {
-        chunks.push(encodeChunkForFastFeed(buffer));
+        chunks.push(buffer);
         buffer = '';
       }
     };
@@ -394,7 +423,7 @@ function fastJsonGraphDigest(root) {
       if (buffer.length + text.length >= STREAM_CHUNK_TARGET) {
         flushBuffer();
         if (text.length >= STREAM_CHUNK_TARGET) {
-          chunks.push(encodeChunkForFastFeed(text));
+          chunks.push(text);
           return;
         }
       }
@@ -431,12 +460,24 @@ function fastJsonGraphDigest(root) {
         for (let i = 0; i < cachedChunks.length; i += 1) pushEncoded(cachedChunks[i]);
         return;
       }
-      if (value !== target && ((Array.isArray(value) && value.length >= 16) || (!Array.isArray(value) && Object.keys(value).length >= 2))) {
-        const subChunks = buildFrozenChunks(value);
-        const smallText = FROZEN_IDENTITY_TEXT.get(value);
-        if (smallText !== undefined) { push(smallText); return; }
-        for (let i = 0; i < subChunks.length; i += 1) pushEncoded(subChunks[i]);
-        return;
+      if (value !== target) {
+        let shouldSubChunk = false;
+        if (Array.isArray(value)) {
+          shouldSubChunk = value.length >= 16;
+        } else {
+          let keyCount = 0;
+          for (const _ in value) {
+            keyCount += 1;
+            if (keyCount >= 2) { shouldSubChunk = true; break; }
+          }
+        }
+        if (shouldSubChunk) {
+          const subChunks = buildFrozenChunks(value);
+          const smallText = FROZEN_IDENTITY_TEXT.get(value);
+          if (smallText !== undefined) { push(smallText); return; }
+          for (let i = 0; i < subChunks.length; i += 1) pushEncoded(subChunks[i]);
+          return;
+        }
       }
       active.add(value);
       try {
@@ -445,18 +486,24 @@ function fastJsonGraphDigest(root) {
           if (propertyKeys.length === 0) return;
           push(`properties:${propertyKeys.length}{`);
           for (const key of propertyKeys.sort()) {
-            const descriptor = Object.getOwnPropertyDescriptor(value, key);
             push(`key:${key.length}:${key};`);
-            emitValue(descriptor.value);
+            emitValue(value[key]);
           }
           push('}');
         };
         if (Array.isArray(value)) {
+          const len = value.length;
+          if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+            push(`array:${len}[`);
+            for (let index = 0; index < len; index += 1) emitValue(value[index]);
+            push(']');
+            return;
+          }
           const ownKeys = new Set(keys);
-          push(`array:${value.length}[`);
-          for (let index = 0; index < value.length; index += 1) {
+          push(`array:${len}[`);
+          for (let index = 0; index < len; index += 1) {
             const key = String(index);
-            if (ownKeys.has(key)) emitValue(Object.getOwnPropertyDescriptor(value, key).value);
+            if (ownKeys.has(key)) emitValue(value[key]);
             else push('hole;');
           }
           push(']');
@@ -494,9 +541,8 @@ function fastJsonGraphDigest(root) {
         const sortedKeys = keys.sort();
         push(`object:${sortedKeys.length}{`);
         for (const key of sortedKeys) {
-          const descriptor = Object.getOwnPropertyDescriptor(value, key);
           push(`key:${key.length}:${key};`);
-          emitValue(descriptor.value);
+          emitValue(value[key]);
         }
         push('}');
       } finally {
@@ -506,9 +552,7 @@ function fastJsonGraphDigest(root) {
     emitValue(target);
     if (chunks.length === 0 && buffer.length <= MAX_CACHED_IDENTITY_TEXT) {
       FROZEN_IDENTITY_TEXT.set(target, buffer);
-      const encoded = encodeChunkForFastFeed(buffer);
-      FROZEN_IDENTITY_BYTES.set(target, encoded);
-      return [encoded];
+      return [buffer];
     }
     flushBuffer();
     FROZEN_STREAM_CHUNKS.set(target, chunks);
@@ -537,14 +581,19 @@ function fastJsonGraphDigest(root) {
       if (cachedBytes !== undefined) { feedChunk(cachedBytes); return; }
       const cachedText = FROZEN_IDENTITY_TEXT.get(value);
       if (cachedText !== undefined) {
-        const encoded = encodeChunkForFastFeed(cachedText);
+        const encoded = cachedText.length >= 256 ? encodeChunkForFastFeed(cachedText) : cachedText;
         FROZEN_IDENTITY_BYTES.set(value, encoded);
         feedChunk(encoded);
         return;
       }
       const cachedChunks = FROZEN_STREAM_CHUNKS.get(value);
       if (cachedChunks !== undefined) {
-        for (let i = 0; i < cachedChunks.length; i += 1) feedChunk(cachedChunks[i]);
+        for (let i = 0; i < cachedChunks.length; i += 1) {
+          if (typeof cachedChunks[i] === 'string' && cachedChunks[i].length >= 256) {
+            cachedChunks[i] = encodeChunkForFastFeed(cachedChunks[i]);
+          }
+          feedChunk(cachedChunks[i]);
+        }
         return;
       }
       if (value !== root) {
@@ -560,18 +609,24 @@ function fastJsonGraphDigest(root) {
         if (propertyKeys.length === 0) return;
         feedText(`properties:${propertyKeys.length}{`);
         for (const key of propertyKeys.sort()) {
-          const descriptor = Object.getOwnPropertyDescriptor(value, key);
           feedText(`key:${key.length}:${key};`);
-          stream(descriptor.value);
+          stream(value[key]);
         }
         feedText('}');
       };
       if (Array.isArray(value)) {
+        const len = value.length;
+        if (keys.length === len && (len === 0 || keys[len - 1] === String(len - 1))) {
+          feedText(`array:${len}[`);
+          for (let index = 0; index < len; index += 1) stream(value[index]);
+          feedText(']');
+          return;
+        }
         const ownKeys = new Set(keys);
-        feedText(`array:${value.length}[`);
-        for (let index = 0; index < value.length; index += 1) {
+        feedText(`array:${len}[`);
+        for (let index = 0; index < len; index += 1) {
           const key = String(index);
-          if (ownKeys.has(key)) stream(Object.getOwnPropertyDescriptor(value, key).value);
+          if (ownKeys.has(key)) stream(value[key]);
           else feedText('hole;');
         }
         feedText(']');
@@ -609,9 +664,8 @@ function fastJsonGraphDigest(root) {
       const sortedKeys = keys.sort();
       feedText(`object:${sortedKeys.length}{`);
       for (const key of sortedKeys) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
         feedText(`key:${key.length}:${key};`);
-        stream(descriptor.value);
+        stream(value[key]);
       }
       feedText('}');
     } finally {
@@ -692,9 +746,8 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   const semanticProperties = (keys, propertyPath = path) => {
     const properties = {};
     for (const key of keys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       Object.defineProperty(properties, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -707,9 +760,8 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = [];
     result.length = value.length;
     for (const key of ownKeys.sort()) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS,
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS,
           arrayIndexKey(key) ? `${path}[${Number(key)}]` : `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
@@ -746,12 +798,11 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = {};
     for (const key of ownKeys.sort()) {
       if (skip.has(key)) continue;
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
       // A skip list describes this known wrapper object only.  Applying it to
       // nested `extra`/metadata objects would silently erase a semantic field
       // whose name happens to be `uses` or `dst`.
       Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
+        value: semanticObject(value[key], seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
         enumerable: true,
         configurable: true,
         writable: true,

@@ -2137,7 +2137,7 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
     term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
     loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
-  emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
+  emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
   lines.push(line('ctrl', indent, '}'));
   return { lines, next: exit === stop ? stop : exit };
 }
@@ -2249,19 +2249,25 @@ function provenTerminalLoopExits(loop, normalExit, ctx, state) {
   return Object.freeze({ loop, header, normalExit, targets:Object.freeze([...earlyTargets].sort((a, b) => a - b)) });
 }
 
-function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
-  let bi = start, guard = 0;
+function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTerm = null) {
+  let bi = start, guard = 0, prevTerm = fromTerm;
   while (bi != null && bi !== stop && guard++ < MAX_BLOCKS) {
     resetInitialValueOwner(ctx);
     if (allowed && !allowed.has(bi)) return;
     if (state.activeLoop && bi === state.loopHeader) return;
     if (state.visited.has(bi)) {
       // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
-      // the canonical origin of the block it jumps into. Emitting it
-      // sourceless made the claim unauditable from the rendered line.
+      // the canonical origin of both the jumping instruction (when known) and
+      // the block it jumps into. Attributing a revisit goto solely to its
+      // target block causes downstream control projection to misclassify it as
+      // belonging to the target block rather than the predecessor branch.
       state.gotoTargets?.add(bi);
-      out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }),
-        null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
+      const gotoSource = prevTerm
+        ? mergeSource(controlSource(prevTerm, ctx), jumpTargetSource(bi, ctx))
+        : jumpTargetSource(bi, ctx);
+      out.push(retainControlRenderLine(
+        line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, prevTerm?.row ?? null, prevTerm?.address ?? null, { source: gotoSource }),
+        prevTerm ?? null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
       state.gotos++; return;
     }
     state.visited.add(bi);
@@ -2288,11 +2294,11 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     if (loop && (!state.activeLoop || nestedLoop)) {
       term2 = emitBlockStatements(block, out, ctx, indent);
       const lr = loopRender(loop, block, term, ctx, state, indent, stop);
-      if (lr) { out.push(...lr.lines); bi = lr.next; continue; }
+      if (lr) { out.push(...lr.lines); prevTerm = term2 ?? term ?? block.insts?.[block.insts.length - 1] ?? null; bi = lr.next; continue; }
     } else {
       term2 = emitBlockStatements(block, out, ctx, indent);
     }
-    if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
+    if (!term2) { prevTerm = block.insts?.[block.insts.length - 1] ?? null; bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
@@ -2307,7 +2313,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       if (state.activeLoop && next === state.loopExit) { out.push(retainControlRenderLine(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
         term2, 'loop-break', { target:next, header:state.loopHeader }, ctx)); return; }
       if (next === stop) return;
-      if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
+      if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { prevTerm = term2; bi = next; continue; }
       if (next != null) { state.gotoTargets?.add(next); out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
         term2, 'residual-branch-goto', { target:next, stop }, ctx)); state.gotos++; }
       return;
@@ -2348,7 +2354,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx, invert);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
           term2, 'one-sided-if', { yes, no, earlyReturn:true, target:earlyTarget, header:earlyReturnProof.header, invert }, ctx));
-        emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null);
+        emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null, term2);
         out.push(line('ctrl', indent, '}'));
         return;
       }
@@ -2390,7 +2396,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
           startConditionalArm(region, out);
-          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
+          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, yesEmpty ? 'no' : 'yes', ctx);
           close = line('ctrl', indent, '}'); out.push(close);
         } else {
@@ -2398,17 +2404,17 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'if-else', { yes, no, join }, ctx));
           startConditionalArm(region, out);
-          emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
+          emitRegion(yes, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'yes', ctx);
           separator = line('ctrl', indent, '} else {'); out.push(separator);
           startConditionalArm(region, out);
-          emitRegion(no, join, out, ctx, state, indent + 1, allowed);
+          emitRegion(no, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'no', ctx);
           close = line('ctrl', indent, '}'); out.push(close);
         }
         finishConditionalRegion(region, out, ctx, term2,
           { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
-        bi = join; continue;
+        prevTerm = null; bi = join; continue;
       }
       const earlyExit = join == null && branch.exact
         ? earlyExitConditionalContinuation(bi, yes, no, ctx, state, stop, allowed) : null;
@@ -2417,9 +2423,9 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
             bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
-        emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
-        bi = earlyExit.continuation; continue;
+        prevTerm = null; bi = earlyExit.continuation; continue;
       }
       const sharedEarlyExit = join == null && branch.exact
         ? sharedEarlyExitContinuation(bi, yes, no, ctx, state, allowed) : null;
@@ -2427,11 +2433,11 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:sharedEarlyExit.continuation, earlyExitShared:true }, ctx));
-        emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
-        emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed);
+        emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
-        bi = sharedEarlyExit.continuation; continue;
+        prevTerm = null; bi = sharedEarlyExit.continuation; continue;
       }
       const terminal = join == null && branch.exact
         ? terminalConditionalPartition(bi, yes, no, ctx, state, allowed) : null;
@@ -2439,9 +2445,9 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:null, terminal:true }, ctx));
-        emitRegion(yes, null, out, ctx, state, indent + 1, allowed);
+        emitRegion(yes, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
-        emitRegion(no, null, out, ctx, state, indent + 1, allowed);
+        emitRegion(no, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
         return;
       }
