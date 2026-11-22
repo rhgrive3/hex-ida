@@ -595,6 +595,10 @@ const valueUseSets = new WeakMap();
 export function addUse(value, inst) {
   if (!value || !inst) return;
   const uses = value.uses;
+  if (uses.length < 16 && !valueUseSets.has(value)) {
+    if (!uses.includes(inst)) uses.push(inst);
+    return;
+  }
   let entry = valueUseSets.get(value);
   if (!entry || entry.arrayRef !== uses || entry.set.size !== uses.length) {
     entry = { arrayRef: uses, set: new Set(uses) };

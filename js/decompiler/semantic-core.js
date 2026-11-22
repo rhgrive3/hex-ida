@@ -1481,7 +1481,7 @@ function renderCall(inst, ctx) {
   if (name) {
     const args = !c.arityKnown
       ? (c.virtualSlot && c.receiver ? `${c.receiver} /* , additional arguments unknown */` : '/* arguments unknown */')
-      : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
+      : c.args.join(', ') + (c.variadicPrefixOnly ? (c.args.length ? ' /* , varargs unknown */' : '/* varargs unknown */') : '');
     return `${name}(${args})`;
   }
   const targetValue = valueOf(inst.args?.[0]);

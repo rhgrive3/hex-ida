@@ -238,7 +238,19 @@ export function stableDigest(value) {
     bLow = Math.imul(bLow, 0x1b3);
   };
   const feedStr = (str) => {
-    for (let i = 0; i < str.length; i += 1) feedCode(str.charCodeAt(i));
+    let al = aLow, ah = aHigh, bl = bLow, bh = bHigh;
+    for (let i = 0, n = str.length; i < n; i += 1) {
+      const code = str.charCodeAt(i);
+      al ^= code;
+      const ac = ((al >>> 16) * 0x1b3 + (((al & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      ah = (Math.imul(ah, 0x1b3) + (al << 8) + ac) | 0;
+      al = Math.imul(al, 0x1b3);
+      bl ^= code;
+      const bc = ((bl >>> 16) * 0x1b3 + (((bl & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      bh = (Math.imul(bh, 0x1b3) + (bl << 8) + bc) | 0;
+      bl = Math.imul(bl, 0x1b3);
+    }
+    aLow = al; aHigh = ah; bLow = bl; bHigh = bh;
   };
   const feedJsonString = (str) => {
     const len = str.length;
@@ -250,7 +262,7 @@ export function stableDigest(value) {
       }
     }
     feedCode(0x22);
-    for (let i = 0; i < len; i += 1) feedCode(str.charCodeAt(i));
+    feedStr(str);
     feedCode(0x22);
   };
   const feedByte = (byte) => {
@@ -772,11 +784,8 @@ export function normalizeIdentity(value, code) {
   return witness ? { identity: normalized, identityTypes: witness } : normalized;
 }
 
-const deeplyFrozenObjects = new WeakSet();
-
 export function deepFreeze(value, seen = null) {
   if (!value || typeof value !== 'object') return value;
-  if (deeplyFrozenObjects.has(value)) return value;
   if (Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
   const active = seen ?? new WeakSet();
   if (active.has(value)) return value;
@@ -784,7 +793,6 @@ export function deepFreeze(value, seen = null) {
   const keys = Object.keys(value);
   for (let i = 0; i < keys.length; i += 1) deepFreeze(value[keys[i]], active);
   const frozen = Object.freeze(value);
-  if (Object.isFrozen(frozen)) deeplyFrozenObjects.add(frozen);
   return frozen;
 }
 

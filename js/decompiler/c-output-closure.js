@@ -1048,7 +1048,7 @@ function isCastTypeText(castInner) {
   if (/^\s*(?:const\s+|volatile\s+)?(?:void|char|short|int|long|unsigned|signed|__int128)\b.*\*\s*$/.test(s)) {
     return 'ptr';
   }
-  if (FIXED_WIDTH_TYPES.has(s) || INT_TYPE_WORDS.has(s)) return 'int';
+  if (FIXED_WIDTH_TYPES.has(s) || INT_TYPE_WORDS.has(s) || s === 'vector128') return 'int';
   if (/^(?:(?:const|volatile|unsigned|signed|short|long)\s+)*(?:char|short|int|long|_Bool|bool|__int128)$/.test(s)) {
     return 'int';
   }
