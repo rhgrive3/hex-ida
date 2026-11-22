@@ -37,18 +37,21 @@ test('extractCallableLeaf and numericSymbolRole separate value calculators from 
     owner: 'DamageCalculator',
     isConst: true,
     isCtorOrDtor: false,
+    isStdGlue: false,
   });
   assert.deepEqual(extractCallableLeaf('-[BattleUnit getAttack]'), {
     leaf: 'getAttack',
     owner: 'BattleUnit',
     isConst: false,
     isCtorOrDtor: false,
+    isStdGlue: false,
   });
   assert.deepEqual(extractCallableLeaf('__ZN20MeleeAttackAnimationC2Ev'), {
     leaf: 'MeleeAttackAnimation',
     owner: null,
     isConst: false,
     isCtorOrDtor: true,
+    isStdGlue: false,
   });
 
   const atk = parseGoal('攻撃力');
@@ -169,4 +172,27 @@ test('pinpointField does not false-positive on bool flag in class matching "atk"
   const res = await pinpointField({ goal, fields, limit: 10 });
   assert.equal(res.candidates.length, 0);
   assert.equal(res.verdict, VERDICT.NONE);
+});
+
+test('std:: template glue, copy assignment, log helpers, and homonym avoids are separated cleanly', () => {
+  const atk = parseGoal('攻撃力');
+  const dmg = parseGoal('ダメージ');
+  const lvl = parseGoal('レベル');
+  const hp = parseGoal('HP');
+
+  // Homonym avoids
+  assert.equal(matchText(atk, '_SDL_GetPowerInfo_UIKit'), null);
+  assert.equal(matchText(atk, 'powerState'), null);
+  assert.ok(matchText(atk, 'attackPower'));
+  assert.equal(matchText(dmg, 'QTextDocumentLayoutPrivate::hitTest'), null);
+  assert.equal(matchText(lvl, 'CBasicLogConfigurator::getLogLevel'), null);
+  assert.ok(matchText(lvl, 'CGameHandler::levelUpHero'));
+
+  // std:: template glue and copy assignment operator=
+  assert.equal(numericSymbolRole(atk, '__ZNKSt3__110__function6__funcIZNK4VCMI16DamageCalculator24getAttackHateTraitFactorEvE3$_0E6targetEv'), 'non-value');
+  assert.equal(numericSymbolRole(hp, '__ZN4VCMI6battle7CHealthaSERKS1_'), 'non-value');
+
+  // Trailing log helpers are non-value unless explicitly queried
+  assert.equal(numericSymbolRole(dmg, '__ZNK21BattleActionProcessor19addGenericDamageLogEv'), 'non-value');
+  assert.equal(numericSymbolRole(hp, '__ZNK21BattleActionProcessor24addGenericDrainedLifeLogEv'), 'non-value');
 });

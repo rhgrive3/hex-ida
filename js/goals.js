@@ -41,6 +41,7 @@ export const GOALS = [
     id: 'attack', ja: '攻撃力', en: 'Attack power', icon: '⚔️',
     strong: [/attack/i, /\batk\b/i, /power/i, /strength/i, /攻撃/, /こうげき/, /威力/],
     weak: [/damage/i, /weapon/i, /skill/i, /武器/, /スキル/],
+    avoid: [/power[\s_-]*(info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source)/i],
     expects: { numeric: true, store: true },
   },
   {
@@ -53,6 +54,7 @@ export const GOALS = [
     id: 'damage', ja: 'ダメージ計算', en: 'Damage calculation', icon: '💥',
     strong: [/damage/i, /\bdmg\b/i, /ダメージ/, /被弾/],
     weak: [/critical/i, /hit/i, /attack/i, /クリティカル/, /命中/],
+    avoid: [/hit[\s_-]*test/i],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -121,6 +123,7 @@ export const GOALS = [
     id: 'level', ja: 'レベル・経験値', en: 'Level and EXP', icon: '⬆️',
     strong: [/level_?up/i, /\blevel\b/i, /\bexp\b/i, /experience/i, /レベル/, /経験値/, /ランクアップ/],
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
+    avoid: [/log[\s_-]*level/i, /verbosity[\s_-]*level/i],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -704,7 +707,7 @@ function findExtraTermMatches(s, word) {
 
 const ACCESSOR_PREFIX_RE = /^(?:get|set|calc|calculate|compute|estimate|base|current|cur|total|effective|final|raw|actual|real|mod|modify|update|add|sub|apply|battle)\s+/;
 const PREDICATE_OR_UI_HEAD_RE = /^(?:is|can|has|should|was|format|render|draw|show|paint|print|log|dump|debug|trace|visit|serialize|deserialize)$/;
-const NON_VALUE_ROLE_TOKEN_RE = /^(?:animation|animator|panel|dialog|window|icon|tooltip|label|widget|controller|keyboard|visitor|hex|hexes|direction|projectile|climax|frame|swipe|cursor|click)$/;
+const NON_VALUE_ROLE_TOKEN_RE = /^(?:animation|animator|panel|dialog|window|icon|tooltip|label|widget|controller|keyboard|visitor|hex|hexes|direction|projectile|climax|frame|swipe|cursor|click|log|logger|logging|logcat|configurator)$/;
 const DIAGNOSTIC_PREFIX_RE = /^(?:error|warning|warn|assert|assertion|fatal|debug|info|trace|undefined|invalid|failed|cannot|unable)\b/i;
 
 /**
@@ -712,16 +715,19 @@ const DIAGNOSTIC_PREFIX_RE = /^(?:error|warning|warn|assert|assertion|fatal|debu
  * @returns {{ leaf: string, owner: string|null, isConst: boolean, isCtorOrDtor: boolean }}
  */
 export function extractCallableLeaf(name) {
-  if (typeof name !== 'string' || !name) return { leaf: '', owner: null, isConst: false, isCtorOrDtor: false };
+  if (typeof name !== 'string' || !name) {
+    return { leaf: '', owner: null, isConst: false, isCtorOrDtor: false, isStdGlue: false };
+  }
   const objc = /^[-+]\[([^\s\]]+)\s+([^\]]+)\]$/.exec(name);
   if (objc) {
-    return { leaf: objc[2].split(':')[0], owner: objc[1], isConst: false, isCtorOrDtor: false };
+    return { leaf: objc[2].split(':')[0], owner: objc[1], isConst: false, isCtorOrDtor: false, isStdGlue: false };
   }
   const cxx = /^_?_Z(N?)(K?)(.*)$/.exec(name);
   if (cxx) {
     const nested = cxx[1] === 'N';
     const isConst = cxx[2] === 'K';
     const body = cxx[3];
+    const isStdGlue = nested && /^St/.test(body);
     if (nested) {
       const parts = [];
       let i = 0;
@@ -729,6 +735,12 @@ export function extractCallableLeaf(name) {
       while (i < body.length && body[i] !== 'E') {
         if (body[i] === 'K' || body[i] === 'V' || body[i] === 'r' || body[i] === 'L') { i++; continue; }
         if ((body[i] === 'C' || body[i] === 'D') && /[0-5]/.test(body[i + 1] || '')) {
+          isCtorOrDtor = true;
+          i += 2;
+          continue;
+        }
+        // Itanium copy/move assignment operator (aS) right after class name
+        if (parts.length && body.slice(i, i + 2) === 'aS' && body[i + 2] === 'E') {
           isCtorOrDtor = true;
           i += 2;
           continue;
@@ -747,6 +759,7 @@ export function extractCallableLeaf(name) {
           owner: parts.length >= 2 ? parts[parts.length - 2] : null,
           isConst,
           isCtorOrDtor,
+          isStdGlue,
         };
       }
     } else {
@@ -755,12 +768,15 @@ export function extractCallableLeaf(name) {
         const len = Number(lm[1]);
         const start = lm[0].length;
         if (len > 0 && start + len <= body.length) {
-          return { leaf: body.slice(start, start + len), owner: null, isConst, isCtorOrDtor: false };
+          return { leaf: body.slice(start, start + len), owner: null, isConst, isCtorOrDtor: false, isStdGlue: false };
         }
       }
     }
+    if (isStdGlue) {
+      return { leaf: '', owner: 'std', isConst, isCtorOrDtor: false, isStdGlue: true };
+    }
   }
-  return { leaf: name.replace(/^_+/, ''), owner: null, isConst: false, isCtorOrDtor: false };
+  return { leaf: name.replace(/^_+/, ''), owner: null, isConst: false, isCtorOrDtor: false, isStdGlue: false };
 }
 
 /**
@@ -770,6 +786,7 @@ export function extractCallableLeaf(name) {
 export function numericSymbolRole(goal, name) {
   if (!goal || !goal.expects || !goal.expects.numeric || typeof name !== 'string' || !name) return 'neutral';
   const info = extractCallableLeaf(name);
+  if (info.isStdGlue) return 'non-value';
   const leafNorm = normalizeFieldName(info.leaf);
   if (!leafNorm) return 'neutral';
   const leafTokens = leafNorm.split(' ');
