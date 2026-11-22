@@ -163,7 +163,7 @@ test('real ARM64 binaries satisfy C-syntax invariants (no dangling/duplicate lab
         if (fnName === 'call_weak_fn') {
           const labels = code.match(/\bloc_[0-9A-Fa-f]+:/g) || [];
           assert.equal(new Set(labels).size, labels.length, `duplicate label in ${caseId}::${fnName}`);
-          const chk = cSyntaxOk(`extern unsigned long long global_13FD0;\n${code}`);
+          const chk = cSyntaxOk(code);
           assert.equal(chk.ok, true, `${caseId}::${fnName} failed C syntax:\n${chk.stderr}`);
         } else {
           const chk = cSyntaxOk(code);

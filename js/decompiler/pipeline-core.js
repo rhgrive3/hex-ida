@@ -2023,6 +2023,30 @@ function cAstFromLines(result, state) {
   return program;
 }
 
+function validatedRewriteAll(state, budget) {
+  const validation = createValidationBatch();
+  let out = state;
+  validation.run(() => { out = rewriteAll(state, budget); });
+  if (validation.settle() > 0) consumerObservationBudget(state).reasons.add('semantic-rewrite-validation-stale');
+  return out;
+}
+
+function validatedSemanticFacts(state, result) {
+  const validation = createValidationBatch();
+  let facts = null;
+  validation.run(() => { facts = semanticFacts(state, result); });
+  if (validation.settle() > 0) consumerObservationBudget(state).reasons.add('semantic-facts-validation-stale');
+  return facts;
+}
+
+function validatedSemanticAstOf(state, facts) {
+  const validation = createValidationBatch();
+  let ast = null;
+  validation.run(() => { ast = semanticAstOf(state, facts); });
+  if (validation.settle() > 0) ast = semanticAstOf(state, facts);
+  return ast;
+}
+
 function validatedCAstFromLines(result, state) {
   // C-AST construction binds many output nodes to the same producer
   // histories. Those histories are read-only during this synchronous section,
@@ -2098,11 +2122,25 @@ export function readRepresentationStage(result) {
 export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const opts = applyDecompilerProfile(rawOpts);
+  let orderedMaterializations;
+  let localDeclarations;
+  {
+    const initValidation = createValidationBatch();
+    initValidation.run(() => {
+      orderedMaterializations = readSemanticOrderedMaterializations(result, result.ir) || new Map();
+      localDeclarations = new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))
+        .filter(Boolean).map(owner => [owner.key, owner]));
+    });
+    if (initValidation.settle() > 0) {
+      orderedMaterializations = readSemanticOrderedMaterializations(result, result.ir) || new Map();
+      localDeclarations = new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))
+        .filter(Boolean).map(owner => [owner.key, owner]));
+    }
+  }
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
-    orderedMaterializations: readSemanticOrderedMaterializations(result, result.ir) || new Map(),
-    localDeclarations: new Map((result.lines || []).map(node => readSemanticLocalDeclaration(node, result.ir))
-      .filter(Boolean).map(owner => [owner.key, owner])),
+    orderedMaterializations,
+    localDeclarations,
     proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],
@@ -2134,16 +2172,46 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   state.phase8ElapsedMs = phase8.elapsedMs;
 
   const manager = new PassManager([
-    { name: 'high-variable-recovery', run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
-    { name: 'prototype-recovery', run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
-    { name: 'aggregate-layout-recovery', run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
+    { name: 'high-variable-recovery', shallowStateOnly: true, run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
+    { name: 'prototype-recovery', shallowStateOnly: true, run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
+    { name: 'aggregate-layout-recovery', shallowStateOnly: true, run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
     { name: 'canonical-expression-build', run:buildCanonicalExpressions },
-    { name: 'semantic-rewrite', run: rewriteAll },
-    { name: 'semantic-facts', run(s) { s.facts = semanticFacts(s, result); return s; } },
-    { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
+    { name: 'semantic-rewrite', run: validatedRewriteAll },
+    { name: 'semantic-facts', run(s) { s.facts = validatedSemanticFacts(s, result); return s; } },
+    { name: 'typed-semantic-ast', shallowStateOnly: true, run(s) { s.semanticAst = validatedSemanticAstOf(s, s.facts); return s; } },
     { name: 'c-ast', run(s) { s.cAst = validatedCAstFromLines(result, s); return s; } },
-    { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
-  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs ?? opts.transformSafetyCeilingMs ?? 250), deadline: opts.transformDeadline, deadlineReason: opts.transformDeadlineReason, clock: opts.transformClock, nodeBudget: Number(opts.decompilerNodeBudget ?? 12000), maxIterations: Number(opts.decompilerIterationCap ?? 16) });
+    { name: 'pretty-print', shallowStateOnly: true, run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
+  ], {
+    timeBudgetMs: Number(opts.decompilerTimeBudgetMs ?? opts.transformSafetyCeilingMs ?? 250),
+    deadline: opts.transformDeadline,
+    deadlineReason: opts.transformDeadlineReason,
+    clock: opts.transformClock,
+    nodeBudget: Number(opts.decompilerNodeBudget ?? 12000),
+    maxIterations: Number(opts.decompilerIterationCap ?? 16),
+    readOnlyRoots: (() => {
+      const roots = new Set([state.ir, state.model, state.types, state.opts].filter(Boolean));
+      const ir = state.ir;
+      if (ir && typeof ir === 'object') {
+        for (const k of ['blocks', 'values', 'instructions', 'args', 'locations', 'byRow', 'stackSlots', 'loops', 'defUse', 'compat']) {
+          if (ir[k] && typeof ir[k] === 'object') roots.add(ir[k]);
+        }
+        if (Array.isArray(ir.blocks)) for (const b of ir.blocks) if (b && typeof b === 'object') roots.add(b);
+        if (Array.isArray(ir.values)) for (const v of ir.values) if (v && typeof v === 'object') roots.add(v);
+        if (Array.isArray(ir.instructions)) for (const inst of ir.instructions) if (inst && typeof inst === 'object') roots.add(inst);
+      }
+      if (state.model && typeof state.model === 'object') {
+        for (const k of ['calls', 'blocks', 'instructions', 'rows']) {
+          if (state.model[k] && typeof state.model[k] === 'object') roots.add(state.model[k]);
+        }
+      }
+      if (state.types && typeof state.types === 'object') {
+        for (const k of ['values', 'locations', 'params', 'returns']) {
+          if (state.types[k] && typeof state.types[k] === 'object') roots.add(state.types[k]);
+        }
+      }
+      return roots;
+    })(),
+  });
   const advanced = manager.run(state);
   // Budgets are a degradation boundary, not a validity boundary. If a large function
   // exhausts the optional pass budget, finish the mandatory representation layers
@@ -2166,8 +2234,8 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   advanced.highVariables ||= recoverHighVariables(advanced.ir, advanced.types, opts);
   advanced.prototype ||= recoverFunctionPrototype(advanced.ir, advanced.types, opts);
   advanced.aggregateLayouts ||= recoverAggregateLayouts(advanced.ir, advanced.types, opts);
-  advanced.facts ||= semanticFacts(advanced, result);
-  advanced.semanticAst ||= semanticAstOf(advanced, advanced.facts);
+  advanced.facts ||= validatedSemanticFacts(advanced, result);
+  advanced.semanticAst ||= validatedSemanticAstOf(advanced, advanced.facts);
   advanced.cAst ||= validatedCAstFromLines(result, advanced);
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
