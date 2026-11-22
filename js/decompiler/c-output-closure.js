@@ -353,6 +353,58 @@ function declaredNamesFromLines(lines) {
   return declared;
 }
 
+const STANDARD_KNOWN_TYPES = new Set([
+  'size_t', 'ssize_t', 'ptrdiff_t', 'uintptr_t', 'intptr_t', 'wchar_t', 'va_list', 'FILE',
+]);
+
+/* Extract pointer parameter bindings (`Thing * this`, `const Base * a2`) from a function signature. */
+function signaturePointerParams(signature) {
+  const result = [];
+  const text = declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return result;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') { depth--; if (!depth) { close = i; break; } }
+  }
+  if (close <= open) return result;
+  for (const rawGroup of text.slice(open + 1, close).split(',')) {
+    const group = rawGroup.trim();
+    if (!group || group === 'void' || !group.includes('*')) continue;
+    const match = /^(?:(?:const|volatile|restrict|struct|union|enum)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:const\s+|volatile\s+|restrict\s+)*\*+\s*(?:const\s+|volatile\s+|restrict\s+)*([A-Za-z_][A-Za-z0-9_]*)$/.exec(group);
+    if (!match) continue;
+    const typeName = match[1];
+    const paramName = match[2];
+    if (KEYWORDS.has(typeName) || FIXED_WIDTH_TYPES.has(typeName) || STANDARD_KNOWN_TYPES.has(typeName)) continue;
+    result.push({ typeName, paramName });
+  }
+  return result;
+}
+
+function atomicCompatPreludeLines(uses, existingLines, entrySource) {
+  const out = [];
+  const hasMacro = (name) => (existingLines || []).some((l) => String(l?.text ?? '').includes(`#define ${name}(`));
+  if (uses.get('__atomic_load')?.callTarget && !hasMacro('__atomic_load')) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_atomic_load_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_atomic_load_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __atomic_load(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  if (uses.get('__atomic_store')?.callTarget && !hasMacro('__atomic_store')) {
+    out.push(
+      { kind: 'decl', indent: 0, text: '#ifndef __hex_atomic_store_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __hex_atomic_store_defined', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#define __atomic_store(ptr, val) (__atomic_store_n((ptr), (val), __ATOMIC_SEQ_CST), 0)', row: null, addr: null, note: null, source: entrySource },
+      { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+    );
+  }
+  return out;
+}
+
 /* Type names appearing in a function signature (return type and parameter types). */
 function signatureTypeNames(signature) {
   const names = new Set();
@@ -675,7 +727,37 @@ export function closeFunctionOutput(result, options = {}) {
     : lines;
 
   const withPostFixedPrelude = [...withDeclarations];
-  const postFixedPrelude = [...structPrelude, ...globalPrelude];
+  const sigPtrParams = signaturePointerParams(sigText);
+  const sigTypesByName = new Map();
+  for (const { typeName, paramName } of sigPtrParams) {
+    if (existingTypes.has(typeName)) continue;
+    let fields = sigTypesByName.get(typeName);
+    if (!fields) {
+      fields = new Set();
+      sigTypesByName.set(typeName, fields);
+    }
+    const access = memberBaseAccesses.get(paramName);
+    if (access && access.fields.size) {
+      for (const f of access.fields) fields.add(f);
+    }
+  }
+  for (const typeName of [...sigTypesByName.keys()].sort(compareAscii)) {
+    const fields = sigTypesByName.get(typeName);
+    if (!structPrelude.length) {
+      structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    }
+    const typedefText = fields && fields.size
+      ? `typedef struct ${typeName} { ${[...fields].sort(compareAscii).map((f) => `uint64 ${f};`).join(' ')} } ${typeName};`
+      : `typedef struct ${typeName} ${typeName};`;
+    structPrelude.push({
+      kind: 'decl', indent: 0, text: typedefText,
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add(typeName);
+  }
+
+  const atomicPrelude = atomicCompatPreludeLines(uses, lines, entrySource);
+  const postFixedPrelude = [...structPrelude, ...globalPrelude, ...atomicPrelude];
   if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)
