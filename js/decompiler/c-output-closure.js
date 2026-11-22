@@ -143,7 +143,7 @@ export function isStandalonePrototypePreludeComment(text) {
 }
 
 export function isStandalonePrototypePreludeDeclaration(text) {
-  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*;$/.exec(String(text ?? '').trim());
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((?:\s*|\s*uint64\s*,\s*\.\.\.\s*|\s*\.\.\.\s*)\)\s*;$/.exec(String(text ?? '').trim());
   return !!match && FIXED_WIDTH_TYPES.has(match[1]) && !KEYWORDS.has(match[2]);
 }
 
@@ -419,6 +419,31 @@ function atomicCompatPreludeLines(uses, existingLines, entrySource) {
   return out;
 }
 
+
+
+function callSiteArityRange(source, name) {
+  const re = new RegExp('\\b' + escapeRegExp(name) + '\\s*\\(', 'g');
+  let minArgs = Infinity;
+  let maxArgs = 0;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    let commas = 0;
+    let hasNonSpace = false;
+    while (i < source.length && depth > 0) {
+      const ch = source[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) break; }
+      else if (ch === ',' && depth === 1) commas++;
+      else if (!/\s/.test(ch) && depth === 1) hasNonSpace = true;
+      i++;
+    }
+    const argc = hasNonSpace ? commas + 1 : 0;
+    if (argc < minArgs) minArgs = argc;
+    if (argc > maxArgs) maxArgs = argc;
+  }
+  return minArgs === Infinity ? { minArgs: 0, maxArgs: 0 } : { minArgs, maxArgs };
+}
 
 function signatureFunctionName(signature) {
   const text = declarationBearingSource(signature);
@@ -841,8 +866,10 @@ export function closeFunctionOutput(result, options = {}) {
   if (standalonePrototypes.length) {
     prototypePrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_PROTOTYPES_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standalonePrototypes) {
+      const arity = callSiteArityRange(declarationBearingSource(renderedInitial), entry.name);
+      const paramList = arity.minArgs >= 1 ? '(uint64, ...)' : (arity.maxArgs >= 1 ? '(...)' : '()');
       prototypePrelude.push({
-        kind: 'decl', indent: 0, text: `uint64 ${entry.name} ();`,
+        kind: 'decl', indent: 0, text: `uint64 ${entry.name} ${paramList};`,
         row: null, addr: null, note: null, source: entrySource,
       });
     }

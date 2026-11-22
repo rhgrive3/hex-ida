@@ -328,7 +328,7 @@ test('standalone prototypes, id typedef, pointer-typed locals, and TU stripping 
   };
   closeFunctionOutput(res);
   assert.match(res.pseudocode, /typedef void \* id;/);
-  assert.match(res.pseudocode, /uint64 objc_retain \(\);/);
+  assert.match(res.pseudocode, /uint64 objc_retain \(uint64, \.\.\.\);/);
   assert.match(res.pseudocode, /void \* x8;/);
   assert.doesNotMatch(res.pseudocode, /\buint64 id;/);
   const once = res.pseudocode;
