@@ -14,7 +14,7 @@ import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtim
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
-import { renderIndexedMemory } from './address-semantics.js';
+import { renderIndexedMemory, renderExtendedIndex } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
 import { createProjectionIrObserver, ownDataEntries } from '../core/identity/live-data.js';
@@ -1011,11 +1011,21 @@ export function renderMemoryLocation(loc, inst, ctx) {
     if (addr.base && addr.index) {
       const base = renderValue(addr.base, ctx);
       const index = renderValue(addr.index, ctx);
-      return renderIndexedMemory(base, index, {
+      const scale = Number(addr.scale || 0);
+      const size = Number(addr.size || 0);
+      const indexed = renderIndexedMemory(base, index, {
         extend: addr.extend || null,
-        scale: addr.scale || 0,
-        size: Number(addr.size || 0),
+        scale,
+        size,
       });
+      const baseType = ctx.types?.values?.get?.(addr.base.id);
+      const isPtr = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(base);
+      const scaleBytes = scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
+      if (!isPtr && size > 0 && scaleBytes === size && !indexed.startsWith('memory[')) {
+        const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 8}_t`;
+        return `((${elemType} *)(uintptr_t)(${base}))[${renderExtendedIndex(index, addr.extend || null)}]`;
+      }
+      return indexed;
     }
     if (addr.base && addr.disp != null) {
       const cxxRec = ctx.opts?.cxxEvidence?.receiver;
@@ -1035,7 +1045,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
     const off = loc.disp ?? 0n;
     const cxxRec = ctx.opts?.cxxEvidence?.receiver;
     const isReceiver = isReceiverAlias(base, cxxRec, ctx);
-    const baseText = isReceiver ? 'this' : renderValue(base, ctx, { asBase: true });
+    const rawBaseText = isReceiver ? 'this' : renderValue(base, ctx, { asBase: true });
+    const baseText = /^[A-Za-z_][A-Za-z0-9_]*$/.test(rawBaseText) ? rawBaseText : `(${rawBaseText})`;
     let known = null;
     try { known = ctx.opts.fieldFor?.(addr.baseReg || base?.reg || null, off, inst?.row); } catch { known = null; }
     if (!known) known = objcIvar(ctx, base, off);
@@ -2191,6 +2202,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
       // the canonical origin of the block it jumps into. Emitting it
       // sourceless made the claim unauditable from the rendered line.
+      state.gotoTargets?.add(bi);
       out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }),
         null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
       state.gotos++; return;
@@ -2198,6 +2210,9 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     state.visited.add(bi);
     const block = ctx.ir.blocks[bi];
     if (!block) return;
+    const currentBi = bi;
+    const blockStartLen = out.length;
+    try {
 
     const loop = ctx.graph.loopByHeader.get(bi);
     const term = blockTerm(block);
@@ -2235,7 +2250,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         term2, 'loop-break', { target:next, header:state.loopHeader }, ctx)); return; }
       if (next === stop) return;
       if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
+      if (next != null) { state.gotoTargets?.add(next); out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
         term2, 'residual-branch-goto', { target:next, stop }, ctx)); state.gotos++; }
       return;
     }
@@ -2246,10 +2261,12 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         out.push(retainControlRenderLine(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'switch-header', { switch:sw }, ctx));
         for (const c of sw.cases || []) {
+          state.gotoTargets?.add(c.block);
           out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
             term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
         }
         if (sw.defaultBlock != null) {
+          state.gotoTargets?.add(sw.defaultBlock);
           out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
             term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
         }
@@ -2371,25 +2388,41 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         return;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-        term2, 'residual-conditional-goto', { yes, no, join }, ctx));
-      if (no != null) out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
-        term2, 'residual-false-goto', { yes, no, join }, ctx));
+      if (yes != null) { state.gotoTargets?.add(yes); out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'residual-conditional-goto', { yes, no, join }, ctx)); }
+      if (no != null) { state.gotoTargets?.add(no); out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
+        term2, 'residual-false-goto', { yes, no, join }, ctx)); }
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
+    }
+    } finally {
+      if (state.blockAnchors && !state.blockAnchors.has(currentBi)) {
+        if (out.length > blockStartLen) {
+          state.blockAnchors.set(currentBi, { firstNode: out[blockStartLen], indent });
+        } else {
+          const marker = { __emptyBlockAnchor: currentBi, indent };
+          out.push(marker);
+          state.blockAnchors.set(currentBi, { firstNode: marker, empty: true, indent });
+        }
+      }
     }
   }
 }
 
 function faithfulCfg(ctx, indent = 1) {
   const out = [];
+  const emittedLabels = new Set();
   const reachable = ctx.graph.reachable || new Set(ctx.ir.blocks.map((b) => b.index));
   for (const bi of [...reachable].sort((a, b) => ctx.ir.blocks[a].startRow - ctx.ir.blocks[b].startRow)) {
     const block = ctx.ir.blocks[bi];
-    const label = line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi));
-    // Keep the public label shape unchanged; its private producer retains the
-    // canonical destination source without inventing a branch instruction.
-    out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
-      source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+    const labelText = `loc_${hex(ctx.blockAddress(bi))}:`;
+    if (!emittedLabels.has(labelText)) {
+      emittedLabels.add(labelText);
+      const label = line('label', indent, labelText, block.startRow, ctx.blockAddress(bi));
+      // Keep the public label shape unchanged; its private producer retains the
+      // canonical destination source without inventing a branch instruction.
+      out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
+        source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+    }
     const term = emitBlockStatements(block, out, ctx, indent + 1);
     if (!term) continue;
     if (term.op === OP.RET) {
@@ -2505,12 +2538,45 @@ export function decompileSemantic(model, rawOpts = {}) {
   const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr, opts, ir);
   const body = [];
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
+    gotoTargets: new Set(), blockAnchors: new Map(),
     terminalProofBudget: { remaining: terminalProofSteps(opts) } };
   emitRegion(ir.entry || 0, null, body, ctx, state, 1);
 
   const reachable = graph.reachable || new Set();
   const missing = [...reachable].filter((b) => !state.visited.has(b));
   let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
+  if (!missing.length) {
+    const anchorToBi = new Map();
+    for (const [bi, anchor] of state.blockAnchors) {
+      if (anchor?.firstNode) anchorToBi.set(anchor.firstNode, { bi, empty: !!anchor.empty, indent: anchor.indent });
+    }
+    const emittedLabels = new Set();
+    const resolvedBody = [];
+    for (let i = 0; i < body.length; i += 1) {
+      const node = body[i];
+      const info = anchorToBi.get(node);
+      if (info) {
+        if (state.gotoTargets.has(info.bi)) {
+          const block = ctx.ir.blocks[info.bi];
+          const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
+          if (!emittedLabels.has(labelText) && block) {
+            emittedLabels.add(labelText);
+            const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
+            resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
+              source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+            if (info.empty) {
+              resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+            }
+          }
+        }
+        if (info.empty) continue;
+      }
+      if (node && node.__emptyBlockAnchor !== undefined) continue;
+      resolvedBody.push(node);
+    }
+    body.length = 0;
+    for (const node of resolvedBody) body.push(node);
+  }
   if (missing.length) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     // Only the selected final emission belongs to the history. Keep legacy

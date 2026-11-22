@@ -1613,7 +1613,12 @@ function statementFor(insn, ctx, node) {
   if (isFrameHousekeeping(insn, ctx)) return null;
 
   /* メモリ */
-  if (insn.memory) return memoryStatement(insn, ctx, mk, base);
+  if (insn.memory) {
+    const memStmt = memoryStatement(insn, ctx, mk, base);
+    if (memStmt) return memStmt;
+    ctx.unknown.add(base);
+    return mk('__asm("' + insn.mnemonic + ' ' + insn.operands + '");', {});
+  }
 
   /* アドレス計算 (adrp / adr / adrp+add)。行き先が決まっていれば名前で書く */
   const ref = ctx.refOf.get(row);
@@ -1638,7 +1643,7 @@ function statementFor(insn, ctx, node) {
 
   /* mov / movz / movk。movi #0 は SIMD 全laneのゼロ初期化。 */
   if (base === 'movi' && insn.ops[1]?.k === 'imm' && insn.ops[1].value === 0n) {
-    return mk(varOf(insn.ops[0]?.text || dst || 'v0', ctx) + ' = 0; /* vector zero */', { dst, pure: true });
+    return mk(varOf(regOf(insn.ops[0]) || dst || 'v0', ctx) + ' = 0; /* vector zero */', { dst, pure: true });
   }
   if (base === 'mov' || base === 'fmov' || base === 'movz') {
     const src = insn.ops[1];
@@ -1898,9 +1903,13 @@ function memoryStatement(insn, ctx, mk, base) {
   }
 
   if (m.kind === 'load') {
-    const d0 = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : '?';
+    const r0 = insn.ops[0] ? regOf(insn.ops[0]) : null;
+    if (!r0) return null;
+    const d0 = nameForDef(ctx, insn.row, r0);
     if (pair) {
-      const d1 = insn.ops[1] ? nameForDef(ctx, insn.row, regOf(insn.ops[1])) : '?';
+      const r1 = insn.ops[1] ? regOf(insn.ops[1]) : null;
+      if (!r1) return null;
+      const d1 = nameForDef(ctx, insn.row, r1);
       return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + (place2 || nextSlot(place, m)) + ';',
         { dst: insn.writes[0] });
     }
@@ -1927,9 +1936,13 @@ function memoryStatement(insn, ctx, mk, base) {
    * いちばんまずい形になっていた。
    */
   const stored = storedValues(insn, ctx);
-  const s0 = stored[0] || (insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?');
+  const sr0 = insn.ops[0] ? regOf(insn.ops[0]) : null;
+  if (!stored[0] && !sr0) return null;
+  const s0 = stored[0] || varOf(sr0, ctx);
   if (pair) {
-    const s1 = stored[1] || (insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?');
+    const sr1 = insn.ops[1] ? regOf(insn.ops[1]) : null;
+    if (!stored[1] && !sr1) return null;
+    const s1 = stored[1] || varOf(sr1, ctx);
     return mk(place + ' = ' + s0 + ';   ' + (place2 || nextSlot(place, m)) + ' = ' + s1 + ';', {});
   }
   return mk(place + ' = ' + s0 + ';');

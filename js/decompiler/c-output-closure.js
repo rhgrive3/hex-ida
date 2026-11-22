@@ -107,6 +107,26 @@ export function declarationBearingSource(text) {
       if (ch === '/' && next === '*') { out += '  '; i++; state = 'block'; continue; }
       if (ch === '"') { out += ' '; state = 'string'; continue; }
       if (ch === "'") { out += ' '; state = 'char'; continue; }
+      if (ch >= '0' && ch <= '9' && (i === 0 || !/[A-Za-z0-9_]/.test(source[i - 1]))) {
+        const isHex = ch === '0' && (next === 'x' || next === 'X');
+        let j = i;
+        while (j < source.length) {
+          const c = source[j];
+          if (/[0-9A-Za-z_.']/.test(c)) {
+            const isExp = isHex ? (c === 'p' || c === 'P') : (c === 'e' || c === 'E');
+            if (isExp && (source[j + 1] === '+' || source[j + 1] === '-')) {
+              j += 2;
+              continue;
+            }
+            j++;
+          } else {
+            break;
+          }
+        }
+        out += ' '.repeat(j - i);
+        i = j - 1;
+        continue;
+      }
       out += ch;
       continue;
     }

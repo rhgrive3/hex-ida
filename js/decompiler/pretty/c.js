@@ -180,7 +180,16 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'float-const': return floatText(n.value, n.bits);
     case 'var': return n.name || 'value';
     case 'field': return `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
-    case 'index': return `${printExpression(n.base, PREC.primary, opts)}[${printExpression(n.index, 0, opts)}]`;
+    case 'index': {
+      const idxText = printExpression(n.index, 0, opts);
+      const mustCast = opts.indexBaseIsPointer !== true;
+      if (!mustCast) {
+        return `${printExpression(n.base, PREC.primary, opts)}[${idxText}]`;
+      }
+      const elemBits = [8, 16, 32, 64].includes(Number(n.bits)) ? Number(n.bits) : (Number(n.bits) === 128 ? 128 : 8);
+      const elemType = elemBits === 128 ? 'uint128' : `uint${elemBits}_t`;
+      return `((${elemType} *)(uintptr_t)(${printExpression(n.base, 0, opts)}))[${idxText}]`;
+    }
     case 'load': return n.location?.text || n.location?.name || `memory_${String(n.location?.key || 'unknown').replace(/[^A-Za-z0-9_]/g, '_')}`;
     case 'call': return `${n.callee || 'unknown_call'}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     case 'intrinsic': {
