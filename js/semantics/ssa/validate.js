@@ -1,6 +1,7 @@
 import { stableStringify } from '../../core/identity/index.js';
 import { createSemanticCfg } from '../cfg/index.js';
 import { createSemanticIrFunction, isCanonicalSemanticIrProducerArtifact } from '../ir/function.js';
+import { isCanonicalSemanticSsaProducerArtifact } from './build.js';
 import {
   analyzeSemanticSsaDominance,
   createSemanticSsaContract,
@@ -50,8 +51,34 @@ function originStrings(origin, key, cache) {
   byKey.set(key, strings);
   return strings;
 }
+const PRIMITIVE_STRING_ORIGIN_KEYS = new Set(['instructionIds', 'operationIds', 'parentEntityIds']);
+function isStringList(value) {
+  if (value == null) return true;
+  if (!Array.isArray(value)) return false;
+  for (let i = 0; i < value.length; i += 1) if (typeof value[i] !== 'string') return false;
+  return true;
+}
 function originContains(container, required, stringCache, setCache) {
+  if (container === required) return true;
   for (const key of ['byteRanges', 'virtualRanges', 'instructionIds', 'operationIds', 'sourceLocations', 'parentEntityIds']) {
+    if (PRIMITIVE_STRING_ORIGIN_KEYS.has(key)) {
+      const containerList = container && typeof container === 'object' ? container[key] : null;
+      const requiredList = required && typeof required === 'object' ? required[key] : null;
+      if (isStringList(containerList) && isStringList(requiredList)) {
+        if (!requiredList || requiredList.length === 0) continue;
+        if (!containerList || containerList.length === 0) return false;
+        let byKey = setCache.get(container);
+        if (byKey == null) { byKey = new Map(); setCache.set(container, byKey); }
+        const rawKey = 'raw:' + key;
+        let haveRaw = byKey.get(rawKey);
+        if (haveRaw == null) {
+          haveRaw = new Set(containerList);
+          byKey.set(rawKey, haveRaw);
+        }
+        for (let i = 0; i < requiredList.length; i += 1) if (!haveRaw.has(requiredList[i])) return false;
+        continue;
+      }
+    }
     let byKey = container && typeof container === 'object' ? setCache.get(container) : null;
     if (byKey == null && container && typeof container === 'object') {
       byKey = new Map();
@@ -261,12 +288,16 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   if (!blockSetEqual(ir, cfg)) fail('semantic-ssa-block-set-mismatch');
   validateControlProjection(ir, cfg);
   const entry = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
-  const ssa = createSemanticSsaContract({
-    contractVersion: ssaInput.contractVersion,
-    functionId: ssaInput.functionId,
-    definitions: ssaInput.definitions,
-    uses: ssaInput.uses,
-  }, { cfg, signal: options.signal, budget: options.budget });
+  const ssa = isCanonicalSemanticSsaProducerArtifact(ssaInput)
+    && options.budget == null
+    && options.cfgOptions == null
+    ? ssaInput
+    : createSemanticSsaContract({
+      contractVersion: ssaInput.contractVersion,
+      functionId: ssaInput.functionId,
+      definitions: ssaInput.definitions,
+      uses: ssaInput.uses,
+    }, { cfg, signal: options.signal, budget: options.budget });
   if (ssa.functionId !== ir.functionId) fail('semantic-ssa-function-mismatch');
 
   const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: maxWorkItems(options) }, ...(options.dominanceOptions ?? {}) });

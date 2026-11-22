@@ -76,6 +76,7 @@ const FROZEN_IDENTITY_TEXT = new WeakMap();
 const FROZEN_IDENTITY_BYTES = new WeakMap();
 const FROZEN_STREAM_CHUNKS = new WeakMap();
 const FROZEN_GRAPH_DIGEST = new WeakMap();
+const FROZEN_IR_SHAPE_DATA = new WeakMap();
 const DEEPLY_FROZEN_FINITE_CACHE = new WeakMap();
 const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
 const STREAM_CHUNK_TARGET = 64 * 1024;
@@ -772,19 +773,27 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = {
       type: 'Map',
       entries: [...value.entries()]
-        .map(([key, item], index) => [
-          semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
-          semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
-        ])
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map(([key, item], index) => {
+          const entry = [
+            semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
+            semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
+          ];
+          return [canonicalSortText(entry), entry];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
       values: [...value.values()]
-        .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map((item, index) => {
+          const projected = semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo);
+          return [canonicalSortText(projected), projected];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Date) {
@@ -1060,8 +1069,8 @@ function valueShape(value, memo, digests, definitionCache) {
 
 function instructionShape(instruction, memo, digests, definitionCache) {
   if (instruction == null || typeof instruction !== 'object') return instruction ?? null;
-  const shape = definitionShape(instruction, ['conditionValue', 'selectorValue'], memo, digests, definitionCache);
-  return shape;
+  const base = definitionShape(instruction, [], memo, digests, definitionCache);
+  return base ? { ...base } : base;
 }
 
 function blockShape(block, memo, digests, definitionCache) {
@@ -1302,14 +1311,24 @@ export function canonicalAnalysisIdentity(context = {}) {
       || hasMalformedIdentityFields(irSourceIdentity)) {
     return { identity: null, valid: false, reason: 'analysis identity is malformed' };
   }
-  const shape = irShape(ir);
-  if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
-  // `shape` is the acyclic plain projection assembled above. Use the same
-  // width-preserving typed serializer as canonical origins; malformed values
-  // fail closed instead of falling back to a lossy alternate representation.
+  const irFrozen = ir != null && typeof ir === 'object'
+    && (DEEPLY_FROZEN_CACHE.get(ir) === true || (Object.isFrozen(ir) && deeplyFrozen(ir)));
+  let cachedIrShape = irFrozen ? FROZEN_IR_SHAPE_DATA.get(ir) : undefined;
+  let shape;
   let shapeDigest;
-  try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
-  catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
+  if (cachedIrShape !== undefined) {
+    shape = cachedIrShape.shape;
+    shapeDigest = cachedIrShape.shapeDigest;
+  } else {
+    shape = irShape(ir);
+    if (shape == null) return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' };
+    // `shape` is the acyclic plain projection assembled above. Use the same
+    // width-preserving typed serializer as canonical origins; malformed values
+    // fail closed instead of falling back to a lossy alternate representation.
+    try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
+    catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
+    if (irFrozen) FROZEN_IR_SHAPE_DATA.set(ir, { shape, shapeDigest });
+  }
   const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
   const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
   const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;

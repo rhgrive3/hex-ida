@@ -449,10 +449,11 @@ function structuralLine(indent, kind, text, source) {
  * of this pass plus what it changed; a pass that changes nothing reports
  * `progress: false` and ends the fixpoint.
  */
-function closurePass(result) {
+function closurePass(result, precomputedInfo = null) {
   const lines = result.lines;
   const ir = result.ir;
-  const info = analyzeLines(lines);
+  const info = precomputedInfo ?? analyzeLines(lines);
+  const startSteps = precomputedInfo ? precomputedInfo.steps : 0;
   const raw = info.raw;
   const out = [];
   const stats = { removedGotos: 0, removedLabels: 0, guardBlocks: 0, ifElseRegions: 0, loopWraps: 0 };
@@ -535,7 +536,7 @@ function closurePass(result) {
 
   const progress = stats.removedGotos > 0 || stats.removedLabels > 0
     || stats.guardBlocks > 0 || stats.ifElseRegions > 0;
-  return { lines: kept, stats, progress, steps: info.steps };
+  return { lines: kept, stats, progress, steps: info.steps - startSteps };
 }
 
 /**
@@ -804,31 +805,53 @@ function wrapLoop(lines, candidate) {
  * from the end of the body so an inner loop is adopted before the outer region
  * that contains it.
  */
+function applyLoopWave(lines, descendingCandidates) {
+  if (descendingCandidates.length === 1) return wrapLoop(lines, descendingCandidates[0]);
+  const out = [];
+  let pos = 0;
+  for (let i = descendingCandidates.length - 1; i >= 0; i -= 1) {
+    const candidate = descendingCandidates[i];
+    for (let j = pos; j < candidate.labelIndex; j += 1) out.push(lines[j]);
+    if (candidate.keepLabel) out.push(lines[candidate.labelIndex]);
+    const source = mergeSource(lines[candidate.labelIndex].source, lines[candidate.jumpIndex].source);
+    out.push(structuralLine(candidate.base, 'ctrl', 'while (1) {', source));
+    const shifted = shiftLines(lines.slice(candidate.labelIndex + 1, candidate.jumpIndex), candidate.shift);
+    for (let j = 0; j < shifted.length; j += 1) out.push(shifted[j]);
+    out.push(structuralLine(candidate.base, 'ctrl', '}', source));
+    pos = candidate.jumpIndex + 1;
+  }
+  for (let j = pos; j < lines.length; j += 1) out.push(lines[j]);
+  return out;
+}
+
 function wrapBackwardLoops(lines, ir, shouldAbort) {
   const stats = { loopWraps: 0, loopCandidates: 0, refusedLoopProof: 0, scanSteps: 0, rounds: 0 };
   let current = lines;
-  for (let round = 0; round < MAX_LOOP_WRAP_ROUNDS; round += 1) {
+  for (let round = 0; round < MAX_LOOP_WRAP_ROUNDS && stats.loopWraps < MAX_LOOP_WRAP_ROUNDS; round += 1) {
     if (shouldAbort?.()) break;
     const info = analyzeLines(current);
-    let wrapped = false;
+    const wave = [];
+    let minAdoptedStart = current.length;
     for (let index = current.length - 1; index >= 0; index -= 1) {
       if (shouldAbort?.()) break;
       if (info.labelLower[index] == null) continue;
       const candidate = loopWrapCandidate(info, index);
       if (!candidate) continue;
+      if (candidate.jumpIndex >= minAdoptedStart) continue;
       stats.loopCandidates += 1;
       if (!backwardLoopProof(ir, info, index, candidate.jumpIndex)) {
         stats.refusedLoopProof += 1;
         continue;
       }
-      current = wrapLoop(current, candidate);
-      stats.loopWraps += 1;
-      stats.scanSteps += info.steps;
-      stats.rounds += 1;
-      wrapped = true;
-      break;
+      wave.push(candidate);
+      minAdoptedStart = candidate.labelIndex;
+      if (stats.loopWraps + wave.length >= MAX_LOOP_WRAP_ROUNDS) break;
     }
-    if (!wrapped) { stats.scanSteps += info.steps; stats.rounds += 1; break; }
+    stats.scanSteps += info.steps;
+    stats.rounds += 1;
+    if (!wave.length) break;
+    current = applyLoopWave(current, wave);
+    stats.loopWraps += wave.length;
   }
   return { lines: current, stats };
 }
@@ -880,16 +903,18 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
   if (!hasRuleInput) return finish(result);
   let current = lines;
 
-  const runTextFixpoint = () => {
+  const runTextFixpoint = (initialInfo = null) => {
+    let nextInfo = initialInfo;
     for (let pass = 0; pass < MAX_PASSES; pass += 1) {
       if (opts.shouldAbort?.() === true) return;
-      const outcome = closurePass({ ...result, lines: current });
+      const outcome = closurePass({ ...result, lines: current }, nextInfo);
       totals.passes += 1;
       totals.scanSteps += outcome.steps;
+      const afterInfo = analyzeLines(outcome.lines);
       // A rewrite that would publish a label without a statement is a bug in the
       // rule that produced it, not a licence to emit the label.  The whole pass
       // is discarded and the fixpoint stops at the last text that was provably C.
-      if (labelAtEndOfBlock(outcome.lines)) { totals.refusedPasses += 1; return; }
+      if (labelAtEndOfBlock(outcome.lines, afterInfo)) { totals.refusedPasses += 1; return; }
       totals.removedGotos += outcome.stats.removedGotos;
       totals.removedLabels += outcome.stats.removedLabels;
       totals.guardBlocks += outcome.stats.guardBlocks;
@@ -897,13 +922,15 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
       totals.loopWraps += outcome.stats.loopWraps;
       current = outcome.lines;
       if (!outcome.progress) return;
+      totals.scanSteps += afterInfo.steps;
+      nextInfo = afterInfo;
     }
   };
 
   // Text rules first, so their IR-bound proofs (the pure-condition no-op
   // branch) still see the original line objects; then the IR-proven loop wraps;
   // then one more text fixpoint for the text the wraps rewrote.
-  runTextFixpoint();
+  runTextFixpoint(entryInfo);
   const wrap = wrapBackwardLoops(current, result.ir, opts.shouldAbort);
   totals.loopWraps += wrap.stats.loopWraps;
   totals.loopCandidates += wrap.stats.loopCandidates;
@@ -913,7 +940,7 @@ export function eliminateAvoidableGotos(result, opts = {}, stats = null) {
   if (wrap.stats.loopWraps > 0) {
     const afterWrap = analyzeLines(current);
     totals.scanSteps += afterWrap.steps;
-    if (!labelAtEndOfBlock(current, afterWrap)) runTextFixpoint();
+    if (!labelAtEndOfBlock(current, afterWrap)) runTextFixpoint(afterWrap);
     else totals.refusedPasses += 1;
   }
   if (current === lines || (totals.removedGotos === 0 && totals.removedLabels === 0

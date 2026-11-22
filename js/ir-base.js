@@ -111,6 +111,133 @@ export function hasUnknownStoreBarrier(ir, from, to) {
  * STORE(MK.UNKNOWN) is a may-alias write to every non-stack object/global state.
  * Never let a concrete reaching-store proof pass through it.
  */
+function buildBarrierReachabilityIndex(ir, barriers) {
+  const blocks = ir.blocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+  const blockCount = blocks.length;
+  const words = (blockCount + 31) >>> 5;
+  const reachFrom = new Array(blockCount);
+  const reachTo = new Array(blockCount);
+  for (let i = 0; i < blockCount; i += 1) {
+    reachFrom[i] = new Uint32Array(words);
+    reachTo[i] = new Uint32Array(words);
+  }
+  const work = new Int32Array(blockCount);
+  for (let start = 0; start < blockCount; start += 1) {
+    const bits = reachFrom[start];
+    bits[start >>> 5] |= (1 << (start & 31));
+    reachTo[start][start >>> 5] |= (1 << (start & 31));
+    let top = 0;
+    work[top++] = start;
+    while (top > 0) {
+      const b = work[--top];
+      const succs = blocks[b]?.succ;
+      if (!succs) continue;
+      for (let i = 0; i < succs.length; i += 1) {
+        const s = succs[i];
+        if (s < 0 || s >= blockCount) continue;
+        const w = s >>> 5;
+        const m = 1 << (s & 31);
+        if ((bits[w] & m) === 0) {
+          bits[w] |= m;
+          reachTo[s][start >>> 5] |= (1 << (start & 31));
+          work[top++] = s;
+        }
+      }
+    }
+  }
+  const barrierBlockMask = new Uint32Array(words);
+  const barriersByBlock = new Map();
+  for (let i = 0; i < barriers.length; i += 1) {
+    const inst = barriers[i];
+    const b = inst?.block;
+    if (b == null || b < 0 || b >= blockCount) return null;
+    barrierBlockMask[b >>> 5] |= (1 << (b & 31));
+    let list = barriersByBlock.get(b);
+    if (!list) { list = []; barriersByBlock.set(b, list); }
+    list.push({ inst, idx: i, row: inst.row == null ? -1 : inst.row });
+  }
+  return {
+    blockCount,
+    words,
+    reachFrom,
+    reachTo,
+    barrierBlockMask,
+    barriersByBlock,
+    findFirstBetween(from, to) {
+      if (!from || !to) return null;
+      const fb = from.block;
+      const tb = to.block;
+      if (fb == null || tb == null || fb < 0 || tb < 0 || fb >= blockCount || tb >= blockCount) {
+        return unknownStoreBetween(ir, from, to, barriers);
+      }
+      const fromRow = from.row == null ? -1 : from.row;
+      const toRow = to.row == null ? -1 : to.row;
+      const fbReach = reachFrom[fb];
+      const tbReach = reachTo[tb];
+      const canReachTo = (fbReach[tb >>> 5] & (1 << (tb & 31))) !== 0;
+      let bestInst = null;
+      let bestIdx = Infinity;
+
+      const fromList = barriersByBlock.get(fb);
+      if (fromList) {
+        if (fb === tb) {
+          for (let i = 0; i < fromList.length; i += 1) {
+            const item = fromList[i];
+            if (item.idx >= bestIdx) break;
+            if (fromRow < item.row && item.row < toRow) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        } else if (canReachTo) {
+          for (let i = 0; i < fromList.length; i += 1) {
+            const item = fromList[i];
+            if (item.idx >= bestIdx) break;
+            if (fromRow < item.row) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        }
+      }
+
+      if (fb !== tb && canReachTo) {
+        const toList = barriersByBlock.get(tb);
+        if (toList) {
+          for (let i = 0; i < toList.length; i += 1) {
+            const item = toList[i];
+            if (item.idx >= bestIdx) break;
+            if (item.row < toRow) {
+              bestInst = item.inst;
+              bestIdx = item.idx;
+              break;
+            }
+          }
+        }
+      }
+
+      for (let w = 0; w < words; w += 1) {
+        let mask = fbReach[w] & tbReach[w] & barrierBlockMask[w];
+        while (mask !== 0) {
+          const lsb = mask & -mask;
+          const b = (w << 5) + (31 - Math.clz32(lsb));
+          mask ^= lsb;
+          if (b === fb || b === tb) continue;
+          const first = barriersByBlock.get(b)[0];
+          if (first.idx < bestIdx) {
+            bestInst = first.inst;
+            bestIdx = first.idx;
+          }
+        }
+      }
+      return bestInst;
+    },
+  };
+}
+
 function hardenUnknownStores(ir) {
   if (!ir || !ir.instructions) return ir;
   const barriers = unknownStores(ir);
@@ -119,6 +246,7 @@ function hardenUnknownStores(ir) {
     return ir;
   }
 
+  const barrierIndex = buildBarrierReachabilityIndex(ir, barriers);
   let blocked = 0;
   for (const load of ir.instructions) {
     if (load.op !== OP.LOAD) continue;
@@ -132,7 +260,9 @@ function hardenUnknownStores(ir) {
       continue;
     }
     if (!load.reachingStore) continue;
-    const barrier = unknownStoreBetween(ir, load.reachingStore, load, barriers);
+    const barrier = barrierIndex
+      ? barrierIndex.findFirstBetween(load.reachingStore, load)
+      : unknownStoreBetween(ir, load.reachingStore, load, barriers);
     if (!barrier) continue;
     load.reachingStore = null;
     load.memUse = {

@@ -12,7 +12,7 @@ export function captureRecoveryDominators(value, shouldAbort = null) {
   const entries = ownDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;
   const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
   let edges = entries.length;
-  const nativeSets = new Map(), roots = [];
+  const nativeSets = new Map(), seenIdoms = new Set(), seenViews = new Map(), roots = [];
   const captureSet = set => {
     if (nativeSets.has(set)) return;
     if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length) throw new TypeError('recovery-dominator-set-required');
@@ -24,21 +24,52 @@ export function captureRecoveryDominators(value, shouldAbort = null) {
   };
   const sets = entries.map(([key, set]) => {
     if (shouldAbort?.()) throw new TypeError('recovery-dominators-cancelled');
-    const view = readDominanceViewInputs(set);
-    if (view) { captureSet(view.reachable); roots.push(view.idom, view.index); }
-    else captureSet(set);
-    return { key, set, view };
+    let view;
+    if (seenViews.has(set)) {
+      view = seenViews.get(set);
+    } else {
+      view = readDominanceViewInputs(set);
+      seenViews.set(set, view);
+      if (view) {
+        captureSet(view.reachable);
+        if (!seenIdoms.has(view.idom)) {
+          seenIdoms.add(view.idom);
+          roots.push(view.idom);
+        }
+        roots.push(view.index);
+      } else {
+        captureSet(set);
+      }
+    }
+    return { key, set, view, viewKeys: view ? Object.keys(view) : null };
   });
   const data = captureProjectionIrData(roots, shouldAbort); edges += data.metrics.edges;
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-dominators-budget');
   return { edges, matches() {
     try {
       const current = ownDataEntries(value, PROJECTION_LIMITS.nodes);
-      return value.length === length && current.length === entries.length && sets.every(({ key, set, view }, index) =>
-        current[index][0] === key && current[index][1] === set
-        && (!view || (() => { const now = readDominanceViewInputs(set); return now && Object.keys(view).every(key => now[key] === view[key]); })()))
-        && [...nativeSets].every(([set, members]) => Object.getPrototypeOf(set) === Set.prototype && !Reflect.ownKeys(set).length
-          && size.call(set) === members.length && members.every(member => Set.prototype.has.call(set, member))) && data.matches();
+      if (value.length !== length || current.length !== entries.length) return false;
+      const checkedViews = new Map();
+      for (let index = 0; index < sets.length; index++) {
+        const { key, set, view, viewKeys } = sets[index];
+        if (current[index][0] !== key || current[index][1] !== set) return false;
+        if (view) {
+          let ok = checkedViews.get(set);
+          if (ok === undefined) {
+            const now = readDominanceViewInputs(set);
+            ok = !!now && viewKeys.every(k => now[k] === view[k]);
+            checkedViews.set(set, ok);
+          }
+          if (!ok) return false;
+        }
+      }
+      for (const [set, members] of nativeSets) {
+        if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length
+          || size.call(set) !== members.length || !members.every(member => Set.prototype.has.call(set, member))) {
+          return false;
+        }
+      }
+      return data.matches();
     } catch { return false; }
   } };
 }

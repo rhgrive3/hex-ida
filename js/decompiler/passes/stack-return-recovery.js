@@ -160,12 +160,72 @@ function branchCondition(ir, term, values) {
   return null;
 }
 
-function targetBlock(ir, term, opts) {
+function createPassIndex(ir) {
+  const blocks = ir?.blocks || [];
+  const blockByIndex = new Map();
+  let sortedDisjointRows = true;
+  let prevEndRow = -Infinity;
+  let hasAnyBlockInsts = false;
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!block) { sortedDisjointRows = false; continue; }
+    if (block.index != null) blockByIndex.set(block.index, block);
+    if (!hasAnyBlockInsts && Array.isArray(block.insts) && block.insts.length > 0) hasAnyBlockInsts = true;
+    if (sortedDisjointRows) {
+      if (typeof block.startRow === 'number' && typeof block.endRow === 'number'
+          && block.startRow <= block.endRow && block.startRow > prevEndRow) {
+        prevEndRow = block.endRow;
+      } else {
+        sortedDisjointRows = false;
+      }
+    }
+  }
+  const blockInstsDesc = new Map();
+  if (hasAnyBlockInsts) {
+    for (const block of blocks) {
+      if (!block || block.index == null) continue;
+      const insts = block.insts;
+      if (!insts || !insts.length) { blockInstsDesc.set(block.index, []); continue; }
+      blockInstsDesc.set(block.index, [...insts].sort((a, b) => (b.row ?? -1) - (a.row ?? -1)));
+    }
+  } else {
+    for (const inst of ir?.instructions || []) {
+      if (inst?.block == null) continue;
+      let list = blockInstsDesc.get(inst.block);
+      if (!list) { list = []; blockInstsDesc.set(inst.block, list); }
+      list.push(inst);
+    }
+    for (const list of blockInstsDesc.values()) {
+      list.sort((a, b) => (b.row ?? -1) - (a.row ?? -1));
+    }
+  }
+  const domDepthCache = new Map();
+  return { blocks, blockByIndex, sortedDisjointRows, blockInstsDesc, domDepthCache };
+}
+
+function blockForRow(ir, row, passIndex = null) {
+  const blocks = passIndex?.blocks || ir?.blocks;
+  if (!blocks || !blocks.length) return null;
+  if (passIndex?.sortedDisjointRows && typeof row === 'number') {
+    let lo = 0, hi = blocks.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const b = blocks[mid];
+      if (row < b.startRow) hi = mid - 1;
+      else if (row > b.endRow) lo = mid + 1;
+      else return b.index ?? null;
+    }
+    return null;
+  }
+  return blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+}
+
+function targetBlock(ir, term, opts, passIndex = null) {
   const address = term?.extra?.target;
   if (address == null) return null;
   const row = opts.rowOfAddress?.(address);
   if (row == null) return null;
-  return ir.blocks?.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+  return blockForRow(ir, row, passIndex);
 }
 
 function terminal(block) {
@@ -174,10 +234,10 @@ function terminal(block) {
   return null;
 }
 
-function branchArms(ir, block, term, opts) {
+function branchArms(ir, block, term, opts, passIndex = null) {
   const succ = block?.succ || [];
   if (term?.op !== 'cbr' || succ.length < 2) return { yes:succ[0] ?? null, no:succ[1] ?? null, exact:term?.op !== 'cbr' };
-  const yes = targetBlock(ir, term, opts);
+  const yes = targetBlock(ir, term, opts, passIndex);
   return yes != null && succ.includes(yes)
     ? { yes, no:succ.find((x) => x !== yes) ?? null, exact:true }
     : { yes:null, no:null, exact:false };
@@ -200,23 +260,56 @@ function dominates(ir, candidate, node) {
   return false;
 }
 
-function domDepth(ir, block) {
+function domDepth(ir, block, passIndex = null) {
+  if (passIndex?.domDepthCache.has(block)) return passIndex.domDepthCache.get(block);
   let depth = 0, cur = block, guard = (ir.blocks?.length || 0) + 2;
   while (cur != null && cur >= 0 && guard-- > 0) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+  if (passIndex) passIndex.domDepthCache.set(block, depth);
   return depth;
 }
 
-function controller(ir, merge, predecessors, opts) {
+function controller(ir, merge, predecessors, opts, passIndex = null) {
+  const blockByIndex = passIndex?.blockByIndex;
+  const getBlock = (idx) => blockByIndex ? blockByIndex.get(idx) : ir.blocks?.find((b) => b.index === idx);
+  const hasIdom = (ir.idom?.[merge] != null) || (getBlock(merge)?.idom != null);
+  const domView = ir.dominators?.[merge];
+  if (hasIdom) {
+    let cur = merge;
+    let guard = (ir.blocks?.length || 0) + 2;
+    const seen = new Set();
+    while (cur != null && cur >= 0 && guard-- > 0 && !seen.has(cur)) {
+      seen.add(cur);
+      const block = getBlock(cur);
+      if (block && (!domView?.has || domView.has(block.index))) {
+        const term = terminal(block);
+        if (term?.op === 'cbr' && (block.succ || []).length >= 2) {
+          const arms = branchArms(ir, block, term, opts, passIndex);
+          if (arms.exact) {
+            const yesIndex = armPredecessorIndex(ir, block, arms.yes, merge, predecessors);
+            const noIndex = armPredecessorIndex(ir, block, arms.no, merge, predecessors);
+            if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) {
+              return { term, yesIndex, noIndex, depth:domDepth(ir, block.index, passIndex) };
+            }
+          }
+        }
+      }
+      cur = ir.idom?.[cur] ?? block?.idom ?? -1;
+    }
+    return null;
+  }
   const candidates = [];
-  for (const block of ir.blocks || []) {
+  const iterBlocks = domView && typeof domView[Symbol.iterator] === 'function' && blockByIndex
+    ? [...domView].map((idx) => blockByIndex.get(idx)).filter(Boolean)
+    : (ir.blocks || []);
+  for (const block of iterBlocks) {
     if (!dominates(ir, block.index, merge)) continue;
     const term = terminal(block);
     if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
-    const arms = branchArms(ir, block, term, opts);
+    const arms = branchArms(ir, block, term, opts, passIndex);
     if (!arms.exact) continue;
     const yesIndex = armPredecessorIndex(ir, block, arms.yes, merge, predecessors);
     const noIndex = armPredecessorIndex(ir, block, arms.no, merge, predecessors);
-    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, depth:domDepth(ir, block.index) });
+    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, depth:domDepth(ir, block.index, passIndex) });
   }
   candidates.sort((a,b) => b.depth - a.depth);
   if (!candidates.length) return null;
@@ -458,50 +551,99 @@ function unsafeBarrier(inst, key) {
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function before(ir, block, row) {
+function before(ir, block, row, passIndex = null) {
+  if (passIndex?.blockInstsDesc) {
+    const list = passIndex.blockInstsDesc.get(block) || [];
+    if (row == null) return list;
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].row < row) out.push(list[i]);
+    }
+    return out;
+  }
   return (ir.instructions || [])
     .filter((i) => i.block === block && (row == null || i.row < row))
     .sort((a,b) => (b.row ?? -1) - (a.row ?? -1));
 }
 
-function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0, expectedBytes = null) {
-  if (blockIndex == null || depth > 64) return null;
+function replayEngineRecords(engine, records, truncated) {
+  if (!engine || !records) return;
+  for (let i = 0; i < records.length; i++) {
+    if (engine.records.length < engine.maximum) engine.records.push(records[i]);
+    else engine.truncated = true;
+  }
+  if (truncated) engine.truncated = true;
+}
+
+function resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex) {
+  if (blockIndex == null || depth > 64) return { value:null, cycleTainted:false };
+  if (depth > 0 && opts?.shouldAbort?.()) return { value:null, cycleTainted:true, aborted:true };
+  const memoKey = beforeRow == null && memo ? `${blockIndex}:${key}:${expectedBytes ?? ''}` : null;
+  if (memoKey != null && memo.has(memoKey)) {
+    const cached = memo.get(memoKey);
+    replayEngineRecords(engine, cached.records, cached.engineTruncated);
+    return { value:cached.value, cycleTainted:false };
+  }
   const token = `${blockIndex}:${beforeRow ?? 'end'}:${key}`;
-  if (active.has(token)) return null;
+  if (active.has(token)) return { value:null, cycleTainted:true };
   active.add(token);
+  const mark = memoKey != null ? engine.mark() : null;
+  let cycleTainted = false;
+  let aborted = false;
+  let resultValue = null;
   try {
-    for (const inst of before(ir, blockIndex, beforeRow)) {
+    for (const inst of before(ir, blockIndex, beforeRow, passIndex)) {
       if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc?.key === key) {
         const stored = storeValue(inst, key, values, expectedBytes);
-        return stored || null;
+        resultValue = stored || null;
+        return { value:resultValue, cycleTainted:false };
       }
-      if (unsafeBarrier(inst, key)) return null;
+      if (unsafeBarrier(inst, key)) return { value:null, cycleTainted:false };
     }
 
-    const block = ir.blocks?.[blockIndex];
+    const block = passIndex?.blockByIndex.get(blockIndex) ?? ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
-    if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, values, opts, engine, active, depth + 1, expectedBytes));
-    if (incoming.some((x) => !x)) return null;
+    if (!predecessors.length) return { value:null, cycleTainted:false };
+    const incoming = [];
+    for (let i = 0; i < predecessors.length; i++) {
+      const sub = resolveInner(ir, predecessors[i], null, key, values, opts, engine, active, depth + 1, expectedBytes, memo, passIndex);
+      if (sub.cycleTainted) cycleTainted = true;
+      if (sub.aborted) { aborted = true; return { value:null, cycleTainted:true, aborted:true }; }
+      incoming.push(sub.value);
+    }
+    if (incoming.some((x) => !x)) return { value:null, cycleTainted };
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-    if (unique.size === 1) return incoming[0];
-    if (predecessors.length !== 2 || unique.size !== 2) return null;
+    if (unique.size === 1) {
+      resultValue = incoming[0];
+      return { value:resultValue, cycleTainted };
+    }
+    if (predecessors.length !== 2 || unique.size !== 2) return { value:null, cycleTainted };
 
-    const control = controller(ir, blockIndex, predecessors, opts);
-    if (!control) return null;
+    const control = controller(ir, blockIndex, predecessors, opts, passIndex);
+    if (!control) return { value:null, cycleTainted };
     const condition = simplify(branchCondition(ir, control.term, values), engine);
-    if (!condition) return null;
+    if (!condition) return { value:null, cycleTainted };
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
-    return simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
+    resultValue = simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
       address:control.term.address,
       row:control.term.row,
       ir:control.term.id,
       evidence:[{ reason:'exact stack CFG join' }],
     }), engine);
+    return { value:resultValue, cycleTainted };
   } finally {
     active.delete(token);
+    if (memoKey != null && !cycleTainted && !aborted) {
+      const records = engine.records.length > mark.length ? engine.records.slice(mark.length) : null;
+      const engineTruncated = Boolean(engine.truncated && !mark.truncated);
+      memo.set(memoKey, { value:resultValue, records, engineTruncated });
+    }
   }
+}
+
+function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0, expectedBytes = null, memo = new Map(), passIndex = null) {
+  return resolveInner(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth, expectedBytes, memo, passIndex).value;
 }
 
 function matchesTargetReturnNode(node, ret, singleRet) {
@@ -549,8 +691,8 @@ function rewriteReturn(result, expression, opts, ret = null, singleRet = true) {
   return true;
 }
 
-function committedStackSpillOnExactReturnPath(result, root, ret) {
-  for (const inst of before(result.ir, ret.block, ret.row)) {
+function committedStackSpillOnExactReturnPath(result, root, ret, passIndex = null) {
+  for (const inst of before(result.ir, ret.block, ret.row, passIndex)) {
     if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
       const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
       return location ? { stackStore:inst, location } : null;
@@ -623,10 +765,11 @@ export function recoverExactStackReturn(result, opts = {}) {
     onBudgetExceeded(reason) { const mapped = reason === 'work-budget' ? 'transform-work-budget' : reason === 'transform-safety-ceiling' || reason === 'transform-time-budget' || reason === 'deadline' ? opts.transformDeadlineReason || 'transform-time-budget' : null; if (mapped) { result.degraded = true; result.degradationReasons = [...new Set([...(result.degradationReasons || []), mapped])]; result.warnings = [...new Set([...(result.warnings || []), mapped === 'transform-work-budget' ? 'Decompiler rewrite budget reached; output was conservatively degraded.' : 'Decompiler pass budget exhausted before optional transforms; the result was conservatively degraded.'])]; } },
     maxApplications:512,
   }), opts.renderProvenanceBudget?.maxTransformRecords);
+  const passIndex = createPassIndex(result.ir);
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
-    const proof = committedStackSpillOnExactReturnPath(result, root, ret);
+    const proof = committedStackSpillOnExactReturnPath(result, root, ret, passIndex);
     if (proof) {
       committedSpill = proof.stackStore;
       committed = expr.load(proof.location, root.bits || 64, root.source, {
@@ -636,7 +779,7 @@ export function recoverExactStackReturn(result, opts = {}) {
     }
   }
   const expectedBytes = Number(root.location?.size || (Number(root.bits) > 0 ? Number(root.bits) / 8 : 0)) || null;
-  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set(), 0, expectedBytes);
+  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set(), 0, expectedBytes, new Map(), passIndex);
   const transitions = (result.cAst.body || [])
     .filter(node => matchesTargetReturnNode(node, ret, singleRet))
     .map(node => ({ node, before:node.semantic?.expression || root,

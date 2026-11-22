@@ -184,6 +184,19 @@ function signedBinaryOperands(n, p, opts) {
   }
 }
 
+function sanitizeCallableIdent(name, fallback = 'unknown_call') {
+  const raw = String(name || '').trim();
+  if (!raw) return fallback;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) return raw;
+  if (/^[A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)+$/.test(raw)) return raw;
+  if (/^\(\s*(?:\*|\([A-Za-z_0-9\s*]+\s*\(\*\))/.test(raw)) return raw;
+  const clean = raw
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/^([0-9])/, '_$1');
+  return clean || fallback;
+}
+
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
   switch (n.kind) {
@@ -202,7 +215,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return `((${elemType} *)(uintptr_t)(${printExpression(n.base, 0, opts)}))[${idxText}]`;
     }
     case 'load': return n.location?.text || n.location?.name || `memory_${String(n.location?.key || 'unknown').replace(/[^A-Za-z0-9_]/g, '_')}`;
-    case 'call': return `${n.callee || 'unknown_call'}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
+    case 'call': return `${sanitizeCallableIdent(n.callee, 'unknown_call')}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     case 'intrinsic': {
       if (n.name === 'madd' && n.args?.length === 3) {
         const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} + ${printExpression(n.args[2], PREC.add + 1, opts)}`;
@@ -212,7 +225,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
         const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} - ${printExpression(n.args[2], PREC.add + 1, opts)}`;
         return wrap(text, PREC.sub, parentPrec);
       }
-      return `${n.name}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
+      return `${sanitizeCallableIdent(n.name, 'unknown_intrinsic')}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     }
     case 'unary': {
       const op = { neg: '-', not: '~', lnot: '!' }[n.op];

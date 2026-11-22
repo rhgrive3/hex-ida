@@ -238,7 +238,32 @@ export function stableDigest(value) {
     bLow = Math.imul(bLow, 0x1b3);
   };
   const feedStr = (str) => {
-    for (let i = 0; i < str.length; i += 1) feedCode(str.charCodeAt(i));
+    let al = aLow, ah = aHigh, bl = bLow, bh = bHigh;
+    for (let i = 0, n = str.length; i < n; i += 1) {
+      const code = str.charCodeAt(i);
+      al ^= code;
+      const ac = ((al >>> 16) * 0x1b3 + (((al & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      ah = (Math.imul(ah, 0x1b3) + (al << 8) + ac) | 0;
+      al = Math.imul(al, 0x1b3);
+      bl ^= code;
+      const bc = ((bl >>> 16) * 0x1b3 + (((bl & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      bh = (Math.imul(bh, 0x1b3) + (bl << 8) + bc) | 0;
+      bl = Math.imul(bl, 0x1b3);
+    }
+    aLow = al; aHigh = ah; bLow = bl; bHigh = bh;
+  };
+  const feedJsonString = (str) => {
+    const len = str.length;
+    for (let i = 0; i < len; i += 1) {
+      const code = str.charCodeAt(i);
+      if (code < 0x20 || code === 0x22 || code === 0x5c || code > 0x7e) {
+        feedStr(JSON.stringify(str));
+        return;
+      }
+    }
+    feedCode(0x22);
+    feedStr(str);
+    feedCode(0x22);
   };
   const feedByte = (byte) => {
     if (byte >= 100) {
@@ -256,7 +281,7 @@ export function stableDigest(value) {
   const streamValue = (cur) => {
     if (cur === null) { feedStr('null'); return; }
     const t = typeof cur;
-    if (t === 'string') { feedStr(JSON.stringify(cur)); return; }
+    if (t === 'string') { feedJsonString(cur); return; }
     if (t === 'boolean') { feedStr(cur ? 'true' : 'false'); return; }
     if (t === 'number') {
       if (!Number.isFinite(cur)) { feedStr('null'); return; }
@@ -360,7 +385,7 @@ export function stableDigest(value) {
               if (text === undefined) continue;
               if (!first) feedCode(0x2c);
               first = false;
-              feedStr(JSON.stringify(key));
+              feedJsonString(key);
               feedCode(0x3a);
               feedStr(text);
               continue;
@@ -368,7 +393,7 @@ export function stableDigest(value) {
           }
           if (!first) feedCode(0x2c);
           first = false;
-          feedStr(JSON.stringify(key));
+          feedJsonString(key);
           feedCode(0x3a);
           streamValue(raw);
         }
@@ -760,13 +785,15 @@ export function normalizeIdentity(value, code) {
 }
 
 export function deepFreeze(value, seen = null) {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+  if (!value || typeof value !== 'object') return value;
+  if (Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
   const active = seen ?? new WeakSet();
   if (active.has(value)) return value;
   active.add(value);
   const keys = Object.keys(value);
   for (let i = 0; i < keys.length; i += 1) deepFreeze(value[keys[i]], active);
-  return Object.freeze(value);
+  const frozen = Object.freeze(value);
+  return frozen;
 }
 
 export const IDENTITY_SCHEMA_VERSION = ID_SCHEMA_VERSION;

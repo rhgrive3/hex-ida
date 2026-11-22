@@ -58,29 +58,112 @@ function asAddress(value) {
   catch { return null; }
 }
 
-function addressAtRow(row, ir, opts = {}) {
+function addressAtRow(row, ir, opts = {}, projIndex = null) {
   if (row == null) return null;
   try {
     const resolved = opts.addressOfRow?.(row);
     const address = asAddress(resolved);
     if (address != null) return address;
   } catch { /* Fall through to IR evidence. */ }
+  if (projIndex?.rowAddressMap) {
+    return projIndex.rowAddressMap.get(row) ?? null;
+  }
   const instruction = ir?.instructions?.find((candidate) =>
     candidate?.row === row && candidate?.address != null
   );
   return asAddress(instruction?.address);
 }
 
-function blockAddress(block, ir, opts = {}) {
+function blockAddress(block, ir, opts = {}, projIndex = null) {
   if (!block) return null;
+  if (projIndex?.addrByBlockIndex && block.index != null && projIndex.addrByBlockIndex.has(block.index)) {
+    return projIndex.addrByBlockIndex.get(block.index);
+  }
   const explicit = asAddress(block.address);
   if (explicit != null) return explicit;
-  const rowAddress = addressAtRow(block.startRow, ir, opts);
+  const rowAddress = addressAtRow(block.startRow, ir, opts, projIndex);
   if (rowAddress != null) return rowAddress;
   const localInstruction = block.insts?.find((candidate) =>
     candidate?.row === block.startRow && candidate?.address != null
   );
   return asAddress(localInstruction?.address);
+}
+
+function buildProjectionIndex(ir, cfg, opts = {}) {
+  const blocks = Array.isArray(ir?.blocks) ? ir.blocks : [];
+  const cfgBlocks = Array.isArray(cfg?.blocks) ? cfg.blocks : blocks;
+  const blockByIndex = new Map();
+  const cfgBlockByIndex = new Map();
+  const instIdToBlock = new Map();
+  const rowAddressMap = new Map();
+  let sortedDisjointRows = true;
+  let prevEndRow = -Infinity;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!block) { sortedDisjointRows = false; continue; }
+    if (block.index != null && !blockByIndex.has(block.index)) blockByIndex.set(block.index, block);
+    if (Array.isArray(block.insts)) {
+      for (let j = 0; j < block.insts.length; j++) {
+        const inst = block.insts[j];
+        if (inst?.id != null && !instIdToBlock.has(inst.id)) instIdToBlock.set(inst.id, block.index);
+      }
+    }
+    if (sortedDisjointRows) {
+      if (typeof block.startRow === 'number' && typeof block.endRow === 'number'
+          && block.startRow <= block.endRow && block.startRow > prevEndRow) {
+        prevEndRow = block.endRow;
+      } else {
+        sortedDisjointRows = false;
+      }
+    }
+  }
+  for (let i = 0; i < cfgBlocks.length; i++) {
+    const block = cfgBlocks[i];
+    if (block && block.index != null && !cfgBlockByIndex.has(block.index)) cfgBlockByIndex.set(block.index, block);
+  }
+  if (Array.isArray(ir?.instructions)) {
+    for (let i = 0; i < ir.instructions.length; i++) {
+      const inst = ir.instructions[i];
+      if (!inst) continue;
+      if (inst.id != null && inst.block != null && !instIdToBlock.has(inst.id)) {
+        instIdToBlock.set(inst.id, inst.block);
+      }
+      if (inst.row != null && inst.address != null && !rowAddressMap.has(inst.row)) {
+        const addr = asAddress(inst.address);
+        if (addr != null) rowAddressMap.set(inst.row, addr);
+      }
+    }
+  }
+
+  const partial = { blocks, blockByIndex, cfgBlockByIndex, instIdToBlock, rowAddressMap, sortedDisjointRows, blockByAddr: new Map(), addrByBlockIndex: null };
+  const addrByBlockIndex = new Map();
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!block) continue;
+    const addr = blockAddress(block, ir, opts, partial);
+    if (block.index != null) addrByBlockIndex.set(block.index, addr);
+    if (addr != null && !partial.blockByAddr.has(addr)) partial.blockByAddr.set(addr, block.index);
+  }
+  partial.addrByBlockIndex = addrByBlockIndex;
+  return partial;
+}
+
+function blockIndexForRow(row, ir, projIndex = null) {
+  const blocks = projIndex?.blocks ?? ir?.blocks;
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+  if (projIndex?.sortedDisjointRows && typeof row === 'number' && Number.isFinite(row)) {
+    let lo = 0, hi = blocks.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const b = blocks[mid];
+      if (row < b.startRow) hi = mid - 1;
+      else if (row > b.endRow) lo = mid + 1;
+      else return b.index ?? null;
+    }
+    return null;
+  }
+  return blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
 }
 
 function textJumpsToAddress(text, address) {
@@ -117,7 +200,7 @@ function controlSource(inst, block = null, ir = null, opts = {}) {
   });
 }
 
-function blockOfNode(node, ir, opts = {}) {
+function blockOfNode(node, ir, opts = {}, projIndex = null) {
   if (!node) return null;
   if (typeof node.block === 'number') return node.block;
   if (typeof node.semantic?.block === 'number') return node.semantic.block;
@@ -132,51 +215,68 @@ function blockOfNode(node, ir, opts = {}) {
   if (store?.instruction?.block != null) return store.instruction.block;
 
   const targetIrId = node.semantic?.ir ?? node.source?.ir?.[0];
-  if (targetIrId && Array.isArray(ir?.blocks)) {
-    for (const block of ir.blocks) {
-      if (block.insts?.some(i => i?.id === targetIrId)) return block.index;
+  if (targetIrId) {
+    if (projIndex) {
+      const found = projIndex.instIdToBlock.get(targetIrId);
+      if (found != null) return found;
+    } else {
+      if (Array.isArray(ir?.blocks)) {
+        for (const block of ir.blocks) {
+          if (block.insts?.some(i => i?.id === targetIrId)) return block.index;
+        }
+      }
+      if (Array.isArray(ir?.instructions)) {
+        const inst = ir.instructions.find(i => i?.id === targetIrId);
+        if (inst?.block != null) return inst.block;
+      }
     }
-  }
-  if (Array.isArray(ir?.instructions) && targetIrId) {
-    const inst = ir.instructions.find(i => i?.id === targetIrId);
-    if (inst?.block != null) return inst.block;
   }
   if (node.kind === 'label' && typeof node.text === 'string' && Array.isArray(ir?.blocks)) {
     const labelMatch = node.text.match(/^loc_([0-9a-fA-F]+):/);
     if (labelMatch) {
       try {
         const addr = BigInt('0x' + labelMatch[1]);
-        const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
-        if (block) return block.index;
+        if (projIndex) {
+          const idx = projIndex.blockByAddr.get(addr);
+          if (idx != null) return idx;
+        } else {
+          const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
+          if (block) return block.index;
+        }
       } catch { /* Ignore */ }
     }
   }
   if (Array.isArray(node.source?.rows) && node.source.rows.length > 0 && Array.isArray(ir.blocks)) {
     const row = Number(node.source.rows[0]);
-    const block = ir.blocks.find(b => row >= b.startRow && row <= b.endRow);
-    if (block) return block.index;
+    const idx = blockIndexForRow(row, ir, projIndex);
+    if (idx != null) return idx;
   }
   if (node.addr != null && Array.isArray(ir.blocks)) {
     try {
       const addr = typeof node.addr === 'bigint' ? node.addr : BigInt(node.addr);
-      const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
-      if (block) return block.index;
+      if (projIndex) {
+        const idx = projIndex.blockByAddr.get(addr);
+        if (idx != null) return idx;
+      } else {
+        const block = ir.blocks.find(b => blockAddress(b, ir, opts) === addr);
+        if (block) return block.index;
+      }
     } catch { /* Ignore */ }
   }
   return null;
 }
 
-function targetBlock(ir, cbr, rowOfAddress) {
+function targetBlock(ir, cbr, rowOfAddress, projIndex = null) {
   const provenBlock = cbr?.extra?.targetBlock;
   if (Number.isInteger(provenBlock) && ir.blocks?.[provenBlock] != null) return provenBlock;
   const addr = cbr?.extra?.target;
   if (addr == null) return null;
   const row = rowOfAddress?.(addr);
   if (row == null) return null;
-  return ir.blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+  return blockIndexForRow(row, ir, projIndex);
 }
 
-function branchTargetsOf(entryBlock, ir, opts = {}) {
+function branchTargetsOf(entryBlock, ir, opts = {}, projIndex = null) {
   const succ = entryBlock?.succ ?? [];
   if (succ.length !== 2) return null;
 
@@ -194,7 +294,7 @@ function branchTargetsOf(entryBlock, ir, opts = {}) {
     }
   }
 
-  const target = term.extra?.targetBlock ?? targetBlock(ir, term, opts.rowOfAddress);
+  const target = term.extra?.targetBlock ?? targetBlock(ir, term, opts.rowOfAddress, projIndex);
   if (target != null && succ.includes(target)) {
     const falseTarget = succ.find(s => s !== target);
     return { trueTarget: target, falseTarget };
@@ -361,14 +461,14 @@ function dominatorDepth(dominators, block) {
 /**
  * Checks if a candidate region is already structured in the current C AST.
  */
-function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir, opts = {}) {
+function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir, opts = {}, projIndex = null) {
   const body = cAst?.body ?? [];
   for (let i = 0; i < body.length; i++) {
     const node = body[i];
     if (node.kind === 'ctrl' && typeof node.text === 'string' && node.text.startsWith('if ') && node.text.endsWith('{')) {
-      const block = blockOfNode(node, ir, opts);
+      const block = blockOfNode(node, ir, opts, projIndex);
       if (block === entry) {
-        const hasGoto = body.some(n => blockOfNode(n, ir, opts) === entry && n.text?.includes('goto loc_'));
+        const hasGoto = body.some(n => blockOfNode(n, ir, opts, projIndex) === entry && n.text?.includes('goto loc_'));
         if (!hasGoto) return true;
       }
     }
@@ -425,6 +525,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     return right.region.entry - left.region.entry;
   });
 
+  const projIndex = buildProjectionIndex(result.ir, cfg, opts);
   let workingBody = [...result.cAst.body];
   const adoptedRecords = [];
   const adoptedRegions = [];
@@ -434,11 +535,11 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const { region, partition } = candidate;
     const entry = region.entry;
     const join = region.exits[0];
-    const entryBlock = (result.ir.blocks ?? []).find((block) => block?.index === entry);
-    const joinBlock = (result.ir.blocks ?? []).find((block) => block?.index === join);
+    const entryBlock = projIndex.blockByIndex.get(entry);
+    const joinBlock = projIndex.blockByIndex.get(join);
     if (!entryBlock || !joinBlock) continue;
 
-    const targets = branchTargetsOf(entryBlock, result.ir, opts);
+    const targets = branchTargetsOf(entryBlock, result.ir, opts, projIndex);
     if (!targets) continue;
     const { trueTarget, falseTarget } = targets;
 
@@ -462,7 +563,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     }
 
     // Check if existing renderer already emitted the exact canonical structure
-    if (isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, { body: workingBody }, result.ir, opts)) {
+    if (isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, { body: workingBody }, result.ir, opts, projIndex)) {
       continue;
     }
 
@@ -480,7 +581,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
 
     // Find the entry branch node in workingBody
     const branchIndex = workingBody.findIndex(n => {
-      if (blockOfNode(n, result.ir, opts) !== entry) return false;
+      if (blockOfNode(n, result.ir, opts, projIndex) !== entry) return false;
       if (n.kind !== 'ctrl' && n.kind !== 'stmt') return false;
       return typeof n.text === 'string' && (n.text.startsWith('if ') || n.text.includes('goto loc_'));
     });
@@ -507,30 +608,30 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
 
     // Match the producer's real target address, never a block row/index or a
     // case-sensitive rendering of the label text.
-    const joinAddress = blockAddress(joinBlock, result.ir, opts);
+    const joinAddress = blockAddress(joinBlock, result.ir, opts, projIndex);
     if (joinAddress == null) continue;
     const otherJumpsToJoin = workingBody.some(n => {
-      const b = blockOfNode(n, result.ir, opts);
+      const b = blockOfNode(n, result.ir, opts, projIndex);
       if (b === entry || armBlocks.has(b)) return false;
       return textJumpsToAddress(n.text, joinAddress);
     });
 
     const isArmNode = (node, blocks) => {
-      const b = blockOfNode(node, result.ir, opts);
+      const b = blockOfNode(node, result.ir, opts, projIndex);
       return b != null && blocks.has(b);
     };
 
     const isRemovableTailJumpToJoin = (node) => {
       if (node.kind !== 'stmt' || typeof node.text !== 'string') return false;
       if (!textJumpsToAddress(node.text, joinAddress)) return false;
-      const blockIndex = blockOfNode(node, result.ir, opts);
+      const blockIndex = blockOfNode(node, result.ir, opts, projIndex);
       const block = partition.byIndex.get(blockIndex);
       return Array.isArray(block?.succ) && block.succ.length === 1 && block.succ[0] === join;
     };
 
     const isBlockLabel = (node, blockIdx) => {
       if (node.kind !== 'label') return false;
-      const b = blockOfNode(node, result.ir, opts);
+      const b = blockOfNode(node, result.ir, opts, projIndex);
       return b === blockIdx;
     };
 
@@ -542,7 +643,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       const stmts = [];
       for (const node of workingBody) {
         if (!isArmNode(node, blocks)) continue;
-        const blockIndex = blockOfNode(node, result.ir, opts);
+        const blockIndex = blockOfNode(node, result.ir, opts, projIndex);
         if (node.kind === 'label' && blockIndex === root) continue;
         if (isRemovableTailJumpToJoin(node)) continue;
         stmts.push(node);
@@ -561,7 +662,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
       indent: entryIndent,
       text: `if (${condText}) {`,
       row: term.row ?? entryBlock.startRow ?? null,
-      addr: term.address ?? blockAddress(entryBlock, result.ir, opts),
+      addr: term.address ?? blockAddress(entryBlock, result.ir, opts, projIndex),
       source: controlSource(term, entryBlock, result.ir, opts),
       semantic: { op: 'control-render', ir: term.id, expression: null },
     };
@@ -612,7 +713,7 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     const nodesToRemove = new Set();
     // 1. Entry branch and false jump
     for (const node of workingBody) {
-      const b = blockOfNode(node, result.ir, opts);
+      const b = blockOfNode(node, result.ir, opts, projIndex);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
           nodesToRemove.add(node);
@@ -710,17 +811,16 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     dominators,
     induction: analysis.get('induction'),
     shouldAbort: () => opts.shouldAbort?.() === true,
-    blockOfNode: (node) => blockOfNode(node, result.ir, opts),
+    blockOfNode: (node) => blockOfNode(node, result.ir, opts, projIndex),
     blockAddress: (index) => {
-      const blocks = cfg?.blocks ?? result.ir.blocks ?? [];
-      const block = blocks.find((candidate) => candidate?.index === index) ?? null;
-      return block ? blockAddress(block, result.ir, opts) : null;
+      const block = projIndex.cfgBlockByIndex.get(index) ?? null;
+      return block ? blockAddress(block, result.ir, opts, projIndex) : null;
     },
     textJumpsToAddress,
     renderCondition: (term, invert) => renderBranchCondition(term, { ir: result.ir, types: result.types, opts }, invert),
     controlSource: (term, blockIndex) => controlSource(
       term,
-      (cfg?.blocks ?? result.ir.blocks ?? []).find((candidate) => candidate?.index === blockIndex) ?? null,
+      projIndex.cfgBlockByIndex.get(blockIndex) ?? null,
       result.ir,
       opts,
     ),

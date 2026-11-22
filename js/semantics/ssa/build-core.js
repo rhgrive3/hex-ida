@@ -698,7 +698,18 @@ function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
     for (const targetId of [...dependents.get(sourceId)].sort()) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }
   }
   const resolved = new Map();
-  for (const phi of sorted) { tick(); resolved.set(phi.valueId, safeOrigin(...[...roots.get(phi.valueId)].sort((a, b) => a - b).map((index) => origins[index]))); }
+  const mergedByRootKey = new Map();
+  for (const phi of sorted) {
+    tick();
+    const sortedIndices = [...roots.get(phi.valueId)].sort((a, b) => a - b);
+    const rootKey = sortedIndices.join(',');
+    let merged = mergedByRootKey.get(rootKey);
+    if (merged === undefined) {
+      merged = safeOrigin(...sortedIndices.map((index) => origins[index]));
+      mergedByRootKey.set(rootKey, merged);
+    }
+    resolved.set(phi.valueId, merged);
+  }
   return resolved;
 }
 function finalizePhi(phi, resolvedOrigin) {

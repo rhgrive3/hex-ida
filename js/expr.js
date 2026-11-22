@@ -1355,8 +1355,7 @@ const PREC = {
 };
 const SYM = {
   add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
-  and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>', ror: '>>>',
-  smulh: '*hi', umulh: '*hi',
+  and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>',
 };
 
 function hexOf(v) {
@@ -1377,14 +1376,12 @@ function hexOf(v) {
  */
 export function render(n, opts) {
   const o = opts || {};
-  const out = emit(n, 0, o, 0);
-  const max = o.maxLen || 220;
-  return out.length > max ? out.slice(0, max - 1) + '…' : out;
+  return emit(n, 0, o, 0);
 }
 
 function emit(n, prec, o, depth) {
-  if (!n) return '?';
-  if (depth > MAX_DEPTH) return '…';
+  if (!n) return '0 /* unknown */';
+  if (depth > MAX_DEPTH) return '0 /* truncated */';
   if (o.nameOf) {
     const custom = o.nameOf(n);
     if (custom) return custom;
@@ -1409,8 +1406,9 @@ function emit(n, prec, o, depth) {
       return prec > 3 ? '(' + t + ')' : t;
     }
     case 'bin': {
-      /* min / max は中置きでは書けないので、関数の形で出す。 */
-      if (n.op === 'min' || n.op === 'max' || n.op === 'umin' || n.op === 'umax') {
+      /* min / max / ror / smulh / umulh は C の中置き演算子にないので、関数の形で出す。 */
+      if (n.op === 'min' || n.op === 'max' || n.op === 'umin' || n.op === 'umax'
+          || n.op === 'ror' || n.op === 'smulh' || n.op === 'umulh') {
         return n.op + '(' + emit(n.a, 0, o, depth + 1) + ', ' + emit(n.b, 0, o, depth + 1) + ')';
       }
       const p = PREC[n.op] || 9;
@@ -1418,7 +1416,7 @@ function emit(n, prec, o, depth) {
         emit(n.b, p + 1, o, depth + 1);
       return p < prec ? '(' + t + ')' : t;
     }
-    default: return '?';
+    default: return '0 /* unknown */';
   }
 }
 
@@ -1453,7 +1451,7 @@ function emitMem(n, o, depth) {
    * 住所は式として組み立ててから文字にする。そうしないと
    * `*(uint32 *)((sp - 400) + 28)` のように、足し算がほどけないまま出てしまう。
    */
-  let addr = n.base || regNode(n.baseReg || '?', n.row);
+  let addr = n.base || regNode(n.baseReg || 'unknown_base', n.row);
   if (n.index) addr = bin('add', addr, n.index, 64);
   if (n.disp != null && n.disp !== 0n) addr = bin('add', addr, constNode(n.disp), 64);
   return '*(' + type + ' *)(' + emit(addr, 0, o, depth + 1) + ')';
@@ -1461,7 +1459,7 @@ function emitMem(n, o, depth) {
 
 function emitCall(n, o, depth) {
   const label = (o.callName && o.callName(n)) || n.name ||
-    (n.target != null ? 'sub_' + n.target.toString(16).toUpperCase() : '(*func)');
+    (n.target != null ? 'sub_' + n.target.toString(16).toUpperCase() : 'unknown_call');
   const args = (n.args || []).map((a) => emit(a.value, 0, o, depth + 1));
   return label + '(' + args.join(', ') + ')';
 }
@@ -1504,8 +1502,11 @@ export function typeName(size, signed) {
 // Input is the string scanner's display form (tab/CR/LF already written as
 // \t, \r, \n); keep those escapes instead of doubling their backslash.
 function escapeText(s) {
-  return String(s == null ? '' : s).replace(/\\(?![nrt])/g, '\\\\').replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').slice(0, 90);
+  return String(s == null ? '' : s).slice(0, 90)
+    .replace(/\\(?![nrt])/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+    .replace(/[\x00-\x1f\x7f]/g, (ch) => '\\' + ch.charCodeAt(0).toString(8).padStart(3, '0'));
 }
 
 /* ────────────────────────────────────────────────────────────

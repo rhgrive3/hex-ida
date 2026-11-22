@@ -1396,9 +1396,88 @@ function defBlockDominates(ir, from, to) {
   return false;
 }
 
-function blockCanReach(ir, from, to) {
-  if (from === to) return true;
-  if (from == null || to == null) return false;
+const IR_QUERY_INDEX = new WeakMap();
+const EMPTY_LIST = Object.freeze([]);
+
+function getIrQueryIndex(ir) {
+  if (!ir || typeof ir !== 'object') return null;
+  const insts = ir.instructions || EMPTY_LIST;
+  const values = ir.values || EMPTY_LIST;
+  const blocks = ir.blocks || EMPTY_LIST;
+  const cached = IR_QUERY_INDEX.get(ir);
+  if (cached
+      && cached.instsRef === insts && cached.instLen === insts.length
+      && cached.valuesRef === values && cached.valLen === values.length
+      && cached.blocksRef === blocks && cached.blockLen === blocks.length) {
+    return cached;
+  }
+  const instsByRow = new Map();
+  const instIndex = new Map();
+  const memByLocKey = new Map();
+  const callInsts = [];
+  const retInsts = [];
+  for (let i = 0; i < insts.length; i++) {
+    const inst = insts[i];
+    if (!inst) continue;
+    if (!instIndex.has(inst)) instIndex.set(inst, i);
+    const row = inst.row;
+    let byRow = instsByRow.get(row);
+    if (!byRow) { byRow = []; instsByRow.set(row, byRow); }
+    byRow.push(inst);
+    const op = inst.op;
+    if (op === 'load' || op === 'store') {
+      const key = inst.loc?.key;
+      if (key != null) {
+        let memList = memByLocKey.get(key);
+        if (!memList) { memList = []; memByLocKey.set(key, memList); }
+        memList.push(inst);
+      }
+    } else if (op === 'call') {
+      callInsts.push(inst);
+    } else if (op === 'ret') {
+      retInsts.push(inst);
+    }
+  }
+  const entry = {
+    instsRef: insts,
+    instLen: insts.length,
+    valuesRef: values,
+    valLen: values.length,
+    blocksRef: blocks,
+    blockLen: blocks.length,
+    instsByRow,
+    instIndex,
+    memByLocKey,
+    callInsts,
+    retInsts,
+    valuesByReg: null,
+    domDepth: new Int32Array(blocks.length).fill(-1),
+    domDepthExtra: null,
+    reachabilityBits: new Array(blocks.length).fill(null),
+  };
+  IR_QUERY_INDEX.set(ir, entry);
+  return entry;
+}
+
+function getValuesByReg(ir, reg) {
+  const idx = getIrQueryIndex(ir);
+  if (!idx) return EMPTY_LIST;
+  if (!idx.valuesByReg) {
+    const map = new Map();
+    const values = idx.valuesRef;
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (!v || !v.reg || !v.def) continue;
+      let list = map.get(v.reg);
+      if (!list) { list = []; map.set(v.reg, list); }
+      list.push(v);
+    }
+    idx.valuesByReg = map;
+  }
+  return idx.valuesByReg.get(reg) || EMPTY_LIST;
+}
+
+function blockCanReachFallback(ir, from, to) {
   const seen = new Set([from]);
   const stack = [from];
   while (stack.length) {
@@ -1415,11 +1494,61 @@ function blockCanReach(ir, from, to) {
   return false;
 }
 
+function blockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const idx = getIrQueryIndex(ir);
+  const n = idx ? idx.blockLen : 0;
+  if (idx && Number.isInteger(from) && Number.isInteger(to) && from >= 0 && from < n && to >= 0 && to < n) {
+    let bits = idx.reachabilityBits[from];
+    if (!bits) {
+      const words = (n + 31) >>> 5;
+      bits = new Uint32Array(words);
+      bits[from >>> 5] |= 1 << (from & 31);
+      const stack = [from];
+      const blocks = idx.blocksRef;
+      let hasNonStandard = false;
+      while (stack.length) {
+        const current = stack.pop();
+        const successors = blocks[current]?.succ ?? blocks[current]?.successors ?? [];
+        for (let i = 0; i < successors.length; i++) {
+          const edge = successors[i];
+          const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+          if (next == null) continue;
+          if (!Number.isInteger(next) || next < 0 || next >= n) { hasNonStandard = true; continue; }
+          const word = next >>> 5;
+          const mask = 1 << (next & 31);
+          if (bits[word] & mask) continue;
+          bits[word] |= mask;
+          stack.push(next);
+        }
+      }
+      if (hasNonStandard) return blockCanReachFallback(ir, from, to);
+      idx.reachabilityBits[from] = bits;
+    }
+    return (bits[to >>> 5] & (1 << (to & 31))) !== 0;
+  }
+  return blockCanReachFallback(ir, from, to);
+}
+
 function defBlockDepth(ir, block) {
+  const idx = getIrQueryIndex(ir);
+  if (idx) {
+    if (Number.isInteger(block) && block >= 0 && block < idx.blockLen) {
+      const cached = idx.domDepth[block];
+      if (cached >= 0) return cached;
+    } else if (idx.domDepthExtra?.has(block)) {
+      return idx.domDepthExtra.get(block);
+    }
+  }
   let depth = 0, cur = block, guard = 0;
   while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
     depth++;
     cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+  }
+  if (idx) {
+    if (Number.isInteger(block) && block >= 0 && block < idx.blockLen) idx.domDepth[block] = depth;
+    else (idx.domDepthExtra ??= new Map()).set(block, depth);
   }
   return depth;
 }
@@ -1448,8 +1577,10 @@ function reachingRegisterValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
   let best = ir.args?.get?.(reg) || null;
   let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
-  for (const v of ir.values || []) {
-    if (v.reg !== reg || !v.def || v.clobbered) continue;
+  const candidates = getValuesByReg(ir, reg);
+  for (let i = 0; i < candidates.length; i++) {
+    const v = candidates[i];
+    if (v.clobbered) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
@@ -1472,8 +1603,9 @@ function reachingRegisterValue(ir, atInst, reg) {
   if (bestSameBlock) return best;
 
   const candidateDefinition = best?.def ?? null;
-  for (const v of ir.values || []) {
-    if (v === best || v.reg !== reg || !v.def || v.clobbered) continue;
+  for (let i = 0; i < candidates.length; i++) {
+    const v = candidates[i];
+    if (v === best || v.clobbered) continue;
     const d = v.def;
     if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
     if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
@@ -1595,6 +1727,10 @@ function returnValueAt(inst, state) {
 
 function semanticFacts(state, result) {
   const facts = { inputs: [], outputs: [], stores: [], calls: [], conditions: [], evidence: [], warnings: [] };
+  const modelCallsByRow = new Map();
+  for (const c of state.model?.calls || []) {
+    if (c && !modelCallsByRow.has(c.row)) modelCallsByRow.set(c.row, c);
+  }
   for (const [reg, v] of state.ir.args || []) {
     if ((v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
   }
@@ -1613,7 +1749,7 @@ function semanticFacts(state, result) {
       facts.stores.push(store); facts.outputs.push({ name: location.text, type: state.types?.locations?.get?.(inst.loc?.key) || null });
       facts.evidence.push({ row: inst.row, address: inst.address, ir: inst.id, reason: 'Memory SSA store' });
     } else if (inst.op === 'call') {
-      const modelCall = (state.model.calls || []).find((c) => c.row === inst.row) || null;
+      const modelCall = modelCallsByRow.get(inst.row) || null;
       const name = modelCall?.name || inst.extra?.name || (inst.extra?.target != null ? state.opts?.symbolFor?.(inst.extra.target) : null) || 'unknown_call';
       const runtime = /objc_msgSend/.test(name) ? 'objc' : /^_?swift_/.test(name) ? 'swift' : null;
       facts.calls.push({ name, runtime, row: inst.row, address: inst.address, ir: inst.id });
@@ -1637,9 +1773,8 @@ function semanticFacts(state, result) {
  */
 function isElidableReturnSpillStore(store, state) {
   if (!store || store.op !== 'store' || store.loc?.kind !== 'stack' || !store.loc?.key) return false;
-  const instructions = state.ir?.instructions || [];
-  const sameLocationMemory = instructions.filter((inst) =>
-    (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
+  const idx = getIrQueryIndex(state.ir);
+  const sameLocationMemory = idx?.memByLocKey.get(store.loc.key) || EMPTY_LIST;
   const storeDefinitionId = store.memDef?.definitionId ?? store.extra?.memoryDefinitionId ?? null;
   const loads = sameLocationMemory.filter((inst) => {
     if (inst.op !== 'load') return false;
@@ -1654,7 +1789,7 @@ function isElidableReturnSpillStore(store, state) {
   const load = loads[0];
   if (store.row == null || load.row == null || Number(load.row) <= Number(store.row) || !load.dst) return false;
 
-  const calls = instructions.filter((inst) => inst.op === 'call' && inst.row != null
+  const calls = (idx?.callInsts || EMPTY_LIST).filter((inst) => inst.row != null
     && Number(inst.row) > Number(store.row) && Number(inst.row) < Number(load.row));
   if (!calls.length) return false;
 
@@ -1672,8 +1807,8 @@ function isElidableReturnSpillStore(store, state) {
   const storedKey = structuralKey(expressionFor(storedValue, state));
   if (!storedKey) return false;
 
-  for (const ret of instructions) {
-    if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
+  for (const ret of idx?.retInsts || EMPTY_LIST) {
+    if (ret.row == null || Number(ret.row) <= Number(load.row)) continue;
     const returned = returnValueAt(ret, state);
     if (!returned || valueDependsOnAny(returned, loadIds, { shouldAbort:state.opts?.shouldAbort }) !== true) continue;
     if (structuralKey(expressionFor(returned, state)) === storedKey) return { ret, returned, load, storedValue };
@@ -1722,7 +1857,10 @@ function compoundStoreHistory(instruction, value, expression, location, form, st
   });
   (state.rewriteProof ??= []).push(record);
   state.compoundStoreHistoryCount = (state.compoundStoreHistoryCount || 0) + 1;
-  const ir = state.ir, instructions = ir.instructions, position = instructions.indexOf(instruction);
+  const ir = state.ir, instructions = ir.instructions;
+  const indexedPosition = getIrQueryIndex(ir)?.instIndex.get(instruction);
+  const position = indexedPosition != null && instructions[indexedPosition] === instruction
+    ? indexedPosition : instructions.indexOf(instruction);
   let observation = null;
   try {
     if (budget.edges <= 0 || position < 0) throw new Error('store-render-observation-budget');
@@ -1765,7 +1903,7 @@ function initialStoreExpansion(initialStore, instruction, value, expression, loc
 
 function knownStatementForLine(line, state, lineIndex, initialStore = null, initialStatement = null) {
   if (line?.row == null || line.kind !== 'stmt') return null;
-  const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
+  const insts = getIrQueryIndex(state.ir)?.instsByRow.get(line.row) || EMPTY_LIST;
   const store = insts.find((i) => i.op === 'store');
   if (store) {
     const elision = isElidableReturnSpillStore(store, state);

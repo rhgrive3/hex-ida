@@ -219,8 +219,8 @@ function rebuildDefUse(projected) {
     if (!root.reg || root.kind === V1_VK.ARG) continue;
     const queue = [...root.uses];
     const seen = new Set();
-    while (queue.length) {
-      const inst = queue.shift();
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const inst = queue[cursor];
       if (!inst || seen.has(inst)) continue;
       seen.add(inst);
       if (transparent(inst)) {

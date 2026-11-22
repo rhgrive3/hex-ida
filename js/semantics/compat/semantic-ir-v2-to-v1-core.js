@@ -591,9 +591,22 @@ export function buildLegacyValues(ir, ssa) {
 }
 
 export function makeArg(value) { return value ? { value, bits: value.bits || 64 } : null; }
+const valueUseSets = new WeakMap();
 export function addUse(value, inst) {
-  if (!value || !inst || value.uses.includes(inst)) return;
-  value.uses.push(inst);
+  if (!value || !inst) return;
+  const uses = value.uses;
+  if (uses.length < 16 && !valueUseSets.has(value)) {
+    if (!uses.includes(inst)) uses.push(inst);
+    return;
+  }
+  let entry = valueUseSets.get(value);
+  if (!entry || entry.arrayRef !== uses || entry.set.size !== uses.length) {
+    entry = { arrayRef: uses, set: new Set(uses) };
+    valueUseSets.set(value, entry);
+  }
+  if (entry.set.has(inst)) return;
+  entry.set.add(inst);
+  uses.push(inst);
 }
 export function attachArgs(inst, values) {
   inst.args = values.filter(Boolean).map(makeArg);

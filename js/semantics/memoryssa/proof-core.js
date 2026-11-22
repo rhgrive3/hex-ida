@@ -58,6 +58,20 @@ const deeplyFrozenObjects = new WeakSet();
 const memorySsaDigestCache = new WeakMap();
 const accessBindingCache = new WeakMap();
 const identityDigestCache = new WeakMap();
+const subRecordDigestCache = new WeakMap();
+const NULL_DIGEST = stableDigest(null);
+
+function cachedSubRecordDigest(value) {
+  if (value == null) return NULL_DIGEST;
+  if (typeof value === 'object' && isDeeplyFrozenPlainData(value)) {
+    const cached = subRecordDigestCache.get(value);
+    if (cached !== undefined) return cached;
+    const digest = stableDigest(value);
+    subRecordDigestCache.set(value, digest);
+    return digest;
+  }
+  return stableDigest(value);
+}
 
 function isDeeplyFrozenPlainData(value, active = null) {
   if (value == null || typeof value !== 'object') return true;
@@ -263,15 +277,15 @@ export function canonicalAccessBinding(access) {
     accessIndex: Number(accessIndex),
     order: order == null ? null : Number(order),
     broad: broad === true,
-    memoryDigest: stableDigest(memory ?? null),
-    sequencingDigest: stableDigest(sequencing ?? null),
-    originDigest: stableDigest(origin ?? null),
-    byteRangeDigest: stableDigest(byteRange ?? null),
-    rangeProofDigest: stableDigest(rangeProof ?? null),
-    accessProofDigest: stableDigest(accessProof ?? null),
+    memoryDigest: cachedSubRecordDigest(memory),
+    sequencingDigest: cachedSubRecordDigest(sequencing),
+    originDigest: cachedSubRecordDigest(origin),
+    byteRangeDigest: cachedSubRecordDigest(byteRange),
+    rangeProofDigest: cachedSubRecordDigest(rangeProof),
+    accessProofDigest: cachedSubRecordDigest(accessProof),
     aliasRelation: String(aliasRelation ?? ''),
-    aliasProofDigest: stableDigest(aliasProof ?? null),
-    canonicalValueDigest: stableDigest(canonicalValue ?? null),
+    aliasProofDigest: cachedSubRecordDigest(aliasProof),
+    canonicalValueDigest: cachedSubRecordDigest(canonicalValue),
   };
   const binding = {
     ...base,

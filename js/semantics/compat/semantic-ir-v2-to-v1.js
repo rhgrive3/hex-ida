@@ -12,6 +12,7 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
+import { isCanonicalSemanticSsaProducerArtifact } from '../ssa/build.js';
 import { createProjectionIrObserver, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
 import { observedRangeAnnotationsMatch } from './legacy-value-ranges.js';
 
@@ -678,21 +679,31 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     ? input
     : validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
-  const ssa = ssaInput == null ? null : createSemanticSsaContract(
-    semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
-  );
+  const ssa = ssaInput == null ? null
+    : (isCanonicalSemanticSsaProducerArtifact(ssaInput) && options.ssaValidationOptions == null
+      ? ssaInput
+      : createSemanticSsaContract(
+        semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
+      ));
   const memorySsaInput = options.memorySsa ?? null;
-  const memorySsaContract = memorySsaInput == null ? null : createMemorySsaContract(
-    memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
-  );
   // Keep the exact object issued by the canonical builder.  A validated
   // compatibility copy is intentionally unbound: serialized/process-boundary
   // clones must be rebuilt by the true producer before exact forwarding can be
   // consumed.
-  const memorySsa = memorySsaInput == null ? null
-    : (isCanonicalMemorySsaProducerArtifact(memorySsaInput)
-      ? memorySsaInput
-      : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract));
+  let memorySsa = null;
+  if (memorySsaInput != null) {
+    const isCanonicalMemorySsa = isCanonicalMemorySsaProducerArtifact(memorySsaInput);
+    if (isCanonicalMemorySsa && options.memorySsaValidationOptions == null) {
+      memorySsa = memorySsaInput;
+    } else {
+      const memorySsaContract = createMemorySsaContract(
+        memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
+      );
+      memorySsa = isCanonicalMemorySsa
+        ? memorySsaInput
+        : memorySsaProjectionArtifact(memorySsaInput, memorySsaContract);
+    }
+  }
   const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;
   if (ssa && ssa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-ssa-function-mismatch');
   if (memorySsa && memorySsa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-memoryssa-function-mismatch');

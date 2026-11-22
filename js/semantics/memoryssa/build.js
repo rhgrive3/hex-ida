@@ -605,23 +605,68 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
   const irBlockById = new Map((irFunction?.blocks ?? []).map((block) => [String(block.id), block]));
   const lastArgWriteByBlock = new Map();
   const writtenArgRegisters = new Set();
+  const nodePosByBlock = new Map();
+  const firstStackPublishPosByBlock = new Map();
+  const blockHasStackPublish = new Set();
   for (const block of irFunction?.blocks ?? []) {
     const blockId = String(block.id);
     const writes = new Map();
-    for (const nodeId of block.nodeIds ?? []) {
-      const candidate = stackValues.nodesById.get(String(nodeId));
+    const posMap = new Map();
+    const nodeIds = block.nodeIds ?? [];
+    for (let index = 0; index < nodeIds.length; index++) {
+      const nodeIdStr = String(nodeIds[index]);
+      if (!posMap.has(nodeIdStr)) posMap.set(nodeIdStr, index);
+      const candidate = stackValues.nodesById.get(nodeIdStr);
+      if (!firstStackPublishPosByBlock.has(blockId) && nodePublishesStackAddress(candidate, stackValues)) {
+        firstStackPublishPosByBlock.set(blockId, index);
+        blockHasStackPublish.add(blockId);
+      }
       const register = argumentRegisterSlot(candidate);
       if (register == null) continue;
       writtenArgRegisters.add(register);
       writes.set(register, stateWriteMayExposeStack(candidate, stackValues));
     }
+    nodePosByBlock.set(blockId, posMap);
     if (writes.size > 0) lastArgWriteByBlock.set(blockId, writes);
+  }
+  const stackPublishReachesBlockEntry = new Set();
+  if (blockHasStackPublish.size > 0) {
+    const forwardSuccessors = new Map();
+    for (const [blockId, cfgBlock] of cfgBlockById) {
+      for (const pred of cfgBlock.predecessors ?? []) {
+        const predId = String(pred);
+        let list = forwardSuccessors.get(predId);
+        if (!list) { list = []; forwardSuccessors.set(predId, list); }
+        list.push(blockId);
+      }
+    }
+    const queue = [];
+    for (const publisherBlockId of blockHasStackPublish) {
+      for (const succId of forwardSuccessors.get(publisherBlockId) ?? []) {
+        if (!stackPublishReachesBlockEntry.has(succId)) {
+          stackPublishReachesBlockEntry.add(succId);
+          queue.push(succId);
+        }
+      }
+    }
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const current = queue[cursor];
+      for (const succId of forwardSuccessors.get(current) ?? []) {
+        if (!stackPublishReachesBlockEntry.has(succId)) {
+          stackPublishReachesBlockEntry.add(succId);
+          queue.push(succId);
+        }
+      }
+    }
   }
   return {
     cfgBlockById,
     irBlockById,
     lastArgWriteByBlock,
     writtenArgRegisters,
+    nodePosByBlock,
+    firstStackPublishPosByBlock,
+    stackPublishReachesBlockEntry,
   };
 }
 
@@ -714,22 +759,11 @@ function stackAddressPublishedBeforeCall(node, stackValues, escapeCfgIndex) {
   const callBlockId = node?.blockId == null ? null : String(node.blockId);
   const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
   const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
-  const callPos = callIrBlock?.nodeIds?.findIndex((id) => String(id) === String(node.id)) ?? -1;
+  const callPos = callBlockId == null ? -1 : (escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(String(node.id)) ?? -1);
   if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
-  for (let index = 0; index < callPos; index++) {
-    const upstream = stackValues.nodesById.get(String(callIrBlock.nodeIds[index]));
-    if (nodePublishesStackAddress(upstream, stackValues)) return true;
-  }
-  const reachingPredecessors = predecessorBlockClosure(callBlockId, escapeCfgIndex.cfgBlockById);
-  for (const blockId of reachingPredecessors) {
-    const irBlock = escapeCfgIndex.irBlockById.get(blockId);
-    if (!irBlock) continue;
-    for (const nodeId of irBlock.nodeIds ?? []) {
-      if (String(nodeId) === String(node.id)) continue;
-      const upstream = stackValues.nodesById.get(String(nodeId));
-      if (nodePublishesStackAddress(upstream, stackValues)) return true;
-    }
-  }
+  const firstPublishPos = escapeCfgIndex.firstStackPublishPosByBlock.get(callBlockId);
+  if (firstPublishPos !== undefined && firstPublishPos < callPos) return true;
+  if (escapeCfgIndex.stackPublishReachesBlockEntry.has(callBlockId)) return true;
   return false;
 }
 
@@ -1164,6 +1198,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     byteRange: memoryRegionByteRange(region),
   }]));
   const aliasCache = new Map();
+  const rawRegionAliasCache = new Map();
   const queryAlias = (left, right, purpose, skipProofIfNo = false) => {
     const key = `${left.key}\u0000${right.key}\u0000${purpose}`;
     if (aliasCache.has(key)) return aliasCache.get(key);
@@ -1183,17 +1218,27 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-special-alias-query-unsupported');
     }
     if (raw == null && typeof options.queryAlias === 'function') {
-      raw = options.queryAlias(left.region, right.region, {
-        function: irFunction,
-        cfg,
-        left,
-        right,
-        purpose,
-        signal: options.signal,
-        ssa: options.ssa ?? null,
-        rootDescriptorProvider: options.rootDescriptorProvider ?? null,
-      });
-      if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-alias-query-unsupported');
+      const canMemoRaw = right?.descriptor == null
+        && left?.descriptor?.broad !== true
+        && left?.region?.id != null
+        && right?.region?.id != null;
+      const rawKey = canMemoRaw ? `${left.region.id}\u0000${right.region.id}` : null;
+      if (rawKey != null && rawRegionAliasCache.has(rawKey)) {
+        raw = rawRegionAliasCache.get(rawKey);
+      } else {
+        raw = options.queryAlias(left.region, right.region, {
+          function: irFunction,
+          cfg,
+          left,
+          right,
+          purpose,
+          signal: options.signal,
+          ssa: options.ssa ?? null,
+          rootDescriptorProvider: options.rootDescriptorProvider ?? null,
+        });
+        if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-alias-query-unsupported');
+        if (rawKey != null) rawRegionAliasCache.set(rawKey, raw);
+      }
     }
     if (raw == null) raw = 'unknown';
     const result = normalizeAliasResult(raw);
