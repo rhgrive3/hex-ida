@@ -283,7 +283,7 @@ test('parenthesized multiplication (a1 * a1) is not misclassified as pointer cas
 });
 
 test('signature pointer class types (Thing * this) get forward/struct typedefs and __atomic_load/__atomic_store get compat macros', () => {
-  const revar_10 = {
+  const res1 = {
     lines: [
       { kind: 'sig', indent: 0, text: 'uint64 ZNK5Thing6updateEi(Thing * this)' },
       { kind: 'ctrl', indent: 0, text: '{' },
