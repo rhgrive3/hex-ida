@@ -441,8 +441,12 @@ function memoryLocation(inst, state) {
     const index = buildValue(addr.index, state, { forAddress: true });
     const scale = 1 << Number(addr.scale || 0);
     if (Number(addr.size || inst?.size || 0) === scale) {
-      const access = expr.index(base, index, scale, Number(addr.size || inst?.size || 64), origin(inst));
-      return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access) };
+      const baseType = state.types?.values?.get?.(addr.base.id);
+      const indexBaseIsPointer = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && base?.kind === 'var';
+      const elemBytes = Number(addr.size || inst?.size || 0);
+      const elemBits = elemBytes > 0 ? elemBytes * 8 : 64;
+      const access = expr.index(base, index, scale, elemBits, origin(inst));
+      return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, { indexBaseIsPointer }) };
     }
   }
   return { kind: 'unknown', key: loc.key || `memory:${inst?.id || '?'}`, name: 'memory_unknown', text: 'memory_unknown' };
