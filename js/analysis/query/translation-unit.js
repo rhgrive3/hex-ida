@@ -17,6 +17,9 @@ import {
   parseSynthesizedStructPreludeDeclaration,
   isStandaloneGlobalPreludeComment,
   isStandaloneGlobalPreludeDeclaration,
+  isStandalonePrototypePreludeComment,
+  isStandalonePrototypePreludeDeclaration,
+  isIdTypedefPreludeDeclaration,
 } from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -190,7 +193,9 @@ function isAllowedBodyPrefixLine(trimmed) {
     || skipBodyTrivia(trimmed, 0) === trimmed.length
     || isReemittedPreludeDeclaration(trimmed)
     || isSynthesizedStructPreludeDeclaration(trimmed)
-    || isStandaloneGlobalPreludeDeclaration(trimmed);
+    || isStandaloneGlobalPreludeDeclaration(trimmed)
+    || isStandalonePrototypePreludeDeclaration(trimmed)
+    || isIdTypedefPreludeDeclaration(trimmed);
 }
 
 /* Strip standalone external global prelude blocks emitted by c-output-closure
@@ -200,17 +205,28 @@ function stripStandaloneGlobalPreludeLines(text) {
   const lines = String(text ?? '').split(/\r?\n/);
   const out = [];
   let inStandaloneGlobals = false;
+  let inStandalonePrototypes = false;
   let sawSignature = false;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!sawSignature) {
       if (isStandaloneGlobalPreludeComment(trimmed)) {
         inStandaloneGlobals = true;
+        inStandalonePrototypes = false;
+        continue;
+      }
+      if (isStandalonePrototypePreludeComment(trimmed)) {
+        inStandalonePrototypes = true;
+        inStandaloneGlobals = false;
         continue;
       }
       if (inStandaloneGlobals) {
         if (isStandaloneGlobalPreludeDeclaration(trimmed)) continue;
         inStandaloneGlobals = false;
+      }
+      if (inStandalonePrototypes) {
+        if (isStandalonePrototypePreludeDeclaration(trimmed)) continue;
+        inStandalonePrototypes = false;
       }
       if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) {
         sawSignature = true;
@@ -243,6 +259,7 @@ function extractSynthesizedStructTypedefs(text) {
 function isAccountedBodyPrefix(prefix) {
   let pos = 0;
   let sawStandaloneGlobalsMarker = false;
+  let sawStandalonePrototypesMarker = false;
   while (pos < prefix.length) {
     const triviaStart = pos;
     pos = skipBodyTrivia(prefix, pos);
@@ -251,6 +268,7 @@ function isAccountedBodyPrefix(prefix) {
       const skipped = prefix.slice(triviaStart, pos);
       for (const rawLine of skipped.split(/\r?\n/)) {
         if (isStandaloneGlobalPreludeComment(rawLine)) sawStandaloneGlobalsMarker = true;
+        if (isStandalonePrototypePreludeComment(rawLine)) sawStandalonePrototypesMarker = true;
       }
     }
     if (pos >= prefix.length) return true;
@@ -259,7 +277,9 @@ function isAccountedBodyPrefix(prefix) {
     const line = prefix.slice(pos, end);
     const ok = isReemittedPreludeDeclaration(line)
       || isSynthesizedStructPreludeDeclaration(line)
-      || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line));
+      || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
+      || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
+      || isIdTypedefPreludeDeclaration(line);
     if (!ok) return false;
     pos = end;
   }

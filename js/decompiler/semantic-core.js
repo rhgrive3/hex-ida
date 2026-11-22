@@ -872,10 +872,19 @@ function defBlockDominates(ir, from, to) {
   return false;
 }
 
-function blockCanReach(ir, from, to) {
-  if (from === to) return true;
-  if (from == null || to == null) return false;
-  const seen = new Set([from]);
+const BLOCK_REACH_CACHE = new WeakMap();
+const VALUES_BY_REG_CACHE = new WeakMap();
+
+function getReachableBlockSet(ir, from) {
+  let perIr = BLOCK_REACH_CACHE.get(ir);
+  const blockCount = ir?.blocks?.length || 0;
+  if (!perIr || perIr.blockCount !== blockCount) {
+    perIr = { blockCount, map: new Map() };
+    BLOCK_REACH_CACHE.set(ir, perIr);
+  }
+  let seen = perIr.map.get(from);
+  if (seen) return seen;
+  seen = new Set([from]);
   const stack = [from];
   while (stack.length) {
     const current = stack.pop();
@@ -883,12 +892,33 @@ function blockCanReach(ir, from, to) {
     for (const edge of successors) {
       const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
       if (next == null || seen.has(next)) continue;
-      if (next === to) return true;
       seen.add(next);
       stack.push(next);
     }
   }
-  return false;
+  perIr.map.set(from, seen);
+  return seen;
+}
+
+function getValuesByReg(ir) {
+  const values = ir?.values || [];
+  let cached = VALUES_BY_REG_CACHE.get(ir);
+  if (cached && cached.length === values.length) return cached.byReg;
+  const byReg = new Map();
+  for (const v of values) {
+    if (!v?.reg || !v.def) continue;
+    let list = byReg.get(v.reg);
+    if (!list) { list = []; byReg.set(v.reg, list); }
+    list.push(v);
+  }
+  VALUES_BY_REG_CACHE.set(ir, { length: values.length, byReg });
+  return byReg;
+}
+
+function blockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  return getReachableBlockSet(ir, from).has(to);
 }
 
 function definitionCanReachUse(ir, definition, atInst) {
@@ -907,12 +937,12 @@ function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
   return blockCanReach(ir, candidateDefinition.block, definition.block);
 }
 
-/** SSA value reaching a call/block point, based on dominance and CFG reachability. */
 export function reachingRegisterValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
+  const regValues = getValuesByReg(ir).get(reg) || [];
   let best = ir.args?.get?.(reg) || null;
   let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
-  for (const v of ir.values || []) {
+  for (const v of regValues) {
     if (v.reg !== reg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
@@ -932,7 +962,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
   if (bestSameBlock) return best?.clobbered ? null : best;
 
   const candidateDefinition = best?.def ?? null;
-  for (const v of ir.values || []) {
+  for (const v of regValues) {
     if (v === best || v.reg !== reg || !v.def) continue;
     const d = v.def;
     if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;

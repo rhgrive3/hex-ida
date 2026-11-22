@@ -90,6 +90,7 @@ const FIXED_WIDTH_TYPES = Object.freeze(new Map([
 const PRELUDE_COMMENT = '/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */';
 const STRUCT_PRELUDE_COMMENT = '/* hex: synthesized member-base structs. */';
 const STANDALONE_GLOBALS_COMMENT = '/* hex: standalone external globals (stripped by translation unit packager). */';
+const STANDALONE_PROTOTYPES_COMMENT = '/* hex: standalone external prototypes (stripped by translation unit packager). */';
 
 const SIMPLE_DECLARABLE = /^(?:unsigned\s+)?(?:char|short|int|long|long\s+long|long\s+long\s+int|__int128)$|^void \*$/;
 
@@ -135,6 +136,19 @@ export function isStandaloneGlobalPreludeComment(text) {
 export function isStandaloneGlobalPreludeDeclaration(text) {
   const match = /^extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;$/.exec(String(text ?? '').trim());
   return !!match && FIXED_WIDTH_TYPES.has(match[1]);
+}
+
+export function isStandalonePrototypePreludeComment(text) {
+  return String(text ?? '').trim() === STANDALONE_PROTOTYPES_COMMENT;
+}
+
+export function isStandalonePrototypePreludeDeclaration(text) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*;$/.exec(String(text ?? '').trim());
+  return !!match && FIXED_WIDTH_TYPES.has(match[1]) && !KEYWORDS.has(match[2]);
+}
+
+export function isIdTypedefPreludeDeclaration(text) {
+  return String(text ?? '').trim() === 'typedef void * id;';
 }
 
 /* Remove comments and literals so identifier scans never read prose or asm
@@ -405,6 +419,15 @@ function atomicCompatPreludeLines(uses, existingLines, entrySource) {
   return out;
 }
 
+
+function signatureFunctionName(signature) {
+  const text = declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return null;
+  const tokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+  return tokens.length ? tokens[tokens.length - 1] : null;
+}
+
 /* Type names appearing in a function signature (return type and parameter types). */
 function signatureTypeNames(signature) {
   const names = new Set();
@@ -535,7 +558,39 @@ function recoveredStackType(name, evidence) {
  * recovered value type), then the naming class the producer itself used, then
  * the explicit 64-bit fallback.  Never a type name this closure cannot spell.
  */
-export function localDeclarationTypeFor(name, result) {
+export 
+function inferPointerTypedLocals(renderedBody, sigText) {
+  const source = declarationBearingSource(renderedBody);
+  const sigPtrNames = new Set(signaturePointerParams(sigText).map((item) => item.paramName));
+  const ptrParamRe = /(?:\bid\s+|\*\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
+  const cleanSig = declarationBearingSource(sigText);
+  for (let m = ptrParamRe.exec(cleanSig); m; m = ptrParamRe.exec(cleanSig)) {
+    sigPtrNames.add(m[1]);
+  }
+  const assignPattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;=]+);\s*$/gm;
+  const stats = new Map();
+  for (let m = assignPattern.exec(source); m; m = assignPattern.exec(source)) {
+    const lhs = m[1];
+    const rhs = m[2].trim();
+    let st = stats.get(lhs);
+    if (!st) { st = { ptrAssigns: 0, nonPtrAssigns: 0 }; stats.set(lhs, st); }
+    const isPtrRhs = sigPtrNames.has(rhs)
+      || /^&\s*[A-Za-z_][A-Za-z0-9_]*$/.test(rhs)
+      || /^\([^()]*\*\s*\)/.test(rhs);
+    if (isPtrRhs) st.ptrAssigns++;
+    else st.nonPtrAssigns++;
+  }
+  const ptrLocals = new Set();
+  for (const [name, st] of stats.entries()) {
+    if (st.ptrAssigns > 0 && st.nonPtrAssigns === 0) {
+      const arithRe = new RegExp('\\b' + escapeRegExp(name) + '\\b\\s*(?:[+*&|^]|<<|>>|/)|(?:[+*&|^]|<<|>>|/)\\s*\\b' + escapeRegExp(name) + '\\b');
+      if (!arithRe.test(source)) ptrLocals.add(name);
+    }
+  }
+  return ptrLocals;
+}
+
+function localDeclarationTypeFor(name, result) {
   const evidence = resultEvidence(result);
   const stack = recoveredStackType(name, evidence);
   if (stack) return stack;
@@ -559,7 +614,7 @@ export function localDeclarationTypeFor(name, result) {
 function isDeclarableLocal(entry, declared) {
   const name = entry?.name;
   if (!name || !entry.value || declared.has(name)) return false;
-  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name)) return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || name === 'id') return false;
   if (entry.callTarget || entry.memberName || entry.memberBase || entry.castType || entry.tag) return false;
   if (entry.label || entry.gotoLabel) return false;
   // External symbols and pseudo-intrinsics are never fabricated as function-local variables.
@@ -714,10 +769,11 @@ export function closeFunctionOutput(result, options = {}) {
     }
   }
 
+  const ptrTypedLocals = inferPointerTypedLocals(renderedInitial, sigText);
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared))
     .map((entry) => ({
-      kind: 'decl', indent: 1, text: `${localDeclarationTypeFor(entry.name, result)} ${entry.name};`,
+      kind: 'decl', indent: 1, text: `${(() => { const t = localDeclarationTypeFor(entry.name, result); return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'void *' : t; })()} ${entry.name};`,
       row: null, addr: null, note: null, source: entrySource,
     }));
 
@@ -757,7 +813,41 @@ export function closeFunctionOutput(result, options = {}) {
   }
 
   const atomicPrelude = atomicCompatPreludeLines(uses, lines, entrySource);
-  const postFixedPrelude = [...structPrelude, ...globalPrelude, ...atomicPrelude];
+  const macroDefinedCalls = new Set();
+  for (const l of [...lines, ...atomicPrelude]) {
+    const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(String(l?.text ?? ''));
+    if (m) macroDefinedCalls.add(m[1]);
+  }
+  const sigFuncName = signatureFunctionName(sigText);
+  const idTypedefPrelude = [];
+  if (!existingTypes.has('id') && (/\bid\b/.test(declarationBearingSource(sigText)) || uses.has('id'))) {
+    idTypedefPrelude.push({
+      kind: 'decl', indent: 0, text: 'typedef void * id;',
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add('id');
+    declared.add('id');
+  }
+  const standalonePrototypes = [...uses.values()]
+    .filter((entry) => entry?.callTarget
+      && !declared.has(entry.name)
+      && !KEYWORDS.has(entry.name)
+      && !FIXED_WIDTH_TYPES.has(entry.name)
+      && !STANDARD_KNOWN_TYPES.has(entry.name)
+      && !macroDefinedCalls.has(entry.name)
+      && entry.name !== sigFuncName)
+    .sort((a, b) => compareAscii(a.name, b.name));
+  const prototypePrelude = [];
+  if (standalonePrototypes.length) {
+    prototypePrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_PROTOTYPES_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    for (const entry of standalonePrototypes) {
+      prototypePrelude.push({
+        kind: 'decl', indent: 0, text: `uint64 ${entry.name} ();`,
+        row: null, addr: null, note: null, source: entrySource,
+      });
+    }
+  }
+  const postFixedPrelude = [...idTypedefPrelude, ...structPrelude, ...globalPrelude, ...prototypePrelude, ...atomicPrelude];
   if (postFixedPrelude.length) withPostFixedPrelude.splice(sigIndex, 0, ...postFixedPrelude);
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)
