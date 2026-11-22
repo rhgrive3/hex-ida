@@ -41,7 +41,8 @@ const KEYWORDS = new Set([
   'true', 'false', 'NULL',
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
-const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
+const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
+const ID_TYPE_USAGE = /(?:^|[\n;(,])\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s*\)|typedef\s+void\s*\*\s*id\s*;/;
 
 function addressKey(value) {
   if (value == null) return null;
@@ -109,6 +110,11 @@ function aliasContractsForText(text, headers, declarations, { ownTypedefsEmitted
     if (ownTypedefsEmitted && new RegExp(`typedef\\s+[^;]*\\b${alias}\\s*;`).test(source)) continue;
     headers.add('<stdint.h>');
     declarations.add(`typedef ${standard} ${alias};`);
+  }
+  if (ID_TYPE_USAGE.test(source)) {
+    if (!(ownTypedefsEmitted && /typedef\s+void\s*\*\s*id\s*;/.test(source))) {
+      declarations.add('typedef void * id;');
+    }
   }
 }
 
@@ -465,6 +471,58 @@ function hasBalancedBraces(text) {
  * unresolved entry: the unit keeps `partial` and no binary fact is invented.
  */
 const LABEL_STATEMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*$/;
+
+function hasRawObjcMessageSyntax(codeText) {
+  const len = codeText.length;
+  for (let i = 0; i < len; i++) {
+    if (codeText[i] !== '[') continue;
+    // Check whether `[` appears in expression-start position (not C array subscript `expr[...]`).
+    let prev = i - 1;
+    while (prev >= 0 && /\s/.test(codeText[prev])) prev--;
+    let exprStart = prev < 0;
+    if (!exprStart) {
+      const ch = codeText[prev];
+      if (/[=(,;?:{[+\-*/%&|^!~<>]/.test(ch)) {
+        exprStart = true;
+      } else if (/[A-Za-z0-9_]/.test(ch)) {
+        let start = prev;
+        while (start > 0 && /[A-Za-z0-9_]/.test(codeText[start - 1])) start--;
+        const word = codeText.slice(start, prev + 1);
+        if (word === 'return' || word === 'case') exprStart = true;
+      }
+    }
+    if (!exprStart) continue;
+    // Find matching `]` and inspect top-level content inside `[...]`.
+    let depth = 0;
+    let close = -1;
+    for (let j = i; j < len; j++) {
+      if (codeText[j] === '[') depth++;
+      else if (codeText[j] === ']') {
+        depth--;
+        if (depth === 0) { close = j; break; }
+      }
+    }
+    if (close < 0) continue;
+    const inner = codeText.slice(i + 1, close).trim();
+    if (!inner) continue;
+    // Detect `[receiver selector]` or `[receiver sel:arg ...]` at top level.
+    let paren = 0;
+    let bracket = 0;
+    let topLevel = '';
+    for (let k = 0; k < inner.length; k++) {
+      const c = inner[k];
+      if (c === '(') { if (paren === 0 && bracket === 0) topLevel += ' _P_ '; paren++; continue; }
+      if (c === ')') { if (paren > 0) paren--; continue; }
+      if (c === '[') { if (paren === 0 && bracket === 0) topLevel += ' _B_ '; bracket++; continue; }
+      if (c === ']') { if (bracket > 0) bracket--; continue; }
+      if (paren === 0 && bracket === 0) topLevel += c;
+    }
+    const compact = topLevel.trim();
+    if (/[A-Za-z_][A-Za-z0-9_]*\s*:/.test(compact) && !compact.includes('?')) return true;
+    if (/^(?:[A-Za-z_][A-Za-z0-9_]*|_P_|_B_)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,|\s*$)/.test(compact)) return true;
+  }
+  return false;
+}
 const FIXED_TYPELIKE_OPERATORS = new Set(['sizeof', 'offsetof', '_Alignof']);
 const ARGUMENTS_UNKNOWN = /\/\*\s*arguments\s+unknown\s*\*\//;
 
@@ -500,7 +558,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     fallbackNames.add(match[1]);
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
-  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), ...synthesizedStructs.keys()]);
+  const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), 'id', ...synthesizedStructs.keys()]);
   const synthesizedStructFields = new Set();
   for (const fieldMap of synthesizedStructs.values()) {
     for (const fieldName of fieldMap.keys()) synthesizedStructFields.add(fieldName);
@@ -540,10 +598,21 @@ function faithfulBodyEligibility(fn, context) {
   if (/\b[A-Za-z_][A-Za-z0-9_]*\s+\d+\s*:/.test(codeText)) return { eligible:false, reason:'bitfield-syntax-unavailable' };
   if (/\bgoto\b/.test(codeText)) return { eligible:false, reason:'goto-syntax-unavailable' };
   if (/\?\s*=/.test(codeText) || /=\s*\?\b/.test(codeText) || /\(\s*\?\s*[,)]/.test(codeText)) return { eligible:false, reason:'producer-placeholder-expression' };
+  if (hasRawObjcMessageSyntax(codeText)) return { eligible:false, reason:'objc-message-syntax-unavailable' };
   // Local declarations inside the body are part of the body's own evidence;
   // accept the spellings the producer emits for them and mark them covered.
   const declaredLocals = context.declaredLocals;
   declaredLocals.clear();
+  const sigOpen = signature.indexOf('(');
+  const sigClose = signature.lastIndexOf(')');
+  if (sigOpen >= 0 && sigClose > sigOpen) {
+    for (const group of signature.slice(sigOpen + 1, sigClose).split(',')) {
+      const value = group.trim();
+      if (!value || /^void$/i.test(value)) continue;
+      const param = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+      if (param?.[2]) declaredLocals.add(param[2]);
+    }
+  }
   for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*[A-Za-z_][A-Za-z0-9_]*\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
     if (match[2]) declaredLocals.add(match[2]);
   }

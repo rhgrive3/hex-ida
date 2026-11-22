@@ -754,21 +754,84 @@ function detachLegacyArguments(inst) {
   inst.args = [];
 }
 
+const projectedValuesByRegCache = new WeakMap();
+function valuesByRegFor(projected) {
+  const values = projected?.values;
+  if (!Array.isArray(values)) return new Map();
+  let entry = projectedValuesByRegCache.get(projected);
+  if (!entry || entry.valuesRef !== values || entry.length > values.length) {
+    const byReg = new Map();
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      const r = value?.reg;
+      if (r == null) continue;
+      let list = byReg.get(r);
+      if (!list) { list = []; byReg.set(r, list); }
+      list.push(value);
+    }
+    entry = { valuesRef: values, length: values.length, byReg };
+    projectedValuesByRegCache.set(projected, entry);
+    return byReg;
+  }
+  if (entry.length < values.length) {
+    const byReg = entry.byReg;
+    for (let i = entry.length; i < values.length; i += 1) {
+      const value = values[i];
+      const r = value?.reg;
+      if (r == null) continue;
+      let list = byReg.get(r);
+      if (!list) { list = []; byReg.set(r, list); }
+      list.push(value);
+    }
+    entry.length = values.length;
+  }
+  return entry.byReg;
+}
+
+const projectedInstructionsByNodeIdCache = new WeakMap();
+function instructionsBySemanticNodeIdFor(projected) {
+  const instructions = projected?.instructions;
+  if (!Array.isArray(instructions)) return new Map();
+  let entry = projectedInstructionsByNodeIdCache.get(projected);
+  if (!entry || entry.instructionsRef !== instructions || entry.length !== instructions.length) {
+    const byNodeId = new Map();
+    for (let i = 0; i < instructions.length; i += 1) {
+      const inst = instructions[i];
+      const nodeId = inst?.semanticNodeId;
+      if (nodeId == null) continue;
+      let list = byNodeId.get(nodeId);
+      if (!list) { list = []; byNodeId.set(nodeId, list); }
+      list.push({ inst, pos: i });
+    }
+    entry = { instructionsRef: instructions, length: instructions.length, byNodeId };
+    projectedInstructionsByNodeIdCache.set(projected, entry);
+  }
+  return entry.byNodeId;
+}
+
 function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
-  const candidates = (projected.values ?? [])
-    .filter((value) => value !== excluded && value.reg === reg && value.kind !== LEGACY_VK.UNDEF
-      && valueDominatesLegacyInstruction(value, inst, projected))
-    .sort((left, right) => {
-      const leftRecency = legacyDefinitionRecency(left, inst, projected);
-      const rightRecency = legacyDefinitionRecency(right, inst, projected);
-      if (leftRecency.scope !== rightRecency.scope) return rightRecency.scope - leftRecency.scope;
-      if (leftRecency.depth !== rightRecency.depth) return rightRecency.depth - leftRecency.depth;
-      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
-      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;
-      const rightWidth = Number(bits) > 0 && right.bits === Number(bits) ? 1 : 0;
-      if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-      return (right.id ?? 0) - (left.id ?? 0);
+  const regValues = reg == null ? (projected.values ?? []) : (valuesByRegFor(projected).get(reg) ?? []);
+  const bitsNum = Number(bits);
+  const decorated = [];
+  for (let i = 0; i < regValues.length; i += 1) {
+    const value = regValues[i];
+    if (value === excluded || value.reg !== reg || value.kind === LEGACY_VK.UNDEF) continue;
+    if (!valueDominatesLegacyInstruction(value, inst, projected)) continue;
+    decorated.push({
+      value,
+      recency: legacyDefinitionRecency(value, inst, projected),
+      width: bitsNum > 0 && value.bits === bitsNum ? 1 : 0,
+      id: value.id ?? 0,
     });
+  }
+  decorated.sort((left, right) => {
+    if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
+    if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
+    if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
+    if (left.width !== right.width) return right.width - left.width;
+    return right.id - left.id;
+  });
+  const candidates = decorated.map((item) => item.value);
   if (observation && !observation.unavailable) {
     if (candidates.length > 512) observation.unavailable = true;
     else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
@@ -1092,8 +1155,28 @@ function retainPublicLocation(observer, projected, source, before, details, hist
   const values = [...new Set([source.addr?.base, details.base, ...source.args.map(arg => arg.value)].filter(Boolean))];
   const memorySources = details.memory?.provenance?.sourceEntityIds || [];
   if (memorySources.length > 512) return;
-  const related = memorySources.length ? projected.instructions.filter(inst => memorySources.includes(inst.semanticNodeId)) : [];
-  if (memorySources.some(id => !related.some(inst => inst.semanticNodeId === id))) return;
+  let related = [];
+  if (memorySources.length) {
+    const byNodeId = instructionsBySemanticNodeIdFor(projected);
+    for (let i = 0; i < memorySources.length; i += 1) {
+      if (!byNodeId.has(memorySources[i])) return;
+    }
+    if (memorySources.length === 1) {
+      related = byNodeId.get(memorySources[0]).map((item) => item.inst);
+    } else {
+      const seenIds = new Set();
+      const matched = [];
+      for (let i = 0; i < memorySources.length; i += 1) {
+        const id = memorySources[i];
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        const list = byNodeId.get(id);
+        if (list) for (let j = 0; j < list.length; j += 1) matched.push(list[j]);
+      }
+      matched.sort((a, b) => a.pos - b.pos);
+      related = matched.map((item) => item.inst);
+    }
+  }
   observer.records.push(Object.freeze({ source, output:source.dst, input:source.addr?.base,
     stage:'facade-public-location', ordinal:observer.count - 1, op:source.op, sub:source.sub,
     operation:details.operation, before:before.identity, after:publicLocationIdentity(source.loc),
@@ -1392,14 +1475,19 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
       || String(returnLocations[0]?.reg ?? '') !== String(result.returnReg)) continue;
     const reg = String(result.returnReg);
     const bits = Number(result.returnBits || 64);
-    const candidates = (projected.values ?? [])
-      .filter((value) => value?.reg === reg
-        && value?.sourceEntityId === inst.semanticNodeId
-        && value?.def == null)
-      .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
-    const priorVersion = Math.max(-1, ...(projected.values ?? [])
-      .filter((value) => value?.reg === reg)
-      .map((value) => Number(value.version ?? -1)));
+    const regValues = valuesByRegFor(projected).get(reg) ?? [];
+    const candidates = [];
+    let priorVersion = -1;
+    for (let i = 0; i < regValues.length; i += 1) {
+      const candidate = regValues[i];
+      if (candidate?.reg !== reg) continue;
+      const version = Number(candidate.version ?? -1);
+      if (version > priorVersion) priorVersion = version;
+      if (candidate.sourceEntityId === inst.semanticNodeId && candidate.def == null) {
+        candidates.push(candidate);
+      }
+    }
+    candidates.sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
     const available = observer.records.length < 1024 && (projected.values?.length || 0) <= ABI_SELECTION_DIRECTORY_LIMIT
       && candidates.length <= 512 && (inst.args?.length || 0) <= 512;
     const before = available ? typedResultIdentity(candidates[0]) : null;

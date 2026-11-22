@@ -17,7 +17,7 @@ import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory, renderExtendedIndex } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
 import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
-import { createProjectionIrObserver, ownDataEntries } from '../core/identity/live-data.js';
+import { createProjectionIrObserver, createValidationBatch, ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -244,9 +244,19 @@ function beginStatementRenderHistory(ctx) {
       return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
     };
     const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
-    history.canonical = { isCurrent:() => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
+    const rawIsCurrent = () => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
       && (args == null || Object.getPrototypeOf(args) === Map.prototype && !Reflect.ownKeys(args).length && size.call(args) === bindings.length
-        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches() };
+        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches();
+    const token = {};
+    history.canonical = { isCurrent:() => {
+      const batch = ctx.validationBatch;
+      if (!batch) return rawIsCurrent();
+      const known = batch.known(token, null);
+      if (known !== undefined) return known;
+      const current = rawIsCurrent();
+      batch.remember(token, null, current, rawIsCurrent);
+      return current;
+    } };
   } catch { history.edges = 0; }
 }
 
@@ -301,7 +311,7 @@ function beginControlRenderHistory(ctx) {
     const data = captureProjectionIrData(plain);
     history.edges -= sets.edges + post.edges + data.metrics.edges;
     if (history.edges < 0) throw new Error('initial-control-budget');
-    history.canonical = { isCurrent:() => { try { return ctx.statementRenderHistory.canonical.isCurrent()
+    const rawIsCurrent = () => { try { return ctx.statementRenderHistory.canonical.isCurrent()
       && roots.every(({ object, key, descriptor }) => {
         const now = Object.getOwnPropertyDescriptor(object, key);
         return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
@@ -309,7 +319,17 @@ function beginControlRenderHistory(ctx) {
         if (Object.getOwnPropertyDescriptor(loops, key)?.value !== loop) return false;
         const now = ownDataEntries(loop, 16);
         return now.length === fields.length && fields.every(([name, value], index) => now[index][0] === name && now[index][1] === value);
-      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } } };
+      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } };
+    const token = {};
+    history.canonical = { isCurrent:() => {
+      const batch = ctx.validationBatch;
+      if (!batch) return rawIsCurrent();
+      const known = batch.known(token, null);
+      if (known !== undefined) return known;
+      const current = rawIsCurrent();
+      batch.remember(token, null, current, rawIsCurrent);
+      return current;
+    } };
   } catch { history.edges = 0; }
 }
 
@@ -585,14 +605,24 @@ export function isExactOperandForwardMove(def) {
     && Array.isArray(def.args) && def.args.length === 1;
 }
 
-function dependencySource(value, ctx, seen = new Set(), depth = 0) {
-  if (!value || depth > MAX_EXPR_DEPTH || seen.has(value.id)) return sourceOf();
-  seen.add(value.id);
+function dependencySource(value, ctx, seen = null, depth = 0) {
+  if (!value || depth > MAX_EXPR_DEPTH) return sourceOf();
+  const isTopLevel = seen === null && depth === 0;
+  if (isTopLevel && ctx?.depSourceCache?.has(value.id)) {
+    return ctx.depSourceCache.get(value.id);
+  }
+  const visited = seen || new Set();
+  if (visited.has(value.id)) return sourceOf();
+  visited.add(value.id);
   const d = value.def;
-  if (!d) return sourceOf({ ssaUse: value.id });
+  if (!d) {
+    const res = sourceOf({ ssaUse: value.id });
+    if (isTopLevel && ctx?.depSourceCache) ctx.depSourceCache.set(value.id, res);
+    return res;
+  }
   const parts = [sourceForInst(d), sourceOf({ ssaDef: value.id })];
   if (d.op === OP.PHI) {
-    for (const incoming of d.incoming || []) parts.push(dependencySource(incoming.value, ctx, seen, depth + 1));
+    for (const incoming of d.incoming || []) parts.push(dependencySource(incoming.value, ctx, visited, depth + 1));
   } else if (d.op === OP.LOAD) {
     // A fixed stack slot's SP/FP arithmetic is frame-construction provenance,
     // not source provenance for the value loaded from that slot. Including it
@@ -600,17 +630,19 @@ function dependencySource(value, ctx, seen = new Set(), depth = 0) {
     // to own later C statements. Keep the load itself, but stop at the stack
     // memory boundary. Non-stack addressing still retains its base/index defs.
     if (d.loc?.kind !== MK.STACK) {
-      parts.push(dependencySource(d.addr?.base, ctx, seen, depth + 1));
-      parts.push(dependencySource(d.addr?.index, ctx, seen, depth + 1));
+      parts.push(dependencySource(d.addr?.base, ctx, visited, depth + 1));
+      parts.push(dependencySource(d.addr?.index, ctx, visited, depth + 1));
     }
   } else if (isExactOperandForwardMove(d)) {
     // The forwarded operand is the exact stored identity behind the replaced
     // fixed-stack load. Provenance stops here exactly like the stack-load
     // boundary above: the spill/reload plumbing is not source provenance.
   } else {
-    for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, seen, depth + 1));
+    for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, visited, depth + 1));
   }
-  return mergeSource(...parts);
+  const merged = mergeSource(...parts);
+  if (isTopLevel && ctx?.depSourceCache) ctx.depSourceCache.set(value.id, merged);
+  return merged;
 }
 
 /**
@@ -794,13 +826,50 @@ function feedsReturn(value, ctx) {
   return false;
 }
 
+const LOAD_INDEX_CACHE = new WeakMap();
+
+function getLoadLookupIndex(ir) {
+  const instructions = ir?.instructions || [];
+  let cached = LOAD_INDEX_CACHE.get(ir);
+  if (cached && cached.length === instructions.length && cached.ref === instructions) return cached;
+  const memByLocKey = new Map();
+  const loadsByForwardingDefId = new Map();
+  for (const x of instructions) {
+    if (x?.op !== OP.LOAD) continue;
+    const locKey = x.loc?.key;
+    if (locKey != null) {
+      let bucket = memByLocKey.get(locKey);
+      if (!bucket) { bucket = []; memByLocKey.set(locKey, bucket); }
+      bucket.push(x);
+    }
+    const defIds = x.memoryForwarding?.contributingDefinitionIds;
+    if (Array.isArray(defIds)) {
+      for (const id of defIds) {
+        const key = String(id);
+        let bucket = loadsByForwardingDefId.get(key);
+        if (!bucket) { bucket = []; loadsByForwardingDefId.set(key, bucket); }
+        if (bucket[bucket.length - 1] !== x) bucket.push(x);
+      }
+    }
+  }
+  cached = { length: instructions.length, ref: instructions, memByLocKey, loadsByForwardingDefId };
+  LOAD_INDEX_CACHE.set(ir, cached);
+  return cached;
+}
+
 /* Hide only stack stores whose loads prove register preservation/return spill. */
 function isMechanicalStackSpill(inst, ctx) {
   if (inst?.op !== OP.STORE || inst.loc?.kind !== MK.STACK) return false;
   const stored = valueOf(inst.args?.[0]);
   const reg = canonicalRegister(stored?.reg);
   if (reg && frameBookkeepingRegisters(ctx).has(reg)) return true; // frame pointer / return address save
-  const loads = (ctx.ir.instructions || []).filter((x) => loadReachedByStore(x, inst, ctx));
+  const definitionId = inst.memDef?.definitionId ?? inst.extra?.memoryDefinitionId ?? null;
+  if (definitionId == null) return false;
+  const idx = getLoadLookupIndex(ctx.ir);
+  const byDef = idx.loadsByForwardingDefId.get(String(definitionId)) || [];
+  const byLoc = inst.loc?.key != null ? (idx.memByLocKey.get(inst.loc.key) || []) : byDef;
+  const candidates = byDef.length <= byLoc.length ? byDef : byLoc;
+  const loads = candidates.filter((x) => loadReachedByStore(x, inst, ctx));
   if (!loads.length) return false;
   return loads.every((load) =>
     (reg && canonicalRegister(load.dst?.reg) === reg) || feedsReturn(load.dst, ctx));
@@ -853,9 +922,36 @@ function formatConst(v, bits = 64, signed = null) {
   return integerText(v, bits, signed);
 }
 
+const DOM_DEPTH_CACHE = new WeakMap();
+
 function dominatorDepth(ir, block) {
+  if (block == null || block < 0) return 0;
+  const blocks = ir?.blocks || [];
+  let cached = DOM_DEPTH_CACHE.get(ir);
+  if (!cached || cached.blockCount !== blocks.length || cached.idomRef !== ir.idom) {
+    cached = { blockCount: blocks.length, idomRef: ir.idom, depths: new Int32Array(blocks.length) };
+    DOM_DEPTH_CACHE.set(ir, cached);
+  }
+  const depths = cached.depths;
+  if (block < depths.length && depths[block] > 0) return depths[block];
+  const maxSteps = blocks.length + 1;
   let d = 0, b = block, guard = 0;
-  while (b != null && b >= 0 && guard++ < ir.blocks.length + 2) { d++; b = ir.idom?.[b] ?? ir.blocks[b]?.idom ?? -1; }
+  const path = [];
+  while (b != null && b >= 0 && guard++ <= maxSteps) {
+    if (b < depths.length && depths[b] > 0) {
+      d += depths[b];
+      break;
+    }
+    path.push(b);
+    d++;
+    b = ir.idom?.[b] ?? blocks[b]?.idom ?? -1;
+  }
+  if (guard <= maxSteps) {
+    for (let i = 0; i < path.length; i++) {
+      const bi = path[i];
+      if (bi >= 0 && bi < depths.length) depths[bi] = d - i;
+    }
+  }
   return d;
 }
 
@@ -1108,8 +1204,12 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const baseType = ctx.types?.values?.get?.(addr.base.id);
       const isPtr = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(base);
       const scaleBytes = scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
-      if (!isPtr && size > 0 && scaleBytes === size && !indexed.startsWith('memory[')) {
-        const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 8}_t`;
+      const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 8}_t`;
+      if (indexed.startsWith('memory[') && indexed.endsWith(']')) {
+        const inner = indexed.slice('memory['.length, -1);
+        return `*(${elemType} *)(uintptr_t)(${inner})`;
+      }
+      if (!isPtr && size > 0 && scaleBytes === size) {
         return `((${elemType} *)(uintptr_t)(${base}))[${renderExtendedIndex(index, addr.extend || null)}]`;
       }
       return indexed;
@@ -1247,6 +1347,8 @@ function unaryText(inst, ctx) {
   if (inst.sub === 'not') return `~${paren(a)}`;
   if (inst.sub === 'abs' || inst.sub === 'fabs') return `abs(${a})`;
   if (inst.sub === 'sqrt' || inst.sub === 'fsqrt') return `sqrt(${a})`;
+  const extMap = { sxtb: 'int8', sxth: 'int16', sxtw: 'int32', uxtb: 'uint8', uxth: 'uint16', uxtw: 'uint32' };
+  if (extMap[inst.sub]) return `(${extMap[inst.sub]})${paren(a)}`;
   if (/^sxt/.test(inst.sub || '')) return `(${inst.sub.replace('sxt', 'int')})${paren(a)}`;
   if (/^uxt/.test(inst.sub || '')) return `(${inst.sub.replace('uxt', 'uint')})${paren(a)}`;
   return `${safeIdent(inst.sub || 'un')}(${a})`;
@@ -1259,7 +1361,7 @@ function callRecord(inst, ctx) {
     return ctx.callCache.get(inst.id);
   }
   const target = inst.extra?.target ?? null;
-  const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
+  const modelCall = ctx.callByRow ? (ctx.callByRow.get(inst.row) || null) : ((ctx.model.calls || []).find((c) => c.row === inst.row) || null);
   let name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
   // A direct call whose target address has neither a symbol nor a model name must keep
   // that proven target explicit. Falling through to renderCall's operand fallback would
@@ -1341,9 +1443,12 @@ function callRecord(inst, ctx) {
     }
   }
 
+  const objcCMode = ctx.opts?.objcSyntax === 'c';
+  const objcCallee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
   const info = {
     name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices,
     receiver: argText[0] || 'receiver', receiverType, selector,
+    ...(objcCMode ? { style: 'c', callee: objcCallee } : {}),
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
     virtualSlot: slotEv,
@@ -1363,12 +1468,19 @@ function callRecord(inst, ctx) {
 
 function renderCall(inst, ctx) {
   const c = callRecord(inst, ctx);
-  if (c.resolved.runtime === 'objc' && c.resolved.message) return c.resolved.message.text;
+  if (c.resolved.runtime === 'objc' && c.resolved.message) {
+    if (ctx.opts?.objcSyntax === 'c' && /^\[/.test(c.resolved.message.text || '')) {
+      const callee = c.callee || 'objc_msgSend';
+      const cArgs = [c.receiver, JSON.stringify(c.selector), ...(c.args || []).map((a) => String(a).replace(/^@(?=")/, ''))];
+      return `${callee}(${cArgs.join(', ')})`;
+    }
+    return c.resolved.message.text;
+  }
   if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
   if (name) {
     const args = !c.arityKnown
-      ? (c.virtualSlot && c.receiver ? `${c.receiver}, /* additional arguments unknown */` : '/* arguments unknown */')
+      ? (c.virtualSlot && c.receiver ? `${c.receiver} /* , additional arguments unknown */` : '/* arguments unknown */')
       : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
     return `${name}(${args})`;
   }
@@ -1377,8 +1489,11 @@ function renderCall(inst, ctx) {
     const receiver = c.receiver || 'this';
     const args = c.arityKnown
       ? (c.args.length ? c.args.join(', ') : receiver)
-      : `${receiver}, /* additional arguments unknown */`;
-    return `(*(code **)(...))(${args})`;
+      : `${receiver} /* , additional arguments unknown */`;
+    if (targetValue) {
+      return `((uint64 (*)(__HEX_ANY_ARGS))(uintptr_t)(${renderValue(targetValue, ctx)}))(${args})`;
+    }
+    return `unknown_call(${args})`;
   }
   return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
 }
@@ -1458,11 +1573,11 @@ function renderValueText(value, ctx, flags) {
       const c=widen==='signed'?`(int64_t)(int32_t)${paren(c0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(c0)}`:c0;
       out = initialValueForm(ctx, 'multiply-accumulate', d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`);
     } else if (d.op === OP.BFX) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? 0;
       if (d.extra?.toward === 'left') out = initialValueForm(ctx, 'bitfield-insert-zero', `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`);
       else out = initialValueForm(ctx, 'bit-extract', `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`);
     } else if (d.op === OP.BFI) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? 0;
       out = initialValueForm(ctx, 'bit-insert', d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`);
     } else if (d.op === OP.LOAD) {
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
@@ -1932,8 +2047,14 @@ function materialization(ctx) {
   const barrierBetween = (load, current, from, to) => {
     if (to <= from + 1) return false;
     if (strongPrefix[to] - strongPrefix[from + 1] > 0) return true;
-    for (const index of storePositions) {
-      if (index <= from) continue;
+    let lo = 0, hi = storePositions.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (storePositions[mid] <= from) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let k = lo; k < storePositions.length; k++) {
+      const index = storePositions[k];
       if (index >= to) break;
       const store = instructions[index];
       if (!mayAliasProvenance(load?.loc, store?.loc)) continue;
@@ -2597,7 +2718,15 @@ export function decompileSemantic(model, rawOpts = {}) {
     storedValueAliases: buildStoredValueAliases(ir),
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
-    callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
+    callCache: new Map(), depSourceCache: new Map(), validationBatch: null,
+    callByRow: (() => {
+      const map = new Map();
+      for (const c of model.calls || []) {
+        if (c && !map.has(c.row)) map.set(c.row, c);
+      }
+      return map;
+    })(),
+    evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
     suppressionHistory: { events:[], reasons:new Set(), limit:Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
       && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024 },
     storeRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
@@ -2634,43 +2763,70 @@ export function decompileSemantic(model, rawOpts = {}) {
   const state = { visited: new Set(), gotos: 0, activeLoop: null, loopHeader: null, loopExit: null,
     gotoTargets: new Set(), blockAnchors: new Map(),
     terminalProofBudget: { remaining: terminalProofSteps(opts) } };
-  emitRegion(ir.entry || 0, null, body, ctx, state, 1);
-
-  const reachable = graph.reachable || new Set();
-  const missing = [...reachable].filter((b) => !state.visited.has(b));
-  let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
-  if (!missing.length) {
-    const anchorToBi = new Map();
-    for (const [bi, anchor] of state.blockAnchors) {
-      if (anchor?.firstNode) anchorToBi.set(anchor.firstNode, { bi, empty: !!anchor.empty, indent: anchor.indent });
+  const runBatchedEmission = (fn) => {
+    const validation = createValidationBatch();
+    ctx.validationBatch = validation;
+    try {
+      validation.run(fn);
+    } finally {
+      ctx.validationBatch = null;
     }
-    const emittedLabels = new Set();
-    const resolvedBody = [];
-    for (let i = 0; i < body.length; i += 1) {
-      const node = body[i];
-      const info = anchorToBi.get(node);
-      if (info) {
-        if (state.gotoTargets.has(info.bi)) {
-          const block = ctx.ir.blocks[info.bi];
-          const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
-          if (!emittedLabels.has(labelText) && block) {
-            emittedLabels.add(labelText);
-            const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
-            resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
-              source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
-            if (info.empty) {
-              resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+    if (validation.settle() > 0) {
+      if (ctx.statementRenderHistory.events.length || ctx.statementRenderHistory.canonical?.isCurrent() === false) {
+        ctx.statementRenderHistory.edges = 0;
+        ctx.statementRenderHistory.reasons.add('initial-statement-binding-unavailable');
+      }
+      if (ctx.controlRenderHistory.events.length || ctx.controlRenderHistory.canonical?.isCurrent() === false) {
+        ctx.controlRenderHistory.edges = 0;
+        ctx.controlRenderHistory.reasons.add('initial-control-binding-unavailable');
+      }
+      if (ctx.storeRenderHistory.events.length) {
+        ctx.storeRenderHistory.edges = 0;
+        ctx.storeRenderHistory.reasons.add('initial-store-binding-unavailable');
+      }
+    }
+  };
+
+  let missing = [];
+  const reachable = graph.reachable || new Set();
+  let coverage;
+  runBatchedEmission(() => {
+    emitRegion(ir.entry || 0, null, body, ctx, state, 1);
+    missing = [...reachable].filter((b) => !state.visited.has(b));
+    coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
+    if (!missing.length) {
+      const anchorToBi = new Map();
+      for (const [bi, anchor] of state.blockAnchors) {
+        if (anchor?.firstNode) anchorToBi.set(anchor.firstNode, { bi, empty: !!anchor.empty, indent: anchor.indent });
+      }
+      const emittedLabels = new Set();
+      const resolvedBody = [];
+      for (let i = 0; i < body.length; i += 1) {
+        const node = body[i];
+        const info = anchorToBi.get(node);
+        if (info) {
+          if (state.gotoTargets.has(info.bi)) {
+            const block = ctx.ir.blocks[info.bi];
+            const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
+            if (!emittedLabels.has(labelText) && block) {
+              emittedLabels.add(labelText);
+              const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
+              resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
+                source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+              if (info.empty) {
+                resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+              }
             }
           }
+          if (info.empty) continue;
         }
-        if (info.empty) continue;
+        if (node && node.__emptyBlockAnchor !== undefined) continue;
+        resolvedBody.push(node);
       }
-      if (node && node.__emptyBlockAnchor !== undefined) continue;
-      resolvedBody.push(node);
+      body.length = 0;
+      for (const node of resolvedBody) body.push(node);
     }
-    body.length = 0;
-    for (const node of resolvedBody) body.push(node);
-  }
+  });
   if (missing.length) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     // Only the selected final emission belongs to the history. Keep legacy
@@ -2680,7 +2836,9 @@ export function decompileSemantic(model, rawOpts = {}) {
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
     ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
     if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
-    body.push(...faithfulCfg(ctx, 1));
+    runBatchedEmission(() => {
+      body.push(...faithfulCfg(ctx, 1));
+    });
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
 

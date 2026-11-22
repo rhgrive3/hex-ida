@@ -60,7 +60,7 @@ for (const [name, lines, expected] of [
 
 {
   const { text } = fixture(['add x8, x0, #16', 'blr x8', 'ret']);
-  assert.match(text, /\(\*\(a1 \+ 16\)\)\(/, text);
+  assert.match(text, /\(\(uint64 \(\*\)\(__HEX_ANY_ARGS\)\)\(uintptr_t\)\(a1 \+ 16\)\)\(/, text);
   assert.doesNotMatch(text, /\(\*x8\)/, text);
 }
 

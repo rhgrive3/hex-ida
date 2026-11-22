@@ -120,9 +120,10 @@ export function decompile(model, opts) {
   }
 
   /* 見出し（シグネチャ） */
-  const name = (o.notes && o.notes.nameOf(o.addr)) ||
+  const rawName = (o.notes && o.notes.nameOf(o.addr)) ||
     (o.name ? shortName(o.name) : null) ||
     ('sub_' + (o.addr != null ? o.addr.toString(16).toUpperCase() : '0'));
+  const name = sanitizeLegacyCallLabel(rawName);
   const signature = signatureOf(name, types, o.notes, o.addr);
   out.push(line('sig', 0, signature, insns[0].row, insns[0].address));
   out.push(line('ctrl', 0, '{', insns[0].row));
@@ -250,6 +251,7 @@ function buildContext(model, o) {
 
   return {
     model,
+    opts: o,
     byRow,
     textOf,
     refOf,
@@ -762,7 +764,10 @@ function exprText(ctx, nodeValue, self) {
   if (!nodeValue) return null;
   const mat = ctx.material;
   const opts = {
-    symbolFor: ctx.symbolFor,
+    symbolFor: (addr) => {
+      const s = ctx.symbolFor(addr);
+      return s ? sanitizeLegacyCallLabel(s) : null;
+    },
     maxLen: 400,
     nameOf: (n) => {
       /*
@@ -845,10 +850,10 @@ function memNodeName(m, ctx) {
 
 function callLabel(c, ctx) {
   const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
-  if (custom) return custom;
-  if (c.sel) return '[' + (c.sel) + ']';
-  if (c.name) return shortName(c.name);
-  return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : '(*func)';
+  if (custom) return sanitizeLegacyCallLabel(custom);
+  if (c.sel) return ctx.opts?.objcSyntax === 'c' ? 'objc_msgSend' : '[' + (c.sel) + ']';
+  if (c.name) return sanitizeLegacyCallLabel(shortName(c.name));
+  return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : 'unknown_call';
 }
 
 /**
@@ -1350,7 +1355,7 @@ function regOf(op) {
 
 /** レジスタの変数名。引数は a1, a2 … に、それ以外はレジスタ名のまま。 */
 function varOf(reg, ctx) {
-  if (!reg) return '?';
+  if (!reg) return '0 /* unknown */';
   if (reg === 'zr') return '0';
   if (reg === 'sp') return 'sp';
   const custom = ctx.notes && ctx.funcAddr != null ? ctx.notes.varName(ctx.funcAddr, reg) : null;
@@ -1371,8 +1376,16 @@ function hexImm(v) {
 }
 
 /** オペランド 1 つを C の式にする。 */
+function sanitizeFallbackOperand(text) {
+  const s = String(text ?? '').trim();
+  if (!s) return '0 /* unknown */';
+  if (/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(s)) return s.replace(/^#/, '');
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;
+  return '0 /* ' + s.replace(/\*\//g, '* /') + ' */';
+}
+
 function operandText(op, ctx, insn) {
-  if (!op) return '?';
+  if (!op) return '0 /* unknown */';
   if (op.k === 'reg') {
     const reg = regOf(op);
     const value = insn && ctx.values ? ctx.values.at(insn.row, reg) : null;
@@ -1388,7 +1401,7 @@ function operandText(op, ctx, insn) {
   }
   if (op.k === 'mem') return memText(op, ctx, insn);
   if (op.k === 'cond') return op.text;
-  return op.text || '?';
+  return op.text ? sanitizeFallbackOperand(op.text) : '0 /* unknown */';
 }
 
 /** [x0, #0x20] を *(型 *)(x0 + 0x20) に。名前が分かっていれば x0->hp に。 */
@@ -1406,7 +1419,7 @@ function memText(op, ctx, insn, extraDisp = 0n) {
   if (ref && ref.load && !op.index) {
     const refAddr = ref.addr + BigInt(extraDisp || 0n);
     const sym = ctx.symbolFor(refAddr);
-    if (sym) return sym;
+    if (sym) return sanitizeLegacyCallLabel(sym);
     return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
   }
 
@@ -1616,7 +1629,11 @@ function statementFor(insn, ctx, node) {
   const row = insn.row, addr = insn.address;
   const mk = (text, extra) => Object.assign({ text, row, addr, dst: null, reads: insn.reads.slice(), pure: false }, extra || {});
 
-  if (insn.data) return mk('__data(' + insn.operands + ');', { kind: 'comment', note: '命令ではなくデータです。' });
+  if (insn.data) {
+    const rawData = String(insn.operands ?? '').trim();
+    const dataArg = /^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(rawData) ? rawData.replace(/^#/, '') : JSON.stringify(rawData);
+    return mk('__data(' + dataArg + ');', { kind: 'comment', note: '命令ではなくデータです。' });
+  }
   if (SKIP_MN.test(base)) return null;                     // 意味を持たない命令は出さない
 
   /*
@@ -1650,7 +1667,8 @@ function statementFor(insn, ctx, node) {
     const memStmt = memoryStatement(insn, ctx, mk, base);
     if (memStmt) return memStmt;
     ctx.unknown.add(base);
-    return mk('__asm("' + insn.mnemonic + ' ' + insn.operands + '");', {});
+    const asmMemText = (insn.mnemonic || '') + (insn.operands ? ' ' + insn.operands : '');
+    return mk('__asm(' + JSON.stringify(asmMemText) + ');', {});
   }
 
   /* アドレス計算 (adrp / adr / adrp+add)。行き先が決まっていれば名前で書く */
@@ -1668,7 +1686,8 @@ function statementFor(insn, ctx, node) {
         { dst, pure: true, note: 'アドレスの上半分を作っています（次の行と組で 1 つの場所になります）。' });
     }
     const sym = t != null ? ctx.symbolFor(t) : null;
-    const targetExpr = sym ? '&' + sym : (t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved ' + base + ' target */');
+    const safeSym = sym ? sanitizeLegacyCallLabel(sym) : null;
+    const targetExpr = safeSym ? '&' + safeSym : (t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved ' + base + ' target */');
     return mk(varOf(dst, ctx) + ' = ' + targetExpr + ';',
       // 場所が 1 つに決まったので、もう手前のレジスタには依存していない
       { dst, pure: true, reads: [] });
@@ -1772,13 +1791,17 @@ function statementFor(insn, ctx, node) {
     return mk('__builtin_trap();   // ここに来たら異常', { kind: 'ctrl', note: '通らないはずの場所です。来たら止まります。' });
   }
   if (base === 'svc') {
-    return mk('__syscall(' + insn.operands + ');', { note: 'OS を直接呼びます（システムコール）。' });
+    const immOp = insn.ops && insn.ops[0] && insn.ops[0].k === 'imm' && insn.ops[0].value != null ? hexImm(insn.ops[0].value) : null;
+    const rawSvc = String(insn.operands ?? '').trim();
+    const svcArg = immOp || (/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(rawSvc) ? rawSvc.replace(/^#/, '') : (rawSvc ? JSON.stringify(rawSvc) : '0'));
+    return mk('__syscall(' + svcArg + ');', { note: 'OS を直接呼びます（システムコール）。' });
   }
 
   /* 訳せなかったもの。嘘を書かず、そのまま残す */
   ctx.unknown.add(base);
   void node;
-  return mk('__asm("' + insn.mnemonic + ' ' + insn.operands + '");',
+  const asmText = (insn.mnemonic || '') + (insn.operands ? ' ' + insn.operands : '');
+  return mk('__asm(' + JSON.stringify(asmText) + ');',
     { dst, note: 'この命令は逆コンパイルできませんでした。アセンブリのまま置いています。' });
 }
 
@@ -1967,7 +1990,7 @@ function conditionalSelect(insn, ctx, mk, base, dst) {
     return mk(varOf(dst, ctx) + ' = (' + c + ') ? ' + (base === 'csetm' ? '-1' : '1') + ' : 0;',
       { dst, pure: true });
   }
-  const a = ops[1] ? operandText(ops[1], ctx, insn) : '?';
+  const a = ops[1] ? operandText(ops[1], ctx, insn) : '0 /* unknown */';
   const b = ops[2] && ops[2].k !== 'cond' ? operandText(ops[2], ctx, insn) : a;
   const alt = base === 'csinc' ? b + ' + 1' : base === 'csinv' ? '~' + b : base === 'csneg' ? '-' + b : b;
   return mk(varOf(dst, ctx) + ' = (' + c + ') ? ' + a + ' : ' + alt + ';',
@@ -1980,18 +2003,18 @@ function memoryStatement(insn, ctx, mk, base) {
   const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp';
   const elemSize = pair ? Math.max(1, Number(m.size || 16) / 2) : Number(m.size || 8);
   const placeInsn = pair ? { ...insn, memory: { ...m, size: elemSize } } : insn;
-  const place = mem ? memText(mem, ctx, placeInsn) : '*(?)';
+  const place = mem ? memText(mem, ctx, placeInsn) : '*(uint64 *)(uintptr_t)0 /* unknown */';
   const place2 = pair && mem ? memText(mem, ctx, placeInsn, BigInt(elemSize)) : null;
 
   /* 排他アクセス（スレッドどうしがぶつからないようにする読み書き） */
   if (/^(ldxr|ldaxr|ldxrb|ldaxrb|ldxrh|ldaxrh)/.test(base)) {
-    const d = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : '?';
+    const d = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : 'unknown_val';
     return mk(d + ' = __atomic_load(' + addressExpr(place) + ');',
       { dst: insn.writes[0], note: '他のスレッドと取り合わないように読み出しています。' });
   }
   if (/^(stxr|stlxr|stxrb|stlxrb|stxrh|stlxrh)/.test(base)) {
-    const status = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?';
-    const src = insn.ops[1] ? operandText(insn.ops[1], ctx, insn) : '?';
+    const status = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : 'unknown_val';
+    const src = insn.ops[1] ? operandText(insn.ops[1], ctx, insn) : '0 /* unknown */';
     return mk(status + ' = __atomic_store(' + addressExpr(place) + ', ' + src + ');',
       { dst: insn.writes[0], note: '書き込めたら 0、他に取られていたら 1 が返ります。' });
   }
@@ -2082,10 +2105,24 @@ function callStatement(insn, ctx, mk) {
     const parts = argc ? sel.split(':').slice(0, argc) : [];
     const argv = [];
     for (let i = 0; i < argc; i++) argv.push(registerValueText(ctx, insn.row, 'x' + (i + 2)));
+    const receiverValue = registerValueText(ctx, insn.row, 'x0');
+    if (ctx.opts?.objcSyntax === 'c') {
+      const callee = /objc_msgSendSuper2/.test(name || '') ? 'objc_msgSendSuper2' : 'objc_msgSend';
+      const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
+      const callArgs = [stripAt(receiverValue), JSON.stringify(sel), ...argv.map(stripAt)];
+      const callExpr = callee + '(' + callArgs.join(', ') + ')';
+      const text = insn.isTailCall
+        ? 'return ' + callExpr + ';'
+        : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
+      return mk(text,
+        { dst: insn.isTailCall ? null : 'x0', call: true,
+          kind: insn.isTailCall ? 'ctrl' : 'stmt',
+          reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
+          note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
+    }
     const body = argc
       ? parts.map((p, i) => p + ':' + argv[i]).join(' ')
       : sel;
-    const receiverValue = registerValueText(ctx, insn.row, 'x0');
     const receiver = needsParens(receiverValue) ? '(' + receiverValue + ')' : receiverValue;
     return mk(nameForDef(ctx, insn.row, 'x0') + ' = [' + receiver + ' ' + body + '];',
       { dst: 'x0', call: true, reads: ['x0'].concat(parts.map((_, i) => 'x' + (i + 2))),
@@ -2161,7 +2198,8 @@ function valueText(v, ctx, index) {
   if (v.kind === 'imm' && v.value != null) return hexImm(v.value);
   if (v.kind === 'address' && v.addr != null) {
     const sym = ctx.symbolFor(v.addr);
-    return sym ? '&' + sym : '0x' + v.addr.toString(16).toUpperCase();
+    const safeSym = sym ? sanitizeLegacyCallLabel(sym) : null;
+    return safeSym ? '&' + safeSym : '0x' + v.addr.toString(16).toUpperCase();
   }
   return varOf('x' + index, ctx);
 }
@@ -2170,9 +2208,11 @@ function valueText(v, ctx, index) {
 // already written as \t, \r, \n. Keep those escapes as they are; doubling
 // their backslash printed "%d\\n" in the pseudocode instead of "%d\n".
 function escapeText(s) {
-  return String(s).replace(/\\(?![nrt])/g, '\\\\').replace(/"/g, '\\"')
+  return String(s == null ? '' : s).slice(0, 120)
+    .replace(/\\(?![nrt])/g, '\\\\')
+    .replace(/"/g, '\\"')
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
-    .slice(0, 120);
+    .replace(/[\x00-\x1f\x7f]/g, (ch) => '\\' + ch.charCodeAt(0).toString(8).padStart(3, '0'));
 }
 
 /* ── 一時変数をたたむ ──────────────────────────────────── */

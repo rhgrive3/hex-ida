@@ -160,10 +160,13 @@ export function resolveAppleCall(index, call = {}) {
         text: imp.resolved ? `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]` : null,
       };
     }
+    const defaultCallee = /objc_msgSendSuper2/.test(name) ? 'objc_msgSendSuper2' : 'objc_msgSend';
     const message = selector ? objcMessage(index?.objc, {
       receiver: call.receiver || 'receiver', receiverType: call.receiverType || null,
       selector, args: call.args || [], classMethod: !!call.classMethod,
-      protocols: call.protocols || null, style: call.style || 'objc',
+      protocols: call.protocols || null,
+      style: call.style || 'objc',
+      callee: call.callee || defaultCallee,
     }) : null;
     return { runtime: 'objc', kind: 'message', message, selectorResolution, resolved: message?.dispatch?.resolved || null, candidates: message?.dispatch?.candidates || selectorResolution?.candidates || [] };
   }

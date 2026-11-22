@@ -772,19 +772,27 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     result = {
       type: 'Map',
       entries: [...value.entries()]
-        .map(([key, item], index) => [
-          semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
-          semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
-        ])
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map(([key, item], index) => {
+          const entry = [
+            semanticObject(key, seen, NO_SKIPPED_KEYS, `${path}.mapKey[${index}]`, memo),
+            semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.mapValue[${index}]`, memo),
+          ];
+          return [canonicalSortText(entry), entry];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Set) {
     result = {
       type: 'Set',
       values: [...value.values()]
-        .map((item, index) => semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo))
-        .sort((left, right) => canonicalSortText(left).localeCompare(canonicalSortText(right))),
+        .map((item, index) => {
+          const projected = semanticObject(item, seen, NO_SKIPPED_KEYS, `${path}.set[${index}]`, memo);
+          return [canonicalSortText(projected), projected];
+        })
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map((pair) => pair[1]),
     };
     if (ownKeys.length > 0) result.properties = semanticProperties(ownKeys);
   } else if (value instanceof Date) {
@@ -1060,8 +1068,8 @@ function valueShape(value, memo, digests, definitionCache) {
 
 function instructionShape(instruction, memo, digests, definitionCache) {
   if (instruction == null || typeof instruction !== 'object') return instruction ?? null;
-  const shape = definitionShape(instruction, ['conditionValue', 'selectorValue'], memo, digests, definitionCache);
-  return shape;
+  const base = definitionShape(instruction, [], memo, digests, definitionCache);
+  return base ? { ...base } : base;
 }
 
 function blockShape(block, memo, digests, definitionCache) {

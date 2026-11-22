@@ -212,6 +212,11 @@ function noteName(opts, addr, key) {
   try { return opts?.notes?.varName?.(addr, key) || null; } catch { return null; }
 }
 
+function sanitizeObjcCIdentPart(value, fallback = 'anon') {
+  const clean = String(value || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  return clean || fallback;
+}
+
 /* Keep the Objective-C symbol spelling while hiding implicit self/_cmd ABI args. */
 function restoreObjcMethodSignature(result, model, opts) {
   if (!result?.semantic) return result;
@@ -230,7 +235,17 @@ function restoreObjcMethodSignature(result, model, opts) {
   }
   let returnType = opts.returnType || noteType(opts, addr, 'ret') || result.types?.ret?.type || 'uint64';
   if (!returnType || returnType === 'unknown' || (returnType === 'void' && /\breturn\s+[^;]+;/.test(result.pseudocode || ''))) returnType = 'uint64';
-  const signature = `${returnType} ${method.raw}(${args.length ? args.join(', ') : 'void'})`;
+  let signature;
+  if (opts?.objcSyntax === 'c') {
+    const prefix = method.kind === '+' ? 'objc_cls' : 'objc_inst';
+    const clsPart = sanitizeObjcCIdentPart(method.className, 'Class');
+    const selPart = sanitizeObjcCIdentPart(method.selector, 'sel');
+    const cName = `${prefix}_${clsPart}_${selPart}`;
+    const cArgs = ['id self', 'void * _cmd', ...args];
+    signature = `${returnType} ${cName}(${cArgs.join(', ')})`;
+  } else {
+    signature = `${returnType} ${method.raw}(${args.length ? args.join(', ') : 'void'})`;
+  }
   result.signature = signature;
   const sig = result.lines?.find((l) => l.kind === 'sig');
   if (sig) sig.text = signature;

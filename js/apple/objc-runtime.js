@@ -488,9 +488,16 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   };
 }
 
-export function formatObjcMessage({ receiver = 'receiver', selector, args = [], style = 'objc' } = {}) {
+export function formatObjcMessage({ receiver = 'receiver', selector, args = [], style = 'objc', callee = 'objc_msgSend' } = {}) {
   const safeArgs = Array.isArray(args) ? args : [];
   if (typeof selector !== 'string' || !selector) return `unknown_call(${[receiver, ...safeArgs].join(', ')})`;
+  if (style === 'c') {
+    const fn = typeof callee === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(callee) ? callee : 'objc_msgSend';
+    const stripAt = (v) => (typeof v === 'string' && /^@"/.test(v) ? v.slice(1) : v);
+    const cleanReceiver = stripAt(receiver);
+    const cleanArgs = safeArgs.map(stripAt);
+    return `${fn}(${[cleanReceiver, JSON.stringify(selector), ...cleanArgs].join(', ')})`;
+  }
   if (style === 'dot') {
     const stem = selector.replace(/:/g, '_').replace(/_+$/, '');
     return `${receiver}.${stem}(${safeArgs.join(', ')})`;
@@ -513,13 +520,13 @@ export function formatObjcMessage({ receiver = 'receiver', selector, args = [], 
 }
 
 /** Convert objc_msgSend evidence into a semantic representation. */
-export function objcMessage(index, { receiver, receiverType, selector, args = [], classMethod = false, protocols = null, style = 'objc' } = {}) {
+export function objcMessage(index, { receiver, receiverType, selector, args = [], classMethod = false, protocols = null, style = 'objc', callee = 'objc_msgSend' } = {}) {
   const safeArgs = Array.isArray(args) ? args : [];
   const dispatch = resolveObjcDispatch(index, { receiverType, selector, classMethod, protocols });
   return {
     runtime: 'objc', kind: 'message', receiver, receiverType: cleanClassName(receiverType), selector,
     args: safeArgs.slice(), dispatch,
-    text: formatObjcMessage({ receiver: receiver || 'receiver', selector, args: safeArgs, style }),
+    text: formatObjcMessage({ receiver: receiver || 'receiver', selector, args: safeArgs, style, callee }),
     ambiguous: !dispatch.resolved && dispatch.candidates.length > 1,
   };
 }

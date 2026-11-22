@@ -50,6 +50,7 @@ function valueOf(arg) { return arg?.value || null; }
 
 function retainRecoverySource(maps, instruction) {
   if (!instruction || !maps.recoverySources) return;
+  if (maps._sourceCollector && maps._sourceCollector.size < 512) maps._sourceCollector.add(instruction);
   if (maps.recoverySources.size < 512) maps.recoverySources.add(instruction);
   else if (!maps.recoverySources.has(instruction)) maps.recoverySourcesTruncated = true;
 }
@@ -64,12 +65,72 @@ function recoveryOriginHistory(before, expression, maps) {
     ? Object.freeze({ ...history, truncated:true }) : history;
 }
 
-function targetBlock(ir, term, opts) {
+function createPassIndex(ir) {
+  const blocks = ir?.blocks || [];
+  const blockByIndex = new Map();
+  let sortedDisjointRows = true;
+  let prevEndRow = -Infinity;
+  let hasAnyBlockInsts = false;
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (!block) { sortedDisjointRows = false; continue; }
+    if (block.index != null) blockByIndex.set(block.index, block);
+    if (!hasAnyBlockInsts && Array.isArray(block.insts) && block.insts.length > 0) hasAnyBlockInsts = true;
+    if (sortedDisjointRows) {
+      if (typeof block.startRow === 'number' && typeof block.endRow === 'number'
+          && block.startRow <= block.endRow && block.startRow > prevEndRow) {
+        prevEndRow = block.endRow;
+      } else {
+        sortedDisjointRows = false;
+      }
+    }
+  }
+  const blockInstsDesc = new Map();
+  if (hasAnyBlockInsts) {
+    for (const block of blocks) {
+      if (!block || block.index == null) continue;
+      const insts = block.insts;
+      if (!insts || !insts.length) { blockInstsDesc.set(block.index, []); continue; }
+      blockInstsDesc.set(block.index, [...insts].sort((a, b) => (b.row ?? -1) - (a.row ?? -1)));
+    }
+  } else {
+    for (const inst of ir?.instructions || []) {
+      if (inst?.block == null) continue;
+      let list = blockInstsDesc.get(inst.block);
+      if (!list) { list = []; blockInstsDesc.set(inst.block, list); }
+      list.push(inst);
+    }
+    for (const list of blockInstsDesc.values()) {
+      list.sort((a, b) => (b.row ?? -1) - (a.row ?? -1));
+    }
+  }
+  const domDepthCache = new Map();
+  return { blocks, blockByIndex, sortedDisjointRows, blockInstsDesc, domDepthCache };
+}
+
+function blockForRow(ir, row, passIndex = null) {
+  const blocks = passIndex?.blocks || ir?.blocks;
+  if (!blocks || !blocks.length) return null;
+  if (passIndex?.sortedDisjointRows && typeof row === 'number') {
+    let lo = 0, hi = blocks.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const b = blocks[mid];
+      if (row < b.startRow) hi = mid - 1;
+      else if (row > b.endRow) lo = mid + 1;
+      else return b.index ?? null;
+    }
+    return null;
+  }
+  return blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+}
+
+function targetBlock(ir, term, opts, passIndex = null) {
   const address = term?.extra?.target;
   if (address == null) return null;
   const row = opts?.rowOfAddress?.(address);
   if (row == null) return null;
-  return ir.blocks?.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+  return blockForRow(ir, row, passIndex);
 }
 
 function terminal(block) {
@@ -80,10 +141,10 @@ function terminal(block) {
   return null;
 }
 
-function branchSuccessors(ir, block, term, opts) {
+function branchSuccessors(ir, block, term, opts, passIndex = null) {
   const successors = block?.succ || [];
   if (term?.op !== 'cbr' || successors.length < 2) return { yes: successors[0] ?? null, no: successors[1] ?? null, exact: term?.op !== 'cbr' };
-  const yes = targetBlock(ir, term, opts);
+  const yes = targetBlock(ir, term, opts, passIndex);
   if (yes == null || !successors.includes(yes)) return { yes: null, no: null, exact: false };
   return { yes, no: successors.find((x) => x !== yes) ?? null, exact: true };
 }
@@ -106,24 +167,57 @@ function dominates(ir, candidate, node) {
   return false;
 }
 
-function domDepth(ir, block) {
+function domDepth(ir, block, passIndex = null) {
+  if (passIndex?.domDepthCache.has(block)) return passIndex.domDepthCache.get(block);
   let depth = 0, cur = block, guard = (ir.blocks?.length || 0) + 2;
   while (cur != null && cur >= 0 && guard-- > 0) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+  if (passIndex) passIndex.domDepthCache.set(block, depth);
   return depth;
 }
 
-function controllerForMerge(ir, mergeBlock, predecessors, opts) {
+function controllerForMerge(ir, mergeBlock, predecessors, opts, passIndex = null) {
+  const blockByIndex = passIndex?.blockByIndex;
+  const getBlock = (idx) => blockByIndex ? blockByIndex.get(idx) : ir.blocks?.find((b) => b.index === idx);
+  const hasIdom = (ir.idom?.[mergeBlock] != null) || (getBlock(mergeBlock)?.idom != null);
+  const domView = ir.dominators?.[mergeBlock];
+  if (hasIdom) {
+    let cur = mergeBlock;
+    let guard = (ir.blocks?.length || 0) + 2;
+    const seen = new Set();
+    while (cur != null && cur >= 0 && guard-- > 0 && !seen.has(cur)) {
+      seen.add(cur);
+      const block = getBlock(cur);
+      if (block && (!domView?.has || domView.has(block.index))) {
+        const term = terminal(block);
+        if (term?.op === 'cbr' && (block.succ || []).length >= 2) {
+          const arms = branchSuccessors(ir, block, term, opts, passIndex);
+          if (arms.exact) {
+            const yesIndex = armIndex(ir, block, arms.yes, mergeBlock, predecessors);
+            const noIndex = armIndex(ir, block, arms.no, mergeBlock, predecessors);
+            if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) {
+              return { term, yesIndex, noIndex, depth: domDepth(ir, block.index, passIndex) };
+            }
+          }
+        }
+      }
+      cur = ir.idom?.[cur] ?? block?.idom ?? -1;
+    }
+    return null;
+  }
   const candidates = [];
-  for (const block of ir.blocks || []) {
+  const iterBlocks = domView && typeof domView[Symbol.iterator] === 'function' && blockByIndex
+    ? [...domView].map((idx) => blockByIndex.get(idx)).filter(Boolean)
+    : (ir.blocks || []);
+  for (const block of iterBlocks) {
     if (!dominates(ir, block.index, mergeBlock)) continue;
     const term = terminal(block);
     if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
-    const arms = branchSuccessors(ir, block, term, opts);
+    const arms = branchSuccessors(ir, block, term, opts, passIndex);
     if (!arms.exact) continue;
     const yesIndex = armIndex(ir, block, arms.yes, mergeBlock, predecessors);
     const noIndex = armIndex(ir, block, arms.no, mergeBlock, predecessors);
     if (yesIndex < 0 || noIndex < 0 || yesIndex === noIndex) continue;
-    candidates.push({ term, yesIndex, noIndex, depth: domDepth(ir, block.index) });
+    candidates.push({ term, yesIndex, noIndex, depth: domDepth(ir, block.index, passIndex) });
   }
   candidates.sort((a, b) => b.depth - a.depth);
   if (!candidates.length) return null;
@@ -246,26 +340,31 @@ function directFlagCondition(term, maps, ir) {
   return repairedFlagComparison(valueOf(term.args?.at?.(-1)), cond, maps, ir);
 }
 
-function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0) {
+function resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth = 0, memo = null, passIndex = null, taintState = null) {
   const rewrite = (node, localDepth = depth) => {
     if (!node || localDepth > 64) return node;
     if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
       const slot = exactStackLoadSlot(ir, null, node);
       if (!slot) return node;
-      return resolveStackBefore(ir, slot.load.block, slot.load.row, slot.key, slot.size,
-        maps, opts, engine, active, localDepth + 1) || node;
+      const sub = resolveStackBeforeInner(ir, slot.load.block, slot.load.row, slot.key, slot.size,
+        maps, opts, engine, active, localDepth + 1, memo, passIndex);
+      if (taintState) {
+        if (sub.cycleTainted) taintState.cycleTainted = true;
+        if (sub.aborted) taintState.aborted = true;
+      }
+      return sub.value || node;
     }
     return mapChildren(node, (child) => rewrite(child, localDepth + 1));
   };
   return rewrite(condition);
 }
 
-function controlCondition(term, maps, engine, ir, opts, active, depth) {
+function controlCondition(term, maps, engine, ir, opts, active, depth, memo = null, passIndex = null, taintState = null) {
   const condition = materializedFlagCondition(term, maps, ir)
     || directFlagCondition(term, maps, ir)
     || maps.conditions.get(term.id);
   if (!condition) return null;
-  return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth), engine);
+  return simplify(resolveConditionStackLoads(condition, maps, engine, ir, opts, active, depth, memo, passIndex, taintState), engine);
 }
 
 function positiveAccessSize(value) {
@@ -300,7 +399,7 @@ function storeAccessSize(inst) {
   return match ? positiveAccessSize(Number(match[1])) : null;
 }
 
-function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth) {
+function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth, memo = null, passIndex = null, taintState = null) {
   if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key
       || storeAccessSize(inst) !== size) return null;
   const value = valueOf(inst.args?.[0]);
@@ -314,8 +413,13 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
   if (expression.kind === 'load' && expression.location?.kind === 'stack') {
     const sourceSlot = exactStackLoadSlot(ir, value, expression);
     if (!sourceSlot) return null;
-    expression = resolveStackBefore(ir, sourceSlot.load.block, sourceSlot.load.row,
-      sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1);
+    const sub = resolveStackBeforeInner(ir, sourceSlot.load.block, sourceSlot.load.row,
+      sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1, memo, passIndex);
+    if (taintState) {
+      if (sub.cycleTainted) taintState.cycleTainted = true;
+      if (sub.aborted) taintState.aborted = true;
+    }
+    expression = sub.value;
     if (!expression) return null;
     retainRecoverySource(maps, sourceSlot.load);
   }
@@ -337,7 +441,16 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
   return expression;
 }
 
-function instructionsBefore(ir, blockIndex, beforeRow) {
+function instructionsBefore(ir, blockIndex, beforeRow, passIndex = null) {
+  if (passIndex?.blockInstsDesc) {
+    const list = passIndex.blockInstsDesc.get(blockIndex) || [];
+    if (beforeRow == null) return list;
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].row < beforeRow) out.push(list[i]);
+    }
+    return out;
+  }
   return (ir.instructions || [])
     .filter((inst) => inst.block === blockIndex && (beforeRow == null || inst.row < beforeRow))
     .sort((a, b) => (b.row ?? -1) - (a.row ?? -1));
@@ -348,37 +461,70 @@ function hasUnsafeBarrier(inst, key) {
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
-function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth = 0) {
-  if (blockIndex == null || positiveAccessSize(size) == null || depth > 64) return null;
+function replayEngineRecords(engine, records, truncated) {
+  if (!engine || !records) return;
+  for (let i = 0; i < records.length; i++) {
+    if (engine.records.length < engine.maximum) engine.records.push(records[i]);
+    else engine.truncated = true;
+  }
+  if (truncated) engine.truncated = true;
+}
+
+function resolveStackBeforeInner(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth, memo, passIndex) {
+  if (blockIndex == null || positiveAccessSize(size) == null || depth > 64) return { value: null, cycleTainted: false };
+  if (depth > 0 && opts?.shouldAbort?.()) return { value: null, cycleTainted: true, aborted: true };
+  const memoKey = beforeRow == null && memo ? `${blockIndex}:${key}:${size}` : null;
+  if (memoKey != null && memo.has(memoKey)) {
+    const cached = memo.get(memoKey);
+    if (cached.value) {
+      if (cached.sources) {
+        for (let i = 0; i < cached.sources.length; i++) retainRecoverySource(maps, cached.sources[i]);
+      }
+      if (cached.sourcesTruncated) maps.recoverySourcesTruncated = true;
+      replayEngineRecords(engine, cached.records, cached.engineTruncated);
+    }
+    return { value: cached.value, cycleTainted: false };
+  }
   const visitKey = `${blockIndex}:${beforeRow ?? 'end'}:${key}:${size}`;
-  if (active.has(visitKey)) return null;
+  if (active.has(visitKey)) return { value: null, cycleTainted: true };
   active.add(visitKey);
   const mark = engine.mark();
   const sourceCount = maps.recoverySources.size, sourcesTruncated = maps.recoverySourcesTruncated;
+  const prevCollector = maps._sourceCollector || null;
+  const localCollector = memoKey != null ? new Set() : prevCollector;
+  maps._sourceCollector = localCollector;
   let accepted = false;
-  const accept = value => { accepted = !!value; return value; };
+  let acceptedValue = null;
+  const taintState = { cycleTainted: false, aborted: false };
+  const accept = value => { accepted = !!value; acceptedValue = value || null; return { value, cycleTainted: taintState.cycleTainted, aborted: taintState.aborted }; };
   try {
-    for (const inst of instructionsBefore(ir, blockIndex, beforeRow)) {
+    for (const inst of instructionsBefore(ir, blockIndex, beforeRow, passIndex)) {
       if (inst?.op === 'store' && inst.loc?.key === key) {
-        return accept(exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth));
+        return accept(exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, depth, memo, passIndex, taintState));
       }
-      if (hasUnsafeBarrier(inst, key)) return null;
+      if (hasUnsafeBarrier(inst, key)) return { value: null, cycleTainted: false };
     }
 
-    const block = ir.blocks?.[blockIndex];
+    const block = passIndex?.blockByIndex.get(blockIndex) ?? ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
-    if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) =>
-      resolveStackBefore(ir, pred, null, key, size, maps, opts, engine, active, depth + 1));
-    if (incoming.some((x) => !x)) return null;
+    if (!predecessors.length) return { value: null, cycleTainted: false };
+    const incoming = [];
+    for (let i = 0; i < predecessors.length; i++) {
+      const sub = resolveStackBeforeInner(ir, predecessors[i], null, key, size, maps, opts, engine, active, depth + 1, memo, passIndex);
+      if (sub.cycleTainted) taintState.cycleTainted = true;
+      if (sub.aborted) { taintState.aborted = true; return { value: null, cycleTainted: true, aborted: true }; }
+      incoming.push(sub.value);
+    }
+    if (incoming.some((x) => !x)) return { value: null, cycleTainted: taintState.cycleTainted };
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return accept(incoming[0]);
-    if (predecessors.length !== 2 || unique.size !== 2) return null;
+    if (predecessors.length !== 2 || unique.size !== 2) return { value: null, cycleTainted: taintState.cycleTainted };
 
-    const control = controllerForMerge(ir, blockIndex, predecessors, opts);
-    if (!control) return null;
-    const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
-    if (!condition) return null;
+    const control = controllerForMerge(ir, blockIndex, predecessors, opts, passIndex);
+    if (!control) return { value: null, cycleTainted: taintState.cycleTainted };
+    const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1, memo, passIndex, taintState);
+    if (taintState.aborted) return { value: null, cycleTainted: true, aborted: true };
+    if (!condition) return { value: null, cycleTainted: taintState.cycleTainted };
     retainRecoverySource(maps, control.term);
     const bits = size * 8;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
@@ -394,14 +540,40 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, en
       evidence: [{ reason: 'exact stack Memory-SSA/CFG join' }],
     }), engine));
   } finally {
+    maps._sourceCollector = prevCollector;
     active.delete(visitKey);
     if (!accepted) {
       engine.rollback(mark);
       let index = 0;
       for (const source of maps.recoverySources) if (index++ >= sourceCount) maps.recoverySources.delete(source);
       maps.recoverySourcesTruncated = sourcesTruncated;
+    } else if (memoKey != null && prevCollector && localCollector) {
+      for (const src of localCollector) {
+        if (prevCollector.size < 512) prevCollector.add(src);
+        else break;
+      }
+    }
+    if (memoKey != null && !taintState.cycleTainted && !taintState.aborted) {
+      if (accepted) {
+        const records = engine.records.length > mark.length ? engine.records.slice(mark.length) : null;
+        const engineTruncated = Boolean(engine.truncated && !mark.truncated);
+        const addedSourcesTruncated = Boolean(maps.recoverySourcesTruncated && !sourcesTruncated);
+        memo.set(memoKey, {
+          value: acceptedValue,
+          sources: localCollector && localCollector.size ? [...localCollector] : null,
+          sourcesTruncated: addedSourcesTruncated,
+          records,
+          engineTruncated,
+        });
+      } else {
+        memo.set(memoKey, { value: null, sources: null, sourcesTruncated: false, records: null, engineTruncated: false });
+      }
     }
   }
+}
+
+function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth = 0, memo = new Map(), passIndex = null) {
+  return resolveStackBeforeInner(ir, blockIndex, beforeRow, key, size, maps, opts, engine, active, depth, memo, passIndex).value;
 }
 
 function isReturnNode(node) {
@@ -433,7 +605,7 @@ function returnSiteForNode(node, ir, allowSingleFallback = false) {
   return null;
 }
 
-function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
+function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback, passIndex = null) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
   const nodeSlot = stackReturnSlot(result.ir, node?.semantic?.expression);
   const slot = nodeSlot || (allowSingleFallback ? stackReturnSlot(result.ir, output?.expression) : null);
@@ -443,12 +615,13 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
   retainRecoverySource(maps, slot.load);
   retainRecoverySource(maps, retInst);
   return resolveStackBefore(result.ir, retInst.block, retInst.row, slot.key, slot.size,
-    maps, opts, engine, new Set());
+    maps, opts, engine, new Set(), 0, new Map(), passIndex);
 }
 
 function rewriteReturnsInAst(result, maps, opts, engine) {
   const nodes = (result.cAst?.body || []).filter(isReturnNode);
   if (!nodes.length) return { changed:0, recovered:[] };
+  const passIndex = createPassIndex(result.ir);
   const recovered = [];
   const allowSingleFallback = nodes.length === 1;
   for (const node of nodes) {
@@ -457,7 +630,7 @@ function rewriteReturnsInAst(result, maps, opts, engine) {
     const mark = engine.mark();
     const before = node.semantic?.expression
       || (allowSingleFallback ? result.semanticAst.outputs?.find(x => x.name === 'return')?.expression : null);
-    const expression = recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback);
+    const expression = recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback, passIndex);
     if (!expression || expression.kind === 'load') { engine.rollback(mark); continue; }
     const record = Object.freeze({ rule:'exact-stack-phi-recovery', phase:'memory-ssa',
       before:before ? structuralKey(before) : null, after:structuralKey(expression),

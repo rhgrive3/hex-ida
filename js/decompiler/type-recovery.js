@@ -128,13 +128,66 @@ function blockDominates(ir, from, to) {
   return false;
 }
 
+const TYPE_REACH_CACHE = new WeakMap();
+
+function getTypeReachIndex(ir) {
+  const values = ir?.values || [];
+  const blocks = ir?.blocks || [];
+  const cached = TYPE_REACH_CACHE.get(ir);
+  if (cached && cached.valuesLen === values.length && cached.blocksLen === blocks.length && cached.idomRef === ir.idom) {
+    return cached;
+  }
+  const valuesByReg = new Map();
+  for (const value of values) {
+    if (!value?.reg || !value.def) continue;
+    let list = valuesByReg.get(value.reg);
+    if (!list) { list = []; valuesByReg.set(value.reg, list); }
+    list.push(value);
+  }
+  const entry = {
+    valuesLen: values.length,
+    blocksLen: blocks.length,
+    idomRef: ir.idom,
+    valuesByReg,
+    domDepth: new Int32Array(blocks.length),
+  };
+  TYPE_REACH_CACHE.set(ir, entry);
+  return entry;
+}
+
+function getTypeDomDepth(ir, domDepth, block) {
+  if (block == null || block < 0) return 0;
+  if (block < domDepth.length && domDepth[block] > 0) return domDepth[block];
+  const maxSteps = (ir.blocks?.length || 0) + 1;
+  let depth = 0, cur = block, guard = 0;
+  const path = [];
+  while (cur != null && cur >= 0 && guard++ <= maxSteps) {
+    if (cur < domDepth.length && domDepth[cur] > 0) {
+      depth += domDepth[cur];
+      break;
+    }
+    path.push(cur);
+    depth++;
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+  }
+  if (guard <= maxSteps) {
+    for (let i = 0; i < path.length; i++) {
+      const b = path[i];
+      if (b >= 0 && b < domDepth.length) domDepth[b] = depth - i;
+    }
+  }
+  return depth;
+}
+
 /** The SSA value of a physical register that reaches this exact call site. */
 export function reachingRegisterTypeValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
+  const { valuesByReg, domDepth } = getTypeReachIndex(ir);
+  const regValues = valuesByReg.get(reg) || [];
   let best = ir.args?.get?.(reg) || null;
   let bestDepth = -1;
   let bestRow = -1;
-  for (const value of ir.values || []) {
+  for (const value of regValues) {
     if (value.reg !== reg || !value.def || value.clobbered) continue;
     const def = value.def;
     if (def === atInst) continue;
@@ -145,8 +198,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
       continue;
     }
     if (!blockDominates(ir, def.block, atInst.block)) continue;
-    let depth = 0, cur = def.block, guard = 0;
-    while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+    const depth = getTypeDomDepth(ir, domDepth, def.block);
     const row = def.row ?? -1;
     if (depth > bestDepth || (depth === bestDepth && row > bestRow)) {
       best = value;
@@ -330,6 +382,17 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   return { args, locals, ret, values, locations, warnings };
 }
 
+function sanitizeCxxTypeIdent(name, fallback = 'cxx_obj') {
+  const raw = String(name || '').trim();
+  if (!raw) return fallback;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) return raw;
+  const clean = raw
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/^([0-9])/, '_$1');
+  return clean || fallback;
+}
+
 export function semanticSignature(name, recovered, notes = null, funcAddr = null, opts = null, ir = null) {
   const rt = (notes && notes.typeOf && notes.typeOf(funcAddr, 'ret')) || (recovered.ret && recovered.ret.type) || 'void';
   const cxxRec = currentCppReceiver(opts || {}, ir);
@@ -343,7 +406,7 @@ export function semanticSignature(name, recovered, notes = null, funcAddr = null
       n = 'this';
       if (!authoritativeType) {
         const className = cxxRec.classIdentity?.className;
-        if (className) t = `${className} *`;
+        if (className) t = `${sanitizeCxxTypeIdent(className)} *`;
       }
     }
     return `${t} ${n}`;
@@ -351,7 +414,7 @@ export function semanticSignature(name, recovered, notes = null, funcAddr = null
   if (cxxRec && !recoveredArgs.some((a) => a.index === 0)) {
     const authoritativeType = notes?.typeOf?.(funcAddr, 'a0') || null;
     const className = cxxRec.classIdentity?.className;
-    const type = authoritativeType || (className ? `${className} *` : 'uint64');
+    const type = authoritativeType || (className ? `${sanitizeCxxTypeIdent(className)} *` : 'uint64');
     args.unshift(`${type} this`);
   }
   return `${rt === 'unknown' ? 'uint64' : rt} ${name || 'sub'}(${args.length ? args.join(', ') : 'void'})`;

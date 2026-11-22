@@ -23,6 +23,7 @@ const readFacadeTypedResultHistory = carried('typedResult', readOriginalTypedRes
 const readFacadeStackEscapeHistory = carried('stackEscape', readOriginalStackEscapeHistory);
 const readFacadeAbiBindingHistory = carried('abiBinding', readOriginalAbiBindingHistory);
 
+const EN_COLLATOR = new Intl.Collator('en');
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
 
 // Both representations remain inspectable. A normalization attached to its
@@ -141,7 +142,7 @@ function canonicalList(values, sortNumeric) {
   }
   out.sort((left, right) => {
     if (sortNumeric && typeof left === 'number' && typeof right === 'number') return left - right;
-    return String(left).localeCompare(String(right), 'en');
+    return EN_COLLATOR.compare(String(left), String(right));
   });
   return out;
 }
@@ -151,7 +152,7 @@ function canonicalList(values, sortNumeric) {
 function sortLedgerAddresses(out) {
   out.sort((left, right) => {
     if (typeof left === 'bigint' && typeof right === 'bigint') return left < right ? -1 : left > right ? 1 : 0;
-    return String(left).localeCompare(String(right), 'en');
+    return EN_COLLATOR.compare(String(left), String(right));
   });
   return out;
 }
@@ -178,7 +179,7 @@ function canonicalOrigins(raw) {
     ssaRefs: [
       ...canonicalList(typed.ssaDefs.map((value) => `def:${value}`), false),
       ...canonicalList(typed.ssaUses.map((value) => `use:${value}`), false),
-    ].sort((left, right) => left.localeCompare(right, 'en')),
+    ].sort(EN_COLLATOR.compare),
   };
 }
 
@@ -842,8 +843,8 @@ function buildRenderProvenanceCore({ result, snapshotId, resolvedBudget, shouldA
   }
 
   const reverseObject = {};
-  for (const key of [...reverse.keys()].sort((left, right) => left.localeCompare(right, 'en'))) {
-    reverseObject[key] = Object.freeze([...reverse.get(key)].sort((left, right) => left.localeCompare(right, 'en')));
+  for (const key of [...reverse.keys()].sort(EN_COLLATOR.compare)) {
+    reverseObject[key] = Object.freeze([...reverse.get(key)].sort(EN_COLLATOR.compare));
   }
 
   const publishRecord = (record, recordIndex, entityRefs) => {
@@ -863,7 +864,7 @@ function buildRenderProvenanceCore({ result, snapshotId, resolvedBudget, shouldA
       ssaDefs:Object.freeze(canonicalList(typedOrigin.ssaDefs, false)),
       ssaUses:Object.freeze(canonicalList(typedOrigin.ssaUses, false)),
     }),
-    producedRefs:Object.freeze([...entityRefs].sort((left, right) => left.localeCompare(right, 'en'))),
+    producedRefs:Object.freeze([...entityRefs].sort(EN_COLLATOR.compare)),
     // Transform-local render tombstones never identify a current line or a
     // canonical semantic entity. Public copied metadata cannot bind one.
     removedRefs:Object.freeze(record.renderedRemoval && entityRefs.size
