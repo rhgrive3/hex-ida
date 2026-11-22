@@ -275,7 +275,7 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   // The return-side vector recognizer matches the parameter-side one (#5997):
   // `__m256*` spellings are 256-bit vectors, not 128-bit or integer scalars.
   const typeAndClass = `${type} ${abiClass}`;
-  const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256/.test(typeAndClass);
+  const vector = prototype?.vector === true || /vector|simd|sse|__m128|__m256|__m512/.test(typeAndClass);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(typeAndClass);
   // A call-site options.returnBits is a return-width override with the same
   // authority as options.returnType/returnClass (#5636): it must outrank the
@@ -283,7 +283,8 @@ export function classifyMicrosoftX64ReturnDecision(prototype, options = {}) {
   // aggregate return path's override-first order.
   const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
   const bitsProven = prototype.returnBits != null || prototype.bits != null || options.returnBits != null;
-  const wideVectorBits = /__m256/.test(typeAndClass) ? 256
+  const wideVectorBits = /__m512/.test(typeAndClass) ? 512
+    : /__m256/.test(typeAndClass) ? 256
     : vector && bitsProven && Number.isSafeInteger(rawBits) && rawBits > 128 ? rawBits : null;
   if (wideVectorBits != null) {
     return { kind:'unknown', partial:true, unsupported:true, vector:true, bits:wideVectorBits,

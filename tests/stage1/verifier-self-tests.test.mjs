@@ -151,8 +151,8 @@ const completeScorecard = await generateCompetitiveScorecard({ profile: competit
   const workflowPath = path.join(ROOT, '.github/workflows/stage1-release-validation.yml');
   const workflowContent = fs.readFileSync(workflowPath, 'utf8');
   assert.ok(
-    workflowContent.includes('candidate-merge-tree:'),
-    'Stage 1 workflow must contain candidate-merge-tree job'
+    workflowContent.includes('exact-candidate:'),
+    'Stage 1 workflow must contain exact-candidate job'
   );
   assert.ok(
     workflowContent.includes('js/analysis/alias/**'),

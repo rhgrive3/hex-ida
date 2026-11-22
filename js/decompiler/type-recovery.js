@@ -133,6 +133,7 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
   let best = ir.args?.get?.(reg) || null;
   let bestDepth = -1;
+  let bestRow = -1;
   for (const value of ir.values || []) {
     if (value.reg !== reg || !value.def || value.clobbered) continue;
     const def = value.def;
@@ -140,13 +141,18 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
     if (def.block === atInst.block) {
       if (def.row == null || atInst.row == null || def.row >= atInst.row) continue;
       const rank = 1_000_000 + def.row;
-      if (rank > bestDepth) { best = value; bestDepth = rank; }
+      if (rank > bestDepth) { best = value; bestDepth = rank; bestRow = def.row; }
       continue;
     }
     if (!blockDominates(ir, def.block, atInst.block)) continue;
     let depth = 0, cur = def.block, guard = 0;
     while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
-    if (depth > bestDepth) { best = value; bestDepth = depth; }
+    const row = def.row ?? -1;
+    if (depth > bestDepth || (depth === bestDepth && row > bestRow)) {
+      best = value;
+      bestDepth = depth;
+      bestRow = row;
+    }
   }
   return best;
 }

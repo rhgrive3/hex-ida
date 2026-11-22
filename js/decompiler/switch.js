@@ -226,10 +226,25 @@ function terminalSwitchCasePlan(result, cases, defaultAddress, at) {
     if (result.lines.some(line => String(line?.text || '').toUpperCase().includes(needle))) return null;
   }
 
+  const canFallThroughIntoLabel = (start) => {
+    for (let prev = start - 1; prev >= 0; prev--) {
+      const line = result.lines[prev];
+      const text = String(line?.text || "").trim();
+      if (!text || line?.kind === "comment" || text.startsWith("//") || /^\/\*[\s\S]*\*\/$/.test(text)) continue;
+      if (prev >= at.start && prev < at.end) return false;
+      if (line?.kind === "label" || /^loc_[0-9A-Fa-f]+:$/.test(text)) return false;
+      if (text === "{" || text === "}") return false;
+      if (/^(?:return(?:\s+[^;]+)?|goto\s+[^;]+|break|continue)\s*;$/.test(text)) return false;
+      return true;
+    }
+    return false;
+  };
+
   const ranges = [];
   for (const key of keys) {
     const start = labelAt.get(key);
     if (start <= at.start) return null;
+    if (canFallThroughIntoLabel(start)) return null;
     let end = start + 1;
     while (end < result.lines.length) {
       const line = result.lines[end];

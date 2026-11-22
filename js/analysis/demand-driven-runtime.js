@@ -741,11 +741,21 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'xrefs', options); if (!program) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
+      const { offset, limit } = pageOf(page);
+      const cap = cumulativePageLimit(offset, limit);
+      if (cap == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
-      const queryLimited=refs.queryLimited === true || calls.queryLimited === true;
-      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      const relationReason = refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null) ?? reason ?? null;
+      const incomplete = refs.complete === false || calls.complete === false || queryLimited || !!reason;
+      const result = paged(rows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && rows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');

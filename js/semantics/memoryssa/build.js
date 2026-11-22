@@ -557,7 +557,72 @@ function stackDerivedValueIds(irFunction) {
   };
 }
 
-function callMayExposeStackAddress(node, orderedNodes, stackValues, nodeIndex) {
+function argumentRegisterSlot(candidate) {
+  if (candidate?.kind !== 'state-write') return null;
+  const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+  // legacy `argN`/`paramN`/`xN` spellings map to `argN`; x86-64 SysV
+  // argument registers map to their positional slot. Unrecognized register
+  // names never authorize a no-escape claim — they are skipped as
+  // non-argument state so the conservative outcome survives.
+  const slot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId)
+    ?? rawRegisterId.match(/^(?:arg|param|[a-z])([0-7])$/)?.[1];
+  if (slot == null) return null;
+  return typeof slot === 'string' && slot.startsWith('arg') ? slot : `arg${slot}`;
+}
+
+function stateWriteMayExposeStack(candidate, stackValues) {
+  const valueId = candidate.inputs?.[0];
+  const value = stackValues.valuesById.get(String(valueId));
+  return stackValues.derives(valueId)
+    || value == null
+    || value.kind === 'unknown'
+    || value.kind === 'undef'
+    || stackValues.nodesById.get(String(value.definitionNodeId))?.completeness !== 'complete';
+}
+
+function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
+  const cfgBlockById = new Map((cfg?.blocks ?? []).map((block) => [String(block.id), block]));
+  const irBlockById = new Map((irFunction?.blocks ?? []).map((block) => [String(block.id), block]));
+  const lastArgWriteByBlock = new Map();
+  const writtenArgRegisters = new Set();
+  for (const block of irFunction?.blocks ?? []) {
+    const blockId = String(block.id);
+    const writes = new Map();
+    for (const nodeId of block.nodeIds ?? []) {
+      const candidate = stackValues.nodesById.get(String(nodeId));
+      const register = argumentRegisterSlot(candidate);
+      if (register == null) continue;
+      writtenArgRegisters.add(register);
+      writes.set(register, stateWriteMayExposeStack(candidate, stackValues));
+    }
+    if (writes.size > 0) lastArgWriteByBlock.set(blockId, writes);
+  }
+  return {
+    cfgBlockById,
+    irBlockById,
+    lastArgWriteByBlock,
+    writtenArgRegisters,
+  };
+}
+
+function predecessorBlockClosure(startBlockId, cfgBlockById) {
+  const visited = new Set();
+  const stack = [...(cfgBlockById.get(startBlockId)?.predecessors ?? [])].map(String);
+  while (stack.length > 0) {
+    const blockId = stack.pop();
+    if (visited.has(blockId)) continue;
+    visited.add(blockId);
+    const block = cfgBlockById.get(blockId);
+    if (!block) continue;
+    for (const pred of block.predecessors ?? []) {
+      const predId = String(pred);
+      if (!visited.has(predId)) stack.push(predId);
+    }
+  }
+  return visited;
+}
+
+function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   if (node?.kind !== 'call') return false;
   const explicitArguments = [
     ...(node.call?.arguments ?? []),
@@ -565,59 +630,84 @@ function callMayExposeStackAddress(node, orderedNodes, stackValues, nodeIndex) {
     ...(node.call?.memoryWrite?.accesses ?? []).map((access) => access.addressExpr?.valueId),
   ];
   if (explicitArguments.some((valueId) => stackValues.derives(valueId))) return true;
-  const callIndex = nodeIndex.get(String(node.id));
-  if (callIndex == null) return true;
+  if (escapeCfgIndex.writtenArgRegisters.size === 0) return false;
+  const callBlockId = node.blockId == null ? null : String(node.blockId);
+  const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
+  const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
+  const callPos = callIrBlock?.nodeIds?.findIndex((id) => String(id) === String(node.id)) ?? -1;
+  if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
   // A canonical call summary may omit ABI arguments.  Recover only the
-  // current argument definitions from canonical Semantic IR + scalar SSA
-  // state-write nodes; this is still producer evidence, not a projected
-  // instruction walk.  An unknown argument conservatively prevents the
-  // no-escape claim as well.
-  const seenRegisters = new Set();
-  for (let index = callIndex - 1; index >= 0 && seenRegisters.size < 8; index--) {
-    const candidate = orderedNodes[index];
-    if (candidate?.kind !== 'state-write') continue;
-    const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
-    // legacy `argN`/`paramN`/`xN` spellings map to `argN`; x86-64 SysV
-    // argument registers map to their positional slot. Unrecognized register
-    // names never authorize a no-escape claim — they are skipped as
-    // non-argument state so the conservative outcome survives.
-    const slot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId)
-      ?? rawRegisterId.match(/^(?:arg|param|[a-z])([0-7])$/)?.[1];
-    if (slot == null) continue;
-    const register = typeof slot === 'string' && slot.startsWith('arg') ? slot : `arg${slot}`;
-    if (seenRegisters.has(register)) continue;
-    seenRegisters.add(register);
-    const valueId = candidate.inputs?.[0];
-    const value = stackValues.valuesById.get(String(valueId));
-    if (stackValues.derives(valueId)
-        || value == null
-        || value.kind === 'unknown'
-        || value.kind === 'undef'
-        || stackValues.nodesById.get(String(value.definitionNodeId))?.completeness !== 'complete') return true;
+  // reaching argument definitions from canonical Semantic IR + scalar SSA
+  // state-write nodes along CFG predecessors; this is still producer
+  // evidence, not a projected instruction walk.  A non-stack overwrite only
+  // kills earlier definitions on that path, never across sibling branches.
+  const killedInCallBlock = new Set();
+  for (let index = callPos - 1; index >= 0; index--) {
+    const candidate = stackValues.nodesById.get(String(callIrBlock.nodeIds[index]));
+    const register = argumentRegisterSlot(candidate);
+    if (register == null || killedInCallBlock.has(register)) continue;
+    killedInCallBlock.add(register);
+    if (stateWriteMayExposeStack(candidate, stackValues)) return true;
+  }
+  for (const register of escapeCfgIndex.writtenArgRegisters) {
+    if (killedInCallBlock.has(register)) continue;
+    const visited = new Set();
+    const stack = (callCfgBlock.predecessors ?? []).map(String);
+    while (stack.length > 0) {
+      const blockId = stack.pop();
+      if (visited.has(blockId)) continue;
+      visited.add(blockId);
+      const blockWrites = escapeCfgIndex.lastArgWriteByBlock.get(blockId);
+      if (blockWrites?.has(register)) {
+        if (blockWrites.get(register)) return true;
+        continue;
+      }
+      const block = escapeCfgIndex.cfgBlockById.get(blockId);
+      if (!block) continue;
+      for (const pred of block.predecessors ?? []) {
+        const predId = String(pred);
+        if (!visited.has(predId)) stack.push(predId);
+      }
+    }
   }
   return false;
 }
 
-function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues, nodeIndex) {
-  const callIndex = nodeIndex.get(String(node.id)) ?? -1;
-  if (callIndex < 0) return true;
-  const stores = (upstream) => {
-    const list = [
-      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
-      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
-        addressValueId: access.addressExpr?.valueId,
-        storedValueId: access.valueId ?? null,
-      })),
-    ];
-    return list;
-  };
-  for (let index = 0; index < callIndex; index++) {
-    const upstream = orderedNodes[index];
-    if (!upstream) continue;
-    for (const store of stores(upstream)) {
-      const stored = store.storedValueId;
-      if (stored == null || !stackValues.derives(stored)) continue;
-      if (!stackValues.derives(store.addressValueId)) return true;
+function nodePublishesStackAddress(upstream, stackValues) {
+  if (!upstream) return false;
+  const stores = [
+    ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+    ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+      addressValueId: access.addressExpr?.valueId,
+      storedValueId: access.valueId ?? null,
+    })),
+  ];
+  for (const store of stores) {
+    const stored = store.storedValueId;
+    if (stored == null || !stackValues.derives(stored)) continue;
+    if (!stackValues.derives(store.addressValueId)) return true;
+  }
+  return false;
+}
+
+function stackAddressPublishedBeforeCall(node, stackValues, escapeCfgIndex) {
+  const callBlockId = node?.blockId == null ? null : String(node.blockId);
+  const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
+  const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
+  const callPos = callIrBlock?.nodeIds?.findIndex((id) => String(id) === String(node.id)) ?? -1;
+  if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
+  for (let index = 0; index < callPos; index++) {
+    const upstream = stackValues.nodesById.get(String(callIrBlock.nodeIds[index]));
+    if (nodePublishesStackAddress(upstream, stackValues)) return true;
+  }
+  const reachingPredecessors = predecessorBlockClosure(callBlockId, escapeCfgIndex.cfgBlockById);
+  for (const blockId of reachingPredecessors) {
+    const irBlock = escapeCfgIndex.irBlockById.get(blockId);
+    if (!irBlock) continue;
+    for (const nodeId of irBlock.nodeIds ?? []) {
+      if (String(nodeId) === String(node.id)) continue;
+      const upstream = stackValues.nodesById.get(String(nodeId));
+      if (nodePublishesStackAddress(upstream, stackValues)) return true;
     }
   }
   return false;
@@ -666,18 +756,18 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
   }
 
   const stackValues = stackDerivedValueIds(irFunction);
-  let stackNodeIndex = null;
-  const stackIndex = () => {
-    if (stackNodeIndex == null) stackNodeIndex = new Map(nodes.map((candidate, index) => [String(candidate.id), index]));
-    return stackNodeIndex;
+  let escapeCfgIndex = null;
+  const getEscapeCfgIndex = () => {
+    if (escapeCfgIndex == null) escapeCfgIndex = buildStackEscapeCfgIndex(irFunction, cfg, stackValues);
+    return escapeCfgIndex;
   };
   for (const descriptor of descriptors) {
     if (descriptor.role === 'write' && descriptor.broad
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, stackValues, stackIndex())
-        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues, stackIndex())) {
+        && !callMayExposeStackAddress(descriptor.node, stackValues, getEscapeCfgIndex())
+        && !stackAddressPublishedBeforeCall(descriptor.node, stackValues, getEscapeCfgIndex())) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -1527,7 +1617,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   for (let i = 0; i < descriptors.length; i += 1) {
     const descriptor = descriptors[i];
     if (descriptor.role !== 'write') continue;
-    if (descriptor.sourceKind === 'call' && descriptor.noEscapeStack === true) continue;
+    if ((descriptor.sourceKind === 'call'
+        || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
+      && descriptor.noEscapeStack === true) continue;
     for (let j = 0; j < descriptor.regions.length; j += 1) {
       conservativeWriteRegionIds.add(descriptor.regions[j].id);
     }

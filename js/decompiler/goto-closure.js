@@ -710,7 +710,7 @@ function backwardLoopProof(ir, info, labelIndex, jumpIndex) {
   }
   if (!proven) return false;
   const dominators = ir.dominators;
-  if (Array.isArray(dominators)) return dominators[header]?.has?.(latch) === true;
+  if (Array.isArray(dominators)) return dominators[latch]?.has?.(header) === true;
   return true;
 }
 

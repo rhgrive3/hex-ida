@@ -2150,9 +2150,14 @@ export function enhanceSemanticDecompilation(result, model, rawOpts = {}) {
   // once without additional fixed-point work so callers always receive a coherent AST.
   if (!advanced.expressions) {
     const expressions = new Map();
+    const idByText = new Map((advanced.ir?.values || []).filter((v) => v?.id != null).map((v) => [String(v.id), v.id]));
     for (const [key, value] of advanced.expressionMemo.entries()) {
       const text = String(key);
-      if (text.endsWith(':v')) expressions.set(Number(text.split(':')[0]), value);
+      if (!text.endsWith(':v')) continue;
+      const rawId = text.slice(0, -2);
+      const parsed = rawId !== '' ? Number(rawId) : Number.NaN;
+      const valueId = idByText.has(rawId) ? idByText.get(rawId) : (Number.isFinite(parsed) && String(parsed) === rawId ? parsed : rawId);
+      expressions.set(valueId, value);
     }
     advanced.expressions = expressions;
   }

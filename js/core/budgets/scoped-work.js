@@ -65,7 +65,9 @@ export class ScopedAnalysisWork {
     else parentBudget?.signal?.addEventListener('abort', this.#parentAbortListener, { once: true });
     this.#budget = new ResourceBudget(resourceLimits, { parent: parentBudget, name: this.#name, signal: this.#controller.signal });
     this.#started = now();
-    this.#timer = setTimeout(() => this.#controller.abort(new AnalysisWorkStopped('timeout', 'query-deadline')), this.#limits.deadlineMs);
+    this.#timer = this.#controller.signal.aborted
+      ? null
+      : setTimeout(() => this.#controller.abort(new AnalysisWorkStopped('timeout', 'query-deadline')), this.#limits.deadlineMs);
     // Kept referenced while work is active: a hung provider Promise alone does
     // not keep a Node host alive long enough to observe an unref'ed deadline.
     SCOPES.add(this);

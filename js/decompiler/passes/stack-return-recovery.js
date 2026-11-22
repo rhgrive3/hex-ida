@@ -224,11 +224,12 @@ function controller(ir, merge, predecessors, opts) {
   return candidates[0];
 }
 
-function storeValue(inst, key, values) {
-  if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
+function storeValue(inst, key, values, expectedBytes = null) {
+  if (inst?.op !== 'store' || inst.loc?.kind !== 'stack' || inst.loc?.key !== key) return null;
+  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
+  if (expectedBytes != null && expectedBytes > 0 && bytes > 0 && bytes !== expectedBytes) return null;
   let node = expressionOf(valueOf(inst.args?.[0]), values);
   if (!node) return null;
-  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
   const bits = bytes > 0 ? bytes * 8 : 0;
   if (bits) node = fitWidth(node, bits, {
     address:inst.address,
@@ -463,22 +464,24 @@ function before(ir, block, row) {
     .sort((a,b) => (b.row ?? -1) - (a.row ?? -1));
 }
 
-function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0) {
+function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, depth = 0, expectedBytes = null) {
   if (blockIndex == null || depth > 64) return null;
   const token = `${blockIndex}:${beforeRow ?? 'end'}:${key}`;
   if (active.has(token)) return null;
   active.add(token);
   try {
     for (const inst of before(ir, blockIndex, beforeRow)) {
-      const stored = storeValue(inst, key, values);
-      if (stored) return stored;
+      if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc?.key === key) {
+        const stored = storeValue(inst, key, values, expectedBytes);
+        return stored || null;
+      }
       if (unsafeBarrier(inst, key)) return null;
     }
 
     const block = ir.blocks?.[blockIndex];
     const predecessors = [...(block?.pred || [])];
     if (!predecessors.length) return null;
-    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, values, opts, engine, active, depth + 1));
+    const incoming = predecessors.map((pred) => resolve(ir, pred, null, key, values, opts, engine, active, depth + 1, expectedBytes));
     if (incoming.some((x) => !x)) return null;
     const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
     if (unique.size === 1) return incoming[0];
@@ -501,13 +504,30 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
   }
 }
 
-function rewriteReturn(result, expression, opts) {
+function matchesTargetReturnNode(node, ret, singleRet) {
+  if (!(node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim()))) return false;
+  if (!ret || singleRet) return true;
+  if (node.semantic?.ir != null && ret.id != null) {
+    return String(node.semantic.ir) === String(ret.id);
+  }
+  if (node.row != null && ret.row != null) {
+    return Number(node.row) === Number(ret.row);
+  }
+  if (ret.id != null && Array.isArray(node.source?.ir) && node.source.ir.some((id) => String(id) === String(ret.id))) {
+    return true;
+  }
+  if (ret.row != null && Array.isArray(node.source?.rows) && node.source.rows.some((r) => Number(r) === Number(ret.row))) {
+    return true;
+  }
+  return false;
+}
+
+function rewriteReturn(result, expression, opts, ret = null, singleRet = true) {
   const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
   if (!output) return false;
-  output.expression = expression;
   let changed = false;
   for (const node of result.cAst?.body || []) {
-    if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
+    if (matchesTargetReturnNode(node, ret, singleRet)) {
       node.text = `return ${printExpression(expression)};`;
       // Retain the predecessor descriptor observed by the incoming consumer.
       // The owning recovery below binds this new descriptor to that preimage;
@@ -517,6 +537,7 @@ function rewriteReturn(result, expression, opts) {
     }
   }
   if (!changed) return false;
+  output.expression = expression;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
   result.sourceMap = printed.mapping;
@@ -584,8 +605,10 @@ export function recoverExactStackReturn(result, opts = {}) {
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   const root = output?.expression;
   if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return result;
-  const ret = [...(result.ir.instructions || [])].reverse().find((i) => i.op === 'ret');
+  const retInstructions = (result.ir.instructions || []).filter((i) => i.op === 'ret');
+  const ret = retInstructions[retInstructions.length - 1] || null;
   if (!ret) return result;
+  const singleRet = retInstructions.length <= 1;
 
   const values = mapsOf(result);
   const engine = new RewriteHistoryJournal(new RewriteEngine(DEFAULT_RULES, {
@@ -612,9 +635,10 @@ export function recoverExactStackReturn(result, opts = {}) {
       });
     }
   }
-  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
+  const expectedBytes = Number(root.location?.size || (Number(root.bits) > 0 ? Number(root.bits) / 8 : 0)) || null;
+  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set(), 0, expectedBytes);
   const transitions = (result.cAst.body || [])
-    .filter(node => node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))
+    .filter(node => matchesTargetReturnNode(node, ret, singleRet))
     .map(node => ({ node, before:node.semantic?.expression || root,
       prior:readStackReturnHistoryConsumer(node.semantic, result.ir)
         || readStackPhiHistoryConsumer(node.semantic, result.ir)
@@ -622,7 +646,7 @@ export function recoverExactStackReturn(result, opts = {}) {
         || readExpressionHistoryConsumer(node.semantic, result.ir) }));
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
-  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
+  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts, ret, singleRet)) return result;
   const removals = committedSpill ? removeProofOnlyStackSpill(result, committedSpill, recovered, opts) : [];
 
   const records = transitions.map(item => {

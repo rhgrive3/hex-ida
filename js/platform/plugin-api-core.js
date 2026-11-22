@@ -514,12 +514,14 @@ export class PlatformPluginRegistry {
     const signal = rawOptions.signal;
     const invocationController = new AbortController();
 
+    let pluginScope = null;
+    let pluginScopeName = null;
     try {
-      let pluginScope = null;
       if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
         const baseScopeName = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
         this.#budgetInvocationSequence += 1n;
-        pluginScope = context.resourceBudget.scope(`${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`);
+        pluginScopeName = `${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`;
+        pluginScope = context.resourceBudget.scope(pluginScopeName);
         if (!pluginScope) throw new Error('plugin resource budget scope unavailable');
       }
 
@@ -552,6 +554,11 @@ export class PlatformPluginRegistry {
         timeout: timedOut,
         ...(error?.executionMayContinue === true ? { executionMayContinue: true } : {}),
       };
+    } finally {
+      if (pluginScope && pluginScopeName && context.resourceBudget?.children instanceof Map
+        && context.resourceBudget.children.get(pluginScopeName) === pluginScope) {
+        context.resourceBudget.children.delete(pluginScopeName);
+      }
     }
   }
 

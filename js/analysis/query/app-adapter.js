@@ -1199,7 +1199,8 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const cap = Math.min(MAX_PAGE, offset + limit);
+      const cap = cumulativePageLimit(offset, limit);
+      if (cap == null) return unsupportedPage(id, page, 'page-range-overflow');
       const refs = program.refSitesTo?.(address, 1n, cap) || [];
       const calls = program.callSitesTo?.(address, cap) || [];
       const rows = [
@@ -1208,10 +1209,18 @@ export function createAppAnalysisQueryAdapter(app) {
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
       const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
       const complete = refs.complete !== false && calls.complete !== false && !queryLimited;
-      return paged(rows, page, complete ? 'complete' : 'partial', {
+      const result = paged(rows, page, complete ? 'complete' : 'partial', {
         reason:refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null),
         ...(queryLimited ? { truncationReason:'query-limit' } : {}),
       });
+      if (queryLimited && result.page.next == null && rows.length >= result.page.offset) {
+        const next = nextPageOffset(
+          result.page.offset,
+          result.page.returned > 0 ? result.page.returned : result.page.limit,
+        );
+        if (next != null) result.page.next = next;
+      }
+      return result;
     },
 
     async types(_snapshot, scope, _page = {}, options = {}) {
@@ -1376,6 +1385,10 @@ export function createAppAnalysisQueryAdapter(app) {
             const entry = ensureCxxEvidenceProviderForApp(app);
             if (entry) {
               await entry.buildPromise;
+              throwIfAborted(options.signal);
+              if (cxxMemberIndexForApp(app) !== entry.provider.memberIndex()) {
+                throw new Error('C++ recovery binding changed');
+              }
               try {
                 projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {});
                 cxxEvidence = entry.provider.projectForFunction({
@@ -1389,6 +1402,7 @@ export function createAppAnalysisQueryAdapter(app) {
             }
           }
           producer = decompile(result.value.model, {
+            ...decompilerOptionsFromQuery(options),
             name,
             addr:address,
             ...(returnsValue ? { returnsValue } : {}),
