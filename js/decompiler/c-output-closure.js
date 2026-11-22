@@ -2336,14 +2336,18 @@ export function closeFunctionOutput(result, options = {}) {
   const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames))
-    .map((entry) => ({
-      kind: 'decl', indent: 1, text: `${(() => {
+    .map((entry) => {
+      const declType = (() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
         const t = localDeclarationTypeFor(entry.name, result);
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
-      })()} ${entry.name};`,
-      row: null, addr: null, note: null, source: entrySource,
-    }));
+      })();
+      const init = entry.name === 'memory' && declType === 'uint8_t *' ? ' = (uint8_t *)0' : '';
+      return {
+        kind: 'decl', indent: 1, text: `${declType} ${entry.name}${init};`,
+        row: null, addr: null, note: null, source: entrySource,
+      };
+    });
 
   const allBodyDeclarations = [...memberBaseDeclarations, ...localDeclarations];
   const withDeclarationsRaw = allBodyDeclarations.length && bodyOpen >= 0
