@@ -46,6 +46,7 @@ const A64_ELEMENT_BITS = Object.freeze({ b:8, h:16, s:32, d:64 });
 // register base name. Every other view stays raw instead of aliasing a second
 // C variable onto the same architectural register.
 const GP_FULL_WIDTH_TEXT = /^x(\d{1,2})$/;
+const GP_ANY_WIDTH_TEXT = /^([wx])(\d{1,2}|zr)$/i;
 const SCALAR_FP_TEXT = /^[bhsdq](\d{1,2})$/i;
 const VECTOR_TEXT = /^v(\d{1,2})(?:\.(\d{1,2})([bhsd]))?$/i;
 
@@ -56,12 +57,35 @@ const WIDE_HIGH_SOURCE_ARRANGEMENT = Object.freeze({ '8h':'16b', '4s':'8h', '2d'
 const ADDV_DESTINATION_ELEMENT_BITS = Object.freeze({ '8b':8, '16b':8, '4h':16, '8h':16, '4s':32 });
 const BITWISE_INSERT_ARRANGEMENTS = new Set(['8b','16b']);
 
+const ARRANGEMENT_LAYOUT = Object.freeze({
+  '8b':  { lanes: 8,  elemBits: 8,  widthBits: 64 },
+  '16b': { lanes: 16, elemBits: 8,  widthBits: 128 },
+  '4h':  { lanes: 4,  elemBits: 16, widthBits: 64 },
+  '8h':  { lanes: 8,  elemBits: 16, widthBits: 128 },
+  '2s':  { lanes: 2,  elemBits: 32, widthBits: 64 },
+  '4s':  { lanes: 4,  elemBits: 32, widthBits: 128 },
+  '2d':  { lanes: 2,  elemBits: 64, widthBits: 128 },
+});
+
 function gpFullWidthRegister(text) {
   const match = GP_FULL_WIDTH_TEXT.exec(String(text || '').trim());
   if (!match) return null;
   const number = Number(match[1]);
   if (!Number.isInteger(number) || number < 0 || number > 30) return null;
   return { number, name:`x${number}` };
+}
+
+function gpRegister(text) {
+  const match = GP_ANY_WIDTH_TEXT.exec(String(text || '').trim());
+  if (!match) return null;
+  const prefix = match[1].toLowerCase();
+  const bits = prefix === 'w' ? 32 : 64;
+  if (match[2].toLowerCase() === 'zr') {
+    return { isZero: true, number: 31, bits, name: bits === 32 ? '0U' : '0ULL', canonicalName: bits === 32 ? '0U' : '0ULL' };
+  }
+  const number = Number(match[2]);
+  if (!Number.isInteger(number) || number < 0 || number > 30) return null;
+  return { isZero: false, number, bits, name: `${prefix}${number}`, canonicalName: `x${number}` };
 }
 
 function vectorRegister(text) {
@@ -109,7 +133,271 @@ function asmPayload(text) {
   return match ? match[2].trim() : null;
 }
 
-function lowerOne(payload) {
+/* --- Standard C lowering helpers (UB-free across 32-bit and 64-bit widths) --- */
+
+function hexLiteral(value, bits) {
+  const mask = (1n << BigInt(bits)) - 1n;
+  const masked = BigInt.asUintN(bits, value & mask);
+  return `0x${masked.toString(16)}${bits === 32 ? 'U' : 'ULL'}`;
+}
+
+function lowerUbfizExpr(srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const maskLit = hexLiteral((1n << BigInt(width)) - 1n, bits);
+  if (lsb === 0) return `((${uType})(${srcExpr}) & ${maskLit})`;
+  return `(((${uType})(${srcExpr}) & ${maskLit}) << ${lsb})`;
+}
+
+function lowerSbfizExpr(srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  const sType = bits === 32 ? 'int32_t' : 'int64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const lshift = bits - width;
+  const rshift = bits - width - lsb;
+  if (rshift === 0) return `((${uType})(${srcExpr}) << ${lshift})`;
+  return `(${uType})((${sType})((${uType})(${srcExpr}) << ${lshift}) >> ${rshift})`;
+}
+
+function lowerUbfxExpr(srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const maskLit = hexLiteral((1n << BigInt(width)) - 1n, bits);
+  if (lsb === 0) return `((${uType})(${srcExpr}) & ${maskLit})`;
+  return `(((${uType})(${srcExpr}) >> ${lsb}) & ${maskLit})`;
+}
+
+function lowerSbfxExpr(srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  const sType = bits === 32 ? 'int32_t' : 'int64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const lshift = bits - lsb - width;
+  const rshift = bits - width;
+  if (lshift === 0) return `(${uType})((${sType})(${uType})(${srcExpr}) >> ${rshift})`;
+  return `(${uType})((${sType})((${uType})(${srcExpr}) << ${lshift}) >> ${rshift})`;
+}
+
+function lowerBfiExpr(dstExpr, srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const fieldMask = (1n << BigInt(width)) - 1n;
+  const allMask = (1n << BigInt(bits)) - 1n;
+  const clearLit = hexLiteral(allMask ^ (fieldMask << BigInt(lsb)), bits);
+  const fieldLit = hexLiteral(fieldMask, bits);
+  const inserted = lsb === 0
+    ? `((${uType})(${srcExpr}) & ${fieldLit})`
+    : `(((${uType})(${srcExpr}) & ${fieldLit}) << ${lsb})`;
+  return `(((${uType})(${dstExpr}) & ${clearLit}) | ${inserted})`;
+}
+
+function lowerBfxilExpr(dstExpr, srcExpr, lsb, width, bits) {
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  if (width === bits) return `(${uType})(${srcExpr})`;
+  const fieldMask = (1n << BigInt(width)) - 1n;
+  const allMask = (1n << BigInt(bits)) - 1n;
+  const clearLit = hexLiteral(allMask ^ fieldMask, bits);
+  const fieldLit = hexLiteral(fieldMask, bits);
+  const extracted = lsb === 0
+    ? `((${uType})(${srcExpr}) & ${fieldLit})`
+    : `(((${uType})(${srcExpr}) >> ${lsb}) & ${fieldLit})`;
+  return `(((${uType})(${dstExpr}) & ${clearLit}) | ${extracted})`;
+}
+
+function lowerMoviCExpr(arrangement, laneValue) {
+  const layout = ARRANGEMENT_LAYOUT[arrangement];
+  if (!layout) return null;
+  const elemMask = (1n << BigInt(layout.elemBits)) - 1n;
+  const elem = BigInt.asUintN(64, laneValue) & elemMask;
+  let lo = 0n;
+  let hi = 0n;
+  for (let i = 0; i < layout.lanes; i++) {
+    const bitPos = i * layout.elemBits;
+    if (bitPos < 64) lo |= elem << BigInt(bitPos);
+    else hi |= elem << BigInt(bitPos - 64);
+  }
+  lo = BigInt.asUintN(64, lo);
+  hi = BigInt.asUintN(64, hi);
+  if (hi === 0n) return `(unsigned __int128)0x${lo.toString(16)}ULL`;
+  return `(((unsigned __int128)0x${hi.toString(16)}ULL << 64) | 0x${lo.toString(16)}ULL)`;
+}
+
+function lowerUshllCExpr(srcName, dstArrangement, shift, isHigh) {
+  const layout = ARRANGEMENT_LAYOUT[dstArrangement];
+  if (!layout) return null;
+  const wideBits = layout.elemBits;
+  const narrowBits = wideBits / 2;
+  const narrowMask = hexLiteral((1n << BigInt(narrowBits)) - 1n, 64);
+  const wideMask = hexLiteral((1n << BigInt(wideBits)) - 1n, 64);
+  const baseBit = isHigh ? 64 : 0;
+  const parts = [];
+  for (let i = 0; i < layout.lanes; i++) {
+    const srcBit = baseBit + i * narrowBits;
+    const extracted = srcBit === 0
+      ? `((uint64_t)(${srcName}) & ${narrowMask})`
+      : `((uint64_t)((${srcName}) >> ${srcBit}) & ${narrowMask})`;
+    const shifted = shift === 0 ? extracted : `((${extracted} << ${shift}) & ${wideMask})`;
+    const dstBit = i * wideBits;
+    parts.push(dstBit === 0 ? `(unsigned __int128)${shifted}` : `((unsigned __int128)${shifted} << ${dstBit})`);
+  }
+  return `(${parts.join(' | ')})`;
+}
+
+function lowerUaddwCExpr(wideName, narrowName, dstArrangement, isHigh) {
+  const layout = ARRANGEMENT_LAYOUT[dstArrangement];
+  if (!layout) return null;
+  const wideBits = layout.elemBits;
+  const narrowBits = wideBits / 2;
+  const narrowMask = hexLiteral((1n << BigInt(narrowBits)) - 1n, 64);
+  const wideMask = hexLiteral((1n << BigInt(wideBits)) - 1n, 64);
+  const baseBit = isHigh ? 64 : 0;
+  const parts = [];
+  for (let i = 0; i < layout.lanes; i++) {
+    const dstBit = i * wideBits;
+    const srcBit = baseBit + i * narrowBits;
+    const wideLane = dstBit === 0
+      ? `((uint64_t)(${wideName}) & ${wideMask})`
+      : `((uint64_t)((${wideName}) >> ${dstBit}) & ${wideMask})`;
+    const narrowLane = srcBit === 0
+      ? `((uint64_t)(${narrowName}) & ${narrowMask})`
+      : `((uint64_t)((${narrowName}) >> ${srcBit}) & ${narrowMask})`;
+    const sum = `((${wideLane} + ${narrowLane}) & ${wideMask})`;
+    parts.push(dstBit === 0 ? `(unsigned __int128)${sum}` : `((unsigned __int128)${sum} << ${dstBit})`);
+  }
+  return `(${parts.join(' | ')})`;
+}
+
+function lowerAddvCExpr(srcName, srcArrangement) {
+  const layout = ARRANGEMENT_LAYOUT[srcArrangement];
+  if (!layout) return null;
+  const elemType = `uint${layout.elemBits}_t`;
+  const terms = [];
+  for (let i = 0; i < layout.lanes; i++) {
+    const bit = i * layout.elemBits;
+    terms.push(bit === 0 ? `(${elemType})(${srcName})` : `(${elemType})((${srcName}) >> ${bit})`);
+  }
+  return `(unsigned __int128)(${elemType})(${terms.join(' + ')})`;
+}
+
+function lowerRbitStatement(dstName, srcExpr, bits) {
+  if (bits === 32) {
+    return `${dstName} = __builtin_bswap32((uint32_t)(${srcExpr})); `
+      + `${dstName} = (((uint32_t)${dstName} & 0x0f0f0f0fU) << 4) | (((uint32_t)${dstName} >> 4) & 0x0f0f0f0fU); `
+      + `${dstName} = (((uint32_t)${dstName} & 0x33333333U) << 2) | (((uint32_t)${dstName} >> 2) & 0x33333333U); `
+      + `${dstName} = (((uint32_t)${dstName} & 0x55555555U) << 1) | (((uint32_t)${dstName} >> 1) & 0x55555555U);`;
+  }
+  return `${dstName} = __builtin_bswap64((uint64_t)(${srcExpr})); `
+    + `${dstName} = (((uint64_t)${dstName} & 0x0f0f0f0f0f0f0f0fULL) << 4) | (((uint64_t)${dstName} >> 4) & 0x0f0f0f0f0f0f0f0fULL); `
+    + `${dstName} = (((uint64_t)${dstName} & 0x3333333333333333ULL) << 2) | (((uint64_t)${dstName} >> 2) & 0x3333333333333333ULL); `
+    + `${dstName} = (((uint64_t)${dstName} & 0x5555555555555555ULL) << 1) | (((uint64_t)${dstName} >> 1) & 0x5555555555555555ULL);`;
+}
+
+function parseComparisonContext(lineText) {
+  const trimmed = String(lineText || '').trim();
+  const commentMatch = /^\/\*\s*(cmp|fcmp|cmn|tst)\s+([^,—*]+?),\s*([^—*]+?)(?:\s+—.*)?\*\/$/i.exec(trimmed);
+  const asmText = !commentMatch ? asmPayload(trimmed) : null;
+  let kind = null;
+  let rawLhs = null;
+  let rawRhs = null;
+  if (commentMatch) {
+    kind = commentMatch[1].toLowerCase();
+    rawLhs = commentMatch[2].trim();
+    rawRhs = commentMatch[3].trim();
+  } else if (asmText) {
+    const sp = asmText.indexOf(' ');
+    if (sp > 0) {
+      const mn = asmText.slice(0, sp).toLowerCase();
+      if (mn === 'cmp' || mn === 'fcmp' || mn === 'cmn' || mn === 'tst') {
+        const ops = splitOperands(asmText.slice(sp + 1));
+        if (ops.length === 2) {
+          kind = mn;
+          rawLhs = ops[0];
+          rawRhs = ops[1];
+        }
+      }
+    }
+  }
+  if (!kind || !rawLhs || !rawRhs) return null;
+
+  if (kind === 'fcmp') {
+    if (!/^[sd]\d+$/i.test(rawLhs)) return null;
+    const isFloat = rawLhs[0].toLowerCase() === 's';
+    const rhs = /^[sd]\d+$/i.test(rawRhs)
+      ? rawRhs
+      : (/^#?0(?:\.0)?$/.test(rawRhs) ? (isFloat ? '0.0f' : '0.0') : null);
+    if (!rhs) return null;
+    return { kind: 'fcmp', lhs: rawLhs, rhs, bits: isFloat ? 32 : 64 };
+  }
+
+  const lhsReg = gpRegister(rawLhs);
+  if (!lhsReg) return null;
+  const bits = lhsReg.bits;
+  const rhsReg = gpRegister(rawRhs);
+  let rhs = null;
+  if (rhsReg && rhsReg.bits === bits) {
+    rhs = rhsReg.name;
+  } else {
+    const imm = parseImm64(rawRhs);
+    if (imm != null) rhs = hexLiteral(imm, bits);
+  }
+  if (!rhs) return null;
+  return { kind, lhs: lhsReg.name, rhs, bits };
+}
+
+function conditionExprFromContext(cond, cmpCtx) {
+  if (cond === 'al') return '1';
+  if (cond === 'nv') return '0';
+  if (!cmpCtx) return `(0 /* cond:${cond} */)`;
+  const { kind, lhs, rhs, bits } = cmpCtx;
+  if (kind === 'fcmp') {
+    switch (cond) {
+      case 'eq': return `(${lhs} == ${rhs})`;
+      case 'ne': return `(${lhs} != ${rhs})`;
+      case 'lt': case 'mi': return `(${lhs} < ${rhs})`;
+      case 'le': case 'ls': return `(${lhs} <= ${rhs})`;
+      case 'gt': case 'hi': return `(${lhs} > ${rhs})`;
+      case 'ge': case 'hs': case 'cs': case 'pl': return `(${lhs} >= ${rhs})`;
+      case 'lo': case 'cc': return `(!(${lhs} >= ${rhs}))`;
+      case 'vs': return `((${lhs} != ${lhs}) || (${rhs} != ${rhs}))`;
+      case 'vc': return `((${lhs} == ${lhs}) && (${rhs} == ${rhs}))`;
+      default: return `(0 /* cond:${cond} */)`;
+    }
+  }
+  const uType = bits === 32 ? 'uint32_t' : 'uint64_t';
+  const sType = bits === 32 ? 'int32_t' : 'int64_t';
+  if (kind === 'tst') {
+    const masked = `((${uType})(${lhs}) & (${uType})(${rhs}))`;
+    if (cond === 'eq') return `(${masked} == 0)`;
+    if (cond === 'ne') return `(${masked} != 0)`;
+    if (cond === 'mi') return `((${sType})${masked} < 0)`;
+    if (cond === 'pl') return `((${sType})${masked} >= 0)`;
+    return `(0 /* cond:${cond} */)`;
+  }
+  if (kind === 'cmn') {
+    const sum = `((${uType})(${lhs}) + (${uType})(${rhs}))`;
+    if (cond === 'eq') return `(${sum} == 0)`;
+    if (cond === 'ne') return `(${sum} != 0)`;
+    if (cond === 'mi') return `((${sType})${sum} < 0)`;
+    if (cond === 'pl') return `((${sType})${sum} >= 0)`;
+    return `(0 /* cond:${cond} */)`;
+  }
+  switch (cond) {
+    case 'eq': return `((${uType})(${lhs}) == (${uType})(${rhs}))`;
+    case 'ne': return `((${uType})(${lhs}) != (${uType})(${rhs}))`;
+    case 'lt': return `((${sType})(${lhs}) < (${sType})(${rhs}))`;
+    case 'le': return `((${sType})(${lhs}) <= (${sType})(${rhs}))`;
+    case 'gt': return `((${sType})(${lhs}) > (${sType})(${rhs}))`;
+    case 'ge': return `((${sType})(${lhs}) >= (${sType})(${rhs}))`;
+    case 'lo': case 'cc': return `((${uType})(${lhs}) < (${uType})(${rhs}))`;
+    case 'ls': return `((${uType})(${lhs}) <= (${uType})(${rhs}))`;
+    case 'hi': return `((${uType})(${lhs}) > (${uType})(${rhs}))`;
+    case 'hs': case 'cs': return `((${uType})(${lhs}) >= (${uType})(${rhs}))`;
+    case 'mi': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) < 0)`;
+    case 'pl': return `((${sType})((${uType})(${lhs}) - (${uType})(${rhs})) >= 0)`;
+    default: return `(0 /* cond:${cond} */)`;
+  }
+}
+
+function lowerOne(payload, { standardC = false, cmpCtx = null } = {}) {
   const space = payload.indexOf(' ');
   const mnemonic = (space < 0 ? payload : payload.slice(0, space)).toLowerCase();
   const operands = splitOperands(space < 0 ? '' : payload.slice(space + 1));
@@ -121,33 +409,196 @@ function lowerOne(payload) {
     return `${operands[0]} = __builtin_bswap${bits}(${operands[1]});`;
   }
 
+  // REV16 <Wd|Xd>, <Wn|Xn>: reverse bytes in each 16-bit halfword.
+  if (mnemonic === 'rev16' && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    if (dst && !dst.isZero && src && dst.bits === src.bits) {
+      if (dst.bits === 32) {
+        return `${dst.name} = ((((uint32_t)(${src.name}) & 0x00ff00ffU) << 8) | (((uint32_t)(${src.name}) >> 8) & 0x00ff00ffU));`;
+      }
+      return `${dst.name} = ((((uint64_t)(${src.name}) & 0x00ff00ff00ff00ffULL) << 8) | (((uint64_t)(${src.name}) >> 8) & 0x00ff00ff00ff00ffULL));`;
+    }
+  }
+
+  // REV32 <Xd>, <Xn>: reverse bytes in each 32-bit word (64-bit only).
+  if (mnemonic === 'rev32' && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    if (dst && !dst.isZero && src && dst.bits === 64 && src.bits === 64) {
+      return `${dst.name} = (((uint64_t)__builtin_bswap32((uint32_t)((uint64_t)(${src.name}) >> 32)) << 32) | (uint64_t)__builtin_bswap32((uint32_t)(${src.name})));`;
+    }
+  }
+
+  // RBIT <Wd|Xd>, <Wn|Xn>: reverse all bits in 32-bit or 64-bit register.
+  if (mnemonic === 'rbit' && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    if (dst && !dst.isZero && src && dst.bits === src.bits) {
+      return lowerRbitStatement(dst.name, src.name, dst.bits);
+    }
+  }
+
+  // CLZ <Wd|Xd>, <Wn|Xn>: count leading zeros (guards zero input to avoid UB).
+  if (mnemonic === 'clz' && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    if (dst && !dst.isZero && src && dst.bits === src.bits) {
+      if (dst.bits === 32) {
+        return `${dst.name} = ((uint32_t)(${src.name}) == 0U ? 32U : (uint32_t)__builtin_clz((uint32_t)(${src.name})));`;
+      }
+      return `${dst.name} = ((uint64_t)(${src.name}) == 0ULL ? 64ULL : (uint64_t)__builtin_clzll((uint64_t)(${src.name})));`;
+    }
+  }
+
+  // CLS <Wd|Xd>, <Wn|Xn>: count leading sign bits (equal to sign bit minus 1).
+  // `v = x ^ (x << 1)` places the first bit differing from the sign bit at the
+  // MSB position; its leading-zero count equals CLS for every non-zero `v`, and
+  // `x == 0` maps to `bits - 1`.
+  if (mnemonic === 'cls' && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    if (dst && !dst.isZero && src && dst.bits === src.bits) {
+      if (dst.bits === 32) {
+        const v = `((uint32_t)(${src.name}) ^ ((uint32_t)(${src.name}) << 1))`;
+        return `${dst.name} = (${v} == 0U ? 31U : (uint32_t)__builtin_clz(${v}));`;
+      }
+      const v = `((uint64_t)(${src.name}) ^ ((uint64_t)(${src.name}) << 1))`;
+      return `${dst.name} = (${v} == 0ULL ? 63ULL : (uint64_t)__builtin_clzll(${v}));`;
+    }
+  }
+
+  // EXTR <Wd|Xd>, <Wn|Xn>, <Wm|Xm>, #<lsb>: extract bits from Rn:Rm.
+  if (mnemonic === 'extr' && operands.length === 4) {
+    const dst = gpRegister(operands[0]);
+    const rn = gpRegister(operands[1]);
+    const rm = gpRegister(operands[2]);
+    const lsb = parseImm(operands[3]);
+    if (dst && !dst.isZero && rn && rm && dst.bits === rn.bits && dst.bits === rm.bits) {
+      if (lsb != null && lsb >= 0 && lsb < dst.bits) {
+        const uType = dst.bits === 32 ? 'uint32_t' : 'uint64_t';
+        if (lsb === 0) return `${dst.name} = (${uType})(${rm.name});`;
+        return `${dst.name} = (((${uType})(${rn.name}) << ${dst.bits - lsb}) | ((${uType})(${rm.name}) >> ${lsb}));`;
+      }
+    }
+    return null;
+  }
+
+  // SBFX/UBFX <Wd|Xd>, <Wn|Xn>, #<lsb>, #<width>: bitfield extract.
+  if (mnemonic === 'sbfx' || mnemonic === 'ubfx') {
+    if (operands.length !== 4) return null;
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    const lsb = parseImm(operands[2]);
+    const fieldWidth = parseImm(operands[3]);
+    if (!dst || dst.isZero || !src || dst.bits !== src.bits) return null;
+    if (lsb == null || fieldWidth == null) return null;
+    if (lsb < 0 || fieldWidth < 1 || lsb + fieldWidth > dst.bits) return null;
+    const expr = mnemonic === 'sbfx'
+      ? lowerSbfxExpr(src.name, lsb, fieldWidth, dst.bits)
+      : lowerUbfxExpr(src.name, lsb, fieldWidth, dst.bits);
+    return `${dst.name} = ${expr};`;
+  }
+
+  // BFI/BFXIL <Wd|Xd>, <Wn|Xn>, #<lsb>, #<width>: bitfield insert/extract-insert-low.
+  if (mnemonic === 'bfi' || mnemonic === 'bfxil') {
+    if (operands.length !== 4) return null;
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    const lsb = parseImm(operands[2]);
+    const fieldWidth = parseImm(operands[3]);
+    if (!dst || dst.isZero || !src || dst.bits !== src.bits) return null;
+    if (lsb == null || fieldWidth == null) return null;
+    if (lsb < 0 || fieldWidth < 1 || lsb + fieldWidth > dst.bits) return null;
+    const expr = mnemonic === 'bfi'
+      ? lowerBfiExpr(dst.name, src.name, lsb, fieldWidth, dst.bits)
+      : lowerBfxilExpr(dst.name, src.name, lsb, fieldWidth, dst.bits);
+    return `${dst.name} = ${expr};`;
+  }
+
+  // BFM <Wd|Xd>, <Wn|Xn>, #<immr>, #<imms>: architectural bitfield move.
+  if (mnemonic === 'bfm') {
+    if (operands.length !== 4) return null;
+    const dst = gpRegister(operands[0]);
+    const src = gpRegister(operands[1]);
+    const immr = parseImm(operands[2]);
+    const imms = parseImm(operands[3]);
+    if (!dst || dst.isZero || !src || dst.bits !== src.bits) return null;
+    if (immr == null || imms == null) return null;
+    if (immr < 0 || immr >= dst.bits || imms < 0 || imms >= dst.bits) return null;
+    const expr = imms >= immr
+      ? lowerBfxilExpr(dst.name, src.name, immr, imms - immr + 1, dst.bits)
+      : lowerBfiExpr(dst.name, src.name, dst.bits - immr, imms + 1, dst.bits);
+    return `${dst.name} = ${expr};`;
+  }
+
   // FCVTAS: floating point -> signed integer, FPCR-independent round to
-  // nearest with halfway cases away from zero. Keep the rounding contract in
-  // the pseudo intrinsic name instead of mis-rendering this as a C cast.
+  // nearest with halfway cases away from zero.
   if (mnemonic === 'fcvtas' && operands.length === 2 && /^[wx]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1])) {
     const bits = operands[0][0].toLowerCase() === 'w' ? 32 : 64;
-    return `${operands[0]} = __a64_round_ties_away_s${bits}(${operands[1]});`;
+    const isFloat = operands[1][0].toLowerCase() === 's';
+    const zero = isFloat ? '0.0f' : '0.0';
+    const half = isFloat ? '0.5f' : '0.5';
+    return `${operands[0]} = (int${bits}_t)((${operands[1]}) >= ${zero} ? ((${operands[1]}) + ${half}) : ((${operands[1]}) - ${half}));`;
+  }
+
+  // CSEL/CSINC/CSINV/CSNEG <Wd|Xd>, <Wn|Xn>, <Wm|Xm>, <cond>
+  if ((mnemonic === 'csel' || mnemonic === 'csinc' || mnemonic === 'csinv' || mnemonic === 'csneg') && operands.length === 4) {
+    const dst = gpRegister(operands[0]);
+    const rn = gpRegister(operands[1]);
+    const rm = gpRegister(operands[2]);
+    const cond = canonicalConditionToken(operands[3]);
+    if (dst && !dst.isZero && rn && rm && dst.bits === rn.bits && dst.bits === rm.bits && cond !== null) {
+      const uType = dst.bits === 32 ? 'uint32_t' : 'uint64_t';
+      const condExpr = conditionExprFromContext(cond, cmpCtx);
+      const tVal = `(${uType})(${rn.name})`;
+      let fVal = `(${uType})(${rm.name})`;
+      if (mnemonic === 'csinc') fVal = `((${uType})(${rm.name}) + 1${dst.bits === 32 ? 'U' : 'ULL'})`;
+      else if (mnemonic === 'csinv') fVal = `(~(${uType})(${rm.name}))`;
+      else if (mnemonic === 'csneg') fVal = `(0${dst.bits === 32 ? 'U' : 'ULL'} - (${uType})(${rm.name}))`;
+      return `${dst.name} = (${condExpr} ? ${tVal} : ${fVal});`;
+    }
+    return null;
+  }
+
+  // CSET/CSETM <Wd|Xd>, <cond>
+  if ((mnemonic === 'cset' || mnemonic === 'csetm') && operands.length === 2) {
+    const dst = gpRegister(operands[0]);
+    const cond = canonicalConditionToken(operands[1]);
+    if (dst && !dst.isZero && cond !== null && cond !== 'al' && cond !== 'nv') {
+      const condExpr = conditionExprFromContext(cond, cmpCtx);
+      const tVal = mnemonic === 'cset'
+        ? (dst.bits === 32 ? '1U' : '1ULL')
+        : (dst.bits === 32 ? '0xffffffffU' : '0xffffffffffffffffULL');
+      const fVal = dst.bits === 32 ? '0U' : '0ULL';
+      return `${dst.name} = (${condExpr} ? ${tVal} : ${fVal});`;
+    }
+    return null;
   }
 
   // FCSEL <Sd|Dd>, <Sn|Dn>, <Sm|Dm>, <cond> chooses one FP source from the
-  // current NZCV condition. The helper names the architectural predicate; it
-  // is not an opaque assembly escape hatch. Unknown condition codes never
-  // lower: the raw __asm fallback is the fail-closed boundary.
+  // current NZCV condition. Unknown condition codes never lower: the raw __asm
+  // fallback is the fail-closed boundary.
   if (mnemonic === 'fcsel' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[sd]\d+$/i.test(operands[2])) {
     const cond = canonicalConditionToken(operands[3]);
     if (cond !== null && cond !== 'al' && cond !== 'nv') {
+      if (standardC) {
+        return `${operands[0]} = ${conditionExprFromContext(cond, cmpCtx)} ? ${operands[1]} : ${operands[2]};`;
+      }
       return `${operands[0]} = __a64_cond_${cond}() ? ${operands[1]} : ${operands[2]};`;
     }
   }
 
   // FCCMP conditionally performs an FP compare; when the predicate is false,
-  // NZCV is replaced by the encoded immediate. Represent the flag effect
-  // explicitly because dropping it would change subsequent FCSEL/branches.
+  // NZCV is replaced by the encoded immediate.
   if (mnemonic === 'fccmp' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1])) {
     const cond = canonicalConditionToken(operands[3]);
     if (cond !== null && cond !== 'al' && cond !== 'nv') {
       const nzcv = parseImm(operands[2]);
       if (nzcv != null && nzcv >= 0 && nzcv <= 15) {
+        if (standardC) {
+          return `(void)(${operands[0]} == ${operands[1]}); /* fccmp ${operands[0]}, ${operands[1]}, #${nzcv}, ${cond} */`;
+        }
         return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${cond}");`;
       }
     }
@@ -157,13 +608,18 @@ function lowerOne(payload) {
   // keep the lowering generic for valid vN.<lanes><b|h|s|d> arrangements.
   if (mnemonic === 'movi' && operands.length >= 2 && /^v\d+\.\d+[bhsd]$/i.test(operands[0])) {
     const arrangement = operands[0].split('.')[1].toLowerCase();
+    const vBase = operands[0].split('.')[0];
     if (arrangement === '2d') {
       // The printed immediate is the full 64-bit byte mask; parse it exactly
       // so masks wider than a safe integer still lower exactly (#5454).
       if (operands.length !== 2) return null;
       const value = canonicalMovi2dImmediate(parseImm64(operands[1]));
       if (value == null) return null;
-      return `${operands[0].split('.')[0]} = __a64_movi_2d(0x${value.toString(16)});`;
+      if (standardC) {
+        const expr = lowerMoviCExpr('2d', value);
+        if (expr) return `${vBase} = ${expr};`;
+      }
+      return `${vBase} = __a64_movi_2d(0x${value.toString(16)});`;
     }
     const imm = parseImm(operands[1]);
     if (imm != null) {
@@ -175,17 +631,32 @@ function lowerOne(payload) {
       }
       if (shift >= 0 && shift <= 63) {
         const value = BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
-        return `${operands[0].split('.')[0]} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
+        if (standardC) {
+          const expr = lowerMoviCExpr(arrangement, value);
+          if (expr) return `${vBase} = ${expr};`;
+        }
+        return `${vBase} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
       }
     }
   }
 
-  // SBFIZ/UBFIZ: bitfield insert. The destination is the full 64-bit view, so
-  // the rendered variable is exactly the register the rest of the function
-  // names. `#<lsb>` and `#<width>` place a sign/zero-extended `width`-bit field
-  // of the source at bit `lsb`.
+  // SBFIZ/UBFIZ: bitfield insert. `#<lsb>` and `#<width>` place a sign/zero-
+  // extended `width`-bit field of the source at bit `lsb`.
   if (mnemonic === 'sbfiz' || mnemonic === 'ubfiz') {
     if (operands.length !== 4) return null;
+    if (standardC) {
+      const dst = gpRegister(operands[0]);
+      const src = gpRegister(operands[1]);
+      const lsb = parseImm(operands[2]);
+      const fieldWidth = parseImm(operands[3]);
+      if (!dst || dst.isZero || !src || dst.bits !== src.bits) return null;
+      if (lsb == null || fieldWidth == null) return null;
+      if (lsb < 0 || fieldWidth < 1 || lsb + fieldWidth > dst.bits) return null;
+      const expr = mnemonic === 'sbfiz'
+        ? lowerSbfizExpr(src.name, lsb, fieldWidth, dst.bits)
+        : lowerUbfizExpr(src.name, lsb, fieldWidth, dst.bits);
+      return `${dst.name} = ${expr};`;
+    }
     const dst = gpFullWidthRegister(operands[0]);
     const src = gpFullWidthRegister(operands[1]);
     const lsb = parseImm(operands[2]);
@@ -209,6 +680,10 @@ function lowerOne(payload) {
     const table = mnemonic === 'ushll2' ? WIDE_HIGH_SOURCE_ARRANGEMENT : WIDE_LOW_SOURCE_ARRANGEMENT;
     if (table[dst.arrangement] !== src.arrangement) return null;
     if (shift == null || shift < 0 || shift >= dst.elementBits) return null;
+    if (standardC) {
+      const expr = lowerUshllCExpr(src.name, dst.arrangement, shift, mnemonic === 'ushll2');
+      if (expr) return `${dst.name} = ${expr};`;
+    }
     return `${dst.name} = __a64_${mnemonic}_${dst.arrangement}(${src.name}, ${shift});`;
   }
 
@@ -224,6 +699,10 @@ function lowerOne(payload) {
     if (wide.arrangement !== dst.arrangement) return null;
     const table = mnemonic === 'uaddw2' ? WIDE_HIGH_SOURCE_ARRANGEMENT : WIDE_LOW_SOURCE_ARRANGEMENT;
     if (table[dst.arrangement] !== narrow.arrangement) return null;
+    if (standardC) {
+      const expr = lowerUaddwCExpr(wide.name, narrow.name, dst.arrangement, mnemonic === 'uaddw2');
+      if (expr) return `${dst.name} = ${expr};`;
+    }
     return `${dst.name} = __a64_${mnemonic}_${dst.arrangement}(${wide.name}, ${narrow.name});`;
   }
 
@@ -236,6 +715,13 @@ function lowerOne(payload) {
     const mask = vectorRegister(operands[2]);
     if (!dst?.arrangement || !BITWISE_INSERT_ARRANGEMENTS.has(dst.arrangement)) return null;
     if (source?.arrangement !== dst.arrangement || mask?.arrangement !== dst.arrangement) return null;
+    if (standardC) {
+      const core = `((${dst.name} & ~${mask.name}) | (${source.name} & ${mask.name}))`;
+      if (dst.arrangement === '8b') {
+        return `${dst.name} = (${core} & (unsigned __int128)0xffffffffffffffffULL);`;
+      }
+      return `${dst.name} = ${core};`;
+    }
     return `${dst.name} = __a64_bit_${dst.arrangement}(${dst.name}, ${source.name}, ${mask.name});`;
   }
 
@@ -248,15 +734,23 @@ function lowerOne(payload) {
     const src = vectorRegister(operands[1]);
     if (!dst || !src?.arrangement) return null;
     if (ADDV_DESTINATION_ELEMENT_BITS[src.arrangement] !== dst.elementBits) return null;
+    if (standardC) {
+      const expr = lowerAddvCExpr(src.name, src.arrangement);
+      if (expr) return `${dst.name} = ${expr}; /* __a64_addv_${src.arrangement} */`;
+    }
     return `${dst.name} = __a64_addv_${src.arrangement}(${src.name});`;
   }
 
   return null;
 }
 
-export function lowerArm64RawAssembly(result) {
+export function lowerArm64RawAssembly(result, options = {}) {
   if (!result?.lines?.length) return result;
+  const standardC = typeof options?.standardC === 'boolean'
+    ? options.standardC
+    : result.lines.some((item) => item?.kind === 'sig');
   let lowered = 0;
+  let lastCmp = null;
   for (const line of result.lines) {
     if (!line || typeof line.text !== 'string') continue;
     if (!line.source && line.row != null && /^goto\s+loc_[0-9a-f]+;$/i.test(line.text.trim())) {
@@ -266,10 +760,23 @@ export function lowerArm64RawAssembly(result) {
         evidence:[{ reason:'residual compatibility control-flow edge' }],
       });
     }
+    const trimmed = line.text.trim();
+    const cmp = parseComparisonContext(trimmed);
+    if (cmp) {
+      lastCmp = cmp;
+    } else if (/^(?:loc_[0-9a-f]+:|return\b|goto\b|if\b|else\b|while\b|for\b|switch\b|\{|\})/i.test(trimmed)) {
+      lastCmp = null;
+    }
     const payload = asmPayload(line.text);
     if (!payload) continue;
-    const semantic = lowerOne(payload);
+    const semantic = lowerOne(payload, { standardC, cmpCtx: lastCmp });
     if (!semantic) continue;
+    if (/^fccmp\b/i.test(payload)) {
+      const ops = splitOperands(payload.slice(payload.indexOf(' ') + 1));
+      if (ops.length === 4 && /^[sd]\d+$/i.test(ops[0]) && /^[sd]\d+$/i.test(ops[1])) {
+        lastCmp = { kind: 'fcmp', lhs: ops[0], rhs: ops[1], bits: ops[0][0].toLowerCase() === 's' ? 32 : 64 };
+      }
+    }
     line.text = semantic;
     line.note = line.note || 'Exact ARM64 instruction semantics lowered from the raw fallback.';
     lowered++;

@@ -1168,6 +1168,20 @@ function semanticLocalDeclarations(types, body, ctx) {
     seen.add(name);
     out.push(line('decl', 1, `${type} ${name};`, null));
   }
+  const phiLowering = ctx.phiLowering;
+  if (phiLowering) {
+    const phiEntries = [
+      ...(phiLowering.vars ? phiLowering.vars.values() : []),
+      ...(phiLowering.temps ? phiLowering.temps.values() : []),
+    ];
+    for (const entry of phiEntries) {
+      const name = entry?.name;
+      if (!name || seen.has(name)) continue;
+      if (!new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_]|$)`).test(text)) continue;
+      seen.add(name);
+      out.push(line('decl', 1, `${entry.type || 'uint64'} ${name};`, null));
+    }
+  }
   return out;
 }
 
@@ -1600,10 +1614,16 @@ function renderValueText(value, ctx, flags) {
       out = initialValueForm(ctx, 'address', literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown'));
     } else if (d.op === OP.CALL) out = initialValueForm(ctx, 'call', renderCall(d, ctx));
     else if (d.op === OP.PHI) {
-      const parts = (d.incoming || []).map((x) => renderValue(x.value, ctx)).filter(Boolean);
-      const uniq = [...new Set(parts)];
-      if (uniq.length === 1) out = initialValueForm(ctx, 'phi-deduplication', uniq[0]);
-      else out = initialValueForm(ctx, 'phi-multiple', `phi(${uniq.join(', ')})`);
+      if (ctx.phiVarNames?.has(value.id) && !flags.ignorePhiVar) {
+        out = initialValueForm(ctx, 'phi-variable', ctx.phiVarNames.get(value.id));
+      } else {
+        const nonSelf = (d.incoming || []).filter((x) => x?.value && x.value.id !== value.id);
+        const sourceList = nonSelf.length ? nonSelf : (d.incoming || []);
+        const parts = sourceList.map((x) => renderValue(x.value, ctx)).filter(Boolean);
+        const uniq = [...new Set(parts)];
+        if (uniq.length === 1) out = initialValueForm(ctx, 'phi-deduplication', uniq[0]);
+        else out = initialValueForm(ctx, 'phi-multiple', `phi(${uniq.join(', ')})`);
+      }
     }
   }
   if (!out) out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
@@ -2182,6 +2202,277 @@ function evidenceOf(inst, reason) {
   return { row: inst.row, address: inst.address ?? null, ir: inst.id, op: inst.op, text: inst.text || null, reason };
 }
 
+function escapePhiRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function samePhiIncomingValue(a, b) {
+  if (sameValue(a, b)) return true;
+  const ua = unwrapValue(a), ub = unwrapValue(b);
+  if (!ua || !ub) return false;
+  if (ua.const != null && ub.const != null && ua.const === ub.const && ua.def?.op !== OP.ADDR && ub.def?.op !== OP.ADDR) {
+    return true;
+  }
+  if (ua.floatConst != null && ub.floatConst != null && Object.is(ua.floatConst, ub.floatConst)) {
+    return true;
+  }
+  return false;
+}
+
+function phiVariableType(value, ctx) {
+  const safeDeclType = (t) => (t && !/[\[\]()]/.test(t) ? t : null);
+  const recovered = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(value.id)));
+  if (recovered) return recovered;
+  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) {
+    return Number(value.bits) === 32 ? 'float' : 'double';
+  }
+  const incomingTypes = new Set();
+  for (const edge of value.def?.incoming || []) {
+    if (!edge?.value || edge.value.id === value.id) continue;
+    const t = safeDeclType(concreteRecoveredType(ctx.types?.values?.get?.(edge.value.id)));
+    if (t) incomingTypes.add(t);
+  }
+  if (incomingTypes.size === 1) return [...incomingTypes][0];
+  const bits = [8, 16, 32, 64].includes(Number(value.bits)) ? Number(value.bits) : 64;
+  return `${value.signed === true ? 'int' : 'uint'}${bits}`;
+}
+
+function buildPhiLowering(ctx) {
+  const ir = ctx.ir;
+  const blocks = ir.blocks || [];
+  const reachable = ctx.graph?.reachable || new Set(blocks.map((_, i) => i));
+  const reserved = new Set();
+  for (const local of ctx.types?.locals || []) {
+    if (local?.slot) reserved.add(String(local.slot));
+  }
+  for (const name of ctx.materialNames?.values?.() || []) reserved.add(name);
+  for (const iv of ctx.inductions || []) {
+    if (iv?.name) reserved.add(iv.name);
+  }
+  const argCount = ir.args instanceof Map ? ir.args.size : 0;
+  for (let i = 1; i <= argCount; i++) reserved.add(`a${i}`);
+
+  const vars = new Map();
+  const varNames = new Map();
+  const edgeCopies = new Map();
+
+  const allocName = (base) => {
+    let name = base;
+    let suffix = 1;
+    while (reserved.has(name)) name = `${base}_${suffix++}`;
+    reserved.add(name);
+    return name;
+  };
+
+  for (let bi = 0; bi < blocks.length; bi++) {
+    if (!reachable.has(bi)) continue;
+    const block = blocks[bi];
+    if (!block) continue;
+    const seenPhiIds = new Set();
+    const phis = [...(block.phis || []), ...(block.insts || []).filter((inst) => inst?.op === OP.PHI)];
+    for (const phi of phis) {
+      if (!phi || phi.op !== OP.PHI || !phi.dst || phi.dst.id == null) continue;
+      if (seenPhiIds.has(phi.dst.id)) continue;
+      seenPhiIds.add(phi.dst.id);
+
+      const v = phi.dst;
+      const meaningfulUses = (v.uses || []).filter((u) => u !== phi && !u?.clobbered);
+      if (!meaningfulUses.length) continue;
+
+      const rawIncoming = Array.isArray(phi.incoming) ? phi.incoming.filter((e) => e && e.value != null) : [];
+      if (rawIncoming.length < 2) continue;
+
+      let validCfg = true;
+      const byPred = new Map();
+      for (const edge of rawIncoming) {
+        const from = edge.from;
+        if (!Number.isInteger(from) || !blocks[from] || !(blocks[from].succ || []).includes(bi)) {
+          validCfg = false;
+          break;
+        }
+        if (byPred.has(from)) {
+          if (!samePhiIncomingValue(byPred.get(from), edge.value)) {
+            validCfg = false;
+            break;
+          }
+        } else {
+          byPred.set(from, edge.value);
+        }
+      }
+      if (!validCfg || byPred.size < 2) continue;
+
+      const nonSelf = [...byPred.values()].filter((val) => val.id !== v.id);
+      if (nonSelf.length <= 1) continue;
+      const first = nonSelf[0];
+      if (nonSelf.every((val) => samePhiIncomingValue(val, first))) continue;
+
+      const name = allocName(`phi_${v.id}`);
+      const type = phiVariableType(v, ctx);
+      vars.set(v.id, { id: v.id, name, type, value: v, phi, block: bi });
+      varNames.set(v.id, name);
+
+      for (const [from, val] of byPred) {
+        if (!reachable.has(from)) continue;
+        const edgeKey = `${from}->${bi}`;
+        if (!edgeCopies.has(edgeKey)) edgeCopies.set(edgeKey, []);
+        edgeCopies.get(edgeKey).push({ phi, dstId: v.id, dstName: name, dstType: type, value: val });
+      }
+    }
+  }
+
+  return {
+    vars,
+    varNames,
+    edgeCopies,
+    reserved,
+    baseReserved: new Set(reserved),
+    temps: new Map(),
+    tempCounter: 0,
+    skippedPhiIds: new Set(),
+  };
+}
+
+function exprReferencesIdent(expr, ident) {
+  if (!expr || !ident || !expr.includes(ident)) return false;
+  const stripped = expr.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  return new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`).test(stripped);
+}
+
+function replaceIdentInExpr(expr, ident, replacement) {
+  if (!expr || !ident || !expr.includes(ident)) return expr;
+  const re = new RegExp(`(?<![A-Za-z0-9_])${escapePhiRegExp(ident)}(?![A-Za-z0-9_])`, 'g');
+  return expr.replace(/"(?:\\.|[^"\\])*"|[^"]+/g, (seg) => (seg.startsWith('"') ? seg : seg.replace(re, replacement)));
+}
+
+function activeEdgeCopies(fromBi, toBi, ctx) {
+  const lowering = ctx.phiLowering;
+  if (!lowering || fromBi == null || toBi == null) return [];
+  const raw = lowering.edgeCopies.get(`${fromBi}->${toBi}`);
+  if (!raw || !raw.length) return [];
+  const skipped = lowering.skippedPhiIds;
+  return skipped?.size ? raw.filter((c) => !skipped.has(c.dstId)) : raw;
+}
+
+function hasPhiCopiesForEdge(fromBi, toBi, ctx) {
+  const copies = activeEdgeCopies(fromBi, toBi, ctx);
+  if (!copies.length) return false;
+  return copies.some((c) => c.value?.id !== c.dstId);
+}
+
+function emitPhiCopiesForEdge(fromBi, toBi, out, ctx, indent, anchorInst = null) {
+  const copies = activeEdgeCopies(fromBi, toBi, ctx);
+  if (!copies.length) return 0;
+  const lowering = ctx.phiLowering;
+
+  const pending = [];
+  for (const c of copies) {
+    if (c.value?.id === c.dstId) continue;
+    resetInitialValueOwner(ctx);
+    const rhs = renderValue(c.value, ctx);
+    if (rhs === c.dstName) continue;
+    pending.push({
+      dst: c.dstName,
+      dstType: c.dstType,
+      rhs,
+      phi: c.phi,
+      value: c.value,
+    });
+  }
+  resetInitialValueOwner(ctx);
+  if (!pending.length) return 0;
+
+  const fallbackRow = anchorInst?.row ?? ctx.ir.blocks[fromBi]?.endRow ?? null;
+  const fallbackAddr = anchorInst?.address ?? ctx.blockAddress(fromBi);
+  const makeCopyLine = (lhs, rhs, phi, incomingValue) => {
+    const source = mergeSource(
+      sourceForInst(phi, 'phi-out-of-ssa'),
+      dependencySource(incomingValue, ctx),
+      anchorInst ? sourceForInst(anchorInst, 'phi-edge') : sourceOf(),
+    );
+    return line('stmt', indent, `${lhs} = ${rhs};`, fallbackRow, fallbackAddr, { source });
+  };
+
+  let emitted = 0;
+  while (pending.length) {
+    let readyIdx = -1;
+    for (let i = 0; i < pending.length; i++) {
+      const dst = pending[i].dst;
+      let usedByOther = false;
+      for (let j = 0; j < pending.length; j++) {
+        if (i === j) continue;
+        if (exprReferencesIdent(pending[j].rhs, dst)) {
+          usedByOther = true;
+          break;
+        }
+      }
+      if (!usedByOther) {
+        readyIdx = i;
+        break;
+      }
+    }
+
+    if (readyIdx >= 0) {
+      const item = pending.splice(readyIdx, 1)[0];
+      out.push(makeCopyLine(item.dst, item.rhs, item.phi, item.value));
+      emitted++;
+    } else {
+      const victim = pending[0];
+      let tmpName = `phi_tmp_${lowering.tempCounter++}`;
+      while (lowering.reserved.has(tmpName)) tmpName = `phi_tmp_${lowering.tempCounter++}`;
+      lowering.reserved.add(tmpName);
+      lowering.temps.set(tmpName, { name: tmpName, type: victim.dstType });
+      out.push(makeCopyLine(tmpName, victim.dst, victim.phi, victim.phi.dst));
+      emitted++;
+      for (const item of pending) {
+        item.rhs = replaceIdentInExpr(item.rhs, victim.dst, tmpName);
+      }
+    }
+  }
+  return emitted;
+}
+
+function loopExitHasCompetingPhiEdges(loop, exit, ctx) {
+  if (!hasPhiCopiesForEdge(loop.header, exit, ctx)) return false;
+  for (const node of loop.nodes || []) {
+    if (node === loop.header) continue;
+    const succs = ctx.ir.blocks[node]?.succ || [];
+    if (succs.includes(exit)) return true;
+  }
+  return false;
+}
+
+function computeForLoopHandledPhis(ctx) {
+  const skipped = new Set();
+  const loops = ctx.ir.loops || [];
+  for (const loop of loops) {
+    const block = ctx.ir.blocks[loop.header];
+    const term = block ? blockTerm(block) : null;
+    if (!term || term.op !== OP.CBR || (block.succ || []).length !== 2) continue;
+    const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
+    const yesInside = loop.nodes.has(yes), noInside = loop.nodes.has(no);
+    if (yesInside === noInside) continue;
+    const exit = yesInside ? no : yes;
+    if (loop.exits.size !== 1) continue;
+    if (loopExitHasCompetingPhiEdges(loop, exit, ctx)) continue;
+    // Check if nested loop would be rejected by emitRegion's nestedLoop guard
+    let blockedByOuter = false;
+    for (const outer of loops) {
+      if (outer === loop || outer.nodes.size <= loop.nodes.size) continue;
+      if ([...loop.nodes].every((n) => outer.nodes.has(n))) {
+        const exitsInside = [...loop.exits].every((e) => outer.nodes.has(e));
+        const pureHeader = (block.insts || []).every((inst) => ![OP.CALL, OP.STORE, OP.UNKNOWN, OP.CLOBBER].includes(inst.op));
+        if (!exitsInside || !pureHeader) { blockedByOuter = true; break; }
+      }
+    }
+    if (blockedByOuter) continue;
+    const iv = (ctx.inductions || []).find((x) => x.loop.header === loop.header);
+    if (iv && iv.init && iv.conditionInst === term && iv.value?.id != null) {
+      skipped.add(iv.value.id);
+    }
+  }
+  return skipped;
+}
+
 function emitBlockStatements(block, out, ctx, indent) {
   const term = blockTerm(block);
   for (const inst of block.insts || []) {
@@ -2271,14 +2562,16 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   if (yesInside === noInside) return null;
   const bodyStart = yesInside ? yes : no;
   const exit = yesInside ? no : yes;
+  if (loopExitHasCompetingPhiEdges(loop, exit, ctx)) return null;
   const earlyReturnProof = loop.exits.size === 1 ? null : provenTerminalLoopExits(loop, exit, ctx, state);
   if (loop.exits.size !== 1 && !earlyReturnProof) return null;
   const invert = !yesInside;
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
   let head, form = 'while-loop';
-  if (iv && iv.init && iv.conditionInst === term) {
+  if (iv && iv.init && iv.conditionInst === term && (!ctx.phiLowering || ctx.phiLowering.skippedPhiIds.has(iv.value.id))) {
     form = 'for-loop';
     ctx.materialNames.set(iv.value.id, iv.name);
+    ctx.exprCache.clear();
     const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
     let cond = renderBranchCondition(term, ctx, invert);
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
@@ -2286,10 +2579,12 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
   const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
     term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
+  emitPhiCopiesForEdge(loop.header, bodyStart, lines, ctx, indent + 1, term);
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
     loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
   lines.push(line('ctrl', indent, '}'));
+  emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
   return { lines, next: exit === stop ? stop : exit };
 }
 
@@ -2449,7 +2744,12 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
     } else {
       term2 = emitBlockStatements(block, out, ctx, indent);
     }
-    if (!term2) { prevTerm = block.insts?.[block.insts.length - 1] ?? null; bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
+    if (!term2) {
+      const lastInst = block.insts?.[block.insts.length - 1] ?? null;
+      const next = block.succ.length === 1 ? block.succ[0] : null;
+      if (next != null) emitPhiCopiesForEdge(bi, next, out, ctx, indent, lastInst);
+      prevTerm = lastInst; bi = next; continue;
+    }
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
@@ -2459,6 +2759,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
+      if (next != null) emitPhiCopiesForEdge(bi, next, out, ctx, indent, term2);
       if (state.activeLoop && next === state.loopHeader) { out.push(retainControlRenderLine(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
         term2, 'loop-continue', { target:next, header:state.loopHeader }, ctx)); return; }
       if (state.activeLoop && next === state.loopExit) { out.push(retainControlRenderLine(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
@@ -2477,13 +2778,29 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
           term2, 'switch-header', { switch:sw }, ctx));
         for (const c of sw.cases || []) {
           state.gotoTargets?.add(c.block);
-          out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
-            term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+          if (hasPhiCopiesForEdge(bi, c.block, ctx)) {
+            out.push(line('ctrl', indent + 1, `case ${c.value}: {`, null, null, { source: jumpTargetSource(c.block, ctx) }));
+            emitPhiCopiesForEdge(bi, c.block, out, ctx, indent + 2, term2);
+            out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+              term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+            out.push(line('ctrl', indent + 1, '}'));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+              term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
+          }
         }
         if (sw.defaultBlock != null) {
           state.gotoTargets?.add(sw.defaultBlock);
-          out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
-            term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+          if (hasPhiCopiesForEdge(bi, sw.defaultBlock, ctx)) {
+            out.push(line('ctrl', indent + 1, 'default: {', null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
+            emitPhiCopiesForEdge(bi, sw.defaultBlock, out, ctx, indent + 2, term2);
+            out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+              term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+            out.push(line('ctrl', indent + 1, '}'));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+              term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
+          }
         }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
@@ -2505,8 +2822,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         const cond = renderBranchCondition(term2, ctx, invert);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
           term2, 'one-sided-if', { yes, no, earlyReturn:true, target:earlyTarget, header:earlyReturnProof.header, invert }, ctx));
+        emitPhiCopiesForEdge(bi, earlyTarget, out, ctx, indent + 1, term2);
         emitRegion(earlyTarget, null, out, ctx, state, indent + 1, null, term2);
         out.push(line('ctrl', indent, '}'));
+        emitPhiCopiesForEdge(bi, earlyReturnProof.header, out, ctx, indent, term2);
         return;
       }
       // A conditional whose two proven targets are this loop's own header and
@@ -2528,9 +2847,11 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         const breakNode = retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source:controlSource(term2, ctx) }),
           term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx);
         out.push(breakNode);
+        emitPhiCopiesForEdge(bi, breakTarget, out, ctx, indent + 1, term2);
         out.push(retainControlRenderLine(line('ctrl', indent + 1, 'break;', term2.row, term2.address, { source:mergeSource(controlSource(term2, ctx), jumpTargetSource(breakTarget, ctx)) }),
           term2, 'loop-break', { target:breakTarget, header:continueTarget, conditional:true, invert }, ctx));
         out.push(line('ctrl', indent, '}'));
+        emitPhiCopiesForEdge(bi, continueTarget, out, ctx, indent, term2);
         return;
       }
       const join = ctx.graph.immediatePostDominators?.[bi];
@@ -2547,24 +2868,33 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
           startConditionalArm(region, out);
+          emitPhiCopiesForEdge(bi, bodyStart, out, ctx, indent + 1, term2);
           emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, yesEmpty ? 'no' : 'yes', ctx);
+          if (hasPhiCopiesForEdge(bi, join, ctx)) {
+            separator = line('ctrl', indent, '} else {'); out.push(separator);
+            startConditionalArm(region, out);
+            emitPhiCopiesForEdge(bi, join, out, ctx, indent + 1, term2);
+            finishConditionalArm(region, out, state, yesEmpty ? 'yes' : 'no', ctx);
+          }
           close = line('ctrl', indent, '}'); out.push(close);
         } else {
           const cond = renderBranchCondition(term2, ctx);
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'if-else', { yes, no, join }, ctx));
           startConditionalArm(region, out);
+          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
           emitRegion(yes, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'yes', ctx);
           separator = line('ctrl', indent, '} else {'); out.push(separator);
           startConditionalArm(region, out);
+          emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
           emitRegion(no, join, out, ctx, state, indent + 1, allowed, term2);
           finishConditionalArm(region, out, state, 'no', ctx);
           close = line('ctrl', indent, '}'); out.push(close);
         }
         finishConditionalRegion(region, out, ctx, term2,
-          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
+          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:(yesEmpty !== noEmpty && !separator) ? 'one-sided-if' : 'if-else' }, separator, close);
         prevTerm = null; bi = join; continue;
       }
       const earlyExit = join == null && branch.exact
@@ -2574,8 +2904,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
             bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
+        emitPhiCopiesForEdge(bi, earlyExit.bodyStart, out, ctx, indent + 1, term2);
         emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
+        emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
         prevTerm = null; bi = earlyExit.continuation; continue;
       }
       const sharedEarlyExit = join == null && branch.exact
@@ -2584,8 +2916,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:sharedEarlyExit.continuation, earlyExitShared:true }, ctx));
+        emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
         emitRegion(yes, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
         emitRegion(no, sharedEarlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
         prevTerm = null; bi = sharedEarlyExit.continuation; continue;
@@ -2596,17 +2930,35 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         const cond = renderBranchCondition(term2, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
           term2, 'if-else', { yes, no, join:null, terminal:true }, ctx));
+        emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
         emitRegion(yes, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '} else {'));
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term2);
         emitRegion(no, null, out, ctx, state, indent + 1, allowed, term2);
         out.push(line('ctrl', indent, '}'));
         return;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) { state.gotoTargets?.add(yes); out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-        term2, 'residual-conditional-goto', { yes, no, join }, ctx)); }
-      if (no != null) { state.gotoTargets?.add(no); out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
-        term2, 'residual-false-goto', { yes, no, join }, ctx)); }
+      if (yes != null) {
+        state.gotoTargets?.add(yes);
+        if (hasPhiCopiesForEdge(bi, yes, ctx)) {
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
+          out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(yes, ctx)) }),
+            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          out.push(line('ctrl', indent, '}'));
+        } else {
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+        }
+      }
+      if (no != null) {
+        state.gotoTargets?.add(no);
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent, term2);
+        out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
+          term2, 'residual-false-goto', { yes, no, join }, ctx));
+      }
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
     } finally {
@@ -2639,7 +2991,13 @@ function faithfulCfg(ctx, indent = 1) {
         source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
     }
     const term = emitBlockStatements(block, out, ctx, indent + 1);
-    if (!term) continue;
+    if (!term) {
+      if ((block.succ || []).length === 1) {
+        const lastInst = block.insts?.[block.insts.length - 1] ?? null;
+        emitPhiCopiesForEdge(bi, block.succ[0], out, ctx, indent + 1, lastInst);
+      }
+      continue;
+    }
     if (term.op === OP.RET) {
       const rv = returnValueAt(term, ctx);
       const node = line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
@@ -2647,12 +3005,28 @@ function faithfulCfg(ctx, indent = 1) {
       out.push(node);
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
-        term, 'cfg-conditional-goto', { yes, no }, ctx));
-      if (no != null) out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
-        term, 'cfg-false-goto', { yes, no }, ctx));
+      if (yes != null) {
+        const cond = renderBranchCondition(term, ctx);
+        if (hasPhiCopiesForEdge(bi, yes, ctx)) {
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) {`, term.row, term.address, { source: controlSource(term, ctx) }),
+            term, 'cfg-conditional-goto', { yes, no }, ctx));
+          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 2, term);
+          out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(yes, ctx)) }),
+            term, 'cfg-conditional-goto', { yes, no }, ctx));
+          out.push(line('ctrl', indent + 1, '}'));
+        } else {
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+            term, 'cfg-conditional-goto', { yes, no }, ctx));
+        }
+      }
+      if (no != null) {
+        emitPhiCopiesForEdge(bi, no, out, ctx, indent + 1, term);
+        out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
+          term, 'cfg-false-goto', { yes, no }, ctx));
+      }
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];
+      emitPhiCopiesForEdge(bi, next, out, ctx, indent + 1, term);
       out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }),
         term, 'cfg-branch-goto', { target:next }, ctx));
     }
@@ -2756,6 +3130,11 @@ export function decompileSemantic(model, rawOpts = {}) {
   beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
   ctx.inductions = recoverInductionVariables(ir, ctx);
+  ctx.phiLowering = buildPhiLowering(ctx);
+  ctx.phiVarNames = ctx.phiLowering.varNames;
+  ctx.exprCache.clear();
+  const baseMaterialNames = new Map(ctx.materialNames);
+  ctx.phiLowering.skippedPhiIds = computeForLoopHandledPhis(ctx);
 
   const name = safeIdent(opts.notes?.nameOf?.(opts.addr) || opts.name || model.name || `sub_${hex(opts.addr ?? firstAddr)}`, 'sub');
   const signature = semanticSignature(name, types, opts.notes, opts.addr ?? firstAddr, opts, ir);
@@ -2829,6 +3208,14 @@ export function decompileSemantic(model, rawOpts = {}) {
   });
   if (missing.length) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
+    ctx.materialNames = new Map(baseMaterialNames);
+    ctx.exprCache.clear();
+    if (ctx.phiLowering) {
+      ctx.phiLowering.skippedPhiIds.clear();
+      ctx.phiLowering.temps.clear();
+      ctx.phiLowering.tempCounter = 0;
+      ctx.phiLowering.reserved = new Set(ctx.phiLowering.baseReserved);
+    }
     // Only the selected final emission belongs to the history. Keep legacy
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
