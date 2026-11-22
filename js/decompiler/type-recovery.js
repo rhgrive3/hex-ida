@@ -4,6 +4,7 @@
  */
 
 import { OP, MK, COND } from '../ir.js';
+import { abiAdapterForIr } from '../ir-core.js';
 import { currentCppReceiver } from './cxx-evidence.js';
 import { knownCallPrototype, knownCallSignature } from './call-prototypes.js';
 
@@ -219,7 +220,22 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
  * bookkeeping (self-looping/dead PHIs, dead register copies, clobber markers,
  * or live-through argument slots past a known fixed-arity callee's signature).
  */
-function hasRealValueUse(value, ir, visited = new Set()) {
+function dominatedByEarlierCall(ir, atInst) {
+  if (!ir || !atInst) return false;
+  for (const other of ir.instructions || []) {
+    if (!other || other === atInst || other.op !== OP.CALL) continue;
+    if (other.block === atInst.block) {
+      if (other.row != null && atInst.row != null && other.row < atInst.row) return true;
+      continue;
+    }
+    if (other.block != null && atInst.block != null && blockDominates(ir, other.block, atInst.block)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null) {
   if (!value || visited.has(value)) return false;
   visited.add(value);
   const uses = Array.isArray(value.uses) ? value.uses : [];
@@ -227,11 +243,14 @@ function hasRealValueUse(value, ir, visited = new Set()) {
     if (!inst) continue;
     if (inst.op === OP.CLOBBER) continue;
     if (inst.op === OP.PHI || inst.op === OP.MOV) {
-      if (inst.dst && hasRealValueUse(inst.dst, ir, visited)) return true;
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName)) return true;
       continue;
     }
     if (inst.op === OP.CALL) {
-      const name = String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
+      if (!value.def && dominatedByEarlierCall(ir, inst)) continue;
+      const name = resolveCalleeName
+        ? resolveCalleeName(inst)
+        : String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
       const proto = knownCallPrototype(name);
       if (proto && !proto.variadic && !inst.extra?.indirect) {
         const callArgs = Array.isArray(inst.args) ? inst.args : [];
@@ -269,10 +288,11 @@ function applyRuntimeHints(ir, evidences, runtime) {
 
 export function inferSemanticTypes(ir, model, opts = {}) {
   if (!ir) return { args:[], locals:[], ret:{type:'void',conf:0.2}, values:new Map(), locations:new Map(), warnings:['Semantic IR unavailable'] };
+  const effectiveAbiAdapter = opts.abiAdapter != null ? opts.abiAdapter : abiAdapterForIr(ir);
   const legacyAArch64 = opts.legacyAArch64 === true
-    || (!opts.abiAdapter && ir?.compat?.projection !== 'semantic-ir-v2-to-v1');
-  const argumentRegisters = opts.abiAdapter?.supported === true
-    ? (opts.abiAdapter.argumentRegisters?.() ?? [])
+    || (!effectiveAbiAdapter && ir?.compat?.projection !== 'semantic-ir-v2-to-v1');
+  const argumentRegisters = effectiveAbiAdapter?.supported === true
+    ? (effectiveAbiAdapter.argumentRegisters?.() ?? [])
     : legacyAArch64
       ? Array.from({ length:8 }, (_unused, i) => `x${i}`)
       : [];
@@ -297,6 +317,85 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     }
   }
 
+  const modelCallByRow = new Map();
+  for (const c of (model && model.calls) || []) {
+    if (c && c.row != null && !modelCallByRow.has(c.row)) modelCallByRow.set(c.row, c);
+  }
+  const calleeNameOf = (inst) => {
+    if (!inst) return '';
+    const mc = inst.row != null ? modelCallByRow.get(inst.row) : null;
+    return String(
+      (inst.extra && (inst.extra.name || inst.extra.targetName))
+      || (inst.insn && (inst.insn.callName || inst.insn.targetName))
+      || (mc && (mc.name || mc.targetName))
+      || ''
+    );
+  };
+  const callRetTypeToSemantic = (retType) => {
+    if (retType === 'void') return 'void';
+    if (retType === 'double') return 'double';
+    if (retType === 'float') return 'float';
+    if (retType === 'ptr') return 'void *';
+    if (retType === 'size') return 'uint64';
+    if (retType === 'int') return 'int32';
+    return 'uint64';
+  };
+  const callParamTypeToSemantic = (pType) => {
+    if (pType === 'double') return 'double';
+    if (pType === 'float') return 'float';
+    if (pType === 'ptr') return 'void *';
+    if (pType === 'size') return 'uint64';
+    if (pType === 'int') return 'int32';
+    return 'uint64';
+  };
+  const passThroughGpArgs = new Map();
+  const passThroughFpArgs = new Map();
+  const passThroughRegs = new Set();
+  const recordPassThroughForCall = (inst, name) => {
+    if (!argumentRegisters.length || dominatedByEarlierCall(ir, inst)) return;
+    const callSig = knownCallSignature(name);
+    const proto = callSig || knownCallPrototype(name);
+    if (!proto || !proto.arity) return;
+    const paramTypes = Array.isArray(callSig?.paramTypes) && callSig.paramTypes.length
+      ? callSig.paramTypes
+      : Array.from({ length: proto.arity }, () => null);
+    let gpIdx = 0;
+    let fpIdx = 0;
+    for (const pType of paramTypes) {
+      if (pType === 'double' || pType === 'float') {
+        if (isAArch64ArgSet && fpIdx < 8) {
+          const fpNames = pType === 'float' ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`] : [`d${fpIdx}`, `v${fpIdx}`];
+          let fpVal = null;
+          let matchedReg = fpNames[0];
+          for (const rn of fpNames) {
+            const rv = reachingRegisterTypeValue(ir, inst, rn);
+            if (rv) { fpVal = rv; matchedReg = rn; break; }
+          }
+          const isIncoming = fpVal ? (!fpVal.def && ir.args?.get?.(matchedReg) === fpVal) : true;
+          if (isIncoming) {
+            passThroughRegs.add(matchedReg);
+            if (!passThroughFpArgs.has(fpIdx)) {
+              passThroughFpArgs.set(fpIdx, { reg: matchedReg, type: pType, callName: proto.name, value: fpVal });
+            }
+          }
+        }
+        fpIdx++;
+      } else {
+        const gpRegName = argumentRegisters[gpIdx];
+        if (gpRegName) {
+          const gpVal = reachingRegisterTypeValue(ir, inst, gpRegName);
+          const isIncoming = gpVal ? (!gpVal.def && ir.args?.get?.(gpRegName) === gpVal) : true;
+          if (isIncoming) {
+            passThroughRegs.add(gpRegName);
+            if (!passThroughGpArgs.has(gpIdx)) {
+              passThroughGpArgs.set(gpIdx, { reg: gpRegName, type: callParamTypeToSemantic(pType), callName: proto.name, value: gpVal });
+            }
+          }
+        }
+        gpIdx++;
+      }
+    }
+  };
   const branches = branchSignedness(ir);
   for (const inst of ir.instructions || []) {
     const dst = eFor(inst.dst);
@@ -372,7 +471,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     }
 
     if (inst.op === OP.CALL) {
-      const name = String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
+      const name = calleeNameOf(inst);
+      recordPassThroughForCall(inst, name);
       if (/objc_msgSend/.test(name) && firstArgumentRegister) {
         const recv = reachingRegisterTypeValue(ir, inst, firstArgumentRegister);
         const re = eFor(recv); if (re) score(re, 'objc', 6, `row ${inst.row}: Objective-C message receiver`);
@@ -422,6 +522,11 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         }
       }
     }
+
+    if ((inst.op === OP.BR || inst.op === 'jmp') && !inst.dst) {
+      const tailName = calleeNameOf(inst);
+      if (tailName) recordPassThroughForCall(inst, tailName);
+    }
   }
 
   applyRuntimeHints(ir, ev, opts.runtime || opts.appleRuntime);
@@ -439,36 +544,105 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   const args = [];
   argumentRegisters.forEach((reg, i) => {
     const v = ir.args && ir.args.get ? ir.args.get(reg) : null;
-    if (!v) return;
+    const pt = passThroughGpArgs.get(i) || null;
+    if (!v) {
+      if (pt) {
+        args.push({
+          reg,
+          index: i,
+          valueId: null,
+          type: pt.type || 'uint64',
+          conf: 0.65,
+          why: [`pass-through argument to ${pt.callName}`],
+        });
+      }
+      return;
+    }
     const t = values.get(v.id) || { name:'unknown', confidence:0.2 };
     const used = (v.uses || []).length > 0
-      ? hasRealValueUse(v, ir)
-      : (!anyUseTracked && ((model && model.argRegs) || []).includes(i));
+      ? (hasRealValueUse(v, ir, new Set(), calleeNameOf) || pt != null)
+      : (pt != null || (!anyUseTracked && ((model && model.argRegs) || []).includes(i)));
     if (!used) return;
-    args.push({ reg, index:i, valueId:v.id, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
+    const resolvedType = t.name === 'unknown' && pt?.type ? pt.type : t.name;
+    const resolvedConf = t.name === 'unknown' && pt?.type ? Math.max(t.confidence || 0.2, 0.65) : t.confidence;
+    args.push({ reg, index:i, valueId:v.id, type:resolvedType, conf:resolvedConf, why:t.evidence || [], semanticType:t });
   });
 
+  // Fill positional parameter gaps for GP arguments (e.g., unused x0 when x1 is used).
+  if (args.length > 0) {
+    const maxGpIdx = Math.max(...args.map((a) => a.index));
+    if (maxGpIdx > 0) {
+      const presentGp = new Set(args.map((a) => a.index));
+      for (let i = 0; i < maxGpIdx; i++) {
+        if (presentGp.has(i)) continue;
+        const reg = argumentRegisters[i];
+        if (!reg) continue;
+        args.push({
+          reg,
+          index: i,
+          valueId: ir.args?.get?.(reg)?.id ?? null,
+          type: 'uint64',
+          conf: 0.3,
+          why: ['positional ABI argument slot'],
+        });
+      }
+      args.sort((a, b) => a.index - b.index);
+    }
+  }
+
   // Collect AArch64 floating-point incoming arguments (`d0..d7` / `s0..s7` / `v0..v7` / `q0..q7`).
-  if (isAArch64ArgSet && ir.args && typeof ir.args.get === 'function') {
-    let nextArgIndex = args.length ? Math.max(...args.map((a) => a.index)) + 1 : 0;
+  if (isAArch64ArgSet) {
+    const fpPicked = new Map();
     for (let k = 0; k < 8; k++) {
       let pickedReg = null;
       let pickedVal = null;
-      for (const candidateReg of [`d${k}`, `s${k}`, `v${k}`, `q${k}`]) {
-        const v = ir.args.get(candidateReg);
-        if (v && hasRealValueUse(v, ir)) {
-          pickedReg = candidateReg;
-          pickedVal = v;
-          break;
+      if (ir.args && typeof ir.args.get === 'function') {
+        for (const candidateReg of [`d${k}`, `s${k}`, `v${k}`, `q${k}`]) {
+          const v = ir.args.get(candidateReg);
+          if (v && (hasRealValueUse(v, ir, new Set(), calleeNameOf) || passThroughRegs.has(candidateReg))) {
+            pickedReg = candidateReg;
+            pickedVal = v;
+            break;
+          }
         }
       }
-      if (!pickedVal) continue;
+      const ptFp = passThroughFpArgs.get(k) || null;
+      if (!pickedVal && !ptFp) continue;
+      if (!pickedVal && ptFp) {
+        fpPicked.set(k, {
+          reg: ptFp.reg,
+          valueId: null,
+          type: ptFp.type || 'double',
+          conf: 0.65,
+          why: [`pass-through FP argument to ${ptFp.callName}`],
+        });
+        continue;
+      }
       let t = values.get(pickedVal.id) || { name:'unknown', confidence:0.2 };
       if (t.name === 'unknown') {
-        if (pickedReg.startsWith('s')) t = { ...t, name: 'float', kind: 'float', bits: 32 };
-        else if (pickedReg.startsWith('d')) t = { ...t, name: 'double', kind: 'float', bits: 64 };
+        if (pickedReg.startsWith('s') || ptFp?.type === 'float') t = { ...t, name: 'float', kind: 'float', bits: 32 };
+        else if (pickedReg.startsWith('d') || ptFp?.type === 'double') t = { ...t, name: 'double', kind: 'float', bits: 64 };
       }
-      args.push({ reg: pickedReg, index: nextArgIndex++, valueId: pickedVal.id, type: t.name, conf: t.confidence, why: t.evidence || [], semanticType: t });
+      fpPicked.set(k, { reg: pickedReg, valueId: pickedVal.id, type: t.name, conf: t.confidence, why: t.evidence || [], semanticType: t });
+    }
+    if (fpPicked.size > 0) {
+      let nextArgIndex = args.length ? Math.max(...args.map((a) => a.index)) + 1 : 0;
+      const maxFpIdx = Math.max(...fpPicked.keys());
+      for (let k = 0; k <= maxFpIdx; k++) {
+        if (fpPicked.has(k)) {
+          args.push({ ...fpPicked.get(k), index: nextArgIndex++ });
+        } else {
+          const fallbackReg = `d${k}`;
+          args.push({
+            reg: fallbackReg,
+            index: nextArgIndex++,
+            valueId: ir.args?.get?.(fallbackReg)?.id ?? ir.args?.get?.(`s${k}`)?.id ?? null,
+            type: 'double',
+            conf: 0.3,
+            why: ['positional ABI argument slot'],
+          });
+        }
+      }
     }
   }
 
@@ -481,31 +655,93 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
   let ret = { type:'void', conf:0.55, why:[] };
   const rets = (ir.instructions || []).filter((i) => i.op === OP.RET);
+  const returnRegister = effectiveAbiAdapter?.returnRegister?.({ returnType:'int64' })
+    ?? (isAArch64ArgSet ? 'x0' : null);
+  const fpRetReg = effectiveAbiAdapter?.returnRegister?.({ returnType:'double' })
+    ?? (isAArch64ArgSet ? 'd0' : null);
+  const fpCandidates = isAArch64ArgSet
+    ? [...new Set([fpRetReg, 'd0', 's0', 'v0'].filter(Boolean))]
+    : [fpRetReg].filter(Boolean);
+
+  const findFpReturnVals = () => {
+    for (const regName of fpCandidates) {
+      const found = rets.map((r) => reachingRegisterTypeValue(ir, r, regName))
+        .filter((value) => {
+          if (!value || !value.def) return false;
+          if (regName === 'v0') {
+            const vt = values.get(value.id);
+            return vt && (vt.kind === 'float' || vt.name === 'double' || vt.name === 'float');
+          }
+          return true;
+        });
+      if (found.length) return found;
+    }
+    return [];
+  };
+
   if (rets.length) {
     let vals = rets.map((r) => valueOf(r.args && r.args[0])).filter(Boolean);
-    if (!vals.length) {
-      // A return instruction that carries no explicit value still leaves the
-      // result in the register the ABI designates. Ask the convention which
-      // one; do not guess a register name.
-      const returnRegister = opts.abiAdapter?.returnRegister?.({ returnType:'int64' }) ?? null;
-      if (returnRegister) {
-        vals = rets.map((r) => reachingRegisterTypeValue(ir, r, returnRegister))
-          .filter((value) => value && ((value.uses || []).length > 0 || value.def));
-      }
-      if (!vals.length) {
-        const fpRetReg = opts.abiAdapter?.returnRegister?.({ returnType:'double' }) ?? (isAArch64ArgSet ? 'd0' : null);
-        const fpCandidates = isAArch64ArgSet ? [fpRetReg, 's0'].filter(Boolean) : [fpRetReg].filter(Boolean);
-        for (const regName of fpCandidates) {
-          const found = rets.map((r) => reachingRegisterTypeValue(ir, r, regName))
-            .filter((value) => value && value.def);
-          if (found.length) { vals = found; break; }
-        }
+    if (!vals.length && returnRegister) {
+      vals = rets.map((r) => reachingRegisterTypeValue(ir, r, returnRegister))
+        .filter((value) => {
+          if (!value) return false;
+          if (value.def) return true;
+          if (ir.args?.get?.(returnRegister) === value && !value.clobbered) {
+            return (value.uses || []).length > 0 || passThroughRegs.has(returnRegister);
+          }
+          return (value.uses || []).length > 0;
+        });
+    }
+    const fpVals = findFpReturnVals();
+    if (!vals.length && fpVals.length) {
+      vals = fpVals;
+    } else if (vals.length && fpVals.length) {
+      // If GP return register is only defined by an earlier helper call (e.g. malloc/free)
+      // before a floating-point computation in d0/s0 that is the latest definition before RET,
+      // prefer the FP return value over the stale GP register.
+      const allGpFromHelperCall = vals.every((v) => v?.def?.op === OP.CALL);
+      const allGpConsumedInternally = vals.every((v) => (v?.uses || []).some((u) => u && u.op !== OP.RET && u.op !== OP.CLOBBER));
+      const allFpFreshReturn = fpVals.every((v) => !(v?.uses || []).some((u) => u && u.op !== OP.RET && u.op !== OP.CLOBBER));
+      const maxGpRow = Math.max(...vals.map((v) => v.def?.row ?? -1));
+      const maxFpRow = Math.max(...fpVals.map((v) => v.def?.row ?? -1));
+      const allGpVoidCall = allGpFromHelperCall && vals.every((v) => knownCallSignature(calleeNameOf(v.def))?.retType === 'void');
+      if (allGpVoidCall || (maxFpRow > maxGpRow && (allGpFromHelperCall || (allGpConsumedInternally && allFpFreshReturn)))) {
+        vals = fpVals;
       }
     }
     if (vals.length) {
       let picked = null;
       for (const v of vals) picked = mergeRecoveredTypes(picked, values.get(v.id));
       if (picked) ret = { type:picked.name, conf:picked.confidence, why:picked.evidence || [], semanticType:picked };
+    }
+  } else {
+    // Tail-call function with no OP.RET (e.g. `b strlen` or tail OP.CALL):
+    // inspect the final instruction of the last block / instruction list.
+    const insts = ir.instructions || [];
+    const blocks = ir.blocks || [];
+    const tailCandidates = [];
+    for (const b of blocks) {
+      if (Array.isArray(b?.succ) && b.succ.length > 0) continue;
+      const bInsts = Array.isArray(b?.insts) && b.insts.length
+        ? b.insts
+        : insts.filter((i) => i.block === b.index || i.block === b.id);
+      if (bInsts.length) tailCandidates.push(bInsts[bInsts.length - 1]);
+    }
+    if (!tailCandidates.length && insts.length) tailCandidates.push(insts[insts.length - 1]);
+    for (const tailInst of tailCandidates) {
+      if (!tailInst) continue;
+      const isCall = tailInst.op === OP.CALL;
+      const tailName = calleeNameOf(tailInst);
+      const isTailBranch = (tailInst.op === OP.BR || tailInst.op === 'jmp') && Boolean(tailName);
+      if (!isCall && !isTailBranch) continue;
+      const sig = tailName ? knownCallSignature(tailName) : null;
+      const rt = sig?.retType ? callRetTypeToSemantic(sig.retType) : 'uint64';
+      ret = {
+        type: rt,
+        conf: sig?.retType ? 0.75 : 0.5,
+        why: [tailName ? `tail call to ${tailName}` : 'tail call return'],
+      };
+      break;
     }
   }
 

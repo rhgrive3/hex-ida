@@ -29,6 +29,8 @@ const FIXED = new Map([
   ['tolower', 1], ['toupper', 1], ['isalpha', 1], ['isdigit', 1], ['isalnum', 1],
   ['isspace', 1], ['isupper', 1], ['islower', 1], ['isprint', 1], ['ispunct', 1],
   ['isxdigit', 1], ['iscntrl', 1], ['isgraph', 1], ['isblank', 1],
+  ['ctype_b_loc', 0], ['ctype_toupper_loc', 0], ['ctype_tolower_loc', 0],
+  ['errno_location', 0],
   // stdlib
   ['free', 1], ['malloc', 1], ['calloc', 2], ['realloc', 2],
   ['atoi', 1], ['atol', 1], ['atoll', 1], ['atof', 1],
@@ -168,6 +170,10 @@ const SIGNATURES = new Map([
   ['modff', { retType: 'float', paramTypes: ['float', 'ptr'] }],
   ['fma', { retType: 'double', paramTypes: ['double', 'double', 'double'] }],
   ['fmaf', { retType: 'float', paramTypes: ['float', 'float', 'float'] }],
+  ['ctype_b_loc', { retType: 'ptr', paramTypes: [] }],
+  ['ctype_toupper_loc', { retType: 'ptr', paramTypes: [] }],
+  ['ctype_tolower_loc', { retType: 'ptr', paramTypes: [] }],
+  ['errno_location', { retType: 'ptr', paramTypes: [] }],
 ]);
 
 export function normalizeExternalSymbol(name) {
