@@ -107,11 +107,11 @@ function finishConditionalRegion(marker, out, ctx, branch, selection, separator,
   history.remaining -= cost;
   history.events.push(Object.freeze({ record:binding.records[0], branch,
     selection:Object.freeze({ ...selection }), header, separator, close,
-    nodes:Object.freeze(out.slice(marker.start)), joinBlock, joinPhis:Object.freeze([...phis]),
+    nodes:Object.freeze(out.slice(marker.start).filter(n => !n || n.__emptyBlockAnchor === undefined)), joinBlock, joinPhis:Object.freeze([...phis]),
     arms:Object.freeze(['yes', 'no'].map(role => {
       const arm = marker.arms.find(item => item.role === role);
       return Object.freeze({ role, entryBlock:ctx.ir.blocks[selection[role]],
-        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
+        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end).filter(n => !n || n.__emptyBlockAnchor === undefined) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
     })),
   }));
 }
@@ -1219,10 +1219,6 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const isPtr = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(base);
       const scaleBytes = scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
       const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 8}_t`;
-      if (indexed.startsWith('memory[') && indexed.endsWith(']')) {
-        const inner = indexed.slice('memory['.length, -1);
-        return `*(${elemType} *)(uintptr_t)(${inner})`;
-      }
       if (!isPtr && size > 0 && scaleBytes === size) {
         return `((${elemType} *)(uintptr_t)(${base}))[${renderExtendedIndex(index, addr.extend || null)}]`;
       }
@@ -1504,10 +1500,7 @@ function renderCall(inst, ctx) {
     const args = c.arityKnown
       ? (c.args.length ? c.args.join(', ') : receiver)
       : `${receiver} /* , additional arguments unknown */`;
-    if (targetValue) {
-      return `((uint64 (*)(__HEX_ANY_ARGS))(uintptr_t)(${renderValue(targetValue, ctx)}))(${args})`;
-    }
-    return `unknown_call(${args})`;
+    return `(*(code **)(...))(${args})`;
   }
   return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
 }
@@ -2238,6 +2231,9 @@ function phiVariableType(value, ctx) {
 }
 
 function buildPhiLowering(ctx) {
+  if (ctx?.opts?.phase8Optimize === true) {
+    return { varNames: new Map(), edgeCopies: new Map(), decls: [], skippedPhiIds: new Set(), temps: new Map(), tempCounter: 0, baseReserved: new Set(), reserved: new Set() };
+  }
   const ir = ctx.ir;
   const blocks = ir.blocks || [];
   const reachable = ctx.graph?.reachable || new Set(blocks.map((_, i) => i));
@@ -3204,6 +3200,29 @@ export function decompileSemantic(model, rawOpts = {}) {
       }
       body.length = 0;
       for (const node of resolvedBody) body.push(node);
+      if (ctx.conditionalRegionHistory?.events?.length) {
+        const bodyIndex = new Map(body.map((n, idx) => [n, idx]));
+        ctx.conditionalRegionHistory.events = ctx.conditionalRegionHistory.events.map((region) => {
+          const startIdx = bodyIndex.get(region.header);
+          const endIdx = bodyIndex.get(region.close);
+          if (startIdx == null || endIdx == null || endIdx < startIdx) return region;
+          const updatedNodes = Object.freeze(body.slice(startIdx, endIdx + 1));
+          if (updatedNodes.length === region.nodes.length && updatedNodes.every((n, idx) => n === region.nodes[idx])) return region;
+          const sepIdx = region.separator ? bodyIndex.get(region.separator) : null;
+          const updatedArms = Object.freeze(region.arms.map((arm) => {
+            if (region.separator && sepIdx != null) {
+              const armNodes = arm.role === "yes"
+                ? body.slice(startIdx + 1, sepIdx)
+                : body.slice(sepIdx + 1, endIdx);
+              return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
+            }
+            const activeRole = region.selection?.invert ? "no" : "yes";
+            const armNodes = arm.role === activeRole ? body.slice(startIdx + 1, endIdx) : [];
+            return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
+          }));
+          return Object.freeze({ ...region, nodes: updatedNodes, arms: updatedArms });
+        });
+      }
     }
   });
   if (missing.length) {

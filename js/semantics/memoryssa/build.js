@@ -1198,7 +1198,6 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     byteRange: memoryRegionByteRange(region),
   }]));
   const aliasCache = new Map();
-  const rawRegionAliasCache = new Map();
   const queryAlias = (left, right, purpose, skipProofIfNo = false) => {
     const key = `${left.key}\u0000${right.key}\u0000${purpose}`;
     if (aliasCache.has(key)) return aliasCache.get(key);
@@ -1218,27 +1217,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-special-alias-query-unsupported');
     }
     if (raw == null && typeof options.queryAlias === 'function') {
-      const canMemoRaw = right?.descriptor == null
-        && left?.descriptor?.broad !== true
-        && left?.region?.id != null
-        && right?.region?.id != null;
-      const rawKey = canMemoRaw ? `${left.region.id}\u0000${right.region.id}` : null;
-      if (rawKey != null && rawRegionAliasCache.has(rawKey)) {
-        raw = rawRegionAliasCache.get(rawKey);
-      } else {
-        raw = options.queryAlias(left.region, right.region, {
-          function: irFunction,
-          cfg,
-          left,
-          right,
-          purpose,
-          signal: options.signal,
-          ssa: options.ssa ?? null,
-          rootDescriptorProvider: options.rootDescriptorProvider ?? null,
-        });
-        if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-alias-query-unsupported');
-        if (rawKey != null) rawRegionAliasCache.set(rawKey, raw);
-      }
+      raw = options.queryAlias(left.region, right.region, {
+        function: irFunction,
+        cfg,
+        left,
+        right,
+        purpose,
+        signal: options.signal,
+        ssa: options.ssa ?? null,
+        rootDescriptorProvider: options.rootDescriptorProvider ?? null,
+      });
+      if (raw && typeof raw.then === 'function') fail('memory-ssa-build-async-alias-query-unsupported');
     }
     if (raw == null) raw = 'unknown';
     const result = normalizeAliasResult(raw);

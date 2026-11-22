@@ -42,6 +42,7 @@ function makeHarness(responses) {
   app.store = { get: (key) => key === 'regions' ? [region] : null };
   app.viewer = { setSymbols() {} };
   app.programRegions = () => [region];
+  app.persistAnalysisSession = () => {};
   return { app, region, calls: () => calls };
 }
 

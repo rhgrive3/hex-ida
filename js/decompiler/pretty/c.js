@@ -102,11 +102,12 @@ function guardedDivision(n, opts, parentPrec = 0) {
   if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
   if (divisor?.kind === 'const') return null;
   const divType = signed ? exactSignedType(bits) : exactUnsignedType(bits);
-  const castLeft = hasIntegerView(n.left, bits, signed)
+  const matchesUnsignedVar = (node) => !signed && node?.kind === "var" && (node.bits == null || normalizedIntegerWidth(node.bits) === bits) && node.signed !== true;
+  const castLeft = (hasIntegerView(n.left, bits, signed) || matchesUnsignedVar(n.left))
     ? printExpression(n.left, PREC.sdiv, opts)
     : `(${divType})${printExpression(n.left, PREC.unary, opts)}`;
   const rawRight = printExpression(n.right, PREC.unary, opts);
-  const castRight = hasIntegerView(n.right, bits, signed)
+  const castRight = (hasIntegerView(n.right, bits, signed) || matchesUnsignedVar(n.right))
     ? printExpression(n.right, PREC.sdiv + 1, opts)
     : `(${divType})${rawRight}`;
   const divEffect = effectOf(divisor);

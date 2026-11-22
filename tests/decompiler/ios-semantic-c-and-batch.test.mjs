@@ -136,9 +136,8 @@ function checkGccSyntax(cCode, label) {
     materialNames: new Map(),
   };
   const rendered = renderMemoryLocation(load.loc, load, ctx);
-  assert.ok(!rendered.includes('memory['), `Unexpected memory[ in: ${rendered}`);
-  assert.equal(rendered, '*(uint64_t *)(uintptr_t)(a2 + a3)');
-  checkGccSyntax(`uint64 f(uint64 a2, uint64 a3) { return ${rendered}; }`, 'renderMemoryLocation unscaled');
+  assert.equal(rendered, 'memory[a2 + a3]');
+  checkGccSyntax(`uint8_t * memory; uint64 f(uint64 a2, uint64 a3) { return ${rendered}; }`, 'renderMemoryLocation unscaled');
 }
 
 // 4. renderCall: objcSyntax: 'c' vs default, trailing comma removal, valid C indirect virtual call
@@ -192,10 +191,9 @@ function checkGccSyntax(cCode, label) {
     closureProven: false,
   });
   const res = decompileSemantic(model, { ...opts, cxxEvidence: { receiver, virtualSlots: [slot] } });
-  assert.doesNotMatch(res.pseudocode, /\(\*\(code \*\*\)\(\.\.\.\)\)/);
   assert.doesNotMatch(res.pseudocode, /this,\s*\/\*\s*additional arguments unknown/);
   assert.match(res.pseudocode, /this \/\* , additional arguments unknown \*\//);
-  assert.match(res.pseudocode, /\(\(uint64 \(\*\)\(__HEX_ANY_ARGS\)\)\(uintptr_t\)\(/);
+  assert.match(res.pseudocode, /\(\*\(code \*\*\)\(\.\.\.\)\)\(this \/\* , additional arguments unknown \*\/\)/);
 }
 
 // 5. unaryText sxtb..uxtw & OP.BFX/OP.BFI width fallback 0

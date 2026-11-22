@@ -1286,7 +1286,7 @@ function restoreAapcs64PublicLocations(projected, history = null) {
 }
 
 function abiBindingObserver(projected) {
-  const observer = { records:[], sources:new WeakSet(), count:0, selection:null, observations:new Map() };
+  const observer = { records:[], sources:new WeakSet(), count:0, selection:null, batchObservation:null };
   try { observer.selection = observePreservedStateSelection(projected); } catch { /* Bounded selection is unavailable. */ }
   return observer;
 }
@@ -1321,11 +1321,16 @@ function retainAbiBinding(projected, inst, binding, observer, history, direction
       inputs:Object.freeze(values.map(value => Object.freeze({ value, definition:value.def }))), beforeInputs:Object.freeze(values),
       object:Object.freeze({ beforeArguments:binding.beforeArguments, beforeExtra:binding.beforeExtra,
         afterArguments:inst.args, afterExtra:inst.extra, descriptors:binding.descriptors, selections:Object.freeze(binding.selections) }) });
-    const current = observeProjectedOperationData(projected, [event]);
-    if (!current()) return;
     observer.records.push(event);
-    observer.observations.set(event, { current, offset:history.writes.length });
   } catch { /* Actual argument writes remain; no later public object can reissue history. */ }
+}
+
+function observeAbiBindingBatch(projected, observer, history) {
+  if (!observer.records.length || !history || history.unavailable) return;
+  try {
+    const current = observeProjectedOperationData(projected, observer.records);
+    observer.batchObservation = { current, offset:history.writes.length };
+  } catch { /* Bounded observation is unavailable; no later public object can reissue history. */ }
 }
 
 function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) {
@@ -1335,27 +1340,30 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
   if (!expected.count || !writes || writes.unavailable) return;
   try {
     const valid = [], checks = [];
-    for (const [observer, following] of [[calls, typedResults], [returns, null]]) {
-      if (!observer.selection || !observer.selection(following)) continue;
+    for (const [observer, following, needsBatch] of [[calls, typedResults, true], [returns, null, false]]) {
+      if (!observer.selection || !observer.records.length || !observer.selection(following)) continue;
       checks.push(() => observer.selection(following));
-      for (const event of observer.records) {
-        const observed = observer.observations.get(event), chain = Object.freeze(writes.writes.slice(observed.offset));
+      if (needsBatch) {
+        const observed = observer.batchObservation;
+        if (!observed) continue;
+        const chain = Object.freeze(writes.writes.slice(observed.offset));
         const current = Object.freeze(Object.assign(() => observed.current.matchesThroughWrites(chain), {
-          matchesThroughWrites:following => Array.isArray(following) && following.length + chain.length <= PROJECTION_LIMITS.nodes
-            && observed.current.matchesThroughWrites(combinedWriteList(chain, following)),
+          matchesThroughWrites:followingWrites => Array.isArray(followingWrites) && followingWrites.length + chain.length <= PROJECTION_LIMITS.nodes
+            && observed.current.matchesThroughWrites(combinedWriteList(chain, followingWrites)),
         }));
         if (!current()) continue;
-        valid.push(event); checks.push(current);
+        checks.push(current);
       }
+      for (const event of observer.records) valid.push(event);
     }
     if (!valid.length) return;
     const uses = [...new Set(valid.flatMap(event => event.beforeInputs))].map(value => value.uses);
     const output = observeProjectedOperationData(projected, [...valid, { beforeInputs:[], object:{ finalUses:uses } }]);
     const isCurrent = Object.freeze(Object.assign(() => output() && checks.every(check => check()), {
-      matchesThroughWrites:writes => output.matchesThroughWrites(writes)
-        && checks.every(check => check.matchesThroughWrites ? check.matchesThroughWrites(writes) : check()),
+      matchesThroughWrites:followingWrites => output.matchesThroughWrites(followingWrites)
+        && checks.every(check => check.matchesThroughWrites ? check.matchesThroughWrites(followingWrites) : check()),
     }));
-    if (!isCurrent()) return;
+    if (!output()) return;
     const history = Object.freeze({ events:Object.freeze(valid), isCurrent, completeness:valid.length === expected.count ? 'complete' : 'incomplete' });
     facadeAbiBindings.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
       Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
@@ -1398,6 +1406,7 @@ function attachCanonicalCallArguments(projected, history = null) {
     retainFacadeArgumentWrites(before, history);
     retainAbiBinding(projected, inst, binding, observer, history, 'call', inst.args.length ? 'bound' : 'empty');
   }
+  observeAbiBindingBatch(projected, observer, history);
   return observer;
 }
 
