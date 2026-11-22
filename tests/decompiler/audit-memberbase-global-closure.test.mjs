@@ -314,3 +314,33 @@ test('signature pointer class types (Thing * this) get forward/struct typedefs a
   closeFunctionOutput(res2);
   assert.equal(res2.pseudocode, once2);
 });
+
+test('standalone prototypes, id typedef, pointer-typed locals, and TU stripping preserve all contracts', () => {
+  const res = {
+    lines: [
+      { kind: 'sig', indent: 0, text: 'id method_sample(id self, void * a2)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'stmt', indent: 1, text: 'x8 = a2;' },
+      { kind: 'stmt', indent: 1, text: 'x0 = objc_retain(self);' },
+      { kind: 'ctrl', indent: 1, text: 'return x0;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  };
+  closeFunctionOutput(res);
+  assert.match(res.pseudocode, /typedef void \* id;/);
+  assert.match(res.pseudocode, /uint64 objc_retain \(uint64, \.\.\.\);/);
+  assert.match(res.pseudocode, /void \* x8;/);
+  assert.doesNotMatch(res.pseudocode, /\buint64 id;/);
+  const once = res.pseudocode;
+  closeFunctionOutput(res);
+  assert.equal(res.pseudocode, once);
+
+  // When packaged into a TU, standalone prototypes are stripped cleanly
+  const unit = buildCTranslationUnit([{
+    address: 0x300n, name: 'method_sample', signature: 'id method_sample(id self, void * a2)',
+    pseudocode: res.pseudocode,
+    ir: { instructions: [{ op: 'call', target: 0x500n, name: 'objc_retain' }] },
+  }]);
+  assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-prototype' && row.subject === 'objc_retain'));
+  assert.ok(!unit.source.includes('/* hex: standalone external prototypes'));
+});
