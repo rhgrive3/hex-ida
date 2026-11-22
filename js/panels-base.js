@@ -215,7 +215,10 @@ export function showFunctionSummary(app, row) {
     endRow = Math.min(app.viewer.totalRows - 1, row + 512);
   }
 
-  const sheet = new Sheet(t('functions.summaryTitle'));
+  const controller = new AbortController();
+  const sheet = new Sheet(t('functions.summaryTitle'), {
+    onClose: () => controller.abort('function-summary-closed'),
+  });
   const status = el('div', 'hint', t('functions.analyzing'));
   const bar = el('div', 'progress');
   const fill = el('i');
@@ -225,10 +228,12 @@ export function showFunctionSummary(app, row) {
   const epoch = app.backend.gen;
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
     (p) => {
+      if (controller.signal.aborted) return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       fill.style.width = Math.round(p * 100) + '%';
-    }, { architecture })
+    }, { architecture, signal: controller.signal })
     .then((res) => {
+      if (controller.signal.aborted) return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.remove();
       bar.remove();
@@ -236,6 +241,7 @@ export function showFunctionSummary(app, row) {
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
+      if (controller.signal.aborted || err?.name === 'AbortError') return;
       if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
