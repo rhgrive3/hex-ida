@@ -75,7 +75,7 @@ function evidenceFromModel(model, addr, name) {
   return out;
 }
 
-function localChatAnswer({ name, address, model, selection }) {
+function localChatAnswer({ name, address, model, selection, reason = 'unreachable' }) {
   const lines = [];
   if (selection && selection.text) {
     lines.push(pick(
@@ -93,9 +93,15 @@ function localChatAnswer({ name, address, model, selection }) {
       `${name}（${address}）は ${parts.join('・')}です。`,
       `${name} (${address}): ${parts.join(', ')}.`));
   }
-  lines.push(pick(
-    'AI 応答サービスに接続できないため、ここまでは Hex がバイナリから直接確認した事実だけです。解釈は付けていません。',
-    'The AI service is unreachable, so this is only what Hex read directly from the binary — no interpretation was added.'));
+  if (reason === 'missing-context') {
+    lines.push(pick(
+      'まずは関数を選択するかバイナリを開いてください。関数を開くと、その処理内容や書き換え方法を案内できます。',
+      'Please select a function or open a binary first so I can explain its behaviour or suggest changes.'));
+  } else {
+    lines.push(pick(
+      'AI 応答サービスに接続できないため、ここまでは Hex がバイナリから直接確認した事実だけです。解釈は付けていません。',
+      'The AI service is unreachable, so this is only what Hex read directly from the binary — no interpretation was added.'));
+  }
   return lines.join('\n\n');
 }
 
@@ -127,7 +133,8 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   };
 
   if (!assembly) {
-    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection }) };
+    const reason = !model ? 'missing-context' : 'unreachable';
+    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection, reason }) };
   }
 
   const payload = {
@@ -147,9 +154,9 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   } catch (error) {
     if (signal && signal.aborted) throw error;
     onActivity({ label: pick('AI に問い合わせ', 'Asking the model'), detail: pick('接続できません', 'unreachable'), state: 'error' });
-    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection }) };
+    return { ...base, answer: localChatAnswer({ name, address, model, selection: context.selection, reason: 'unreachable' }) };
   }
-  return { ...base, answer: streamed.trim() || localChatAnswer({ name, address, model, selection: context.selection }) };
+  return { ...base, answer: streamed.trim() || localChatAnswer({ name, address, model, selection: context.selection, reason: 'unreachable' }) };
 }
 
 function candidateEvidence(plan, globallyAuthoritative = true) {

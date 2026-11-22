@@ -37,8 +37,8 @@ import {
    1. 持ち回っている値を見つける
    ──────────────────────────────────────────────────────────── */
 
-/* 関数をまたいでも残るレジスタ。「持ち回る」のはほぼここか、スタックの置き場。 */
-const CARRIED = /^x(19|2[0-8])$/;
+/* 関数をまたいでも残るレジスタ（整数 x19..x28 と浮動小数点 s8..s15 / d8..d15 / v8..v15）。 */
+const CARRIED = /^(?:x(19|2[0-8])|[sdv](?:[89]|1[0-5]))$/;
 
 /**
  * その関数が「作り変えながら持ち回っている値」を探す。
@@ -182,7 +182,7 @@ function substitute(n, from, to, depth) {
 function arithOpsOf(n) {
   const out = new Set();
   walk(n, (x) => {
-    if (x.k === 'bin' && /^(add|sub|mul|sdiv|udiv|smod|umod|shl|shr|sar|and|or|xor)$/.test(x.op)) {
+    if (x.k === 'bin' && /^(add|sub|mul|sdiv|udiv|smod|umod|shl|shr|sar|and|or|xor|fadd|fsub|fmul|fdiv)$/.test(x.op)) {
       out.add(x.op);
     }
   });
@@ -228,10 +228,10 @@ export function shapeOfStep(expr) {
       return { kind: STEP.SCALE, muls, divs, mul: muls[0] || null, div: divs[0] || null };
     }
     if (!cur || cur.k !== 'bin') break;
-    if ((cur.op === 'sdiv' || cur.op === 'udiv') && holdsResult(cur.a)) {
+    if ((cur.op === 'sdiv' || cur.op === 'udiv' || cur.op === 'fdiv') && holdsResult(cur.a)) {
       divs.push(cur.b); cur = cur.a; continue;
     }
-    if (cur.op === 'mul') {
+    if (cur.op === 'mul' || cur.op === 'fmul') {
       if (holdsResult(cur.a) && !holdsResult(cur.b)) { muls.push(cur.b); cur = cur.a; continue; }
       if (holdsResult(cur.b) && !holdsResult(cur.a)) { muls.push(cur.a); cur = cur.b; continue; }
     }
@@ -242,9 +242,10 @@ export function shapeOfStep(expr) {
   }
 
   // result ± A
-  if (expr && expr.k === 'bin' && (expr.op === 'add' || expr.op === 'sub')) {
-    if (isResult(expr.a)) return { kind: STEP.OFFSET, sign: expr.op === 'add' ? 1 : -1, amount: expr.b };
-    if (isResult(expr.b) && expr.op === 'add') return { kind: STEP.OFFSET, sign: 1, amount: expr.a };
+  if (expr && expr.k === 'bin' && (expr.op === 'add' || expr.op === 'sub' || expr.op === 'fadd' || expr.op === 'fsub')) {
+    const isAdd = expr.op === 'add' || expr.op === 'fadd';
+    if (isResult(expr.a)) return { kind: STEP.OFFSET, sign: isAdd ? 1 : -1, amount: expr.b };
+    if (isResult(expr.b) && isAdd) return { kind: STEP.OFFSET, sign: 1, amount: expr.a };
   }
   /* 条件で入れ替えている＝上限・下限で止めている形 */
   if (expr && expr.k === 'sel' && (isResult(expr.a) || isResult(expr.b))) {
@@ -574,11 +575,17 @@ export function findSink(model, vg, acc) {
       sinks.push({ kind: 'store', row: insn.row, address: insn.address, write: w, clamps });
       pathHasSink = true;
     }
+    const isFpAcc = /^[sdv]/.test(acc.reg || '');
     const call = callByRow.get(insn.row);
     if (call) {
+      const argPrefixes = isFpAcc ? ['x', 'v', 'd', 's'] : ['x'];
       for (let a = 0; a <= 7; a++) {
-        const v = vg.at(insn.row, 'x' + a);
-        if (!v || !contains(v, cur)) continue;
+        let matched = false;
+        for (const pfx of argPrefixes) {
+          const v = vg.at(insn.row, pfx + a);
+          if (v && contains(v, cur)) { matched = true; break; }
+        }
+        if (!matched) continue;
         sinks.push({
           kind: 'argument', row: insn.row, address: insn.address,
           name: call.name || null, target: call.target != null ? call.target : null,
@@ -588,8 +595,12 @@ export function findSink(model, vg, acc) {
       }
     }
     if (insn.isReturn) {
-      const v = vg.at(insn.row, 'x0');
-      if (v && contains(v, cur)) {
+      const retRegs = isFpAcc ? ['x0', 'v0', 'd0', 's0'] : ['x0'];
+      const hitRet = retRegs.some((r) => {
+        const v = vg.at(insn.row, r);
+        return v && contains(v, cur);
+      });
+      if (hitRet) {
         sinks.push({ kind: 'return', row: insn.row, address: insn.address, clamps });
         pathHasSink = true;
       }
@@ -647,7 +658,7 @@ export function findSink(model, vg, acc) {
   for (const row of [...reachable].sort((a, b) => a - b)) {
     const insn = byRow.get(row);
     if (!insn || row - last.row > 96) continue;
-    if (!/^(csel|csinc|csinv|csneg|smax|smin|umax|umin)$/.test(String(insn.mnemonic).toLowerCase())) continue;
+    if (!/^(csel|csinc|csinv|csneg|smax|smin|umax|umin|fmax|fmin|fmaxnm|fminnm|fcsel)$/.test(String(insn.mnemonic).toLowerCase())) continue;
     if (!insn.reads.includes(acc.reg)) continue;
     return { kind: 'clamped', certain: false, clamps: [{ row, address: insn.address, cc: null, expr: null }] };
   }

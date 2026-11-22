@@ -173,12 +173,13 @@ function orderWithinStage(passes) {
   return ordered;
 }
 
-export function phase8Passes({ stages = null, proofRewritePlan = null, regionErasurePlan = null } = {}) {
-  const enabled = stages == null ? null : new Set(stages);
-  const registry = [...REGISTERED,
-    ...(proofRewritePlan == null ? [] : [Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })]),
-    ...(regionErasurePlan == null ? [] : [Object.freeze({ descriptor: REGION_ERASURE_PASS, run: runRegionErasurePass })])];
-  const selected = [...registry].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
+const KNOWN_PASS_STAGES = new Set(PASS_STAGES);
+const EMPTY_PROVIDERS = Object.freeze([]);
+const staticPassListCache = new Map();
+const staticPassListMeta = new WeakMap();
+
+function computeOrderedPasses(registry, enabled) {
+  const selected = enabled == null ? registry : registry.filter(({ descriptor }) => enabled.has(descriptor.stage));
   const byStage = new Map();
   for (const pass of selected) {
     if (!byStage.has(pass.descriptor.stageIndex)) byStage.set(pass.descriptor.stageIndex, []);
@@ -186,6 +187,40 @@ export function phase8Passes({ stages = null, proofRewritePlan = null, regionEra
   }
   return Object.freeze([...byStage.keys()].sort((left, right) => left - right)
     .flatMap((stageIndex) => orderWithinStage(byStage.get(stageIndex))));
+}
+
+function registerStaticPassList(key, passes) {
+  const hasProviderPass = passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
+  staticPassListCache.set(key, passes);
+  staticPassListMeta.set(passes, {
+    hasProviderPass,
+    noProviderDigest: null,
+    defaultProvidersDigest: null,
+    emptyProvidersDigest: null,
+  });
+  return passes;
+}
+
+// Pre-sort the static registered pass lists once at module load for both the
+// default interactive stage and the full registered set.
+registerStaticPassList('*|0', computeOrderedPasses(REGISTERED, null));
+registerStaticPassList(`${INTERACTIVE_STAGES[0]}|0`, computeOrderedPasses(REGISTERED, new Set(INTERACTIVE_STAGES)));
+
+export function phase8Passes({ stages = null, proofRewritePlan = null, regionErasurePlan = null } = {}) {
+  const planFlags = (proofRewritePlan != null ? 1 : 0) | (regionErasurePlan != null ? 2 : 0);
+  const stageKey = stages == null
+    ? '*'
+    : (stages === INTERACTIVE_STAGES ? INTERACTIVE_STAGES[0] : [...new Set(stages)].sort().join(','));
+  const cacheKey = `${stageKey}|${planFlags}`;
+  const cached = staticPassListCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const enabled = stages == null ? null : new Set(stages);
+  const registry = planFlags === 0
+    ? REGISTERED
+    : [...REGISTERED,
+      ...(proofRewritePlan == null ? [] : [Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })]),
+      ...(regionErasurePlan == null ? [] : [Object.freeze({ descriptor: REGION_ERASURE_PASS, run: runRegionErasurePass })])];
+  return registerStaticPassList(cacheKey, computeOrderedPasses(registry, enabled));
 }
 
 function canonicalProviderSnapshot(provider) {
@@ -237,10 +272,26 @@ function providerRegistryMaterial(providers) {
  * only when the provider pass is present, so provider refinements cannot leave
  * stale provider-derived artifacts behind or invalidate unrelated stage sets.
  */
+let defaultCanonicalProvidersCache = null;
+function defaultCanonicalProviders() {
+  defaultCanonicalProvidersCache ??= Object.freeze([...REGISTERED_PROVIDERS].map(canonicalProviderSnapshot));
+  return defaultCanonicalProvidersCache;
+}
+
 export function passRegistryDigest(passes = phase8Passes(), providers = REGISTERED_PROVIDERS) {
-  const hasProviderPass = passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
+  const meta = staticPassListMeta.get(passes);
+  if (meta !== undefined) {
+    if (!meta.hasProviderPass) {
+      if (meta.noProviderDigest !== null) return meta.noProviderDigest;
+    } else if (providers === REGISTERED_PROVIDERS || (defaultCanonicalProvidersCache !== null && providers === defaultCanonicalProvidersCache)) {
+      if (meta.defaultProvidersDigest !== null) return meta.defaultProvidersDigest;
+    } else if (Array.isArray(providers) && providers.length === 0) {
+      if (meta.emptyProvidersDigest !== null) return meta.emptyProvidersDigest;
+    }
+  }
+  const hasProviderPass = meta !== undefined ? meta.hasProviderPass : passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
   const providerRegistry = hasProviderPass ? providerRegistryMaterial(providers) : null;
-  return stableDigest(passes.map(({ descriptor }) => ({
+  const digest = stableDigest(passes.map(({ descriptor }) => ({
     id: descriptor.id,
     version: descriptor.version,
     stage: descriptor.stage,
@@ -257,6 +308,12 @@ export function passRegistryDigest(passes = phase8Passes(), providers = REGISTER
       providers: providerRegistry,
     } : {}),
   })));
+  if (meta !== undefined) {
+    if (!meta.hasProviderPass) meta.noProviderDigest = digest;
+    else if (providers === REGISTERED_PROVIDERS || (defaultCanonicalProvidersCache !== null && providers === defaultCanonicalProvidersCache)) meta.defaultProvidersDigest = digest;
+    else if (Array.isArray(providers) && providers.length === 0) meta.emptyProvidersDigest = digest;
+  }
+  return digest;
 }
 
 const COMPLETENESS_RANK = Object.freeze({ complete: 2, partial: 1, unknown: 0 });
@@ -364,9 +421,8 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   // passes and publishing a "complete" ledger for work that never ran (#5464).
   if (enabledStages != null) {
     if (!Array.isArray(enabledStages)) throw new TypeError('phase8-enabled-stages-invalid');
-    const known = new Set(PASS_STAGES);
     for (const stage of enabledStages) {
-      if (!known.has(stage)) throw new TypeError(`phase8-enabled-stage-unknown:${stage}`);
+      if (!KNOWN_PASS_STAGES.has(stage)) throw new TypeError(`phase8-enabled-stage-unknown:${stage}`);
     }
   }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
@@ -381,13 +437,16 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   // produced under a different refinement registry. Provider-free stage sets
   // must not observe provider authority at all; provider-bearing sets snapshot
   // that authority once so accessors cannot change execution after digest.
-  const hasProviderPass = passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
+  const passMeta = staticPassListMeta.get(passes);
+  const hasProviderPass = passMeta !== undefined ? passMeta.hasProviderPass : passes.some(({ descriptor }) => descriptor.id === PROVIDER_PASS.id);
   const configuredProviders = !hasProviderPass || context.opts?.phase8Providers === false
-    ? []
+    ? EMPTY_PROVIDERS
     : (context.providers ?? REGISTERED_PROVIDERS);
-  const providers = hasProviderPass
-    ? Object.freeze([...configuredProviders].map(canonicalProviderSnapshot))
-    : Object.freeze([]);
+  const providers = !hasProviderPass || configuredProviders === EMPTY_PROVIDERS
+    ? EMPTY_PROVIDERS
+    : configuredProviders === REGISTERED_PROVIDERS
+      ? defaultCanonicalProviders()
+      : Object.freeze([...configuredProviders].map(canonicalProviderSnapshot));
   const registryDigest = passRegistryDigest(passes, providers);
   const contextDescriptors = Object.getOwnPropertyDescriptors(context);
   delete contextDescriptors.providers;
@@ -395,11 +454,12 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     ...contextDescriptors,
     providers: { value: providers, enumerable: true, configurable: true },
   });
+  const externallyProvidedAnalysis = context.analysis != null;
   let authoritative;
   try {
     const ir = context.ir;
     source = sourceKnowledge(ir);
-    authoritative = context.analysis ?? seedAnalysisState(ir, { types: context.types ?? null });
+    authoritative = externallyProvidedAnalysis ? context.analysis : seedAnalysisState(ir, { types: context.types ?? null });
   } catch (error) {
     // Seeding reads upstream facts. If reading them throws, Phase 8 knows
     // nothing about this function and must say so rather than proceeding with a
@@ -431,22 +491,34 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   }
 
   let analysis;
-  try {
-    // Every pass in this vertical sees a private state.  A partial optimizer
-    // set therefore cannot replace a complete artifact that was already
-    // authoritative before the set started.
-    analysis = forkAnalysisState(authoritative);
-  } catch (error) {
-    return {
-      ledger: withheldLedger('failed', 'analysis-fork-failed', [{
-        severity: 'error',
-        code: 'phase8.analysis.fork-failed',
-        message: 'Phase 8 could not create an isolated analysis snapshot.',
-        reason: String(error?.message ?? error),
-      }], registryDigest, before),
-      timings: Object.freeze([]),
-      analysis: authoritative,
-    };
+  const forkPrivateAnalysis = () => {
+    try {
+      return forkAnalysisState(authoritative);
+    } catch (error) {
+      return { __forkError: error };
+    }
+  };
+  if (externallyProvidedAnalysis) {
+    // Caller-supplied analysis state is always forked up front so a partial
+    // optimizer set cannot mutate or replace authoritative facts.
+    const forked = forkPrivateAnalysis();
+    if (forked?.__forkError) {
+      return {
+        ledger: withheldLedger('failed', 'analysis-fork-failed', [{
+          severity: 'error',
+          code: 'phase8.analysis.fork-failed',
+          message: 'Phase 8 could not create an isolated analysis snapshot.',
+          reason: String(forked.__forkError?.message ?? forked.__forkError),
+        }], registryDigest, before),
+        timings: Object.freeze([]),
+        analysis: authoritative,
+      };
+    }
+    analysis = forked;
+  } else {
+    // Freshly seeded state is already private to this vertical; defer forking
+    // until a pass that can mutate analysis state is about to execute.
+    analysis = authoritative;
   }
   // Scalar passes share one identity proof for this isolated, non-mutating
   // vertical. The identity module itself never caches by object; direct callers
@@ -469,6 +541,23 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const observations = {};
   const invalidated = new Set();
   for (const pass of passes) {
+    if (analysis === authoritative && (pass.descriptor.produces.length > 0 || pass.descriptor.invalidates.length > 0)) {
+      const forked = forkPrivateAnalysis();
+      if (forked?.__forkError) {
+        return {
+          ledger: withheldLedger('failed', 'analysis-fork-failed', [{
+            severity: 'error',
+            code: 'phase8.analysis.fork-failed',
+            message: 'Phase 8 could not create an isolated analysis snapshot.',
+            reason: String(forked.__forkError?.message ?? forked.__forkError),
+          }], registryDigest, before),
+          timings: Object.freeze(timings),
+          analysis: authoritative,
+        };
+      }
+      analysis = forked;
+      passContext.analysis = analysis;
+    }
     const started = clock();
     const outcome = runPassTransaction(analysis, pass, passContext, budget);
     timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
@@ -577,7 +666,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
       timings: Object.freeze(timings), analysis: authoritative,
     };
   }
-  if (!commitAnalysisState(authoritative, analysis, before)) {
+  if (analysis !== authoritative && !commitAnalysisState(authoritative, analysis, before)) {
     return {
       ledger: withheldLedger('failed', 'analysis-concurrent-change', [{
         severity: 'error',
@@ -660,7 +749,8 @@ export function runPhase8Stage(context = {}, options = {}) {
           return true;
         }
       }
-      if (hasDeadline && readClock() >= deadline) { deadlineExceeded = true; return true; }
+      if (deadlineExceeded) return true;
+      if (hasDeadline && (workChecks & 63) === 0 && readClock() >= deadline) { deadlineExceeded = true; return true; }
       if (workChecks >= maxWorkItems) { workBudgetExceeded = true; return true; }
       workChecks += 1;
       return false;

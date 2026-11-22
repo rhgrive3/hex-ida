@@ -181,7 +181,18 @@ function summaryNextViews(app, sheet, address) {
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast('先にファイルを開いてください。'); return; }
-  const sheet = new Sheet('関数');
+  let sequence = 0;
+  let controller = null;
+  let debounceTimer = 0;
+  const sheet = new Sheet('関数', {
+    onClose:() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = 0;
+      sequence++;
+      controller?.abort('functions-sheet-closed');
+      controller = null;
+    },
+  });
   const status = el('div', 'hint', '関数を確認しています…');
   const field = el('div', 'field');
   const input = el('input');
@@ -194,8 +205,6 @@ export function showFunctions(app) {
   const results = list();
   sheet.body.append(field, status, results);
 
-  let sequence = 0;
-  let controller = null;
   let pager = null;
   let loaded = 0;
   let loading = false;
@@ -273,7 +282,7 @@ export function showFunctions(app) {
     more = null;
     try {
       const page = await pager.next({ signal:controller.signal });
-      if (current !== sequence) return;
+      if (current !== sequence || controller.signal.aborted || !sheet.root.isConnected) return;
       if (page.unsupported) {
         const reason = page.status?.reason ? `（${page.status.reason}）` : '';
         status.textContent = `関数一覧は現在の解析経路では利用できません${reason}。`;
@@ -291,7 +300,13 @@ export function showFunctions(app) {
       alertDialog('関数を調べられませんでした', userError(error));
     }
   };
-  input.addEventListener('input', () => { void render(); });
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = 0;
+      void render();
+    }, 120);
+  });
   void render();
 }
 

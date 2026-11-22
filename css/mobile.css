@@ -27,6 +27,7 @@
   .product-ui-ready .titlebar .tb-title { text-align: left; }
   .product-ui-ready .titlebar .tb-btn { min-height: var(--ui-touch); min-width: var(--ui-touch); padding-inline: 8px; }
   .product-ui-ready .ui-product-chrome { min-height: 50px; padding-block: 3px; }
+  .product-ui-ready .ui-chrome-back { padding-inline: 8px; font-size: var(--ui-font-xs); }
   .product-ui-ready .ui-command-go { display: none; }
   .product-ui-ready .ui-global-command { font-size: 16px; }
   .product-ui-ready .ui-route-host input,
@@ -62,8 +63,10 @@
   /* Phone code view: address + assembly. Bytes remain available in Hex mode. */
   .product-ui-ready .ui-code-route .addrbar { min-height: 34px; padding-block: 3px; }
   .product-ui-ready .ui-code-route .addr-range { display: none; }
-  /* The range is hidden here, so the search button takes the free space itself. */
+  /* The range is hidden here, so the quick action pills take the free space. */
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) { margin-left: auto; }
   .product-ui-ready .ui-code-route .addrbar .addr-search { margin-left: auto; }
+  .product-ui-ready .ui-code-route .addrbar .addr-pseudo:not([hidden]) + .addr-search { margin-left: 4px; }
   /* Only in assembly mode: Hex mode keeps its 16進 / 文字 headings. */
   .product-ui-ready .ui-code-route .colhead.mode-asm-head .c-hex,
   .product-ui-ready .ui-code-route .viewport.mode-asm .c-hex { display: none; }
@@ -95,7 +98,10 @@
 }
 
 @media (min-width: 600px) and (max-width: 899px) {
-  .product-ui-ready .ui-route-host { padding-inline: max(var(--ui-space-6), var(--ui-safe-left)); }
+  .product-ui-ready .ui-route-host {
+    padding-left: max(var(--ui-space-6), var(--ui-safe-left));
+    padding-right: max(var(--ui-space-6), var(--ui-safe-right));
+  }
   .product-ui-ready .ui-investigate-hero { padding: var(--ui-space-8); }
   .product-ui-ready .ui-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-ui-ready .ui-card-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
@@ -148,12 +154,13 @@
   .ai-panel[data-layout="sheet"] { bottom: calc(58px + var(--ui-safe-bottom)); }
   .product-ui-ready.ui-keyboard-open .ai-panel[data-layout="sheet"] { bottom: 0; }
   html.ai-open .ui-bottom-nav { display: none; }
+  .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
 }
 
 @media (max-width: 599px) {
   .ai-panel[data-layout="full"] { z-index: var(--ui-z-sheet); }
   .ai-panel .ai-panel-head { flex-wrap: nowrap; }
   .ai-panel .ai-seg { padding-inline: 8px; font-size: 12px; }
-  .ai-panel .ai-icon-button { min-width: 32px; }
+  .ai-panel .ai-icon-button { min-width: var(--ui-touch); min-height: var(--ui-touch); }
   .ai-turn-user { max-width: 100%; }
 }

@@ -18,8 +18,31 @@ export const SEMANTIC_SSA_DEFAULT_BUDGET = Object.freeze({
 
 const DEF_KINDS = new Set(SEMANTIC_SSA_DEFINITION_KINDS);
 const VIRTUAL_ENTRY_PREDECESSOR_BASE = '@semantic-ssa-virtual-entry';
+const frozenCfgIndexCache = new WeakMap();
+
+function frozenCfgIndex(cfg) {
+  if (!cfg || typeof cfg !== 'object' || !Object.isFrozen(cfg)
+      || !Array.isArray(cfg.blocks) || !Object.isFrozen(cfg.blocks)) {
+    return null;
+  }
+  let cached = frozenCfgIndexCache.get(cfg);
+  if (cached) return cached;
+  const blocks = new Map();
+  for (const block of cfg.blocks) {
+    if (!block || typeof block !== 'object' || !Object.isFrozen(block)) return null;
+    if (!blocks.has(block.id)) blocks.set(block.id, block);
+  }
+  let virtualEntry = VIRTUAL_ENTRY_PREDECESSOR_BASE;
+  let suffix = 0;
+  while (blocks.has(virtualEntry)) virtualEntry = `${VIRTUAL_ENTRY_PREDECESSOR_BASE}#${++suffix}`;
+  cached = { blocks, virtualEntry };
+  frozenCfgIndexCache.set(cfg, cached);
+  return cached;
+}
 
 export function semanticSsaVirtualEntryPredecessor(cfg) {
+  const cached = frozenCfgIndex(cfg);
+  if (cached) return cached.virtualEntry;
   const ids = new Set((cfg?.blocks ?? []).map((block) => block.id));
   let candidate = VIRTUAL_ENTRY_PREDECESSOR_BASE;
   let suffix = 0;
@@ -28,11 +51,14 @@ export function semanticSsaVirtualEntryPredecessor(cfg) {
 }
 
 export function semanticSsaPhiPredecessors(cfg, blockId) {
-  const block = (cfg?.blocks ?? []).find((candidate) => candidate.id === blockId);
+  const cached = frozenCfgIndex(cfg);
+  const block = cached
+    ? cached.blocks.get(blockId)
+    : (cfg?.blocks ?? []).find((candidate) => candidate.id === blockId);
   if (!block) return [];
   const predecessors = block.predecessors.slice();
   if (blockId === cfg.entryBlockId && predecessors.length > 0) {
-    predecessors.push(semanticSsaVirtualEntryPredecessor(cfg));
+    predecessors.push(cached ? cached.virtualEntry : semanticSsaVirtualEntryPredecessor(cfg));
   }
   return predecessors.sort();
 }

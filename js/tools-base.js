@@ -32,7 +32,7 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable, rttiPointerContextForSlice } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
-import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, instructionPatchArchitectureSupported } from './patch.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, validateMultiInstructionPatchRange, instructionPatchArchitectureSupported } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
@@ -126,12 +126,51 @@ function rowMapper(app) {
 
 
 export function parseDebuggerArgument(value) {
-  const raw = String(value ?? '');
-  if (!raw || raw !== raw.trim() || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
+  const raw = String(value ?? '').trim();
+  if (!raw || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
     return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
   }
-  try { return { ok: true, value: BigInt(raw), error: null }; }
-  catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
+  try {
+    if (/^-0[xX]/.test(raw)) return { ok: true, value: -BigInt(raw.slice(1)), error: null };
+    return { ok: true, value: BigInt(raw), error: null };
+  } catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
+}
+
+export function explainEmulatorFault(code, message) {
+  const c = String(code || '').toLowerCase();
+  const msg = String(message || '');
+  const low = msg.toLowerCase();
+  if (c === 'program-return' || msg.includes('最初の呼び出し元まで戻ってきました')) {
+    return '関数が正常に終了して戻ってきました。';
+  }
+  if (c === 'step-limit' || c === 'invalid-step-budget' || msg.includes('命令ぶん進んだので、いったん止めました')) {
+    return '実行命令数の上限に達したため停止しました（無限ループ、または処理が長すぎる可能性があります）。\nヒント: 下の「通った道」で同じ場所を繰り返していないか確認し、分岐命令にパッチを当てて試してみてください。';
+  }
+  if (c === 'unmapped-memory' || c === 'memory-read-failed'
+      || low.includes('no backing memory') || low.includes('outside backed memory')
+      || low.includes('outside synthetic mapping') || low.includes('backing memory is unavailable')
+      || low.includes('write offset is outside page')) {
+    const addrMatch = /0x([0-9a-f]+)/i.exec(msg);
+    const faultAddr = addrMatch ? BigInt('0x' + addrMatch[1]) : null;
+    if (faultAddr != null && faultAddr < 0x1000n) {
+      return `NULL（0）付近のアドレス（0x${faultAddr.toString(16)}）を読み書きしようとして停止しました。ポインタ（アドレス）を引数に取る関数かもしれません。\nヒント: 「ダミー領域を引数にセット」を押して x0 などに仮のメモリ番地を入れてからもう一度試してみてください。`;
+    }
+    return `割り当てられていないメモリ領域${faultAddr != null ? `（0x${faultAddr.toString(16)}）` : ''}への読み書きが起きたため停止しました。\nヒント: 引数に不正なアドレスが入っていないか確認し、ポインタ引数には「ダミー領域を引数にセット」を試してください。`;
+  }
+  if (c === 'unsupported-instruction' || c === 'pointer-authentication-unsupported'
+      || c === 'unsupported-operand' || c === 'unsupported-shift'
+      || c === 'unsupported-arrangement' || c === 'invalid-fmov-form'
+      || msg.includes('まだ実行できません') || low.includes('not modelled') || low.includes('unsupported')) {
+    return `このエミュレータがまだ対応していない命令に到達したため停止しました（${msg || c}）。\nヒント: 該当命令をパッチで nop に置き換えるか、直前にブレークポイントを置いて途中までの値を確認してみてください。`;
+  }
+  if (c === 'instruction-fetch-failed' || c === 'unmapped-tail-branch' || c === 'unknown-executable'
+      || msg.includes('の命令が読めませんでした') || msg.includes('間接分岐先')) {
+    return `実行できないアドレスへジャンプしたため停止しました（${msg || c}）。\nヒント: 分岐先や関数ポインタ（引数やメモリ上の値）が正しく設定されているか確認してください。`;
+  }
+  if (c === 'heap-exhausted' || c === 'allocation-overflow') {
+    return 'エミュレータ内の仮想ヒープ容量を超えたため停止しました。\nヒント: 引数に渡しているサイズ値が大きすぎないか確認してください。';
+  }
+  return msg || 'ブレークポイントで止まりました。';
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1258,7 +1297,31 @@ export async function showPatchEditor(app, addr, insnArg) {
     sheet.body.append(b);
   }
 
-  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr);
+  const activePatch = app.patches?.at?.(fileOffset)
+    || app.patches?.byAddress?.(addr)
+    || (app.patches?.list?.() || []).find((it) => fileOffset >= it.offset && fileOffset < it.offset + BigInt(it.after.length))
+    || null;
+  if (activePatch) {
+    const activeBlock = block('適用中のパッチ');
+    activeBlock.append(el('div', 'bigval mono', activePatch.text || hexOf(activePatch.after)));
+    activeBlock.append(el('div', 'hint mono', hexOf(activePatch.before) + '  →  ' + hexOf(activePatch.after)));
+    const undoBar = el('div', 'chips');
+    undoBar.append(button('元に戻す (Undo)', 'chip danger', () => {
+      app.patches.remove(activePatch.offset);
+      sheet.close();
+      toast('パッチを元に戻しました');
+    }));
+    activeBlock.append(undoBar);
+    sheet.body.append(activeBlock);
+  }
+
+  const regionRem = Number(region.size - (addr - region.vmAddr));
+  const fileRem = file && Number.isFinite(Number(file.size)) ? Number(BigInt(file.size) - fileOffset) : regionRem;
+  const fnRange = app.symbols?.functionAt?.(addr);
+  const fnRem = fnRange && fnRange.end != null && BigInt(fnRange.end) > addr ? Number(BigInt(fnRange.end) - addr) : regionRem;
+  const availableBytes = Math.max(0, Math.min(regionRem, fileRem, fnRem));
+
+  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr, { availableBytes });
   const l = list();
   l.append(groupRow('よく使う書き換え'));
   for (const s of suggestions) {
@@ -1267,16 +1330,16 @@ export async function showPatchEditor(app, addr, insnArg) {
   sheet.body.append(l);
 
   sheet.body.append(heading('自分で書く'));
-  const asm = input('例: mov w0, #1');
+  const asm = input('例: mov w0, #1 または mov w0, #1; ret');
   sheet.body.append(field(asm, '書き換える', () => apply(asm.value)));
   sheet.body.append(el('div', 'hint',
-    '使えるのは nop / ret / brk / mov / b / bl / b.条件 です。\n' +
+    '使えるのは nop / ret / brk / mov / movz / movn / b / bl / b.条件 / cbz / cbnz / tbz / tbnz です（; 区切りで複数命令も可）。\n' +
     'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。'));
 
   const hex = input('1F 20 03 D5');
   sheet.body.append(field(hex, '16 進で書き換える', () => {
     const bytes = parseHexBytes(hex.value);
-    if (!bytes || bytes.length !== 4) { toast('4 バイト（8 桁）で指定してください'); return; }
+    if (!bytes || bytes.length < 4 || bytes.length % 4 !== 0) { toast('4 バイト単位（8 桁の倍数）で指定してください'); return; }
     commit(bytes, hex.value);
   }));
 
@@ -1287,7 +1350,9 @@ export async function showPatchEditor(app, addr, insnArg) {
   }
 
   async function commit(bytes, text) {
-    const valid = validatePatchRange(region, addr, bytes.length, file && file.size, true);
+    const valid = bytes.length === 4
+      ? validatePatchRange(region, addr, bytes.length, file && file.size, true)
+      : validateMultiInstructionPatchRange(region, addr, bytes.length, file && file.size);
     if (valid.error) { alertDialog('登録できません', valid.error); return; }
     const before = await app.backend.readAt(addr, bytes.length)
       .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
@@ -1295,9 +1360,14 @@ export async function showPatchEditor(app, addr, insnArg) {
       alertDialog('登録できません', '元のバイトを読み取れませんでした。');
       return;
     }
-    app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+    try {
+      app.patches.add(valid.fileOffset, before, bytes, { addr, text });
+    } catch (err) {
+      alertDialog('登録できません', userError(err, '既存のパッチと重なっています。先のパッチを元に戻してからお試しください。'));
+      return;
+    }
     sheet.close();
-    toast('書き換えを登録しました（保存するまでファイルは変わりません）');
+    toast('書き換えを登録しました（エミュレータでそのまま試せます）');
   }
 }
 
@@ -1332,8 +1402,12 @@ export function showDebugger(app, addr) {
     activeRun = null;
   };
   const sheet = new Sheet('実行してみる', { onClose:() => abortRun('debugger-sheet-closed') });
-  const emu = makeEmulator(app);
+  const stagedPatchCount = () => (app?.patches?.size || 0);
+  let applyPatches = stagedPatchCount() > 0;
+  let emu = makeEmulator(app, { applyPatches });
   let args = [0n, 0n, 0n, 0n];
+  let lastArgsKey = '';
+  let focusedArgIndex = 0;
 
   sheet.body.append(el('div', 'hint',
     fnName(app, addr) + '\n' +
@@ -1349,11 +1423,44 @@ export function showDebugger(app, addr) {
   const argInputs = [];
   for (let i = 0; i < 4; i++) {
     const n = input('x' + i, '0');
-    n.style.maxWidth = '80px';
+    n.style.maxWidth = '120px';
+    n.addEventListener('focus', () => { focusedArgIndex = i; });
     argInputs.push(n);
     argWrap.append(n);
   }
-  sheet.body.append(heading('引数（x0〜x3）'), argWrap);
+  const argPresetBar = el('div', 'chips');
+  argPresetBar.append(button('ダミー領域を引数にセット', 'chip', () => {
+    const targetIdx = focusedArgIndex >= 0 && focusedArgIndex < argInputs.length ? focusedArgIndex : 0;
+    const dummyAddr = '0x' + emu.heapBase.toString(16);
+    argInputs[targetIdx].value = dummyAddr;
+    start();
+    toast(`x${targetIdx} にダミー領域（${dummyAddr}）をセットしました`);
+  }));
+  sheet.body.append(heading('引数（x0〜x3）'), argWrap, argPresetBar);
+
+  if (stagedPatchCount() > 0) {
+    const patchToggleWrap = el('label', 'chip');
+    patchToggleWrap.style.display = 'inline-flex';
+    patchToggleWrap.style.alignItems = 'center';
+    patchToggleWrap.style.gap = '6px';
+    patchToggleWrap.style.cursor = 'pointer';
+    const patchCheckbox = el('input');
+    patchCheckbox.type = 'checkbox';
+    patchCheckbox.checked = applyPatches;
+    const patchLabelText = el('span', '', `パッチ適用状態で試す（${stagedPatchCount()} 件）`);
+    patchToggleWrap.append(patchCheckbox, patchLabelText);
+    patchCheckbox.addEventListener('change', () => {
+      applyPatches = !!patchCheckbox.checked;
+      const keep = new Set(emu.breakpoints);
+      emu = makeEmulator(app, { applyPatches });
+      emu.breakpoints = keep;
+      start();
+      toast(applyPatches ? 'パッチ適用状態で実行します' : '元の状態（パッチ無効）で実行します');
+    });
+    const patchBar = el('div', 'chips');
+    patchBar.append(patchToggleWrap);
+    sheet.body.append(patchBar);
+  }
 
   const chips = el('div', 'chips');
   const status = el('div', 'hint', 'まだ動かしていません。');
@@ -1362,8 +1469,7 @@ export function showDebugger(app, addr) {
   const logBox = el('div');
   const bpBox = el('div');
 
-  const start = () => {
-    abortRun('debugger-reset');
+  const parseAllArgs = () => {
     const parsed = argInputs.map((n) => parseDebuggerArgument(n.value));
     let invalid = false;
     parsed.forEach((result, i) => {
@@ -1374,30 +1480,57 @@ export function showDebugger(app, addr) {
     });
     if (invalid) {
       status.textContent = '引数に読み取れない値があります。赤く示した欄を直してください。';
-      return false;
+      return null;
     }
-    args = parsed.map((result) => result.value);
+    return parsed.map((result) => result.value);
+  };
+
+  const start = () => {
+    abortRun('debugger-reset');
+    const parsedValues = parseAllArgs();
+    if (!parsedValues) return false;
+    args = parsedValues;
+    lastArgsKey = args.map((v) => v.toString()).join(',');
     const keep = new Set(emu.breakpoints);   // 置いた目印は、やり直しても残す
     emu.reset();
     emu.breakpoints = keep;
     emu.setup(addr, args);
     status.textContent = '準備しました。「1 命令進む」か「最後まで走らせる」を押してください。';
     render();
+    return true;
+  };
+
+  const ensureReadyForRun = () => {
+    const parsedValues = parseAllArgs();
+    if (!parsedValues) return false;
+    const nextKey = parsedValues.map((v) => v.toString()).join(',');
+    if (emu.stopped || nextKey !== lastArgsKey) {
+      return start();
+    }
+    return true;
   };
 
   chips.append(button('はじめから', 'chip', start));
   chips.append(button('1 命令進む', 'chip', async () => {
+    if (!ensureReadyForRun()) return;
     const r = await emu.step();
-    status.textContent = r.text ? ('実行: ' + r.text) : (r.reason || '');
-    if (r.reason) status.textContent += '\n' + r.reason;
+    status.textContent = r.text ? ('実行: ' + r.text) : '';
+    if (r.reason || emu.stopped) {
+      const explained = explainEmulatorFault(r.code || emu.faultCode || emu.stopCode, r.reason || emu.stopped);
+      status.textContent = status.textContent ? (status.textContent + '\n' + explained) : explained;
+    }
     render();
   }));
   chips.append(button('10 命令進む', 'chip', async () => {
+    if (!ensureReadyForRun()) return;
     for (let i = 0; i < 10 && !emu.stopped; i++) await emu.step();
-    status.textContent = emu.stopped || (emu.steps + ' 命令まで進みました。');
+    status.textContent = emu.stopped
+      ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
+      : (emu.steps + ' 命令まで進みました。');
     render();
   }));
   chips.append(button('最後まで走らせる', 'chip strong', async () => {
+    if (!ensureReadyForRun()) return;
     abortRun('debugger-run-replaced');
     const controller = new AbortController();
     activeRun = controller;
@@ -1407,12 +1540,15 @@ export function showDebugger(app, addr) {
         if (!controller.signal.aborted && sheet.root.isConnected) status.textContent = n + ' 命令…';
       }, { signal:controller.signal });
       if (controller.signal.aborted || activeRun !== controller || !sheet.root.isConnected) return;
-      status.textContent = (emu.stopped || 'ブレークポイントで止まりました。') +
+      const summary = emu.stopped
+        ? explainEmulatorFault(emu.faultCode || emu.stopCode, emu.stopped)
+        : 'ブレークポイントで止まりました。';
+      status.textContent = summary +
         '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
       render();
     } catch (error) {
       if (!controller.signal.aborted && error?.name !== 'AbortError' && sheet.root.isConnected) {
-        status.textContent = '実行を続けられませんでした: ' + (error?.message || error);
+        status.textContent = explainEmulatorFault(error?.code, error?.message || String(error));
       }
     } finally {
       if (activeRun === controller) activeRun = null;
@@ -1461,8 +1597,12 @@ export function showDebugger(app, addr) {
     const v = memAddr.value.trim();
     if (/^x\d+$/.test(v)) a = emu.get(v);
     else { try { a = BigInt(v); } catch { toast('アドレスの形が違います'); return; } }
-    const bytes = await emu.dump(a, 64);
-    memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
+    try {
+      const bytes = await emu.dump(a, 64);
+      memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
+    } catch (err) {
+      memOut.replaceChildren(noteBox(explainEmulatorFault(err?.code, err?.message || String(err))));
+    }
   }));
   const memOut = el('div');
   memWrap.append(memOut);

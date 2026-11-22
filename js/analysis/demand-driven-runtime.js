@@ -1,7 +1,7 @@
 import { AnalysisQueryAPI } from './query/api.js';
 import { createAppAnalysisQueryAdapter as createBaseQueryAdapter } from './query/app-adapter.js';
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
-import { canonicalContentDigest } from './binary-identity-digest.js';
+import { canonicalContentDigest, canonicalSha256DigestOrNull } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
 import { executableByteCoverage } from './discovery/executable-coverage.js';
@@ -335,15 +335,31 @@ function installWorkerBackedIdentity(app) {
         promise:null,
         cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
       };
-      entry.promise = scheduleBackgroundIdentity(controller.signal)
-        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
-        .then((hash) => {
+      const foreground = options.priority === 'current' || options.priority === 'foreground';
+      const schedule = foreground
+        ? Promise.resolve().then(() => abortIfNeeded(controller.signal))
+        : scheduleBackgroundIdentity(controller.signal);
+      entry.promise = schedule
+        .then(() => {
           abortIfNeeded(controller.signal);
           if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
-          // The platform content hash is an FNV cache key; `bin_sha256_` identities
-          // must bind an exact SHA-256 digest, so re-derive from the canonical
-          // full-content producer instead of laundering the cache hash (#7054).
-          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+          const existingDigest = canonicalSha256DigestOrNull(this.contentHash);
+          if (existingDigest != null) return existingDigest;
+          // Avoid hashing the file twice (FNV-1a then SHA-256): when the platform
+          // worker is available or a non-SHA-256 contentHash is already present,
+          // derive the canonical SHA-256 directly via worker / subtle.digest.
+          if ((typeof this._callTo === 'function' && this.platformWorker) || this.contentHash != null) {
+            return canonicalContentDigest(this, this.contentHash, controller.signal, options.onProgress);
+          }
+          return this.ensureContentHash(options.onProgress, controller.signal)
+            .then((hash) => {
+              abortIfNeeded(controller.signal);
+              if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+              // The platform content hash is an FNV cache key; `bin_sha256_` identities
+              // must bind an exact SHA-256 digest, so re-derive from the canonical
+              // full-content producer instead of laundering the cache hash (#7054).
+              return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+            });
         })
         .then((digest) => {
           abortIfNeeded(controller.signal);
@@ -635,7 +651,7 @@ function installCancellableFunctionDiscovery(app) {
 }
 
 function installDemandQueryAPI(app, recognitionVersion) {
-  const base = createBaseQueryAdapter(app); const regionScans = new Map();
+  const base = createBaseQueryAdapter(app); const regionScans = new Map(); const localProgramCache = new Map();
   const scanRegion = async (region, options = {}, localCount = 1) => {
     const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
@@ -673,18 +689,38 @@ function installDemandQueryAPI(app, recognitionVersion) {
     abortIfNeeded(options.signal); const address = addressOf(id); if (address == null) return { program:null, reason:'function-address-invalid', scannedRegionIds:[], unscannedRegionIds:[] };
     const { allRegions, target, local, unscanned } = localRegionPlan(app, address, kind);
     if (!local.length) return { program:null, reason:'program-region-unavailable', scannedRegionIds:[], unscannedRegionIds:allRegions.map((r) => r.id) };
+    const epoch = demandAnalysisEpoch(app);
+    const artifact = demandArtifactIdentity(app);
+    const symbolGen = demandSymbolGeneration(app);
+    const symbolsRef = objectId(app.symbols);
+    const architecture = architectureOf(app);
+    const primaryRegion = target ?? local[0];
+    const scannedRegionIds = local.map((r) => r.id);
+    const unscannedRegionIds = unscanned.map((r) => r.id);
+    const cacheKey = JSON.stringify([epoch, artifact, symbolGen, symbolsRef, architecture, kind, primaryRegion.id, scannedRegionIds, unscannedRegionIds]);
+    const cached = localProgramCache.get(cacheKey);
+    if (cached) {
+      localProgramCache.delete(cacheKey);
+      localProgramCache.set(cacheKey, cached);
+      return cached;
+    }
     const scans = []; for (const region of local) scans.push(await scanRegion(region, options, local.length)); abortIfNeeded(options.signal);
     // Outgoing callees are function-local once the function extent is proven; incoming
     // callers/xrefs still require the remaining executable regions for global absence.
     const reasons = kind === 'callees' ? [] : unscanned.map((region) => `program-region-unscanned:${region.id}`);
     const coverageRegions = kind === 'callees' ? local : allRegions;
     const merged = mergeProgramScans(scans, { regions:coverageRegions, reasons, limits:PROGRAM_MERGE_LIMITS });
-    return {
-      program:new ProgramIndex(merged, app.symbols, target ?? local[0]),
+    const built = {
+      program:new ProgramIndex(merged, app.symbols, primaryRegion),
       reason:reasons[0] ?? null,
-      scannedRegionIds:local.map((r) => r.id),
-      unscannedRegionIds:unscanned.map((r) => r.id),
+      scannedRegionIds,
+      unscannedRegionIds,
     };
+    if (epoch === demandAnalysisEpoch(app) && artifact === demandArtifactIdentity(app) && symbolGen === demandSymbolGeneration(app) && symbolsRef === objectId(app.symbols)) {
+      localProgramCache.set(cacheKey, built);
+      pruneCache(localProgramCache);
+    }
+    return built;
   };
   const graphUnsupported = (program) => program?.unsupported === true || (program?.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported));
   const adapter = {

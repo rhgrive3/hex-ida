@@ -1799,29 +1799,36 @@ async function fillPurpose(app, region, program, strings, rows) {
   const analyze = makeAnalyzer(app, region);
   if (!analyze || !rows || !rows.length) return;
   const lookup = stringLookup(strings || []);
-  for (const r of rows.slice(0, PURPOSE_ROWS)) {
-    if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
-    const range = program ? program.functionRange(r.addr) : null;
-    let model = null;
-    try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
-    if (!model) continue;
-    let text = '';
-    try {
-      const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
-      text = purposeText(describePurpose({
-        model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
-      }));
-    } catch { text = ''; }
-    if (!text) continue;
-    const sub = r.row.querySelector('.sub');
-    if (!sub) continue;
-    /*
-     * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
-     * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
-     * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
-     */
-    sub.textContent = text + '\n' + r.rest;
-  }
+  const targets = rows.slice(0, PURPOSE_ROWS);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const r = targets[cursor++];
+      if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
+      const range = program ? program.functionRange(r.addr) : null;
+      let model = null;
+      try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
+      if (!model || !r.row.isConnected) continue;
+      let text = '';
+      try {
+        const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
+        text = purposeText(describePurpose({
+          model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
+        }));
+      } catch { text = ''; }
+      if (!text) continue;
+      const sub = r.row.querySelector('.sub');
+      if (!sub) continue;
+      /*
+       * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
+       * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
+       * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
+       */
+      sub.textContent = text + '\n' + r.rest;
+    }
+  };
+  const concurrency = Math.min(3, targets.length);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
@@ -4036,31 +4043,44 @@ export function showFunctionReport(app, addr, goal) {
   const later = el('div');
   body.append(later);
 
-  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture })
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture, signal: controller.signal })
   .then((res) => {
     box.done();
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     applySemantic(app, region, res);
-    const render = (program) => {
+    let loadingNote = null;
+    let callBlkRef = null;
+    const renderInitial = () => {
       if (controller.signal.aborted || !sheet.root.isConnected) return;
       const report = buildFunctionReport({
-        model:res.model, region, symbols:sym, program, goal, name,
+        model:res.model, region, symbols:sym, program:null, goal, name,
         fields:app.fields, owner:app.ownerOf(start),
       });
       report.role = roleFromReport(report, { apis:res.model.facts.apis });
       later.replaceChildren();
-      renderFunctionReport(app, sheet, later, report, res, region, goal);
-      if (!program) later.prepend(para(pick(
+      callBlkRef = renderFunctionReport(app, sheet, later, report, res, region, goal, controller.signal);
+      loadingNote = para(pick(
         '呼び出し関係は別に取得中です。ここまでの内容はこの関数自身の命令から得た結果です。',
-        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub'));
+        'Call relationships are loading separately; the report shown now comes from this function itself.'), 'sub');
+      later.prepend(loadingNote);
     };
     // First useful paint is function-local and cannot be failed by global graph work.
-    render(null);
+    renderInitial();
     Promise.resolve().then(() => {
       if (controller.signal.aborted) return null;
       return app.ensureProgram();
     }).then((program) => {
-      if (program) render(program);
+      if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
+      if (loadingNote && loadingNote.parentNode) loadingNote.remove();
+      const updated = buildFunctionReport({
+        model:res.model, region, symbols:sym, program, goal, name,
+        fields:app.fields, owner:app.ownerOf(start),
+      });
+      const nextCallBlk = buildCallRelationshipsBlock(app, sheet, updated, goal);
+      if (callBlkRef && callBlkRef.parentNode) {
+        callBlkRef.replaceWith(nextCallBlk);
+        callBlkRef = nextCallBlk;
+      }
     }).catch(() => { /* relationship enrichment is optional */ });
   }).catch((err) => {
     box.done();
@@ -4073,7 +4093,7 @@ export function showFunctionReport(app, addr, goal) {
   });
 }
 
-function renderFunctionReport(app, sheet, body, report, res, region, goal) {
+function renderFunctionReport(app, sheet, body, report, res, region, goal, signal = null) {
   const id = report.identity;
 
   const head = el('div', 'fn-head');
@@ -4108,10 +4128,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
    * 命令をまたいで式に戻したものは、数え上げとはまるで別の情報量を持つので、
    * 事実・推測より **先に** 出す。
    */
-  if (report.comprehension) {
-    const cs = comprehensionSection(app, report.comprehension, sheet, region);
-    if (cs) body.append(cs);
-  }
+  /* 1 段目 — まずは C やアセンブリを知らなくても読める 1 文要約と箇条書き */
   body.append(el('div', 'lead', oneLiner(report, id.name)));
   const what = whatItDoes(report);
   if (what.length) {
@@ -4124,8 +4141,13 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     }
     body.append(ul0);
   }
+  /* 2 段目 — 復元した計算式（必要な人向けの詳細） */
+  if (report.comprehension) {
+    const cs = comprehensionSection(app, report.comprehension, sheet, region);
+    if (cs) body.append(cs);
+  }
 
-  body.append(geminiAnalysisSection(report, res));
+  body.append(geminiAnalysisSection(report, res, signal));
 
   /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
   body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
@@ -4203,8 +4225,12 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       'Here a value is read, changed and written back — the first place to look if you want to change it.')));
     const eul = list();
     for (const e of report.editTargets) {
-      eul.append(tapRow(addrHex(e.address), {
-        sub: updateLines(e).join('\n'),
+      const lines = updateLines(e);
+      const primaryTitle = lines[0] || pick('値の書き換え箇所', 'Value write location');
+      const subParts = lines.slice(1);
+      subParts.push(addrHex(e.address));
+      eul.append(tapRow(primaryTitle, {
+        sub: subParts.join('\n'),
         tag: certaintyWord(e.level === 'confirmed' ? 'fact' : 'inference'),
         tagClass: e.level === 'confirmed' ? 'tag-fact' : 'tag-infer',
         onTap: () => { sheet.close(); showValueFlow(app, res.model, e.row, region); },
@@ -4219,44 +4245,7 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   }
 
   /* 6. 呼び出し関係 */
-  const callBlk = block(pick('呼び出し関係', 'Call relationships'));
-  const cul = list();
-  cul.append(groupRow(pick('この関数を呼んでいる (' + report.callers.length + ')',
-    'Callers (' + report.callers.length + ')')));
-  if (!report.callers.length) {
-    cul.append(tapRow(pick('見つかりませんでした。実行時に呼ばれる形かもしれません。',
-      'None found — it may only be reached at run time.'), { disabled: true }));
-  }
-  for (const c of report.callers.slice(0, 12)) {
-    const cRole = c.addr != null ? roleTagline(app, c.addr) : '';
-    cul.append(tapRow(c.name || (c.addr != null ? 'sub_' + c.addr.toString(16).toUpperCase() : addrHex(c.site)), {
-      sub: (cRole ? cRole + '\n' : '') + addrHex(c.site) + pick(' から呼び出し', ' calls here'),
-      right: c.count > 1 ? '× ' + c.count : '',
-      onTap: () => { sheet.close(); showFunctionReport(app, c.addr != null ? c.addr : c.site, goal); },
-    }));
-  }
-  cul.append(groupRow(pick('この関数が呼んでいる (' + report.callees.length + ')',
-    'Callees (' + report.callees.length + ')')));
-  if (!report.callees.length) {
-    cul.append(tapRow(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), { disabled: true }));
-  }
-  for (const c of report.callees.slice(0, 12)) {
-    const eRole = roleTagline(app, c.addr);
-    cul.append(tapRow(c.name || 'sub_' + c.addr.toString(16).toUpperCase(), {
-      sub: (eRole ? eRole + '\n' : '') + addrHex(c.addr),
-      right: c.count > 1 ? '× ' + c.count : '',
-      onTap: () => { sheet.close(); showFunctionReport(app, c.addr, goal); },
-    }));
-  }
-  callBlk.append(cul);
-  callBlk.append(para(pick(
-    '※ 各行の 1 行目は「その関数が何の処理か」です。「たぶん」と書いてあるものは、' +
-    '索引だけで見た下見です。その関数を開くと、命令まで降りて言い直します。',
-    'The first line of each row says what that function is for. Lines marked “probably” are index-only previews.'), 'sub'));
-  callBlk.append(button(pick('呼び出しの流れを図で見る', 'Show the call graph'), 'chip', () => {
-    sheet.close();
-    showCallGraph(app, id.startAddr);
-  }));
+  const callBlk = buildCallRelationshipsBlock(app, sheet, report, goal);
   body.append(callBlk);
 
   /* 7. 処理の流れ（制御フロー） */
@@ -4303,6 +4292,50 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     copyText(body.innerText, pick('関数レポート', 'function report'));
   }));
   body.append(actions);
+  return callBlk;
+}
+
+function buildCallRelationshipsBlock(app, sheet, report, goal) {
+  const id = report.identity;
+  const callBlk = block(pick('呼び出し関係', 'Call relationships'));
+  const cul = list();
+  cul.append(groupRow(pick('この関数を呼んでいる (' + report.callers.length + ')',
+    'Callers (' + report.callers.length + ')')));
+  if (!report.callers.length) {
+    cul.append(tapRow(pick('見つかりませんでした。実行時に呼ばれる形かもしれません。',
+      'None found — it may only be reached at run time.'), { disabled: true }));
+  }
+  for (const c of report.callers.slice(0, 12)) {
+    const cRole = c.addr != null ? roleTagline(app, c.addr) : '';
+    cul.append(tapRow(c.name || (c.addr != null ? 'sub_' + c.addr.toString(16).toUpperCase() : addrHex(c.site)), {
+      sub: (cRole ? cRole + '\n' : '') + addrHex(c.site) + pick(' から呼び出し', ' calls here'),
+      right: c.count > 1 ? '× ' + c.count : '',
+      onTap: () => { sheet.close(); showFunctionReport(app, c.addr != null ? c.addr : c.site, goal); },
+    }));
+  }
+  cul.append(groupRow(pick('この関数が呼んでいる (' + report.callees.length + ')',
+    'Callees (' + report.callees.length + ')')));
+  if (!report.callees.length) {
+    cul.append(tapRow(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), { disabled: true }));
+  }
+  for (const c of report.callees.slice(0, 12)) {
+    const eRole = roleTagline(app, c.addr);
+    cul.append(tapRow(c.name || 'sub_' + c.addr.toString(16).toUpperCase(), {
+      sub: (eRole ? eRole + '\n' : '') + addrHex(c.addr),
+      right: c.count > 1 ? '× ' + c.count : '',
+      onTap: () => { sheet.close(); showFunctionReport(app, c.addr, goal); },
+    }));
+  }
+  callBlk.append(cul);
+  callBlk.append(para(pick(
+    '※ 各行の 1 行目は「その関数が何の処理か」です。「たぶん」と書いてあるものは、' +
+    '索引だけで見た下見です。その関数を開くと、命令まで降りて言い直します。',
+    'The first line of each row says what that function is for. Lines marked “probably” are index-only previews.'), 'sub'));
+  callBlk.append(button(pick('呼び出しの流れを図で見る', 'Show the call graph'), 'chip', () => {
+    sheet.close();
+    showCallGraph(app, id.startAddr);
+  }));
+  return callBlk;
 }
 
 /** GeminiのMarkdownを、HTML文字列を使わず安全なDOMとして組み立てる。 */
@@ -4413,7 +4446,7 @@ function renderGeminiMarkdown(target, source) {
 }
 
 /** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
-function geminiAnalysisSection(report, res) {
+function geminiAnalysisSection(report, res, parentSignal = null) {
   const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
   section.classList.add('gemini-analysis');
   section.append(para(pick(
@@ -4549,6 +4582,11 @@ function geminiAnalysisSection(report, res) {
   cancel.addEventListener('click', () => {
     if (controller) controller.abort();
   });
+  if (parentSignal) {
+    const onParentAbort = () => { if (controller) controller.abort(); };
+    if (parentSignal.aborted) onParentAbort();
+    else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
   return section;
 }
 

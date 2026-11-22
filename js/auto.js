@@ -70,10 +70,26 @@ function fairFunctionList(symbols, region, max = 20000) {
       if (!seen.has(idx)) { seen.add(idx); indexes.push(idx); }
     }
   }
+  const hasDirectEnd = typeof symbols._functionEnd === 'function';
+  const hasDirectAddrs = symbols.addrs?.length > 0 && Array.isArray(symbols.names);
+  const renames = symbols.renames instanceof Map && symbols.renames.size > 0 ? symbols.renames : null;
+  let symCursor = hasDirectAddrs ? lowerBoundBig(symbols.addrs, symbols.funcs[indexes[0]]) : 0;
   const out = indexes.map((idx) => {
     const addr = symbols.funcs[idx];
-    const fn = symbols.functionAt(addr);
-    return { addr, name: symbols.nameAt(addr) || null, size: fn?.end != null ? fn.end - addr : null };
+    const end = hasDirectEnd ? symbols._functionEnd(idx) : (symbols.functionAt?.(addr)?.end ?? null);
+    let name = null;
+    if (renames) name = renames.get(addr.toString()) || null;
+    if (name == null) {
+      if (hasDirectAddrs) {
+        while (symCursor < symbols.addrs.length && symbols.addrs[symCursor] < addr) symCursor++;
+        if (symCursor < symbols.addrs.length && symbols.addrs[symCursor] === addr) {
+          name = symbols.names[symCursor] || null;
+        }
+      } else {
+        name = symbols.nameAt?.(addr) || null;
+      }
+    }
+    return { addr, name, size: end != null ? end - addr : null };
   });
   Object.defineProperties(out, {
     complete: { value: total <= max, enumerable: false },
@@ -184,12 +200,25 @@ function stringByteSpan(s) {
 
 export function findings(strings, program, symbols, limit = 40) {
   const out = [];
-  if (!program) return out;
-  for (const sig of SIGNALS) {
-    let taken = 0;
-    for (const s of strings || []) {
-      if (taken >= sig.max || out.length >= limit) break;
-      if (!sig.re.test(s.text)) continue;
+  if (!program || limit <= 0) return out;
+  const buckets = SIGNALS.map(() => []);
+  let activeSignals = SIGNALS.length;
+  for (const s of strings || []) {
+    if (activeSignals === 0) break;
+    const text = s.text;
+    for (let si = 0; si < SIGNALS.length; si++) {
+      const sig = SIGNALS[si];
+      const bucket = buckets[si];
+      if (bucket.length >= sig.max) continue;
+      if (!sig.re.test(text)) continue;
+      bucket.push(s);
+      if (bucket.length >= sig.max) activeSignals--;
+    }
+  }
+  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
+    const sig = SIGNALS[si];
+    for (const s of buckets[si]) {
+      if (out.length >= limit) break;
       // The xref span is a virtual-address byte range (#5698): use the
       // string's authoritative raw byte extent; entries without one stay
       // visible as data but get no xref authority (no over-inclusive
@@ -209,7 +238,6 @@ export function findings(strings, program, symbols, limit = 40) {
           name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
         })),
       });
-      taken++;
     }
   }
   // Proven/actionable findings always precede dead strings.
@@ -270,11 +298,12 @@ export async function autoAnalyze(opts) {
 
   const all = GOALS.length;
   const rankedByGoal = new Map();
+  const vendors = vendorsOf(fields);
   for (let i = 0; i < GOALS.length; i++) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors: vendorsOf(fields) });
+    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 12, vendors });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (ranked.candidates.length) {
       report.goals.push({

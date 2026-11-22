@@ -26,7 +26,7 @@
 import { decompile, decompiledText } from './decompile.js';
 import { readableName } from './rtti.js';
 import { inferTypes, recoverStruct } from './types.js';
-import { parseHexBytes, isHexBytes, validatePatchRange } from './patch.js';
+import { parseHexBytes, isHexBytes, validatePatchRange, decodeArm64PatchWord } from './patch.js';
 import { architectureAdapter, unsupportedArchitectureResult, UnsupportedArchitectureError } from './architecture/index.js';
 import { Emulator } from './emu.js';
 
@@ -481,8 +481,15 @@ export function createApi(app, out, options = {}) {
       }
       if (!built?.bytes) return built;
       if (!raw) {
-        const placement = archAdapter.validateInstructionPlacement(r, a, built.bytes.length);
-        if (!placement?.ok) return placement;
+        if (built.bytes.length > 4 && built.bytes.length % 4 === 0 && archAdapter.fixedInstructionSize === 4) {
+          for (let off = 0; off < built.bytes.length; off += 4) {
+            const placement = archAdapter.validateInstructionPlacement(r, a + BigInt(off), 4);
+            if (!placement?.ok) return placement;
+          }
+        } else {
+          const placement = archAdapter.validateInstructionPlacement(r, a, built.bytes.length);
+          if (!placement?.ok) return placement;
+        }
       }
       const file = app.store.get('file');
       // Explicit raw bytes are ISA-neutral and may be any in-range length/alignment.
@@ -513,7 +520,7 @@ export function createApi(app, out, options = {}) {
       if (!Array.isArray(args)) throw new TypeError('run args must be an array');
       const signal = signalOf(context);
       throwIfAborted(signal);
-      const emu = makeEmulator(app);
+      const emu = makeEmulator(app, { applyPatches: context?.applyPatches !== false });
       emu.setup(BigInt(addr), args.map((v) => BigInt(v)));
       await emu.run(boundedSteps(maxSteps), { signal });
       return {
@@ -526,9 +533,9 @@ export function createApi(app, out, options = {}) {
      * Stateful emulator for scripts. Only the handle crosses the sandbox RPC;
      * sandbox.js presents it as an object with setup/step/run/get/set/... methods.
      */
-    emulatorCreate(addr = null, args = []) {
+    emulatorCreate(addr = null, args = [], emuOptions = null) {
       if (emulators.size >= MAX_EMULATORS) throw new Error('同時に作れるエミュレータは16個までです。');
-      const emu = makeEmulator(app);
+      const emu = makeEmulator(app, { applyPatches: emuOptions?.applyPatches !== false });
       if (addr != null) emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
       const id = 'emu' + emulatorSeq++;
       emulators.set(id, emu);
@@ -537,7 +544,7 @@ export function createApi(app, out, options = {}) {
 
     /* Direct callers get the same clone-safe descriptor. In the sandbox, the
        special `hex.emulator()` proxy calls emulatorCreate automatically. */
-    emulator(addr = null, args = []) { return api.emulatorCreate(addr, args); },
+    emulator(addr = null, args = [], emuOptions = null) { return api.emulatorCreate(addr, args, emuOptions); },
 
     emulatorSetup(id, addr, args = []) {
       const emu = emulatorOf(id);
@@ -600,22 +607,128 @@ export function createApi(app, out, options = {}) {
   return { api, print };
 }
 
+function patchVirtualAddress(item, regions) {
+  if (!item) return null;
+  if (item.addr != null) {
+    try { return BigInt(item.addr); } catch { return null; }
+  }
+  if (item.offset == null) return null;
+  const off = BigInt(item.offset);
+  for (const r of regions || []) {
+    if (!r || r.fileOffset == null || r.vmAddr == null || r.size == null) continue;
+    try {
+      const fileStart = BigInt(r.fileOffset);
+      const size = BigInt(r.size);
+      if (size > 0n && off >= fileStart && off < fileStart + size) {
+        return BigInt(r.vmAddr) + (off - fileStart);
+      }
+    } catch { /* ignore malformed region */ }
+  }
+  return null;
+}
+
+/** ステージング中のパッチをメモリ読み取りバイト列へ重ねる。 */
+export function overlayStagedPatches(patches, regions, addr, bytes) {
+  if (!bytes || !bytes.length || !patches || typeof patches.list !== 'function' || !(patches.size > 0)) return bytes;
+  const start = BigInt(addr);
+  const end = start + BigInt(bytes.length);
+  let out = null;
+  for (const item of patches.list()) {
+    if (!item?.after?.length) continue;
+    const patchStart = patchVirtualAddress(item, regions);
+    if (patchStart == null) continue;
+    const patchEnd = patchStart + BigInt(item.after.length);
+    if (patchEnd <= start || patchStart >= end) continue;
+    if (!out) out = Uint8Array.from(bytes);
+    const lo = patchStart > start ? patchStart : start;
+    const hi = patchEnd < end ? patchEnd : end;
+    for (let cur = lo; cur < hi; cur++) {
+      out[Number(cur - start)] = item.after[Number(cur - patchStart)];
+    }
+  }
+  return out || bytes;
+}
+
+function patchedTextSlot(item, patchStart, addr) {
+  if (!item || typeof item.text !== 'string' || isHexBytes(item.text)) return null;
+  const rel = Number(addr - patchStart);
+  if (rel < 0 || rel % 4 !== 0) return null;
+  const slot = rel / 4;
+  const parts = item.text.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
+  const line = parts[slot];
+  if (!line) return null;
+  const sp = line.indexOf(' ');
+  return sp < 0 ? { mn: line.toLowerCase(), ops: '' } : { mn: line.slice(0, sp).toLowerCase(), ops: line.slice(sp + 1).trim() };
+}
+
+async function patchedInstructionAt(app, regions, addr, readMemory) {
+  const patches = app?.patches;
+  if (!patches || typeof patches.list !== 'function' || !(patches.size > 0)) return null;
+  const target = BigInt(addr);
+  const targetEnd = target + 4n;
+  let overlapping = null;
+  let covering = null;
+  let coveringStart = null;
+  for (const item of patches.list()) {
+    if (!item?.after?.length) continue;
+    const patchStart = patchVirtualAddress(item, regions);
+    if (patchStart == null) continue;
+    const patchEnd = patchStart + BigInt(item.after.length);
+    if (patchEnd <= target || patchStart >= targetEnd) continue;
+    overlapping = item;
+    if (patchStart <= target && patchEnd >= targetEnd) {
+      covering = item;
+      coveringStart = patchStart;
+      break;
+    }
+  }
+  if (!overlapping) return null;
+  let four = null;
+  if (covering && coveringStart != null) {
+    const off = Number(target - coveringStart);
+    four = covering.after.slice(off, off + 4);
+  } else {
+    four = await readMemory(target, 4);
+  }
+  if (four && four.length === 4) {
+    const word = (four[0] | (four[1] << 8) | (four[2] << 16) | (four[3] << 24)) >>> 0;
+    const decoded = decodeArm64PatchWord(word, target);
+    if (decoded) return decoded;
+  }
+  if (covering && coveringStart != null) {
+    const fallback = patchedTextSlot(covering, coveringStart, target);
+    if (fallback) return fallback;
+  }
+  return null;
+}
+
 /** app からエミュレータを作る（画面側でも使う）。 */
-export function makeEmulator(app) {
+export function makeEmulator(app, options = {}) {
   // Legacy callers predate architecture metadata and were ARM64-only. Keep that
   // compatibility path, while explicit unknown/foreign architectures fail closed.
   const detectedArchitecture = app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture;
   const architecture = String(detectedArchitecture || 'arm64').toLowerCase();
   const adapter = architectureAdapter(architecture);
   if (adapter.id !== 'arm64') throw new UnsupportedArchitectureError('emulate', architecture);
-  const regions = (app.store.get('regions') || []).filter((r) => r.exec && r.size > 0n);
+  const applyPatches = options?.applyPatches !== false;
+  const allRegions = app.store.get('regions') || [];
+  const regions = allRegions.filter((r) => r.exec && r.size > 0n);
   const regionAt = (addr) => regions.find((r) => addr >= r.vmAddr && addr < r.vmAddr + r.size) || null;
+  const readMemory = (addr, len) => app.backend.readAt(addr, len)
+    .then((r) => {
+      if (!r || !r.found || !r.bytes) return null;
+      if (!applyPatches || !(app?.patches?.size > 0)) return r.bytes;
+      return overlayStagedPatches(app.patches, allRegions, BigInt(addr), r.bytes);
+    }).catch(() => null);
   return new Emulator({
-    read: (addr, len) => app.backend.readAt(addr, len)
-      .then((r) => (r && r.found ? r.bytes : null)).catch(() => null),
+    read: readMemory,
     fetch: async (addr) => {
       const r = regionAt(addr);
       if (!r) return null;
+      if (applyPatches && app?.patches?.size > 0) {
+        const patched = await patchedInstructionAt(app, allRegions, BigInt(addr), readMemory);
+        if (patched) return patched;
+      }
       const row = adapter.rowForAddress(r, addr);
       if (row == null) return null;
       const chunk = Math.floor(row / 1024);

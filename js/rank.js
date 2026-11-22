@@ -137,6 +137,21 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     }
   }
 
+  const vendorChecked = new Set();
+  const applyVendorPenalty = (c) => {
+    const key = c.addr.toString();
+    if (vendorChecked.has(key)) return;
+    vendorChecked.add(key);
+    const vendor = vendorOfCandidate(c, vendors);
+    if (!vendor) return;
+    c.vendor = vendor;
+    if (vendorConflicts(goal.id, vendor)) addReason(c, REASON.VENDOR, POINTS[REASON.VENDOR], {
+      vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
+      name: vendor.name || null, text: vendor.text || null,
+    });
+  };
+  for (const c of byAddr.values()) applyVendorPenalty(c);
+
   const tainted = (name) => {
     if (!name) return false;
     const v = vendorOf(classFromSymbol(name) || name, vendors);
@@ -177,9 +192,12 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     }
   }
 
+  for (const c of byAddr.values()) applyVendorPenalty(c);
+
   const expects = goal.expects || {};
   for (const c of byAddr.values()) {
     if (!hasProgram) break;
+    if (c.score <= 0 && c.vendor && vendorConflicts(goal.id, c.vendor)) continue;
     const range = program.functionRange(c.addr);
     if (!range || range.start !== c.addr || range.end == null) continue;
     const stats = program.statsOf(range.start, range.end);
@@ -192,16 +210,6 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     if (called >= 3) addReason(c, REASON.POPULAR, POINTS[REASON.POPULAR], { n: called, complete: !program.callsCapped });
     c.calledCount = called;
     if (stats.total > 1500) addReason(c, REASON.SIZE_PENALTY, POINTS[REASON.SIZE_PENALTY], { n: stats.total, complete: stats.covered !== false });
-  }
-
-  for (const c of byAddr.values()) {
-    const vendor = vendorOfCandidate(c, vendors);
-    if (!vendor) continue;
-    c.vendor = vendor;
-    if (vendorConflicts(goal.id, vendor)) addReason(c, REASON.VENDOR, POINTS[REASON.VENDOR], {
-      vendor: vendor.vendor, kind: vendor.kind, where: vendor.where,
-      name: vendor.name || null, text: vendor.text || null,
-    });
   }
 
   const out = [];

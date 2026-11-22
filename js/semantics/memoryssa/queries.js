@@ -70,6 +70,23 @@ function canonicalQueryIndex(memorySsa) {
     for (const item of state.exit ?? []) if (!exit.has(item.regionId)) exit.set(item.regionId, item.definitionId);
     blockVersions.set(state.blockId, { entry, exit });
   }
+  let byteCoverageByUseId = null;
+  let byteCoverageMalformedReason = null;
+  if (Array.isArray(memorySsa.byteCoverage)) {
+    byteCoverageByUseId = new Map();
+    for (const coverage of memorySsa.byteCoverage) {
+      if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-row-malformed';
+        break;
+      }
+      const coverageUseId = String(coverage.useId ?? '').trim();
+      if (!coverageUseId || byteCoverageByUseId.has(coverageUseId)) {
+        byteCoverageMalformedReason = 'memory-forwarding-coverage-use-duplicate';
+        break;
+      }
+      byteCoverageByUseId.set(coverageUseId, coverage);
+    }
+  }
   index = {
     regions: new Map((memorySsa.regions ?? []).map((region) => [String(region.id), region])),
     definitions: new Map(memorySsa.definitions.map((definition) => [definition.id, definition])),
@@ -78,6 +95,8 @@ function canonicalQueryIndex(memorySsa) {
     definitionsByRegion,
     accessMetadata: new Map((memorySsa.accessMetadata ?? []).map((item) => [item.memorySsaEntityId, item])),
     blockVersions,
+    byteCoverageByUseId,
+    byteCoverageMalformedReason,
   };
   canonicalQueryIndexes.set(memorySsa, index);
   return index;
@@ -1402,8 +1421,23 @@ function forwardingContains(outer, inner) {
   return outer.domain === inner.domain && outer.start <= inner.start && outer.end >= inner.end;
 }
 
+const forwardingDefinitionMapCache = new WeakMap();
+function forwardingDefinitionMap(memorySsa) {
+  const qIndex = canonicalQueryIndex(memorySsa);
+  if (qIndex) return qIndex.definitions;
+  if (forwardingObject(memorySsa) && Object.isFrozen(memorySsa)
+      && Array.isArray(memorySsa.definitions) && Object.isFrozen(memorySsa.definitions)) {
+    let cached = forwardingDefinitionMapCache.get(memorySsa);
+    if (cached) return cached;
+    cached = new Map(memorySsa.definitions.map((definition) => [String(definition.id), definition]));
+    forwardingDefinitionMapCache.set(memorySsa, cached);
+    return cached;
+  }
+  return new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+}
+
 function forwardingDefinitionChain(memorySsa, startId, state) {
-  const definitions = new Map((memorySsa.definitions ?? []).map((definition) => [String(definition.id), definition]));
+  const definitions = forwardingDefinitionMap(memorySsa);
   const chain = [];
   const visited = new Set();
   let currentId = String(startId ?? '');
@@ -1566,6 +1600,21 @@ function forwardingCheckRangeWidth(range, widthBits, code) {
   }
 }
 
+const frozenIrDigestCache = new WeakMap();
+function forwardingIrDigest(ir) {
+  if (ir == null) return null;
+  if (forwardingObject(ir) && Object.isFrozen(ir)
+      && (ir.nodes == null || (Array.isArray(ir.nodes) && Object.isFrozen(ir.nodes)))
+      && (ir.values == null || (Array.isArray(ir.values) && Object.isFrozen(ir.values)))) {
+    let digest = frozenIrDigestCache.get(ir);
+    if (digest !== undefined) return digest;
+    digest = stableDigest(ir);
+    frozenIrDigestCache.set(ir, digest);
+    return digest;
+  }
+  return stableDigest(ir);
+}
+
 function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage, context, options) {
   return {
     digest: stableDigest({
@@ -1617,7 +1666,7 @@ function forwardingIdentity(memorySsa, use, loadMeta, winners, stores, coverage,
       optionsIdentity: options.currentIdentity ?? null,
       consumerId: options.consumerId ?? null,
       purpose: options.purpose ?? null,
-      canonicalIrDigest: options.ir == null ? null : stableDigest(options.ir),
+      canonicalIrDigest: forwardingIrDigest(options.ir),
     }),
     functionId: memorySsa.functionId,
     snapshotId: memorySsa.snapshotId ?? options.snapshotId ?? null,
@@ -2011,7 +2060,10 @@ function forwardingCoverageStates(memorySsa, use, context, options, state, metad
   const irCacheKey = options?.ir ?? NO_IR_CACHE_KEY;
   if (cacheable) {
     if (state.options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
-    const cached = coverageValidationCache.get(memorySsa)?.get(irCacheKey);
+    const useKey = String(use.id);
+    let perIr = coverageValidationCache.get(memorySsa);
+    let byUseId = perIr?.get(irCacheKey);
+    const cached = byUseId?.get(useKey);
     if (cached !== undefined) {
       if (cached.ticks > 0) {
         if (state.deadlineMs != null && Date.now() >= state.deadlineMs) {
@@ -2026,54 +2078,55 @@ function forwardingCoverageStates(memorySsa, use, context, options, state, metad
       if (!cached.ok) {
         throw new ForwardingStop(cached.error.status, cached.error.reason);
       }
-      const hit = cached.byUseId.get(String(use.id));
-      if (!hit) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-missing');
-      return hit;
+      return cached.states;
+    }
+    const startIterations = state.iterations;
+    const qIndex = canonicalQueryIndex(memorySsa);
+    if (!perIr) { perIr = new WeakMap(); coverageValidationCache.set(memorySsa, perIr); }
+    if (!byUseId) { byUseId = new Map(); perIr.set(irCacheKey, byUseId); }
+    try {
+      forwardingScanTick(state);
+      if (qIndex?.byteCoverageMalformedReason) {
+        throw new ForwardingStop('unknown', qIndex.byteCoverageMalformedReason);
+      }
+      const coverage = qIndex?.byteCoverageByUseId?.get(useKey) ?? null;
+      if (!coverage) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-missing');
+      const states = forwardingCoverageStateForUse(memorySsa, use, context, coverage, state);
+      byUseId.set(useKey, { ok: true, states, ticks: state.iterations - startIterations });
+      return states;
+    } catch (error) {
+      if (error instanceof ForwardingStop
+          && error.status !== 'cancelled' && error.status !== 'budget-limited') {
+        byUseId.set(useKey, {
+          ok: false,
+          error: { status: error.status, reason: error.reason },
+          ticks: state.iterations - startIterations,
+        });
+      }
+      throw error;
     }
   }
-  const startIterations = state.iterations;
   const qIndex = canonicalQueryIndex(memorySsa);
   const usesById = qIndex ? qIndex.uses : new Map((memorySsa.uses ?? []).map((item) => [String(item.id), item]));
   const seenUseIds = new Set();
-  const byUseId = cacheable ? new Map() : null;
   let selectedStates = null;
-  try {
-    for (const coverage of memorySsa.byteCoverage) {
-      forwardingScanTick(state);
-      if (!forwardingObject(coverage)) {
-        throw new ForwardingStop('unknown', 'memory-forwarding-coverage-row-malformed');
-      }
-      const coverageUseId = String(coverage.useId ?? '').trim();
-      if (!coverageUseId || seenUseIds.has(coverageUseId)) {
-        throw new ForwardingStop('unknown', 'memory-forwarding-coverage-use-duplicate');
-      }
-      seenUseIds.add(coverageUseId);
-      const coverageUse = usesById.get(coverageUseId);
-      if (!coverageUse) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-use-missing');
-      const coverageContext = coverageUseId === String(use.id)
-        ? context
-        : forwardingLoadContext(memorySsa, coverageUse, options, metadataById, regionById, sourceById);
-      const states = forwardingCoverageStateForUse(memorySsa, coverageUse, coverageContext, coverage, state);
-      if (byUseId) byUseId.set(coverageUseId, states);
-      if (coverageUseId === String(use.id)) selectedStates = states;
+  for (const coverage of memorySsa.byteCoverage) {
+    forwardingScanTick(state);
+    if (!forwardingObject(coverage)) {
+      throw new ForwardingStop('unknown', 'memory-forwarding-coverage-row-malformed');
     }
-  } catch (error) {
-    if (cacheable && error instanceof ForwardingStop
-        && error.status !== 'cancelled' && error.status !== 'budget-limited') {
-      let perIr = coverageValidationCache.get(memorySsa);
-      if (!perIr) { perIr = new WeakMap(); coverageValidationCache.set(memorySsa, perIr); }
-      perIr.set(irCacheKey, {
-        ok: false,
-        error: { status: error.status, reason: error.reason },
-        ticks: state.iterations - startIterations,
-      });
+    const coverageUseId = String(coverage.useId ?? '').trim();
+    if (!coverageUseId || seenUseIds.has(coverageUseId)) {
+      throw new ForwardingStop('unknown', 'memory-forwarding-coverage-use-duplicate');
     }
-    throw error;
-  }
-  if (cacheable && byUseId) {
-    let perIr = coverageValidationCache.get(memorySsa);
-    if (!perIr) { perIr = new WeakMap(); coverageValidationCache.set(memorySsa, perIr); }
-    perIr.set(irCacheKey, { ok: true, byUseId, ticks: state.iterations - startIterations });
+    seenUseIds.add(coverageUseId);
+    const coverageUse = usesById.get(coverageUseId);
+    if (!coverageUse) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-use-missing');
+    const coverageContext = coverageUseId === String(use.id)
+      ? context
+      : forwardingLoadContext(memorySsa, coverageUse, options, metadataById, regionById, sourceById);
+    const states = forwardingCoverageStateForUse(memorySsa, coverageUse, coverageContext, coverage, state);
+    if (coverageUseId === String(use.id)) selectedStates = states;
   }
   if (!selectedStates) throw new ForwardingStop('unknown', 'memory-forwarding-coverage-missing');
   return selectedStates;

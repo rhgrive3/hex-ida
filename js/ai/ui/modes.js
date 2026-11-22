@@ -28,6 +28,16 @@ export const SCOPE_ITEMS = Object.freeze([
   { id: 'runtime', ja: '実行時', en: 'Runtime' },
 ]);
 
+export const FUNCTION_LEVEL_TASKS = Object.freeze(new Set([
+  'explain',
+  'explain_function',
+  'rename',
+  'rename_suggestion',
+  'comment',
+  'comment_suggestion',
+  'patch_suggestion',
+]));
+
 const byId = (items) => new Map(items.map((item) => [item.id, item]));
 const MODE_MAP = byId(MODE_ITEMS);
 const STYLE_MAP = byId(STYLE_ITEMS);
@@ -52,13 +62,20 @@ export function scopeLabel(id, ja = true) {
  * Auto is not a scope of its own at investigation time: it resolves to the
  * narrowest scope the workbench can actually supply, so a question asked with
  * nothing open cannot silently become a whole-binary sweep in Chat mode.
+ * For function-level tasks (explain, rename, comment, patch_suggestion), Auto
+ * resolves to 'function' whenever a function is open rather than under-scoping
+ * to a single selected instruction.
  */
-export function resolveScope(scope, state = {}) {
+export function resolveScope(scope, state = {}, options = {}) {
   if (scope && scope !== 'auto' && SCOPES.includes(scope)) return scope;
+  const task = options?.task ?? state?.task ?? null;
+  if (task && FUNCTION_LEVEL_TASKS.has(task) && state.functionAddress != null) {
+    return 'function';
+  }
   if (state.selection) return 'selection';
   if (state.functionAddress != null) return 'function';
   if (state.fileOpen) return 'binary';
   return 'project';
 }
 
-export default { MODE_ITEMS, STYLE_ITEMS, SCOPE_ITEMS, resolveScope };
+export default { MODE_ITEMS, STYLE_ITEMS, SCOPE_ITEMS, FUNCTION_LEVEL_TASKS, resolveScope };

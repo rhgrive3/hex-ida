@@ -316,8 +316,8 @@ const WORKER_PRELUDE = String.raw`
       if (typeof prop !== 'string' || prop === 'then' || prop === '__proto__' || prop === 'constructor') return undefined;
       if (prop === 'hex') return (value, pad = 8) => '0x' + BigInt(value).toString(16).toUpperCase().padStart(pad, '0');
       if (prop === 'emulator') {
-        return async (addr = null, args = []) => {
-          const created = await rpc('emulatorCreate', [addr, args]);
+        return async (addr = null, args = [], options = null) => {
+          const created = await rpc('emulatorCreate', options == null ? [addr, args] : [addr, args, options]);
           if (!created || !created.id) throw new Error('エミュレータを作れませんでした。');
           return emulatorProxy(created.id);
         };

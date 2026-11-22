@@ -144,18 +144,28 @@ export function showSearch(app) {
     const items=[...initialItems];
     results.replaceChildren(); let shown=0; let loading=false;
     const more=tapRow(t('search.more'),{onTap:()=>{void page();}});
+    const setMoreLoading=(isLoading)=>{
+      more.disabled=isLoading;
+      more.setAttribute('aria-busy',isLoading?'true':'false');
+      if(isLoading){
+        more.replaceChildren(el('div',null,'読み込み中...'));
+        if(!more.isConnected)results.append(more);
+      }
+    };
     const addMore=()=>{
-      if(shown>=items.length&&!pager.hasMore)return;
+      more.disabled=false;
+      more.setAttribute('aria-busy','false');
+      if(shown>=items.length&&!pager.hasMore){more.remove();return;}
       const remaining=items.length-shown;
       more.replaceChildren();more.append(el('div',null,t('search.showMore',{n:Math.min(PAGE,remaining||PAGE)})));results.append(more);
     };
     const page=async()=>{
       if(loading)return;
-      more.remove();
       if(shown>=items.length&&pager.hasMore){
         const controller=runs.start();
         if(!controller){addMore();return;}
         loading=true; goBtn.textContent=t('btn.stop');
+        setMoreLoading(true);
         try {
           const response=await pager.next({ signal:controller.signal, onProgress:progressFor(controller) });
           if(!runs.runIfActive(controller, () => {
@@ -163,7 +173,8 @@ export function showSearch(app) {
           }))return;
         } catch(error) {
           if(!runs.runIfActive(controller, () => {
-            if(!isAbort(error)){alertDialog(t('search.failed'),userError(error));addMore();}
+            if(!isAbort(error))alertDialog(t('search.failed'),userError(error));
+            addMore();
           }))return;
           return;
         } finally {
@@ -171,6 +182,7 @@ export function showSearch(app) {
           runs.finish(controller,()=>{goBtn.textContent=t('btn.find');});
         }
       }
+      more.remove();
       const frag=document.createDocumentFragment();const end=Math.min(items.length,shown+PAGE);
       for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{sheet.close();showCodeRoute();app.viewer.goToRow(item.row,'third');app.viewer.mark(item.row);app.viewer.select(item.row,false);app.store.set({selectedRow:item.row});}}));}
       results.append(frag);addMore();

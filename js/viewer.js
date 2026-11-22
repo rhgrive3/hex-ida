@@ -70,6 +70,9 @@ export class CodeViewer {
     this.variableRows = Object.freeze([]);
     this.variableError = null;
     this.variableNavigation = 0;
+    this.variablePending = false;
+    this.variablePendingAddress = null;
+    this._variableNavController = null;
     this.variableIndex = new VariableInstructionIndex({
       disassembleAt:(address, options) => this.backend.disassembleAt(address, options),
       onPublish:() => this._variablePublished(),
@@ -196,6 +199,9 @@ export class CodeViewer {
       || this.backend?.legacyInfo?.capability?.architecture
       || 'arm64').toLowerCase();
     this.variableNavigation++;
+    this._abortVariableNavigation('region-changed');
+    this.variablePending = false;
+    this.variablePendingAddress = null;
     this.variableIndex.configureRegion(region, { architecture });
     this.region = region;
     this.modeAddressAnchor = null;
@@ -235,7 +241,12 @@ export class CodeViewer {
     }
     if (leavingVariableAsm && mode === 'hex') this.modeAddressAnchor = visibleAnchor;
     else if (previousMode !== 'hex' || mode !== 'asm') this.modeAddressAnchor = null;
-    if (leavingVariableAsm) this.variableIndex.cancelAll('mode-changed');
+    if (leavingVariableAsm) {
+      this._abortVariableNavigation('mode-changed');
+      this.variablePending = false;
+      this.variablePendingAddress = null;
+      this.variableIndex.cancelAll('mode-changed');
+    }
     this.variableNavigation++;
     this.mode = mode;
     this.vp.classList.toggle('mode-asm', mode === 'asm');
@@ -386,12 +397,32 @@ export class CodeViewer {
     return true;
   }
 
+  _abortVariableNavigation(reason = 'superseded-navigation') {
+    if (this._variableNavController && !this._variableNavController.signal.aborted) {
+      this._variableNavController.abort(reason);
+    }
+    this._variableNavController = null;
+  }
+
+  _beginVariableNavigation(reason = 'superseded-navigation') {
+    this._abortVariableNavigation(reason);
+    const controller = new AbortController();
+    this._variableNavController = controller;
+    return controller;
+  }
+
   _navigateVariable(address, { trusted = false, where = 'third' } = {}) {
     if (!this.region || this.mode !== 'asm' || this.fixedInstructionSize() != null) return;
     const requestGeneration = ++this.variableNavigation;
+    const controller = this._beginVariableNavigation('superseded-navigation');
     this.variableError = null;
-    this.variableIndex.navigate(address, { trusted }).then((result) => {
-      if (requestGeneration !== this.variableNavigation || this.disposed || !this.region) return;
+    this.variablePending = true;
+    this.variablePendingAddress = BigInt(address);
+    this.invalidate();
+    this.variableIndex.navigate(address, { trusted, signal: controller.signal }).then((result) => {
+      if (requestGeneration !== this.variableNavigation || controller.signal.aborted || this.disposed || !this.region) return;
+      this.variablePending = false;
+      this.variablePendingAddress = null;
       if (result.status === 'ambiguous' || result.status === 'unknown' || result.status === 'undecodable') {
         this.variableError = { address:BigInt(address), status:result.status, bytes:null };
         this._loadVariableErrorByte(this.variableError, requestGeneration);
@@ -399,7 +430,9 @@ export class CodeViewer {
       this._syncVariableRows(result.address ?? address);
       if (!this._goToKnownVariableAddress(result.address ?? address, where)) this.invalidate();
     }).catch((error) => {
-      if (isAbort(error) || requestGeneration !== this.variableNavigation) return;
+      if (isAbort(error) || controller.signal.aborted || requestGeneration !== this.variableNavigation) return;
+      this.variablePending = false;
+      this.variablePendingAddress = null;
       this.variableError = { address:BigInt(address), status:'decode-error', bytes:null, error:String(error?.message || error) };
       this._loadVariableErrorByte(this.variableError, requestGeneration);
       this._syncVariableRows(address);
@@ -455,10 +488,11 @@ export class CodeViewer {
         const first = this.variableRows[0];
         const navGen = this.variableNavigation;
         const region = this.region;
-        this.variableIndex.previousBoundary(first.address).then((result) => {
-          if (navGen !== this.variableNavigation || this.disposed || this.region !== region || !this.isVariableAsm()) return;
+        const controller = this._beginVariableNavigation('superseded-previous-boundary');
+        this.variableIndex.previousBoundary(first.address, { signal: controller.signal }).then((result) => {
+          if (navGen !== this.variableNavigation || controller.signal.aborted || this.disposed || this.region !== region || !this.isVariableAsm()) return;
           if (result.status !== 'proven') { this.variableError = { address:first.address, status:result.status, bytes:null }; this.invalidate(); return; }
-          return this.variableIndex.ensurePage(result.address, { priority:'current', protect:false });
+          return this.variableIndex.ensurePage(result.address, { priority:'current', protect:false, signal: controller.signal });
         }).catch(() => {});
         return;
       }
@@ -565,10 +599,30 @@ export class CodeViewer {
 
   _render() {
     this.frame=0;
-    if(!this.region||!this.totalRows){ for(const el of this.pool)el.style.display='none'; return; }
-    const rowH=this.rowH, vpH=this.vp.clientHeight;
+    // Read all layout metrics BEFORE any DOM writes to avoid layout thrash.
+    const rowH=this.rowH;
+    const vpH=this.vp.clientHeight;
+    const scrollTop=this.vp.scrollTop;
+    const trackH=this.track?this.track.clientHeight:0;
+    const visible=Math.max(1,Math.floor(vpH/rowH));
+
+    if(!this.region||!this.totalRows){
+      if(this.region&&this.isVariableAsm()&&this.variablePending){
+        const skeletonCount=Math.max(1,Math.min(24,visible));
+        this._selLo=-1; this._selHi=-1;
+        this._ensurePool(skeletonCount);
+        for(let i=0;i<skeletonCount;i++){
+          this._paintBase(this.pool[i],i,i*rowH,i===0?this.variablePendingAddress:null,null,'…','',null);
+        }
+        for(let i=skeletonCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
+        return;
+      }
+      for(const el of this.pool) if(el.style.display!=='none')el.style.display='none';
+      return;
+    }
+
     this._selLo=this.selAnchor<0?-1:bigMin(this.selAnchor,this.selFocus); this._selHi=this.selAnchor<0?-1:bigMax(this.selAnchor,this.selFocus);
-    const firstLocal=Math.max(0,Math.floor(this.vp.scrollTop/rowH)-OVERSCAN);
+    const firstLocal=Math.max(0,Math.floor(scrollTop/rowH)-OVERSCAN);
     const count=Math.min(this.windowRows-firstLocal,Math.ceil(vpH/rowH)+OVERSCAN*2);
     let startRow,endRow;
     if(this._bigRows()){
@@ -583,9 +637,12 @@ export class CodeViewer {
     if(this.isVariableAsm()) this._renderVariable(startRow,endRow);
     else this._renderFixed(startRow,endRow);
     for(let i=rowCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
-    const top=this.topRow();
+    const localTop=this.baseRow+Math.floor(scrollTop/rowH);
+    const top=this._bigRows()
+      ? rowIdentity(bigMin(this.totalRowsBig-1n,this.pageRow+BigInt(localTop)))
+      : Math.min(Math.max(0,this.totalRows-1),localTop);
     if(top!==this.lastTopRow){this.lastTopRow=top;this.onTopChange(top,this.rowAddress(top));}
-    this._updateScrubber();
+    this._updateScrubber(trackH,visible,top);
   }
 
   _renderVariable(startRow,endRow) {
@@ -594,18 +651,20 @@ export class CodeViewer {
   }
 
   _renderFixed(startRow,endRow) {
+    if(startRow>=endRow)return;
     const wantAsm=this.wantAsm();
     const big=typeof startRow==='bigint';
     const globalBase=big?this.pageRow+BigInt(this.baseRow):0;
+    const firstChunk=big?Number(startRow/BigInt(CHUNK_ROWS)):Math.floor(startRow/CHUNK_ROWS);
+    const lastChunk=big?Number((endRow-1n)/BigInt(CHUNK_ROWS)):Math.floor((endRow-1)/CHUNK_ROWS);
+    const maxChunk=big?Number((this.totalRowsBig-1n)/BigInt(CHUNK_ROWS)):Math.floor((this.totalRows-1)/CHUNK_ROWS);
+    this.backend.pruneVisibleChunks?.(this.region.id,firstChunk,lastChunk,PREFETCH_CHUNKS);
     let chunkIdx=-1,entry=null,asmEntry=null;
     for(let r=startRow,i=0;r<endRow;r++,i++){
       const el=this.pool[i],c=big?Number(r/BigInt(CHUNK_ROWS)):Math.floor(r/CHUNK_ROWS);
       if(c!==chunkIdx){chunkIdx=c;entry=this.backend.peek(this.region.id,c,false);asmEntry=wantAsm?this.backend.peek(this.region.id,c,true):null;if(!entry||(wantAsm&&!asmEntry))this.backend.request(this.region.id,c,wantAsm,{priority:'visible'});}
       this._paintFixedRow(el,r,entry,asmEntry,(big?Number(r-globalBase):r-this.baseRow)*this.rowH);
     }
-    const firstChunk=big?Number(startRow/BigInt(CHUNK_ROWS)):Math.floor(startRow/CHUNK_ROWS);
-    const lastChunk=big?Number((endRow-1n)/BigInt(CHUNK_ROWS)):Math.floor((endRow-1)/CHUNK_ROWS);
-    const maxChunk=big?Number((this.totalRowsBig-1n)/BigInt(CHUNK_ROWS)):Math.floor((this.totalRows-1)/CHUNK_ROWS);
     for(let c=Math.max(0,firstChunk-PREFETCH_CHUNKS);c<=Math.min(maxChunk,lastChunk+PREFETCH_CHUNKS);c++){if(c>=firstChunk&&c<=lastChunk)continue;this.backend.request(this.region.id,c,wantAsm,{priority:'prefetch'});}
   }
 
@@ -660,11 +719,14 @@ export class CodeViewer {
     track.addEventListener('pointerdown',(e)=>{if(!this.region)return;dragging=true;track.classList.add('dragging');track.setPointerCapture(e.pointerId);navigate(e.clientY);e.preventDefault();});
     track.addEventListener('pointermove',(e)=>{if(!dragging)return;navigate(e.clientY);e.preventDefault();});const end=()=>{dragging=false;track.classList.remove('dragging');};track.addEventListener('pointerup',end);track.addEventListener('pointercancel',end);
   }
-  _thumbHeight(trackH) { if(this.isVariableAsm())return Math.max(28,Math.round(trackH*0.08));if(!this.totalRows)return 28;const frac=Math.min(1,this.visibleRows()/this.totalRows);return Math.max(28,Math.round(trackH*frac)); }
-  _updateScrubber() {
-    if(!this.track||!this.region)return;const trackH=this.track.clientHeight;if(!trackH)return;const thumbH=this._thumbHeight(trackH);let frac=0;
-    if(this.isVariableAsm()){const address=this.topAddress()??this.region.vmAddr;frac=this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}
-    else if(this.totalRows){if(this._bigRows()){const address=this.topAddress();frac=address!=null&&this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}else{const span=Math.max(1,this.totalRows-this.visibleRows());frac=Math.max(0,Math.min(1,this.topRow()/span));}}
+  _thumbHeight(trackH, visible = this.visibleRows()) { if(this.isVariableAsm())return Math.max(28,Math.round(trackH*0.08));if(!this.totalRows)return 28;const frac=Math.min(1,visible/this.totalRows);return Math.max(28,Math.round(trackH*frac)); }
+  _updateScrubber(measuredTrackH = null, measuredVisible = null, measuredTop = null) {
+    if(!this.track||!this.region)return;const trackH=measuredTrackH!=null?measuredTrackH:this.track.clientHeight;if(!trackH)return;
+    const visible=measuredVisible!=null?measuredVisible:this.visibleRows();
+    const top=measuredTop!=null?measuredTop:this.topRow();
+    const thumbH=this._thumbHeight(trackH,visible);let frac=0;
+    if(this.isVariableAsm()){const address=this.rowAddress(top)??this.region.vmAddr;frac=this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}
+    else if(this.totalRows){if(this._bigRows()){const address=this.rowAddress(top);frac=address!=null&&this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}else{const span=Math.max(1,this.totalRows-visible);frac=Math.max(0,Math.min(1,top/span));}}
     const y=Math.round(Math.max(0,Math.min(1,frac))*(trackH-thumbH)),style=this.thumb.style,h=thumbH+'px',t=y+'px';if(style.height!==h)style.height=h;if(style.top!==t)style.top=t;
   }
 
@@ -763,6 +825,6 @@ export class CodeViewer {
   }
 
   dispose() {
-    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this.vp.removeEventListener('scroll',this._onScroll);
+    if(this.disposed)return;this.disposed=true;this.variableNavigation++;this._abortVariableNavigation('viewer-disposed');this.variablePending=false;this.variablePendingAddress=null;this.variableIndex.dispose();clearTimeout(this.idleTimer);if(this.frame)cancelAnimationFrame(this.frame);this.frame=0;this.vp.removeEventListener('scroll',this._onScroll);
   }
 }

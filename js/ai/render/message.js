@@ -17,13 +17,66 @@ import { confidenceDisplay } from './normalize.js';
 import { decorateTerms } from './terms.js';
 import { missingLabel } from './missing.js';
 
+const DEFAULT_ACTION_LABELS = Object.freeze({
+  'emulate-function': ['この関数を試す', 'Try this function'],
+  'open-patch-editor': ['ここを書き換える', 'Patch here'],
+  'open-function': ['関数を開く', 'Open function'],
+  'open-address': ['この命令へ移動', 'Go to instruction'],
+  'show-xrefs': ['参照元を見る', 'Show xrefs'],
+  'show-callers': ['呼び出し元', 'Callers'],
+  'show-callees': ['呼び出し先', 'Callees'],
+  'show-cfg': ['制御フローを見る', 'Show CFG'],
+  'show-pseudocode': ['疑似コードを見る', 'Show pseudocode'],
+  'open-evidence': ['根拠を開く', 'Open evidence'],
+  'trace-value': ['値を追う', 'Trace value'],
+  'run-agent': ['エージェントで調べる', 'Investigate with Agent'],
+  'review-proposal': ['変更案を確認', 'Review proposal'],
+});
+
+export function actionButtonLabel(action) {
+  if (action && typeof action.label === 'string' && action.label.trim()) return action.label;
+  const fallback = action && DEFAULT_ACTION_LABELS[action.kind];
+  return fallback ? pick(fallback[0], fallback[1]) : String((action && action.kind) || '');
+}
+
+function enrichBridgeActions(actions) {
+  if (!Array.isArray(actions) || !actions.length) return [];
+  const out = actions.slice();
+  const hasEmulate = out.some((a) => a && a.kind === 'emulate-function');
+  const hasPatch = out.some((a) => a && a.kind === 'open-patch-editor');
+  if (!hasEmulate) {
+    const fnAction = out.find((a) => a && a.kind === 'open-function' && (a.address != null || a.target != null));
+    if (fnAction) {
+      out.push({
+        kind: 'emulate-function',
+        target: fnAction.target ?? null,
+        address: fnAction.address ?? null,
+        label: pick('この関数を試す', 'Try this function'),
+      });
+    }
+  }
+  if (!hasPatch) {
+    const addrAction = out.find((a) => a && (a.kind === 'open-address' || a.kind === 'open-evidence') && (a.address != null || a.target != null));
+    if (addrAction) {
+      out.push({
+        kind: 'open-patch-editor',
+        target: addrAction.target ?? null,
+        address: addrAction.address ?? null,
+        label: pick('ここを書き換える', 'Patch here'),
+      });
+    }
+  }
+  return out;
+}
+
 function actionsRow(actions, handlers) {
-  if (!actions || !actions.length) return null;
+  const items = enrichBridgeActions(actions);
+  if (!items.length) return null;
   const root = h('div', 'ai-actions');
   root.append(h('span', 'ai-actions-label', pick('次にできること', 'Next')));
   const row = h('div', 'ai-actions-row');
-  for (const action of actions) {
-    row.append(uiButton(action.label, { cls: 'ai-chip primary', onClick: () => handlers.onAction(action) }));
+  for (const action of items) {
+    row.append(uiButton(actionButtonLabel(action), { cls: 'ai-chip primary', onClick: () => handlers.onAction(action) }));
   }
   root.append(row);
   return root;

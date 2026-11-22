@@ -243,6 +243,7 @@ export function describePurpose(o) {
     stores: f.stores || 0,
     loads: f.loads || 0,
     changes: list.slice(0, 6),
+    allChanges: list,
     locals,
     compares,
     callNames: callNames.slice(0, 8),
@@ -315,7 +316,8 @@ function headlineOf(p) {
 export function changeAt(purpose, disp) {
   if (!purpose || disp == null) return null;
   const want = BigInt(disp);
-  for (const c of purpose.changes) {
+  const list = purpose.allChanges || purpose.changes || [];
+  for (const c of list) {
     if (c.disp != null && BigInt(c.disp) === want) return c;
   }
   return null;

@@ -16,6 +16,7 @@ import { createLauncher } from './launcher.js';
 import { launcherStateForSessionEvent } from './launcher-state.js';
 import { createAiEngine } from './bridge.js';
 import { workbenchContext } from './workbench.js';
+import { detectTask } from '../prompts/task.js';
 import { createActionRunner } from '../interaction/actions.js';
 import { renderProposal } from '../render/proposal.js';
 import { showTerm } from '../../panels.js';
@@ -26,7 +27,7 @@ const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
 const CONTEXT_STORE_KEYS = new Set([
   'fileInfo', 'regions', 'currentRegion', 'architecture',
-  'selectedRow', 'selectionStart', 'selectionEnd',
+  'selectedRow', 'selectionStart', 'selectionEnd', 'patches',
 ]);
 
 function storePatchAffectsContext(patch) {
@@ -42,7 +43,7 @@ function layoutFor(width) {
   return 'full';
 }
 
-function suggestionsFor(app) {
+export function suggestionsFor(app) {
   const info = app.store.get('fileInfo');
   if (!info) {
     return [
@@ -51,9 +52,10 @@ function suggestionsFor(app) {
     ];
   }
   return [
+    pick('わかりやすく説明して', 'Explain this simply'),
+    pick('書き換える方法を教えて', 'How can I patch this?'),
     pick('この関数は何をしている？', 'What does this function do?'),
     pick('コインが増える処理はどこ？', 'Where do coins increase?'),
-    pick('セーブしている場所を探して', 'Find where the game saves'),
   ];
 }
 
@@ -188,6 +190,10 @@ export function installAssistant(app, ui) {
     if (options.scope) session.setScope(options.scope);
     panel.update({ stick: false });
     const context = workbenchContext(app);
+    const task = options.task || detectTask(question, { selection: context.selection ? context.selection.kind : null });
+    if (task && context.state) {
+      context.state = { ...context.state, task };
+    }
     if (options.untrustedTarget != null) context.untrustedTarget = options.untrustedTarget;
     return session.ask(question, { context });
   }

@@ -483,9 +483,14 @@ function structuredControlProjectionOptions(model, opts) {
 function attachSourceBoundRenderProvenance(result, analysis, analysisIdentityBinding, opts) {
   const bound = boundAnalysisIdentityForIr(analysisIdentityBinding, result.ir);
   const identity = bound?.valid === true ? bound : canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  const snapshotId = identity?.valid === true ? identity.identity.snapshotId : null;
+  if (opts.deferRenderProvenance === true) {
+    opts._onDeferRenderProvenance?.(snapshotId);
+    return result;
+  }
   const renderProvenance = buildRenderProvenance({
     result,
-    snapshotId:identity?.valid === true ? identity.identity.snapshotId : null,
+    snapshotId,
     budget:opts.renderProvenanceBudget,
     shouldAbort:opts.shouldAbort,
   });
@@ -521,8 +526,15 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
       );
       if (structuringStage.ledger?.published === true && structuringStage.analysis
           && structuringStage.ledger.sourceCompleteness === 'complete') {
+        const beforeStructuring = projected;
+        const structOpts = opts.deferRenderProvenance === true
+          ? { ...opts, renderProvenance: false, analysisIdentityBinding: structuringStage.analysisIdentityBinding }
+          : { ...opts, analysisIdentityBinding: structuringStage.analysisIdentityBinding };
         projected = applyStructuredControlProjection(projected, structuringStage.analysis,
-          structuredControlProjectionOptions(model, { ...opts, analysisIdentityBinding:structuringStage.analysisIdentityBinding }));
+          structuredControlProjectionOptions(model, structOpts));
+        if (opts.deferRenderProvenance === true && projected !== beforeStructuring) {
+          opts._onDeferRenderProvenance?.(projected.renderProvenance?.snapshotId ?? beforeStructuring.renderProvenance?.snapshotId ?? null);
+        }
       }
     }
     const pipeline = projected.ctx?.decompilerPipeline;
@@ -599,7 +611,14 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   const projectionOpts = { ...opts, analysisIdentityBinding:stage.analysisIdentityBinding };
   updated = applyPhase8Projection(updated, stage.analysis, projectionOpts);
   if (allowsStructuredControlProjection(opts)) {
-    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, projectionOpts));
+    const beforeStructuring = updated;
+    const structOpts = opts.deferRenderProvenance === true
+      ? { ...projectionOpts, renderProvenance: false }
+      : projectionOpts;
+    updated = applyStructuredControlProjection(updated, stage.analysis, structuredControlProjectionOptions(model, structOpts));
+    if (opts.deferRenderProvenance === true && updated !== beforeStructuring) {
+      opts._onDeferRenderProvenance?.(updated.renderProvenance?.snapshotId ?? beforeStructuring.renderProvenance?.snapshotId ?? null);
+    }
   }
   return updated;
 }
@@ -732,7 +751,7 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started });
     const final = rememberProducerProjection({ ...projected, proofOptimization },
       { phase8PrepareProof:true, phase8ProofOnlyRewrites:proofOnlyRewrites, shouldAbort:aborted });
-    if (!current() || aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
+    if (aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
     return final;
   } catch (error) { return fail(guard?.reason() ?? error.reason ?? 'invalid-or-unsupported-condition-optimization'); }
 }
@@ -824,7 +843,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
       phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
-    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
+    if (aborted()) return fail('cancelled-before-projection-publication');
     const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,
       phase8ProofOnlyRewrites:proofOnlyRewrites,shouldAbort:aborted});
     if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');

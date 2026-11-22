@@ -11,7 +11,7 @@ import { addrHex, parseAddress, sizeText } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast, closeAllSheets, closeMenu } from '../ui.js';
 import {
-  currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals,
+  currentFunctionAddr, showTools, showRename, showComment, showDebugger, showGlobals, showPatches,
 } from '../tools.js';
 import { findGlobals, importList } from '../linkage.js';
 import { findCxxClasses } from '../rtti.js';
@@ -41,7 +41,7 @@ const showClass = lazyProductPanel('showClass');
 const showJump = lazyProductPanel('showJump');
 const showSearchPanel = lazyProductPanel('showSearch');
 
-const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
+const ja = () => (uiRoot()?.lang || globalThis.navigator?.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 
 function addressText(value) {
@@ -67,6 +67,24 @@ function requireFile(app, action) {
   if (app.store.get('fileInfo')) return action();
   toast(text('先にファイルを開いてください。', 'Open a file first.'));
   return null;
+}
+
+function noFileActions(app) {
+  const actions = h('div', 'ui-actions');
+  actions.append(
+    uiButton(text('ファイルを開く', 'Open file'), {
+      cls: 'ui-primary-action',
+      onClick: () => {
+        if (window.__hexUi?.actions?.run) window.__hexUi.actions.run('file.open');
+        else document.getElementById('file-input')?.click();
+      },
+    }),
+    uiButton(text('サンプルで試す', 'Try sample'), {
+      cls: 'ui-secondary-action',
+      onClick: () => app.openSample?.(),
+    }),
+  );
+  return actions;
 }
 
 function architectureOf(app) {
@@ -106,10 +124,25 @@ function installViewportBridge() {
   window.addEventListener('orientationchange', sync, { passive: true });
   viewport?.addEventListener('resize', sync, { passive: true });
   viewport?.addEventListener('scroll', sync, { passive: true });
+  const isStickyOrFixedChrome = (node) => {
+    for (let el = node; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      const pos = getComputedStyle(el).position;
+      if (pos === 'sticky') return true;
+      if (pos === 'fixed') return !node.closest('.sheet-body, .ai-messages');
+    }
+    return false;
+  };
   const focus = (event) => {
     const target = event.target;
     if (!target || !/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-    setTimeout(() => target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 120);
+    if (isStickyOrFixedChrome(target)) return;
+    setTimeout(() => {
+      if (document.activeElement !== target) return;
+      const rect = target.getBoundingClientRect();
+      const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      if (rect.top >= 0 && rect.bottom <= vh) return;
+      target.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    }, 120);
   };
   document.addEventListener('focusin', focus);
   return () => {
@@ -181,7 +214,6 @@ function renderInvestigate(app, router) {
   const suggestions = h('div', 'ui-goal-suggestions');
   for (const q of [
     text('経験値が増える場所', 'where experience increases'),
-    text('HPを書き換える処理', 'where HP is written'),
     text('通信している場所', 'network communication'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
   ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
@@ -199,6 +231,13 @@ for (const preset of [
   }));
 }
 hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+if (!app.store?.get?.('fileInfo')) {
+  s.body.append(emptyState(
+    text('ファイルが開かれていません', 'No binary open'),
+    text('まずは解析したいバイナリを開くか、サンプルで操作を試してみてください。', 'Open a binary to investigate, or try the built-in sample first.'),
+    noFileActions(app),
+  ));
+}
 s.body.append(hero.root);
 
   const overview = card(text('自動で分かったこと', 'Automatic overview'), {
@@ -624,6 +663,15 @@ function renderExplorer(app, router, route, routeContext = {}) {
 
   const update = async () => {
     if (disposed) return;
+    if (!app.store?.get?.('fileInfo')) {
+      virtual?.dispose(); virtual = null;
+      content.replaceChildren(emptyState(
+        text('ファイルが開かれていません', 'No binary open'),
+        text('バイナリを開くと、関数・文字列・型・データ・外部API・セクションをまとめて探せます。', 'Open a binary or try the sample to browse functions, strings, types, data, external APIs, and sections.'),
+        noFileActions(app),
+      ));
+      return;
+    }
     const signal = queryScope.spawn('explorer-query-replaced');
     const serial = ++querySerial;
     const current = () => !disposed && !routeSignal.aborted && !signal.aborted && serial === querySerial;
@@ -808,6 +856,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
       { label: text('名前を付ける', 'Rename'), action: () => showRename(app, addr) },
       { label: text('メモを書く', 'Comment'), action: () => showComment(app, addr) },
+      { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => showPatches(app, addr) },
       { label: text('アセンブリへ', 'Open assembly'), action: () => router.navigate('/code/' + addr.toString()) },
     ], r.left + r.width / 2, r.bottom + 4);
   } }));
@@ -875,12 +924,14 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     facts.body.append(listRow({ title: text('アーキテクチャ', 'Architecture'), meta: architectureOf(app) }));
     grid.append(facts.root);
     const next = card(text('次に見る', 'Next steps'));
-    for (const item of [
-      ['pseudocode', text('疑似Cで読む', 'Read pseudocode')],
-      ['flow', text('分岐とループを見る', 'Inspect branches and loops')],
-      ['evidence', text('なぜそう言えるか', 'Review evidence')],
-      ['runtime', text('実行して確かめる', 'Verify at runtime')],
-    ]) next.body.append(listRow({ title: item[1], onClick: () => router.navigate('/function/' + addr.toString() + '/' + item[0]) }));
+    for (const [dest, label] of [
+      ['/function/' + addr.toString() + '/pseudocode', text('疑似Cで読む', 'Read pseudocode')],
+      ['/code/' + addr.toString(), text('アセンブリへ', 'Open assembly')],
+      ['/function/' + addr.toString() + '/flow', text('分岐とループを見る', 'Inspect branches and loops')],
+      ['/function/' + addr.toString() + '/calls', text('呼び出し', 'Call graph')],
+      ['/function/' + addr.toString() + '/evidence', text('なぜそう言えるか', 'Review evidence')],
+      ['/function/' + addr.toString() + '/runtime', text('実行して確かめる', 'Verify at runtime')],
+    ]) next.body.append(listRow({ title: label, onClick: () => router.navigate(dest) }));
     grid.append(next.root);
     content.replaceChildren(grid);
   };
@@ -1295,6 +1346,14 @@ function renderResults(app, router, route) {
     return renderFindingDetail(app, router, route.params.id);
   }
   const s = screen(text('結果', 'Results'), { id: 'results', subtitle: text('確認した答え、根拠、履歴、ピンをここへ集めます。', 'Confirmed answers, evidence, history and pins live here.') });
+  if (!app.store?.get?.('fileInfo')) {
+    s.body.append(emptyState(
+      text('ファイルが開かれていません', 'No binary open'),
+      text('バイナリを開いて自動解析を実行すると、見つかった結果と根拠がここに並びます。', 'Open a binary or try the sample to see analysis findings and evidence here.'),
+      noFileActions(app),
+    ));
+    return { root: s.root };
+  }
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
   if (Array.isArray(findings) && findings.length) {
@@ -1495,12 +1554,28 @@ function installAddressBar(app, router, addrbar) {
   let fnStart = null;
   fn.addEventListener('click', () => { if (fnStart != null) router.navigate('/function/' + fnStart.toString() + '/overview'); });
 
-  const search = uiButton(text('検索', 'Search'), {
+  const pseudo = uiButton(text('疑似C', 'Pseudo-C'), {
+    cls: 'addr-pseudo',
+    ariaLabel: text('現在の関数を疑似Cで開く', 'Open current function as pseudocode'),
+    onClick: () => requireFile(app, () => {
+      const target = fnStart ?? currentFunctionAddr(app);
+      if (target == null) {
+        toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
+        return;
+      }
+      router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
+    }),
+  });
+  pseudo.hidden = true;
+  pseudo.title = text('現在の関数を疑似Cで開く', 'Open current function as pseudocode');
+
+  const search = uiButton(text('バイト検索', 'Find bytes'), {
     cls: 'addr-search',
-    ariaLabel: text('命令・バイト列・数値を検索', 'Search instructions, bytes or numbers'),
+    ariaLabel: text('命令・バイト列・数値を検索（コード内）', 'Search instructions, bytes, or numbers in code'),
     onClick: () => requireFile(app, () => showSearchPanel(app)),
   });
-  addrbar.append(search);
+  search.title = text('命令・バイト列・数値を検索（コード内）', 'Search instructions, bytes, or numbers in code');
+  addrbar.append(pseudo, search);
 
   let frame = 0;
   const update = () => {
@@ -1524,17 +1599,18 @@ function installAddressBar(app, router, addrbar) {
       try { start = sym.functionAt?.(addr)?.start ?? sym.functionStartAt?.(addr) ?? null; } catch { start = null; }
     }
     fnStart = start;
-    if (start == null) { fn.hidden = true; return; }
+    if (start == null) { fn.hidden = true; pseudo.hidden = true; return; }
     const offset = BigInt(addr) - BigInt(start);
     fn.textContent = functionName(app, start) + (offset > 0n ? '+0x' + offset.toString(16).toUpperCase() : '');
     fn.hidden = false;
+    pseudo.hidden = false;
   };
   const unsubscribe = app.store.subscribe((_state, patch) => {
     if (!patch || !('currentAddress' in patch || 'selectedRow' in patch || 'currentRegion' in patch || 'fileInfo' in patch)) return;
     if (!frame) frame = requestAnimationFrame(update);
   });
   update();
-  return () => { unsubscribe(); if (frame) cancelAnimationFrame(frame); fn.remove(); search.remove(); };
+  return () => { unsubscribe(); if (frame) cancelAnimationFrame(frame); fn.remove(); pseudo.remove(); search.remove(); };
 }
 
 function symbolAddress(app, name) {
@@ -1587,7 +1663,16 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
   input.addEventListener('input', refreshHint);
 
   const runCommand = (intent) => {
-    switch (intent.command) {
+    const rawCmd = String(intent.value || '').trim().toLowerCase();
+    const cmd = intent.command || (
+      /^(patch|patches|パッチ|書き換え)$/.test(rawCmd) ? 'patch'
+      : /^(export|hexproj|save|書き出し|書き出す|保存)$/.test(rawCmd) ? 'export'
+      : /^(import|load|読み込み|読み込む|復元)$/.test(rawCmd) ? 'import'
+      : /^(pseudo|pseudocode|decompile|疑似c|逆コンパイル)$/.test(rawCmd) ? 'pseudocode'
+      : /^(diff|差分)$/.test(rawCmd) ? 'diff'
+      : null
+    );
+    switch (cmd) {
       case 'code': router.navigate('/code'); return true;
       case 'explorer': router.navigate('/explorer/functions'); return true;
       case 'results': router.navigate('/results'); return true;
@@ -1597,6 +1682,15 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       case 'advanced': router.navigate('/advanced'); return true;
       case 'search': requireFile(app, () => showSearchPanel(app)); return true;
       case 'jump': requireFile(app, () => showJump(app)); return true;
+      case 'patch': requireFile(app, () => showPatches(app)); return true;
+      case 'export': requireFile(app, () => exportProjectFromProduct(app)); return true;
+      case 'import': requireFile(app, () => importProjectFromProduct(app)); return true;
+      case 'diff': router.navigate('/diff'); return true;
+      case 'pseudocode': requireFile(app, () => {
+        const target = currentFunctionAddr(app);
+        if (target != null) router.navigate('/function/' + BigInt(target).toString() + '/pseudocode');
+        else toast(text('この位置の関数を特定できませんでした。', 'Could not identify a function at this address.'));
+      }); return true;
       case 'ai': getAssistant()?.open(); return true;
       case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
       default: return false;
@@ -1657,7 +1751,13 @@ export function installProductUI(app) {
    * fixed` still resolves against the viewport here because the chrome uses a
    * plain background — a backdrop-filter on the parent would have trapped it.
    */
-  chrome.append(nav);
+  const backBtn = uiButton(text('← 戻る', '← Back'), {
+    cls: 'ui-chrome-back',
+    ariaLabel: text('前の画面へ戻る', 'Go back'),
+    onClick: () => router.back(),
+  });
+  backBtn.hidden = true;
+  chrome.append(backBtn, nav);
 
   let lastRouteId = null;
   let autoHexForData = false;
@@ -1677,15 +1777,17 @@ export function installProductUI(app) {
      * function tab to another) keep their sheets; sheets opened after the
      * change (the sample guide) are not affected.
      */
-    onState: ({ current }) => {
+    onState: ({ current, canBack }) => {
       const id = current?.route?.id || null;
       if (lastRouteId != null && id !== lastRouteId) { closeMenu(); closeAllSheets(); }
       lastRouteId = id;
+      backBtn.hidden = !canBack;
     },
     onRoute: (route, routeContext = {}) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
-      for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === route.route.id ? 'page' : 'false');
+      const activeNavId = route.route.id === 'finding' ? 'results' : route.route.id;
+      for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === activeNavId ? 'page' : 'false');
       if (route.route.id === 'code') {
         updateScreenTitle(null);
         routeHost.hidden = true;
@@ -1772,6 +1874,10 @@ export function installProductUI(app) {
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
     menu([
+      { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => requireFile(app, () => showPatches(app)) },
+      { label: text('プロジェクトを書き出す (.hexproj)', 'Export project (.hexproj)'), action: () => requireFile(app, () => exportProjectFromProduct(app)) },
+      { label: text('プロジェクトを読み込む', 'Import project'), action: () => requireFile(app, () => importProjectFromProduct(app)) },
+      '-',
       { label: text('設定', 'Settings'), action: () => router.navigate('/settings') },
       { label: text('学ぶ', 'Learn'), action: () => router.navigate('/learn') },
       { label: text('ヘルプ', 'Help'), action: () => router.navigate('/help') },

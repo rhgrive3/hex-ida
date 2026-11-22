@@ -476,6 +476,46 @@ function isAlreadyStructured(entry, join, isOneSided, ifArm, elseArm, cAst, ir, 
   return false;
 }
 
+function hasBalancedBodyBraces(nodes) {
+  let depth = 0;
+  let state = 'code';
+  for (const node of nodes || []) {
+    const text = typeof node?.text === 'string' ? node.text : '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (state === 'code') {
+        if (ch === '/' && next === '/') { break; }
+        if (ch === '/' && next === '*') { state = 'block'; i++; continue; }
+        if (ch === '"') { state = 'string'; continue; }
+        if (ch === "'") { state = 'char'; continue; }
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth < 0) return false;
+        }
+        continue;
+      }
+      if (state === 'block') {
+        if (ch === '*' && next === '/') { state = 'code'; i++; }
+        continue;
+      }
+      if (state === 'string') {
+        if (ch === '\\') { i++; continue; }
+        if (ch === '"') state = 'code';
+        continue;
+      }
+      if (state === 'char') {
+        if (ch === '\\') { i++; continue; }
+        if (ch === "'") state = 'code';
+        continue;
+      }
+    }
+    if (state === 'string' || state === 'char') state = 'code';
+  }
+  return depth === 0 && state === 'code';
+}
+
 /**
  * Adopts proven reducible conditional regions from Phase 8 structuring facts
  * into the final C AST.
@@ -588,6 +628,10 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     if (branchIndex < 0) continue;
 
     const existingBranchNode = workingBody[branchIndex];
+    // Multi-line block branches (e.g. faithfulCfg PHI-copy blocks `if (cond) { ... }`)
+    // cannot be spliced by removing only the header/goto lines without stranding
+    // their closing `}` brace and closing the function early. Fail closed.
+    if (existingBranchNode.text?.trim().endsWith('{')) continue;
     if (!condText) {
       const match = existingBranchNode.text?.match(/^if\s*\((.+)\)\s*(?:goto\s+\w+;|\{)/);
       const expression = match?.[1]?.trim();
@@ -712,14 +756,20 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     // Identify all nodes to remove from workingBody
     const nodesToRemove = new Set();
     // 1. Entry branch and false jump
+    let entryHasBlockBranch = false;
     for (const node of workingBody) {
       const b = blockOfNode(node, result.ir, opts, projIndex);
       if (b === entry && (node.kind === 'ctrl' || node.kind === 'stmt')) {
         if (node.text?.startsWith('if ') || node.text?.includes('goto loc_')) {
+          if (node.text.trim().endsWith('{')) {
+            entryHasBlockBranch = true;
+            break;
+          }
           nodesToRemove.add(node);
         }
       }
     }
+    if (entryHasBlockBranch) continue;
     // 2. Arm nodes (statements were extracted and will be re-inserted)
     for (const node of workingBody) {
       if (isArmNode(node, armBlocks)) {
@@ -750,6 +800,10 @@ export function applyStructuredControlProjection(result, analysis, opts = {}) {
     }
     if (!inserted) {
       nextBody.push(...structuredNodes);
+    }
+
+    if (hasBalancedBodyBraces(workingBody) && !hasBalancedBodyBraces(nextBody)) {
+      continue;
     }
 
     workingBody = nextBody;

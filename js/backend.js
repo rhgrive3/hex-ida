@@ -95,6 +95,10 @@ export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
 const CHUNK_CACHE = 64;
 const MAX_INFLIGHT = 6;
+const MACHO_SPECULATIVE_MAGICS = new Set([
+  0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe,
+  0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca,
+]);
 
 // Phase 4 production cutover: ArtifactStore/scheduler is the default analysis
 // route. CURRENT remains available only through explicit route selection as the
@@ -415,6 +419,48 @@ export class Backend {
       }
     };
 
+    // Sniff Mach-O magic when a sliceable File/Blob is provided so platform and
+    // legacy workers can parse Mach-O binaries in parallel without touching the
+    // legacy worker for non-Mach-O formats.
+    let speculativeLegacyReq = null;
+    let speculativeLegacyOutcome = null;
+    if (typeof file?.slice === 'function' && Number(file?.size ?? 0) >= 4) {
+      try {
+        const header = await file.slice(0, 4).arrayBuffer();
+        assertCurrent();
+        if (header.byteLength >= 4) {
+          const magic = new DataView(header).getUint32(0, false);
+          if (MACHO_SPECULATIVE_MAGICS.has(magic)) {
+            speculativeLegacyReq = this._callTo('legacy', 'open', { file });
+            speculativeLegacyOutcome = speculativeLegacyReq.then(
+              (value) => ({ ok: true, value }),
+              (error) => ({ ok: false, error }),
+            );
+          }
+        }
+      } catch (error) {
+        if (error?.stale) throw error;
+      }
+    }
+    const awaitLegacyOpen = async () => {
+      if (speculativeLegacyOutcome) {
+        const outcome = await speculativeLegacyOutcome;
+        speculativeLegacyOutcome = null;
+        speculativeLegacyReq = null;
+        assertCurrent();
+        if (outcome.ok) return outcome.value;
+        throw outcome.error;
+      }
+      return step(this._callTo('legacy', 'open', { file }));
+    };
+    const cancelSpeculativeLegacy = () => {
+      if (speculativeLegacyReq) {
+        try { speculativeLegacyReq.cancel?.(); } catch { /* best effort */ }
+        speculativeLegacyReq = null;
+        speculativeLegacyOutcome = null;
+      }
+    };
+
     let detection = null;
     let platformError = null;
     let initialPlatformInfo = null;
@@ -425,7 +471,10 @@ export class Backend {
       detection = initialPlatformInfo?.detection ?? initialPlatformInfo?.detected ?? {
         formatId: initialPlatformInfo?.formatId || initialPlatformInfo?.capability?.format || 'unknown',
       };
-    } catch (error) { if (error?.stale) throw error; platformError = error; }
+    } catch (error) {
+      if (error?.stale) { cancelSpeculativeLegacy(); throw error; }
+      platformError = error;
+    }
     assertCurrent();
 
     let nextFormat = 'unknown';
@@ -435,7 +484,7 @@ export class Backend {
     let result = null;
     if (detection?.formatId === 'macho') {
       nextFormat = 'macho';
-      const legacy = await step(this._callTo('legacy', 'open', { file }));
+      const legacy = await awaitLegacyOpen();
       const normalized = initialPlatformInfo;
       assertCurrent();
       legacy.formatId = 'macho';
@@ -463,17 +512,19 @@ export class Backend {
         nextBridge = capability?.architecture === 'arm64';
         if (nextBridge) {
           try {
-            await step(this._callTo('legacy', 'open', { file }));
+            await awaitLegacyOpen();
             const allRegions=[...(platformInfo.slices||[]).flatMap((slice)=>slice.regions||[]),platformInfo.raw].filter(Boolean);
             await step(this._callTo('legacy','setRegions',{regions:allRegions}));
           } catch (error) {
             if (error?.stale) throw error;
             nextBridge=false;
           }
+        } else {
+          cancelSpeculativeLegacy();
         }
         result=platformInfo;
       } else {
-        const legacy=await step(this._callTo('legacy','open',{file}));
+        const legacy=await awaitLegacyOpen();
         const fallbackFormatId = legacyFallbackFormatId(legacy);
         assertCurrent();
         if (fallbackFormatId === null) {
@@ -611,25 +662,43 @@ export class Backend {
     const assertCurrent = () => {
       if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
     };
-    const call = (workerName, t, payload) => awaitCancellableProducer(this._callTo(workerName, t, payload), options.signal);
-    const legacy = await call('legacy', 'analyze', { sliceIndex });
-    assertCurrent();
-    const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
-    assertCurrent();
     if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
-    if (!this.platformInfo?.normalizedDyldTruth) {
+    const wantNormalized = !!this.platformInfo?.normalizedDyldTruth;
+    const legacyReq = this._callTo('legacy', 'analyze', { sliceIndex });
+    const legacyPromise = awaitCancellableProducer(legacyReq, options.signal);
+    let platformReq = null;
+    let normalizedOutcome = null;
+    if (wantNormalized) {
+      platformReq = this._callTo('platform', 'analyze', { sliceIndex });
+      normalizedOutcome = awaitCancellableProducer(platformReq, options.signal).then(
+        (value) => ({ ok: true, value }),
+        (error) => ({ ok: false, error }),
+      );
+    }
+    let enriched;
+    try {
+      const legacy = await legacyPromise;
+      assertCurrent();
+      enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+      assertCurrent();
+      if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('Aborted', 'AbortError');
+    } catch (error) {
+      try { platformReq?.cancel?.(); } catch { /* best effort */ }
+      throw error;
+    }
+    if (!normalizedOutcome) {
       return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
     }
-    try {
-      const normalized = await call('platform', 'analyze', { sliceIndex });
+    const outcome = await normalizedOutcome;
+    if (outcome.ok) {
       assertCurrent();
-      return mergeMachOAnalysisResults(enriched, normalized);
-    } catch (error) {
-      if (error?.name === 'AbortError' || options.signal?.aborted) throw options.signal?.reason ?? error;
-      if (error?.stale) throw error;
-      assertCurrent();
-      return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
+      return mergeMachOAnalysisResults(enriched, outcome.value);
     }
+    const error = outcome.error;
+    if (error?.name === 'AbortError' || options.signal?.aborted) throw options.signal?.reason ?? error;
+    if (error?.stale) throw error;
+    assertCurrent();
+    return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
   }
 
   _analysisArtifactDescriptor(sliceIndex, options = {}) {
@@ -1179,6 +1248,29 @@ export class Backend {
         (err) => this._finishChunk(job, null, err),
       );
   }
+  pruneVisibleChunks(regionId, firstChunk, lastChunk, prefetchMargin = 1) {
+    if (!this.queue.length) return;
+    const keepMin = firstChunk - prefetchMargin;
+    const keepMax = lastChunk + prefetchMargin;
+    const visible = [];
+    const prefetch = [];
+    for (const job of this.queue) {
+      if (job.regionId !== regionId || job.chunk < keepMin || job.chunk > keepMax) {
+        this.inflight.delete(job.key);
+        continue;
+      }
+      if (job.chunk >= firstChunk && job.chunk <= lastChunk) {
+        job.priority = 'visible';
+        visible.push(job);
+      } else {
+        job.priority = 'prefetch';
+        prefetch.push(job);
+      }
+    }
+    this.queue.length = 0;
+    this.queue.push(...visible, ...prefetch);
+  }
+
   dropQueued() {
     for (const job of this.queue) this.inflight.delete(job.key);
     this.queue.length = 0;
