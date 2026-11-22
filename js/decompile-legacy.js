@@ -28,6 +28,7 @@ import { shortName } from './rtti.js';
 import { buildValues, render as renderExpr, sizeOf as exprSize, constOf as exprConst } from './expr.js';
 import { findAccumulators } from './comprehend.js';
 import { analyzeGraph } from './controlflow.js';
+import { knownCallPrototype, knownCallSignature } from './decompiler/call-prototypes.js';
 
 /* ── 出力の 1 行 ────────────────────────────────────────────
    kind: 'sig' 見出し / 'decl' 変数宣言 / 'stmt' 文 / 'ctrl' 制御 /
@@ -89,6 +90,7 @@ export function decompile(model, opts) {
   const cfg = buildFlow(model, ctx);
   const types = inferTypes(model);
   ctx.types = types;
+  augmentLegacyFpSignature(model, types, ctx);
 
   /* どのラベルが本当に要るかは、構造化してみないと分からない。
      まず本体を組み立て、そのあとで使われたラベルだけを差し込む。 */
@@ -779,9 +781,26 @@ function exprText(ctx, nodeValue, self) {
         const d = stackDispOf(n, ctx);
         if (inFrame(d, ctx)) return '&' + slotName('sp', d, ctx);
       }
+      const formatCallNode = (c) => {
+        if (c.sel) return null;
+        const label = callLabel(c, ctx);
+        const calleeKey = c.name || label;
+        const proto = knownCallPrototype(calleeKey);
+        if (!proto || proto.variadic) return null;
+        const rawArgs = new Map();
+        for (const a of c.args || []) {
+          if (a && a.index != null && a.value) rawArgs.set(a.index, renderExpr(a.value, opts));
+        }
+        const args = normalizeKnownCallArgs(calleeKey, rawArgs, ctx, null);
+        return args ? label + '(' + args.join(', ') + ')' : null;
+      };
       if (n === self) {
         if (n.k === 'bin' && n.op === 'ror') {
           return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+        }
+        if (n.k === 'call') {
+          const formatted = formatCallNode(n);
+          if (formatted != null) return formatted;
         }
         return null;                             // 自分自身は展開する
       }
@@ -790,6 +809,10 @@ function exprText(ctx, nodeValue, self) {
       if (mat && mat.names.has(n)) {
         ctx.usedVars.add(mat.names.get(n));
         return mat.names.get(n);
+      }
+      if (n.k === 'call') {
+        const formatted = formatCallNode(n);
+        if (formatted != null) return formatted;
       }
       if (n.k === 'bin' && n.op === 'ror') {
         return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
@@ -1653,6 +1676,13 @@ function statementFor(insn, ctx, node) {
       const returned = (ctx.values.returns || []).find((item) => item.row === row);
       if (returned?.value) value = exprText(ctx, returned.value, null);
     }
+    if (ret && ctx.fpReturnReg) {
+      const fpNode = ctx.values ? ctx.values.at(row, ctx.fpReturnReg) : null;
+      const fpVal = value || (fpNode ? exprText(ctx, fpNode, null) : null) || varOf(ctx.fpReturnReg, ctx);
+      const fpType = ctx.fpReturnType || 'double';
+      const castExpr = '(' + fpType + ')' + (needsParens(fpVal) ? '(' + fpVal + ')' : fpVal);
+      return mk('return ' + castExpr + ';', { kind: 'ctrl', reads: [ctx.fpReturnReg] });
+    }
     return mk(ret ? 'return ' + (value || varOf('x0', ctx)) + ';' : 'return;', { kind: 'ctrl' });
   }
 
@@ -2129,14 +2159,18 @@ function callStatement(insn, ctx, mk) {
         note: 'Objective-C のメソッド「' + sel + '」を呼びます。' });
   }
 
-  const args = callArguments(call, ctx);
   const cleanName = name ? sanitizeLegacyCallLabel(name) : null;
   const label = cleanName || (target != null ? 'sub_' + target.toString(16).toUpperCase() : indirectName(insn, ctx));
+  const args = callArguments(call, ctx, name || cleanName);
   const callExpr = label + '(' + args.join(', ') + ')';
   /* 値が分かっている引数（"文字列" や 0x50）は、そのまま書けているので
      「x0 を読んだ」ことにしない。手前の準備の行を消せるようにするため。 */
   const reads = insn.reads.slice();          // blr x8 の x8 など、命令自身が読むもの
-  args.forEach((text, i) => { if (text === varOf('x' + i, ctx)) reads.push('x' + i); });
+  args.forEach((text, i) => {
+    if (text === varOf('x' + i, ctx)) reads.push('x' + i);
+    const fpMatch = /^\((?:float|double)\)v([0-7])$/.exec(text);
+    if (fpMatch) reads.push('v' + fpMatch[1]);
+  });
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
   const text = insn.isTailCall
     ? 'return ' + callExpr + ';'
@@ -2173,21 +2207,157 @@ function registerValueText(ctx, row, reg) {
  * 引数。呼ぶ直前に用意された x0〜x7 のうち、実際に値が入っているものだけ。
  * 数が分からないときに 8 個並べても嘘になるので、途切れたところで止める。
  */
-function callArguments(call, ctx) {
+function normalizeKnownCallArgs(calleeName, rawArgMap, ctx, row) {
+  const proto = calleeName ? knownCallPrototype(calleeName) : null;
+  if (!proto || proto.variadic) return null;
+  const arity = proto.arity;
+  const sig = knownCallSignature(calleeName);
+  const paramTypes = Array.isArray(sig?.paramTypes) ? sig.paramTypes : null;
+  const hasFpParam = !!(paramTypes && paramTypes.some((t) => t === 'float' || t === 'double'));
+
+  const gpArgAt = (gpIdx) => {
+    if (rawArgMap && rawArgMap.has(gpIdx)) return rawArgMap.get(gpIdx);
+    if (row != null && ctx.values) {
+      const node = ctx.values.at(row, 'x' + gpIdx);
+      if (node && !(node.k === 'call' && node.row === row)) {
+        const text = exprText(ctx, node, null);
+        if (text) return text;
+      }
+    }
+    const isIncoming = Array.isArray(ctx.model?.argRegs) && ctx.model.argRegs.includes(gpIdx);
+    return isIncoming ? argName(gpIdx, ctx) : varOf('x' + gpIdx, ctx);
+  };
+
+  if (hasFpParam) {
+    const out = [];
+    let gpIdx = 0;
+    let fpIdx = 0;
+    for (let k = 0; k < arity; k++) {
+      const pt = paramTypes[k];
+      if (pt === 'float' || pt === 'double') {
+        out.push('(' + pt + ')' + varOf('v' + fpIdx, ctx));
+        fpIdx++;
+      } else {
+        out.push(gpArgAt(gpIdx));
+        gpIdx++;
+      }
+    }
+    return out;
+  }
+
+  const out = [];
+  for (let i = 0; i < arity; i++) out.push(gpArgAt(i));
+  return out;
+}
+
+function fpRegWidth(op) {
+  if (!op || op.k !== 'reg') return null;
+  if (op.cls !== 'fp' && op.cls !== 'vec') return null;
+  const text = typeof op.text === 'string' ? op.text.trim().toLowerCase() : '';
+  if (/^s\d+$/.test(text)) return 'float';
+  if (/^d\d+$/.test(text)) return 'double';
+  return null;
+}
+
+function augmentLegacyFpSignature(model, types, ctx) {
+  const insns = model && Array.isArray(model.instructions) ? model.instructions : [];
+  if (!insns.length || !types) return;
+
+  const writtenFp = new Set();
+  const incomingFp = new Map();
+  for (const insn of insns) {
+    for (const r of insn.reads || []) {
+      const m = /^v([0-7])$/.exec(r);
+      if (!m) continue;
+      const idx = Number(m[1]);
+      if (writtenFp.has(idx) || incomingFp.has(idx)) continue;
+      let fpType = null;
+      for (const op of insn.ops || []) {
+        if (op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec') && op.num === idx) {
+          fpType = fpRegWidth(op);
+          if (fpType) break;
+        }
+      }
+      if (fpType) incomingFp.set(idx, fpType);
+    }
+    for (const w of insn.writes || []) {
+      const m = /^v([0-7])$/.exec(w);
+      if (m) writtenFp.add(Number(m[1]));
+    }
+    if (insn.isCall) {
+      for (let i = 0; i <= 7; i++) writtenFp.add(i);
+    }
+  }
+
+  if (incomingFp.size > 0) {
+    const existingArgs = Array.isArray(types.args) ? types.args : [];
+    const existingRegs = new Set(existingArgs.map((a) => a.reg));
+    let nextIndex = existingArgs.reduce((max, a) => Math.max(max, a.index), -1) + 1;
+    for (const [fpIdx, fpType] of [...incomingFp.entries()].sort((a, b) => a[0] - b[0])) {
+      const reg = 'v' + fpIdx;
+      if (existingRegs.has(reg)) continue;
+      existingArgs.push({
+        reg,
+        index: nextIndex++,
+        type: fpType,
+        conf: 0.75,
+        why: [{ why: '入口で ' + (fpType === 'float' ? 's' : 'd') + fpIdx + ' を読み出している' }],
+      });
+    }
+    types.args = existingArgs;
+  }
+
+  if (!types.ret || types.ret.type === 'void') {
+    for (let i = insns.length - 1; i >= 0; i--) {
+      const insn = insns[i];
+      if (!(insn.writes || []).includes('v0')) continue;
+      let fpRetType = null;
+      for (const op of insn.ops || []) {
+        if (op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec') && op.num === 0) {
+          fpRetType = fpRegWidth(op);
+          if (fpRetType) break;
+        }
+      }
+      if (!fpRetType) {
+        const base = (insn.mnemonic || '').toLowerCase();
+        if (/^f/.test(base) || base === 'scvtf' || base === 'ucvtf') fpRetType = 'double';
+      }
+      if (fpRetType) {
+        types.ret = {
+          type: fpRetType,
+          conf: 0.75,
+          why: [{ row: insn.row, why: '帰る直前に v0 を作っている行' }],
+        };
+        ctx.fpReturnReg = 'v0';
+        ctx.fpReturnType = fpRetType;
+      }
+      break;
+    }
+  }
+}
+
+function callArguments(call, ctx, calleeName) {
+  const known = new Map((call && Array.isArray(call.args) ? call.args : []).map((a) => [a.index, a]));
+  const rawArgMap = new Map();
+  for (const [idx, a] of known) {
+    if (idx < 0 || idx > 7) continue;
+    const node = ctx.values ? ctx.values.at(call.row, 'x' + idx) : null;
+    const text = node ? exprText(ctx, node, null) : null;
+    rawArgMap.set(idx, text || valueText(a.value, ctx, idx));
+  }
+  const normalized = normalizeKnownCallArgs(calleeName, rawArgMap, ctx, call ? call.row : null);
+  if (normalized) return normalized;
+
   const out = [];
   if (!call || !call.args) return out;
-  const known = new Map(call.args.map((a) => [a.index, a]));
   for (let i = 0; i <= 7; i++) {
-    const a = known.get(i);
-    if (!a) break;
+    if (!rawArgMap.has(i)) break;
     /*
      * 引数も、レジスタ名ではなく中身で書く。
      * `sub_10041A334(1, a4, …)` と `sub_10041A334(x0, x1, …)` では、
      * 読む人が受け取るものがまったく違う。
      */
-    const node = ctx.values ? ctx.values.at(call.row, 'x' + i) : null;
-    const text = node ? exprText(ctx, node, null) : null;
-    out.push(text || valueText(a.value, ctx, i));
+    out.push(rawArgMap.get(i));
   }
   return out;
 }

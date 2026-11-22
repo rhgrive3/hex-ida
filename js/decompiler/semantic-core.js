@@ -3004,12 +3004,16 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
       if (yes != null) {
         state.gotoTargets?.add(yes);
         if (hasPhiCopiesForEdge(bi, yes, ctx)) {
-          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
-          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 1, term2);
-          out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(yes, ctx)) }),
-            term2, 'residual-conditional-goto', { yes, no, join }, ctx));
-          out.push(line('ctrl', indent, '}'));
+          const copyLines = [];
+          emitPhiCopiesForEdge(bi, yes, copyLines, ctx, indent + 1, term2);
+          if (copyLines.length) {
+            const copyStmts = copyLines.map((l) => l.text).join(' ');
+            out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) { ${copyStmts} goto loc_${hex(ctx.blockAddress(yes))}; }`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(yes, ctx)) }),
+              term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+              term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+          }
         } else {
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'residual-conditional-goto', { yes, no, join }, ctx));
@@ -3035,6 +3039,28 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
       }
     }
   }
+}
+
+function hasUnbalancedBracesInLines(nodes) {
+  let depth = 0;
+  for (const n of nodes) {
+    const raw = n?.text;
+    if (!raw || (!raw.includes('{') && !raw.includes('}'))) continue;
+    const stripped = raw
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/.*$/g, '')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    for (let i = 0; i < stripped.length; i += 1) {
+      const ch = stripped[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth < 0) return true;
+      }
+    }
+  }
+  return depth !== 0;
 }
 
 function faithfulCfg(ctx, indent = 1) {
@@ -3070,12 +3096,16 @@ function faithfulCfg(ctx, indent = 1) {
       if (yes != null) {
         const cond = renderBranchCondition(term, ctx);
         if (hasPhiCopiesForEdge(bi, yes, ctx)) {
-          out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) {`, term.row, term.address, { source: controlSource(term, ctx) }),
-            term, 'cfg-conditional-goto', { yes, no }, ctx));
-          emitPhiCopiesForEdge(bi, yes, out, ctx, indent + 2, term);
-          out.push(retainControlRenderLine(line('stmt', indent + 2, `goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(yes, ctx)) }),
-            term, 'cfg-conditional-goto', { yes, no }, ctx));
-          out.push(line('ctrl', indent + 1, '}'));
+          const copyLines = [];
+          emitPhiCopiesForEdge(bi, yes, copyLines, ctx, indent + 2, term);
+          if (copyLines.length) {
+            const copyStmts = copyLines.map((l) => l.text).join(' ');
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) { ${copyStmts} goto loc_${hex(ctx.blockAddress(yes))}; }`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(yes, ctx)) }),
+              term, 'cfg-conditional-goto', { yes, no }, ctx));
+          } else {
+            out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+              term, 'cfg-conditional-goto', { yes, no }, ctx));
+          }
         } else {
           out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
             term, 'cfg-conditional-goto', { yes, no }, ctx));
@@ -3231,6 +3261,7 @@ export function decompileSemantic(model, rawOpts = {}) {
 
   let missing = [];
   let hasUndefinedLabel = false;
+  let hasUnbalancedBraces = false;
   const reachable = graph.reachable || new Set();
   let coverage;
   runBatchedEmission(() => {
@@ -3293,6 +3324,9 @@ export function decompileSemantic(model, rawOpts = {}) {
           if (hasUndefinedLabel) break;
         }
       }
+      if (!hasUndefinedLabel && hasUnbalancedBracesInLines(resolvedBody)) {
+        hasUnbalancedBraces = true;
+      }
       body.length = 0;
       for (const node of resolvedBody) body.push(node);
       if (ctx.conditionalRegionHistory?.events?.length) {
@@ -3320,7 +3354,7 @@ export function decompileSemantic(model, rawOpts = {}) {
       }
     }
   });
-  if (missing.length || hasUndefinedLabel) {
+  if (missing.length || hasUndefinedLabel || hasUnbalancedBraces) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     ctx.materialNames = new Map(baseMaterialNames);
     ctx.exprCache.clear();
