@@ -484,8 +484,10 @@ export function canonicalStoreValueProof({
     if (!Number.isSafeInteger(sourceWidth) || sourceWidth <= 0 || sourceWidth % 8 !== 0) return null;
     const constantUnsigned = BigInt.asUintN(sourceWidth, canonicalConstant);
     const constantSigned = BigInt.asIntN(sourceWidth, canonicalConstant);
+    const zeroExtended = BigInt.asUintN(width, constantUnsigned);
+    const signExtended = BigInt.asUintN(width, constantSigned);
     if ((canonicalConstant !== constantUnsigned && canonicalConstant !== constantSigned)
-        || BigInt.asUintN(width, constantUnsigned) !== canonicalValue) return null;
+        || (zeroExtended !== canonicalValue && signExtended !== canonicalValue)) return null;
     if (resolvedSemanticValue != null) {
       if (resolvedValueId == null || String(resolvedSemanticValue.id ?? '') !== String(resolvedValueId)
           || String(resolvedValueId).trim() === '') return null;

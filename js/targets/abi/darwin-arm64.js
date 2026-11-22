@@ -502,20 +502,34 @@ function appleLongDoubleReturnConflict(proto, opts = {}) {
     reason:'darwin-arm64-long-double-width-conflicts-with-apple-binary64' };
 }
 
+function normalizeAppleReturnOptions(proto, opts = {}) {
+  const source = opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '';
+  const sourceClass = opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '';
+  if (!isAppleLongDoubleScalar(source, sourceClass)) return opts;
+  const normalized = { ...opts };
+  if (opts?.returnType || !proto) normalized.returnType = 'double';
+  if (Object.hasOwn(normalized, 'returnClass')) normalized.returnClass = 'fp';
+  return normalized;
+}
+
 function classifyDarwinArm64CallReturn(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
   const conflict = appleLongDoubleReturnConflict(proto, opts);
   if (conflict) return conflict;
   const normalized = normalizeAppleReturnType(proto, opts);
-  if (!proto || normalized === proto) return classifyAAPCS64CallReturn(insn, opts);
-  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, opts);
+  const normalizedOpts = normalizeAppleReturnOptions(proto, opts);
+  if (normalized === proto) return classifyAAPCS64CallReturn(insn, normalizedOpts);
+  return classifyAAPCS64CallReturn({ ...(insn || {}), callPrototype:normalized }, normalizedOpts);
 }
 
 function classifyDarwinArm64FunctionReturn(opts = {}) {
   const proto = opts?.functionPrototype || opts?.prototype || null;
   const conflict = appleLongDoubleReturnConflict(proto, opts);
   if (conflict) return conflict;
-  return classifyAAPCS64FunctionReturn({ ...opts, functionPrototype:normalizeAppleReturnType(proto, opts) });
+  const normalizedOpts = normalizeAppleReturnOptions(proto, opts);
+  const normalizedProto = normalizeAppleReturnType(proto, opts);
+  if (normalizedProto === proto) return classifyAAPCS64FunctionReturn(normalizedOpts);
+  return classifyAAPCS64FunctionReturn({ ...normalizedOpts, functionPrototype:normalizedProto });
 }
 
 export const DARWIN_ARM64_ABI = new ABIPlugin({

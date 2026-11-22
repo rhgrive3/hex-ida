@@ -65,7 +65,7 @@ function exactSignedType(bits) {
   return '__int128';
 }
 
-function moduloArithmeticExpression(n, opts) {
+function moduloArithmeticExpression(n, opts, parentPrec = 0) {
   if (!['add','sub','mul','shl'].includes(n.op)) return null;
   const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
   // Issue #969: machine add/sub/mul/shl wrap at the operation width. Plain C says
@@ -82,7 +82,8 @@ function moduloArithmeticExpression(n, opts) {
   const exactWidth = bits === 32 || bits === 64 || bits === 8 || bits === 16 || bits === 128;
   const needsTruncation = !(exactWidth && arithmetic === exactUnsignedType(bits));
   const truncated = needsTruncation ? `(${exactUnsignedType(bits)})(${raw})` : `(${raw})`;
-  return n.signed === true ? `(${exactSignedType(bits)})${truncated}` : truncated;
+  if (n.signed === true) return wrap(`(${exactSignedType(bits)})${truncated}`, PREC.unary, parentPrec);
+  return needsTruncation ? wrap(truncated, PREC.unary, parentPrec) : truncated;
 }
 
 // Machine integer division (AArch64 SDIV/UDIV and every other architecture
@@ -91,18 +92,28 @@ function moduloArithmeticExpression(n, opts) {
 // select that restores the architectural result (#4689). The constant-zero
 // divisor is already folded by the truth evaluator and never reaches a
 // printed division, so this guard only fires where the divisor is unknown.
-function guardedDivision(n, opts) {
+function guardedDivision(n, opts, parentPrec = 0) {
   if (!['sdiv', 'udiv'].includes(n.op)) return null;
   const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
   const signed = n.op === 'sdiv' && n.compareSigned !== false ? true : false;
-  const left = printExpression(n.left, PREC.unary, opts);
-  const right = printExpression(n.right, PREC.unary, opts);
   // A divisor statically known to be 0 makes the whole quotient the
   // architectural 0; printing any division there would be UB-in-C.
   const divisor = n.right;
   if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
   if (divisor?.kind === 'const') return null;
-  return `(${signed ? exactSignedType(bits) : exactUnsignedType(bits)})(${right} == 0 ? 0 : ${left} / ${right})`;
+  const divType = signed ? exactSignedType(bits) : exactUnsignedType(bits);
+  const castLeft = hasIntegerView(n.left, bits, signed)
+    ? printExpression(n.left, PREC.sdiv, opts)
+    : `(${divType})${printExpression(n.left, PREC.unary, opts)}`;
+  const rawRight = printExpression(n.right, PREC.unary, opts);
+  const castRight = hasIntegerView(n.right, bits, signed)
+    ? printExpression(n.right, PREC.sdiv + 1, opts)
+    : `(${divType})${rawRight}`;
+  const divEffect = effectOf(divisor);
+  if (divisor?.kind === 'call' || (divEffect !== 'pure' && divEffect !== 'read')) {
+    return wrap(`(${divType})({ ${divType} __div = (${divType})${rawRight}; __div == 0 ? 0 : ${castLeft} / __div; })`, PREC.unary, parentPrec);
+  }
+  return wrap(`(${divType})(${castRight} == 0 ? 0 : ${castLeft} / ${castRight})`, PREC.unary, parentPrec);
 }
 
 function integerWidth(...nodes) {
@@ -125,8 +136,8 @@ function printIntegerView(n, bits, signed, parentPrec, opts, forceCast = false) 
   if (n?.kind === 'const') {
     const valText = integerText(n.value, bits, signed);
     if (forceCast) {
-      const type = `${signed ? 'int' : 'uint'}${bits}_t`;
-      return `(${type})${valText}`;
+      const type = signed ? exactSignedType(bits) : exactUnsignedType(bits);
+      return wrap(`(${type})${valText}`, PREC.unary, parentPrec);
     }
     return valText;
   }
@@ -134,8 +145,8 @@ function printIntegerView(n, bits, signed, parentPrec, opts, forceCast = false) 
   // A literal already states its own value; a cast on it adds no signedness
   // information and only costs readability (#861/#862 need the *variable* view).
   if (!forceCast && /^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(text)) return text;
-  const type = `${signed ? 'int' : 'uint'}${bits}_t`;
-  return `(${type})${text}`;
+  const type = signed ? exactSignedType(bits) : exactUnsignedType(bits);
+  return wrap(`(${type})${text}`, PREC.unary, parentPrec);
 }
 
 function compareOperands(n, p, opts) {
@@ -207,8 +218,8 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       const op = { neg: '-', not: '~', lnot: '!' }[n.op];
       if (op) return wrap(`${op}${printExpression(n.arg, PREC.unary, opts)}`, PREC.unary, parentPrec);
       if (n.op === 'trunc' || n.op === 'zext' || n.op === 'sext') {
-        const sign = n.op === 'sext' ? 'int' : 'uint';
-        return `(${sign}${n.bits}_t)${printExpression(n.arg, PREC.unary, opts)}`;
+        const type = n.op === 'sext' ? exactSignedType(n.bits) : exactUnsignedType(n.bits);
+        return wrap(`(${type})${printExpression(n.arg, PREC.unary, opts)}`, PREC.unary, parentPrec);
       }
       return `${n.op}(${printExpression(n.arg, 0, opts)})`;
     }
@@ -218,9 +229,9 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'binary': {
-      const guarded = guardedDivision(n, opts);
+      const guarded = guardedDivision(n, opts, parentPrec);
       if (guarded) return guarded;
-      const exact = moduloArithmeticExpression(n, opts);
+      const exact = moduloArithmeticExpression(n, opts, parentPrec);
       if (exact) return exact;
       const p = PREC[n.op] || 11;
       const semanticOperands = signedBinaryOperands(n, p, opts);

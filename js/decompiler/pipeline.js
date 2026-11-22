@@ -211,6 +211,47 @@ function canonicalScalarReturnRegister(result, opts = {}) {
   return null;
 }
 
+function returnDefBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir?.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir?.blocks?.length || 0) + 1) {
+    cur = ir?.idom?.[cur] ?? ir?.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+function returnDefBlockDepth(ir, block) {
+  let depth = 0, cur = block, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir?.blocks?.length || 0) + 1) {
+    depth++;
+    cur = ir?.idom?.[cur] ?? ir?.blocks?.[cur]?.idom ?? -1;
+  }
+  return depth;
+}
+
+function returnBlockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const current = stack.pop();
+    const successors = ir?.blocks?.[current]?.succ ?? ir?.blocks?.[current]?.successors ?? [];
+    for (const edge of successors) {
+      const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+      if (next == null || seen.has(next)) continue;
+      if (next === to) return true;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  return false;
+}
+
 function latestReturnStackLoad(ir, ret, returnRegister) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
@@ -221,11 +262,48 @@ function latestReturnStackLoad(ir, ret, returnRegister) {
   // redefines that register (#914). Never substitute AAPCS64's x0 here: on
   // RISC-V it is the hardwired zero register.
   if (!returnRegister) return null;
-  let value = null, bestRow = -Infinity;
+
+  if (ret?.block == null) {
+    let value = null, bestRow = -Infinity;
+    for (const candidate of ir?.values || []) {
+      const def = candidate?.def;
+      if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
+      if (def.row > bestRow) { value = candidate; bestRow = def.row; }
+    }
+    return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
+  }
+
+  let value = null, bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
   for (const candidate of ir?.values || []) {
     const def = candidate?.def;
-    if (candidate?.reg !== returnRegister || !def || (ret?.row != null && def.row >= ret.row)) continue;
-    if (def.row > bestRow) { value = candidate; bestRow = def.row; }
+    if (candidate?.reg !== returnRegister || !def || def === ret) continue;
+    if (def.block === ret.block) {
+      if (ret.row != null && (def.row == null || def.row >= ret.row)) continue;
+      if (!bestSameBlock || (def.row ?? -Infinity) > bestRow) {
+        value = candidate; bestRow = def.row ?? -Infinity; bestSameBlock = true;
+      }
+      continue;
+    }
+    if (bestSameBlock || !returnDefBlockDominates(ir, def.block, ret.block)) continue;
+    const depth = returnDefBlockDepth(ir, def.block);
+    if (depth > bestDepth || (depth === bestDepth && (def.row ?? -Infinity) > bestRow)) {
+      value = candidate; bestDepth = depth; bestRow = def.row ?? -Infinity;
+    }
+  }
+  if (!bestSameBlock && value?.def) {
+    const candDef = value.def;
+    for (const other of ir?.values || []) {
+      const def = other?.def;
+      if (other === value || other?.reg !== returnRegister || !def || def === ret) continue;
+      const reachesRet = def.block === ret.block
+        ? (def.row != null && ret.row != null && def.row < ret.row)
+        : returnBlockCanReach(ir, def.block, ret.block);
+      if (!reachesRet) continue;
+      const mayOverride = def.block === candDef.block
+        ? (def.row != null && candDef.row != null && def.row > candDef.row)
+        : returnBlockCanReach(ir, candDef.block, def.block);
+      if (mayOverride) return null;
+    }
   }
   return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
 }

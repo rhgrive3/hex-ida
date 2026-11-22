@@ -859,27 +859,84 @@ function dominatorDepth(ir, block) {
   return d;
 }
 
-/** SSA value reaching a call/block point, based only on dominance/version facts. */
+function defBlockDominates(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const dom = ir.dominators?.[to];
+  if (dom && typeof dom.has === 'function') return dom.has(from);
+  let cur = to, guard = 0;
+  while (cur != null && cur >= 0 && guard++ <= (ir.blocks?.length || 0) + 1) {
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+    if (cur === from) return true;
+  }
+  return false;
+}
+
+function blockCanReach(ir, from, to) {
+  if (from === to) return true;
+  if (from == null || to == null) return false;
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const current = stack.pop();
+    const successors = ir.blocks?.[current]?.succ ?? ir.blocks?.[current]?.successors ?? [];
+    for (const edge of successors) {
+      const next = edge && typeof edge === 'object' ? (edge.to ?? edge.block ?? edge.id) : edge;
+      if (next == null || seen.has(next)) continue;
+      if (next === to) return true;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  return false;
+}
+
+function definitionCanReachUse(ir, definition, atInst) {
+  if (definition.block === atInst.block) {
+    return definition.row != null && atInst.row != null && definition.row < atInst.row;
+  }
+  return blockCanReach(ir, definition.block, atInst.block);
+}
+
+function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
+  if (!candidateDefinition) return true;
+  if (definition.block === candidateDefinition.block) {
+    if (definition.row == null || candidateDefinition.row == null) return false;
+    return definition.row > candidateDefinition.row;
+  }
+  return blockCanReach(ir, candidateDefinition.block, definition.block);
+}
+
+/** SSA value reaching a call/block point, based on dominance and CFG reachability. */
 export function reachingRegisterValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
   let best = ir.args?.get?.(reg) || null;
-  let bestDepth = -1, bestRow = -Infinity;
+  let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
   for (const v of ir.values || []) {
     if (v.reg !== reg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
       if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
-      const depth = 100000 + d.row;
-      if (depth > bestDepth) { best = v; bestDepth = depth; bestRow = d.row; }
+      if (!bestSameBlock || d.row > bestRow) {
+        best = v; bestRow = d.row; bestSameBlock = true;
+      }
       continue;
     }
-    const dom = ir.dominators?.[atInst.block];
-    if (!dom || !dom.has(d.block)) continue;
+    if (bestSameBlock || !defBlockDominates(ir, d.block, atInst.block)) continue;
     const depth = dominatorDepth(ir, d.block);
     if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow)) {
       best = v; bestDepth = depth; bestRow = d.row ?? -Infinity;
     }
+  }
+  if (bestSameBlock) return best?.clobbered ? null : best;
+
+  const candidateDefinition = best?.def ?? null;
+  for (const v of ir.values || []) {
+    if (v === best || v.reg !== reg || !v.def) continue;
+    const d = v.def;
+    if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
+    if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
   }
   return best?.clobbered ? null : best;
 }
@@ -2227,13 +2284,14 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       // loop must not move a repeated statement out of it. LOAD expressions
       // remain in the condition/body and are evaluated on each iteration.
       && block.insts.every(inst => ![OP.CALL,OP.STORE,OP.UNKNOWN,OP.CLOBBER].includes(inst.op));
+    let term2;
     if (loop && (!state.activeLoop || nestedLoop)) {
-      emitBlockStatements(block, out, ctx, indent);
+      term2 = emitBlockStatements(block, out, ctx, indent);
       const lr = loopRender(loop, block, term, ctx, state, indent, stop);
       if (lr) { out.push(...lr.lines); bi = lr.next; continue; }
+    } else {
+      term2 = emitBlockStatements(block, out, ctx, indent);
     }
-
-    const term2 = emitBlockStatements(block, out, ctx, indent);
     if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);

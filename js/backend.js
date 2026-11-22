@@ -1159,7 +1159,7 @@ export class Backend {
       this.cache.set(job.key, entry);
       this.onChunk?.(job.regionId, job.chunk);
 
-      if (job.wantAsm && !entry.mn) {
+      if (job.wantAsm && !job.dispatchedWantAsm && !entry.mn) {
         const retry = { ...job, wantAsm: true, dispatchedWantAsm: null };
         this.inflight.set(job.key, retry);
         this.queue.unshift(retry);

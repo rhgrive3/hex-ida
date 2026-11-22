@@ -507,9 +507,10 @@ function vectorcallReturn(prototype, options = {}) {
       members, elementBits, homogeneousLayoutProven:true,
     };
   }
-  const vector = /vector|simd|sse|__m128|__m256/.test(`${type} ${abiClass}`);
+  const typeAndClass = `${type} ${abiClass}`;
+  const vector = /vector|simd|sse|__m128|__m256|__m512/.test(typeAndClass);
   if (vector) {
-    const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, /__m256/.test(type) ? 256 : 128));
+    const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, /__m512/.test(typeAndClass) ? 512 : /__m256/.test(typeAndClass) ? 256 : 128));
     const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 128;
     if (bits <= 256) return { reg:vectorRegister(0, bits), bits, abiClass:'vector' };
     return { reg:null, partial:true, reason:'microsoft-vectorcall-wide-vector-return-unsupported' };

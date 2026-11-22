@@ -37,6 +37,7 @@ import { queryNativeAppleMetadata, createNativeAppleDispatchResolver } from '../
 import { createObjectContext, partitionPointsToObjects } from '../pointsto/objects.js';
 
 const unsupported = (reason) => ({ value: { status: 'unsupported', reason, exact: false }, status: { completeness: 'unsupported', reason } });
+const isArm64Architecture = (arch) => arch === 'arm64' || arch === 'arm64e';
 const random = () => {
   if (!globalThis.crypto?.getRandomValues) contractFail('scoped-service-secure-random-required');
   return [...globalThis.crypto.getRandomValues(new Uint32Array(4))].map((n) => n.toString(16).padStart(8, '0')).join('');
@@ -54,7 +55,7 @@ export class ScopedAnalysisService {
     this.#world = createWorldScope(worldInput); this.#assumptions = createAssumptionSet({}, this.#world);
     this.#dependencies = new DependencyEpochRegistry({ world: this.#world, maxSelectors: 8192, maxWatchers: 256 });
     this.#dispatch = new DispatchResolverRegistry({ onMembershipChange: () => this.#dependencies.reset('dispatch-provider-membership') });
-    if (host.canonicalArchitecture === 'arm64') this.#dispatch.register(createNativeDemandDispatchResolver({ queryPointer: host.queryNativeApplePointer
+    if (isArm64Architecture(host.canonicalArchitecture)) this.#dispatch.register(createNativeDemandDispatchResolver({ queryPointer: host.queryNativeApplePointer
       ? (request, context) => host.queryNativeApplePointer(request, context) : null, readMemory: host.readNativeDispatchMemory ?? null }));
     if (host.getNativeAppleMetadataContext) this.#dispatch.register(createNativeAppleDispatchResolver({
       snapshotId: snapshot.snapshotId, getContext: host.getNativeAppleMetadataContext,
@@ -145,7 +146,7 @@ export class ScopedAnalysisService {
     recordFields(input, ['functionId', 'includePremises'], 'native-transform-query-fields');
     exactString(input.functionId, 'native-transform-function');
     if (input.includePremises !== undefined && typeof input.includePremises !== 'boolean') contractFail('native-transform-premises-option');
-    if (this.#host.canonicalArchitecture !== 'arm64') return { status: 'unsupported', reason: 'native-transform-arm64-owner-required', exact: false };
+    if (!isArm64Architecture(this.#host.canonicalArchitecture)) return { status: 'unsupported', reason: 'native-transform-arm64-owner-required', exact: false };
     const loaded = await this.#load(input.functionId, work, { kind: 'transforms', world: this.#world, assumptions: this.#assumptions });
     if (!loaded.pipeline) return { status: 'unsupported', reason: loaded.reason, exact: false };
     const view = this.#localView(loaded, 'transforms');
@@ -157,7 +158,7 @@ export class ScopedAnalysisService {
   async #taskView(input, work) {
     recordFields(input, ['functionId', 'task', 'statementIds'], 'task-query-fields');
     exactString(input.functionId, 'task-query-function');
-    if (this.#host.canonicalArchitecture !== 'arm64') return { status: 'unsupported', reason: 'task-native-arm64-owner-required', exact: false };
+    if (!isArm64Architecture(this.#host.canonicalArchitecture)) return { status: 'unsupported', reason: 'task-native-arm64-owner-required', exact: false };
     const loaded = await this.#load(input.functionId, work, { kind: 'transforms', world: this.#world, assumptions: this.#assumptions });
     if (!loaded.pipeline) return { status: 'unsupported', reason: loaded.reason, exact: false };
     const view = this.#localView(loaded, 'transforms');
@@ -241,13 +242,13 @@ export class ScopedAnalysisService {
         getContext: this.#host.configuration.getConditionalModelContext ?? null, isCurrent: () => this.#current() });
       else if (method === 'checkLoopInvariant') value = await queryLoopInvariant(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
-        getContext: this.#host.configuration.getLoopModelContext ?? (this.#host.canonicalArchitecture === 'arm64' && this.#host.readRange
+        getContext: this.#host.configuration.getLoopModelContext ?? (isArm64Architecture(this.#host.canonicalArchitecture) && this.#host.readRange
           ? (locator, loopId) => this.#nativeLoopContext(locator, loopId, work) : null), isCurrent: () => this.#current() });
       else if (method === 'asyncEventOrder') value = await queryAsyncEventOrder(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
         getContext: this.#host.configuration.getAsyncEventContext ?? this.#host.getNativeAsyncEventContext ?? null,
         getRuntimeContext: this.#host.configuration.getRuntimeEvidenceContext ?? this.#host.getNativeRuntimeEvidenceContext ?? null, isCurrent: () => this.#current() });
-      else if (method === 'portableIntegerChecks') value = this.#host.canonicalArchitecture !== 'arm64'
+      else if (method === 'portableIntegerChecks') value = !isArm64Architecture(this.#host.canonicalArchitecture)
         ? { status: 'unsupported', reason: 'portable-native-arm64-required', exact: false }
         : await queryPortableChecks(input, { world: this.#world, assumptions: this.#assumptions,
           snapshotId: this.#snapshot.snapshotId, work, isCurrent: () => this.#current(), readRange: this.#host.readRange ?? null,
@@ -301,7 +302,7 @@ export class ScopedAnalysisService {
     }
   }
   #capabilities() {
-    const native = this.#host.canonicalArchitecture === 'arm64';
+    const native = isArm64Architecture(this.#host.canonicalArchitecture);
     const custom = typeof this.#host.configuration.loadPipeline === 'function';
     return { schema: 'scoped-capabilities/v1', status: 'available-experimental', canonicalArchitecture: this.#host.canonicalArchitecture ?? null,
       producerQualification: custom ? 'custom-host-unverified' : native ? 'current-arm64-owner-unverified' : 'native-pair-unsupported', modes: {
@@ -325,7 +326,7 @@ export class ScopedAnalysisService {
       typeEvidence: native || custom ? 'isolated-worker-canonical-type-projection' : 'unsupported',
       abiInputBindings: native ? 'isolated-existing-abi-and-compat-64-bit-register-inputs; candidate-only' : 'unsupported',
       abiPlacementEvidence: this.#host.configuration.getAbiPlacementContext || native ? 'canonical-owner-physical-consistency; prototype-unknown-preserved' : 'unsupported',
-      explainTransformChain: (this.#host.configuration.resolveTransformReceipt || this.#host.canonicalArchitecture === 'arm64') ? 'receipt-dag-replay; checker-required-for-semantic-verdict' : 'unsupported',
+      explainTransformChain: (this.#host.configuration.resolveTransformReceipt || native) ? 'receipt-dag-replay; checker-required-for-semantic-verdict' : 'unsupported',
       runtimeObservations: this.#host.configuration.getRuntimeEvidenceContext ? 'captured-events-only; no-runtime-experiments' : 'unsupported',
       objectMemory: native || custom ? 'isolated-worker-points-to-root-projection' : 'unsupported',
       summarySlice: native || custom ? 'resumable-source-preparation-and-context-insensitive-bounded-scc' : 'unsupported',
@@ -363,7 +364,7 @@ export class ScopedAnalysisService {
       const scopeBuilder = method === 'interproceduralQuery' ? new ScopedInterproceduralProjectionBuilder({
         functionIds: plan.query.scope.functionIds, world: this.#world, assumptions: this.#assumptions,
         snapshotId: this.#snapshot.snapshotId, loadProjection: (locator, ctx) => this.#projection(locator, ctx.work,
-          this.#host.canonicalArchitecture === 'arm64' && !this.#host.configuration.getFunctionFlowInterface),
+          isArm64Architecture(this.#host.canonicalArchitecture) && !this.#host.configuration.getFunctionFlowInterface),
         getFunctionFlowInterface: this.#host.configuration.getFunctionFlowInterface ?? null,
         isCurrent: () => this.#current() && this.#dependencies.validate(dependency),
       }) : null;
@@ -507,7 +508,7 @@ export class ScopedAnalysisService {
       this.#prune();
       if (this.#sessions.size >= this.#host.configuration.maximumSessions) return unsupported('scoped-session-cap');
       session = new ScopedCallGraphSession({ query: input, world: this.#world, assumptions: this.#assumptions,
-        snapshotId: this.#snapshot.snapshotId, loadProjection: (locator, ctx) => this.#host.canonicalArchitecture === 'arm64'
+        snapshotId: this.#snapshot.snapshotId, loadProjection: (locator, ctx) => isArm64Architecture(this.#host.canonicalArchitecture)
           ? this.#loadDemandOwner(locator, ctx.work, { maximumValues: 64 }) : this.#projection(locator, ctx.work),
         resolveDispatch: (projection, callSiteId, work, nativeContext) => resolveUnifiedDispatch(projection,
           { functionId: projection.functionId, callSiteId, maxTargets: nativeContext.maxTargets, maxHops: nativeContext.maxHops },
@@ -526,7 +527,7 @@ export class ScopedAnalysisService {
   }
   async #targets(input, work) {
     recordFields(input, ['functionId', 'callSiteId', 'families', 'maxTargets', 'maxHops'], 'scoped-dispatch-fields');
-    const loaded = this.#host.canonicalArchitecture === 'arm64'
+    const loaded = isArm64Architecture(this.#host.canonicalArchitecture)
       ? await this.#loadDemandOwner(input.functionId, work, { maximumValues: 64 }) : await this.#projection(input.functionId, work);
     if (!loaded.projection) return { status: 'unsupported', reason: loaded.reason };
     try {
@@ -611,7 +612,7 @@ export class ScopedAnalysisService {
   async #objects(input, work) {
     recordFields(input, ['functionId', 'valueId'], 'scoped-object-fields');
     exactString(input.valueId, 'scoped-object-value');
-    if (this.#host.canonicalArchitecture === 'arm64' && !this.#host.configuration.describeObjectTarget) {
+    if (isArm64Architecture(this.#host.canonicalArchitecture) && !this.#host.configuration.describeObjectTarget) {
       const loaded = await this.#loadDemandOwner(input.functionId, work, { valueIds: [input.valueId], maximumValues: 1 });
       try {
         if (!loaded.projection) return { status: 'unsupported', reason: loaded.reason, exact: false };

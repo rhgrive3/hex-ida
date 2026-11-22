@@ -154,7 +154,16 @@ export function evaluateFinalHeadAdmission({
   const blockers = [];
   const pending = [];
   const latest = latestStatuses(statuses);
-  const latestStatusByContext = new Map(latest.map((status) => [string(status?.context), status]));
+  const statusSeverity = { success: 0, pending: 1, failure: 2 };
+  const latestStatusByContext = new Map();
+  for (const status of latest) {
+    const context = string(status?.context);
+    if (!context) continue;
+    const existing = latestStatusByContext.get(context);
+    if (!existing || statusSeverity[statusState(status)] > statusSeverity[statusState(existing)]) {
+      latestStatusByContext.set(context, status);
+    }
+  }
 
   // Campaign-only Draft and exact-head AUTO-approval requirements were
   // intentionally removed. Admission now follows ordinary PR safety signals:

@@ -898,17 +898,23 @@ function forwardingValueForDefinition(definition, metadata, memorySsa, options) 
         else if (typeof constant?.value === 'number' && Number.isSafeInteger(constant.value)) sourceValue = BigInt(constant.value);
         else if (typeof constant?.value === 'string' && /^[+-]?(?:0|[1-9][0-9]*)$/.test(constant.value)) sourceValue = BigInt(constant.value);
       } catch { sourceValue = null; }
+      const validSourceWidth = Number.isSafeInteger(sourceWidth) && sourceWidth > 0 && sourceWidth % 8 === 0;
+      const sourceUnsigned = validSourceWidth && sourceValue != null ? BigInt.asUintN(sourceWidth, sourceValue) : null;
+      const sourceSigned = validSourceWidth && sourceValue != null ? BigInt.asIntN(sourceWidth, sourceValue) : null;
+      const targetWidth = Number(proof.widthBits);
       resolvedValueValid = !!resolved
         && String(proof.resolvedValueId ?? '').trim() !== ''
         && String(proof.resolvedSemanticValueDigest ?? '') === stableDigest(resolved)
         && String(proof.scalarSsaDigest ?? '') === String(memorySsa.identity?.scalarSsaDigest ?? '')
         && resolved.machineType?.kind === 'bitvector'
+        && validSourceWidth
         && Number(resolved.machineType?.widthBits) === sourceWidth
         && Number(constant?.widthBits) === sourceWidth
         && sourceValue != null
         && parsedValue != null
-        && BigInt.asUintN(sourceWidth, sourceValue) === sourceValue
-        && BigInt.asUintN(Number(proof.widthBits), sourceValue) === parsedValue;
+        && (sourceValue === sourceUnsigned || sourceValue === sourceSigned)
+        && (BigInt.asUintN(targetWidth, sourceUnsigned) === parsedValue
+          || BigInt.asUintN(targetWidth, sourceSigned) === parsedValue);
     }
     if (!storeNode || storeNode.kind !== 'store' || !Array.isArray(storeNode.inputs)
         || storeNode.inputs.length !== 2

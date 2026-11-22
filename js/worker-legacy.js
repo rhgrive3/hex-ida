@@ -65,8 +65,9 @@ let cs = null;                        // { M, handle, hp }
 let csError = null;
 let currentEpoch = 0;
 let openChain = Promise.resolve();
-const activeRequests = new Map();             // request id -> epoch
-const cancelledRequests = new Set();
+const activeRequests = new Map();             // "${epoch}:${id}" -> { id, epoch }
+const cancelledRequests = new Set();          // "${epoch}:${id}"
+const requestKey = (epoch, id) => `${epoch}:${id}`;
 
 const blocks = new Map();             // blockIndex -> Uint8Array (insertion-ordered LRU)
 const blockInflight = new Map();       // blockIndex -> { epoch, file, promise }
@@ -77,16 +78,17 @@ self.onmessage = async (e) => {
   const msg = e.data;
   if (!msg || typeof msg.t !== 'string') return;
   if (msg.t === 'cancel' || msg.t === 'cancelSearch') {
-    for (const [id, epoch] of activeRequests) {
-      if ((msg.requestId == null || msg.requestId === id) &&
-          (msg.epoch == null || msg.epoch === epoch)) cancelledRequests.add(id);
+    for (const [key, entry] of activeRequests) {
+      if ((msg.requestId == null || msg.requestId === entry.id) &&
+          (msg.epoch == null || msg.epoch === entry.epoch)) cancelledRequests.add(key);
     }
     return;
   }
+  const reqKey = msg.id != null ? requestKey(msg.epoch, msg.id) : null;
   const run = async () => {
     if (msg.t === 'open') currentEpoch = msg.epoch;
     if (msg.epoch !== currentEpoch) throw new Error('Stale analysis request.');
-    if (msg.id != null) activeRequests.set(msg.id, msg.epoch);
+    if (reqKey != null) activeRequests.set(reqKey, { id: msg.id, epoch: msg.epoch });
     return handle(msg);
   };
   try {
@@ -98,14 +100,16 @@ self.onmessage = async (e) => {
     if (msg.id != null) post({ t: 'err', id: msg.id, epoch: msg.epoch, error: errText(err) });
     else post({ t: 'fatal', error: errText(err) });
   } finally {
-    if (msg.id != null) {
-      activeRequests.delete(msg.id);
-      cancelledRequests.delete(msg.id);
+    if (reqKey != null) {
+      activeRequests.delete(reqKey);
+      cancelledRequests.delete(reqKey);
     }
   }
 };
 
-function cancelled(requestId) { return requestId != null && cancelledRequests.has(requestId); }
+function cancelled(requestId, epoch = currentEpoch) {
+  return requestId != null && cancelledRequests.has(requestKey(epoch, requestId));
+}
 function scanProgress(requestId, epoch, done, all, hits) {
   self.postMessage({ t: 'scanProgress', requestId, epoch, done, all, hits });
 }
@@ -1580,7 +1584,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
 
   while (pos < total) {
-    if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
+    if (cancelled(requestId, epoch)) return { cancelled: true, __transfer: [] };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
@@ -1675,9 +1679,12 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   if (callsCapped) truncationReasons.push('call-edge-memory-budget');
   if (refsCapped) truncationReasons.push('reference-memory-budget');
   if (kinds.length < words) truncationReasons.push('kind-stat-budget');
-  const outCallFrom=callFrom.slice(0,nCalls), outCallTo=callTo.slice(0,nCalls);
-  const outRefFrom=refFrom.slice(0,nRefs), outRefTo=refTo.slice(0,nRefs), outRefKind=refKind.slice(0,nRefs);
-  const outKinds=kinds.slice(0,Math.min(words,kinds.length));
+  const outCallFrom = nCalls === callFrom.length ? callFrom : callFrom.slice(0, nCalls);
+  const outCallTo = nCalls === callTo.length ? callTo : callTo.slice(0, nCalls);
+  const outRefFrom = nRefs === refFrom.length ? refFrom : refFrom.slice(0, nRefs);
+  const outRefTo = nRefs === refTo.length ? refTo : refTo.slice(0, nRefs);
+  const outRefKind = nRefs === refKind.length ? refKind : refKind.slice(0, nRefs);
+  const outKinds = kinds.length <= words ? kinds : kinds.slice(0, words);
   return {
     regionId,
     vmAddr: region.vmAddr,

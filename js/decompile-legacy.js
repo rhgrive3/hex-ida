@@ -774,12 +774,20 @@ function exprText(ctx, nodeValue, self) {
         const d = stackDispOf(n, ctx);
         if (inFrame(d, ctx)) return '&' + slotName('sp', d, ctx);
       }
-      if (n === self) return null;               // 自分自身は展開する
+      if (n === self) {
+        if (n.k === 'bin' && n.op === 'ror') {
+          return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
+        }
+        return null;                             // 自分自身は展開する
+      }
       if (n.k === 'reg') return varOf(n.reg, ctx);
       if (n.k === 'arg') return argName(n.n, ctx);
       if (mat && mat.names.has(n)) {
         ctx.usedVars.add(mat.names.get(n));
         return mat.names.get(n);
+      }
+      if (n.k === 'bin' && n.op === 'ror') {
+        return rorExpr(renderExpr(n.a, opts), renderExpr(n.b, opts), n.bits === 32 ? 32 : 64);
       }
       return null;
     },
@@ -1279,7 +1287,11 @@ function condText(cond, ctx) {
   if (cond.kind === 'bit') return '(' + cond.reg + ' & (1 << ' + cond.bit + '))' + (cond.neg ? ' != 0' : ' == 0');
   if (cond.kind === 'flag') {
     const op = COND_OPS[cond.cc] || cond.cc;
+    if (cond.cc === 'al') return '1';
+    if (cond.cc === 'nv') return '0';
     if (!cond.cmp) return 'flag_' + cond.cc;
+    if (cond.cc === 'vs') return 'flag_vs /* overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
+    if (cond.cc === 'vc') return '!flag_vs /* !overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
     if (cond.cmp.op === 'tst' || cond.cmp.op === 'ands') {
       return '(' + cond.cmp.left + ' & ' + cond.cmp.right + ')' + (cond.cc === 'eq' ? ' == 0' : ' != 0');
     }
@@ -1682,14 +1694,21 @@ function statementFor(insn, ctx, node) {
   const BIN = {
     add: '+', adds: '+', sub: '-', subs: '-', mul: '*', udiv: '/', sdiv: '/',
     and: '&', ands: '&', orr: '|', eor: '^', bic: '& ~', bics: '& ~', lsl: '<<', lsr: '>>', asr: '>>',
-    ror: '>>>', fadd: '+', fsub: '-', fmul: '*', fdiv: '/', smull: '*', umull: '*',
+    fadd: '+', fsub: '-', fmul: '*', fdiv: '/', smull: '*', umull: '*',
   };
+  const operandBits = insn.ops[0]?.bits === 32 || insn.ops[0]?.width === 32 || /^w\d+$/i.test(insn.ops[0]?.name || '') ? 32 : 64;
+  if ((base === 'ror' || base === 'rorv') && insn.ops.length >= 3 && dst) {
+    const a = operandText(insn.ops[1], ctx, insn);
+    const b = operandText(insn.ops[2], ctx, insn);
+    return mk(varOf(dst, ctx) + ' = ' + rorExpr(a, b, operandBits) + ';', { dst, pure: true });
+  }
   if (BIN[base] && insn.ops.length >= 3 && dst) {
     const a = operandText(insn.ops[1], ctx, insn);
     const b = operandText(insn.ops[2], ctx, insn);
-    const shift = insn.ops[2] && insn.ops[2].shift && insn.ops[2].shift.amount
-      ? ' ' + shiftOp(insn.ops[2].shift.op) + ' ' + insn.ops[2].shift.amount : '';
-    const expr = shift ? '(' + b + shift + ')' : b;
+    const sh = insn.ops[2] && insn.ops[2].shift && insn.ops[2].shift.amount ? insn.ops[2].shift : null;
+    const expr = sh
+      ? (sh.op === 'ror' ? rorExpr(b, sh.amount, operandBits) : '(' + b + ' ' + shiftOp(sh.op) + ' ' + sh.amount + ')')
+      : b;
     return mk(varOf(dst, ctx) + ' = ' + a + ' ' + BIN[base] + ' ' + expr + ';', { dst, pure: true });
   }
   if ((base === 'neg' || base === 'negs' || base === 'fneg') && dst) {
@@ -1738,8 +1757,15 @@ function statementFor(insn, ctx, node) {
     { dst, note: 'この命令は逆コンパイルできませんでした。アセンブリのまま置いています。' });
 }
 
+function rorExpr(value, amount, bits = 64) {
+  const width = bits === 32 ? 32 : 64;
+  const mask = width - 1;
+  const sh = '(' + amount + ' & ' + mask + ')';
+  return '((' + value + ' >> ' + sh + ') | (' + value + ' << ((' + width + ' - ' + sh + ') & ' + mask + ')))';
+}
+
 function shiftOp(op) {
-  return { lsl: '<<', lsr: '>>', asr: '>>', ror: '>>>' }[op] || '<<';
+  return { lsl: '<<', lsr: '>>', asr: '>>', ror: '>>' }[op] || '<<';
 }
 
 /*
@@ -2147,6 +2173,11 @@ function inlineTemporaries(stmts, ctx) {
       }
       if (blocked) continue;
     } else {
+      const interveningDef = (defs.get(reg) || []).some((k) => k > i && k < j && !stmts[k].dropped);
+      if (interveningDef) continue;
+      const clobberedRead = (st.reads || []).some((r) =>
+        (defs.get(r) || []).some((k) => k > i && k < j && !stmts[k].dropped));
+      if (clobberedRead) continue;
       const later = (defs.get(reg) || []).filter((k) => k > j);
       const isTemp = /^x(8|9|1[0-7])$/.test(reg);
       if (!later.length && !isTemp) continue;    // あとで使われるかもしれない変数は残す

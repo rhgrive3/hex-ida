@@ -47,7 +47,7 @@ const KEYWORDS = new Set([
   'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double',
   'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
   'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct',
-  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', '_Bool',
+  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', '_Bool', 'bool',
   '_Static_assert', '__asm', '__asm__', 'asm', 'true', 'false', 'NULL',
 ]);
 
@@ -198,7 +198,23 @@ export function scanIdentifierUses(text) {
     const callTarget = after === '(';
     const label = after === ':' && startsStatement(source, start);
     const gotoLabel = previousWord(source, start) === 'goto';
-    const castType = before === '(' && after === '*';
+    const isNonPointerCast = (() => {
+      if (before !== '(' || after !== ')') return false;
+      let openIdx = start - 1;
+      while (openIdx >= 0 && /\s/.test(source[openIdx])) openIdx--;
+      const wordBeforeOpen = previousWord(source, openIdx);
+      if (['if', 'while', 'switch', 'for', 'sizeof', 'typeof', 'alignof', '_Alignof'].includes(wordBeforeOpen)) return false;
+      let closeIdx = end;
+      while (closeIdx < source.length && /\s/.test(source[closeIdx])) closeIdx++;
+      let afterClose = closeIdx + 1;
+      while (afterClose < source.length && /\s/.test(source[afterClose])) afterClose++;
+      if (afterClose >= source.length) return false;
+      const ch = source[afterClose];
+      if (/[A-Za-z0-9_~]/.test(ch)) return true;
+      if (ch === '!' && source[afterClose + 1] !== '=') return true;
+      return false;
+    })();
+    const castType = (before === '(' && after === '*') || isNonPointerCast;
     const tag = ['struct', 'union', 'enum'].includes(previousWord(source, start));
     const entry = uses.get(name) ?? {
       name, firstIndex: start, callTarget: false, callTargetOnly: true, memberName: false,
@@ -218,14 +234,56 @@ export function scanIdentifierUses(text) {
 }
 
 
-/* Names a declaration line or a prelude typedef line introduces. */
+const NON_DECL_STMT_HEADS = new Set([
+  'return', 'goto', 'if', 'else', 'for', 'while', 'do', 'switch',
+  'case', 'default', 'break', 'continue', 'sizeof',
+]);
+
+/* Names a declaration line, stmt-kind local declaration, or prelude typedef line introduces. */
 function declaredNamesFromLines(lines) {
   const declared = new Set();
   for (const item of lines || []) {
-    if (item?.kind !== 'decl') continue;
-    for (const match of declarationBearingSource(item.text).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(match[0]);
+    if (item?.kind === 'decl') {
+      for (const match of declarationBearingSource(item.text).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(match[0]);
+      continue;
+    }
+    if (item?.kind === 'stmt') {
+      const cleaned = declarationBearingSource(item.text).trim();
+      const match = /^(?:(?:const|volatile|static|register|unsigned|signed|short|long|struct|union|enum)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\*+\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(cleaned);
+      if (match && !NON_DECL_STMT_HEADS.has(match[1]) && !KEYWORDS.has(match[2])) {
+        declared.add(match[1]);
+        declared.add(match[2]);
+      }
+    }
   }
   return declared;
+}
+
+/* Type names appearing in a function signature (return type and parameter types). */
+function signatureTypeNames(signature) {
+  const names = new Set();
+  const text = declarationBearingSource(signature);
+  const open = text.indexOf('(');
+  if (open < 0) return names;
+  const retTokens = [...text.slice(0, open).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+  for (let i = 0; i < retTokens.length - 1; i++) names.add(retTokens[i]);
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') { depth--; if (!depth) { close = i; break; } }
+  }
+  if (close > open) {
+    for (const group of text.slice(open + 1, close).split(',')) {
+      const tokens = [...group.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+      if (tokens.length >= 2) {
+        for (let i = 0; i < tokens.length - 1; i++) names.add(tokens[i]);
+      } else if (tokens.length === 1 && !KEYWORDS.has(tokens[0])) {
+        names.add(tokens[0]);
+      }
+    }
+  }
+  return names;
 }
 
 /* Parameter names of `returnType name(uint64 a1, uint32 a2)`, if any. */
@@ -427,7 +485,9 @@ export function closeFunctionOutput(result, options = {}) {
   if (sigIndex < 0) return result;
 
   const declared = declaredNamesFromLines(lines);
-  for (const name of parameterNames(String(lines[sigIndex].text ?? ''))) declared.add(name);
+  const sigText = String(lines[sigIndex].text ?? '');
+  for (const name of parameterNames(sigText)) declared.add(name);
+  for (const name of signatureTypeNames(sigText)) declared.add(name);
   const uses = scanIdentifierUses(render(lines));
   const entrySource = entryOriginSource(lines[sigIndex]);
   const localDeclarations = [...uses.values()]

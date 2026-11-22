@@ -453,7 +453,10 @@ export class CodeViewer {
       if (target >= this.totalRows) { this._requestVariableForward(); return; }
       if (target < 0 && this.variableRows.length) {
         const first = this.variableRows[0];
+        const navGen = this.variableNavigation;
+        const region = this.region;
         this.variableIndex.previousBoundary(first.address).then((result) => {
+          if (navGen !== this.variableNavigation || this.disposed || this.region !== region || !this.isVariableAsm()) return;
           if (result.status !== 'proven') { this.variableError = { address:first.address, status:result.status, bytes:null }; this.invalidate(); return; }
           return this.variableIndex.ensurePage(result.address, { priority:'current', protect:false });
         }).catch(() => {});

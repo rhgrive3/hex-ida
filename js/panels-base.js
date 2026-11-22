@@ -84,8 +84,13 @@ export { showSettings } from './ui/panels/settings.js';
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast(t('err.openFirst')); return; }
+  let activeRequest = null;
   const sheet = new Sheet(t('functions.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (activeRequest?.requestId != null) app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
+      app.backend.onScanProgress = null;
+    },
   });
 
   const status = el('div', 'hint', '');
@@ -157,10 +162,13 @@ export function showFunctions(app) {
     // LC_FUNCTION_STARTS がない → 命令の並びから推測する（推測は app 側に一本化）
     status.textContent = t('functions.analyzing');
     try {
-      const guessed = await app.ensureFunctions(region, (p) => {
+      const req = app.ensureFunctions(region, (p) => {
         if (!p.all) return;
         fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
       });
+      activeRequest = req;
+      const guessed = await req;
+      if (activeRequest === req) activeRequest = null;
       fill.style.width = '100%';
       all = guessed.functionList(region);
       status.textContent = all.length ? t('functions.hintNoSymbols') : t('functions.none');
@@ -214,15 +222,21 @@ export function showFunctionSummary(app, row) {
   bar.append(fill);
   sheet.body.append(bar, status);
 
+  const epoch = app.backend.gen;
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
-    (p) => { fill.style.width = Math.round(p * 100) + '%'; }, { architecture })
+    (p) => {
+      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
+      fill.style.width = Math.round(p * 100) + '%';
+    }, { architecture })
     .then((res) => {
+      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.remove();
       bar.remove();
       applySemantic(app, region, res);
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
+      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
     });
@@ -533,10 +547,12 @@ export function showFeatures(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
   const controller = new AbortController();
+  let activeRequest = null;
   const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
     onClose: () => {
       controller.abort('features-sheet-closed');
-      app.backend.cancelSearch();
+      if (activeRequest?.requestId != null) app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
       app.backend.onScanProgress = null;
     },
   });
@@ -591,7 +607,10 @@ export function showFeatures(app) {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
-  collectStrings(app, progress).then(async (strings) => {
+  const req = collectStrings(app, progress);
+  activeRequest = req;
+  req.then(async (strings) => {
+    if (activeRequest === req) activeRequest = null;
     if (controller.signal.aborted || !sheet.root.isConnected) return;
     const index = await classifyFeaturesAndEngineAsync(strings, {
       signal: controller.signal,
@@ -641,8 +660,17 @@ function trimText(s, n) {
 export function showStrings(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
+  let activeRequest = null;
+  let scanToken = 0;
   const sheet = new Sheet(t('strings.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      scanToken++;
+      if (activeRequest) {
+        app.backend.cancelSearch(activeRequest);
+        activeRequest = null;
+      }
+      app.backend.onScanProgress = null;
+    },
   });
 
   /* 文字列は __cstring などにまとまっている。なければ今のセクションを見る。 */
@@ -711,6 +739,11 @@ export function showStrings(app) {
   input.addEventListener('input', render);
 
   const scan = async (region) => {
+    const token = ++scanToken;
+    if (activeRequest) {
+      app.backend.cancelSearch(activeRequest);
+      activeRequest = null;
+    }
     active = region;
     for (const c of chips.children) c.setAttribute('aria-pressed', String(c._region === region));
     results.replaceChildren();
@@ -718,11 +751,16 @@ export function showStrings(app) {
     status.textContent = t('strings.scanning');
     fill.style.width = '0%';
     const progress = (p) => {
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       if (!p.all) return;
       fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
     };
+    const request = app.backend.strings({ regionId: region.id, min: 4 }, progress);
+    activeRequest = request;
     try {
-      const res = await app.backend.strings({ regionId: region.id, min: 4 }, progress);
+      const res = await request;
+      if (activeRequest === request) activeRequest = null;
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       fill.style.width = '100%';
       all = res.results;
       status.textContent = t('strings.count', { n: all.length.toLocaleString() }) +
@@ -730,6 +768,8 @@ export function showStrings(app) {
         '\n' + t('strings.hint');
       render();
     } catch (err) {
+      if (activeRequest === request) activeRequest = null;
+      if (token !== scanToken || active !== region || !sheet.root.isConnected) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
     }
@@ -750,8 +790,13 @@ function showXrefsLegacy(app, target) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const codeRegion = pickCodeRegion(app) || region;
+  let request = null;
   const sheet = new Sheet(t('xref.title'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (request) app.backend.cancelSearch(request);
+      request = null;
+      app.backend.onScanProgress = null;
+    },
   });
 
   sheet.body.append(el('div', 'hint',
@@ -770,8 +815,7 @@ function showXrefsLegacy(app, target) {
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
 
-  const request = app.backend.xrefs({ regionId: codeRegion.id, target }, progress);
-  sheet.onClose = () => request.cancel();
+  request = app.backend.xrefs({ regionId: codeRegion.id, target }, progress);
   request.then((res) => {
     fill.style.width = '100%';
     if (!res.results.length) { status.textContent = t('xref.none'); return; }
@@ -1437,7 +1481,7 @@ export function showOverview(app) {
   const info = app.store.get('fileInfo');
   if (!info) { toast(t('err.openFirst')); return; }
   const sheet = new Sheet(pick('このアプリを解析しました', 'This app has been analysed'), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => { app.backend.onScanProgress = null; },
   });
   const body = sheet.body;
 
@@ -1963,8 +2007,13 @@ export function showClass(app, className) {
 }
 
 function showFieldLegacy(app, className, field) {
+  let fieldRequest = null;
   const sheet = new Sheet(className + '.' + plainFieldName(field.name), {
-    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+    onClose: () => {
+      if (fieldRequest) app.backend.cancelSearch(fieldRequest);
+      fieldRequest = null;
+      app.backend.onScanProgress = null;
+    },
   });
   const body = sheet.body;
 
@@ -1987,14 +2036,16 @@ function showFieldLegacy(app, className, field) {
   const results = el('div');
   body.append(results);
 
+  fieldRequest = app.backend.fieldAccess({
+    regionId: (app.codeRegion() || {}).id,
+    offset: field.offset,
+    size: field.size || 0,
+  });
   Promise.all([
     app.ensureProgram(),
-    app.backend.fieldAccess({
-      regionId: (app.codeRegion() || {}).id,
-      offset: field.offset,
-      size: field.size || 0,
-    }),
+    fieldRequest,
   ]).then(([program, res]) => {
+    fieldRequest = null;
     box.done();
     if (!sheet.root.isConnected) return;
 

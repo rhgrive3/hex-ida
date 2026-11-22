@@ -922,7 +922,7 @@ export function buildCTranslationUnit(functions, options = {}) {
    * placeholder can never be counted as a parsed recovered function.
    */
   const eligibilityContext = bodyEligibilityContext({
-    prototypes:prototypeMap.values(), globals:globalMap.values(),
+    prototypes, globals,
     fallbackDeclarations, selectedNames,
   });
   // A selected definition whose recovered signature carries no parameter
