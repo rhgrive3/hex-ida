@@ -1285,8 +1285,9 @@ function buildFunctionCandidate(c, goal, o) {
    *
    * 別々の文言はそれぞれ独立した観測として数える（同じ文言の重複は数えない）。
    */
+  const fnRole = c.name ? numericSymbolRole(goal, c.name) : 'neutral';
   const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
-  if (total > 0) {
+  if (total > 0 && fnRole !== 'non-value') {
     const seenText = new Set();
     const named = [];
     for (const s of c.strings || []) {
