@@ -281,3 +281,36 @@ test('parenthesized multiplication (a1 * a1) is not misclassified as pointer cas
   assert.match(res.pseudocode, /typedef struct \{ uint64 field_20; \} hex_struct_p;/);
   assert.match(res.pseudocode, /\bhex_struct_p \*p;/);
 });
+
+test('signature pointer class types (Thing * this) get forward/struct typedefs and __atomic_load/__atomic_store get compat macros', () => {
+  const res1 = {
+    lines: [
+      { kind: 'sig', indent: 0, text: 'uint64 ZNK5Thing6updateEi(Thing * this)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'ctrl', indent: 1, text: 'return this->field_0x8 + this->field_0xC;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  };
+  closeFunctionOutput(res1);
+  assert.match(res1.pseudocode, /typedef struct Thing \{ uint64 field_0x8; uint64 field_0xC; \} Thing;/);
+  const once1 = res1.pseudocode;
+  closeFunctionOutput(res1);
+  assert.equal(res1.pseudocode, once1);
+
+  const res2 = {
+    lines: [
+      { kind: 'sig', indent: 0, text: 'uint64 exclusive_pair(void * a2)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'stmt', indent: 1, text: 'x0 = __atomic_load((uint64 *)(a2));' },
+      { kind: 'stmt', indent: 1, text: 'x2 = __atomic_store((uint64 *)(a2), x0);' },
+      { kind: 'ctrl', indent: 1, text: 'return x0;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  };
+  closeFunctionOutput(res2);
+  assert.match(res2.pseudocode, /#define __atomic_load\(ptr\) __atomic_load_n\(\(ptr\), __ATOMIC_SEQ_CST\)/);
+  assert.match(res2.pseudocode, /#define __atomic_store\(ptr, val\) \(__atomic_store_n\(\(ptr\), \(val\), __ATOMIC_SEQ_CST\), 0\)/);
+  const once2 = res2.pseudocode;
+  closeFunctionOutput(res2);
+  assert.equal(res2.pseudocode, once2);
+});
