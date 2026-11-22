@@ -406,6 +406,7 @@ export function scanIdentifierUses(text) {
     const gotoLabel = previousWord(source, start) === 'goto';
     const isNonPointerCast = (() => {
       if (before !== '(' || after !== ')') return false;
+      if (registerType(name) != null || /^(?:var|local|tmp|call|load|arg)_/.test(name)) return false;
       let openIdx = start - 1;
       while (openIdx >= 0 && /\s/.test(source[openIdx])) openIdx--;
       const wordBeforeOpen = previousWord(source, openIdx);
@@ -500,40 +501,128 @@ const C_PRIMITIVE_TYPE_KEYWORDS = new Set([
   'void', 'char', 'short', 'int', 'long', 'float', 'double', '_Bool', 'bool', '__int128',
 ]);
 
+function splitTopLevelCommas(text) {
+  const parts = [];
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+function cutBeforeTopLevelAssign(text) {
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') paren++;
+    else if (ch === ')') { if (paren > 0) paren--; }
+    else if (ch === '[') bracket++;
+    else if (ch === ']') { if (bracket > 0) bracket--; }
+    else if (ch === '{') brace++;
+    else if (ch === '}') { if (brace > 0) brace--; }
+    else if (ch === '=' && paren === 0 && bracket === 0 && brace === 0 && text[i + 1] !== '=' && text[i - 1] !== '!' && text[i - 1] !== '<' && text[i - 1] !== '>') {
+      return text.slice(0, i);
+    }
+  }
+  return text;
+}
+
+function extractDeclaredNamesFromDeclText(cleaned, outSet) {
+  const trimmed = cleaned.trim().replace(/;\s*$/, '').trim();
+  if (!trimmed) return;
+  if (/^typedef\b/.test(trimmed)) {
+    const aliasMatch = /\b([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+    if (aliasMatch && !KEYWORDS.has(aliasMatch[1])) outSet.add(aliasMatch[1]);
+    const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(trimmed);
+    if (tagMatch && !KEYWORDS.has(tagMatch[1])) outSet.add(tagMatch[1]);
+    return;
+  }
+  const beforeAssign = cutBeforeTopLevelAssign(trimmed).trim();
+  const openParen = beforeAssign.indexOf('(');
+  if (openParen >= 0) {
+    const fnPtrMatch = /\(\s*\*+\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(beforeAssign);
+    if (fnPtrMatch && !KEYWORDS.has(fnPtrMatch[1])) {
+      outSet.add(fnPtrMatch[1]);
+      return;
+    }
+    const beforeParen = beforeAssign.slice(0, openParen).trim();
+    const fnNameMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(beforeParen);
+    if (fnNameMatch && !KEYWORDS.has(fnNameMatch[1])) outSet.add(fnNameMatch[1]);
+    return;
+  }
+  const declarators = splitTopLevelCommas(trimmed);
+  for (let idx = 0; idx < declarators.length; idx++) {
+    const head = cutBeforeTopLevelAssign(declarators[idx]).replace(/\[[^\]]*\]/g, '').trim();
+    const tokens = [...head.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((m) => m[0]);
+    const name = tokens.at(-1);
+    if (name && !KEYWORDS.has(name)) outSet.add(name);
+    if (idx === 0 && tokens.length >= 2) {
+      for (let t = 0; t < tokens.length - 1; t++) {
+        const tok = tokens[t];
+        if (!KEYWORDS.has(tok) && !/^(?:struct|union|enum)$/.test(tokens[t - 1] || '')) outSet.add(tok);
+      }
+    }
+  }
+}
+
 /* Names a declaration line, stmt-kind local declaration, or prelude typedef line introduces. */
 function declaredNamesFromLines(lines) {
   const declared = new Set();
   const definedTypes = definedTypeAliases(lines);
+  let braceDepth = 0;
   for (const item of lines || []) {
+    const cleanedRaw = declarationBearingSource(item?.text ?? '');
     if (item?.kind === 'decl') {
-      for (const match of declarationBearingSource(item.text).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) declared.add(match[0]);
-      continue;
-    }
-    if (item?.kind === 'stmt') {
-      const cleaned = declarationBearingSource(item.text).trim();
+      extractDeclaredNamesFromDeclText(cleanedRaw, declared);
+    } else if (item?.kind === 'stmt') {
+      const cleaned = cleanedRaw.trim();
       if (/^typedef\b/.test(cleaned)) {
         const aliasMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(cleaned);
         if (aliasMatch && !KEYWORDS.has(aliasMatch[1])) declared.add(aliasMatch[1]);
         const tagMatch = /\b(?:struct|union|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(cleaned);
         if (tagMatch && !KEYWORDS.has(tagMatch[1])) declared.add(tagMatch[1]);
-        continue;
-      }
-      const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(cleaned);
-      if (match && !NON_DECL_STMT_HEADS.has(match[2]) && !KEYWORDS.has(match[4])) {
-        const hasQualifier = match[1].trim().length > 0;
-        const typeTok = match[2];
-        const hasStar = match[3].includes('*');
-        const knownType = FIXED_WIDTH_TYPES.has(typeTok)
-          || STANDARD_KNOWN_TYPES.has(typeTok)
-          || C_PRIMITIVE_TYPE_KEYWORDS.has(typeTok)
-          || typeTok === 'id'
-          || /^hex_struct_/.test(typeTok)
-          || definedTypes.has(typeTok);
-        if (!hasStar || hasQualifier || knownType) {
-          if (!/\b(?:struct|union|enum)\s+$/.test(match[1])) declared.add(typeTok);
-          declared.add(match[4]);
+      } else if (braceDepth <= 1) {
+        const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/.exec(cleaned);
+        if (match && !NON_DECL_STMT_HEADS.has(match[2]) && !KEYWORDS.has(match[4])) {
+          const hasQualifier = match[1].trim().length > 0;
+          const typeTok = match[2];
+          const hasStar = match[3].includes('*');
+          const knownType = FIXED_WIDTH_TYPES.has(typeTok)
+            || STANDARD_KNOWN_TYPES.has(typeTok)
+            || C_PRIMITIVE_TYPE_KEYWORDS.has(typeTok)
+            || typeTok === 'id'
+            || /^hex_struct_/.test(typeTok)
+            || definedTypes.has(typeTok);
+          if (!hasStar || hasQualifier || knownType) {
+            if (!/\b(?:struct|union|enum)\s+$/.test(match[1])) declared.add(typeTok);
+            for (const part of splitTopLevelCommas(cleaned.replace(/;\s*$/, ''))) {
+              const head = cutBeforeTopLevelAssign(part).replace(/\[[^\]]*\]/g, '').trim();
+              const nm = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(head);
+              if (nm && !KEYWORDS.has(nm[1])) declared.add(nm[1]);
+            }
+          }
         }
       }
+    }
+    for (const ch of cleanedRaw) {
+      if (ch === '{') braceDepth++;
+      else if (ch === '}' && braceDepth > 0) braceDepth--;
     }
   }
   return declared;
@@ -818,11 +907,12 @@ function localDeclarationTypeFor(name, result) {
   return 'uint64';
 }
 
-function isDeclarableLocal(entry, declared) {
+function isDeclarableLocal(entry, declared, declaredMemberBases = null) {
   const name = entry?.name;
   if (!name || !entry.value || declared.has(name)) return false;
   if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || name === 'id' || name === '__HEX_ANY_ARGS') return false;
-  if (entry.callTarget || entry.memberBase || entry.castType) return false;
+  const handledAsMemberBase = declaredMemberBases ? declaredMemberBases.has(name) : entry.memberBase;
+  if (entry.callTarget || handledAsMemberBase || entry.castType) return false;
   // External symbols and pseudo-intrinsics are never fabricated as function-local variables.
   if (/^global_/.test(name)) return false;
   if (/^(?:sub_|func_|fn_|unknown_call$|loc_|__)/.test(name)) return false;
@@ -1048,6 +1138,7 @@ function isCastTypeText(castInner) {
   if (/^\s*(?:const\s+|volatile\s+)?(?:void|char|short|int|long|unsigned|signed|__int128)\b.*\*\s*$/.test(s)) {
     return 'ptr';
   }
+  if (/^(?:(?:const|volatile)\s+)*(?:float|double|long\s+double)$/.test(s)) return 'float';
   if (FIXED_WIDTH_TYPES.has(s) || INT_TYPE_WORDS.has(s) || s === 'vector128') return 'int';
   if (/^(?:(?:const|volatile|unsigned|signed|short|long)\s+)*(?:char|short|int|long|_Bool|bool|__int128)$/.test(s)) {
     return 'int';
@@ -1055,7 +1146,7 @@ function isCastTypeText(castInner) {
   return null;
 }
 
-function classifyExprType(expr, ptrNames, intNames) {
+function classifyExprType(expr, ptrNames, intNames, floatNames = null) {
   const t = stripOuterParens(expr);
   if (!t) return 'unknown';
 
@@ -1067,16 +1158,18 @@ function classifyExprType(expr, ptrNames, intNames) {
 
   // 3. Non-zero numeric or char literal.
   if (/^(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|\d+)[uUlL]*$/.test(t)) return 'int';
+  if (/^(?:\d+\.\d*(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+|\.\d+(?:[eE][+-]?\d+)?|0[xX][0-9A-Fa-f]*(?:\.[0-9A-Fa-f]+)?[pP][+-]?\d+)[fFlL]?$/.test(t)) return 'float';
   if (/^'(?:[^'\\]|\\.)+'$/.test(t)) return 'int';
 
   // 4. Top-level ternary (lowest precedence).
   const tern = findTopLevelTernary(t);
   if (tern) {
-    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames);
-    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames);
+    const t1 = classifyExprType(t.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames);
+    const t2 = classifyExprType(t.slice(tern.cIdx + 1), ptrNames, intNames, floatNames);
     if (t1 === 'ptr' && (t2 === 'ptr' || t2 === 'zero')) return 'ptr';
     if (t2 === 'ptr' && (t1 === 'ptr' || t1 === 'zero')) return 'ptr';
     if ((t1 === 'int' || t1 === 'zero') && (t2 === 'int' || t2 === 'zero')) return 'int';
+    if (t1 === 'float' || t2 === 'float') return 'float';
     if ((t1 === 'ptr' && t2 === 'int') || (t1 === 'int' && t2 === 'ptr')) return 'mixed';
     return 'unknown';
   }
@@ -1084,17 +1177,23 @@ function classifyExprType(expr, ptrNames, intNames) {
   // 5. Top-level binary operator.
   const bin = findLowestTopLevelBinaryOp(t);
   if (bin) {
-    if (['||', '&&', '==', '!=', '<=', '>=', '<', '>', '|', '^', '&', '<<', '>>', '*', '/', '%'].includes(bin.op)) {
+    if (['||', '&&', '==', '!=', '<=', '>=', '<', '>', '|', '^', '&', '<<', '>>', '%'].includes(bin.op)) {
       return 'int';
     }
-    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames);
-    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames);
+    const leftT = classifyExprType(t.slice(0, bin.index), ptrNames, intNames, floatNames);
+    const rightT = classifyExprType(t.slice(bin.index + bin.len), ptrNames, intNames, floatNames);
+    if (['*', '/'].includes(bin.op)) {
+      if (leftT === 'float' || rightT === 'float') return 'float';
+      return 'int';
+    }
     if (bin.op === '+') {
       if (leftT === 'ptr' || rightT === 'ptr') return 'ptr';
+      if (leftT === 'float' || rightT === 'float') return 'float';
       return 'int';
     }
     if (bin.op === '-') {
       if (leftT === 'ptr' && rightT !== 'ptr') return 'ptr';
+      if (leftT === 'float' || rightT === 'float') return 'float';
       return 'int';
     }
   }
@@ -1119,6 +1218,9 @@ function classifyExprType(expr, ptrNames, intNames) {
         if (/^\(\s*(?:id|[^()]+\*)\s*\(\s*\*\s*\)/.test(inner)) return 'ptr';
         return 'int';
       }
+      // Parenthesized member access `(expr)->field` or `(expr).field` or subscript `(expr)[i]`
+      if (/^(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*$/.test(rest)) return 'int';
+      if (rest.startsWith('[') && rest.endsWith(']')) return 'int';
     }
   }
 
@@ -1130,8 +1232,9 @@ function classifyExprType(expr, ptrNames, intNames) {
       if (closeIdx > 0) {
         const inner = rest.slice(1, closeIdx).trim();
         if (/\*\s*\*\s*$/.test(inner)) return 'ptr';
-        const base = inner.replace(/\*+\s*$/, '').trim().replace(/^(?:const|volatile)\s+/, '');
+        const base = inner.replace(/\*+\s*$/, '').trim().replace(/^(?:const|volatile)\s+/, '').replace(/\s+/g, ' ');
         if (base === 'id') return 'ptr';
+        if (base === 'float' || base === 'double' || base === 'long double') return 'float';
         if (FIXED_WIDTH_TYPES.has(base) || INT_TYPE_WORDS.has(base)) return 'int';
       }
     }
@@ -1142,7 +1245,11 @@ function classifyExprType(expr, ptrNames, intNames) {
   if (t.startsWith('&') && !t.startsWith('&&')) return 'ptr';
 
   // 9. Unary !, ~, +, -.
-  if (/^[!~+-]/.test(t)) return 'int';
+  if (/^[!~]/.test(t)) return 'int';
+  if (/^[+-]/.test(t)) {
+    const innerT = classifyExprType(t.slice(1), ptrNames, intNames, floatNames);
+    return innerT === 'float' ? 'float' : 'int';
+  }
 
   // 10. ObjC message send `[recv sel]` -> leave unknown so ObjC display mode stays untouched.
   if (t.startsWith('[')) return 'unknown';
@@ -1150,22 +1257,81 @@ function classifyExprType(expr, ptrNames, intNames) {
   // 11. Direct function call `fn(...)`.
   if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(t) && t.endsWith(')')) return 'int';
 
-  // 12. Array subscript `base[...]` or member access `a->f` / `s.f`.
+  // 12. Array subscript `base[...]` or member access `a->f` / `s.f` or postfix `a++`/`a--`.
   if (/^[A-Za-z_][A-Za-z0-9_]*\s*\[/.test(t) && t.endsWith(']')) return 'int';
   if (/^[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)+$/.test(t)) return 'int';
+  const postInc = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--)$/.exec(t);
+  if (postInc) {
+    if (ptrNames.has(postInc[1])) return 'ptr';
+    if (intNames.has(postInc[1])) return 'int';
+  }
 
   // 13. Single identifier.
   if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) {
     if (ptrNames.has(t)) return 'ptr';
+    if (floatNames && floatNames.has(t)) return 'float';
     if (intNames.has(t)) return 'int';
   }
 
   return 'unknown';
 }
 
+function isFloatExpr(expr, floatNames) {
+  const t = stripOuterParens(expr);
+  if (!t) return false;
+  if (/^(?:\d+\.\d*(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+|\.\d+(?:[eE][+-]?\d+)?|0[xX][0-9A-Fa-f]*(?:\.[0-9A-Fa-f]+)?[pP][+-]?\d+)[fFlL]?$/.test(t)) {
+    return true;
+  }
+  const tern = findTopLevelTernary(t);
+  if (tern) {
+    return isFloatExpr(t.slice(tern.qIdx + 1, tern.cIdx), floatNames)
+      || isFloatExpr(t.slice(tern.cIdx + 1), floatNames);
+  }
+  const bin = findLowestTopLevelBinaryOp(t);
+  if (bin) {
+    if (['+', '-', '*', '/'].includes(bin.op)) {
+      return isFloatExpr(t.slice(0, bin.index), floatNames)
+        || isFloatExpr(t.slice(bin.index + bin.len), floatNames);
+    }
+    return false;
+  }
+  if (t.startsWith('(')) {
+    let depth = 0;
+    let closeIdx = -1;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (ch === '"' || ch === "'") { i = skipQuoted(t, i); continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { closeIdx = i; break; } }
+    }
+    if (closeIdx > 0 && closeIdx < t.length - 1) {
+      const castKind = isCastTypeText(t.slice(1, closeIdx));
+      if (castKind === 'float') return true;
+      if (castKind === 'int' || castKind === 'ptr') return false;
+    }
+  }
+  if (t.startsWith('*')) {
+    const rest = t.slice(1).trim();
+    if (rest.startsWith('(')) {
+      const closeIdx = rest.indexOf(')');
+      if (closeIdx > 0) {
+        const base = rest.slice(1, closeIdx).replace(/\*+\s*$/, '').trim().replace(/^(?:const|volatile)\s+/, '').replace(/\s+/g, ' ');
+        if (base === 'float' || base === 'double' || base === 'long double') return true;
+      }
+    }
+    return false;
+  }
+  if (/^[+-]/.test(t) && !t.startsWith('++') && !t.startsWith('--')) {
+    return isFloatExpr(t.slice(1), floatNames);
+  }
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t) && floatNames && floatNames.has(t)) return true;
+  return false;
+}
+
 function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
   const ptrNames = new Set();
   const intNames = new Set();
+  const floatNames = new Set();
   const cleanSig = declarationBearingSource(sigText);
   const open = cleanSig.indexOf('(');
   let retType = '';
@@ -1195,7 +1361,11 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
         if (isPtr) {
           ptrNames.add(nameMatch[1]);
           intNames.delete(nameMatch[1]);
-        } else if (!/\b(?:float|double|struct|union)\b/.test(group)) {
+          floatNames.delete(nameMatch[1]);
+        } else if (/\b(?:float|double)\b/.test(group)) {
+          floatNames.add(nameMatch[1]);
+          intNames.delete(nameMatch[1]);
+        } else if (!/\b(?:struct|union)\b/.test(group)) {
           intNames.add(nameMatch[1]);
         }
       }
@@ -1206,28 +1376,33 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
     if (!item || (item.kind !== 'decl' && item.kind !== 'stmt')) continue;
     const cleaned = declarationBearingSource(item.text).trim();
     if (!cleaned || /^typedef\b/.test(cleaned) || cleaned.startsWith('#')) continue;
-    const declHead = cleaned.split('=')[0].replace(/;\s*$/, '').trim();
-    if (!declHead || declHead.includes('(')) continue;
-    const ptrDecl = /^(?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*(?:id\s+|([A-Za-z_][A-Za-z0-9_]*)\s*(?:(?:const|volatile|restrict)\s+)*\*+\s*(?:(?:const|volatile|restrict)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?$/.exec(declHead);
-    if (ptrDecl) {
-      const typeTok = ptrDecl[1];
-      const varName = ptrDecl[2];
-      if (!KEYWORDS.has(varName) && (!typeTok || !NON_DECL_STMT_HEADS.has(typeTok))) {
+    const noSemi = cleaned.replace(/;\s*$/, '').trim();
+    const declarators = splitTopLevelCommas(noSemi);
+    const firstHead = cutBeforeTopLevelAssign(declarators[0] || '').trim();
+    if (!firstHead || firstHead.includes('(')) continue;
+    const baseMatch = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)\b/.exec(firstHead);
+    if (!baseMatch || NON_DECL_STMT_HEADS.has(baseMatch[2])) continue;
+    const baseType = baseMatch[2];
+    const baseIsFloat = baseType === 'float' || baseType === 'double';
+    const baseIsId = baseType === 'id';
+    const baseIsInt = FIXED_WIDTH_TYPES.has(baseType) || INT_TYPE_WORDS.has(baseType);
+    for (let idx = 0; idx < declarators.length; idx++) {
+      const part = cutBeforeTopLevelAssign(declarators[idx]).trim();
+      const body = idx === 0 ? part.slice(baseMatch[0].length).trim() : part;
+      if (!body) continue;
+      const isPtr = baseIsId || body.includes('*') || /\[[^\]]*\]\s*$/.test(body);
+      const nameMatch = /([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?\s*$/.exec(body);
+      if (!nameMatch || KEYWORDS.has(nameMatch[1])) continue;
+      const varName = nameMatch[1];
+      if (isPtr) {
+        if (idx === 0 && !baseIsId && !body.startsWith('*') && !/\[[^\]]*\]\s*$/.test(body)) continue;
         ptrNames.add(varName);
         intNames.delete(varName);
-      }
-      continue;
-    }
-    const arrDecl = /^(?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\[[^\]]*\]$/.exec(declHead);
-    if (arrDecl && !NON_DECL_STMT_HEADS.has(arrDecl[1]) && !KEYWORDS.has(arrDecl[2])) {
-      ptrNames.add(arrDecl[2]);
-      intNames.delete(arrDecl[2]);
-      continue;
-    }
-    const intDecl = /^(?:(?:const|volatile|static|extern|register|unsigned|signed|short|long)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(declHead);
-    if (intDecl && !NON_DECL_STMT_HEADS.has(intDecl[1]) && !KEYWORDS.has(intDecl[2])) {
-      if (FIXED_WIDTH_TYPES.has(intDecl[1]) || INT_TYPE_WORDS.has(intDecl[1])) {
-        if (!ptrNames.has(intDecl[2])) intNames.add(intDecl[2]);
+        floatNames.delete(varName);
+      } else if (baseIsFloat) {
+        if (!ptrNames.has(varName)) floatNames.add(varName);
+      } else if (baseIsInt) {
+        if (!ptrNames.has(varName) && !floatNames.has(varName)) intNames.add(varName);
       }
     }
   }
@@ -1236,7 +1411,7 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
     if (entry?.name && !ptrNames.has(entry.name)) intNames.add(entry.name);
   }
 
-  return { ptrNames, intNames, retType, retIsPtr, retIsInt };
+  return { ptrNames, intNames, floatNames, retType, retIsPtr, retIsInt };
 }
 
 function splitCallArgs(argStr) {
@@ -1265,7 +1440,7 @@ function splitCallArgs(argStr) {
   return args;
 }
 
-function rewriteBuiltinPtrArgs(text, ptrNames, intNames) {
+function rewriteBuiltinPtrArgs(text, ptrNames, intNames, floatNames = null) {
   let out = '';
   let i = 0;
   while (i < text.length) {
@@ -1303,11 +1478,11 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames) {
           if (closeIdx > k) {
             const rawArgs = splitCallArgs(text.slice(k + 1, closeIdx));
             const rewrittenArgs = rawArgs.map((rawArg, idx) => {
-              const nested = rewriteBuiltinPtrArgs(rawArg, ptrNames, intNames);
+              const nested = rewriteBuiltinPtrArgs(rawArg, ptrNames, intNames, floatNames);
               const castType = spec[idx];
               if (!castType) return nested;
               const trimmed = nested.trim();
-              if (classifyExprType(trimmed, ptrNames, intNames) === 'int') {
+              if (classifyExprType(trimmed, ptrNames, intNames, floatNames) === 'int') {
                 const lead = nested.slice(0, nested.indexOf(trimmed));
                 const trail = nested.slice(nested.indexOf(trimmed) + trimmed.length);
                 return `${lead}(${castType})(uintptr_t)(${trimmed})${trail}`;
@@ -1330,37 +1505,107 @@ function rewriteBuiltinPtrArgs(text, ptrNames, intNames) {
   return out;
 }
 
-function harmonizeMixedTernaries(expr, ptrNames, intNames) {
+function findMatchingDelimRaw(text, openIdx, openCh, closeCh) {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(text, i); continue; }
+    if (ch === '/' && text[i + 1] === '*') { i = skipBlockComment(text, i); continue; }
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function rewriteParenthesizedSubexprs(text, transform) {
+  let out = '';
+  let i = 0;
+  let prevNonWs = '';
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const end = skipQuoted(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      prevNonWs = '"';
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = skipBlockComment(text, i);
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '[') {
+      const closeIdx = findMatchingDelimRaw(text, i, '[', ']');
+      if (closeIdx > i) {
+        const isCSubscript = prevNonWs === ')' || prevNonWs === ']' || /[A-Za-z0-9_]/.test(prevNonWs);
+        if (isCSubscript) {
+          const inner = text.slice(i + 1, closeIdx);
+          out += `[${transform(inner)}]`;
+        } else {
+          // ObjC message send `[recv sel:...]` -> preserve untouched.
+          out += text.slice(i, closeIdx + 1);
+        }
+        i = closeIdx + 1;
+        prevNonWs = ']';
+        continue;
+      }
+    }
+    if (ch === '(') {
+      const closeIdx = findMatchingDelimRaw(text, i, '(', ')');
+      if (closeIdx > i) {
+        const inner = text.slice(i + 1, closeIdx);
+        const parts = splitCallArgs(inner);
+        const rewritten = parts.length > 1
+          ? parts.map((p) => transform(p)).join(',')
+          : transform(inner);
+        out += `(${rewritten})`;
+        i = closeIdx + 1;
+        prevNonWs = ')';
+        continue;
+      }
+    }
+    out += ch;
+    if (!/\s/.test(ch)) prevNonWs = ch;
+    i++;
+  }
+  return out;
+}
+
+function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null) {
   const s = String(expr ?? '');
+  if (!s.includes('?')) return s;
   const trimmed = s.trim();
   if (!trimmed.includes('?')) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
   const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
 
-  // If wrapped in outer parens, recurse inside.
-  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
-    const unwrapped = stripOuterParens(trimmed);
-    if (unwrapped.length < trimmed.length) {
-      const inner = harmonizeMixedTernaries(unwrapped, ptrNames, intNames);
-      if (inner !== unwrapped) {
-        // Re-wrap with the exact number of stripped parens.
-        const openCount = (trimmed.length - unwrapped.length) / 2;
-        if (Number.isInteger(openCount) && trimmed.startsWith('('.repeat(openCount)) && trimmed.endsWith(')'.repeat(openCount))) {
-          return `${lead}${'('.repeat(openCount)}${inner}${')'.repeat(openCount)}${trail}`;
-        }
-        return `${lead}(${inner})${trail}`;
-      }
-      return s;
-    }
-  }
+  // First harmonize any ternaries nested inside parenthesized/subscripted subexpressions.
+  const withNested = rewriteParenthesizedSubexprs(
+    trimmed,
+    (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames),
+  );
 
-  const tern = findTopLevelTernary(trimmed);
-  if (!tern) return s;
-  const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames);
-  let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames);
-  let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames);
-  const t1 = classifyExprType(arm1, ptrNames, intNames);
-  const t2 = classifyExprType(arm2, ptrNames, intNames);
+  const tern = findTopLevelTernary(withNested);
+  if (!tern) {
+    // Also check binary operands at depth 0 (e.g. `x + cond ? a : b` or `lhs = rhs`).
+    const bin = findLowestTopLevelBinaryOp(withNested);
+    if (bin) {
+      const left = harmonizeMixedTernaries(withNested.slice(0, bin.index), ptrNames, intNames, floatNames);
+      const right = harmonizeMixedTernaries(withNested.slice(bin.index + bin.len), ptrNames, intNames, floatNames);
+      return `${lead}${left}${withNested.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+    }
+    return `${lead}${withNested}${trail}`;
+  }
+  const cond = harmonizeMixedTernaries(withNested.slice(0, tern.qIdx), ptrNames, intNames, floatNames);
+  let arm1 = harmonizeMixedTernaries(withNested.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames);
+  let arm2 = harmonizeMixedTernaries(withNested.slice(tern.cIdx + 1), ptrNames, intNames, floatNames);
+  const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames);
+  const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames);
   if (t1 === 'ptr' && t2 === 'int') {
     const a1Trim = arm1.trim();
     const a1Lead = arm1.slice(0, arm1.indexOf(a1Trim));
@@ -1373,6 +1618,57 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames) {
     arm2 = `${a2Lead}(uintptr_t)(${a2Trim})${a2Trail}`;
   }
   return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+}
+
+const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
+
+function wrapFloatOperand(operand, floatNames) {
+  const trim = operand.trim();
+  if (!trim || !isFloatExpr(trim, floatNames)) return operand;
+  const lead = operand.slice(0, operand.indexOf(trim));
+  const trail = operand.slice(operand.indexOf(trim) + trim.length);
+  return `${lead}(uint64)(${trim})${trail}`;
+}
+
+function sanitizeFloatBitwiseOps(expr, floatNames) {
+  const s = String(expr ?? '');
+  if (!/[&|^~%]|<<|>>/.test(s)) return s;
+  const trimmed = s.trim();
+  if (!trimmed) return s;
+  const lead = s.slice(0, s.indexOf(trimmed));
+  const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
+
+  // Recurse into parenthesized/subscripted subexpressions first.
+  const withNested = rewriteParenthesizedSubexprs(
+    trimmed,
+    (inner) => sanitizeFloatBitwiseOps(inner, floatNames),
+  );
+
+  const tern = findTopLevelTernary(withNested);
+  if (tern) {
+    const cond = sanitizeFloatBitwiseOps(withNested.slice(0, tern.qIdx), floatNames);
+    const arm1 = sanitizeFloatBitwiseOps(withNested.slice(tern.qIdx + 1, tern.cIdx), floatNames);
+    const arm2 = sanitizeFloatBitwiseOps(withNested.slice(tern.cIdx + 1), floatNames);
+    return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+  }
+
+  const bin = findLowestTopLevelBinaryOp(withNested);
+  if (bin) {
+    let left = sanitizeFloatBitwiseOps(withNested.slice(0, bin.index), floatNames);
+    let right = sanitizeFloatBitwiseOps(withNested.slice(bin.index + bin.len), floatNames);
+    if (BITWISE_BIN_OPS.has(bin.op)) {
+      left = wrapFloatOperand(left, floatNames);
+      right = wrapFloatOperand(right, floatNames);
+    }
+    return `${lead}${left}${withNested.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+  }
+
+  if (withNested.startsWith('~')) {
+    const inner = sanitizeFloatBitwiseOps(withNested.slice(1), floatNames);
+    return `${lead}~${wrapFloatOperand(inner, floatNames)}${trail}`;
+  }
+
+  return `${lead}${withNested}${trail}`;
 }
 
 function splitTrailingComment(lineText) {
@@ -1421,17 +1717,100 @@ function splitTopLevelStatements(code) {
   return parts;
 }
 
-function rewriteStatementForIntConversion(stmtText, symTable) {
-  const { ptrNames, intNames, retType, retIsPtr, retIsInt } = symTable;
-  let stmt = rewriteBuiltinPtrArgs(stmtText, ptrNames, intNames);
+function findTopLevelAssignment(stmt) {
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < stmt.length; i++) {
+    const ch = stmt[i];
+    if (ch === '"' || ch === "'") { i = skipQuoted(stmt, i); continue; }
+    if (ch === '/' && stmt[i + 1] === '*') { i = skipBlockComment(stmt, i); continue; }
+    if (ch === '(') { paren++; continue; }
+    if (ch === ')') { if (paren > 0) paren--; continue; }
+    if (ch === '[') { bracket++; continue; }
+    if (ch === ']') { if (bracket > 0) bracket--; continue; }
+    if (ch === '{') { brace++; continue; }
+    if (ch === '}') { if (brace > 0) brace--; continue; }
+    if (paren === 0 && bracket === 0 && brace === 0 && ch === '=' && stmt[i + 1] !== '=') {
+      const prev = stmt[i - 1] || '';
+      const prev2 = stmt.slice(Math.max(0, i - 2), i);
+      if (prev === '!' || prev === '<' || prev === '>') {
+        if (prev2 === '<<' || prev2 === '>>') {
+          return { op: `${prev2}=`, start: i - 2, end: i + 1 };
+        }
+        continue;
+      }
+      if (['+', '-', '*', '/', '%', '&', '|', '^'].includes(prev)) {
+        return { op: `${prev}=`, start: i - 1, end: i + 1 };
+      }
+      return { op: '=', start: i, end: i + 1 };
+    }
+  }
+  return null;
+}
 
-  // Return statement (standalone or trailing after `if (...)`).
-  const retMatch = /^((?:[\s\S]*?\)\s*|\s*)return\s+)([\s\S]+)$/.exec(stmt);
+function stripLeadingControlOrLabel(stmt) {
+  let prefix = '';
+  let rest = stmt;
+  for (;;) {
+    const lbl = /^(\s*[A-Za-z_][A-Za-z0-9_]*\s*:(?!:)\s*)/.exec(rest);
+    if (lbl && !/^\s*(?:case|default)\b/.test(lbl[1])) {
+      prefix += lbl[1];
+      rest = rest.slice(lbl[1].length);
+      continue;
+    }
+    const elseM = /^(\s*else\s+)/.exec(rest);
+    if (elseM) {
+      prefix += elseM[1];
+      rest = rest.slice(elseM[1].length);
+      continue;
+    }
+    const ifM = /^(\s*if\s*)\(/.exec(rest);
+    if (ifM) {
+      const openIdx = ifM[1].length;
+      const closeIdx = findMatchingDelimRaw(rest, openIdx, '(', ')');
+      if (closeIdx > openIdx) {
+        let after = closeIdx + 1;
+        while (after < rest.length && /\s/.test(rest[after])) after++;
+        if (after < rest.length && rest[after] !== '{') {
+          prefix += rest.slice(0, after);
+          rest = rest.slice(after);
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return { prefix, rest };
+}
+
+function classifyLhsDeclType(lhsText) {
+  const cleaned = declarationBearingSource(lhsText).trim();
+  const match = /^((?:(?:const|volatile|static|extern|register|unsigned|signed|short|long|struct|union|enum)\s+)*)([A-Za-z_][A-Za-z0-9_]*)(\s+(?:\*+\s*)*|\s*\*+\s*)([A-Za-z_][A-Za-z0-9_]*)$/.exec(cleaned);
+  if (!match || NON_DECL_STMT_HEADS.has(match[2]) || KEYWORDS.has(match[4])) return null;
+  const typeTok = match[2];
+  if (match[3].includes('*') || typeTok === 'id') return 'ptr';
+  if (typeTok === 'float' || typeTok === 'double') return 'float';
+  if (FIXED_WIDTH_TYPES.has(typeTok) || INT_TYPE_WORDS.has(typeTok)) return 'int';
+  return null;
+}
+
+function rewriteStatementForIntConversion(stmtText, symTable) {
+  const { ptrNames, intNames, floatNames, retType, retIsPtr, retIsInt } = symTable;
+  let stmt = rewriteBuiltinPtrArgs(stmtText, ptrNames, intNames, floatNames);
+
+  const { prefix: ctrlPrefix, rest: bodyStmt } = stripLeadingControlOrLabel(stmt);
+  const sanitizedPrefix = ctrlPrefix
+    ? sanitizeFloatBitwiseOps(harmonizeMixedTernaries(ctrlPrefix, ptrNames, intNames, floatNames), floatNames)
+    : '';
+
+  // Return statement (standalone or trailing after `if (...)` / `else` / `label:`).
+  const retMatch = /^(\s*return\s+)([\s\S]+)$/.exec(bodyStmt);
   if (retMatch) {
-    const prefix = retMatch[1];
-    let expr = harmonizeMixedTernaries(retMatch[2], ptrNames, intNames);
+    const prefix = sanitizedPrefix + retMatch[1];
+    let expr = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(retMatch[2], ptrNames, intNames, floatNames), floatNames);
     const exprTrim = expr.trim();
-    const exprType = classifyExprType(exprTrim, ptrNames, intNames);
+    const exprType = classifyExprType(exprTrim, ptrNames, intNames, floatNames);
     if (retIsPtr && exprType === 'int') {
       expr = `(${retType})(uintptr_t)(${exprTrim})`;
     } else if (retIsInt && exprType === 'ptr') {
@@ -1440,26 +1819,50 @@ function rewriteStatementForIntConversion(stmtText, symTable) {
     return prefix + expr;
   }
 
-  // Simple assignment `lhs = rhs` (single or paired statements).
-  const assignMatch = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)([\s\S]+)$/.exec(stmt);
-  if (assignMatch && !NON_DECL_STMT_HEADS.has(assignMatch[2])) {
-    const [, lead, lhs, eq, rawRhs] = assignMatch;
-    let rhs = harmonizeMixedTernaries(rawRhs, ptrNames, intNames);
+  // General assignment (bare ident, deref store `*(T *)(...) = ...`, member, decl initializer, compound assign).
+  const assign = findTopLevelAssignment(bodyStmt);
+  if (assign) {
+    const lhsRaw = bodyStmt.slice(0, assign.start);
+    const lhsTrim = lhsRaw.trim();
+    const op = assign.op;
+    const rawRhs = bodyStmt.slice(assign.end);
+    const rhsLeadMatch = /^(\s*)/.exec(rawRhs);
+    const rhsLead = rhsLeadMatch ? rhsLeadMatch[1] : '';
+    const rhsBody = rawRhs.slice(rhsLead.length);
+    let rhs = findTopLevelAssignment(rhsBody)
+      ? rewriteStatementForIntConversion(rhsBody, symTable)
+      : sanitizeFloatBitwiseOps(harmonizeMixedTernaries(rhsBody, ptrNames, intNames, floatNames), floatNames);
     const rhsTrim = rhs.trim();
-    const rhsType = classifyExprType(rhsTrim, ptrNames, intNames);
-    if (intNames.has(lhs) && rhsType === 'ptr') {
-      rhs = `(uintptr_t)(${rhsTrim})`;
-    } else if (ptrNames.has(lhs) && rhsType === 'int') {
-      rhs = `(void *)(uintptr_t)(${rhsTrim})`;
+
+    if (['&=', '|=', '^=', '<<=', '>>=', '%='].includes(op) && isFloatExpr(rhsTrim, floatNames)) {
+      rhs = `(uint64)(${rhsTrim})`;
     }
-    return `${lead}${lhs}${eq}${rhs}`;
+
+    let lhsType = null;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(lhsTrim) && !NON_DECL_STMT_HEADS.has(lhsTrim)) {
+      if (intNames.has(lhsTrim)) lhsType = 'int';
+      else if (ptrNames.has(lhsTrim)) lhsType = 'ptr';
+      else if (floatNames && floatNames.has(lhsTrim)) lhsType = 'float';
+    } else {
+      lhsType = classifyLhsDeclType(lhsTrim) ?? classifyExprType(lhsTrim, ptrNames, intNames, floatNames);
+    }
+
+    const rhsType = classifyExprType(rhs.trim(), ptrNames, intNames, floatNames);
+    if (lhsType === 'int' && rhsType === 'ptr') {
+      rhs = `(uintptr_t)(${rhs.trim()})`;
+    } else if (lhsType === 'ptr' && rhsType === 'int' && op === '=') {
+      rhs = `(void *)(uintptr_t)(${rhs.trim()})`;
+    }
+    const lhsSanitized = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(lhsRaw, ptrNames, intNames, floatNames), floatNames);
+    return `${sanitizedPrefix}${lhsSanitized}${op}${rhsLead}${rhs}`;
   }
 
-  return harmonizeMixedTernaries(stmt, ptrNames, intNames);
+  return sanitizedPrefix + sanitizeFloatBitwiseOps(harmonizeMixedTernaries(bodyStmt, ptrNames, intNames, floatNames), floatNames);
 }
 
 function applyIntConversionCoercions(lines, bodyOpen, symTable) {
   if (bodyOpen < 0) return { lines, changed: false };
+  const { ptrNames, intNames, floatNames } = symTable;
   let changed = false;
   const out = lines.map((item, index) => {
     if (index <= bodyOpen || !item || (item.kind !== 'stmt' && item.kind !== 'ctrl')) return item;
@@ -1470,7 +1873,11 @@ function applyIntConversionCoercions(lines, bodyOpen, symTable) {
     const parts = splitTopLevelStatements(code);
     let lineChanged = false;
     const rebuilt = parts.map((part) => {
-      if (!part.hasSemi) return part.text;
+      if (!part.hasSemi) {
+        const nextText = sanitizeFloatBitwiseOps(harmonizeMixedTernaries(part.text, ptrNames, intNames, floatNames), floatNames);
+        if (nextText !== part.text) lineChanged = true;
+        return nextText;
+      }
       const nextText = rewriteStatementForIntConversion(part.text, symTable);
       if (nextText !== part.text) lineChanged = true;
       return `${nextText};`;
@@ -1559,9 +1966,13 @@ export function closeFunctionOutput(result, options = {}) {
     }
   }
 
+  const declaredMemberBaseNames = new Set(memberBaseDeclarations.map((d) => {
+    const m = /([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(d.text);
+    return m ? m[1] : '';
+  }).filter(Boolean));
   const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
   const localDeclarations = [...uses.values()]
-    .filter((entry) => isDeclarableLocal(entry, declared))
+    .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames))
     .map((entry) => ({
       kind: 'decl', indent: 1, text: `${(() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';

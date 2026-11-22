@@ -354,7 +354,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
   checkRiscvVariantCcTag(image, tags, relocs, symbols);
-  attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, !relocationBudget.stopped);
+  attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, !relocationBudget.stopped, symbols, symbolBudget);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -454,6 +454,7 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
   }
 
   const jumpSlots = [];
+  const jumpEntries = [];
   const seen = new Set();
   const count = Number(countBig);
   for (let i = 0; i < count; i++) {
@@ -465,8 +466,9 @@ function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComp
     if (seen.has(key)) return null;
     seen.add(key);
     jumpSlots.push(offset);
+    jumpEntries.push({ gotSlot: offset, symIndex: rel.symIndex });
   }
-  return { dtPltgot, jumpSlots };
+  return { dtPltgot, jumpSlots, jumpEntries };
 }
 
 // Exhaustive uniqueness scanning reads every executable file byte. That is
@@ -499,6 +501,16 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
     return true;
   };
 
+  const buildMatch = (address, gotAnchored) => ({
+    address,
+    gotAnchored,
+    thunks: dynamic.jumpEntries.map((entry, i) => ({
+      address: address + AAELF64_PLT_RESOLVER_BYTES + AAELF64_PLT_THUNK_BYTES * BigInt(i),
+      gotSlot: entry.gotSlot,
+      symIndex: entry.symIndex,
+    })),
+  });
+
   const executableSegments = [];
   let executableFileBytes = 0n;
   for (const segment of image.segments || []) {
@@ -524,7 +536,7 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
       else if (value !== anchor) return null;
     }
     if (anchor == null || anchor === 0n || (anchor & 3n) !== 0n) return null;
-    return structurallyMatches(anchor) ? { address: anchor, gotAnchored: true } : null;
+    return structurallyMatches(anchor) ? buildMatch(anchor, true) : null;
   }
 
   // PT_LOAD is the runtime authority. We inspect every aligned address in its
@@ -544,13 +556,13 @@ function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocati
       if (matches.size > 1) return null;
     }
   }
-  return matches.size === 1 ? { address: matches.values().next().value, gotAnchored: false } : null;
+  return matches.size === 1 ? buildMatch(matches.values().next().value, false) : null;
 }
 
-function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
+function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete, symbols = [], symbolBudget = null) {
   const match = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
   if (match == null) return;
-  const { address, gotAnchored } = match;
+  const { address, gotAnchored, thunks } = match;
   // The finder proves the full 32-byte PLT0 extent: STP head, GOT-linked
   // resolver tail (DT_PLTGOT+16), 3x NOP padding, ordered R_AARCH64_JUMP_SLOT
   // thunks immediately following, a single candidate (unique executable
@@ -573,6 +585,48 @@ function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, reloca
     source: 'elf-plt-structure',
     ...(gotAnchored ? { candidate: 'got-initial-value' } : {}),
   };
+  if (symbolBudget?.stopped || !Array.isArray(thunks) || !thunks.length) return;
+  const byIndex = new Map();
+  const addDynSymbol = (sym) => {
+    if (sym && Number.isSafeInteger(sym.index) && sym.index > 0 && !byIndex.has(sym.index)) {
+      byIndex.set(sym.index, sym);
+    }
+  };
+  for (const sym of symbols || []) addDynSymbol(sym);
+  for (const sym of image.symbols || []) {
+    if (sym?.source === 'dynsym' || sym?.source === 'PT_DYNAMIC') addDynSymbol(sym);
+  }
+  if (!byIndex.size) return;
+  const existingPltStubs = new Set();
+  for (const sym of image.symbols || []) {
+    if (sym?.source === 'elf-plt-structure' && sym.address != null && sym.name) {
+      existingPltStubs.add(`${sym.address}:${sym.name}`);
+    }
+  }
+  for (const thunk of thunks) {
+    if (!Number.isSafeInteger(thunk.symIndex) || thunk.symIndex <= 0) continue;
+    const sym = byIndex.get(thunk.symIndex);
+    if (!sym || typeof sym.name !== 'string' || !sym.name) continue;
+    const dedupeKey = `${thunk.address}:${sym.name}`;
+    if (existingPltStubs.has(dedupeKey)) continue;
+    existingPltStubs.add(dedupeKey);
+    image.symbols.push({
+      name: sym.name,
+      address: thunk.address,
+      size: AAELF64_PLT_THUNK_BYTES,
+      kind: 'stub',
+      stub: true,
+      binding: sym.binding ?? 'global',
+      defined: true,
+      sectionIndex: null,
+      source: 'elf-plt-structure',
+      symbolIndex: sym.index,
+      gotAddress: thunk.gotSlot,
+      version: sym.version ?? null,
+      versionLibrary: sym.versionLibrary ?? null,
+      addressDomain: 'virtual',
+    });
+  }
 }
 
 function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, tags, versions = new Map(), budget = null) {

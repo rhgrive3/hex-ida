@@ -5,6 +5,7 @@
 
 import { OP, MK, COND } from '../ir.js';
 import { currentCppReceiver } from './cxx-evidence.js';
+import { knownCallPrototype, knownCallSignature } from './call-prototypes.js';
 
 const INTEGER_NAMES = new Map([
   ['8:s', 'int8'], ['8:u', 'uint8'], ['16:s', 'int16'], ['16:u', 'uint16'],
@@ -54,10 +55,14 @@ export function typeNameOf(t) {
 }
 
 export function mergeRecoveredTypes(a, b) {
+  if (!a) return b;
+  if (!b) return a;
   const flatten = (t) => {
     if (!t) return [];
-    const list = Array.isArray(t.candidates) && t.candidates.length ? t.candidates : [t];
-    return list.flatMap((x) => x && Array.isArray(x.candidates) && x.candidates.length ? x.candidates : [x]).filter(Boolean);
+    if (t.kind === 'ambiguous' && Array.isArray(t.candidates) && t.candidates.length) {
+      return t.candidates.flatMap((x) => x && x.kind === 'ambiguous' && Array.isArray(x.candidates) && x.candidates.length ? x.candidates : [x]).filter(Boolean);
+    }
+    return [t];
   };
   const byName = new Map();
   for (const candidate of [...flatten(a), ...flatten(b)]) {
@@ -209,6 +214,41 @@ export function reachingRegisterTypeValue(ir, atInst, reg) {
   return best;
 }
 
+/*
+ * Distinguish genuine uses of an incoming argument register from dead SSA
+ * bookkeeping (self-looping/dead PHIs, dead register copies, clobber markers,
+ * or live-through argument slots past a known fixed-arity callee's signature).
+ */
+function hasRealValueUse(value, ir, visited = new Set()) {
+  if (!value || visited.has(value)) return false;
+  visited.add(value);
+  const uses = Array.isArray(value.uses) ? value.uses : [];
+  for (const inst of uses) {
+    if (!inst) continue;
+    if (inst.op === OP.CLOBBER) continue;
+    if (inst.op === OP.PHI || inst.op === OP.MOV) {
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited)) return true;
+      continue;
+    }
+    if (inst.op === OP.CALL) {
+      const name = String((inst.extra && inst.extra.name) || (inst.insn && inst.insn.callName) || '');
+      const proto = knownCallPrototype(name);
+      if (proto && !proto.variadic && !inst.extra?.indirect) {
+        const callArgs = Array.isArray(inst.args) ? inst.args : [];
+        const matchedIdx = callArgs.findIndex((a) => valueOf(a) === value);
+        if (matchedIdx >= proto.arity) continue;
+        if (matchedIdx < 0 && typeof value.reg === 'string') {
+          const rm = /^[xdsvq](\d+)$/.exec(value.reg);
+          if (rm && Number(rm[1]) >= proto.arity) continue;
+        }
+      }
+      return true;
+    }
+    return true;
+  }
+  return false;
+}
+
 function applyRuntimeHints(ir, evidences, runtime) {
   if (!runtime) return;
   const hints = runtime.valueTypes || runtime.typesByValue || null;
@@ -231,9 +271,13 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   if (!ir) return { args:[], locals:[], ret:{type:'void',conf:0.2}, values:new Map(), locations:new Map(), warnings:['Semantic IR unavailable'] };
   const legacyAArch64 = opts.legacyAArch64 === true
     || (!opts.abiAdapter && ir?.compat?.projection !== 'semantic-ir-v2-to-v1');
-  const firstArgumentRegister = opts.abiAdapter?.supported === true
-    ? (opts.abiAdapter.argumentRegisters?.()?.[0] ?? null)
-    : legacyAArch64 ? 'x0' : null;
+  const argumentRegisters = opts.abiAdapter?.supported === true
+    ? (opts.abiAdapter.argumentRegisters?.() ?? [])
+    : legacyAArch64
+      ? Array.from({ length:8 }, (_unused, i) => `x${i}`)
+      : [];
+  const firstArgumentRegister = argumentRegisters[0] ?? null;
+  const isAArch64ArgSet = argumentRegisters.length > 0 && argumentRegisters[0] === 'x0';
   const ev = new Map(), locEv = new Map();
   const eFor = (v) => { if (!v) return null; if (!ev.has(v.id)) ev.set(v.id, evidence()); return ev.get(v.id); };
   const lFor = (loc) => { if (!loc) return null; if (!locEv.has(loc.key)) locEv.set(loc.key, evidence()); return locEv.get(loc.key); };
@@ -242,6 +286,15 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     if (v.signed === true) score(e, 'signed', 3, 'IR signedness');
     if (v.signed === false) score(e, 'unsigned', 3, 'IR unsignedness');
     if (v.nullable != null) e.nullable = !!v.nullable;
+    if (typeof v.reg === 'string') {
+      if (/^d\d+$/.test(v.reg)) {
+        score(e, 'floating', 2, 'scalar double register');
+        width(e, 64, 1, 'scalar double register width');
+      } else if (/^s\d+$/.test(v.reg)) {
+        score(e, 'floating', 2, 'scalar float register');
+        width(e, 32, 1, 'scalar float register width');
+      }
+    }
   }
 
   const branches = branchSignedness(ir);
@@ -275,7 +328,10 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         for (const a of args) score(eFor(a), 'unsigned', 4, `row ${inst.row}: ${inst.sub}`);
         if (dst) score(dst, 'unsigned', 4, `row ${inst.row}: ${inst.sub} result`);
       }
-      if (/^f(add|sub|mul|div)/.test(inst.sub || '')) { for (const a of args) score(eFor(a), 'floating', 5, `row ${inst.row}: ${inst.sub}`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${inst.sub}`); }
+      if (/^f(add|sub|mul|div|min|max|madd|msub|nmadd|nmsub|rem)/.test(inst.sub || '')) {
+        for (const a of args) score(eFor(a), 'floating', 5, `row ${inst.row}: ${inst.sub}`);
+        if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${inst.sub}`);
+      }
       if (/^(and|or|xor|bic)$/.test(inst.sub || '') && inst.dst && inst.dst.bits === 1) score(dst, 'bool', 3, `row ${inst.row}: bitwise boolean`);
     }
 
@@ -283,6 +339,10 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const a = eFor(valueOf(inst.args && inst.args[0]));
       if (/^sxt/.test(inst.sub || '')) score(a, 'signed', 5, `row ${inst.row}: sign extension`);
       if (/^uxt/.test(inst.sub || '')) score(a, 'unsigned', 5, `row ${inst.row}: zero extension`);
+      if (/^f(abs|neg|sqrt|cvt|rint|floor|ceil|round|trunc)/.test(inst.sub || '')) {
+        if (a) score(a, 'floating', 5, `row ${inst.row}: ${inst.sub}`);
+        if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${inst.sub}`);
+      }
       // Numeric conversions type each side independently (#5494). i2f/u2f
       // prove the source's integer signedness and a floating result; f2i/f2u
       // prove a floating source and the result's integer signedness. Scoring
@@ -296,8 +356,10 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
     if (inst.op === OP.CMP) {
       const args = (inst.args || []).map(valueOf).filter(Boolean);
+      const isFloatCmp = /^fcmp/i.test(inst.sub || '');
       const signedBranch = branches.signedCmpIds.has(inst.id), unsignedBranch = branches.unsignedCmpIds.has(inst.id);
       for (const a of args) {
+        if (isFloatCmp) score(eFor(a), 'floating', 5, `row ${inst.row}: floating comparison`);
         if (signedBranch) score(eFor(a), 'signed', 5, `row ${inst.row}: signed conditional branch`);
         if (unsignedBranch) score(eFor(a), 'unsigned', 5, `row ${inst.row}: unsigned conditional branch`);
       }
@@ -320,6 +382,45 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         const block = reachingRegisterTypeValue(ir, inst, firstArgumentRegister);
         const ce = eFor(block); if (ce) score(ce, 'closure', 7, `row ${inst.row}: Objective-C block runtime`);
       }
+      const callSig = knownCallSignature(name);
+      if (callSig) {
+        if (dst) {
+          if (callSig.retType === 'double') { score(dst, 'floating', 5, `row ${inst.row}: ${callSig.name} return`); width(dst, 64, 2, `row ${inst.row}: ${callSig.name} return width`); }
+          else if (callSig.retType === 'float') { score(dst, 'floating', 5, `row ${inst.row}: ${callSig.name} return`); width(dst, 32, 2, `row ${inst.row}: ${callSig.name} return width`); }
+          else if (callSig.retType === 'ptr') score(dst, 'pointer', 4, `row ${inst.row}: ${callSig.name} return`);
+          else if (callSig.retType === 'size') { score(dst, 'unsigned', 3, `row ${inst.row}: ${callSig.name} return`); width(dst, 64, 1, `row ${inst.row}: ${callSig.name} return width`); }
+        }
+        if (Array.isArray(callSig.paramTypes) && argumentRegisters.length) {
+          let gpIdx = 0;
+          let fpIdx = 0;
+          for (const pType of callSig.paramTypes) {
+            if (pType === 'double' || pType === 'float') {
+              if (isAArch64ArgSet && fpIdx < 8) {
+                const fpReg = pType === 'float'
+                  ? (reachingRegisterTypeValue(ir, inst, `s${fpIdx}`) ?? reachingRegisterTypeValue(ir, inst, `d${fpIdx}`) ?? reachingRegisterTypeValue(ir, inst, `v${fpIdx}`))
+                  : (reachingRegisterTypeValue(ir, inst, `d${fpIdx}`) ?? reachingRegisterTypeValue(ir, inst, `v${fpIdx}`));
+                const pe = eFor(fpReg);
+                if (pe) {
+                  score(pe, 'floating', 5, `row ${inst.row}: ${callSig.name} fp arg`);
+                  width(pe, pType === 'float' ? 32 : 64, 2, `row ${inst.row}: ${callSig.name} fp arg width`);
+                }
+              }
+              fpIdx++;
+            } else {
+              const gpRegName = argumentRegisters[gpIdx];
+              if (gpRegName) {
+                const gpVal = reachingRegisterTypeValue(ir, inst, gpRegName);
+                const pe = eFor(gpVal);
+                if (pe) {
+                  if (pType === 'ptr') score(pe, 'pointer', 4, `row ${inst.row}: ${callSig.name} ptr arg`);
+                  else if (pType === 'size') score(pe, 'unsigned', 2, `row ${inst.row}: ${callSig.name} size arg`);
+                }
+              }
+              gpIdx++;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -334,20 +435,42 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // and is kept only for legacy callers that supply no ABI adapter; on RISC-V
   // those same ids name the zero register, ra, sp, gp, tp and temporaries, so
   // assuming them would report the stack pointer as an argument.
-  const argumentRegisters = opts.abiAdapter?.supported === true
-    ? (opts.abiAdapter.argumentRegisters?.() ?? [])
-    : legacyAArch64
-      ? Array.from({ length:8 }, (_unused, i) => `x${i}`)
-      : [];
+  const anyUseTracked = (ir.values || []).some((val) => Array.isArray(val?.uses) && val.uses.length > 0);
   const args = [];
   argumentRegisters.forEach((reg, i) => {
     const v = ir.args && ir.args.get ? ir.args.get(reg) : null;
     if (!v) return;
     const t = values.get(v.id) || { name:'unknown', confidence:0.2 };
-    const used = (v.uses || []).length > 0 || ((model && model.argRegs) || []).includes(i);
+    const used = (v.uses || []).length > 0
+      ? hasRealValueUse(v, ir)
+      : (!anyUseTracked && ((model && model.argRegs) || []).includes(i));
     if (!used) return;
     args.push({ reg, index:i, valueId:v.id, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
   });
+
+  // Collect AArch64 floating-point incoming arguments (`d0..d7` / `s0..s7` / `v0..v7` / `q0..q7`).
+  if (isAArch64ArgSet && ir.args && typeof ir.args.get === 'function') {
+    let nextArgIndex = args.length ? Math.max(...args.map((a) => a.index)) + 1 : 0;
+    for (let k = 0; k < 8; k++) {
+      let pickedReg = null;
+      let pickedVal = null;
+      for (const candidateReg of [`d${k}`, `s${k}`, `v${k}`, `q${k}`]) {
+        const v = ir.args.get(candidateReg);
+        if (v && hasRealValueUse(v, ir)) {
+          pickedReg = candidateReg;
+          pickedVal = v;
+          break;
+        }
+      }
+      if (!pickedVal) continue;
+      let t = values.get(pickedVal.id) || { name:'unknown', confidence:0.2 };
+      if (t.name === 'unknown') {
+        if (pickedReg.startsWith('s')) t = { ...t, name: 'float', kind: 'float', bits: 32 };
+        else if (pickedReg.startsWith('d')) t = { ...t, name: 'double', kind: 'float', bits: 64 };
+      }
+      args.push({ reg: pickedReg, index: nextArgIndex++, valueId: pickedVal.id, type: t.name, conf: t.confidence, why: t.evidence || [], semanticType: t });
+    }
+  }
 
   const locals = [];
   for (const slot of ir.stackSlots || []) {
@@ -368,6 +491,15 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       if (returnRegister) {
         vals = rets.map((r) => reachingRegisterTypeValue(ir, r, returnRegister))
           .filter((value) => value && ((value.uses || []).length > 0 || value.def));
+      }
+      if (!vals.length) {
+        const fpRetReg = opts.abiAdapter?.returnRegister?.({ returnType:'double' }) ?? (isAArch64ArgSet ? 'd0' : null);
+        const fpCandidates = isAArch64ArgSet ? [fpRetReg, 's0'].filter(Boolean) : [fpRetReg].filter(Boolean);
+        for (const regName of fpCandidates) {
+          const found = rets.map((r) => reachingRegisterTypeValue(ir, r, regName))
+            .filter((value) => value && value.def);
+          if (found.length) { vals = found; break; }
+        }
       }
     }
     if (vals.length) {
@@ -419,4 +551,3 @@ export function semanticSignature(name, recovered, notes = null, funcAddr = null
   }
   return `${rt === 'unknown' ? 'uint64' : rt} ${name || 'sub'}(${args.length ? args.join(', ') : 'void'})`;
 }
-
