@@ -1292,11 +1292,12 @@ function buildValueRaw(v, state, flags = {}) {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
     } else if (d.op === 'call') {
-      out = expr.variable(`call_${d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
+      out = expr.variable(`call_${v.id ?? d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
     } else if (d.op === 'phi') {
       const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-      out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
+      const phiName = state.opts?.phase8Optimize === true ? `local_phi_${v.id}` : `phi_${v.id}`;
+      out = unique.size === 1 ? incoming[0] : expr.variable(phiName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
       if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
     }
   }

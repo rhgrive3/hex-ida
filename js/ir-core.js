@@ -52,6 +52,11 @@ const facadeProjectedConstants = new WeakMap();
 const facadeProjectedMemoryOperands = new WeakMap();
 const facadeRegisterStateBindings = new WeakMap();
 const facadeReturnFaultBindings = new WeakMap();
+const irAbiAdapters = new WeakMap();
+
+export function abiAdapterForIr(ir) {
+  return ir && typeof ir === 'object' ? (irAbiAdapters.get(ir) ?? null) : null;
+}
 
 /** Canonical bundle membership only. No predicate is discharged by this API. */
 export function prepareCanonicalReturnFaultBindings(projected, identity) {
@@ -1924,6 +1929,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       context: item.memoryForwardingContext,
     })), null, 2) + '\n');
   }
+  if (result.legacyV1 && abiAdapter) irAbiAdapters.set(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
 }

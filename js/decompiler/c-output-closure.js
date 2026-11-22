@@ -92,6 +92,115 @@ const STRUCT_PRELUDE_COMMENT = '/* hex: synthesized member-base structs. */';
 const STANDALONE_GLOBALS_COMMENT = '/* hex: standalone external globals (stripped by translation unit packager). */';
 const STANDALONE_PROTOTYPES_COMMENT = '/* hex: standalone external prototypes (stripped by translation unit packager). */';
 
+export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
+  // <stdlib.h>
+  ['malloc', '<stdlib.h>'], ['calloc', '<stdlib.h>'], ['realloc', '<stdlib.h>'], ['free', '<stdlib.h>'],
+  ['aligned_alloc', '<stdlib.h>'],
+  ['strtol', '<stdlib.h>'], ['strtoul', '<stdlib.h>'], ['strtoll', '<stdlib.h>'], ['strtoull', '<stdlib.h>'],
+  ['strtod', '<stdlib.h>'], ['strtof', '<stdlib.h>'], ['strtold', '<stdlib.h>'],
+  ['atoi', '<stdlib.h>'], ['atol', '<stdlib.h>'], ['atoll', '<stdlib.h>'], ['atof', '<stdlib.h>'],
+  ['abs', '<stdlib.h>'], ['labs', '<stdlib.h>'], ['llabs', '<stdlib.h>'],
+  ['div', '<stdlib.h>'], ['ldiv', '<stdlib.h>'], ['lldiv', '<stdlib.h>'],
+  ['qsort', '<stdlib.h>'], ['bsearch', '<stdlib.h>'],
+  ['exit', '<stdlib.h>'], ['_Exit', '<stdlib.h>'], ['quick_exit', '<stdlib.h>'], ['atexit', '<stdlib.h>'],
+  ['abort', '<stdlib.h>'], ['system', '<stdlib.h>'], ['getenv', '<stdlib.h>'],
+  ['rand', '<stdlib.h>'], ['srand', '<stdlib.h>'],
+  ['mblen', '<stdlib.h>'], ['mbtowc', '<stdlib.h>'], ['wctomb', '<stdlib.h>'],
+  ['mbstowcs', '<stdlib.h>'], ['wcstombs', '<stdlib.h>'],
+  // <string.h>
+  ['strlen', '<string.h>'], ['strnlen', '<string.h>'],
+  ['strcpy', '<string.h>'], ['strncpy', '<string.h>'], ['strcat', '<string.h>'], ['strncat', '<string.h>'],
+  ['strdup', '<string.h>'], ['strndup', '<string.h>'],
+  ['strcmp', '<string.h>'], ['strncmp', '<string.h>'], ['strcoll', '<string.h>'], ['strxfrm', '<string.h>'],
+  ['strchr', '<string.h>'], ['strrchr', '<string.h>'], ['strstr', '<string.h>'],
+  ['strpbrk', '<string.h>'], ['strspn', '<string.h>'], ['strcspn', '<string.h>'],
+  ['strtok', '<string.h>'], ['strtok_r', '<string.h>'], ['strerror', '<string.h>'],
+  ['memcpy', '<string.h>'], ['memmove', '<string.h>'], ['memset', '<string.h>'],
+  ['memcmp', '<string.h>'], ['memchr', '<string.h>'],
+  // <strings.h>
+  ['strcasecmp', '<strings.h>'], ['strncasecmp', '<strings.h>'],
+  ['bzero', '<strings.h>'], ['bcopy', '<strings.h>'], ['bcmp', '<strings.h>'],
+  ['ffs', '<strings.h>'], ['index', '<strings.h>'], ['rindex', '<strings.h>'],
+  // <stdio.h>
+  ['printf', '<stdio.h>'], ['fprintf', '<stdio.h>'], ['sprintf', '<stdio.h>'], ['snprintf', '<stdio.h>'],
+  ['vprintf', '<stdio.h>'], ['vfprintf', '<stdio.h>'], ['vsprintf', '<stdio.h>'], ['vsnprintf', '<stdio.h>'],
+  ['scanf', '<stdio.h>'], ['fscanf', '<stdio.h>'], ['sscanf', '<stdio.h>'],
+  ['vscanf', '<stdio.h>'], ['vfscanf', '<stdio.h>'], ['vsscanf', '<stdio.h>'],
+  ['puts', '<stdio.h>'], ['fputs', '<stdio.h>'], ['putchar', '<stdio.h>'], ['putc', '<stdio.h>'], ['fputc', '<stdio.h>'],
+  ['getchar', '<stdio.h>'], ['getc', '<stdio.h>'], ['fgetc', '<stdio.h>'], ['ungetc', '<stdio.h>'],
+  ['fgets', '<stdio.h>'], ['getline', '<stdio.h>'],
+  ['fopen', '<stdio.h>'], ['freopen', '<stdio.h>'], ['fclose', '<stdio.h>'], ['fflush', '<stdio.h>'],
+  ['fread', '<stdio.h>'], ['fwrite', '<stdio.h>'], ['fseek', '<stdio.h>'], ['ftell', '<stdio.h>'], ['rewind', '<stdio.h>'],
+  ['fgetpos', '<stdio.h>'], ['fsetpos', '<stdio.h>'], ['feof', '<stdio.h>'], ['ferror', '<stdio.h>'], ['clearerr', '<stdio.h>'],
+  ['perror', '<stdio.h>'], ['remove', '<stdio.h>'], ['rename', '<stdio.h>'],
+  ['tmpfile', '<stdio.h>'], ['tmpnam', '<stdio.h>'], ['setbuf', '<stdio.h>'], ['setvbuf', '<stdio.h>'], ['fileno', '<stdio.h>'],
+  // <math.h>
+  ['sqrt', '<math.h>'], ['sqrtf', '<math.h>'], ['sqrtl', '<math.h>'],
+  ['cbrt', '<math.h>'], ['cbrtf', '<math.h>'], ['cbrtl', '<math.h>'],
+  ['pow', '<math.h>'], ['powf', '<math.h>'], ['powl', '<math.h>'],
+  ['hypot', '<math.h>'], ['hypotf', '<math.h>'], ['hypotl', '<math.h>'],
+  ['fabs', '<math.h>'], ['fabsf', '<math.h>'], ['fabsl', '<math.h>'],
+  ['floor', '<math.h>'], ['floorf', '<math.h>'], ['floorl', '<math.h>'],
+  ['ceil', '<math.h>'], ['ceilf', '<math.h>'], ['ceill', '<math.h>'],
+  ['round', '<math.h>'], ['roundf', '<math.h>'], ['roundl', '<math.h>'],
+  ['lround', '<math.h>'], ['lroundf', '<math.h>'], ['lroundl', '<math.h>'],
+  ['llround', '<math.h>'], ['llroundf', '<math.h>'], ['llroundl', '<math.h>'],
+  ['trunc', '<math.h>'], ['truncf', '<math.h>'], ['truncl', '<math.h>'],
+  ['rint', '<math.h>'], ['rintf', '<math.h>'], ['rintl', '<math.h>'],
+  ['lrint', '<math.h>'], ['lrintf', '<math.h>'], ['lrintl', '<math.h>'],
+  ['llrint', '<math.h>'], ['llrintf', '<math.h>'], ['llrintl', '<math.h>'],
+  ['nearbyint', '<math.h>'], ['nearbyintf', '<math.h>'], ['nearbyintl', '<math.h>'],
+  ['fmod', '<math.h>'], ['fmodf', '<math.h>'], ['fmodl', '<math.h>'],
+  ['remainder', '<math.h>'], ['remainderf', '<math.h>'], ['remainderl', '<math.h>'],
+  ['remquo', '<math.h>'], ['remquof', '<math.h>'], ['remquol', '<math.h>'],
+  ['modf', '<math.h>'], ['modff', '<math.h>'], ['modfl', '<math.h>'],
+  ['copysign', '<math.h>'], ['copysignf', '<math.h>'], ['copysignl', '<math.h>'],
+  ['fmax', '<math.h>'], ['fmaxf', '<math.h>'], ['fmaxl', '<math.h>'],
+  ['fmin', '<math.h>'], ['fminf', '<math.h>'], ['fminl', '<math.h>'],
+  ['fdim', '<math.h>'], ['fdimf', '<math.h>'], ['fdiml', '<math.h>'],
+  ['fma', '<math.h>'], ['fmaf', '<math.h>'], ['fmal', '<math.h>'],
+  ['sin', '<math.h>'], ['sinf', '<math.h>'], ['sinl', '<math.h>'],
+  ['cos', '<math.h>'], ['cosf', '<math.h>'], ['cosl', '<math.h>'],
+  ['tan', '<math.h>'], ['tanf', '<math.h>'], ['tanl', '<math.h>'],
+  ['asin', '<math.h>'], ['asinf', '<math.h>'], ['asinl', '<math.h>'],
+  ['acos', '<math.h>'], ['acosf', '<math.h>'], ['acosl', '<math.h>'],
+  ['atan', '<math.h>'], ['atanf', '<math.h>'], ['atanl', '<math.h>'],
+  ['atan2', '<math.h>'], ['atan2f', '<math.h>'], ['atan2l', '<math.h>'],
+  ['sinh', '<math.h>'], ['sinhf', '<math.h>'], ['sinhl', '<math.h>'],
+  ['cosh', '<math.h>'], ['coshf', '<math.h>'], ['coshl', '<math.h>'],
+  ['tanh', '<math.h>'], ['tanhf', '<math.h>'], ['tanhl', '<math.h>'],
+  ['asinh', '<math.h>'], ['asinhf', '<math.h>'], ['asinhl', '<math.h>'],
+  ['acosh', '<math.h>'], ['acoshf', '<math.h>'], ['acoshl', '<math.h>'],
+  ['atanh', '<math.h>'], ['atanhf', '<math.h>'], ['atanhl', '<math.h>'],
+  ['exp', '<math.h>'], ['expf', '<math.h>'], ['expl', '<math.h>'],
+  ['exp2', '<math.h>'], ['exp2f', '<math.h>'], ['exp2l', '<math.h>'],
+  ['expm1', '<math.h>'], ['expm1f', '<math.h>'], ['expm1l', '<math.h>'],
+  ['log', '<math.h>'], ['logf', '<math.h>'], ['logl', '<math.h>'],
+  ['log10', '<math.h>'], ['log10f', '<math.h>'], ['log10l', '<math.h>'],
+  ['log2', '<math.h>'], ['log2f', '<math.h>'], ['log2l', '<math.h>'],
+  ['log1p', '<math.h>'], ['log1pf', '<math.h>'], ['log1pl', '<math.h>'],
+  ['ldexp', '<math.h>'], ['ldexpf', '<math.h>'], ['ldexpl', '<math.h>'],
+  ['frexp', '<math.h>'], ['frexpf', '<math.h>'], ['frexpl', '<math.h>'],
+  ['scalbn', '<math.h>'], ['scalbnf', '<math.h>'], ['scalbnl', '<math.h>'],
+  ['ilogb', '<math.h>'], ['ilogbf', '<math.h>'], ['ilogbl', '<math.h>'],
+  ['logb', '<math.h>'], ['logbf', '<math.h>'], ['logbl', '<math.h>'],
+  ['erf', '<math.h>'], ['erff', '<math.h>'], ['erfl', '<math.h>'],
+  ['erfc', '<math.h>'], ['erfcf', '<math.h>'], ['erfcl', '<math.h>'],
+  ['tgamma', '<math.h>'], ['tgammaf', '<math.h>'], ['tgammal', '<math.h>'],
+  ['lgamma', '<math.h>'], ['lgammaf', '<math.h>'], ['lgammal', '<math.h>'],
+  ['nan', '<math.h>'], ['nanf', '<math.h>'], ['nanl', '<math.h>'],
+  ['nextafter', '<math.h>'], ['nextafterf', '<math.h>'], ['nextafterl', '<math.h>'],
+  // <ctype.h>
+  ['isalpha', '<ctype.h>'], ['isdigit', '<ctype.h>'], ['isalnum', '<ctype.h>'],
+  ['isspace', '<ctype.h>'], ['isupper', '<ctype.h>'], ['islower', '<ctype.h>'],
+  ['isxdigit', '<ctype.h>'], ['ispunct', '<ctype.h>'], ['isprint', '<ctype.h>'],
+  ['isgraph', '<ctype.h>'], ['iscntrl', '<ctype.h>'], ['isblank', '<ctype.h>'],
+  ['tolower', '<ctype.h>'], ['toupper', '<ctype.h>'],
+  ['isascii', '<ctype.h>'], ['toascii', '<ctype.h>'],
+]));
+
+const STANDARD_C_HEADER_SET = new Set(STANDARD_C_LIBRARY_HEADERS.values());
+
 const SIMPLE_DECLARABLE = /^(?:unsigned\s+)?(?:char|short|int|long|long\s+long|long\s+long\s+int|__int128)$|^void \*$/;
 
 export function isFixedWidthTypeName(name) {
@@ -156,6 +265,15 @@ export function isStandalonePrototypePreludeDeclaration(text) {
 
 export function isIdTypedefPreludeDeclaration(text) {
   return String(text ?? '').trim() === 'typedef void * id;';
+}
+
+export function parseStandardHeaderInclude(text) {
+  const match = /^#include\s*(<[A-Za-z0-9_./+-]+>)$/.exec(String(text ?? '').trim());
+  return match && STANDARD_C_HEADER_SET.has(match[1]) ? match[1] : null;
+}
+
+export function isStandardHeaderInclude(text) {
+  return parseStandardHeaderInclude(text) !== null;
 }
 
 /* Remove comments and literals so identifier scans never read prose or asm
@@ -2036,12 +2154,32 @@ export function closeFunctionOutput(result, options = {}) {
     existingTypes.add('id');
     declared.add('id');
   }
+  const existingIncludes = new Set();
+  for (const l of lines) {
+    const inc = /^\s*#include\s*(<[A-Za-z0-9_./+-]+>)/.exec(String(l?.text ?? ''));
+    if (inc) existingIncludes.add(inc[1]);
+  }
+  const neededStdlibHeaders = new Set();
+  for (const entry of uses.values()) {
+    if (!entry?.callTarget) continue;
+    if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
+    const header = STANDARD_C_LIBRARY_HEADERS.get(entry.name);
+    if (header && !existingIncludes.has(header)) neededStdlibHeaders.add(header);
+  }
+  const stdlibIncludePrelude = [...neededStdlibHeaders]
+    .sort(compareAscii)
+    .map((header) => ({
+      kind: 'decl', indent: 0, text: `#include ${header}`,
+      row: null, addr: null, note: null, source: entrySource,
+    }));
+
   const standalonePrototypes = [...uses.values()]
     .filter((entry) => entry?.callTarget
       && !declared.has(entry.name)
       && !KEYWORDS.has(entry.name)
       && !FIXED_WIDTH_TYPES.has(entry.name)
       && !STANDARD_KNOWN_TYPES.has(entry.name)
+      && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
       && !macroDefinedCalls.has(entry.name)
       && !/^__builtin_/.test(entry.name)
       && entry.name !== '__HEX_ANY_ARGS'
@@ -2075,10 +2213,11 @@ export function closeFunctionOutput(result, options = {}) {
 
   const prelude = fixedWidthPreludeLines(render(withPostFixedPrelude), existingTypes)
     .map((item) => ({ ...item, source: entrySource }));
-  if (!allBodyDeclarations.length && !postFixedPrelude.length && !prelude.length && !bodyChanged) return result;
+  if (!allBodyDeclarations.length && !postFixedPrelude.length && !prelude.length && !stdlibIncludePrelude.length && !bodyChanged) return result;
 
   const next = [...withPostFixedPrelude];
-  if (prelude.length) next.splice(sigIndex, 0, ...prelude);
+  const leadingPrelude = [...stdlibIncludePrelude, ...prelude];
+  if (leadingPrelude.length) next.splice(sigIndex, 0, ...leadingPrelude);
   result.lines = next;
   result.pseudocode = render(next);
   if (typeof options.onLinesChanged === 'function') options.onLinesChanged(result);

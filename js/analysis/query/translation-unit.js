@@ -12,6 +12,7 @@
  */
 
 import {
+  STANDARD_C_LIBRARY_HEADERS,
   isFixedWidthPreludeDeclaration,
   isSynthesizedStructPreludeDeclaration,
   parseSynthesizedStructPreludeDeclaration,
@@ -20,6 +21,8 @@ import {
   isStandalonePrototypePreludeComment,
   isStandalonePrototypePreludeDeclaration,
   isIdTypedefPreludeDeclaration,
+  isStandardHeaderInclude,
+  parseStandardHeaderInclude,
 } from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -201,7 +204,8 @@ function isAllowedBodyPrefixLine(trimmed) {
     || isSynthesizedStructPreludeDeclaration(trimmed)
     || isStandaloneGlobalPreludeDeclaration(trimmed)
     || isStandalonePrototypePreludeDeclaration(trimmed)
-    || isIdTypedefPreludeDeclaration(trimmed);
+    || isIdTypedefPreludeDeclaration(trimmed)
+    || isStandardHeaderInclude(trimmed);
 }
 
 /* Strip standalone external global prelude blocks emitted by c-output-closure
@@ -234,6 +238,7 @@ function stripStandaloneGlobalPreludeLines(text) {
         if (isStandalonePrototypePreludeDeclaration(trimmed)) continue;
         inStandalonePrototypes = false;
       }
+      if (isStandardHeaderInclude(trimmed)) continue;
       if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) {
         sawSignature = true;
       }
@@ -258,6 +263,21 @@ function extractSynthesizedStructTypedefs(text) {
     if (looksLikeSignature(trimmed) || trimmed === '{' || trimmed.endsWith('{')) break;
   }
   return structs;
+}
+
+function extractStandardHeaderIncludes(text) {
+  const found = [];
+  for (const rawLine of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    const header = parseStandardHeaderInclude(trimmed);
+    if (header) {
+      found.push(header);
+      continue;
+    }
+    if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
+  }
+  return found;
 }
 
 /* The same rule over the whole prefix at once, so a comment cannot open on
@@ -285,7 +305,8 @@ function isAccountedBodyPrefix(prefix) {
       || isSynthesizedStructPreludeDeclaration(line)
       || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
-      || isIdTypedefPreludeDeclaration(line);
+      || isIdTypedefPreludeDeclaration(line)
+      || isStandardHeaderInclude(line);
     if (!ok) return false;
     pos = end;
   }
@@ -534,10 +555,11 @@ function identifierIsCovered(name, context) {
   if (context.declaredLocals.has(name)) return true;
   if (context.knownAliases.has(name)) return true;
   if (context.fallbackNames.has(name)) return true;
+  if (context.stdlibHeaderFunctions?.has(name)) return true;
   return false;
 }
 
-function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map() }) {
+function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set() }) {
   const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
   const prototypeNames = new Set();
   const variadicPrototypes = new Set();
@@ -559,6 +581,10 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
     if (/\[\]\s*;/.test(String(declaration))) fallbackArrayGlobals.add(match[1]);
   }
   const knownAliases = new Set([...FIXED_WIDTH_ALIASES.keys(), ...FIXED_WIDTH_ALIASES.values(), 'id', ...synthesizedStructs.keys()]);
+  if (headers.has('<stdint.h>')) { knownAliases.add('uintptr_t'); knownAliases.add('intptr_t'); }
+  if (headers.has('<stddef.h>') || headers.has('<stdlib.h>') || headers.has('<string.h>') || headers.has('<stdio.h>')) { knownAliases.add('size_t'); }
+  if (headers.has('<stddef.h>')) { knownAliases.add('ptrdiff_t'); }
+  if (headers.has('<stdbool.h>')) { knownAliases.add('bool'); }
   const synthesizedStructFields = new Set();
   for (const fieldMap of synthesizedStructs.values()) {
     for (const fieldName of fieldMap.keys()) synthesizedStructFields.add(fieldName);
@@ -574,7 +600,11 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   const declaredLocals = new Set();
   // Selected definitions with a known recovered arity, filled by the caller.
   const knownAritySelected = new Set();
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames };
+  const stdlibHeaderFunctions = new Set();
+  for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
+    if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
+  }
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -908,6 +938,9 @@ export function buildCTranslationUnit(functions, options = {}) {
         if (!fieldMap.has(field.name)) fieldMap.set(field.name, field.type);
       }
     }
+    for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
+      headers.add(header);
+    }
     const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
     // A function's own typedef lines are never emitted (a faithful body is
     // the text after its signature), so they cannot stand in for the contract.
@@ -956,6 +989,10 @@ export function buildCTranslationUnit(functions, options = {}) {
         unresolvedRows.push(unresolved('unresolved-call', addressText(call.target) ?? 'unknown_call', 'callee-identity-unavailable'));
         continue;
       }
+      if (!selected && STANDARD_C_LIBRARY_HEADERS.has(name)) {
+        headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
+        continue;
+      }
       let declaration = renderPrototype(name, call.prototype);
       let evidence = declaration ? 'call-prototype-evidence' : null;
       if (!declaration && selected) {
@@ -1002,6 +1039,10 @@ export function buildCTranslationUnit(functions, options = {}) {
       if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
+      if (STANDARD_C_LIBRARY_HEADERS.has(name)) {
+        headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
+        continue;
+      }
       if (name.startsWith('__')) {
         // Reserved compiler helpers are not redeclared; their unresolved row
         // remains explicit and a later syntax-only body can avoid using them.
@@ -1116,7 +1157,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   const eligibilityContext = bodyEligibilityContext({
     prototypes, globals,
     fallbackDeclarations, selectedNames,
-    synthesizedStructs,
+    synthesizedStructs, headers,
   });
   // A selected definition whose recovered signature carries no parameter
   // spellings is emitted unprototyped; an arity-unknown call to it cannot

@@ -1426,7 +1426,11 @@ function callRecord(inst, ctx) {
   } else {
     let override = null;
     try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
-    const indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
+    const knownProto = knownCallPrototype(name);
+    let indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
+    if (knownProto && !knownProto.variadic && Array.isArray(indexes) && indexes.length > knownProto.arity) {
+      indexes = indexes.slice(0, knownProto.arity);
+    }
     if (indexes == null) {
       if (slotEv) {
         if (slotEv.argumentCount != null) {
@@ -2132,6 +2136,66 @@ function materialization(ctx) {
   return names;
 }
 
+const CALL_RETURN_REG_ORDER = [
+  'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
+  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'fa0', 'f10', 'st0',
+];
+
+function buildCallResultMap(ir, materialNames) {
+  const byInst = new Map();
+  const candidatesByInst = new Map();
+  for (const v of ir?.values || []) {
+    const def = v?.def;
+    if (!def || def.op !== OP.CALL) continue;
+    if (def.dst === v) {
+      byInst.set(def, v);
+      continue;
+    }
+    if (!materialNames?.has(v.id)) continue;
+    let list = candidatesByInst.get(def);
+    if (!list) {
+      list = [];
+      candidatesByInst.set(def, list);
+    }
+    list.push(v);
+  }
+  for (const [inst, list] of candidatesByInst) {
+    if (byInst.has(inst)) continue;
+    if (inst.dst) {
+      byInst.set(inst, inst.dst);
+      continue;
+    }
+    if (inst.returnReg) {
+      const targetReg = String(inst.returnReg).toLowerCase();
+      const exact = list.find((v) => String(v.reg || '').toLowerCase() === targetReg);
+      if (exact) {
+        byInst.set(inst, exact);
+        continue;
+      }
+    }
+    let picked = null;
+    for (const reg of CALL_RETURN_REG_ORDER) {
+      const match = list.find((v) => String(v.reg || '').toLowerCase() === reg);
+      if (match) {
+        picked = match;
+        break;
+      }
+    }
+    if (!picked && list.length === 1 && !list[0].reg) {
+      picked = list[0];
+    }
+    if (picked) byInst.set(inst, picked);
+  }
+  return byInst;
+}
+
+function callResultValue(inst, ctx) {
+  if (!inst) return null;
+  if (inst.dst) return ctx.materialNames.has(inst.dst.id) ? inst.dst : null;
+  const candidate = ctx.callResultByInst?.get(inst) || null;
+  return candidate && ctx.materialNames.has(candidate.id) ? candidate : null;
+}
+
 function rmwOperand(rmw, ctx) {
   void ctx;
   const loadValue=rmw.load?.dst;
@@ -2498,11 +2562,13 @@ function emitBlockStatements(block, out, ctx, indent) {
       }
       const call = renderCall(inst, ctx);
       const extra = { source: callSource(inst, c, ctx) };
-      const node = inst.dst && ctx.materialNames.has(inst.dst.id)
-        ? line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra)
+      const callDst = callResultValue(inst, ctx);
+      const callDstName = callDst ? ctx.materialNames.get(callDst.id) : null;
+      const node = callDstName
+        ? line('stmt', indent, `${callDstName} = ${call};`, inst.row, inst.address, extra)
         : line('stmt', indent, `${call};`, inst.row, inst.address, extra);
-      const resultBinding = inst.dst && ctx.materialNames.has(inst.dst.id)
-        ? Object.freeze({ name:ctx.materialNames.get(inst.dst.id), callText:`${call};`, value:inst.dst }) : null;
+      const resultBinding = callDstName
+        ? Object.freeze({ name: callDstName, callText: `${call};`, value: callDst }) : null;
       retainStatementRenderLine(node, inst, c, ctx, null, resultBinding);
       out.push(node);
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
@@ -3125,6 +3191,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   beginControlRenderHistory(ctx);
   beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
+  ctx.callResultByInst = buildCallResultMap(ir, ctx.materialNames);
   ctx.inductions = recoverInductionVariables(ir, ctx);
   ctx.phiLowering = buildPhiLowering(ctx);
   ctx.phiVarNames = ctx.phiLowering.varNames;
@@ -3163,6 +3230,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   };
 
   let missing = [];
+  let hasUndefinedLabel = false;
   const reachable = graph.reachable || new Set();
   let coverage;
   runBatchedEmission(() => {
@@ -3172,31 +3240,58 @@ export function decompileSemantic(model, rawOpts = {}) {
     if (!missing.length) {
       const anchorToBi = new Map();
       for (const [bi, anchor] of state.blockAnchors) {
-        if (anchor?.firstNode) anchorToBi.set(anchor.firstNode, { bi, empty: !!anchor.empty, indent: anchor.indent });
+        if (!anchor?.firstNode) continue;
+        let list = anchorToBi.get(anchor.firstNode);
+        if (!list) {
+          list = [];
+          anchorToBi.set(anchor.firstNode, list);
+        }
+        list.push({ bi, empty: !!anchor.empty, indent: anchor.indent });
       }
       const emittedLabels = new Set();
       const resolvedBody = [];
       for (let i = 0; i < body.length; i += 1) {
         const node = body[i];
-        const info = anchorToBi.get(node);
-        if (info) {
-          if (state.gotoTargets.has(info.bi)) {
-            const block = ctx.ir.blocks[info.bi];
-            const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
-            if (!emittedLabels.has(labelText) && block) {
-              emittedLabels.add(labelText);
-              const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
-              resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
-                source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
-              if (info.empty) {
-                resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+        const infos = anchorToBi.get(node);
+        if (infos) {
+          for (const info of infos) {
+            if (state.gotoTargets.has(info.bi)) {
+              const block = ctx.ir.blocks[info.bi];
+              const labelText = `loc_${hex(ctx.blockAddress(info.bi))}:`;
+              if (!emittedLabels.has(labelText) && block) {
+                emittedLabels.add(labelText);
+                const label = line('label', Math.max(0, info.indent - 1), labelText, block.startRow, ctx.blockAddress(info.bi));
+                resolvedBody.push(retainControlRenderLine(label, null, 'cfg-label', { target: info.bi,
+                  source: sourceOf({ row: block.startRow, address: label.addr, ir: block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
+                if (info.empty) {
+                  resolvedBody.push(line('stmt', info.indent, ';', block.startRow, ctx.blockAddress(info.bi), { source: jumpTargetSource(info.bi, ctx) }));
+                }
               }
             }
           }
-          if (info.empty) continue;
         }
         if (node && node.__emptyBlockAnchor !== undefined) continue;
         resolvedBody.push(node);
+      }
+      for (const bi of state.gotoTargets) {
+        const labelText = `loc_${hex(ctx.blockAddress(bi))}:`;
+        if (!emittedLabels.has(labelText)) {
+          hasUndefinedLabel = true;
+          break;
+        }
+      }
+      if (!hasUndefinedLabel) {
+        for (const n of resolvedBody) {
+          const text = n?.text;
+          if (!text || !text.includes('goto ')) continue;
+          for (const m of text.matchAll(/\bgoto\s+(loc_[0-9A-Fa-f]+)\s*;/g)) {
+            if (!emittedLabels.has(`${m[1]}:`)) {
+              hasUndefinedLabel = true;
+              break;
+            }
+          }
+          if (hasUndefinedLabel) break;
+        }
       }
       body.length = 0;
       for (const node of resolvedBody) body.push(node);
@@ -3225,7 +3320,7 @@ export function decompileSemantic(model, rawOpts = {}) {
       }
     }
   });
-  if (missing.length) {
+  if (missing.length || hasUndefinedLabel) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
     ctx.materialNames = new Map(baseMaterialNames);
     ctx.exprCache.clear();
