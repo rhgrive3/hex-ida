@@ -266,12 +266,40 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
   return intrinsicCondition(sub, cond, left, right, bits, source);
 }
 
+function atomicOperandText(text) {
+  const s = text.trim();
+  if (!s) return text;
+  if (/^-?(?:0[xX][0-9A-Fa-f]+|d+)$/.test(s) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return text;
+  // Already wrapped in a single matching outer pair of parentheses.
+  if (s[0] === '(' && s[s.length - 1] === ')') {
+    let depth = 0, wrapsAll = true;
+    for (let i = 0; i < s.length - 1; i++) {
+      if (s[i] === '(') depth++;
+      else if (s[i] === ')') { depth--; if (depth === 0) { wrapsAll = false; break; } }
+    }
+    if (wrapsAll) return text;
+  }
+  // Only parenthesize when an unparenthesized binary/ternary operator is present at top level.
+  let depth = 0, hasTopOp = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (ch === '&' || ch === '|' || ch === '^' || ch === '?' || ch === ':' || ch === '<' || ch === '>' || ch === '=')) {
+      // Skip "->" member access.
+      if (ch === '>' && i > 0 && s[i - 1] === '-') continue;
+      hasTopOp = true; break;
+    }
+  }
+  return hasTopOp ? `(${s})` : text;
+}
+
 export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
   if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
   const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
   if (width === null || !WIDTH_BITS.has(width)) return null;
-  const left = expr.variable(leftText, width, null, source);
-  const right = expr.variable(rightText, width, null, source);
+  const left = expr.variable(atomicOperandText(leftText), width, null, source);
+  const right = expr.variable(atomicOperandText(rightText), width, null, source);
   const condition = buildNZCVConditionExpression(sub, cond, left, right, width, source);
   return condition ? printExpression(condition) : null;
 }

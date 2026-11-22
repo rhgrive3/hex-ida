@@ -1222,6 +1222,13 @@ export function renderMemoryLocation(loc, inst, ctx) {
       if (!isPtr && size > 0 && scaleBytes === size) {
         return `((${elemType} *)(uintptr_t)(${base}))[${renderExtendedIndex(index, addr.extend || null)}]`;
       }
+      if (!isPtr && size > 0 && scaleBytes > 0 && scaleBytes !== size && ctx.opts?.phase8Optimize !== true) {
+        const idxExpr = renderExtendedIndex(index, addr.extend || null);
+        const offsetExpr = scaleBytes === 1 ? `(${idxExpr})` : `(${idxExpr}) * ${scaleBytes}`;
+        const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+        const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
+        return `*(${elemType} *)((uintptr_t)(${base}) + ${offsetExpr}${dispExpr})`;
+      }
       return indexed;
     }
     if (addr.base && addr.disp != null) {
@@ -1234,6 +1241,18 @@ export function renderMemoryLocation(loc, inst, ctx) {
         const field = safeIdent(known?.name || `field_${hex(off)}`, `field_${hex(off)}`);
         return `this->${field}${cppMemberTypeSuffix(addr.base, off, ctx)}`;
       }
+    }
+    if (addr.base && ctx.opts?.phase8Optimize !== true) {
+      const base = renderValue(addr.base, ctx);
+      const size = Number(addr.size || inst?.size || loc?.size || 8);
+      const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 64}_t`;
+      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+      if (disp !== 0n) {
+        return disp < 0n
+          ? `*(${elemType} *)((uintptr_t)(${base}) - ${(-disp).toString()})`
+          : `*(${elemType} *)((uintptr_t)(${base}) + ${disp.toString()})`;
+      }
+      return `*(${elemType} *)(uintptr_t)(${base})`;
     }
     return 'memory_unknown';
   }
@@ -1609,7 +1628,14 @@ function renderValueText(value, ctx, flags) {
       const addr = value.const ?? d.extra?.value ?? d.extra?.target;
       const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
       out = initialValueForm(ctx, 'address', literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown'));
-    } else if (d.op === OP.CALL) out = initialValueForm(ctx, 'call', renderCall(d, ctx));
+    } else if (d.op === OP.CALL) {
+      const canonical = d.dst || ctx.callResultByInst?.get(d) || null;
+      if (ctx.opts?.phase8Optimize !== true && value !== canonical && !isSameCallReturnFamily(value.reg, canonical?.reg)) {
+        out = initialValueForm(ctx, 'call-clobber', '0');
+      } else {
+        out = initialValueForm(ctx, 'call', renderCall(d, ctx));
+      }
+    }
     else if (d.op === OP.PHI) {
       if (ctx.phiVarNames?.has(value.id) && !flags.ignorePhiVar) {
         out = initialValueForm(ctx, 'phi-variable', ctx.phiVarNames.get(value.id));
@@ -2138,10 +2164,33 @@ function materialization(ctx) {
 
 const CALL_RETURN_REG_ORDER = [
   'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
-  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'fa0', 'f10', 'st0',
+  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'ymm0', 'zmm0', 'fa0', 'f10', 'st0',
 ];
+const CALL_INT_RETURN_REGS = new Set([
+  'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
+]);
+const CALL_FP_RETURN_REGS = new Set([
+  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'ymm0', 'zmm0', 'fa0', 'f10', 'st0',
+]);
 
-function buildCallResultMap(ir, materialNames) {
+function callReturnRegFamily(reg) {
+  if (!reg) return null;
+  const r = String(reg).toLowerCase();
+  if (CALL_INT_RETURN_REGS.has(r)) return 'int';
+  if (CALL_FP_RETURN_REGS.has(r)) return 'fp';
+  return null;
+}
+
+export function isSameCallReturnFamily(aReg, bReg) {
+  if (!aReg || !bReg) return false;
+  const a = String(aReg).toLowerCase();
+  const b = String(bReg).toLowerCase();
+  if (a === b) return true;
+  const fa = callReturnRegFamily(a);
+  return fa != null && fa === callReturnRegFamily(b);
+}
+
+export function buildCallResultMap(ir, materialNames = null) {
   const byInst = new Map();
   const candidatesByInst = new Map();
   for (const v of ir?.values || []) {
@@ -2151,7 +2200,11 @@ function buildCallResultMap(ir, materialNames) {
       byInst.set(def, v);
       continue;
     }
-    if (!materialNames?.has(v.id)) continue;
+    if (materialNames) {
+      if (!materialNames.has(v.id)) continue;
+    } else if (!(v.uses || []).some((u) => u !== def && !u.clobbered)) {
+      continue;
+    }
     let list = candidatesByInst.get(def);
     if (!list) {
       list = [];
@@ -3222,6 +3275,20 @@ export function decompileSemantic(model, rawOpts = {}) {
   beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
   ctx.callResultByInst = buildCallResultMap(ir, ctx.materialNames);
+  for (const v of ir.values || []) {
+    const def = v?.def;
+    if (!def || def.op !== OP.CALL || !ctx.materialNames.has(v.id)) continue;
+    const canonical = def.dst || ctx.callResultByInst.get(def) || null;
+    if (canonical && v !== canonical) {
+      if (isSameCallReturnFamily(v.reg, canonical.reg)) {
+        ctx.materialNames.set(v.id, `call_${canonical.id}`);
+      } else if (ctx.opts?.phase8Optimize !== true) {
+        ctx.materialNames.delete(v.id);
+      }
+    } else if (!canonical && ctx.opts?.phase8Optimize !== true) {
+      ctx.materialNames.delete(v.id);
+    }
+  }
   ctx.inductions = recoverInductionVariables(ir, ctx);
   ctx.phiLowering = buildPhiLowering(ctx);
   ctx.phiVarNames = ctx.phiLowering.varNames;
@@ -3418,7 +3485,7 @@ export function decompileSemantic(model, rawOpts = {}) {
   const result = bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
-    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
+    coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown, phase8Optimize: opts.phase8Optimize === true },
     semantic: true,
   }, ctx), ctx), ctx), ctx, true), ctx);
   const bindings = new Map();
