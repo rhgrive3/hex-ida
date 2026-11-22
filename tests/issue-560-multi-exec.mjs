@@ -93,6 +93,6 @@ assert.match(app,/for\(let i=0;i<regions\.length;i\+\+\)/);
 assert.match(app,/FUNCTION_DISCOVERY_GLOBAL_CAP/);
 assert.match(backend,/scanProgram\(regionId, onProgress, limits = \{\}\)/);
 assert.match(worker,/callLimit, refLimit, kindLimit/);
-assert.match(worker,/outCallFrom=callFrom\.slice\(0,nCalls\)/);
+assert.match(worker, /outCallFrom\s*=\s*(?:nCalls\s*===\s*callFrom\.length\s*\?\s*callFrom\s*:\s*)?callFrom\.slice\(0,\s*nCalls\)/);
 
 console.log('issue #560 multi-exec regressions passed');
