@@ -1653,7 +1653,9 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const rowOfAddress = rowResolver(model, opts);
   const legacyCfg = opts.cfg ?? buildCfg(model, { rowOfAddress });
   const instructionByRow = new Map(model.instructions.map((instruction) => [instruction.row, instruction]));
-  const blocks = legacyCfg.nodes.map((node) => {
+  const rawNodes = [];
+  const validNodeIndices = new Set();
+  for (const node of legacyCfg.nodes) {
     const instructions = [];
     for (let row = node.startRow; row <= node.endRow; row++) {
       const instruction = instructionByRow.get(row);
@@ -1666,16 +1668,19 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       });
     }
     const first = instructions[0]?.decoded?.address;
-    if (first == null) throw new TypeError('semantic-v2-compat-empty-basic-block');
-    return {
-      key: `legacy-block-${node.index}`,
-      startAddress: first,
-      instructions,
-      successors: node.succ
-        .filter((successor) => successor.to >= 0)
-        .map((successor) => ({ to: `legacy-block-${successor.to}`, kind: edgeKind(successor) })),
-    };
-  });
+    if (first == null) continue;
+    validNodeIndices.add(node.index);
+    rawNodes.push({ node, first, instructions });
+  }
+  if (!rawNodes.length) return null;
+  const blocks = rawNodes.map(({ node, first, instructions }) => ({
+    key: `legacy-block-${node.index}`,
+    startAddress: first,
+    instructions,
+    successors: node.succ
+      .filter((successor) => successor.to >= 0 && validNodeIndices.has(successor.to))
+      .map((successor) => ({ to: `legacy-block-${successor.to}`, kind: edgeKind(successor) })),
+  }));
   const binaryId = String(opts.binaryId ?? model.binaryId ?? ephemeralBinaryId(model));
   const sliceId = String(opts.sliceId ?? model.sliceId ?? `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`);
   const abiAdapter = opts.abiAdapter ?? canonicalCompatibilityAbiAdapter(opts, binaryId, sliceId);
@@ -1685,8 +1690,10 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     binaryId,
     sliceId,
     addressWidthBits: 64,
-    canonicalStartIdentity: { address: model.startAddress ?? model.instructions[0].address },
-    entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
+    canonicalStartIdentity: { address: model.startAddress ?? blocks[0].startAddress },
+    entryBlockKey: (legacyCfg.entry >= 0 && validNodeIndices.has(legacyCfg.entry))
+      ? `legacy-block-${legacyCfg.entry}`
+      : blocks[0]?.key,
     blocks,
     abiAdapter,
     rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),

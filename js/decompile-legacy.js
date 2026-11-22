@@ -1035,11 +1035,26 @@ function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
   try {
     const headCond = node.cond && node.condTarget != null && !info.nodes.has(node.condTarget);
     if (headCond) {
-      const cond = negate(node.cond);
-      emitBlockBody(node, indent, out, ctx, state, { skipTerminator: true });
-      out.push(line('ctrl', indent, 'while (' + condText(cond, ctx) + ')  {', node.endRow, addrOf(ctx, node.endRow)));
-      if (ctx.beginner) out[out.length - 1].note = condNote(cond) + 'あいだ、下を繰り返します。';
+      const headLines = [];
+      emitBlockBody(node, indent + 1, headLines, ctx, state, { skipTerminator: true });
+      const headLabel = headLines.length && headLines[0].kind === 'label' ? headLines.shift() : null;
+      if (headLabel) out.push({ ...headLabel, indent: Math.max(0, indent - 1) });
+      const hasHeadExec = headLines.some((l) => l.kind !== 'comment' && l.kind !== 'blank');
+      if (hasHeadExec) {
+        out.push(line('ctrl', indent, 'while (1)  {', node.startRow, addrOf(ctx, node.startRow)));
+        if (ctx.beginner) out[out.length - 1].note = condNote(negate(node.cond)) + 'あいだ、下を繰り返します。';
+        for (const hl of headLines) out.push(hl);
+        out.push(line('ctrl', indent + 1, 'if (' + condText(node.cond, ctx) + ') break;', node.endRow, addrOf(ctx, node.endRow)));
+      } else {
+        const cond = negate(node.cond);
+        for (const hl of headLines) out.push({ ...hl, indent });
+        out.push(line('ctrl', indent, 'while (' + condText(cond, ctx) + ')  {', node.endRow, addrOf(ctx, node.endRow)));
+        if (ctx.beginner) out[out.length - 1].note = condNote(cond) + 'あいだ、下を繰り返します。';
+      }
       if (last >= header + 1) emitRange(cfg, header + 1, last, indent + 1, out, ctx, state, loop);
+      if (out.length && out[out.length - 1].kind === 'ctrl' && out[out.length - 1].indent === indent + 1 && out[out.length - 1].text === 'continue;') {
+        out.pop();
+      }
       out.push(line('ctrl', indent, '}', cfg.nodes[last].endRow));
       return exit == null ? -1 : exit;
     }
@@ -1049,9 +1064,12 @@ function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
     if (tailCond) {
       out.push(line('ctrl', indent, 'do  {', node.startRow, addrOf(ctx, node.startRow)));
       if (ctx.beginner) out[out.length - 1].note = '同じ処理を、条件が続くあいだ繰り返します。';
-      emitBlockBody(node, indent + 1, out, ctx, state, { skipTerminator: true });
-      if (last > header + 1) emitRange(cfg, header + 1, last - 1, indent + 1, out, ctx, state, loop);
-      if (last !== header) emitBlockBody(tail, indent + 1, out, ctx, state, { skipTerminator: true });
+      if (last === header) {
+        emitBlockBody(node, indent + 1, out, ctx, state, { skipTerminator: true });
+      } else {
+        emitRange(cfg, header, last - 1, indent + 1, out, ctx, state, loop);
+        if (!state.emitted.has(last)) emitBlockBody(tail, indent + 1, out, ctx, state, { skipTerminator: true });
+      }
       out.push(line('ctrl', indent, '} while (' + condText(tailCond, ctx) + ');', tail.endRow, addrOf(ctx, tail.endRow)));
       return exit == null ? -1 : exit;
     }
@@ -1060,6 +1078,9 @@ function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
     if (tail.jump === header) {
       out.push(line('ctrl', indent, 'while (1)  {', node.startRow, addrOf(ctx, node.startRow)));
       emitRange(cfg, header, last, indent + 1, out, ctx, state, loop);
+      if (out.length && out[out.length - 1].kind === 'ctrl' && out[out.length - 1].indent === indent + 1 && out[out.length - 1].text === 'continue;') {
+        out.pop();
+      }
       out.push(line('ctrl', indent, '}', tail.endRow));
       return exit == null ? -1 : exit;
     }
@@ -1642,11 +1663,13 @@ function statementFor(insn, ctx, node) {
     const t = ref ? ref.addr : insn.pcRelTarget;
     if (base === 'adrp' && !ref) {
       /* ページの先頭だけを作る途中。次の add / ldr と組で 1 つのアドレスになる */
-      return mk(varOf(dst, ctx) + ' = 0x' + (t != null ? t.toString(16).toUpperCase() : '?') + ';',
+      const pageExpr = t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved adrp target */';
+      return mk(varOf(dst, ctx) + ' = ' + pageExpr + ';',
         { dst, pure: true, note: 'アドレスの上半分を作っています（次の行と組で 1 つの場所になります）。' });
     }
     const sym = t != null ? ctx.symbolFor(t) : null;
-    return mk(varOf(dst, ctx) + ' = ' + (sym ? '&' + sym : '0x' + (t != null ? t.toString(16).toUpperCase() : '?')) + ';',
+    const targetExpr = sym ? '&' + sym : (t != null ? '0x' + t.toString(16).toUpperCase() : '0 /* unresolved ' + base + ' target */');
+    return mk(varOf(dst, ctx) + ' = ' + targetExpr + ';',
       // 場所が 1 つに決まったので、もう手前のレジスタには依存していない
       { dst, pure: true, reads: [] });
   }
@@ -1739,9 +1762,11 @@ function statementFor(insn, ctx, node) {
       { dst, pure: true });
   }
   if (base === 'bfi' || base === 'bfxil' || base === 'ubfx' || base === 'sbfx' || base === 'ubfiz') {
-    const args = insn.ops.map((op) => operandText(op, ctx, insn)).join(', ');
-    return mk(varOf(dst, ctx) + ' = ' + base + '(' + args + ');',
-      { dst, pure: true, note: 'ビットの一部を取り出す / 差し込む処理です。' });
+    const bfExpr = bitfieldExpr(base, dst, insn, ctx, operandBits);
+    if (bfExpr) {
+      return mk(varOf(dst, ctx) + ' = ' + bfExpr + ';',
+        { dst, pure: true, note: 'ビットの一部を取り出す / 差し込む処理です。' });
+    }
   }
   if (base === 'brk' || base === 'udf') {
     return mk('__builtin_trap();   // ここに来たら異常', { kind: 'ctrl', note: '通らないはずの場所です。来たら止まります。' });
@@ -1755,6 +1780,49 @@ function statementFor(insn, ctx, node) {
   void node;
   return mk('__asm("' + insn.mnemonic + ' ' + insn.operands + '");',
     { dst, note: 'この命令は逆コンパイルできませんでした。アセンブリのまま置いています。' });
+}
+
+function bitfieldExpr(base, dst, insn, ctx, bits = 64) {
+  if (!dst || !Array.isArray(insn.ops) || insn.ops.length < 4) return null;
+  const lsbOp = insn.ops[2];
+  const widthOp = insn.ops[3];
+  if (lsbOp?.value == null || widthOp?.value == null) return null;
+  const lsb = Number(lsbOp.value);
+  const width = Number(widthOp.value);
+  const w = bits === 32 ? 32 : 64;
+  if (!Number.isInteger(lsb) || !Number.isInteger(width) || lsb < 0 || width <= 0 || lsb >= w || width > w) return null;
+  const src = operandText(insn.ops[1], ctx, insn);
+  const dstName = varOf(dst, ctx);
+  const allMask = (1n << BigInt(w)) - 1n;
+  const maskBig = width >= w ? allMask : ((1n << BigInt(width)) - 1n);
+  const suffix = w === 64 ? 'ULL' : 'U';
+  const maskHex = '0x' + maskBig.toString(16).toUpperCase() + suffix;
+  if (base === 'ubfx') {
+    const shifted = lsb === 0 ? src : '(' + src + ' >> ' + lsb + ')';
+    return '(' + shifted + ' & ' + maskHex + ')';
+  }
+  if (base === 'ubfiz') {
+    const masked = '(' + src + ' & ' + maskHex + ')';
+    return lsb === 0 ? masked : '(' + masked + ' << ' + lsb + ')';
+  }
+  if (base === 'sbfx') {
+    const leftShift = w - lsb - width;
+    const rightShift = w - width;
+    if (leftShift < 0 || rightShift < 0) return null;
+    const signedTy = w === 32 ? 'int32' : 'int64';
+    const shl = leftShift === 0 ? src : '(' + src + ' << ' + leftShift + ')';
+    return rightShift === 0 ? '(' + signedTy + ')' + shl : '((' + signedTy + ')' + shl + ' >> ' + rightShift + ')';
+  }
+  if (base === 'bfi') {
+    const clearMaskHex = '0x' + ((maskBig << BigInt(lsb)) & allMask).toString(16).toUpperCase() + suffix;
+    const ins = lsb === 0 ? '(' + src + ' & ' + maskHex + ')' : '((' + src + ' & ' + maskHex + ') << ' + lsb + ')';
+    return '((' + dstName + ' & ~' + clearMaskHex + ') | ' + ins + ')';
+  }
+  if (base === 'bfxil') {
+    const ext = lsb === 0 ? '(' + src + ' & ' + maskHex + ')' : '((' + src + ' >> ' + lsb + ') & ' + maskHex + ')';
+    return '((' + dstName + ' & ~' + maskHex + ') | ' + ext + ')';
+  }
+  return null;
 }
 
 function rorExpr(value, amount, bits = 64) {

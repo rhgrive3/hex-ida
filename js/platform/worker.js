@@ -43,12 +43,17 @@ function selectedFatSliceIndex(binaryImage) {
     && slice.cpu === selected.cpu
     && slice.subtype === selected.subtype);
 }
-async function waitForForegroundDrain(epoch) {
+async function waitForForegroundDrain(epoch, { scheduledEntry = null, signal = null } = {}) {
   // Background metadata performs many small paged reads. Do not enqueue the
   // next page while any interactive request for the same binary epoch is live.
   // A currently executing page is bounded, so foreground work is never held
-  // behind an unbounded metadata scan.
-  while ([...active.values()].some((entry) => entry.epoch === epoch && entry.priority !== 'background')) {
+  // behind an unbounded metadata scan. Exit early on cancellation or epoch change.
+  while (
+    epoch === currentEpoch
+    && !scheduledEntry?.cancelled
+    && !signal?.aborted
+    && [...active.values()].some((entry) => entry.epoch === epoch && entry.priority !== 'background')
+  ) {
     await cooperativeYield();
   }
 }
@@ -81,7 +86,7 @@ self.onmessage = async (event) => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const priority = msg.priority === 'background' ? 'background' : 'current';
-    if (priority === 'background') await waitForForegroundDrain(msg.epoch);
+    if (priority === 'background') await waitForForegroundDrain(msg.epoch, { scheduledEntry });
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     if (scheduledEntry.cancelled) throw new Error('Platform request cancelled.');
     const controller = new AbortController();

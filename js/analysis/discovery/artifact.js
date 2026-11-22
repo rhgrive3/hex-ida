@@ -330,6 +330,17 @@ function referenceMemberV1(reference) {
   });
 }
 
+function upperBoundBigInt(sortedValues, target) {
+  let low = 0;
+  let high = sortedValues.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedValues[mid] <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 function buildCollisionsV1(intervals, candidates, references, budget) {
   let checks = 0;
   const collisions = new Map();
@@ -338,43 +349,58 @@ function buildCollisionsV1(intervals, candidates, references, budget) {
     return checks <= budget.maxCollisionChecks;
   };
 
-  for (let leftIndex = 0; leftIndex < intervals.length; leftIndex += 1) {
-    const left = intervals[leftIndex];
-    for (let rightIndex = leftIndex + 1; rightIndex < intervals.length; rightIndex += 1) {
-      const right = intervals[rightIndex];
-      if (BigInt(right.start) >= BigInt(left.end)) break;
+  const indexedIntervals = intervals.map((interval) => ({
+    interval,
+    start: BigInt(interval.start),
+    end: BigInt(interval.end),
+  }));
+
+  for (let leftIndex = 0; leftIndex < indexedIntervals.length; leftIndex += 1) {
+    const leftEntry = indexedIntervals[leftIndex];
+    const left = leftEntry.interval;
+    for (let rightIndex = leftIndex + 1; rightIndex < indexedIntervals.length; rightIndex += 1) {
+      const rightEntry = indexedIntervals[rightIndex];
+      if (rightEntry.start >= leftEntry.end) break;
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
-      if (BigInt(left.start) >= BigInt(right.end)) continue;
+      if (leftEntry.start >= rightEntry.end) continue;
+      const right = rightEntry.interval;
       const distinctFunctions = left.kind === 'code' && right.kind === 'code'
         && left.candidateStart != null && right.candidateStart != null
         && left.candidateStart !== right.candidateStart;
       const codeData = (left.kind === 'code' && right.kind === 'data')
         || (left.kind === 'data' && right.kind === 'code');
       if (!distinctFunctions && !codeData) continue;
-      const start = BigInt(left.start) > BigInt(right.start) ? left.start : right.start;
-      const end = BigInt(left.end) < BigInt(right.end) ? left.end : right.end;
+      const start = leftEntry.start > rightEntry.start ? left.start : right.start;
+      const end = leftEntry.end < rightEntry.end ? left.end : right.end;
       const item = collisionV1(distinctFunctions ? 'function-overlap' : 'code-data', [intervalMemberV1(left), intervalMemberV1(right)], { start, end });
       collisions.set(item.collisionId, item);
     }
   }
 
-  const codeIntervals = intervals.filter((interval) => interval.kind === 'code');
-  for (const interval of codeIntervals) {
-    for (const candidate of candidates) {
+  const codeIntervals = indexedIntervals.filter((entry) => entry.interval.kind === 'code');
+  const candidateStarts = candidates.map((candidate) => BigInt(candidate.start));
+  for (const entry of codeIntervals) {
+    const interval = entry.interval;
+    for (let k = upperBoundBigInt(candidateStarts, entry.start);
+         k < candidates.length && candidateStarts[k] < entry.end;
+         k += 1) {
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
+      const candidate = candidates[k];
       if (interval.candidateStart === candidate.start) continue;
-      if (BigInt(interval.start) < BigInt(candidate.start) && BigInt(candidate.start) < BigInt(interval.end)) {
-        const item = collisionV1('function-contained-start', [intervalMemberV1(interval), candidateMemberV1(candidate)], null, candidate.start);
-        collisions.set(item.collisionId, item);
-      }
+      const item = collisionV1('function-contained-start', [intervalMemberV1(interval), candidateMemberV1(candidate)], null, candidate.start);
+      collisions.set(item.collisionId, item);
     }
   }
 
-  for (const reference of references) {
-    for (const interval of codeIntervals) {
+  const referenceAddresses = references.map((reference) => BigInt(reference.address));
+  for (const entry of codeIntervals) {
+    const interval = entry.interval;
+    for (let k = upperBoundBigInt(referenceAddresses, entry.start);
+         k < references.length && referenceAddresses[k] < entry.end;
+         k += 1) {
       if (!consume()) return { ok: false, reason: 'collisionV1-work', checks, collisions: [] };
-      if (BigInt(interval.start) < BigInt(reference.address) && BigInt(reference.address) < BigInt(interval.end)
-          && interval.candidateStart !== reference.address) {
+      const reference = references[k];
+      if (interval.candidateStart !== reference.address) {
         const item = collisionV1('code-reference', [intervalMemberV1(interval), referenceMemberV1(reference)], null, reference.address);
         collisions.set(item.collisionId, item);
       }
@@ -742,11 +768,11 @@ export function verifyDiscoveryReparseV1(sourceBinding, reparsedArtifact, { expe
     }
   }
   const sourceCollisionIds = sourceBinding.collisionSets.map((item) => item.collisionId).sort(compareText);
-  const outputCollisionIds = reparsedArtifact.collisionSets.map((item) => item.collisionId).sort(compareText);
+  const outputCollisionIds = new Set(reparsedArtifact.collisionSets.map((item) => item.collisionId));
   const sourceReferenceIds = sourceBinding.references.map((item) => item.referenceId).sort(compareText);
-  const outputReferenceIds = reparsedArtifact.references.map((item) => item.referenceId).sort(compareText);
-  const missingCollisionIds = sourceCollisionIds.filter((id) => !outputCollisionIds.includes(id));
-  const missingReferenceIds = sourceReferenceIds.filter((id) => !outputReferenceIds.includes(id));
+  const outputReferenceIds = new Set(reparsedArtifact.references.map((item) => item.referenceId));
+  const missingCollisionIds = sourceCollisionIds.filter((id) => !outputCollisionIds.has(id));
+  const missingReferenceIds = sourceReferenceIds.filter((id) => !outputReferenceIds.has(id));
   const ok = missingCandidateIds.length === 0
     && promotedCandidateIds.length === 0
     && missingCandidateConflictIds.length === 0
@@ -1193,10 +1219,12 @@ export function verifyDiscoveryReparseV2(sourceBinding, reparsedArtifact, option
     return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-mismatch' });
   }
 
+  const outputCollisionIds = new Set(reparsedArtifact.collisionSets.map((item) => item.collisionId));
+  const outputReferenceIds = new Set(reparsedArtifact.references.map((item) => item.memberId));
   const missingCollisionIds = ids(sourceBinding.collisionSets, 'collisionId')
-    .filter((id) => !ids(reparsedArtifact.collisionSets, 'collisionId').includes(id));
+    .filter((id) => !outputCollisionIds.has(id));
   const missingReferenceIds = ids(sourceBinding.references, 'memberId')
-    .filter((id) => !ids(reparsedArtifact.references, 'memberId').includes(id));
+    .filter((id) => !outputReferenceIds.has(id));
   const candidatesPreserved = sameCanonical(
     sourceBinding.functionCandidates.map(candidateProjection),
     reparsedArtifact.functionCandidates.map(candidateProjection),

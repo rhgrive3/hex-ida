@@ -496,13 +496,19 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       onCaptureRecheck: (fn) => { recheckLive = fn; },
     });
   });
-  if (output?.completeness === 'cancelled') return output;
-  const staleCount = validation.settle();
-  if (staleCount > 0) {
-    const extraReasons = typeof recheckLive === 'function' ? recheckLive() : [];
+  if (output?.completeness === 'cancelled' || output?.reasons?.includes('cancelled')) return output;
+  // Run live-data stale checks outside the initial validation batch (inside a
+  // fresh batch so neither this batch nor any outer batch can shadow live
+  // answers, while still deduplicating shared observations across boundLines).
+  let extraReasons = [];
+  if (typeof recheckLive === 'function') {
+    const recheckBatch = createValidationBatch();
+    recheckBatch.run(() => { extraReasons = recheckLive(); });
+  }
+  if (extraReasons.length > 0) {
     const mergedReasons = [...new Set([
       ...(output?.reasons || []),
-      ...(extraReasons.length > 0 ? extraReasons : ['stale-render-provenance-observation']),
+      ...extraReasons,
     ])];
     return Object.freeze({
       ...output,
@@ -896,10 +902,19 @@ function buildRenderProvenanceCore({ result, snapshotId, resolvedBudget, shouldA
     if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
       staleReasons.push('stale-expression-binding');
     }
+    if ((switches && readSwitchRenderHistory(result) !== switches)
+        || (initialStores && readSemanticStoreRenderHistory(result) !== initialStores)
+        || (initialStatements && readSemanticStatementRenderHistory(result) !== initialStatements)
+        || (initialControls && readSemanticControlRenderHistory(result) !== initialControls)) {
+      staleReasons.push('stale-render-provenance-observation');
+    }
     return staleReasons;
   };
-  onCaptureRecheck?.(collectStaleReasons);
-  for (const r of collectStaleReasons()) reasons.add(r);
+  if (typeof onCaptureRecheck === 'function') {
+    onCaptureRecheck(collectStaleReasons);
+  } else {
+    for (const r of collectStaleReasons()) reasons.add(r);
+  }
   if (snapshotId == null) {
     reasons.add('missing-snapshot');
   }

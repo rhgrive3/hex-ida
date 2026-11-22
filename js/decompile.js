@@ -4,7 +4,6 @@
  * the already-produced decompiler snapshot; never re-decompile that snapshot
  * through the legacy architecture path. */
 import { decompile as baseDecompile } from './decompile-base.js';
-import { lowerArm64RawAssembly } from './decompiler/arm64-extra-semantics.js';
 import { optimizeSemanticDecompilation } from './decompiler/pipeline.js';
 export { optimizeSemanticDecompilation } from './decompiler/pipeline.js';
 
@@ -24,7 +23,7 @@ function canonicalSnapshot(model) {
 export function decompile(model, opts = {}) {
   const canonical = canonicalSnapshot(model);
   if (canonical) return canonical;
-  return lowerArm64RawAssembly(baseDecompile(model, opts));
+  return baseDecompile(model, opts);
 }
 
 /** Explicit asynchronous optimization; the default decompile stays synchronous. */

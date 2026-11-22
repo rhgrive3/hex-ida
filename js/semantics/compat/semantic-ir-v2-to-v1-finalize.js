@@ -350,9 +350,11 @@ function foldInstruction(inst) {
     if (inst.sub === 'sub') return uint(a - b, bits);
     if (inst.sub === 'mul') return uint(a * b, bits);
     if (inst.sub === 'and') return uint(a & b, bits);
-    if (inst.sub === 'or') return uint(a | b, bits);
-    if (inst.sub === 'xor') return uint(a ^ b, bits);
-    if (inst.sub === 'shl' || inst.sub === 'lshr' || inst.sub === 'ashr') {
+    if (inst.sub === 'or' || inst.sub === 'orr') return uint(a | b, bits);
+    if (inst.sub === 'xor' || inst.sub === 'eor') return uint(a ^ b, bits);
+    if (inst.sub === 'shl' || inst.sub === 'lsl'
+        || inst.sub === 'lshr' || inst.sub === 'lsr'
+        || inst.sub === 'ashr' || inst.sub === 'asr') {
       // Compare the original integer count before shifting. Converting an
       // unbounded bigint through Number() can round it or produce Infinity,
       // and BigInt(Infinity) throws before the width guard (#5852).
@@ -361,8 +363,8 @@ function foldInstruction(inst) {
         ? b
         : (typeof b === 'number' && Number.isSafeInteger(b) ? BigInt(b) : null);
       if (shift == null || shift < 0n || shift >= BigInt(bits)) return null;
-      if (inst.sub === 'shl') return uint(a << shift, bits);
-      if (inst.sub === 'lshr') return uint(uint(a, bits) >> shift, bits);
+      if (inst.sub === 'shl' || inst.sub === 'lsl') return uint(a << shift, bits);
+      if (inst.sub === 'lshr' || inst.sub === 'lsr') return uint(uint(a, bits) >> shift, bits);
       return uint(sint(a, bits) >> shift, bits);
     }
     if (inst.sub === 'ror') return ror(a, b, bits);
@@ -413,38 +415,144 @@ function observeConstantWrite(inst, value, round, stage, observer) {
   }));
 }
 
-function propagateConstants(projected, observer) {
-  const maximum = Math.max(4, projected.instructions.length * 2);
-  for (let round = 0; round < maximum; round++) {
-    let changed = false;
-    for (const inst of projected.instructions) {
+function createIndexMinHeap() {
+  const heap = [];
+  const push = (value) => {
+    heap.push(value);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (heap[index] >= heap[parent]) break;
+      const tmp = heap[index];
+      heap[index] = heap[parent];
+      heap[parent] = tmp;
+      index = parent;
+    }
+  };
+  const pop = () => {
+    if (heap.length === 0) return -1;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        const tmp = heap[index];
+        heap[index] = heap[smallest];
+        heap[smallest] = tmp;
+        index = smallest;
+      }
+    }
+    return top;
+  };
+  return {
+    push,
+    pop,
+    get size() { return heap.length; },
+  };
+}
+
+function propagateConstantsWithWorklist(projected, observer, { skipLoads, stage }) {
+  const instructions = projected.instructions;
+  const count = instructions.length;
+  if (!count) return;
+  const maximum = Math.max(4, count * 2);
+  const usersByValue = new Map();
+  for (let index = 0; index < count; index += 1) {
+    const inst = instructions[index];
+    if (skipLoads && inst.op === V1_OP.LOAD) continue;
+    const args = inst.args;
+    if (!args || !args.length) continue;
+    for (let argIndex = 0; argIndex < args.length; argIndex += 1) {
+      const value = args[argIndex]?.value;
+      if (!value) continue;
+      let list = usersByValue.get(value);
+      if (!list) {
+        list = [];
+        usersByValue.set(value, list);
+      }
+      if (list[list.length - 1] !== index) list.push(index);
+    }
+  }
+  const inCurrent = new Uint8Array(count);
+  const inNext = new Uint8Array(count);
+  let nextDirty = [];
+  let changed = false;
+  for (let index = 0; index < count; index += 1) {
+    const inst = instructions[index];
+    if (skipLoads && inst.op === V1_OP.LOAD) continue;
+    const value = foldInstruction(inst);
+    if (value == null || !inst.dst || inst.dst.const === value) continue;
+    observeConstantWrite(inst, value, 0, stage, observer);
+    inst.dst.const = value;
+    changed = true;
+    const consumers = usersByValue.get(inst.dst);
+    if (!consumers) continue;
+    for (let c = 0; c < consumers.length; c += 1) {
+      const consumerIndex = consumers[c];
+      if (consumerIndex <= index && !inNext[consumerIndex]) {
+        inNext[consumerIndex] = 1;
+        nextDirty.push(consumerIndex);
+      }
+    }
+  }
+  if (!changed || !nextDirty.length) return;
+  const currentHeap = createIndexMinHeap();
+  for (let round = 1; round < maximum; round += 1) {
+    for (let i = 0; i < nextDirty.length; i += 1) {
+      const idx = nextDirty[i];
+      inNext[idx] = 0;
+      if (!inCurrent[idx]) {
+        inCurrent[idx] = 1;
+        currentHeap.push(idx);
+      }
+    }
+    nextDirty = [];
+    let roundChanged = false;
+    while (currentHeap.size > 0) {
+      const index = currentHeap.pop();
+      inCurrent[index] = 0;
+      const inst = instructions[index];
+      if (skipLoads && inst.op === V1_OP.LOAD) continue;
       const value = foldInstruction(inst);
       if (value == null || !inst.dst || inst.dst.const === value) continue;
-      observeConstantWrite(inst, value, round, 'finalize-constants', observer);
+      observeConstantWrite(inst, value, round, stage, observer);
       inst.dst.const = value;
-      changed = true;
+      roundChanged = true;
+      const consumers = usersByValue.get(inst.dst);
+      if (!consumers) continue;
+      for (let c = 0; c < consumers.length; c += 1) {
+        const consumerIndex = consumers[c];
+        if (consumerIndex > index) {
+          if (!inCurrent[consumerIndex]) {
+            inCurrent[consumerIndex] = 1;
+            currentHeap.push(consumerIndex);
+          }
+        } else if (!inNext[consumerIndex]) {
+          inNext[consumerIndex] = 1;
+          nextDirty.push(consumerIndex);
+        }
+      }
     }
-    if (!changed) break;
+    if (!roundChanged || !nextDirty.length) break;
   }
+}
+
+function propagateConstants(projected, observer) {
+  propagateConstantsWithWorklist(projected, observer, { skipLoads: false, stage: 'finalize-constants' });
 }
 
 // The canonical MemorySSA query may need the already-owned scalar SSA fact
 // feeding a store.  Populate those scalar constants before the query without
 // evaluating any memory load; memory loads remain gated by MemorySSA below.
 export function propagateScalarConstants(projected, observer = null) {
-  const maximum = Math.max(4, projected.instructions.length * 2);
-  for (let round = 0; round < maximum; round++) {
-    let changed = false;
-    for (const inst of projected.instructions) {
-      if (inst.op === V1_OP.LOAD) continue;
-      const value = foldInstruction(inst);
-      if (value == null || !inst.dst || inst.dst.const === value) continue;
-      observeConstantWrite(inst, value, round, 'pre-memory-scalar-constants', observer);
-      inst.dst.const = value;
-      changed = true;
-    }
-    if (!changed) break;
-  }
+  propagateConstantsWithWorklist(projected, observer, { skipLoads: true, stage: 'pre-memory-scalar-constants' });
 }
 
 function recoverLocalStackFlow(projected) {

@@ -318,12 +318,17 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
     SHT_NOTE,
   ]);
 
+  const linkedStrtabIndices = new Set();
+  for (const other of sections) {
+    if (other.type === SHT_DYNSYM || other.type === SHT_SYMTAB || other.type === SHT_DYNAMIC) {
+      linkedStrtabIndices.add(other.link);
+    }
+  }
+
   for (const s of sections) {
     let matched = candidateSecTypes.has(s.type);
-    if (s.type === SHT_STRTAB) {
-      // Linked from dynsym or symtab?
-      const isLinked = sections.some((other) => (other.type === SHT_DYNSYM || other.type === SHT_SYMTAB || other.type === SHT_DYNAMIC) && other.link === s.index);
-      if (isLinked) matched = true;
+    if (s.type === SHT_STRTAB && linkedStrtabIndices.has(s.index)) {
+      matched = true;
     }
     if (s.name === '.eh_frame_hdr' || s.name === '.gnu_debuglink' || s.name === '.comment') {
       matched = true;
@@ -537,49 +542,92 @@ export async function prefetchELFRanges(source, prefix, options = {}) {
   // Coalesce intervals
   // Any gap < 64 KiB should be merged!
   const GAP_MERGE_THRESHOLD = 64 * 1024;
-  let admittedSpans = [];
-  let currentBudgetUsed = 0;
-
-  for (const item of candidateRanges) {
-    const start = item.offset;
-    const end = start + BigInt(item.size);
-
-    // Compute added bytes if we admit this interval
-    // Check overlap with existing admittedSpans
-    let overlap = 0n;
-    for (const span of admittedSpans) {
-      if (span.start >= end) continue;
-      if (span.end <= start) continue;
-      const lo = span.start > start ? span.start : start;
-      const hi = span.end < end ? span.end : end;
-      if (hi > lo) overlap += hi - lo;
-    }
-    const additional = item.size - Number(overlap);
-    if (additional <= 0) continue;
-    if (currentBudgetUsed + additional > maxCachedBytes) {
-      // Exceeds budget, stop
-      break;
-    }
-
-    // Merge into admittedSpans
-    currentBudgetUsed += additional;
-    admittedSpans.push({ start, end });
-    admittedSpans.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
-    // Consolidate overlapping / touching
-    const consolidated = [];
-    for (const span of admittedSpans) {
-      if (!consolidated.length) {
-        consolidated.push({ start: span.start, end: span.end });
+  const mergeSortedSpans = (left, right) => {
+    if (right.length === 0) return left;
+    if (left.length === 0) return right;
+    const merged = [];
+    let i = 0;
+    let j = 0;
+    while (i < left.length || j < right.length) {
+      const next = (j >= right.length || (i < left.length && left[i].start <= right[j].start))
+        ? left[i++]
+        : right[j++];
+      if (!merged.length) {
+        merged.push({ start: next.start, end: next.end });
       } else {
-        const last = consolidated[consolidated.length - 1];
-        if (span.start <= last.end) {
-          if (span.end > last.end) last.end = span.end;
+        const last = merged[merged.length - 1];
+        if (next.start <= last.end) {
+          if (next.end > last.end) last.end = next.end;
         } else {
-          consolidated.push({ start: span.start, end: span.end });
+          merged.push({ start: next.start, end: next.end });
         }
       }
     }
-    admittedSpans = consolidated;
+    return merged;
+  };
+
+  let admittedSpans = [];
+  let currentBudgetUsed = 0;
+  let idx = 0;
+  let budgetExhausted = false;
+
+  while (idx < candidateRanges.length && !budgetExhausted) {
+    const groupPriority = candidateRanges[idx].priority;
+    const groupSpans = [];
+    let prevIdx = 0;
+    let groupMaxEnd = -1n;
+
+    while (idx < candidateRanges.length && candidateRanges[idx].priority === groupPriority) {
+      const item = candidateRanges[idx++];
+      const start = item.offset;
+      const end = start + BigInt(item.size);
+
+      // Compute added bytes against already admitted spans in this priority group
+      // (monotonically non-decreasing start) and prior priority groups.
+      let overlap = 0n;
+      let effStart = start;
+      if (groupMaxEnd > start) {
+        const groupOverlapEnd = groupMaxEnd < end ? groupMaxEnd : end;
+        overlap += groupOverlapEnd - start;
+        effStart = groupOverlapEnd;
+      }
+
+      if (effStart < end) {
+        while (prevIdx < admittedSpans.length && admittedSpans[prevIdx].end <= effStart) {
+          prevIdx++;
+        }
+        for (let p = prevIdx; p < admittedSpans.length; p++) {
+          const span = admittedSpans[p];
+          if (span.start >= end) break;
+          const lo = span.start > effStart ? span.start : effStart;
+          const hi = span.end < end ? span.end : end;
+          if (hi > lo) overlap += hi - lo;
+        }
+      }
+
+      const additional = item.size - Number(overlap);
+      if (additional <= 0) continue;
+      if (currentBudgetUsed + additional > maxCachedBytes) {
+        // Exceeds budget, stop
+        budgetExhausted = true;
+        break;
+      }
+
+      currentBudgetUsed += additional;
+      if (end > groupMaxEnd) groupMaxEnd = end;
+      if (!groupSpans.length) {
+        groupSpans.push({ start, end });
+      } else {
+        const last = groupSpans[groupSpans.length - 1];
+        if (start <= last.end) {
+          if (end > last.end) last.end = end;
+        } else {
+          groupSpans.push({ start, end });
+        }
+      }
+    }
+
+    admittedSpans = mergeSortedSpans(admittedSpans, groupSpans);
   }
 
   // Now coalesce adjacent spans where gap < GAP_MERGE_THRESHOLD

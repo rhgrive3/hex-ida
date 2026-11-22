@@ -55,39 +55,67 @@ getChunk = async function getChunkDataInCode(args) {
   return { ...result, mn:mn.join('\n'), ops:ops.join('\n') };
 };
 
+let __dicTempRegionSeq = 0;
+function __dicTempRegionKey(regionId) {
+  let key;
+  do {
+    __dicTempRegionSeq += 1;
+    key = `${regionId}:__dic:${__dicTempRegionSeq}`;
+  } while (regions.has(key));
+  return key;
+}
+
 scanProgram = async function scanProgramDataInCode(args) {
   const region = regions.get(args.regionId);
   const reasons = [];
   const spans = region ? __dicCodeSpans(region, reasons) : [];
   if (!region || !__dicRanges(region).length) return __dicScanProgram(args);
   const words = Math.floor(Number(region.size) / 4);
-  const kinds = new Uint8Array(words); // OTHER=0 is the fail-closed value.
+  const capOf = (value, hard) => value == null ? hard : Math.max(0, Math.min(hard, Math.floor(Number(value) || 0)));
+  const callCap = capOf(args.callLimit, MAX_EDGES);
+  const refCap = capOf(args.refLimit, MAX_REFS);
+  const kindCap = capOf(args.kindLimit, MAX_KIND_WORDS);
+  const kinds = new Uint8Array(Math.min(words, kindCap)); // OTHER=0 is the fail-closed value.
   const calls = [], refs = [];
   let callsCapped = false, refsCapped = false, cancelledResult = false;
   const original = region;
-  try {
-    for (let n = 0; n < spans.length; n++) {
-      const span = spans[n], delta = span.start - BigInt(original.vmAddr);
-      const sub = { ...original, fileOffset:BigInt(original.fileOffset) + delta, vmAddr:span.start, size:span.end - span.start, dataInCode:[] };
-      regions.set(args.regionId, sub);
-      const part = await __dicScanProgram(args);
-      if (part?.cancelled) { cancelledResult = true; break; }
-      for (let i = 0; i < Number(part.callCount || 0); i++) calls.push([part.callFrom[i], part.callTo[i]]);
-      for (let i = 0; i < Number(part.refCount || 0); i++) refs.push([part.refFrom[i], part.refTo[i], part.refKind[i]]);
-      const wordBase = Number(delta / 4n);
-      for (let i = 0; i < part.kinds.length && wordBase + i < kinds.length; i++) kinds[wordBase + i] = part.kinds[i];
-      callsCapped ||= part.callsCapped === true;
-      refsCapped ||= part.refsCapped === true;
-      for (const reason of part.completeness?.reasons || []) if (!reasons.includes(reason)) reasons.push(reason);
+  for (let n = 0; n < spans.length; n++) {
+    const span = spans[n], delta = span.start - BigInt(original.vmAddr);
+    const wordBase = Number(delta / 4n);
+    const remainingKinds = Math.max(0, kinds.length - wordBase);
+    const remainingCalls = Math.max(0, callCap - calls.length);
+    const remainingRefs = Math.max(0, refCap - refs.length);
+    const sub = { ...original, fileOffset:BigInt(original.fileOffset) + delta, vmAddr:span.start, size:span.end - span.start, dataInCode:[] };
+    const tempKey = __dicTempRegionKey(args.regionId);
+    regions.set(tempKey, sub);
+    let part;
+    try {
+      part = await __dicScanProgram({
+        ...args,
+        regionId: tempKey,
+        callLimit: remainingCalls,
+        refLimit: remainingRefs,
+        kindLimit: remainingKinds,
+      });
+    } finally {
+      regions.delete(tempKey);
     }
-  } finally { regions.set(args.regionId, original); }
+    if (part?.cancelled) { cancelledResult = true; break; }
+    for (let i = 0; i < Number(part.callCount || 0) && calls.length < callCap; i++) calls.push([part.callFrom[i], part.callTo[i]]);
+    for (let i = 0; i < Number(part.refCount || 0) && refs.length < refCap; i++) refs.push([part.refFrom[i], part.refTo[i], part.refKind[i]]);
+    for (let i = 0; i < part.kinds.length && wordBase + i < kinds.length; i++) kinds[wordBase + i] = part.kinds[i];
+    callsCapped ||= part.callsCapped === true;
+    refsCapped ||= part.refsCapped === true;
+    for (const reason of part.completeness?.reasons || []) if (!reasons.includes(reason)) reasons.push(reason);
+  }
   if (cancelledResult) return { cancelled:true, __transfer:[] };
-  const callCap = args.callLimit == null ? MAX_EDGES : Math.max(0, Math.min(MAX_EDGES, Math.floor(Number(args.callLimit) || 0)));
-  const refCap = args.refLimit == null ? MAX_REFS : Math.max(0, Math.min(MAX_REFS, Math.floor(Number(args.refLimit) || 0)));
   if (calls.length > callCap) { calls.length = callCap; callsCapped = true; if (!reasons.includes('call-edge-memory-budget')) reasons.push('call-edge-memory-budget'); }
   if (refs.length > refCap) { refs.length = refCap; refsCapped = true; if (!reasons.includes('reference-memory-budget')) reasons.push('reference-memory-budget'); }
-  const callFrom = new BigUint64Array(calls.map((x)=>x[0])), callTo = new BigUint64Array(calls.map((x)=>x[1]));
-  const refFrom = new BigUint64Array(refs.map((x)=>x[0])), refTo = new BigUint64Array(refs.map((x)=>x[1])), refKind = new Uint8Array(refs.map((x)=>x[2]));
+  if (kinds.length < words && !reasons.includes('kind-stat-budget')) reasons.push('kind-stat-budget');
+  const callFrom = new BigUint64Array(calls.length), callTo = new BigUint64Array(calls.length);
+  for (let i = 0; i < calls.length; i++) { callFrom[i] = calls[i][0]; callTo[i] = calls[i][1]; }
+  const refFrom = new BigUint64Array(refs.length), refTo = new BigUint64Array(refs.length), refKind = new Uint8Array(refs.length);
+  for (let i = 0; i < refs.length; i++) { refFrom[i] = refs[i][0]; refTo[i] = refs[i][1]; refKind[i] = refs[i][2]; }
   return {
     regionId:args.regionId, vmAddr:original.vmAddr, words,
     callFrom, callTo, callCount:calls.length,
@@ -104,16 +132,21 @@ findXrefs = async function findXrefsDataInCode(args) {
   const spans = region ? __dicCodeSpans(region) : [];
   if (!region || !__dicRanges(region).length) return __dicFindXrefs(args);
   const original = region, results = [], cap = Math.min(Number(args.limit) || 2000, 2000);
-  try {
-    for (const span of spans) {
-      const delta = span.start - BigInt(original.vmAddr);
-      regions.set(args.regionId, { ...original, fileOffset:BigInt(original.fileOffset)+delta, vmAddr:span.start, size:span.end-span.start, dataInCode:[] });
-      const part = await __dicFindXrefs({ ...args, limit:Math.max(0, cap-results.length) });
-      if (part?.cancelled) return { results, cancelled:true, capped:false };
-      results.push(...(part.results || []));
-      if (results.length >= cap) break;
+  for (const span of spans) {
+    const delta = span.start - BigInt(original.vmAddr);
+    const sub = { ...original, fileOffset:BigInt(original.fileOffset)+delta, vmAddr:span.start, size:span.end-span.start, dataInCode:[] };
+    const tempKey = __dicTempRegionKey(args.regionId);
+    regions.set(tempKey, sub);
+    let part;
+    try {
+      part = await __dicFindXrefs({ ...args, regionId: tempKey, limit:Math.max(0, cap-results.length) });
+    } finally {
+      regions.delete(tempKey);
     }
-  } finally { regions.set(args.regionId, original); }
+    if (part?.cancelled) return { results, cancelled:true, capped:false };
+    results.push(...(part.results || []));
+    if (results.length >= cap) break;
+  }
   return { results:results.slice(0,cap), cancelled:false, capped:results.length>=cap };
 };
 

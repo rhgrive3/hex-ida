@@ -10,6 +10,7 @@ import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js'
 import { applyDecompilerProfile } from './decompiler/profiles.js';
 import { closeFunctionOutput } from './decompiler/c-output-closure.js';
 import { eliminateAvoidableGotos } from './decompiler/goto-closure.js';
+import { lowerArm64RawAssembly } from './decompiler/arm64-extra-semantics.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -74,7 +75,10 @@ function finalize(result, model, opts) {
         completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
     }
   }
-  return closePublicCOutput(result, opts);
+  const prevLowerings = result?.ctx?.exactArm64FallbackLowerings || 0;
+  result = lowerArm64RawAssembly(result);
+  const loweredArm64 = (result?.ctx?.exactArm64FallbackLowerings || 0) > prevLowerings;
+  return closePublicCOutput(result, opts, { forceRefreshProvenance: loweredArm64 });
 }
 
 /*
@@ -106,7 +110,7 @@ function refreshRenderProvenance(closed, opts) {
   }
 }
 
-function closePublicCOutput(result, opts = {}) {
+function closePublicCOutput(result, opts = {}, internal = {}) {
   if (!result?.lines?.length) return result;
   // Provably redundant jumps go first: the declaration closure below must
   // declare storage for the text that will actually be published, and a jump
@@ -121,7 +125,7 @@ function closePublicCOutput(result, opts = {}) {
     onLinesChanged: noteLinesChanged,
   });
   const closed = closeFunctionOutput(withoutJumps, { render: textOf, onLinesChanged: noteLinesChanged });
-  if (linesChanged) refreshRenderProvenance(closed, opts);
+  if (linesChanged || internal.forceRefreshProvenance) refreshRenderProvenance(closed, opts);
   return closed;
 }
 
@@ -462,9 +466,23 @@ function exactExceptionAssemblyLines(model, block) {
  * the separation explicit and prevent catch code from looking like normal code
  * that executes after a return.
  */
-function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, classification) {
+function cloneLegacyResult(legacy) {
+  if (!legacy) return legacy;
+  return {
+    ...legacy,
+    lines: Array.isArray(legacy.lines) ? legacy.lines.map((l) => ({ ...l })) : [],
+    warnings: Array.isArray(legacy.warnings) ? legacy.warnings.slice() : [],
+    evidence: Array.isArray(legacy.evidence) ? legacy.evidence.slice() : [],
+    ctx: legacy.ctx ? { ...legacy.ctx } : legacy.ctx,
+    coverage: legacy.coverage ? { ...legacy.coverage } : legacy.coverage,
+  };
+}
+
+function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, classification, getLegacy) {
   if (!classification.components.length || !classification.allException) return null;
-  const legacy = legacyDecompile(model, opts);
+  const closeCheck = semantic.lines?.findLastIndex?.((l) => l.kind === 'ctrl' && l.text === '}') ?? -1;
+  if (closeCheck < 0) return null;
+  const legacy = getLegacy ? getLegacy() : legacyDecompile(model, opts);
   const detachedBlocks = new Set(classification.components.flatMap((c) => c.blocks));
   const regionLines = [];
 
@@ -535,9 +553,12 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
  * old false-loop bug without replacing an otherwise translatable function with
  * raw assembly.
  */
-function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
+function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges, getLegacy) {
+  if (!edges.every((edge) => (edge.from.succ || []).length === 1 && edge.from.insts?.at(-1) && edge.to.insts?.[0])) {
+    return null;
+  }
   const fallback = augmentLegacy(
-    legacyDecompile(model, opts),
+    getLegacy ? getLegacy() : legacyDecompile(model, opts),
     'A backward control-flow edge is not a proven natural loop; Semantic IR supplies the shared-cleanup goto/label edge while legacy rendering handles statements.',
     semantic,
   );
@@ -553,12 +574,12 @@ function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
   return fallback;
 }
 
-function preferLegacyForUnsupported(model, opts, semantic) {
+function preferLegacyForUnsupported(model, opts, semantic, getLegacy) {
   const unsupported = semantic?.ctx?.unknownInstructions || 0;
   if (!unsupported) return semantic;
   if (asmCount(semantic) === 0) return semantic;
   const legacy = augmentLegacy(
-    legacyDecompile(model, opts),
+    getLegacy ? getLegacy() : legacyDecompile(model, opts),
     `Semantic IR has ${unsupported} unsupported instruction(s); only this unsupported function uses the isolated legacy expression fallback.`,
     semantic,
   );
@@ -568,9 +589,16 @@ function preferLegacyForUnsupported(model, opts, semantic) {
 }
 
 export function decompile(model, opts = {}) {
-  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
+  if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) {
+    return finalize(legacyDecompile(model, opts), model, opts);
+  }
   const semanticModel = semanticModelForDecompiler(model);
   const semanticOpts = semanticOptionsForModel(semanticModel, opts);
+  let cachedLegacy = null;
+  const getLegacy = () => {
+    if (!cachedLegacy) cachedLegacy = legacyDecompile(model, opts);
+    return cloneLegacyResult(cachedLegacy);
+  };
   try {
     let result = decompileSemantic(semanticModel, semanticOpts);
     if (result) {
@@ -579,18 +607,18 @@ export function decompile(model, opts = {}) {
       if (total > reachable) {
         const detached = detachedExceptionComponents(result, semanticModel, semanticOpts);
         if (detached.allException && detached.components.length) {
-          const mixed = graftDetachedExceptionRegions(model, semanticModel, semanticOpts, result, detached);
+          const mixed = graftDetachedExceptionRegions(model, semanticModel, semanticOpts, result, detached, getLegacy);
           if (mixed) result = mixed;
           else {
             return finalize(augmentLegacy(
-              legacyDecompile(model, opts),
+              getLegacy(),
               `Semantic IR covers ${reachable}/${total} Basic Blocks; detached exception regions could not be preserved losslessly, so the isolated faithful fallback was used.`,
               result,
             ), model, opts);
           }
         } else {
           return finalize(augmentLegacy(
-            legacyDecompile(model, opts),
+            getLegacy(),
             `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets use the isolated faithful fallback.`,
             result,
           ), model, opts);
@@ -599,11 +627,11 @@ export function decompile(model, opts = {}) {
 
       const cleanupEdges = nonNaturalBackwardEdges(result);
       if (cleanupEdges.length) {
-        const mixed = legacyWithIrCleanupEdges(model, semanticModel, semanticOpts, result, cleanupEdges);
+        const mixed = legacyWithIrCleanupEdges(model, semanticModel, semanticOpts, result, cleanupEdges, getLegacy);
         if (mixed) return finalize(mixed, semanticModel, semanticOpts);
       }
 
-      result = preferLegacyForUnsupported(model, semanticOpts, result);
+      result = preferLegacyForUnsupported(model, semanticOpts, result, getLegacy);
       if (!result.semantic) return finalize(result, semanticModel, semanticOpts);
 
       result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, semanticModel, semanticOpts, bi));
@@ -616,9 +644,9 @@ export function decompile(model, opts = {}) {
     }
   } catch (error) {
     return finalize(augmentLegacy(
-      legacyDecompile(model, opts),
+      getLegacy(),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,
     ), model, opts);
   }
-  return finalize(augmentLegacy(legacyDecompile(model, opts), 'Semantic IR is unavailable for this function.'), model, opts);
+  return finalize(augmentLegacy(getLegacy(), 'Semantic IR is unavailable for this function.'), model, opts);
 }

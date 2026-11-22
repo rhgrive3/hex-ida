@@ -173,9 +173,12 @@ export function rangeOnBranch(ir, branch, taken = true) {
   };
 }
 
+const publicBranchConstraintsCache = new WeakMap();
+
 export function branchConstraints(ir) {
   if (!ir) return [];
-  if (ir._branchConstraints) return ir._branchConstraints;
+  const cached = publicBranchConstraintsCache.get(ir);
+  if (cached) return cached;
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CBR) continue;
@@ -183,6 +186,7 @@ export function branchConstraints(ir) {
     const no = rangeOnBranch(ir, inst, false);
     if (yes || no) out.push({ branch:inst, taken:yes, fallthrough:no });
   }
+  publicBranchConstraintsCache.set(ir, out);
   ir._branchConstraints = out;
   return out;
 }

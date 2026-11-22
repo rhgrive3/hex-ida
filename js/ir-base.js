@@ -454,7 +454,6 @@ export function buildIR(model, opts) {
   promoteResolvedGlobals(ir);
   hardenUnknownStores(ir);
   annotateValueRanges(ir);
-  branchConstraints(ir);
   return ir;
 }
 

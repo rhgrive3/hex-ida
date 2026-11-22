@@ -176,6 +176,52 @@ function validateControlProjection(ir, cfg) {
   }
 }
 
+function createLexicalMinPriorityQueue(initialItems = []) {
+  const heap = [];
+  const push = (item) => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (heap[index] >= heap[parent]) break;
+      const tmp = heap[index];
+      heap[index] = heap[parent];
+      heap[parent] = tmp;
+      index = parent;
+    }
+  };
+  for (let i = 0; i < initialItems.length; i++) {
+    push(initialItems[i]);
+  }
+  const pop = () => {
+    if (heap.length === 0) return undefined;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        const tmp = heap[index];
+        heap[index] = heap[smallest];
+        heap[smallest] = tmp;
+        index = smallest;
+      }
+    }
+    return top;
+  };
+  return {
+    push,
+    pop,
+    get size() { return heap.length; },
+  };
+}
+
 function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
   const defBlocks = new Set(definitions
     .filter((definition) => definition.kind !== 'phi'
@@ -184,11 +230,12 @@ function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
       && reachable.has(definition.blockId))
     .map((definition) => definition.blockId));
   const expected = new Set();
-  const pending = [...defBlocks].sort();
-  const queued = new Set(pending);
-  while (pending.length) {
+  const defs = [...defBlocks].sort();
+  const queued = new Set(defs);
+  const pending = createLexicalMinPriorityQueue(defs);
+  while (pending.size) {
     tick();
-    const blockId = pending.shift();
+    const blockId = pending.pop();
     for (const frontierId of dominance.dominanceFrontier[blockId] ?? []) {
       tick();
       if (!reachable.has(frontierId) || expected.has(frontierId)) continue;
@@ -196,7 +243,6 @@ function computeExpectedPhiBlocks(definitions, dominance, reachable, tick) {
       if (!defBlocks.has(frontierId) && !queued.has(frontierId)) {
         queued.add(frontierId);
         pending.push(frontierId);
-        pending.sort();
       }
     }
   }
