@@ -143,7 +143,14 @@ export function isStandalonePrototypePreludeComment(text) {
 }
 
 export function isStandalonePrototypePreludeDeclaration(text) {
-  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((?:\s*|\s*uint64\s*,\s*\.\.\.\s*|\s*\.\.\.\s*)\)\s*;$/.exec(String(text ?? '').trim());
+  const trimmed = String(text ?? '').trim();
+  if (trimmed === '#ifndef __HEX_ANY_ARGS'
+    || trimmed === '#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L'
+    || trimmed === '#define __HEX_ANY_ARGS ...'
+    || trimmed === '#else'
+    || trimmed === '#define __HEX_ANY_ARGS'
+    || trimmed === '#endif') return true;
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((?:\s*|\s*__HEX_ANY_ARGS\s*|\s*uint64\s*,\s*\.\.\.\s*|\s*\.\.\.\s*)\)\s*;$/.exec(trimmed);
   return !!match && FIXED_WIDTH_TYPES.has(match[1]) && !KEYWORDS.has(match[2]);
 }
 
@@ -592,17 +599,27 @@ function inferPointerTypedLocals(renderedBody, sigText) {
   for (let m = ptrParamRe.exec(cleanSig); m; m = ptrParamRe.exec(cleanSig)) {
     sigPtrNames.add(m[1]);
   }
-  const assignPattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;=]+);\s*$/gm;
+  const rawText = String(renderedBody ?? '');
+  const assignPattern = /(?:^|[;{}])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;{}]+);/gm;
   const stats = new Map();
-  for (let m = assignPattern.exec(source); m; m = assignPattern.exec(source)) {
+  const isStringOrPtrExpr = (expr) => {
+    const t = expr.trim();
+    if (!t) return false;
+    if (sigPtrNames.has(t)) return true;
+    if (/^"(?:[^"\\]|\\.)*"$/.test(t)) return true;
+    if (/^&\s*[A-Za-z_][A-Za-z0-9_]*$/.test(t)) return true;
+    if (/^\([^()]*\*\s*\)/.test(t)) return true;
+    const tern = /^[^?]+\?\s*([^:]+)\s*:\s*(.+)$/.exec(t);
+    if (tern && isStringOrPtrExpr(tern[1]) && isStringOrPtrExpr(tern[2])) return true;
+    return false;
+  };
+  for (let m = assignPattern.exec(rawText); m; m = assignPattern.exec(rawText)) {
     const lhs = m[1];
     const rhs = m[2].trim();
+    if (/^\s*(?:return|if|while|for|switch|typedef|extern)\b/.test(lhs)) continue;
     let st = stats.get(lhs);
     if (!st) { st = { ptrAssigns: 0, nonPtrAssigns: 0 }; stats.set(lhs, st); }
-    const isPtrRhs = sigPtrNames.has(rhs)
-      || /^&\s*[A-Za-z_][A-Za-z0-9_]*$/.test(rhs)
-      || /^\([^()]*\*\s*\)/.test(rhs);
-    if (isPtrRhs) st.ptrAssigns++;
+    if (isStringOrPtrExpr(rhs)) st.ptrAssigns++;
     else st.nonPtrAssigns++;
   }
   const ptrLocals = new Set();
@@ -639,7 +656,7 @@ function localDeclarationTypeFor(name, result) {
 function isDeclarableLocal(entry, declared) {
   const name = entry?.name;
   if (!name || !entry.value || declared.has(name)) return false;
-  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || name === 'id') return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || name === 'id' || name === '__HEX_ANY_ARGS') return false;
   if (entry.callTarget || entry.memberName || entry.memberBase || entry.castType || entry.tag) return false;
   if (entry.label || entry.gotoLabel) return false;
   // External symbols and pseudo-intrinsics are never fabricated as function-local variables.
@@ -798,7 +815,7 @@ export function closeFunctionOutput(result, options = {}) {
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared))
     .map((entry) => ({
-      kind: 'decl', indent: 1, text: `${(() => { const t = localDeclarationTypeFor(entry.name, result); return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'void *' : t; })()} ${entry.name};`,
+      kind: 'decl', indent: 1, text: `${(() => { const t = localDeclarationTypeFor(entry.name, result); return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t; })()} ${entry.name};`,
       row: null, addr: null, note: null, source: entrySource,
     }));
 
@@ -860,16 +877,29 @@ export function closeFunctionOutput(result, options = {}) {
       && !FIXED_WIDTH_TYPES.has(entry.name)
       && !STANDARD_KNOWN_TYPES.has(entry.name)
       && !macroDefinedCalls.has(entry.name)
+      && !/^__builtin_/.test(entry.name)
+      && entry.name !== '__HEX_ANY_ARGS'
       && entry.name !== sigFuncName)
     .sort((a, b) => compareAscii(a.name, b.name));
   const prototypePrelude = [];
-  if (standalonePrototypes.length) {
+  const needsAnyArgsMacro = (standalonePrototypes.length > 0 || /\b__HEX_ANY_ARGS\b/.test(renderedInitial))
+    && !lines.some((l) => String(l?.text ?? '').includes('#define __HEX_ANY_ARGS'));
+  if (needsAnyArgsMacro || standalonePrototypes.length) {
     prototypePrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_PROTOTYPES_COMMENT, row: null, addr: null, note: null, source: entrySource });
+    if (needsAnyArgsMacro) {
+      prototypePrelude.push(
+        { kind: 'decl', indent: 0, text: '#ifndef __HEX_ANY_ARGS', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#define __HEX_ANY_ARGS ...', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#else', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#define __HEX_ANY_ARGS', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+      );
+    }
     for (const entry of standalonePrototypes) {
-      const arity = callSiteArityRange(declarationBearingSource(renderedInitial), entry.name);
-      const paramList = arity.minArgs >= 1 ? '(uint64, ...)' : (arity.maxArgs >= 1 ? '(...)' : '()');
       prototypePrelude.push({
-        kind: 'decl', indent: 0, text: `uint64 ${entry.name} ${paramList};`,
+        kind: 'decl', indent: 0, text: `uint64 ${entry.name} (__HEX_ANY_ARGS);`,
         row: null, addr: null, note: null, source: entrySource,
       });
     }

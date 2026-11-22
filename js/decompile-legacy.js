@@ -2093,7 +2093,8 @@ function callStatement(insn, ctx, mk) {
   }
 
   const args = callArguments(call, ctx);
-  const label = name || (target != null ? 'sub_' + target.toString(16).toUpperCase() : indirectName(insn, ctx));
+  const cleanName = name ? sanitizeLegacyCallLabel(name) : null;
+  const label = cleanName || (target != null ? 'sub_' + target.toString(16).toUpperCase() : indirectName(insn, ctx));
   const callExpr = label + '(' + args.join(', ') + ')';
   /* 値が分かっている引数（"文字列" や 0x50）は、そのまま書けているので
      「x0 を読んだ」ことにしない。手前の準備の行を消せるようにするため。 */
@@ -2110,11 +2111,19 @@ function callStatement(insn, ctx, mk) {
   });
 }
 
+function sanitizeLegacyCallLabel(raw) {
+  const s = String(raw || '').trim();
+  if (!s || /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;
+  let clean = s.replace(/\[\]/g, '_array').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!clean || /^[0-9]/.test(clean)) clean = 'fn_' + clean;
+  return clean;
+}
+
 function indirectName(insn, ctx) {
   const r = insn.ops && insn.ops[0] ? regOf(insn.ops[0]) : null;
   if (!r) return '(*func)';
   const target = registerValueText(ctx, insn.row, r);
-  return '(*' + (needsParens(target) ? '(' + target + ')' : target) + ')';
+  return '((uint64 (*)(__HEX_ANY_ARGS))(uintptr_t)(' + target + '))';
 }
 
 function registerValueText(ctx, row, reg) {

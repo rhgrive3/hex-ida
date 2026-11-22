@@ -283,7 +283,7 @@ test('parenthesized multiplication (a1 * a1) is not misclassified as pointer cas
 });
 
 test('signature pointer class types (Thing * this) get forward/struct typedefs and __atomic_load/__atomic_store get compat macros', () => {
-  const res1 = {
+  const revar_10 = {
     lines: [
       { kind: 'sig', indent: 0, text: 'uint64 ZNK5Thing6updateEi(Thing * this)' },
       { kind: 'ctrl', indent: 0, text: '{' },
@@ -328,8 +328,8 @@ test('standalone prototypes, id typedef, pointer-typed locals, and TU stripping 
   };
   closeFunctionOutput(res);
   assert.match(res.pseudocode, /typedef void \* id;/);
-  assert.match(res.pseudocode, /uint64 objc_retain \(uint64, \.\.\.\);/);
-  assert.match(res.pseudocode, /void \* x8;/);
+  assert.match(res.pseudocode, /uint64 objc_retain \(__HEX_ANY_ARGS\);/);
+  assert.match(res.pseudocode, /const void \* x8;/);
   assert.doesNotMatch(res.pseudocode, /\buint64 id;/);
   const once = res.pseudocode;
   closeFunctionOutput(res);
@@ -343,4 +343,28 @@ test('standalone prototypes, id typedef, pointer-typed locals, and TU stripping 
   }]);
   assert.ok(unit.unresolved.some((row) => row.kind === 'unresolved-prototype' && row.subject === 'objc_retain'));
   assert.ok(!unit.source.includes('/* hex: standalone external prototypes'));
+});
+
+test('__HEX_ANY_ARGS macro skips __builtin_*, supports 0..N mixed-type args, and infers const void* for string/ternary pointer locals', () => {
+  const res = {
+    lines: [
+      { kind: 'sig', indent: 0, text: 'uint64 mixed_calls(void * a1)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'stmt', indent: 1, text: 'var_10 = a1 != 0 ? "yes" : "no";' },
+      { kind: 'stmt', indent: 1, text: 'x0 = ext_fn();' },
+      { kind: 'stmt', indent: 1, text: 'x0 = ext_fn(a1, var_10, 42);' },
+      { kind: 'stmt', indent: 1, text: 'x0 = ((uint64 (*)(__HEX_ANY_ARGS))(uintptr_t)(x0))(a1);' },
+      { kind: 'stmt', indent: 1, text: '__builtin_trap();' },
+      { kind: 'ctrl', indent: 1, text: 'return x0;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  };
+  closeFunctionOutput(res);
+  assert.match(res.pseudocode, /#define __HEX_ANY_ARGS/);
+  assert.match(res.pseudocode, /uint64 ext_fn \(__HEX_ANY_ARGS\);/);
+  assert.doesNotMatch(res.pseudocode, /uint64 __builtin_trap/);
+  assert.match(res.pseudocode, /const void \* var_10;/);
+  const once = res.pseudocode;
+  closeFunctionOutput(res);
+  assert.equal(res.pseudocode, once);
 });
