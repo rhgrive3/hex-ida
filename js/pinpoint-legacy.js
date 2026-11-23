@@ -157,7 +157,7 @@ export async function pinpointField(opts) {
       if (!cxx && fit === 'conflict' && !nameHit && !propHit) continue;
       // 名前も当たらず、クラスの担当も違うなら、証拠が 1 つもないので候補にしない
       if (!cxx && !nameHit && !propHit && !ctx.categoryHit && !ctx.nameHit) continue;
-      raw.push({ cls, iv, nameHit, fit, ctx });
+      raw.push({ cls, iv, nameHit, propHit, fit, ctx });
     }
   }
   if (!raw.length) {
@@ -211,7 +211,7 @@ export async function pinpointField(opts) {
   } else {
     asked = candidates.filter((c) => c.askedBySequence || c.askedByWords);
   }
-  const narrowed = asked.length > 0 && asked.length < candidates.length;
+  const narrowed = asked.length > 0 && (asked.length < candidates.length || asked.length < universe);
   if (asked.length) {
     const keys = new Set(asked.map((c) => c.key));
     // Anonymous C++ fields keep their binary identity even when their names
@@ -326,7 +326,9 @@ function classContext(cls, goal, categoryOf, classStringHits, vendors) {
   // 同じクラスに、その目的の仲間の値がいくつあるか（hp があるクラスには attack もある）
   let siblings = 0;
   for (const iv of cls.ivars || []) {
-    if ((!cxx || !iv.anonymous) && matchField(goal, iv.name)) siblings++;
+    const ivHit = (!cxx || !iv.anonymous) && matchField(goal, iv.name);
+    const prHit = iv.property ? matchField(goal, iv.property.name) : null;
+    if (ivHit || prHit) siblings++;
   }
   // その目的の言葉を含むメソッドが、このクラスにあるか
   let selectors = 0;
@@ -375,40 +377,51 @@ function classesReferencingGoalStrings(goal, o) {
 
 /* ── 候補 1 つぶんの証拠 ─────────────────────────────────── */
 
-function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
+function isPointerFieldType(type) {
+  if (!type) return false;
+  const kind = type.kind;
+  return kind === 'pointer' || kind === 'object' || kind === 'cstring' ||
+    kind === 'class' || kind === 'selector' || kind === 'block';
+}
+
+function buildFieldCandidate({ cls, iv, nameHit, propHit, fit, ctx }, goal) {
   const ev = [];
   const cxx = isCxxMemberField(iv, cls);
 
   /* 名前 — いちばん直接的だが、これだけでは確定にしない（evidence.js が上限を掛ける） */
   const isPreset = !!(goal && goal.isPreset);
-  if (nameHit) {
+  const prop = iv.property || null;
+  const pm = propHit !== undefined ? propHit : (prop ? matchField(goal, prop.name) : null);
+  const primaryNameHit = (!nameHit || (!isPreset && pm && pm.literal && pm.exact && !(nameHit.literal && nameHit.exact)))
+    ? (pm || nameHit)
+    : nameHit;
+  const primaryName = primaryNameHit === pm && prop ? prop.name : iv.name;
+  if (primaryNameHit) {
     /*
      * 打ち込まれた名前と、変数の名前が、そっくりそのまま同じ。
      * 探しものの名前を知っている人が名前で探しているのだから、
      * これ以上の手がかりは無い。語彙ごしの一致とは別格に扱う。
      * プリセット選択（goal.isPreset）はラベル文字のリテラル一致にしない。
      */
-    if (!isPreset && nameHit.literal && nameHit.exact) {
-      ev.push(evidence('field-name-asked', 1, { name: iv.name, term: nameHit.term }));
-    } else if (!isPreset && nameHit.literal && nameHit.sequence) {
-      ev.push(evidence('field-name-contains', 1, { name: iv.name, term: nameHit.term }));
-    } else if (!isPreset && nameHit.literal && nameHit.words) {
-      ev.push(evidence('field-name-words', 1, { name: iv.name, term: nameHit.term }));
-    } else if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
-    else if (nameHit.score >= 0.6) ev.push(evidence('field-name-strong', nameHit.score, { name: iv.name, term: nameHit.term }));
-    else ev.push(evidence('field-name-weak', Math.max(0.3, nameHit.score), { name: iv.name, term: nameHit.term }));
+    if (!isPreset && primaryNameHit.literal && primaryNameHit.exact) {
+      ev.push(evidence('field-name-asked', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (!isPreset && primaryNameHit.literal && primaryNameHit.sequence) {
+      ev.push(evidence('field-name-contains', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (!isPreset && primaryNameHit.literal && primaryNameHit.words) {
+      ev.push(evidence('field-name-words', 1, { name: primaryName, term: primaryNameHit.term }));
+    } else if (primaryNameHit.exact) ev.push(evidence('field-name-exact', primaryNameHit.score, { name: primaryName, term: primaryNameHit.term }));
+    else if (primaryNameHit.score >= 0.6) ev.push(evidence('field-name-strong', primaryNameHit.score, { name: primaryName, term: primaryNameHit.term }));
+    else ev.push(evidence('field-name-weak', Math.max(0.3, primaryNameHit.score), { name: primaryName, term: primaryNameHit.term }));
   }
-  const askedByName = !isPreset && !!(nameHit && nameHit.literal && nameHit.exact);
-  const askedBySequence = !isPreset && !!(nameHit && nameHit.literal && nameHit.sequence);
-  const askedByWords = !isPreset && !!(nameHit && nameHit.literal && nameHit.words);
+  const askedByName = !isPreset && !!((nameHit && nameHit.literal && nameHit.exact) || (pm && pm.literal && pm.exact));
+  const askedBySequence = !isPreset && !!((nameHit && nameHit.literal && nameHit.sequence) || (pm && pm.literal && pm.sequence));
+  const askedByWords = !isPreset && !!((nameHit && nameHit.literal && nameHit.words) || (pm && pm.literal && pm.words));
 
   /*
    * プロパティとして宣言された名前。ivar 名とは別の場所に書いてあるので、
    * 名前が 2 通り取れることになる（`_a1` のように ivar 名が潰されていても拾える）。
    */
-  const prop = iv.property || null;
   if (prop) {
-    const pm = matchField(goal, prop.name);
     if (pm) {
       ev.push(evidence('property-name', pm.score, {
         name: prop.name, term: pm.term, ivar: iv.name,
@@ -416,7 +429,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
     }
     const pfit = typeFits(goal, prop.type || iv.declaredType);
     if (pfit === 'fit') ev.push(evidence('type-declared', 1, { type: prop.type }));
-    else if (pfit === 'conflict' && !nameHit) {
+    else if (pfit === 'conflict' && !nameHit && !pm) {
       ev.push(evidence('type-conflict', 1, { type: prop.type }));
     }
   }
@@ -424,7 +437,9 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
   /* 宣言された型 */
   if (fit === 'fit') ev.push(evidence('type-numeric', 1, { type: iv.type }));
   else if (fit === 'conflict') ev.push(evidence('type-conflict', 1, { type: iv.type }));
-  if (iv.size && iv.size <= 8) ev.push(evidence('size-fits', 0.6, { size: iv.size }));
+  if (iv.size && iv.size <= 8 && fit !== 'conflict' && !isPointerFieldType(iv.type)) {
+    ev.push(evidence('size-fits', 0.6, { size: iv.size }));
+  }
 
   /* まわり — 値の名前とは独立した手がかり */
   if (ctx.categoryHit) {
@@ -466,7 +481,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
 
   // Reuse proven accesses only when there is an independent intent match.
   // Unnamed members retain structural provenance without a semantic claim.
-  if (cxx && !iv.conflict && (nameHit || ctx.nameHit || ctx.categoryHit)) {
+  if (cxx && !iv.anonymous && !iv.conflict && (nameHit || pm || ctx.nameHit || ctx.categoryHit)) {
     ev.push(evidence('access-verified', 1, {
       className: cls.name, offset: iv.offset, size: iv.size,
       provenance: iv.provenance,
@@ -522,11 +537,20 @@ function findAccessors(cls, iv) {
   const prop = iv.property || null;
   const wantGet = prop ? prop.getter : null;
   const wantSet = prop ? prop.setter : null;
+  const methods = cls.methods || [];
 
-  for (const m of (cls.methods || [])) {
+  if (wantGet || wantSet) {
+    for (const m of methods) {
+      if (!m.sel || m.addr == null) continue;
+      if (wantGet && m.sel === wantGet && !out.getter) out.getter = m;
+      if (wantSet && m.sel === wantSet && !out.setter) out.setter = m;
+      if ((!wantGet || out.getter) && (!wantSet || out.setter)) break;
+    }
+  }
+  if (out.getter && out.setter) return out;
+
+  for (const m of methods) {
     if (!m.sel || m.addr == null) continue;
-    if (wantGet && m.sel === wantGet && !out.getter) { out.getter = m; continue; }
-    if (wantSet && m.sel === wantSet && !out.setter) { out.setter = m; continue; }
     const kind = accessorKind(m.sel, iv.name) ||
       (prop ? accessorKind(m.sel, prop.name) : null);
     if (kind === 'getter' && !out.getter) out.getter = m;
@@ -574,8 +598,10 @@ async function verifyCandidate(c, goal, o, how) {
   };
 
   /* 1. アクセサ */
+  const analyzedAccessors = new Set();
   for (const [which, m] of [['getter', c.accessors.getter], ['setter', c.accessors.setter]]) {
     if (!m || m.addr == null || spent(o)) continue;
+    analyzedAccessors.add(m.addr.toString());
     charge(o);
     const model = await analyze(m.addr, endOf(m.addr));
     if (!model) continue;
@@ -588,8 +614,12 @@ async function verifyCandidate(c, goal, o, how) {
         offset: c.offset, size: v.size, exclusive: v.exclusive,
       }));
       // 実測した大きさが、表に書いてある大きさと合っているか
-      if (v.size && c.size && v.size === c.size) {
-        c.evidence.push(evidence('size-fits', 1, { size: v.size, measured: true }));
+      if (v.size && c.size && v.size === c.size &&
+          !isPointerFieldType(c.type) && typeFits(goal, c.type) !== 'conflict') {
+        const measured = evidence('size-fits', 1, { size: v.size, measured: true });
+        const existingIdx = c.evidence.findIndex((e) => e.code === 'size-fits');
+        if (existingIdx >= 0) c.evidence[existingIdx] = measured;
+        else c.evidence.push(measured);
       }
     }
     if (which === 'setter' && v.setter) {
@@ -606,8 +636,9 @@ async function verifyCandidate(c, goal, o, how) {
    *    アクセサがない（直接メンバ変数を使っている）クラスではこちらが決め手になる。
    */
   if (deep && (!c.verified || !c.rmwFound)) {
-    const methods = (c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
-      methodsOfClass(o.fields, c.className);
+    const methods = ((c.context.info && c.context.info.info ? c.context.info.info.methods : null) ||
+      methodsOfClass(o.fields, c.className))
+      .filter((m) => m && m.addr != null && !analyzedAccessors.has(m.addr.toString()));
     const pick = pickMethodsToRead(methods, goal, 3);
     for (const m of pick) {
       if (m.addr == null || spent(o)) continue;
@@ -663,8 +694,8 @@ export function pickMethodsToRead(methods, goal, n) {
     if (m.addr == null || !m.sel) continue;
     let score = 0;
     if (matchName(goal, m.sel)) score += 3;
-    if (/^(set|add|sub|inc|dec|update|apply|consume|gain|use|reset|init|recover|heal|damage|take|spend|earn)/i.test(m.sel)) score += 2;
-    if (/^(init|dealloc|description|copyWith|encodeWith|isEqual|hash)$/i.test(m.sel)) score -= 3;
+    if (/^(set|add|sub|inc|dec|update|apply|consume|gain|use|reset|recover|heal|damage|take|spend|earn)/i.test(m.sel)) score += 2;
+    if (/^(?:init(?:$|With|:)|copyWith|encodeWith|(?:dealloc|description|isEqual:?|hash)$)/i.test(m.sel)) score -= 3;
     scored.push({ m, score });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -771,9 +802,11 @@ export async function pinpointLocation(opts) {
   /* 1. 目的に関係する関数を読んで、触っている場所を集める */
   const byKey = new Map();
   let checked = 0;
-  for (const cand of (o.analyze ? ranked.slice(0, 8) : [])) {
+  const orderedRanked = ranked.filter((cand) => !(cand.vendor && vendorConflicts(goal.id, cand.vendor)));
+  const toAnalyze = o.analyze ? orderedRanked.slice(0, 8) : [];
+  for (const cand of toAnalyze) {
     if (cancelled() || spent(o)) break;
-    progress({ phase: 'verify-loc', done: checked, all: Math.min(8, ranked.length) });
+    progress({ phase: 'verify-loc', done: checked, all: toAnalyze.length });
     charge(o);
     const range = program ? program.functionRange(cand.addr) : null;
     let model = null;
@@ -781,16 +814,20 @@ export async function pinpointLocation(opts) {
     if (!model) continue;
     checked++;
 
+    const owner = o.fields ? o.fields.ownerOf(cand.addr) : null;
+    const ownerClass = owner ? owner.className : null;
     const goalStrings = (cand.strings || []).length;
-    const touched = [];
+    const rmwTouched = [];
     for (const u of findValueUpdates(model)) {
       const loc = u.location;
       // スタックの一時置き場は「アプリが持っている値」ではないので採らない
       if (loc.stack || loc.key == null) continue;
-      const key = loc.base + '@' + loc.disp.toString();
+      const locIdentity = loc.identity != null ? String(loc.identity) : (ownerClass || null);
+      const key = (locIdentity != null ? locIdentity + ':' : '') + loc.base + '@' + loc.disp.toString();
       if (!byKey.has(key)) {
         byKey.set(key, {
           key, kind: 'location',
+          className: ownerClass, identity: locIdentity,
           base: loc.base, offset: loc.disp, size: loc.size,
           functions: [], updates: [], compares: [],
           goalStringRefs: 0, evidence: [], verifications: [],
@@ -798,18 +835,20 @@ export async function pinpointLocation(opts) {
         });
       }
       const e = byKey.get(key);
-      touched.push(e);
       if (!e.functions.some((f) => f.addr === cand.addr)) {
         e.functions.push({ addr: cand.addr, name: cand.name || null, strings: goalStrings });
         if (goalStrings) e.goalStringRefs++;
       }
-      if (u.kind === 'read-modify-write' && e.updates.length < 4) e.updates.push(u);
+      if (u.kind === 'read-modify-write') {
+        if (e.updates.length < 4) e.updates.push(u);
+        rmwTouched.push(e);
+      }
     }
     // どの場所と比べているかまでは命令からは決められないので、
-    // 同じ関数の中で見つかった場所にだけ、しきい値の判定を添える。
-    if (touched.length) {
+    // 同じ関数の中で RMW が見つかった場所にだけ、しきい値の判定を添える。
+    if (rmwTouched.length) {
       const cmps = constantComparisons(model).slice(0, 4);
-      for (const e of new Set(touched)) {
+      for (const e of new Set(rmwTouched)) {
         for (const cmp of cmps) if (e.compares.length < 4) e.compares.push(cmp);
       }
     }
@@ -824,10 +863,12 @@ export async function pinpointLocation(opts) {
    */
   if (o.shapes && o.shapes.size) {
     for (const sh of shapesByGoal(o.shapes, goal.id, 8)) {
-      const key = 'shape@' + sh.offset;
+      const shIdentity = sh.identityKnown && sh.identity != null ? String(sh.identity) : null;
+      const key = shIdentity != null ? ('shape@' + shIdentity + '@' + sh.offset) : ('shape@' + sh.offset);
       if (byKey.has(key)) continue;
       byKey.set(key, {
         key, kind: 'location', fromShape: true,
+        className: null, identity: shIdentity,
         base: null, offset: BigInt(sh.offset), size: sh.size || 4,
         functions: [], updates: [], compares: [],
         goalStringRefs: 0, evidence: [], verifications: [],
@@ -846,12 +887,16 @@ export async function pinpointLocation(opts) {
   let list = Array.from(byKey.values());
   if (o.scanAccess) {
     try {
-      const groups = await o.scanAccess(list.slice(0, 8).map((e) => ({
+      const toScan = list.slice(0, 8);
+      const scannedOffsets = new Set(toScan.map((e) => e.offset.toString()));
+      const groups = await o.scanAccess(toScan.map((e) => ({
         offset: e.offset, size: e.size || 0,
       })));
       for (const e of list) {
-        const sites = (groups && (groups.get ? groups.get(e.offset.toString())
-          : groups[e.offset.toString()])) || [];
+        const offKey = e.offset.toString();
+        if (!scannedOffsets.has(offKey)) continue;
+        const sites = (groups && (groups.get ? groups.get(offKey)
+          : groups[offKey])) || [];
         e.siteCount = sites.length;
         e.sites = groupSites(sites, program, o.fields, null);
       }
@@ -934,9 +979,13 @@ export async function pinpointLocation(opts) {
          * 珍しさは測れるのだから、測った値を使う。
          */
         for (const c of sh.codes) {
-          const lr = SHAPE_CODES.has(c.code)
-            ? rarityLR(o.shapes.size, shapeMatchCount(o.shapes, goal.id))
-            : null;
+          let lr = null;
+          if (SHAPE_CODES.has(c.code)) {
+            const matched = shapeMatchCount(o.shapes, goal.id);
+            if (matched <= 0) continue;
+            lr = rarityLR(o.shapes.size, matched);
+            if (!(lr > 0)) continue;
+          }
           e.evidence.push(evidence(c.code, c.strength, c.detail, lr));
         }
       }
@@ -1212,13 +1261,41 @@ async function verifyShapes(list, o, progress, cancelled) {
  * 読んだ命令と比較を持っているので、そちらを台にして、ふるまい側の
  * 裏取り（proof / shape / 走査で数えた場所）を足し込む。
  */
+function locationIdentityOf(e) {
+  if (!e) return null;
+  if (e.className) return String(e.className);
+  if (e.identity != null) return String(e.identity);
+  if (e.shape && e.shape.identityKnown && e.shape.identity != null) return String(e.shape.identity);
+  return null;
+}
+
 function mergeByOffset(list) {
   const byOffset = new Map();
   const out = [];
   for (const e of list) {
     const key = e.offset != null ? e.offset.toString() : e.key;
-    const hit = byOffset.get(key);
-    if (!hit) { byOffset.set(key, e); out.push(e); continue; }
+    const buckets = byOffset.get(key);
+    const eId = locationIdentityOf(e);
+    let hit = null;
+    if (buckets) {
+      if (eId != null) {
+        hit = buckets.find((b) => locationIdentityOf(b) === eId) ||
+          buckets.find((b) => locationIdentityOf(b) == null) ||
+          null;
+      } else if (buckets.length === 1) {
+        hit = buckets[0];
+      } else {
+        hit = buckets.find((b) => locationIdentityOf(b) == null) || null;
+      }
+    }
+    if (!hit) {
+      if (buckets) buckets.push(e);
+      else byOffset.set(key, [e]);
+      out.push(e);
+      continue;
+    }
+    if (!hit.className && e.className) hit.className = e.className;
+    if (hit.identity == null && e.identity != null) hit.identity = e.identity;
     // 大きさは、実際に開いて数えたほうを優先する（見出しと裏取りを食い違わせない）
     if (e.sizeVerified && !hit.sizeVerified) { hit.size = e.size; hit.sizeVerified = true; }
     else if (!hit.size && e.size) hit.size = e.size;
@@ -1232,11 +1309,13 @@ function mergeByOffset(list) {
     } else {
       hit.updates = hit.updates.concat(e.updates);
       hit.compares = hit.compares.concat(e.compares);
-      hit.goalStringRefs += e.goalStringRefs;
     }
     for (const f of e.functions) {
-      if (!hit.functions.some((x) => x.addr === f.addr)) hit.functions.push(f);
+      const existing = hit.functions.find((x) => x.addr === f.addr);
+      if (!existing) hit.functions.push(f);
+      else if ((f.strings || 0) > (existing.strings || 0)) existing.strings = f.strings;
     }
+    hit.goalStringRefs = hit.functions.filter((f) => (f.strings || 0) > 0).length;
     if ((e.siteCount || 0) > (hit.siteCount || 0)) {
       hit.siteCount = e.siteCount;
       if (e.sites && e.sites.length) hit.sites = e.sites;
@@ -1256,7 +1335,7 @@ const shapeMatchCache = new WeakMap();
 function shapeMatchCount(shapes, goalId) {
   let per = shapeMatchCache.get(shapes);
   if (!per) { per = new Map(); shapeMatchCache.set(shapes, per); }
-  if (!per.has(goalId)) per.set(goalId, Math.max(1, shapesByGoal(shapes, goalId, 64).length));
+  if (!per.has(goalId)) per.set(goalId, shapesByGoal(shapes, goalId, 64).length);
   return per.get(goalId);
 }
 
@@ -1267,8 +1346,8 @@ const REASON_TO_EVIDENCE = {
   'name-match': 'fn-name-match',
   'callee-name': 'fn-callee-match',
   'caller-name': 'fn-caller-match',
-  'calls-match': 'fn-caller-match',
-  'called-by-match': 'fn-callee-match',
+  'calls-match': 'fn-callee-match',
+  'called-by-match': 'fn-caller-match',
   numeric: 'fn-numeric',
   popular: 'fn-called-often',
   'size-penalty': 'fn-too-large',
@@ -1289,6 +1368,7 @@ function buildFunctionCandidate(c, goal, o) {
       ev.push(evidence(code, 1, r.detail));
       continue;
     }
+    if (code === 'fn-numeric' && ev.some((e) => e.code === 'fn-numeric')) continue;
     // 元の配点を 0..1 の濃さに直す（配点の最大で割る）
     const strength = Math.max(0.2, Math.min(1, Math.abs(r.points) / 25));
     ev.push(evidence(code, strength, r.detail));
@@ -1306,8 +1386,9 @@ function buildFunctionCandidate(c, goal, o) {
    * 別々の文言はそれぞれ独立した観測として数える（同じ文言の重複は数えない）。
    */
   const fnRole = c.name ? numericSymbolRole(goal, c.name) : 'neutral';
+  const hasVendorConflict = !!(c.vendor && vendorConflicts(goal.id, c.vendor));
   const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
-  if (total > 0 && fnRole !== 'non-value') {
+  if (total > 0 && fnRole !== 'non-value' && !hasVendorConflict) {
     const seenText = new Set();
     const named = [];
     for (const s of c.strings || []) {
@@ -1330,12 +1411,14 @@ function buildFunctionCandidate(c, goal, o) {
     const cm = matchText(goal, owner.className);
     if (cm) ev.push(evidence('fn-owner-class', cm.score, { className: owner.className }));
   }
-  if (c.name && matchName(goal, c.name)) {
+  if (c.name) {
     const leaf = extractCallableLeaf(c.name).leaf;
-    const norm = normalizeFieldName(leaf || c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
-    const m = matchField(goal, norm);
-    if ((m && m.exact) || numericSymbolRole(goal, c.name) === 'value') {
-      ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+    if (matchName(goal, c.name) || (leaf && matchName(goal, leaf))) {
+      const norm = normalizeFieldName(leaf || c.name.replace(/^[-+]\[[^\s]+\s|\]$/g, ''));
+      const m = matchField(goal, norm);
+      if ((m && m.exact) || numericSymbolRole(goal, c.name) === 'value') {
+        ev.push(evidence('fn-name-exact', 1, { name: c.name }));
+      }
     }
   }
 
@@ -1365,12 +1448,149 @@ function buildFunctionCandidate(c, goal, o) {
  */
 const FORMULA_MIN_CONST = 10;
 
-function verifyFormula(c, insns) {
+const FORMULA_ASSET_EXT_RE = /(?:^|[\s"'(\[])(?:[\w.%/-]+\/)?[\w.%-]+\.(?:png|jpe?g|webp|gif|svg|bmp|tga|dds|pvr|astc|ktx|mp3|wav|ogg|m4a|aac|mp4|mov|json|xml|plist|yaml|yml|ini|cfg|csv|tsv|txt|bin|dat|db|sqlite|sql|lua|js|ts|py|rb|sh|cpp|cxx|cc|c|h|hpp|hh|mm|m|swift|kt|java|cs|rs|go|dll|so|dylib|a|o|obj|exe|apk|ipa|zip|gz|tar|pak|bundle|asset|prefab|unity|fbx|ttf|otf|woff2?|fnt|shader|glsl|metal|hlsl|vert|frag|html?|css)(?:$|\b|[\s"')\]:])/i;
+const FORMULA_RTTI_RE = /(?:^|\b)_?Z(?:N\d+[A-Za-z_]|K\d+|St|T[A-Z])/;
+const FORMULA_LOG_TAG_RE = /^\s*(?:\[[^\]]{1,40}\]\s*|<[A-Za-z0-9_.:-]{1,32}>\s*|(?:ERROR|WARN(?:ING)?|INFO|DEBUG|TRACE|FATAL|LOG|ASSERT(?:ION)?)\s*[:\[])/i;
+const FORMULA_SOURCE_LINE_RE = /\.(?:c|cc|cpp|cxx|h|hpp|m|mm|swift|java|kt|cs|rs|go):\d+/i;
+const FORMULA_CXX_SIG_RE = /(?:\b[A-Za-z_]\w*::[A-Za-z_~]\w*\s*\(|\b(?:const\s+)?(?:void|bool|int|float|double|char|size_t|u?int\d+_t|auto|std::\w+)\s+[A-Za-z_]\w*::|::[A-Za-z_]\w*<[^>]*>)/;
+const FORMULA_SYNTAX_RE = /(?:[+×÷*=<≥≤>]|(?:\d|\)|%[diuoxXfFeEgG])\s*[-\/]\s*(?:\d|\(|%[A-Za-z])|%[-+0 #]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|z|t|j|L)?[diuoxXfFeEgG]|\d+\s*%|\b(?:min|max|clamp|floor|ceil|round|mod)\s*\()/i;
+const FORMULA_INSN_RE = /^(?:add|adds|sub|subs|cmp|cmn|ccmp|ccmn|fcmp|fadd|fsub|fmul|fdiv|mov|movz|movn|movk|fmov|tst)$/i;
+const NUMERIC_MUL_DIV_RE = /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)$/i;
+const NUMERIC_ADD_SUB_RE = /^(add|adds|sub|subs|fadd|fsub)$/i;
+const CTRL_BOUNDARY_RE = /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/i;
+
+function isFormulaString(text) {
+  if (typeof text !== 'string') return false;
+  const s = text.trim();
+  if (!s) return false;
+  if (FORMULA_RTTI_RE.test(s)) return false;
+  if (FORMULA_LOG_TAG_RE.test(s)) return false;
+  if (FORMULA_SOURCE_LINE_RE.test(s)) return false;
+  if (FORMULA_ASSET_EXT_RE.test(s)) return false;
+  if (FORMULA_CXX_SIG_RE.test(s)) return false;
+  return FORMULA_SYNTAX_RE.test(s);
+}
+
+function regIdentity(op) {
+  if (!op) return null;
+  if (typeof op === 'string') {
+    const s = op.trim().toLowerCase();
+    if (s === 'wzr' || s === 'xzr') return 'zr';
+    if (s === 'sp' || s === 'wsp') return 'sp';
+    if (s === 'fp' || s === 'x29' || s === 'w29') return 'fp';
+    const m = /^[wx](\d+)$/.exec(s);
+    if (m) return 'x' + m[1];
+    return null;
+  }
+  if (op.k === 'reg') {
+    const name = String(op.text || op.name || '').trim().toLowerCase();
+    if (op.cls === 'zr' || name === 'wzr' || name === 'xzr') return 'zr';
+    if (op.cls === 'sp' || name === 'sp' || name === 'wsp') return 'sp';
+    if ((op.cls === 'gp' && op.num === 29) || name === 'fp' || name === 'x29' || name === 'w29') return 'fp';
+    if (op.cls === 'gp' && op.num != null) return 'x' + op.num;
+    if (name) return regIdentity(name);
+  }
+  return null;
+}
+
+function isImmOperand(op) {
+  if (!op) return false;
+  if (typeof op === 'string') {
+    const s = op.trim();
+    return s.startsWith('#') || /pageoff/i.test(s) || /^-?(?:0x[0-9a-f]+|\d+)$/i.test(s);
+  }
+  return op.k === 'imm';
+}
+
+function operandListOf(insn) {
+  if (Array.isArray(insn?.ops) && insn.ops.length) return insn.ops;
+  if (typeof insn?.operands === 'string' && insn.operands.trim()) {
+    return insn.operands.split(',').map((s) => s.trim());
+  }
+  return [];
+}
+
+function countPureNumericArithmetic(insns) {
+  let count = 0;
+  const adrpRegs = new Set();
+  let prevWasAdrp = false;
+  let prevAdrpReg = null;
+
+  for (const insn of insns || []) {
+    const mn = String(insn?.mnemonic || '').trim();
+    if (!mn) {
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+    const ops = operandListOf(insn);
+    const dstKey = regIdentity(ops[0]);
+
+    if (/^adrp$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.add(dstKey);
+      prevWasAdrp = true;
+      prevAdrpReg = dstKey;
+      continue;
+    }
+
+    if (NUMERIC_MUL_DIV_RE.test(mn)) {
+      count++;
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+
+    if (NUMERIC_ADD_SUB_RE.test(mn)) {
+      if (/^f(?:add|sub)$/i.test(mn)) {
+        count++;
+      } else {
+        const src1Key = regIdentity(ops[1]);
+        const src2Key = regIdentity(ops[2]);
+        const isZeroDst = dstKey === 'zr';
+        const isStackOrFp = dstKey === 'sp' || dstKey === 'fp' ||
+          src1Key === 'sp' || src1Key === 'fp' ||
+          src2Key === 'sp' || src2Key === 'fp';
+        const isAdrpPageAdd = /^add$/i.test(mn) &&
+          isImmOperand(ops[2]) &&
+          ((src1Key && adrpRegs.has(src1Key)) || (prevWasAdrp && (!prevAdrpReg || prevAdrpReg === src1Key)));
+        if (!isZeroDst && !isStackOrFp && !isAdrpPageAdd) {
+          count++;
+        }
+      }
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      prevWasAdrp = false;
+      prevAdrpReg = null;
+      continue;
+    }
+
+    if (CTRL_BOUNDARY_RE.test(mn)) {
+      adrpRegs.clear();
+    } else {
+      if (Array.isArray(insn?.writes)) {
+        for (const w of insn.writes) {
+          const wk = regIdentity(w);
+          if (wk) adrpRegs.delete(wk);
+        }
+      }
+      if (!insn?.memory || insn.memory.kind !== 'store') {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      }
+    }
+    prevWasAdrp = false;
+    prevAdrpReg = null;
+  }
+  return count;
+}
+
+function verifyFormula(c, insns, goal) {
+  if (!goal?.expects?.numeric) return null;
   const wanted = new Map();          // 定数 → それを書いている文言
   for (const s of c.strings || []) {
     if (!s || !s.text || s.users == null || s.users > 2) continue;
-    for (const m of String(s.text).matchAll(/\d+/g)) {
-      const v = Number(m[0]);
+    if (!isFormulaString(s.text)) continue;
+    for (const m of String(s.text).matchAll(/(?<![A-Za-z0-9_.])(\d+)(?![A-Za-z0-9_]|\.\d)/g)) {
+      const v = Number(m[1]);
       if (!(v >= FORMULA_MIN_CONST) || !Number.isSafeInteger(v)) continue;
       if (!wanted.has(v)) wanted.set(v, s.text);
     }
@@ -1378,13 +1598,42 @@ function verifyFormula(c, insns) {
   if (!wanted.size) return null;
 
   const seen = new Map();
-  for (const i of insns) {
-    for (const op of i.ops || []) {
-      if (!op || op.k !== 'imm') continue;
+  const adrpRegs = new Set();
+  for (const i of insns || []) {
+    const mn = String(i?.mnemonic || '').trim();
+    const ops = operandListOf(i);
+    const dstKey = regIdentity(ops[0]);
+    if (/^adrp$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.add(dstKey);
+      continue;
+    }
+    if (i?.memory || !FORMULA_INSN_RE.test(mn)) {
+      if (CTRL_BOUNDARY_RE.test(mn)) adrpRegs.clear();
+      else if (dstKey && dstKey !== 'zr' && (!i?.memory || i.memory.kind !== 'store')) adrpRegs.delete(dstKey);
+      continue;
+    }
+    if (/^(?:add|adds|sub|subs)$/i.test(mn)) {
+      const src1Key = regIdentity(ops[1]);
+      if (dstKey === 'sp' || dstKey === 'fp' || src1Key === 'sp' || src1Key === 'fp') {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+        continue;
+      }
+      if (/^add$/i.test(mn) && src1Key && adrpRegs.has(src1Key)) {
+        if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+        continue;
+      }
+    }
+    const rawOps = Array.isArray(i.ops) ? i.ops : [];
+    const maxImmIdx = /^movk$/i.test(mn) ? 1 : (/^(?:add|adds|sub|subs)$/i.test(mn) ? 2 : rawOps.length - 1);
+    for (let idx = 0; idx < rawOps.length; idx++) {
+      if (idx > maxImmIdx) break;
+      const op = rawOps[idx];
+      if (!op || op.k !== 'imm' || op.shift || op.kind === 'shift') continue;
       const v = Number(op.value);
       if (!wanted.has(v)) continue;
       seen.set(v, (seen.get(v) || 0) + 1);
     }
+    if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
   }
   if (!seen.size) return null;
 
@@ -1409,7 +1658,12 @@ async function verifyFunctionCandidate(c, goal, o) {
   c.instructions = (model.instructions || []).length;
 
   const field = o.field || null;
-  if (field && field.source !== 'cxx') {
+  const ownerMismatch = !!(
+    field && c.owner && c.owner.className && field.className &&
+    c.owner.className !== field.className &&
+    !isRelated(o.fields, c.owner.className, field.className)
+  );
+  if (field && field.source !== 'cxx' && !ownerMismatch) {
     const use = verifyFunctionHandlesField(model, BigInt(field.offset));
     if (use.touches) {
       c.evidence.push(evidence(use.writes ? 'fn-writes-field' : 'fn-touches-field', 1, {
@@ -1432,16 +1686,16 @@ async function verifyFunctionCandidate(c, goal, o) {
       c.evidence.push(evidence('fn-store-observed', 0.55, { n: stores.length, self: true }));
     }
   }
-  if (!field && expects.numeric) {
-    const use = insns.filter((i) => /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)/i.test(i.mnemonic || ''));
-    if (use.length) c.evidence.push(evidence('fn-numeric', Math.min(1, use.length / 3), { n: use.length }));
+  if (!field && expects.numeric && !c.evidence.some((e) => e.code === 'fn-numeric')) {
+    const numCount = countPureNumericArithmetic(insns);
+    if (numCount) c.evidence.push(evidence('fn-numeric', Math.min(1, numCount / 3), { n: numCount }));
   }
 
   /*
    * 文言が書いている計算式を、命令の即値で確かめる。
    * クラス表が無いアプリでは、これが唯一の「逆アセンブルで確かめた」になる。
    */
-  const formula = verifyFormula(c, insns);
+  const formula = verifyFormula(c, insns, goal);
   if (formula) {
     c.evidence.push(evidence('fn-formula-verified', formula.strength, formula.detail));
     c.verifications.push(Object.assign({ what: 'formula' }, formula.detail));
@@ -1476,7 +1730,7 @@ export async function pinpoint(opts) {
       // Offset-only function verification cannot establish a C++ owner.
       field: field.top && field.top.source !== 'cxx' ? {
         offset: field.top.offset, className: field.top.className,
-        plain: field.top.plain, name: field.top.field.name,
+        plain: field.top.plain, name: field.top?.field?.name ?? null,
       } : null,
     }));
   }

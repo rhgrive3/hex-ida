@@ -375,12 +375,14 @@ async function scanDataChunks(ctx,minimum,visit) {
   const overlap=Math.max(48,minimum);
   let complete=true;
   for(const r of ctx.data){
+    if(r.size<BigInt(minimum))continue;
     let offset=0n;
     while(offset<r.size){
       ctx.budget.check(1);
       const remaining=r.size-offset;
+      if(remaining<BigInt(minimum))break;
       const left=ctx.budget.limit.maxScanBytes-ctx.budget.snapshot().scanBytes;
-      if(left<=0){complete=false;return complete;}
+      if(left<minimum){complete=false;return complete;}
       const want=Math.min(Number(remaining>BigInt(Number.MAX_SAFE_INTEGER)?BigInt(Number.MAX_SAFE_INTEGER):remaining),ctx.budget.limit.chunkBytes,left);
       if(want<minimum){complete=false;return complete;}
       ctx.budget.consumeScan(want);
@@ -416,7 +418,7 @@ export async function bindMethodAddresses(meta, opts) {
   meta.warnings ||= [];
   const budget=bindingBudget(o);
   const exec=regions.filter((r)=>r.exec&&r.size>0n);
-  const data=regions.filter((r)=>!r.exec&&!r.zerofill&&r.size>=16n&&/__(const|data|data_const|rodata)/.test(r.section||''));
+  const data=regions.filter((r)=>!r.exec&&!r.zerofill&&r.size>=16n&&/(?:__(?:const|data|data_const|rodata)|^\.(?:data(?:\.rel\.ro(?:\..+)?)?|rodata(?:\..+)?)$)/.test(r.section||''));
   const inExec=(raw)=>{let p=BigInt.asUintN(64,raw);p&=0x00ffffffffffffffn;return exec.some((r)=>p>=r.vmAddr&&p<r.vmAddr+r.size)?p:null;};
   const containing=(addr,bytes)=>regions.find((r)=>addr>=r.vmAddr&&addr+BigInt(bytes)<=r.vmAddr+r.size);
   const context={regions,data,exec,read,containing,inExec,budget};
@@ -491,7 +493,11 @@ async function bindCodeGenModules(meta,ctx,o={}){
   if(!complete)return{...bindingFail(meta,budget,'scan-budget-exhausted','CodeGenModule候補をbudget内に全走査できなかったため、自動bindingしません。'),blocked:true};
   const wanted=new Map(images.map((x)=>[x.name.toLowerCase(),x])),groups=new Map();
   for(const c of raw){
-    const nameBytes=await readExtra(ctx,c.namePtr,160);if(!nameBytes)continue;const zero=nameBytes.indexOf(0);if(zero<0)continue;
+    const nameRegion=containing(c.namePtr,1);if(!nameRegion)continue;
+    const avail=nameRegion.vmAddr+nameRegion.size-c.namePtr;
+    const nameReadLen=avail>=160n?160:Number(avail);
+    if(!(nameReadLen>0))continue;
+    const nameBytes=await readExtra(ctx,c.namePtr,nameReadLen);if(!nameBytes)continue;const zero=nameBytes.indexOf(0);if(zero<0)continue;
     const name=utf8(nameBytes.subarray(0,zero)),key=name?.toLowerCase();if(!key||!wanted.has(key))continue;
     const sampleCount=Math.min(c.count,64),sample=await readExtra(ctx,c.table,sampleCount*8);if(!sample)continue;
     const dv=new DataView(sample.buffer,sample.byteOffset,sample.byteLength);let nonzero=0,executable=0;
@@ -499,7 +505,9 @@ async function bindCodeGenModules(meta,ctx,o={}){
     if(!nonzero)continue;const executableRatio=executable/nonzero;if(executableRatio<0.85)continue;
     const image=wanted.get(key),methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
     const rids=methods.map((m)=>(m.token&0x00ffffff)-1).filter((rid)=>rid>=0);
-    const covered=rids.filter((rid)=>rid<c.count).length,tokenCoverage=covered/Math.max(1,Math.min(rids.length,c.count)),maxRid=rids.length?Math.max(...rids):-1;
+    let covered=0,maxRid=-1;
+    for(const rid of rids){if(rid<c.count)covered++;if(rid>maxRid)maxRid=rid;}
+    const tokenCoverage=covered/Math.max(1,Math.min(rids.length,c.count));
     const tail=maxRid>=0?Math.max(0,c.count-(maxRid+1)):c.count;
     const tailPenalty=maxRid>=0?Math.min(1,tail/Math.max(1,maxRid+1)):0;
     const score=executableRatio+tokenCoverage*0.75-tailPenalty*0.2;

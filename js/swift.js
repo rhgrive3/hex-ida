@@ -74,6 +74,14 @@ function canonicalPointerBytes(options) {
   return raw;
 }
 
+function pointerResolverFor(options) {
+  if (typeof options?.resolvePointer === 'function') return options.resolvePointer;
+  const image = options?.binaryImage;
+  if (image && typeof image.resolvePointer === 'function') return (raw, ctx) => image.resolvePointer(raw, ctx);
+  if (image && typeof image.decodePointer === 'function') return (raw, ctx) => image.decodePointer(raw, ctx);
+  return null;
+}
+
 function swiftMangledFragment(bytes) {
   if (!bytes.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
@@ -119,7 +127,7 @@ export async function readSwiftMangledName(read, address, options = {}) {
           if (resolved != null) resolvedTarget = BigInt(resolved);
         } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
       } else if (byte >= 0x18) {
-        const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
+        const pointerResolver = pointerResolverFor(options);
         if (typeof pointerResolver === 'function') {
           try {
             const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
@@ -411,7 +419,7 @@ async function parseSwiftProtocolRequirements(read,protocol,budget=4096,nested=n
 async function resolveAbsolutePointer(read,address,options={}) {
   const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
   const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
-  const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
+  const resolver=pointerResolverFor(options);
   if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
 }
@@ -467,7 +475,7 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
   const out=[];let at=BigInt(address);
   const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return out;
   const stride=BigInt(pointerBytes);
-  const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
+  const resolver=pointerResolverFor(options);
   for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
     if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
@@ -542,8 +550,9 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     if(signal?.aborted)return null;
     if(type.generic!==true)continue;
     if(genericRemaining<=0){genericContextsComplete=false;continue;}
-    const context=await parseSwiftGenericContext(get,type,{...opts,budget:genericRemaining,readMangledName:readSwiftMangledName});
-    if(context){genericContexts.push(context);type.genericContext=context;genericRemaining-=1+context.parameters.length+context.requirements.length;if(!context.complete)genericContextsComplete=false;}
+    let context=null;
+    try{context=await parseSwiftGenericContext(get,type,{...opts,budget:genericRemaining,readMangledName:readSwiftMangledName});}catch(error){if(isCancellationError(error))throw error;context=null;}
+    if(context){genericContexts.push(context);type.genericContext=context;genericRemaining-=1+context.parameters.length+context.requirements.length;if(!context.complete)genericContextsComplete=false;}else{genericContextsComplete=false;}
   }
   const captures=await parseSwiftCaptureSection(get,sectionRange(sections,['__swift5_capture']),{...opts,readMangledName:readSwiftMangledName});
   for(const p of protocols){
@@ -650,5 +659,5 @@ export function resolveSwiftDispatch(index,call={}){
 
 export function swiftCallingConvention({name='',mangled='',metadata=null,attributes=null}={}){const sym=demangleSwiftSymbol(mangled||name),a=attributes||{},async=a.async!=null?!!a.async:!!sym.async,throws=a.throws!=null?!!a.throws:!!sym.throws;return{runtime:'swift',swiftself:a.swiftself!==false,swiftasync:async,swiftthrows:throws,indirectResult:!!a.indirectResult,context:a.context!==false,errorResult:throws||!!a.errorResult,metadataArguments:Number(a.metadataArguments||(metadata?.generic?1:0)),representation:async&&throws?'await-throwing':async?'await':throws?'throwing':'normal'};}
 const SWIFT_NOISE=[/^_?swift_(retain|release|bridgeObjectRetain|bridgeObjectRelease|unknownObjectRetain|unknownObjectRelease|beginAccess|endAccess|copyPOD|destroyPOD)\b/,/^_?swift_get(TypeByMangledName|SingletonMetadata|GenericMetadata|WitnessTable|AssociatedTypeWitness)\b/,/metadata accessor/i,/(copy|destroy) value witness/i];
-export function classifySwiftRuntimeCall(name){const n=String(name||'');if(SWIFT_NOISE.some((r)=>r.test(n)))return{runtime:'swift',noise:true,category:/metadata|TypeBy|Metadata/.test(n)?'metadata':'ownership',name:n};if(/^_?swift_/.test(n)||/^_?\$s/.test(n))return{runtime:'swift',noise:false,category:'runtime',name:n};return null;}
+export function classifySwiftRuntimeCall(name){const n=String(name||'');if(SWIFT_NOISE.some((r)=>r.test(n)))return{runtime:'swift',noise:true,category:/metadata|TypeBy|Metadata/.test(n)?'metadata':'ownership',name:n};if(/^_?swift_/.test(n)||/^_?\$[sS]/.test(n))return{runtime:'swift',noise:false,category:'runtime',name:n};return null;}
 export function formatSwiftCall(name,args=[],convention={}){const cc=convention.representation?convention:swiftCallingConvention({name,attributes:convention}),readable=demangleSwiftSymbol(name).demangled||name||'unknown_call',prefix=cc.swiftasync?'await ':'',throwing=cc.swiftthrows?'try ':'';return`${throwing}${prefix}${readable}(${args.join(', ')})`;}

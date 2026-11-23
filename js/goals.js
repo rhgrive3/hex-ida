@@ -32,8 +32,10 @@ export const GOALS = [
      * IronSource の通信設定が並ぶ。同じことが lifecycle / lifetime にも起きる。
      */
     avoid: [
-      /health[\s_-]*(check|monitor|status|state|report|percentile|kit)/i,
+      /health[\s_-]*(check|monitor|status|state|report|percentile|kit|store|data|probe|endpoint)/i,
       /life[\s_-]*(cycle|time|span|line)/i,
+      /battery[\s_-]*(?:health|life)/i,
+      /(?:half|shelf)[\s_-]*life/i,
       /(?:hp|health)[\s_-]*(bar|label|gauge|view|icon|meter|slider|text|ui)\b/i,
     ],
     expects: { numeric: true, store: true, compare: true },
@@ -42,20 +44,37 @@ export const GOALS = [
     id: 'attack', ja: '攻撃力', en: 'Attack power', icon: '⚔️',
     strong: [/attack/i, /\batk\b/i, /power/i, /strength/i, /攻撃/, /こうげき/, /威力/],
     weak: [/damage/i, /weapon/i, /skill/i, /武器/, /スキル/],
-    avoid: [/power[\s_-]*(info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source)/i],
+    avoid: [
+      /power[\s_-]*(?:info|state|mode|sav(?:e|ing)|supply|management|battery|adapter|source|of[\s_-]*(?:2|two|10|ten)|consumption|usage|budget|button|key|off|on|thermal)/i,
+      /(?:signal|wifi|password|encryption|blur|shadow)[\s_-]*strength/i,
+      /\b(?:(?:c|name)[\s_-]*)?str[\s_-]*(?:len|size|buf|ptr|cpy|cmp)\b/i,
+    ],
     expects: { numeric: true, store: true },
   },
   {
     id: 'defense', ja: '防御力', en: 'Defence', icon: '🛡️',
     strong: [/defen[cs]e/i, /\bdef\b/i, /armor|armour/i, /resist/i, /防御/, /ぼうぎょ/, /耐性/],
     weak: [/guard/i, /shield/i, /盾/],
+    avoid: [
+      /(?:scope|raii|unlock|lock)[\s_-]*guard/i,
+      /driver[\s_-]*shield/i,
+      /(?:body|fixture|shape|type)[\s_-]*def/i,
+      /(?:completion|callback|handler|memory|code|cipher)[\s_-]*block/i,
+      /block[\s_-]*(?:size|count|index|offset)/i,
+      /irresistible/i,
+    ],
     expects: { numeric: true, store: true },
   },
   {
     id: 'damage', ja: 'ダメージ計算', en: 'Damage calculation', icon: '💥',
     strong: [/damage/i, /\bdmg\b/i, /ダメージ/, /被弾/],
     weak: [/critical/i, /hit/i, /attack/i, /クリティカル/, /命中/],
-    avoid: [/hit[\s_-]*test/i],
+    avoid: [
+      /hit[\s_-]*(?:test|slop)/i,
+      /white|hitch|match[\s_-]*iterator/i,
+      /cache[\s_-]*hit/i,
+      /critical[\s_-]*(?:section|error|log|alert|failure|level)/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -70,13 +89,24 @@ export const GOALS = [
      * `bid_floor_currency` のほうは綴りは正しいが、広告の入札下限額であって
      * ゲームの所持金ではないので、語ごと外す。
      */
-    avoid: [/concurren(cy|t)/i, /\bbid[\s_-]*floor\w*/i, /price[\s_-]*floor\w*/i],
+    avoid: [
+      /(?:multi[\s_-]*)?concurren(cy|t)/i,
+      /\bbid[\s_-]*floor\w*/i,
+      /price[\s_-]*floor\w*/i,
+      /costume|acoustic|coincid(?:e|ent|ence)/i,
+      /(?:white|load|audio|stereo|color|channel)[\s_-]*balance/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
     id: 'gacha', ja: 'ガチャ・抽選', en: 'Gacha / loot', icon: '🎰',
     strong: [/gacha/i, /lottery/i, /\bdraw\b/i, /summon/i, /ガチャ/, /抽選/, /召喚/],
     weak: [/rate/i, /probability/i, /rare/i, /reward/i, /確率/, /レア/, /排出/],
+    avoid: [
+      /generat(?:e|ed|es|or)|iterat(?:e|ed|es|or)|operat(?:e|ed|es|or)|separat(?:e|ed|es)|accelerat(?:e|ed|es)|migrat(?:e|ed|es)|integrat(?:e|ed|es)|accurate|strategy|infrared|rarely/i,
+      /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss)[\s_-]*rate/i,
+      /draw[\s_-]*(?:call|rect|in[\s_-]*rect|mesh|sprite|text|image|line|path|layer|buffer|pass|order|mode|index(?:ed)?|array|element|primitive|vertex|quad|triangle|canvas|context|surface|texture|shadow|view|node|gizmo|batch)/i,
+    ],
     expects: { numeric: true, call: true },
   },
   {
@@ -85,6 +115,10 @@ export const GOALS = [
       /in[\s_-]?app/i, /\bsku\b/i, /entitlement/i, /transaction/i,
       /subscription/i, /課金/, /購入/, /決済/, /レシート/],
     weak: [/price/i, /product/i, /restore/i, /価格/, /商品/],
+    avoid: [
+      /(?:ca|sql|sqlite|db|database|realm|core[\s_-]*data|begin|commit|rollback|write|read)[\s_-]*transaction/i,
+      /restore[\s_-]*(?:g[\s_-]*state|state|context|window|view|frame|layout|focus|graphics|matrix|transform)/i,
+    ],
     expects: { call: true, compare: true },
   },
   {
@@ -92,6 +126,13 @@ export const GOALS = [
     strong: [/login/i, /logout/i, /sign_?in/i, /auth/i, /credential/i, /password/i, /token/i,
       /ログイン/, /認証/, /パスワード/],
     weak: [/account/i, /session/i, /user_?id/i, /アカウント/, /会員/],
+    avoid: [
+      /author(?:s|ed|ing|ship|itative)?/i,
+      /(?:tokeniz\w*|lexer|parser|syntax|json|xml|ast)[\s_-]*token/i,
+      /token[\s_-]*(?:izer|ize|type|kind|stream)/i,
+      /(?:url|audio|capture|media|playback)[\s_-]*session/i,
+      /\b(?:ar|vr|wc)[\s_-]*session/i,
+    ],
     expects: { call: true, compare: true },
   },
   {
@@ -99,6 +140,7 @@ export const GOALS = [
     strong: [/admob/i, /unityads/i, /applovin/i, /ironsource/i, /vungle/i, /tapjoy/i,
       /interstitial/i, /rewarded/i, /banner_?ad/i, /広告/],
     weak: [/\bads?\b/i, /impression/i, /campaign/i],
+    avoid: [/\bad[\s_-]*hoc\b/i],
     expects: { call: true },
   },
   {
@@ -106,6 +148,12 @@ export const GOALS = [
     strong: [/save_?data/i, /savefile/i, /autosave/i, /userdefault/i, /nskeyedarchiv/i,
       /セーブ/, /保存/, /記録/],
     weak: [/write/i, /store/i, /persist/i, /progress/i, /進行/],
+    avoid: [
+      /restore|store[\s_-]*kit|store[\s_-]*front/i,
+      /(?:app|play)[\s_-]*store/i,
+      /(?:power|battery|energy)[\s_-]*sav(?:e|ing)/i,
+      /save[\s_-]*(?:g[\s_-]*state|graphics|context|matrix|transform)/i,
+    ],
     expects: { call: true, store: true },
   },
   {
@@ -113,31 +161,54 @@ export const GOALS = [
     strong: [/https?:\/\//i, /nsurlsession/i, /endpoint/i, /\/api\//i, /\/v\d\//i,
       /websocket/i, /request/i, /通信/, /サーバー/],
     weak: [/response/i, /json/i, /header/i, /timeout/i, /接続/],
+    avoid: [
+      /request[\s_-]*(?:animation[\s_-]*frame|layout|focus|redraw|render|review|permission)/i,
+      /(?:table|section|file|mach|elf|zip|png|wav)[\s_-]*header/i,
+      /(?:audio|capture|media)[\s_-]*session/i,
+      /\b(?:ar|vr|wc)[\s_-]*session/i,
+    ],
     expects: { call: true },
   },
   {
     id: 'score', ja: 'スコア', en: 'Score', icon: '🏆',
     strong: [/\bscore\b/i, /ranking/i, /leaderboard/i, /highscore/i, /スコア/, /得点/, /ランキング/],
     weak: [/point/i, /result/i, /record/i, /順位/],
+    avoid: [
+      /pointer|null[\s_-]*ptr|appoint/i,
+      /(?:end|break|check|entry|floating|code|mid|cg|focal|touch)[\s_-]*point/i,
+      /(?:audio|video|voice|screen|dns)[\s_-]*record/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
     id: 'level', ja: 'レベル・経験値', en: 'Level and EXP', icon: '⬆️',
     strong: [/level_?up/i, /\blevel\b/i, /\bexp\b/i, /experience/i, /レベル/, /経験値/, /ランクアップ/],
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
-    avoid: [/log[\s_-]*level/i, /verbosity[\s_-]*level/i],
+    avoid: [
+      /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent)[\s_-]*level/i,
+      /(?:crank|frank|prank|drank|shrank)/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
     id: 'stamina', ja: 'スタミナ', en: 'Stamina', icon: '⚡',
     strong: [/stamina/i, /energy/i, /\bap\b/i, /スタミナ/, /行動力/],
     weak: [/recover/i, /consume/i, /回復/, /消費/],
+    avoid: [
+      /low[\s_-]*energy/i,
+      /energy[\s_-]*(?:impact|usage|saving|efficiency|consumption|mode|budget|state)/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
     id: 'item', ja: 'アイテム・所持品', en: 'Items', icon: '🎒',
     strong: [/inventory/i, /item_?id/i, /equipment/i, /アイテム/, /所持品/, /装備/],
     weak: [/count/i, /quantity/i, /material/i, /個数/, /素材/],
+    avoid: [
+      /account|country|discount|encounter/i,
+      /(?:menu|tab[\s_-]*bar|bar[\s_-]*button|nav(?:igation)?|tool[\s_-]*bar|list|collection[\s_-]*view|status|accessibility)[\s_-]*items?/i,
+      /material[\s_-]*(?:design|shader|texture|pbr|diffuse|specular|albedo|metallic|roughness)/i,
+    ],
     expects: { numeric: true, store: true },
   },
   {
@@ -146,7 +217,10 @@ export const GOALS = [
       /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i, /magisk/i, /ptrace/i, /ssl[\s_-]*pinning/i,
       /integrity/i, /debugger/i, /cheat/i, /改造/, /不正/],
     weak: [/detect/i, /verify/i, /signature/i, /検知/],
-    avoid: [/secure[\s_-]*text[\s_-]*entry/i],
+    avoid: [
+      /secure[\s_-]*(?:text[\s_-]*entry|coding|enclave|connection|socket|transport|cookie|channel)/i,
+      /(?:method|type|function|selector|block)[\s_-]*signature/i,
+    ],
     expects: { compare: true, call: true },
   },
 ];
@@ -207,7 +281,7 @@ function wordCoverage(haystack, needle, blocked = []) {
 const ROLE_RULES = [
   { role: 'max', re: /(?:\b(?:max|maximum|limit|cap|upper|full)\b|総|最大)/ },
   { role: 'min', re: /(?:\b(?:min|minimum|lower)\b|最小)/ },
-  { role: 'base', re: /(?:\b(?:base|default|initial|init|origin|original|start|starting)\b|素|基本|初期)/ },
+  { role: 'base', re: /(?:\b(?:base|(?<!\buser\s)default|initial|init|origin|original|start|starting)\b|素|基本|初期)/ },
   { role: 'delta', re: /(?:\b(?:delta|diff|add|bonus|buff|modifier|mod|rate|ratio|percent)\b|倍率|補正)/ },
   { role: 'count', re: /(?:\b(?:count|num|number|times|total|len|length|size)\b|回数|個数)/ },
   { role: 'flag', re: /\b(?:is|has|can|should|enabled|flag)\b/ },
@@ -446,7 +520,8 @@ export function typeFits(goal, type) {
   }
   if (want === 'bool') {
     if (kind === 'bool' || (kind === 'int' && type.bytes === 1)) return 'fit';
-    if (kind === 'object' || kind === 'float') return 'conflict';
+    if (kind === 'object' || kind === 'float' || kind === 'cstring' || kind === 'class' ||
+        kind === 'selector' || kind === 'block' || kind === 'pointer') return 'conflict';
     return 'unknown';
   }
   if (want === 'text') {
@@ -489,28 +564,28 @@ export function goalLabel(goal) {
  */
 const SYNONYMS = [
   [/ダメージ|damage|だめーじ/i, ['damage', 'dmg', 'hurt', 'ダメージ']],
-  [/攻撃|こうげき|attack|atk/i, ['attack', 'atk', 'attk', '攻撃']],
+  [/攻撃|こうげき|attack|\batk\b/i, ['attack', 'atk', 'attk', '攻撃']],
   [/防御|ぼうぎょ|defense|defence/i, ['defense', 'defence', 'def', '防御']],
-  [/体力|hp|ヒットポイント|health/i, ['hp', 'health', 'life', '体力']],
-  [/所持金|お金|金|コイン|coins?|money|gold|wallet/i, ['coin', 'coins', 'gold', 'money', 'currency', 'wallet', '所持金']],
-  [/ジェム|石|gems?|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
+  [/体力|\bhp\b|ヒットポイント|health/i, ['hp', 'health', 'life', '体力']],
+  [/所持金|お金|資金|通貨|コイン|\bcoins?\b|money|gold|wallet/i, ['coin', 'coins', 'gold', 'money', 'currency', 'wallet', '所持金']],
+  [/ジェム|(?:課金|魔法|魔晶|聖晶|有償|無償|ガチャ)石|\bgems?\b|jewel|diamond|crystal/i, ['gem', 'jewel', 'diamond', 'crystal', 'ジェム']],
   [/ガチャ|gacha|抽選|召喚/i, ['gacha', 'lottery', 'draw', 'summon', 'ガチャ']],
   [/課金|購入|買|purchase|payment|iap|in-?app|sku|entitlement|storekit|receipt/i, ['purchase', 'payment', 'billing', 'receipt', 'iap', 'inapp', 'sku', 'entitlement', 'storekit', '購入']],
   [/チート|改造|不正|cheat|jailbreak|frida|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
-  [/ログイン|login|認証|auth/i, ['login', 'auth', 'signin', 'ログイン']],
-  [/広告|ad\b|ads\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
+  [/ログイン|login|認証|\bauth(?:enticat\w*|oriz\w*|n|z)?\b/i, ['login', 'auth', 'signin', 'ログイン']],
+  [/広告|\bads?\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
   [/セーブ|保存|save/i, ['save', 'store', 'persist', 'セーブ']],
-  [/通信|サーバ|server|network|api/i, ['http', 'api', 'request', 'session', '通信']],
+  [/通信|サーバ|server|network|\bapi\b/i, ['http', 'api', 'request', 'session', '通信']],
   [/スコア|score|得点/i, ['score', 'point', 'スコア']],
-  [/レベル|level|経験値|exp/i, ['level', 'exp', 'experience', 'レベル']],
+  [/レベル|level|経験値|\bexp\b/i, ['level', 'exp', 'experience', 'レベル']],
   [/スタミナ|stamina|行動力/i, ['stamina', 'energy', 'スタミナ']],
   [/アイテム|item|装備/i, ['item', 'inventory', 'equip', 'アイテム']],
   [/敵|enemy|モンスター|monster/i, ['enemy', 'monster', 'mob', '敵']],
   [/味方|player|プレイヤー|自分/i, ['player', 'user', 'hero', 'プレイヤー']],
   [/時間|time|タイマー|timer/i, ['time', 'timer', 'duration']],
-  [/回数|count|カウント/i, ['count', 'num', 'times']],
+  [/回数|\bcounts?\b|カウント/i, ['count', 'num', 'times']],
   [/速度|speed|スピード/i, ['speed', 'velocity', 'rate']],
-  [/確率|probability|rate/i, ['rate', 'probability', 'chance', '確率']],
+  [/確率|probability|\brates?\b/i, ['rate', 'probability', 'chance', '確率']],
 ];
 
 /** 目的を表す文字を、実際に探す語の並びに開く。 */
@@ -733,6 +808,79 @@ const DIAGNOSTIC_PREFIX_RE = /^(?:error|warning|warn|assert|assertion|fatal|debu
  * 関数シンボル（ObjC / Itanium C++ / 通常関数）から末尾のメソッド名（葉）を取り出す。
  * @returns {{ leaf: string, owner: string|null, isConst: boolean, isCtorOrDtor: boolean }}
  */
+function skipItaniumTemplateArgs(body, start) {
+  let i = start + 1;
+  let depth = 1;
+  while (i < body.length && depth > 0) {
+    const ch = body[i];
+    if (ch === 'E') {
+      depth--;
+      i++;
+      continue;
+    }
+    if (ch === 'I' || ch === 'N' || ch === 'F' || ch === 'X' || ch === 'J' || ch === 'Z') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === 'L') {
+      if (/^[abchijlmstxyfde]/.test(body.slice(i + 1))) {
+        const end = body.indexOf('E', i + 2);
+        if (end < 0) return -1;
+        i = end + 1;
+        continue;
+      }
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === 'B') {
+      const tm = /^(\d+)/.exec(body.slice(i + 1));
+      if (tm) {
+        const tlen = Number(tm[1]);
+        const next = i + 1 + tm[1].length + tlen;
+        if (tlen > 0 && next <= body.length) {
+          i = next;
+          continue;
+        }
+      }
+      i++;
+      continue;
+    }
+    if (ch === 'S') {
+      const sm = /^S(?:[0-9A-Z]*_|[tabsoid])/.exec(body.slice(i));
+      if (sm) {
+        i += sm[0].length;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (ch === 'T') {
+      const tm = /^T[0-9A-Z]*_/.exec(body.slice(i));
+      if (tm) {
+        i += tm[0].length;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (ch >= '1' && ch <= '9') {
+      const dm = /^(\d+)/.exec(body.slice(i));
+      const len = Number(dm[1]);
+      const next = i + dm[1].length + len;
+      if (len > 0 && next <= body.length) {
+        i = next;
+        continue;
+      }
+      i += dm[1].length;
+      continue;
+    }
+    i++;
+  }
+  return depth === 0 ? i : -1;
+}
+
 export function extractCallableLeaf(name) {
   if (typeof name !== 'string' || !name) {
     return { leaf: '', owner: null, isConst: false, isCtorOrDtor: false, isStdGlue: false };
@@ -744,15 +892,34 @@ export function extractCallableLeaf(name) {
   const cxx = /^_?_Z(N?)(K?)(.*)$/.exec(name);
   if (cxx) {
     const nested = cxx[1] === 'N';
-    const isConst = cxx[2] === 'K';
+    let isConst = cxx[2] === 'K';
     const body = cxx[3];
-    const isStdGlue = nested && /^St/.test(body);
+    const isStdGlue = nested && /^[VKrRO]*St/.test(body);
     if (nested) {
       const parts = [];
       let i = 0;
       let isCtorOrDtor = false;
       while (i < body.length && body[i] !== 'E') {
-        if (body[i] === 'K' || body[i] === 'V' || body[i] === 'r' || body[i] === 'L') { i++; continue; }
+        if (body[i] === 'K') { isConst = true; i++; continue; }
+        if (body[i] === 'V' || body[i] === 'r' || body[i] === 'R' || body[i] === 'O' || body[i] === 'L') {
+          i++;
+          continue;
+        }
+        if (body[i] === 'B') {
+          const tm = /^(\d+)/.exec(body.slice(i + 1));
+          if (!tm) break;
+          const tlen = Number(tm[1]);
+          const next = i + 1 + tm[1].length + tlen;
+          if (!(tlen > 0) || next > body.length) break;
+          i = next;
+          continue;
+        }
+        if (body[i] === 'I') {
+          const next = skipItaniumTemplateArgs(body, i);
+          if (next < 0) break;
+          i = next;
+          continue;
+        }
         if ((body[i] === 'C' || body[i] === 'D') && /[0-5]/.test(body[i + 1] || '')) {
           isCtorOrDtor = true;
           i += 2;
@@ -778,7 +945,7 @@ export function extractCallableLeaf(name) {
           owner: parts.length >= 2 ? parts[parts.length - 2] : null,
           isConst,
           isCtorOrDtor,
-          isStdGlue,
+          isStdGlue: isStdGlue || parts[0] === 'std',
         };
       }
     } else {
@@ -813,7 +980,11 @@ export function numericSymbolRole(goal, name) {
   const askedTokens = new Set(normalizeFieldName(goal.text || '').split(' ').filter(Boolean));
 
   const isNonValueToken = (tok) => NON_VALUE_ROLE_TOKEN_RE.test(tok) && !askedTokens.has(tok);
-  const isPredicateHead = (tok) => PREDICATE_OR_UI_HEAD_RE.test(tok) && !askedTokens.has(tok);
+  const isPredicateHead = (tok) => (
+    PREDICATE_OR_UI_HEAD_RE.test(tok)
+    && !askedTokens.has(tok)
+    && !(goal.id === 'gacha' && tok === 'draw')
+  );
 
   if (isPredicateHead(leafTokens[0])) return 'non-value';
   if (leafTokens.length >= 2 && /^(?:is|can|has|should)$/.test(leafTokens[1]) && !askedTokens.has(leafTokens[1])) {
@@ -827,8 +998,9 @@ export function numericSymbolRole(goal, name) {
     core = next;
   }
   const coreHit = core ? matchField(goal, core) : null;
-  const hasNonValueToken = leafTokens.some(isNonValueToken) || ownerTokens.some(isNonValueToken);
-  if (hasNonValueToken && !(coreHit && coreHit.exact)) return 'non-value';
+  if (ownerTokens.some(isNonValueToken)) return 'non-value';
+  const hasLeafNonValue = leafTokens.some(isNonValueToken);
+  if (hasLeafNonValue && !(coreHit && coreHit.exact)) return 'non-value';
   if (info.isCtorOrDtor) return 'non-value';
   if (coreHit && (coreHit.exact || coreHit.score >= 0.7)) return 'value';
   return 'neutral';

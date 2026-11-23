@@ -47,25 +47,25 @@ const BLOCK_FEATURE_TO_CATEGORY = {
 };
 
 const CLASS_NAME_HINTS = [
-  { id: 'battle', points: 3, re: /battle|combat|damage|attack|skill|buff|enemy|monster|boss|weapon|bullet|hitbox|\bhp\b/i },
+  { id: 'battle', points: 3, re: /battle|combat|damage|attack|skill|buff(?!er)|enemy|monster|boss|weapon|bullet|hitbox|\bhp\b/i },
   { id: 'character', points: 3, re: /character|chara|hero|avatar|actor|unit(?!test)|player(?!prefs)|party|team/i },
-  { id: 'item', points: 3, re: /item|inventory|equip|bag|gear|material|consumable/i },
-  { id: 'gacha', points: 3, re: /gacha|lottery|draw|reward|bonus|present|gift|loot|treasure/i },
-  { id: 'purchase', points: 3, re: /shop|storekit|store|purchase|payment|billing|\biap\b|in[\s_-]?app|\bsku\b|entitlement|receipt|product|price|checkout|wallet|currency|coin|gem|diamond|crystal|gold/i },
+  { id: 'item', points: 3, re: /item|inventory|equip|(?<!gar)bag|gear|material|consumable/i },
+  { id: 'gacha', points: 3, re: /gacha|lottery|draw(?!er|able|ing|call|rect)|reward|bonus|present(?!er|ation|view|controller|modal|sheet|dialog)|gift|loot|treasure/i },
+  { id: 'purchase', points: 3, re: /shop|storekit|store|purchase|payment|billing|\biap\b|in[\s_-]?app|\bsku\b|entitlement|receipt|product|price|checkout|wallet|currency|coin(?!cid)|gem(?!ent)|diamond|crystal|gold/i },
   { id: 'login', points: 3, re: /login|logout|auth(?!or)|account|credential|token|signin|signup|register/i },
   { id: 'login', points: 1, re: /session|profile(?:manager)?|\buser\b/i },
   { id: 'network', points: 3, re: /\bapi\b|api[a-z]*(client|manager|service)|http|network|request|response|socket|connection|endpoint|\burl\b|urlsession|session(task|manager|delegate|config)|download|upload|sync/i },
   { id: 'save', points: 3, re: /save|persist|database|\bdb\b|realm|coredata|sqlite|cache|archive|userdefault|storage/i },
-  { id: 'quest', points: 3, re: /quest|stage|mission|chapter|dungeon|map(?:data|manager)|world/i },
+  { id: 'quest', points: 3, re: /quest|stage|(?<!per|sub|trans|ad|com|inter)mission|chapter|dungeon|map(?:data|manager)|world/i },
   { id: 'social', points: 3, re: /friend|guild|clan|chat|message|mail|social|invite|follow/i },
   { id: 'ranking', points: 3, re: /rank|leaderboard|score|record|achievement/i },
   { id: 'ads', points: 3, re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adcolony|interstitial|rewarded|banner|\bads?[a-z]*(manager|helper|view|unit)/i },
-  { id: 'anticheat', points: 3, re: /jailbreak|frida|magisk|ptrace|ssl[\s_-]?pinning|root(?:detect|check|ed|guard|jail)|tamper|integrity|antichea|cheat|security|crypt|cipher|hash|keychain|obfusc|protect|guard(?!ian)/i },
-  { id: 'audio', points: 3, re: /audio|sound|\bbgm\b|music|voice|\bse\b(?:manager|player)/i },
-  { id: 'tutorial', points: 3, re: /tutorial|onboard|guide|walkthrough/i },
+  { id: 'anticheat', points: 3, re: /jailbreak|frida|magisk|ptrace|ssl[\s_-]?pinning|root(?:detect|check|ed|guard|jail)|tamper|integrity|antichea|cheat|security|crypt|cipher|hash(?!map|table|set|code)|keychain|obfusc|protect|guard(?!ian)/i },
+  { id: 'audio', points: 3, re: /audio|sound|\bbgm\b|music|voice|\bse[\s_-]?(?:manager|player)\b/i },
+  { id: 'tutorial', points: 3, re: /tutorial|onboard|(?<!layout)guide|walkthrough/i },
   { id: 'settings', points: 2, re: /setting|config|option|preference|locale|language/i },
   { id: 'error', points: 2, re: /error|exception|crash|report|logger|logging/i },
-  { id: 'ui', points: 2, re: /viewcontroller|view$|view[a-z]*(controller|model)|button|label|cell|scene|screen|dialog|popup|\bhud\b|layout|animation|widget|window|navigation|table|collection/i },
+  { id: 'ui', points: 2, re: /viewcontroller|view$|view[a-z]*(controller|model)|button|label|cell|scene|screen|dialog|popup|\bhud\b|layout|animation|widget|window|navigation|(?<!mu)table|collection/i },
   { id: 'system', points: 1, re: /manager$|helper|util|common|base$|core$|delegate|factory|builder|observer|handler|bridge|wrapper|adapter/i },
 ];
 
@@ -232,6 +232,7 @@ export function buildAppMap(opts) {
 
   const textByAddr = new Map();
   for (const s of o.strings || []) {
+    if (typeof s?.text !== 'string') continue;
     const key = canonicalAddressKey(s?.addr);
     if (key != null) textByAddr.set(key, s.text);
   }
@@ -267,7 +268,7 @@ export function buildAppMap(opts) {
         fields: c.ivars ? c.ivars.length : 0,
         instanceSize: c.instanceSize,
         calls,
-        addr: c.methods && c.methods.length ? c.methods[0].addr : null,
+        addr: c.methods?.[0]?.addr ?? c.classMethods?.[0]?.addr ?? null,
         info: c,
       });
     }
@@ -355,6 +356,7 @@ function producerByteExtentWindow(text) {
 // provable extent (missing byteLength falls back to the provable minimum; a
 // malformed/forged carried value gets no xref authority at all).
 function stringByteSpan(s) {
+  if (typeof s?.text !== 'string') return null;
   const carried = s.byteLength;
   if (carried === undefined || carried === null) {
     const { minRaw } = producerByteExtentWindow(s.text);
@@ -390,6 +392,7 @@ export function buildStringMap(opts) {
     }
   }
   for (const s of selectedStrings) {
+    if (typeof s?.text !== 'string') continue;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
     // The xref span is a virtual-address byte range (#5698): use the string's
@@ -414,7 +417,7 @@ export function buildStringMap(opts) {
           });
         }
         const f = g.funcs.get(key);
-        if (f.samples.length < 3) f.samples.push(s.text);
+        if (f.samples.length < 3 && !f.samples.includes(s.text)) f.samples.push(s.text);
       }
     }
   }
