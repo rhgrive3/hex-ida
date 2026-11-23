@@ -580,6 +580,7 @@ function highVariableGroupById(highVariables, groupId) {
 }
 
 function argumentName(v, state) {
+  if (v?.reg === 'sp') return 'sp';
   const cxxRec = currentCppReceiver(state.opts, state.ir);
   if (cxxRec && isCppReceiverAlias(v, cxxRec, state.ir)) return 'this';
   const groupId = state.highVariables?.valueToGroup?.get(v?.id);
@@ -615,10 +616,116 @@ function stackLocationName(loc, addr) {
   return `local_slot_${encodedLocationIdentity(fallbackIdentity) || 'unknown'}`;
 }
 
+const escapedStackFrameCache = new WeakMap();
+
+function hasEscapedStackFrame(state) {
+  const ir = state?.ir;
+  if (!ir || typeof ir !== 'object') return false;
+  if (escapedStackFrameCache.has(ir)) return escapedStackFrameCache.get(ir);
+  const spDerived = new Set();
+  const mark = (v) => {
+    if (!v || typeof v !== 'object') return false;
+    if (spDerived.has(v)) return false;
+    spDerived.add(v);
+    return true;
+  };
+  const spArg = ir.args?.get?.('sp');
+  if (spArg) mark(spArg);
+  for (const v of ir.values || []) {
+    if (v?.reg === 'sp') mark(v);
+  }
+  if (spDerived.size === 0) {
+    escapedStackFrameCache.set(ir, false);
+    return false;
+  }
+  const insts = ir.instructions || [];
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < 16) {
+    changed = false;
+    guard += 1;
+    for (let i = 0; i < insts.length; i += 1) {
+      const ins = insts[i];
+      if (!ins?.dst || spDerived.has(ins.dst)) continue;
+      if (ins.op === 'mov') {
+        if (spDerived.has(valueOf(ins.args?.[0]))) changed = mark(ins.dst) || changed;
+      } else if (ins.op === 'bin' && (ins.sub === 'add' || ins.sub === 'sub')) {
+        const a0 = valueOf(ins.args?.[0]);
+        const a1 = valueOf(ins.args?.[1]);
+        if (spDerived.has(a0) || (ins.sub === 'add' && spDerived.has(a1))) {
+          changed = mark(ins.dst) || changed;
+        }
+      } else if (ins.op === 'sel') {
+        if (spDerived.has(valueOf(ins.args?.[0])) || spDerived.has(valueOf(ins.args?.[1]))) {
+          changed = mark(ins.dst) || changed;
+        }
+      } else if (ins.op === 'phi') {
+        if ((ins.args || []).some((a) => spDerived.has(valueOf(a)))) {
+          changed = mark(ins.dst) || changed;
+        }
+      }
+    }
+  }
+  let escaped = false;
+  for (let i = 0; i < insts.length; i += 1) {
+    const ins = insts[i];
+    if (!ins) continue;
+    if (ins.op === 'call' || ins.op === 'ret') {
+      if ((ins.args || []).some((a) => spDerived.has(valueOf(a)))) { escaped = true; break; }
+    } else if (ins.op === 'phi' && ins.dst?.reg !== 'sp') {
+      if ((ins.args || []).some((a) => spDerived.has(valueOf(a)))) { escaped = true; break; }
+    } else if (ins.op === 'load' || ins.op === 'store') {
+      if (ins.loc?.kind !== 'stack') {
+        const b1 = valueOf(ins.addr?.base) || ins.addr?.base;
+        const b2 = valueOf(ins.loc?.base) || ins.loc?.base;
+        const idx = valueOf(ins.addr?.index) || ins.addr?.index;
+        if (spDerived.has(b1) || spDerived.has(b2) || spDerived.has(idx)) { escaped = true; break; }
+      }
+      if (ins.op === 'store' && spDerived.has(valueOf(ins.args?.[0]))) {
+        escaped = true;
+        break;
+      }
+    }
+  }
+  escapedStackFrameCache.set(ir, escaped);
+  return escaped;
+}
+
+function stackFrameOffset(loc, addr) {
+  const key = typeof loc?.key === 'string' ? loc.key : '';
+  const canonical = /^stack:([+-]?\d+)$/.exec(key);
+  if (canonical) {
+    try { return BigInt(canonical[1]); } catch { /* fall through */ }
+  }
+  const raw = loc?.disp ?? addr?.disp;
+  if (raw != null) {
+    try { return BigInt(raw); } catch { /* fall through */ }
+  }
+  return null;
+}
+
 function memoryLocation(inst, state) {
   const loc = inst?.loc || {};
   const addr = inst?.addr || {};
   if (loc.kind === 'stack') {
+    if (hasEscapedStackFrame(state)) {
+      const stackOff = stackFrameOffset(loc, addr);
+      if (stackOff !== null) {
+        const effBytes = Number(addr.size || inst?.size || loc?.size || 8);
+        const elemType = memoryElementType(inst, effBytes > 0 ? effBytes : 8, state.types) || 'uint64_t';
+        const addrExpr = stackOff === 0n
+          ? 'sp'
+          : (stackOff < 0n ? `sp - ${(-stackOff).toString()}` : `sp + ${stackOff.toString()}`);
+        const text = `*(${elemType} *)(uintptr_t)(${addrExpr})`;
+        return {
+          kind: 'deref',
+          key: loc.key || `stack:${stackOff.toString()}`,
+          base: expr.variable('sp', 64, false, origin(inst)),
+          disp: stackOff,
+          text,
+        };
+      }
+    }
     // A declaration and every use denote one recovered stack location. Keep
     // the initial producer's spelling when it issued a typed declaration;
     // renaming only the rewritten stores would leave the declaration orphaned
@@ -641,7 +748,7 @@ function memoryLocation(inst, state) {
     if (isReceiver) {
       base = expr.variable('this', 64, false, origin(inst));
     }
-    if (!known && !isReceiver && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
+    if (!known && !isReceiver) {
       const baseType = typeFor(state, baseVal);
       const effBytes = Number(addr.size || inst?.size || loc?.size || 0);
       const elemType = effBytes > 0 ? memoryElementType(inst, effBytes, state.types) : null;
@@ -735,48 +842,157 @@ function nzcvCondition(value, cond) {
   }
 }
 
-function compareFromFlags(flagValue, cond, state) {
-  const d = flagValue?.def;
-  if (!d || d.op !== 'cmp') return expr.variable('condition_' + (cond || 'flags'), 1, false);
-  const selection = observeBuildSelection(flagValue, d, state, 'flag-condition');
-  const expression = compareFromFlagsRaw(flagValue, cond, state);
-  recordCompatOperationSelection(flagValue, expression, compatOperationSelection(flagValue, state, [d], false), state);
-  const observation = finishBuildSelection(expression, selection, state);
-  if (observation) {
-    const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
-      const value = valueOf(arg); return origin(value?.def, value);
-    })) };
-    const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build', valueId:null,
-      before:`cmp:${d.sub || 'sub'}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
-      evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
-        detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
-      originHistory:buildOriginHistory(state, before, expression),
-    });
-    buildHistoryObservations.set(record, observation);
-    reusableBuildHistoryRecords.add(record);
-    (state.buildHistoryFrame.records ??= new Set()).add(record);
+function normalizeFlagProducerSub(d) {
+  if (!d) return null;
+  if (d.op === 'cmp') {
+    const s = String(d.extra?.innerOp ?? d.sub ?? 'sub').toLowerCase();
+    if (s === 'sub' || s === 'subs' || s === 'cmp' || s === 'ccmp') return 'sub';
+    if (s === 'add' || s === 'adds' || s === 'cmn' || s === 'ccmn') return 'add';
+    if (s === 'and' || s === 'ands' || s === 'tst') return 'and';
+    if (s === 'bic' || s === 'bics') return 'bic';
+    if (s === 'fsub' || s === 'fcmp' || s === 'fcmpe' || s === 'fccmp' || s === 'fccmpe') return 'fsub';
+    return s;
   }
-  return expression;
+  const op = String(d.op || '').toLowerCase();
+  const sub = String(d.sub || '').toLowerCase();
+  if (op === 'subs' || (op === 'bin' && (sub === 'subs' || sub === 'sub'))) return 'sub';
+  if (op === 'adds' || (op === 'bin' && (sub === 'adds' || sub === 'add'))) return 'add';
+  if (op === 'ands' || (op === 'bin' && (sub === 'ands' || sub === 'and'))) return 'and';
+  if (op === 'bics' || (op === 'bin' && (sub === 'bics' || sub === 'bic'))) return 'bic';
+  return null;
 }
 
-function compareFromFlagsRaw(flagValue, cond, state) {
+function isFallbackConditionExpr(e) {
+  return e?.kind === 'var' && typeof e.name === 'string' && e.name.startsWith('condition_');
+}
+
+function compareFromFlags(flagValue, cond, state) {
+  const d = flagValue?.def;
+  if (!d) return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  const active = (state.flagCompareActive ??= new Set());
+  const cycleKey = flagValue?.id != null ? `v:${flagValue.id}:${cond || ''}` : null;
+  if (cycleKey && active.has(cycleKey)) {
+    return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  }
+  if (d.op === 'mov') {
+    if (cycleKey) active.add(cycleKey);
+    try { return compareFromFlags(valueOf(d.args?.[0]), cond, state); } finally { if (cycleKey) active.delete(cycleKey); }
+  }
+  if (d.op === 'phi') {
+    if (cycleKey) active.add(cycleKey);
+    try {
+      const incoming = (d.args || []).map(valueOf).filter((arg) => arg && arg !== flagValue && (flagValue.id == null || arg.id !== flagValue.id));
+      const lowered = [];
+      for (const inc of incoming) {
+        const cand = compareFromFlags(inc, cond, state);
+        if (!isFallbackConditionExpr(cand)) lowered.push(cand);
+      }
+      if (lowered.length === 1) return lowered[0];
+      if (lowered.length > 1) {
+        const firstText = printExpression(lowered[0]);
+        if (lowered.every((c) => printExpression(c) === firstText)) return lowered[0];
+      }
+      return expr.variable('condition_' + (cond || 'flags'), 1, false);
+    } finally {
+      if (cycleKey) active.delete(cycleKey);
+    }
+  }
+  const producerSub = normalizeFlagProducerSub(d);
+  if (!producerSub) return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  if (cycleKey) active.add(cycleKey);
+  try {
+    const selection = observeBuildSelection(flagValue, d, state, 'flag-condition');
+    const expression = compareFromFlagsRaw(flagValue, cond, state, producerSub);
+    recordCompatOperationSelection(flagValue, expression, compatOperationSelection(flagValue, state, [d], false), state);
+    const observation = finishBuildSelection(expression, selection, state);
+    if (observation) {
+      const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
+        const value = valueOf(arg); return origin(value?.def, value);
+      })) };
+      const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build', valueId:null,
+        before:`cmp:${d.sub || producerSub}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
+        evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
+          detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
+        originHistory:buildOriginHistory(state, before, expression),
+      });
+      buildHistoryObservations.set(record, observation);
+      reusableBuildHistoryRecords.add(record);
+      (state.buildHistoryFrame.records ??= new Set()).add(record);
+    }
+    return expression;
+  } finally {
+    if (cycleKey) active.delete(cycleKey);
+  }
+}
+
+const irValueByIdCache = new WeakMap();
+
+function lookupIrValueById(ir, id) {
+  if (!ir || id == null) return null;
+  let byId = irValueByIdCache.get(ir);
+  if (!byId || byId.size < (ir.values?.length || 0)) {
+    byId = new Map();
+    for (const v of ir.values || []) {
+      if (v && v.id != null) byId.set(v.id, v);
+    }
+    irValueByIdCache.set(ir, byId);
+  }
+  return byId.get(id) || null;
+}
+
+function resolveConditionalArg(ref, fallbackArg, state) {
+  if (ref == null) return fallbackArg;
+  if (typeof ref === 'object') return ref;
+  if (valueOf(fallbackArg)?.id === ref) return fallbackArg;
+  const found = lookupIrValueById(state?.ir, ref);
+  return found ? { value: found, bits: found.bits } : fallbackArg;
+}
+
+function resolveConditionalGuard(ref, fallbackArg, state) {
+  if (ref != null && typeof ref === 'object') {
+    if (ref.def) return ref;
+    if (ref.op) return { id: ref.dst?.id ?? null, def: ref };
+    return valueOf(ref);
+  }
+  if (ref != null) {
+    const fb = valueOf(fallbackArg);
+    if (fb && fb.id === ref) return fb;
+    const found = lookupIrValueById(state?.ir, ref);
+    if (found) return found;
+  }
+  return valueOf(fallbackArg);
+}
+
+function compareFromFlagsRaw(flagValue, cond, state, producerSub = null) {
   const d = flagValue.def;
-  const a = buildArg(d.args?.[0], state);
-  let b = buildArg(d.args?.[1], state);
+  const sub = producerSub || normalizeFlagProducerSub(d) || d.sub || 'sub';
+  const lhsArg = d.extra?.conditional ? resolveConditionalArg(d.extra.innerLhs, d.args?.[0], state) : d.args?.[0];
+  const rhsArg = d.extra?.conditional ? resolveConditionalArg(d.extra.innerRhs, d.args?.[1], state) : d.args?.[1];
+  const a = buildArg(lhsArg, state);
+  let b = buildArg(rhsArg, state);
   // ARM compare immediates inherit the register operand width. The IR wrapper
   // does not need to duplicate that width on the immediate itself, so canonicalize
   // the constant here before structural min/max matching (#356).
   if (b?.kind === 'const' && a?.bits && b.bits !== a.bits) b = expr.constant(BigInt.asUintN(Number(a.bits), b.value), Number(a.bits), false, b.source);
+  const cmpBits = Number(d.bits || a.bits || b.bits || 64);
+  const effectiveSub = sub === 'bic' ? 'and' : sub;
+  const effectiveB = sub === 'bic' ? expr.unary('not', b, cmpBits, false, origin(d)) : b;
   let normal;
   if (cond === 'al' || cond === 'nv') normal = expr.constant(1, 1, false, origin(d));
-  else normal = buildNZCVConditionExpression(d.sub || 'sub', cond, a, b, Number(d.bits || a.bits || b.bits || 64), origin(d))
-    || expr.intrinsic(`__arm64_nzcv_${d.sub || 'unknown'}_${cond || 'flags'}`, [a,b], 1, false, origin(d), { nzcvCondition:true });
+  else normal = buildNZCVConditionExpression(effectiveSub, cond, a, effectiveB, cmpBits, origin(d))
+    || expr.intrinsic(`__arm64_nzcv_${effectiveSub || 'unknown'}_${cond || 'flags'}`, [a, effectiveB], 1, false, origin(d), { nzcvCondition:true });
   if (!d.extra?.conditional) return normal;
-  const previousFlags = valueOf(d.args?.[2]);
-  const gate = compareFromFlags(previousFlags, d.extra?.cond, state);
+  const guardFlags = resolveConditionalGuard(d.extra.guardCmp, d.args?.[2], state);
+  const guardCond = d.extra.guardCond ?? d.extra.cond;
+  const gate = compareFromFlags(guardFlags, guardCond, state);
   const fallbackTruth = nzcvCondition(d.extra?.fallbackNzcv, cond);
-  const fallback = fallbackTruth == null ? expr.variable('fallback_' + (cond || 'flags'), 1, false, origin(d))
-    : expr.constant(fallbackTruth ? 1 : 0, 1, false, origin(d));
+  if (fallbackTruth === false) {
+    return expr.binary('andand', gate, normal, 1, false, origin(d));
+  }
+  if (fallbackTruth === true) {
+    return expr.binary('oror', expr.unary('lnot', gate, 1, false, origin(d)), normal, 1, false, origin(d));
+  }
+  const fallback = expr.variable('fallback_' + (cond || 'flags'), 1, false, origin(d));
   return expr.select(gate, normal, fallback, 1, false, origin(d));
 }
 
@@ -814,8 +1030,27 @@ function buildArg(arg, state, flags = {}) {
   return applyShift(out, arg.shift);
 }
 
+function resolveSelectArmAddress(arm, rawArg, state, peerIsString) {
+  if (!arm || arm.kind !== 'const' || arm.value === 0n) return arm;
+  const v = valueOf(rawArg);
+  const addrDerived = isAddressDerivedConstant(v);
+  if (!addrDerived && !peerIsString) return arm;
+  const literal = stringLiteralAt(arm.value, state);
+  if (literal) {
+    return expr.variable(literal, 64, false, arm.source, { address: arm.value, stringLiteral: true });
+  }
+  if (addrDerived) {
+    const name = state.opts?.symbolFor?.(arm.value) || null;
+    return expr.variable(name ? safeIdent(name) : `&global_${BigInt(arm.value).toString(16).toUpperCase()}`, 64, false, arm.source, { address: arm.value });
+  }
+  return arm;
+}
+
 function selectExpression(d, state) {
-  const t = buildArg(d.args?.[0], state), f = buildArg(d.args?.[1], state), flags = valueOf(d.args?.[2]);
+  let t = buildArg(d.args?.[0], state), f = buildArg(d.args?.[1], state);
+  const flags = valueOf(d.args?.[2]);
+  t = resolveSelectArmAddress(t, d.args?.[0], state, f?.stringLiteral === true);
+  f = resolveSelectArmAddress(f, d.args?.[1], state, t?.stringLiteral === true);
   const condition = compareFromFlags(flags, d.cond, state);
   if (d.sub === 'inc') return expr.select(condition, t, expr.binary('add', f, expr.constant(1, f.bits), f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'inv') return expr.select(condition, t, expr.unary('not', f, f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
@@ -1538,7 +1773,7 @@ function buildValueRaw(v, state, flags = {}) {
     const literal = stringLiteralForValue(v, state, addressDerived);
     if (literal) {
       out = expr.variable(literal, 64, false, origin(d, v), { address: v.const, stringLiteral: true });
-    } else if (addressDerived && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true && BigInt(v.const) !== 0n) {
+    } else if (addressDerived && BigInt(v.const) !== 0n) {
       const name = state.opts?.symbolFor?.(v.const) || null;
       out = expr.variable(name ? safeIdent(name) : `&global_${BigInt(v.const).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address: v.const });
     } else {
@@ -1563,12 +1798,30 @@ function buildValueRaw(v, state, flags = {}) {
       recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null, cast ? operandBits : null);
     }
     else if (d.op === 'bin') {
+      if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedConstant(v)) {
+        const lv = valueOf(d.args?.[0]);
+        const rv = valueOf(d.args?.[1]);
+        const lc = lv?.const ?? (lv?.def?.op === 'addr' ? (lv.def.extra?.value ?? lv.def.extra?.target ?? null) : null);
+        const rc = rv?.const ?? (rv?.def?.op === 'addr' ? (rv.def.extra?.value ?? rv.def.extra?.target ?? null) : null);
+        if (lc != null && rc != null) {
+          const foldedAddr = d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+          const literal = stringLiteralAt(foldedAddr, state);
+          if (literal) {
+            out = expr.variable(literal, 64, false, origin(d, v), { address: foldedAddr, stringLiteral: true });
+          } else if (foldedAddr !== 0n) {
+            const name = state.opts?.symbolFor?.(foldedAddr) || null;
+            out = expr.variable(name ? safeIdent(name) : `&global_${foldedAddr.toString(16).toUpperCase()}`, 64, false, origin(d, v), { address: foldedAddr });
+          }
+        }
+      }
+      if (!out) {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));
       else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
       if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
+      }
     } else if (d.op === 'un') {
       const a = buildArg(d.args?.[0], state);
       const sub = String(d.sub || '');
@@ -1610,9 +1863,7 @@ function buildValueRaw(v, state, flags = {}) {
         out = expr.variable(literal, 64, false, origin(d, v), { address, stringLiteral: true });
       } else {
         const name = address != null ? state.opts?.symbolFor?.(address) : null;
-        const fallbackGlobal = (state.preservePhase8Unknown || state.opts?.phase8Optimize === true)
-          ? `global_${BigInt(address || 0).toString(16).toUpperCase()}`
-          : `&global_${BigInt(address || 0).toString(16).toUpperCase()}`;
+        const fallbackGlobal = `&global_${BigInt(address || 0).toString(16).toUpperCase()}`;
         out = expr.variable(name ? safeIdent(name) : fallbackGlobal, 64, false, origin(d, v), { address });
       }
     } else if (d.op === 'load') {
@@ -2024,9 +2275,8 @@ function reachingRegisterValue(ir, atInst, reg) {
   const candidates = getValuesByReg(ir, reg);
   for (let i = 0; i < candidates.length; i++) {
     const v = candidates[i];
-    if (v.clobbered) continue;
     const d = v.def;
-    if (d === atInst) continue;
+    if (!d || d === atInst) continue;
     if (d.block === atInst.block) {
       if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
       if (!bestSameBlock || d.row > bestRow) {
@@ -2044,14 +2294,15 @@ function reachingRegisterValue(ir, atInst, reg) {
       bestRow = d.row ?? -Infinity;
     }
   }
+  if (best?.clobbered) return null;
   if (bestSameBlock) return best;
 
   const candidateDefinition = best?.def ?? null;
   for (let i = 0; i < candidates.length; i++) {
     const v = candidates[i];
-    if (v === best || v.clobbered) continue;
+    if (v === best) continue;
     const d = v.def;
-    if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
+    if (!d || d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
     if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
   }
   return best;

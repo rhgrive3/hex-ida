@@ -229,10 +229,13 @@ function buildContext(model, o) {
   }
 
   const textOf = new Map();       // row -> 文字列リテラル
-  const refOf = new Map();        // row -> {addr, load} 命令が指している絶対アドレス
+  const refOf = new Map();        // row -> {addr, load, bytes} 命令が指している絶対アドレス
   for (const r of model.addressRefs || []) {
     if (r.text) textOf.set(r.row, r.text);
-    if (r.addr != null && !refOf.has(r.row)) refOf.set(r.row, { addr: r.addr, load: !!r.load });
+    if (r.addr != null) {
+      if (!refOf.has(r.row)) refOf.set(r.row, { addr: r.addr, load: !!r.load, bytes: r.bytes || null });
+      else if (r.bytes && !refOf.get(r.row).bytes) refOf.get(r.row).bytes = r.bytes;
+    }
   }
   const callOf = new Map();       // row -> call 情報
   for (const c of model.calls || []) callOf.set(c.row, c);
@@ -293,11 +296,26 @@ function buildContext(model, o) {
   const aliases = values ? argAliases(model, values) : new Map();
 
   const material = values ? decideMaterial(model, values) : null;
+  if (material && aliases.size) {
+    for (const [v, n] of material.names) {
+      if (aliases.has(n)) material.names.set(v, aliases.get(n));
+    }
+  }
   if (carry && material) {
     const head = carry.reg + '_';
     for (const [v, n] of material.names) {
       if (n === carry.reg || n.startsWith(head)) material.names.set(v, 'result');
     }
+  }
+
+  const frame = frameOf(model);
+  const escapedStackRanges = collectEscapedStackRanges(model, frame, savedSlots);
+  const blocks = model.basicBlocks || [];
+  let liveOut = material && material.liveOut ? material.liveOut : null;
+  if (!liveOut) {
+    const bOf = new Map();
+    blocks.forEach((b, i) => { for (const r of b.rows) bOf.set(r, i); });
+    liveOut = liveOutSets(model, blocks, bOf);
   }
 
   return {
@@ -310,7 +328,9 @@ function buildContext(model, o) {
     refOf,
     callOf,
     savedSlots,
-    frame: frameOf(model),
+    frame,
+    escapedStackRanges,
+    liveOut,
     values,
     material,
     carry,
@@ -426,6 +446,12 @@ function decideMaterial(model, vg) {
 
   for (const insn of insns) {
     for (const r of insn.reads) bump(vg.at(insn.row, r), insn.row);
+    if (insn.isTailCall || insn.tailCall) {
+      for (let a = 0; a <= 7; a++) {
+        bump(vg.at(insn.row, 'x' + a), insn.row);
+        bump(vg.at(insn.row, 'v' + a), insn.row);
+      }
+    }
   }
   for (const w of vg.memWrites || []) bump(w.value, w.row);
   for (const r of vg.returns || []) bump(r.value, r.row);
@@ -542,7 +568,14 @@ function decideMaterial(model, vg) {
       }
       continue;
     }
-    if (insn.data || insn.isCall || insn.memory || insn.isBranch) continue;
+    if (insn.isCall || insn.isTailCall || insn.tailCall) {
+      for (let a = 0; a <= 7; a++) {
+        const fpArg = vg.at(insn.row, 'v' + a);
+        if (fpArg && vg.nodeDef.has(fpArg)) opaqueInputs.add(fpArg);
+      }
+      continue;
+    }
+    if (insn.data || insn.memory || insn.isBranch) continue;
     const base = (insn.mnemonic || '').toLowerCase();
     const writes = (insn.writes || []).filter((reg) => reg !== 'nzcv');
     const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base);
@@ -622,8 +655,11 @@ function decideMaterial(model, vg) {
     for (const w of vg.memWrites || []) mark(w.value, null);
     for (const r of vg.returns || []) mark(r.value, null);
     for (const insn of insns) {
-      if (!insn.isCall) continue;
-      for (let a = 0; a <= 7; a++) mark(vg.at(insn.row, 'x' + a), null);
+      if (!insn.isCall && !insn.isTailCall && !insn.tailCall) continue;
+      for (let a = 0; a <= 7; a++) {
+        mark(vg.at(insn.row, 'x' + a), null);
+        mark(vg.at(insn.row, 'v' + a), null);
+      }
     }
     let dropped = 0;
     for (const nodeValue of Array.from(material)) {
@@ -683,8 +719,11 @@ function decideMaterial(model, vg) {
     for (const w of vg.memWrites || []) tally(w.value, null);
     for (const r of vg.returns || []) tally(r.value, null);
     for (const insn of insns) {
-      if (!insn.isCall) continue;
-      for (let a = 0; a <= 7; a++) tally(vg.at(insn.row, 'x' + a), null);
+      if (!insn.isCall && !insn.isTailCall && !insn.tailCall) continue;
+      for (let a = 0; a <= 7; a++) {
+        tally(vg.at(insn.row, 'x' + a), null);
+        tally(vg.at(insn.row, 'v' + a), null);
+      }
     }
     let merged = 0;
     for (const nodeValue of Array.from(material)) {
@@ -723,11 +762,49 @@ function decideMaterial(model, vg) {
    * （アセンブリと同じ読み方になるので、突き合わせもしやすい）。
    */
   const lost = new Set();
+  const markLostInNode = (root) => {
+    if (!root) return;
+    const seen = new Set();
+    const stack = [root];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || seen.has(cur)) continue;
+      seen.add(cur);
+      if (cur.k === 'reg' && cur.reg) { lost.add(cur.reg); continue; }
+      const kids = cur.k === 'bin' ? [cur.a, cur.b]
+        : cur.k === 'un' ? [cur.a]
+          : cur.k === 'sel' ? [cur.a, cur.b, cur.predicate, cur.cmp && cur.cmp.a, cur.cmp && cur.cmp.b]
+            : cur.k === 'flagcond' ? [cur.a, cur.b]
+              : cur.k === 'mem' ? [cur.base, cur.index]
+                : cur.k === 'call' ? (cur.args || []).map((a) => a.value) : [];
+      for (const c of kids) if (c) stack.push(c);
+    }
+  };
   for (const insn of insns) {
     for (const r of insn.reads) {
       const at = vg.at(insn.row, r);
       if (at && at.k === 'reg' && at.reg === r) lost.add(r);
     }
+    if (insn.isReturn) {
+      for (const r of ['x0', 'v0']) {
+        const at = vg.at(insn.row, r);
+        if (!at || (at.k === 'reg' && at.reg === r)) lost.add(r);
+      }
+    }
+    if (insn.isCall || insn.isTailCall || insn.tailCall) {
+      for (let a = 0; a <= 7; a++) {
+        for (const r of ['x' + a, 'v' + a]) {
+          const at = vg.at(insn.row, r);
+          if (at && at.k === 'reg' && at.reg === r) lost.add(r);
+        }
+      }
+    }
+  }
+  for (const nodeValue of material) markLostInNode(nodeValue);
+  for (const w of vg.memWrites || []) markLostInNode(w.value);
+  for (const r of vg.returns || []) {
+    if (!r.value) lost.add('x0');
+    else markLostInNode(r.value);
   }
 
   const names = new Map();
@@ -746,7 +823,8 @@ function decideMaterial(model, vg) {
        * 「その道の最後に入れた値」だから。同じブロックの途中の代入まで
        * 素の名前にすると、1 つの式の中に `x0 + x0` が出て意味が壊れる。
        */
-      if (lost.has(reg) && lastInBlock.get(blockOf.get(insn.row) + ':' + reg) === v) {
+      if ((lost.has(reg) && lastInBlock.get(blockOf.get(insn.row) + ':' + reg) === v) ||
+          isDefLiveOut({ row: insn.row, reg }, v)) {
         names.set(v, reg);
         continue;
       }
@@ -769,7 +847,7 @@ function decideMaterial(model, vg) {
       if (isDefLiveOut(d, nodeValue)) liveOutNonCanonical.add(d.row + ':' + d.reg);
     }
   }
-  return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical };
+  return { material, uses, crossed, blockOf, names, lost, canonical, liveOutNonCanonical, liveOut, lastInBlock, killedByCall };
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
@@ -808,10 +886,21 @@ function liveOutSets(model, blocks, blockOf) {
       const insn = byRow.get(row);
       if (!insn) continue;
       for (const r of insn.reads) if (!d.has(r)) u.add(r);
-      if (insn.isCall) for (let a = 0; a <= 7; a++) if (!d.has('x' + a)) u.add('x' + a);
-      if (insn.isReturn && !d.has('v0')) u.add('v0');
+      if (insn.isCall || insn.isTailCall || insn.tailCall) {
+        for (let a = 0; a <= 7; a++) {
+          if (!d.has('x' + a)) u.add('x' + a);
+          if (!d.has('v' + a)) u.add('v' + a);
+        }
+      }
+      if (insn.isReturn) {
+        if (!d.has('x0')) u.add('x0');
+        if (!d.has('v0')) u.add('v0');
+      }
       for (const w of insn.writes) d.add(w);
-      if (insn.isCall) for (let a = 0; a <= 17; a++) d.add('x' + a);
+      if (insn.isCall && !insn.isTailCall && !insn.tailCall) {
+        for (let a = 0; a <= 17; a++) d.add('x' + a);
+        for (let a = 0; a <= 7; a++) d.add('v' + a);
+      }
     }
     const last = byRow.get(blocks[i].endRow);
     if (last && last.isBranch && !last.isCall && !last.isReturn) {
@@ -862,8 +951,12 @@ function exprText(ctx, nodeValue, self) {
        */
       if (n.k === 'bin' || n.k === 'reg') {
         const d = stackDispOf(n, ctx);
-        if (inFrame(d, ctx)) return '&' + slotName('sp', d, ctx);
+        if (inFrame(d, ctx)) {
+          if (isEscapedStackDisp(d, ctx)) return stackAddrExpr(d, ctx);
+          return '&' + slotName('sp', d, ctx);
+        }
       }
+      if (n.k === 'reg') return varOf(n.reg, ctx);
       const formatCallNode = (c) => {
         if (c.sel) return null;
         const label = callLabel(c, ctx);
@@ -887,7 +980,6 @@ function exprText(ctx, nodeValue, self) {
         }
         return null;                             // 自分自身は展開する
       }
-      if (n.k === 'reg') return varOf(n.reg, ctx);
       if (n.k === 'arg') return argName(n.n, ctx);
       if (mat && mat.names.has(n)) {
         ctx.usedVars.add(mat.names.get(n));
@@ -943,10 +1035,73 @@ function argName(n, ctx) {
   return custom || ('a' + (n + 1));
 }
 
+function isFpMemNode(m, ctx) {
+  if (!m || m.row == null || !ctx || !ctx.byRow) return false;
+  const loadInsn = ctx.byRow.get(m.row);
+  if (!loadInsn || !loadInsn.memory || loadInsn.memory.kind !== 'load') return false;
+  const op0 = loadInsn.ops && loadInsn.ops[0];
+  return !!(op0 && op0.k === 'reg' && (op0.cls === 'fp' || op0.cls === 'vec'));
+}
+
+function decodeRodataFloatLiteral(bytes, size, byteOffset = 0) {
+  if (!bytes || (size !== 4 && size !== 8)) return null;
+  const off = Number(byteOffset || 0);
+  if (!Number.isInteger(off) || off < 0 || bytes.length < off + size) return null;
+  const buf = new Uint8Array(size);
+  for (let i = 0; i < size; i++) buf[i] = Number(bytes[off + i]) & 0xff;
+  const dv = new DataView(buf.buffer);
+  const val = size === 4 ? dv.getFloat32(0, true) : dv.getFloat64(0, true);
+  if (Number.isNaN(val)) return size === 4 ? '(0.0f / 0.0f)' : '(0.0 / 0.0)';
+  if (!Number.isFinite(val)) {
+    if (val > 0) return size === 4 ? '(1.0f / 0.0f)' : '(1.0 / 0.0)';
+    return size === 4 ? '(-1.0f / 0.0f)' : '(-1.0 / 0.0)';
+  }
+  if (Object.is(val, -0)) return size === 4 ? '-0.0f' : '-0.0';
+  if (Object.is(val, 0)) return size === 4 ? '0.0f' : '0.0';
+  let s = size === 4 ? String(Math.fround(val)) : String(val);
+  if (!/[.eE]/.test(s)) s += '.0';
+  return size === 4 ? s + 'f' : s;
+}
+
 /** メモリ参照の呼び名。スタックなら var_XX、名前が読めるなら self->hp。 */
 function memNodeName(m, ctx) {
+  if (!m.stack && !m.index && m.row != null) {
+    const loadInsn = ctx.byRow.get(m.row);
+    const fpW = loadInsn && loadInsn.memory && loadInsn.memory.kind === 'load'
+      ? fpRegWidth(loadInsn.ops && loadInsn.ops[0])
+      : null;
+    if (fpW) {
+      const ref = ctx.refOf.get(m.row);
+      const sz = fpW === 'float' ? 4 : 8;
+      if (ref && ref.bytes) {
+        const fpLit = decodeRodataFloatLiteral(ref.bytes, sz, 0);
+        if (fpLit != null) return fpLit;
+      }
+    }
+  }
+  if (!m.stack && !m.index && m.addr != null) {
+    const sym = ctx.symbolFor(m.addr);
+    if (sym) return sanitizeLegacyCallLabel(sym);
+    if (m.size === 8 && !m.signed && !isFpMemNode(m, ctx)) {
+      return 'global_' + m.addr.toString(16).toUpperCase();
+    }
+  }
+  if (!m.stack && !m.index && m.base && m.base.k === 'mem' && m.base.addr != null && !m.base.stack) {
+    const baseNamed = memNodeName(m.base, ctx);
+    if (baseNamed && /^global_[0-9A-F]+$/.test(baseNamed)) {
+      const type = typeFromAccess(m.size || 8, { float: isFpMemNode(m, ctx) });
+      const addrExpr = m.disp != null && m.disp !== 0n ? baseNamed + ' + ' + hexImm(m.disp) : baseNamed;
+      return '*(' + type + ' *)(uintptr_t)(' + addrExpr + ')';
+    }
+  }
   if (m.stack && m.disp != null) {
-    return slotName(m.baseReg === 'x29' ? 'x29' : 'sp', m.disp, ctx);
+    const b = m.baseReg === 'x29' ? 'x29' : 'sp';
+    const spDisp = toSpDisp(b, m.disp, ctx);
+    if (spDisp != null && isEscapedStackDisp(spDisp, ctx)) {
+      const type = typeFromAccess(m.size || 8, { float: isFpMemNode(m, ctx) });
+      return '*(' + type + ' *)(uintptr_t)' + stackAddrExpr(spDisp, ctx);
+    }
+    return slotName(b, m.disp, ctx);
   }
   /*
    * オペランドが `[sp, #N]` の形をしていなくても、番地の式が置き場を指していれば
@@ -956,7 +1111,13 @@ function memNodeName(m, ctx) {
     const d = stackDispOf(m.base, ctx);
     if (d != null) {
       const at = d + (m.disp != null ? m.disp : 0n);
-      if (inFrame(at, ctx)) return slotName('sp', at, ctx);
+      if (inFrame(at, ctx)) {
+        if (isEscapedStackDisp(at, ctx)) {
+          const type = typeFromAccess(m.size || 8, { float: isFpMemNode(m, ctx) });
+          return '*(' + type + ' *)(uintptr_t)' + stackAddrExpr(at, ctx);
+        }
+        return slotName('sp', at, ctx);
+      }
     }
   }
   if (m.baseReg && m.disp != null && !m.index && ctx.fieldFor) {
@@ -1485,6 +1646,15 @@ function condText(cond, ctx) {
     if (cond.cmp.op === 'tst' || cond.cmp.op === 'ands') {
       return '(' + cond.cmp.left + ' & ' + cond.cmp.right + ')' + (cond.cc === 'eq' ? ' == 0' : ' != 0');
     }
+    if (cond.cmp.op === 'cmn' || cond.cmp.op === 'adds') {
+      const sum = '(' + cond.cmp.left + ' + ' + cond.cmp.right + ')';
+      if (cond.cc === 'eq' || cond.cc === 'ne' || cond.cc === 'lt' || cond.cc === 'le' || cond.cc === 'gt' || cond.cc === 'ge') {
+        return sum + ' ' + op + ' 0';
+      }
+      if (cond.cc === 'mi' || cond.cc === 'pl') return sum + ' ' + op;
+      if (cond.cc === 'cs' || cond.cc === 'hs') return '((uint64)' + sum + ' < (uint64)(' + cond.cmp.left + '))';
+      if (cond.cc === 'cc' || cond.cc === 'lo') return '((uint64)' + sum + ' >= (uint64)(' + cond.cmp.left + '))';
+    }
     if ((cond.cmp.op === 'fcmp' || cond.cmp.op === 'fcmpe') && (cond.cc === 'mi' || cond.cc === 'pl')) {
       return cond.cmp.left + (cond.cc === 'mi' ? ' < ' : ' >= ') + cond.cmp.right;
     }
@@ -1579,14 +1749,27 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
   const size = insn && insn.memory ? (insn.memory.size || 8) : 8;
   const float = insn && insn.ops[0] && insn.ops[0].k === 'reg' && (insn.ops[0].cls === 'fp' || insn.ops[0].cls === 'vec');
 
-  if (base === 'sp' || base === 'x29') return slotName(base, disp, ctx);
+  if (base === 'sp' || base === 'x29') {
+    const spDisp = toSpDisp(base, disp, ctx);
+    if (spDisp != null && isEscapedStackDisp(spDisp, ctx)) {
+      return '*(' + typeFromAccess(size, { float }) + ' *)(uintptr_t)' + stackAddrExpr(spDisp, ctx);
+    }
+    return slotName(base, disp, ctx);
+  }
 
   /* 行き先が 1 つに決まっているなら、レジスタ経由ではなくその場所を書く */
   const ref = insn ? ctx.refOf.get(insn.row) : null;
   if (ref && ref.load && !op.index && baseOverride == null) {
     const refAddr = ref.addr + BigInt(extraDisp || 0n);
+    if (float && ref.bytes) {
+      const fpLit = decodeRodataFloatLiteral(ref.bytes, size, Number(extraDisp || 0n));
+      if (fpLit != null) return fpLit;
+    }
     const sym = ctx.symbolFor(refAddr);
     if (sym) return sanitizeLegacyCallLabel(sym);
+    if (!float && size === 8) {
+      return 'global_' + refAddr.toString(16).toUpperCase();
+    }
     return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
   }
 
@@ -1599,6 +1782,9 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
   const inner = op.index
     ? baseText + ' + ' + indexText + (op.shift && op.shift.amount ? ' * ' + (1 << op.shift.amount) : '')
     : (disp ? baseText + ' + ' + hexImm(disp) : baseText);
+  if (/^global_[0-9A-F]+(?:\s*[+-]\s*(?:0x[0-9A-Fa-f]+|\d+))?$/.test(inner)) {
+    return '*(' + type + ' *)(uintptr_t)(' + inner + ')';
+  }
   return '*(' + type + ' *)(' + inner + ')';
 }
 
@@ -1657,6 +1843,73 @@ function frameOf(model) {
   }
   if (adjust <= 0n) return null;
   return { adjust, fpOffset };
+}
+
+function collectEscapedStackRanges(model, frame, savedSlots) {
+  if (!frame || !model || !Array.isArray(model.instructions)) return [];
+  const escapedBases = new Set();
+  for (const insn of model.instructions) {
+    const base = (insn.mnemonic || '').toLowerCase();
+    const ops = insn.ops || [];
+    const dst = ops[0];
+    if (!dst || dst.k !== 'reg' || dst.cls !== 'gp' || dst.num === 29) continue;
+    const src = ops[1];
+    if (!src || src.k !== 'reg') continue;
+    if (base === 'mov' && src.cls === 'sp') {
+      escapedBases.add(0n);
+      continue;
+    }
+    if ((base === 'add' || base === 'sub') && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
+      const imm = ops[2].value;
+      if (src.cls === 'sp' && base === 'add' && imm >= 0n && imm < frame.adjust) {
+        escapedBases.add(imm);
+      } else if (src.cls === 'gp' && src.num === 29 && frame.fpOffset != null) {
+        const spDisp = base === 'sub' ? frame.fpOffset - imm : frame.fpOffset + imm;
+        if (spDisp >= 0n && spDisp < frame.adjust) escapedBases.add(spDisp);
+      }
+    }
+  }
+  if (!escapedBases.size) return [];
+  const savedBounds = [];
+  for (const key of savedSlots || []) {
+    const m = /^(sp|x29):(-?\d+)$/.exec(key);
+    if (!m) continue;
+    const raw = BigInt(m[2]);
+    const spDisp = m[1] === 'x29' ? (frame.fpOffset != null ? frame.fpOffset + raw : null) : raw;
+    if (spDisp != null && spDisp > 0n && spDisp <= frame.adjust) savedBounds.push(spDisp);
+  }
+  savedBounds.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ranges = [];
+  for (const b of escapedBases) {
+    let end = frame.adjust;
+    for (const sb of savedBounds) {
+      if (sb > b) { end = sb; break; }
+    }
+    if (end > b) ranges.push({ start: b, end });
+  }
+  return ranges;
+}
+
+function toSpDisp(base, disp, ctx) {
+  if (!ctx || !ctx.frame || disp == null) return null;
+  if (base === 'sp') return disp;
+  if (base === 'x29' && ctx.frame.fpOffset != null) return disp + ctx.frame.fpOffset;
+  return null;
+}
+
+function isEscapedStackDisp(spDisp, ctx) {
+  if (spDisp == null || !ctx || !Array.isArray(ctx.escapedStackRanges) || !ctx.escapedStackRanges.length) return false;
+  for (const r of ctx.escapedStackRanges) {
+    if (spDisp >= r.start && spDisp < r.end) return true;
+  }
+  return false;
+}
+
+function stackAddrExpr(spDisp, ctx) {
+  const delta = ctx.frame.adjust - spDisp;
+  if (delta === 0n) return 'sp';
+  if (delta > 0n) return '(sp - ' + hexImm(delta) + ')';
+  return '(sp + ' + hexImm(-delta) + ')';
 }
 
 /**
@@ -1782,7 +2035,19 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
   }
 
   /* 使い捨ての一時変数をたたむ（x8 = a + b; f(x8) → f(a + b)） */
-  inlineTemporaries(stmts, ctx);
+  const termReads = new Set();
+  if (node.terminator && Array.isArray(node.terminator.reads)) {
+    for (const r of node.terminator.reads) termReads.add(r);
+  }
+  if (node.cond && node.cond.cmp && node.cond.cmp.row != null) {
+    const cmpInsn = ctx.byRow.get(node.cond.cmp.row);
+    if (cmpInsn && Array.isArray(cmpInsn.reads)) {
+      for (const r of cmpInsn.reads) termReads.add(r);
+    }
+  }
+  const termText = node.cond ? condText(node.cond, ctx) : '';
+  const blockLiveOut = (ctx.liveOut && ctx.liveOut[node.index]) || new Set();
+  inlineTemporaries(stmts, ctx, { liveOut: blockLiveOut, termReads, termText, blockIndex: node.index });
   removeDeadStores(stmts);
 
   /* ラベル。goto で使われたときだけ、あとから残る */
@@ -1885,8 +2150,29 @@ function statementFor(insn, ctx, node, state) {
   }
   if (base === 'mov' || base === 'fmov' || base === 'movz') {
     const src = insn.ops[1];
+    const dstOp = insn.ops[0];
     const text = ctx.textOf.get(row);
-    if (text != null) return mk(varOf(dst, ctx) + ' = "' + escapeText(text) + '";', { dst, pure: true });
+    const dstIsFp = !!(dstOp && dstOp.k === 'reg' && (dstOp.cls === 'fp' || dstOp.cls === 'vec'));
+    const srcIsFp = !!(src && src.k === 'reg' && (src.cls === 'fp' || src.cls === 'vec'));
+    const dstIsGp = !!(dstOp && dstOp.k === 'reg' && dstOp.cls === 'gp');
+    const srcIsGp = !!(src && src.k === 'reg' && (src.cls === 'gp' || src.cls === 'zr'));
+    if (base === 'fmov' && dstIsFp && srcIsGp) {
+      const w = (src.bits === 32 || dstOp.bits === 32 || fpRegWidth(dstOp) === 'float') ? 32 : 64;
+      const val = operandText(src, ctx, insn);
+      const expr = w === 32
+        ? '((union { uint32_t u; float f; }){ .u = (uint32_t)(' + val + ') }.f)'
+        : '((union { uint64_t u; double f; }){ .u = (uint64_t)(' + val + ') }.f)';
+      return mk(varOf(dst, ctx) + ' = ' + expr + ';', { dst, pure: true });
+    }
+    if (base === 'fmov' && dstIsGp && srcIsFp) {
+      const w = (dstOp.bits === 32 || src.bits === 32 || fpRegWidth(src) === 'float') ? 32 : 64;
+      const val = operandText(src, ctx, insn);
+      const expr = w === 32
+        ? '((union { float f; uint32_t u; }){ .f = (float)(' + val + ') }.u)'
+        : '((union { double f; uint64_t u; }){ .f = (double)(' + val + ') }.u)';
+      return mk(varOf(dst, ctx) + ' = ' + expr + ';', { dst, pure: true });
+    }
+    if (text != null && !dstIsFp) return mk(varOf(dst, ctx) + ' = "' + escapeText(text) + '";', { dst, pure: true });
     return mk(varOf(dst, ctx) + ' = ' + operandText(src, ctx, insn) + ';', { dst, pure: true });
   }
   if (base === 'movn') {
@@ -2131,7 +2417,20 @@ function valueStatement(insn, ctx, mk) {
    * 関数の頭に意味のない 8 行が並ぶ。値を見失うレジスタだけは残す
    * （合流の先で素の `x19` が出るなら、そこへ入れる行が要るため）。
    */
-  if (value.k === 'arg' && (ctx.aliases.has(dst) || !ctx.material.lost.has(dst))) return null;
+  if (value.k === 'arg') {
+    if (ctx.aliases.has(dst)) return null;
+    const bi = ctx.material.blockOf ? ctx.material.blockOf.get(insn.row) : null;
+    const isLiveOutArg = bi != null && !!(ctx.liveOut && ctx.liveOut[bi] && ctx.liveOut[bi].has(dst)) &&
+      (!ctx.material.lastInBlock || ctx.material.lastInBlock.get(bi + ':' + dst) === value) &&
+      !(ctx.material.killedByCall && ctx.material.killedByCall({ row: insn.row, reg: dst }));
+    if (isLiveOutArg || ctx.material.lost.has(dst)) {
+      const lhs = varOf(dst, ctx);
+      const rhs = argName(value.n, ctx);
+      if (lhs === rhs) return null;
+      return mk(lhs + ' = ' + rhs + ';', { dst, pure: false, fromValues: true });
+    }
+    return null;
+  }
 
   const isLiveOutCopy = !!(ctx.material.liveOutNonCanonical && ctx.material.liveOutNonCanonical.has(insn.row + ':' + dst));
   if (!ctx.material.material.has(value)) {
@@ -2406,12 +2705,15 @@ function callStatement(insn, ctx, mk) {
     if (!reads.includes(r)) reads.push(r);
   }
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
-  const isVoidCall = knownCallSignature(name || cleanName)?.retType === 'void';
+  const callSig = knownCallSignature(name || cleanName);
+  const isVoidCall = callSig?.retType === 'void';
+  const isFpRetCall = callSig?.retType === 'float' || callSig?.retType === 'double';
+  const retReg = isFpRetCall ? 'v0' : 'x0';
   const text = insn.isTailCall
     ? (isVoidCall ? callExpr + '; return;' : 'return ' + callExpr + ';')
-    : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';');
+    : (isVoidCall ? callExpr + ';' : nameForDef(ctx, insn.row, retReg) + ' = ' + callExpr + ';');
   return mk(text, {
-    dst: (insn.isTailCall || isVoidCall) ? null : 'x0', call: true, target, reads,
+    dst: (insn.isTailCall || isVoidCall) ? null : retReg, call: true, target, reads,
     kind: insn.isTailCall ? 'ctrl' : 'stmt',
     note: name ? null : '行き先が固定でない呼び出しです（関数ポインタ）。',
   });
@@ -2683,7 +2985,23 @@ function augmentLegacyFpSignature(model, types, ctx) {
     for (let i = insns.length - 1; i >= 0; i--) {
       const insn = insns[i];
       const base = (insn.mnemonic || '').toLowerCase();
-      if (insn.isCall || base === 'bl' || base === 'blr') break;
+      if (insn.isCall || base === 'bl' || base === 'blr') {
+        if (!v0Consumed) {
+          const c = ctx.callOf && ctx.callOf.get(insn.row);
+          const cname = (c && c.name) || (insn.callTarget != null ? ctx.symbolFor(insn.callTarget) : null);
+          const csig = cname ? knownCallSignature(cname) : null;
+          if (csig && (csig.retType === 'float' || csig.retType === 'double')) {
+            types.ret = {
+              type: csig.retType,
+              conf: 0.75,
+              why: [{ row: insn.row, why: '帰る直前に FP 戻り値の関数を呼んでいる行' }],
+            };
+            ctx.fpReturnReg = 'v0';
+            ctx.fpReturnType = csig.retType;
+          }
+        }
+        break;
+      }
       const writes = insn.writes || [];
       const reads = insn.reads || [];
       if (writes.includes('v0')) {
@@ -2777,7 +3095,12 @@ function escapeText(s) {
  * そのあと上書きされる（＝あとに残らない）なら、使う側に埋め込む。
  * これをやらないと、逆コンパイル結果が代入だらけで読めません。
  */
-function inlineTemporaries(stmts, ctx) {
+const CALL_CLOBBER_REG = /^(x([0-9]|1[0-7])|v[0-7]|v1[6-9]|v2[0-9]|v3[0-1])$/;
+
+function inlineTemporaries(stmts, ctx, blockInfo = {}) {
+  const blockLiveOut = blockInfo.liveOut || new Set();
+  const termReads = blockInfo.termReads || new Set();
+  const termText = blockInfo.termText || '';
   const uses = new Map();       // reg -> [文の位置]
   const defs = new Map();
   stmts.forEach((st, i) => {
@@ -2813,7 +3136,21 @@ function inlineTemporaries(stmts, ctx) {
     const target = stmts[j];
     if (!target || target.dropped) continue;
     if (target.call) continue;                   // 呼び出しの行に埋め込むと左辺まで書き換えてしまう
+    const value = rightHandSide(st.text, reg);
+    if (value == null) continue;
+    const laterDefs = (defs.get(reg) || []).filter((k) => k > j && !stmts[k].dropped);
+    const usedInTerminator = (termText && hasWholeWord(termText, name)) ||
+      (!laterDefs.length && termReads.has(reg));
+    const liveAtBlockExit = !laterDefs.length && blockLiveOut.has(reg);
     if (st.call) {
+      if (usedInTerminator || liveAtBlockExit) continue;
+      if (ctx.values && ctx.material && st.row != null) {
+        const callNode = ctx.values.defAt(st.row, reg);
+        if (callNode) {
+          if (ctx.material.crossed && ctx.material.crossed.has(callNode)) continue;
+          if (ctx.material.uses && (ctx.material.uses.get(callNode) || 0) > 1) continue;
+        }
+      }
       /*
        * 呼び出しは順番そのものが処理なので、動かせるのは「すぐ次の行」まで。
        *
@@ -2845,6 +3182,7 @@ function inlineTemporaries(stmts, ctx) {
       }
       if (blocked) continue;
     } else {
+      if (usedInTerminator || liveAtBlockExit) continue;
       let crossesCtrl = false;
       for (let k = i + 1; k < j; k++) {
         if (!stmts[k].dropped && (stmts[k].kind === 'label' || stmts[k].kind === 'ctrl')) { crossesCtrl = true; break; }
@@ -2853,14 +3191,17 @@ function inlineTemporaries(stmts, ctx) {
       const interveningDef = (defs.get(reg) || []).some((k) => k > i && k < j && !stmts[k].dropped);
       if (interveningDef) continue;
       const clobberedRead = (st.reads || []).some((r) =>
-        (defs.get(r) || []).some((k) => k > i && k < j && !stmts[k].dropped));
+        (defs.get(r) || []).some((k) => k > i && k < j && !stmts[k].dropped) ||
+        stmts.some((mid, k) => k > i && k < j && !mid.dropped && mid.call && CALL_CLOBBER_REG.test(r))
+      ) || stmts.some((mid, k) => {
+        if (k <= i || k >= j || mid.dropped) return false;
+        const mlhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(mid.text.trim());
+        return !!(mlhs && hasWholeWord(value, mlhs[1]));
+      });
       if (clobberedRead) continue;
-      const later = (defs.get(reg) || []).filter((k) => k > j);
       const isTemp = /^x(8|9|1[0-7])$/.test(reg);
-      if (!later.length && !isTemp) continue;    // あとで使われるかもしれない変数は残す
+      if (!laterDefs.length && !isTemp) continue; // あとで使われるかもしれない変数は残す
     }
-    const value = rightHandSide(st.text, reg);
-    if (value == null) continue;
     /* 左辺が「その変数そのもの」なら、そこは書き込み先なので触らない。
        x8 = *(x8 + 8);  の左の x8 まで置き換えると、意味が変わってしまう。 */
     const eq = target.text.indexOf(' = ');
@@ -2945,7 +3286,41 @@ function declarations(ctx, types, o, body) {
   const out = [];
   const seen = new Set();
   const text = body.map((l) => l.text).join('\n');
+  const parseConstSize = (raw) => {
+    const s = String(raw || '').trim();
+    if (/^0x[0-9a-fA-F]+$/.test(s)) return parseInt(s, 16);
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    return null;
+  };
+  const stackArraySizes = new Map();
+  const recordStackArray = (name, sz) => {
+    if (!name || !Number.isInteger(sz) || sz <= 8) return;
+    if (new RegExp('(?:^|[^\\w.])' + escapeRe(name) + '\\s*=(?!=)').test(text)) return;
+    const prev = stackArraySizes.get(name) || 0;
+    if (sz > prev) stackArraySizes.set(name, sz);
+  };
+  const memBufPatterns = [
+    /\b(?:memset|memcpy|memmove)\s*\(\s*&\s*(var_[0-9A-Fa-f]+)\s*,[^,)]+,\s*(0x[0-9a-fA-F]+|\d+)\s*\)/g,
+    /\b(?:memcpy|memmove)\s*\(\s*[^,)]+,\s*&\s*(var_[0-9A-Fa-f]+)\s*,\s*(0x[0-9a-fA-F]+|\d+)\s*\)/g,
+    /\b(?:bzero|snprintf)\s*\(\s*&\s*(var_[0-9A-Fa-f]+)\s*,\s*(0x[0-9a-fA-F]+|\d+)/g,
+  ];
+  for (const re of memBufPatterns) {
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const sz = parseConstSize(m[2]);
+      if (sz != null && sz > 8) recordStackArray(m[1], sz);
+    }
+  }
+  {
+    const sprintfRe = /\bsprintf\s*\(\s*&\s*(var_[0-9A-Fa-f]+)\s*,/g;
+    let m;
+    while ((m = sprintfRe.exec(text)) !== null) {
+      recordStackArray(m[1], 256);
+    }
+  }
+
   const byType = new Map();
+  const arrayDecls = [];
   let hidden = 0;
   let shown = 0;
   for (const l of types.locals) {
@@ -2957,15 +3332,36 @@ function declarations(ctx, types, o, body) {
     if (!hasWholeWord(text, name)) { hidden++; continue; }
     if (shown >= 48) { hidden++; continue; }
     shown++;
+    if (stackArraySizes.has(name)) {
+      arrayDecls.push('uint8_t ' + name + '[' + stackArraySizes.get(name) + '];');
+      continue;
+    }
     const raw = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
     const type = raw === 'unknown' ? 'int64' : raw;
     if (!byType.has(type)) byType.set(type, []);
     byType.get(type).push(name);
   }
+  for (const [name, sz] of stackArraySizes) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    arrayDecls.push('uint8_t ' + name + '[' + sz + '];');
+  }
+  for (const declText of arrayDecls) {
+    out.push(line('decl', 1, declText, null));
+  }
   /* Scalar FP registers (sN -> float, dN -> double) used in body: declare with accurate FP type instead of uint128 fallback */
   const scalarFpKinds = new Map();
   for (const insn of (ctx.model && ctx.model.instructions) || []) {
     const mn = (insn.mnemonic || '').toLowerCase();
+    if (insn.isCall) {
+      const c = ctx.callOf && ctx.callOf.get(insn.row);
+      const cname = (c && c.name) || (insn.callTarget != null ? ctx.symbolFor(insn.callTarget) : null);
+      const csig = cname ? knownCallSignature(cname) : null;
+      if (csig && (csig.retType === 'float' || csig.retType === 'double')) {
+        if (!scalarFpKinds.has('v0')) scalarFpKinds.set('v0', new Set());
+        scalarFpKinds.get('v0').add(csig.retType);
+      }
+    }
     for (const op of insn.ops || []) {
       if (!op || op.k !== 'reg' || (op.cls !== 'fp' && op.cls !== 'vec')) continue;
       const reg = 'v' + op.num;

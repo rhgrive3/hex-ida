@@ -50,6 +50,8 @@
  *   sel     条件で選ぶ      cc, a, b, cmp
  */
 
+import { knownCallSignature } from './decompiler/call-prototypes.js';
+
 const MAX_DEPTH = 22;      // これより深い木は読めないので、途中で切って reg に戻す
 const MAX_NODES = 160;     // 1 つの式が抱えてよいノード数
 
@@ -482,6 +484,29 @@ export function buildValues(model, opts) {
     regs.set(key, fresh);
     return fresh;
   };
+  const dependsOnRegOrCall = (val, targetReg) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'reg' && x.reg === targetReg) { hit = true; return; }
+      if (x.k === 'call') {
+        const d = nodeDef.get(x);
+        if (d && d.reg === targetReg) hit = true;
+      }
+    });
+    return hit;
+  };
+  const invalidateDependents = (writtenKey, row) => {
+    if (!writtenKey || writtenKey === 'zr') return;
+    if (writtenKey === 'sp' && spStable) return;
+    for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+      if (otherKey === writtenKey) continue;
+      if (dependsOnRegOrCall(otherVal, writtenKey)) {
+        regs.set(otherKey, regNode(otherKey, row));
+      }
+    }
+  };
   const set = (key, v, row) => {
     if (!key || key === 'zr') return;
     /*
@@ -489,6 +514,7 @@ export function buildValues(model, opts) {
      * ここでたたんでおくと、その先の式にも割り算の形のまま伝わる。
      */
     regs.set(key, bounded(foldMagic(v, 0), key, row));
+    invalidateDependents(key, row);
   };
 
   /** オペランド 1 つを式にする。 */
@@ -571,7 +597,12 @@ export function buildValues(model, opts) {
      * x0〜x7 を読む。ここで記録しておかないと、「この呼び出しに何を渡したか」に
      * 誰も答えられない — 擬似 C の引数がレジスタ名のままになる。
      */
-    if (insn.isCall) for (let a = 0; a <= 7; a++) snapshot['x' + a] = get('x' + a, row);
+    if (insn.isCall || insn.isTailCall || insn.tailCall) {
+      for (let a = 0; a <= 7; a++) {
+        snapshot['x' + a] = get('x' + a, row);
+        snapshot['v' + a] = get('v' + a, row);
+      }
+    }
     reads.set(row, snapshot);
     for (const w of insn.writes) everWritten.add(w);
     if (insn.isCall) for (let a = 0; a <= 17; a++) everWritten.add('x' + a);
@@ -637,8 +668,14 @@ export function buildValues(model, opts) {
        * 番地が外へ出た時点で置き場の記憶は捨てる。
        */
       if (args.some((a) => escapesStack(a.value))) stack.clear();
-      for (const k of Array.from(regs.keys())) if (CALL_CLOBBER.test(k)) regs.delete(k);
-      emit('x0', ret);
+      const clobbered = [];
+      for (const k of Array.from(regs.keys())) {
+        if (CALL_CLOBBER.test(k)) { regs.delete(k); clobbered.push(k); }
+      }
+      for (const k of clobbered) invalidateDependents(k, row);
+      const callSig = name ? knownCallSignature(name) : null;
+      const retReg = callSig && (callSig.retType === 'float' || callSig.retType === 'double') ? 'v0' : 'x0';
+      emit(retReg, ret);
       defs.set(row, made);
       continue;
     }
@@ -767,8 +804,20 @@ export function buildValues(model, opts) {
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
-      const isFpOrVecDst = dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec');
-      emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(insn.ops[1], row, bits));
+      const srcOp = insn.ops[1];
+      const isFpOrVecDst = !!(dstOp && (dstOp.cls === 'fp' || dstOp.cls === 'vec'));
+      const isFpOrVecSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'fp' || srcOp.cls === 'vec'));
+      const isGpDst = !!(dstOp && dstOp.cls === 'gp');
+      const isGpSrc = !!(srcOp && srcOp.k === 'reg' && (srcOp.cls === 'gp' || srcOp.cls === 'zr'));
+      if (base === 'fmov' && isFpOrVecDst && isGpSrc) {
+        const w = (regBits(srcOp) === 32 || regBits(dstOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_u32_f32' : 'bitcast_u64_f64', valueOf(srcOp, row, w)));
+      } else if (base === 'fmov' && isGpDst && isFpOrVecSrc) {
+        const w = (regBits(dstOp) === 32 || regBits(srcOp) === 32) ? 32 : 64;
+        emit(dst, un(w === 32 ? 'bitcast_f32_u32' : 'bitcast_f64_u64', valueOf(srcOp, row, w)));
+      } else {
+        emit(dst, (txt && !isFpOrVecDst) ? node('str', { addr: txt.addr, text: txt.text }) : valueOf(srcOp, row, bits));
+      }
     } else if (base === 'movn') {
       emit(dst, un('not', valueOf(insn.ops[1], row, bits)));
     } else if (base === 'movk') {
@@ -901,7 +950,10 @@ export function buildValues(model, opts) {
         bits: cbits,
       };
     } else if (insn.writes.length) {
-      for (const w of insn.writes) regs.delete(w);
+      for (const w of insn.writes) {
+        regs.delete(w);
+        invalidateDependents(w, row);
+      }
     }
 
     defs.set(row, made);
@@ -1482,6 +1534,10 @@ function emitUn(n, prec, o, depth) {
     case 'uxt32': return '(uint32)' + inner;
     case 'sxt64': return '(int64)' + inner;
     case 'uxt64': return '(uint64)' + inner;
+    case 'bitcast_u32_f32': return '((union { uint32_t u; float f; }){ .u = (uint32_t)(' + inner + ') }.f)';
+    case 'bitcast_u64_f64': return '((union { uint64_t u; double f; }){ .u = (uint64_t)(' + inner + ') }.f)';
+    case 'bitcast_f32_u32': return '((union { float f; uint32_t u; }){ .f = (float)(' + inner + ') }.u)';
+    case 'bitcast_f64_u64': return '((union { double f; uint64_t u; }){ .f = (double)(' + inner + ') }.u)';
     default: void prec; return n.op + '(' + inner + ')';
   }
 }
@@ -1518,6 +1574,18 @@ function emitFlagCondition(predicate, o, depth) {
   if (!predicate || predicate.k !== 'flagcond') return 'flag_unknown';
   const producer = String(predicate.producer || 'unknown'), bits = Number(predicate.bits || 64);
   const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
+  if (producer === 'cmn') {
+    const sum = `(${a} + ${b})`;
+    switch (predicate.cc) {
+      case 'eq': return `${sum} == 0`;
+      case 'ne': return `${sum} != 0`;
+      case 'mi': case 'lt': return `${sum} < 0`;
+      case 'pl': case 'ge': return `${sum} >= 0`;
+      case 'le': return `${sum} <= 0`;
+      case 'gt': return `${sum} > 0`;
+      default: break;
+    }
+  }
   const stem = `${producer}${bits}(${a}, ${b})`;
   const n=`N_${stem}`, z=`Z_${stem}`, c=`C_${stem}`, v=`V_${stem}`;
   switch (predicate.cc) {

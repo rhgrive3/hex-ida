@@ -226,11 +226,27 @@ function comparisonCarrier(valueId, context, active = new Set()) {
           && producer.outputs.every(id => context.valuesById.get(id)?.bits === 1)) {
         result = { value: comparison, compareNode: numeric };
       }
-    } else if (producer.kind === 'select' || producer.kind === 'intrinsic'
+    } else if (producer.kind === 'select') {
+      const bundle = bundleMetadata(producer);
+      const cc = conditionCode(producer);
+      if (producer.inputs?.length === 3
+          && (bundle.operation === 'ccmp' || bundle.operation === 'ccmn')
+          && cc != null && bundle.fallbackNzcv != null) {
+        // Preserve the conditional-compare carrier produced by the ccmp/ccmn
+        // inner add-with-carry compare (whose OP.CMP carries conditional
+        // metadata) rather than returning null or borrowing the older guard.
+        const inner = comparisonCarrier(producer.inputs[1], context, active);
+        if (inner?.value) result = inner;
+      } else {
+        // Other conditional selects (e.g., FCCMP, CSEL) must not borrow an
+        // older unconditional display CMP.
+        result = null;
+      }
+    } else if (producer.kind === 'intrinsic'
         && !['extract-bit','is-zero','not-bool','and-bool','or-bool','equal-bool'].includes(producer.operator)) {
-      // A conditional/opaque producer does not mean its incoming comparison.
-      // In particular, dynamic carry, CCMP fallback flags and FCCMP results
-      // must not borrow an older unconditional display CMP.
+      // An opaque producer does not mean its incoming comparison.
+      // In particular, dynamic carry and FCCMP results must not borrow an
+      // older unconditional display CMP.
       result = null;
     } else if (producer.kind === 'state-read') {
       const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
@@ -1129,11 +1145,35 @@ export function projectNode(node, context) {
   if (undefinedResult != null) inst.extra = { ...(inst.extra || {}), undefinedResult };
   const conditionalCompare = conditionCode(node);
   if (conditionalCompare != null && bundle.fallbackNzcv != null) {
+    const nodeInsnIds = new Set(sourceInstructionIds(node.origin));
+    let guardCarrier = null;
+    if (nodeInsnIds.size > 0 && Array.isArray(ir?.nodes)) {
+      for (const sibling of ir.nodes) {
+        if (sibling.kind !== 'select' || sibling.inputs?.length !== 3) continue;
+        const sibIds = sourceInstructionIds(sibling.origin);
+        if (!sibIds.some((id) => nodeInsnIds.has(id))) continue;
+        guardCarrier = comparisonCarrier(sibling.inputs[0], context);
+        if (guardCarrier?.value) break;
+      }
+    }
+    const defaultInnerOp = bundle.operation === 'ccmn' ? 'cmn' : 'cmp';
     for (const candidate of [inst, ...extraInstructions]) {
       if (candidate.op !== V1_OP.CMP) continue;
+      const innerLhs = candidate.args?.[0]?.value?.id ?? null;
+      const innerRhs = candidate.args?.[1]?.value?.id ?? null;
       candidate.cond = conditionalCompare;
       candidate.extra.conditional = true;
+      candidate.extra.cond = conditionalCompare;
+      candidate.extra.guardCond = conditionalCompare;
+      candidate.extra.guardCmp = guardCarrier?.value?.id ?? null;
+      candidate.extra.innerOp = candidate.sub === 'add' ? 'cmn' : defaultInnerOp;
+      candidate.extra.innerLhs = innerLhs;
+      candidate.extra.innerRhs = innerRhs;
       candidate.extra.fallbackNzcv = Number(bundle.fallbackNzcv);
+      if (guardCarrier?.value && candidate.args.length === 2) {
+        candidate.args.push({ value: guardCarrier.value, bits: guardCarrier.value.bits || 1 });
+        addUse(guardCarrier.value, candidate);
+      }
     }
   }
   if (primaryOutput && primaryOutput.def == null && inst.dst === primaryOutput) primaryOutput.def = inst;

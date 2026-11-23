@@ -1414,9 +1414,108 @@ export function memoryElementType(inst, sizeBytes, types = null) {
   return `${prefix}${bytes * 8}_t`;
 }
 
+function isSpDerivedValue(v, memo = new Map(), depth = 0) {
+  if (!v || depth > 12) return false;
+  if (v.id != null && memo.has(v.id)) return memo.get(v.id);
+  if (v.id != null) memo.set(v.id, false);
+  let res = false;
+  if (String(v.reg || '').toLowerCase() === 'sp') {
+    res = true;
+  } else if (v.def) {
+    const d = v.def;
+    if (d.op === OP.MOV) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1);
+    } else if (d.op === OP.BIN && (d.sub === 'add' || d.sub === 'sub')) {
+      res = isSpDerivedValue(valueOf(d.args?.[0]), memo, depth + 1)
+        || (d.sub === 'add' && isSpDerivedValue(valueOf(d.args?.[1]), memo, depth + 1));
+    } else if (d.op === OP.PHI) {
+      res = (d.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo, depth + 1));
+    }
+  }
+  if (v.id != null) memo.set(v.id, res);
+  return res;
+}
+
+function hasEscapedStackFrame(ctx) {
+  if (!ctx?.ir) return false;
+  if (ctx._hasEscapedStackFrame !== undefined) return ctx._hasEscapedStackFrame;
+  const memo = new Map();
+  let escaped = false;
+  const checkCallArg = (v) => {
+    if (!v) return false;
+    const reg = String(v.reg || '').toLowerCase();
+    if (reg === 'sp' || reg === 'x29' || reg === 'fp') return false;
+    return isSpDerivedValue(v, memo);
+  };
+  for (const inst of ctx.ir.instructions || []) {
+    if (!inst) continue;
+    if (inst.op === OP.CALL) {
+      if ((inst.args || []).some((a) => checkCallArg(valueOf(a)))) { escaped = true; break; }
+      if (Array.isArray(inst.callArguments)) {
+        for (const desc of inst.callArguments) {
+          const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
+          if (checkCallArg(directVal)) { escaped = true; break; }
+        }
+        if (escaped) break;
+      }
+      for (let i = 0; i < 8; i++) {
+        if (checkCallArg(reachingRegisterValue(ctx.ir, inst, 'x' + i))) { escaped = true; break; }
+      }
+      if (escaped) break;
+    } else if (inst.op === OP.PHI) {
+      const dstReg = String(inst.dst?.reg || '').toLowerCase();
+      if (dstReg !== 'sp' && (inst.incoming || []).some((inc) => isSpDerivedValue(inc?.value, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.STORE) {
+      if (isSpDerivedValue(valueOf(inst.args?.[0]), memo)) { escaped = true; break; }
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.LOAD) {
+      if (inst.loc?.kind !== MK.STACK && (isSpDerivedValue(inst.addr?.base, memo) || isSpDerivedValue(inst.loc?.base, memo))) {
+        escaped = true;
+        break;
+      }
+    } else if (inst.op === OP.RET) {
+      if ((inst.args || []).some((a) => isSpDerivedValue(valueOf(a), memo))) { escaped = true; break; }
+    }
+  }
+  ctx._hasEscapedStackFrame = escaped;
+  return escaped;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
-  if (loc.kind === MK.STACK) return stackName(ctx, loc);
+  if (loc.kind === MK.STACK) {
+    if (ctx?.opts?.phase8Optimize !== true && hasEscapedStackFrame(ctx)) {
+      const size = Number(inst?.addr?.size || inst?.size || loc.size || 8);
+      const elemType = memoryElementType(inst, size, ctx.types);
+      if (loc.frameEpoch === 0 && (loc.baseReg === 'sp' || !loc.baseReg)) {
+        const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+          : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+      }
+      if (inst?.addr?.base) {
+        const base = renderValue(inst.addr.base, ctx);
+        const disp = inst.addr.disp != null ? BigInt(inst.addr.disp) : (loc.disp != null ? BigInt(loc.disp) : 0n);
+        if (disp === 0n) return `*(${elemType} *)(uintptr_t)(${base})`;
+        return disp < 0n
+          ? `*(${elemType} *)(uintptr_t)((${base}) - ${(-disp).toString()})`
+          : `*(${elemType} *)(uintptr_t)((${base}) + ${disp.toString()})`;
+      }
+      const disp = loc.disp != null ? BigInt(loc.disp) : 0n;
+      if (disp === 0n) return `*(${elemType} *)(uintptr_t)(sp)`;
+      return disp < 0n
+        ? `*(${elemType} *)(uintptr_t)(sp - ${(-disp).toString()})`
+        : `*(${elemType} *)(uintptr_t)(sp + ${disp.toString()})`;
+    }
+    return stackName(ctx, loc);
+  }
   if (loc.kind === MK.GLOBAL) {
     const name = ctx.opts.symbolFor?.(loc.address);
     return name ? safeIdent(name, `global_${hex(loc.address)}`) : `global_${hex(loc.address)}`;
@@ -1507,8 +1606,56 @@ function cmpFromFlags(flagValue) {
   return d && d.op === OP.CMP ? d : null;
 }
 
-function renderCmp(cmp, cond, ctx, atInst = cmp) {
+function nzcvMatchesCond(nzcv, cond) {
+  const bits = Number(nzcv || 0) & 0xf;
+  const n = (bits & 8) !== 0;
+  const z = (bits & 4) !== 0;
+  const c = (bits & 2) !== 0;
+  const v = (bits & 1) !== 0;
+  switch (String(cond || '').toLowerCase()) {
+    case 'eq': return z;
+    case 'ne': return !z;
+    case 'hs': case 'cs': return c;
+    case 'lo': case 'cc': return !c;
+    case 'mi': return n;
+    case 'pl': return !n;
+    case 'vs': return v;
+    case 'vc': return !v;
+    case 'hi': return c && !z;
+    case 'ls': return !c || z;
+    case 'ge': return n === v;
+    case 'lt': return n !== v;
+    case 'gt': return !z && n === v;
+    case 'le': return z || n !== v;
+    case 'al': case 'nv': return true;
+    default: return null;
+  }
+}
+
+function renderCmp(cmp, cond, ctx, atInst = cmp, depth = 0) {
   if (!cmp) return cond ? `condition_${cond}` : 'condition';
+  if (cmp.extra?.conditional === true && depth < 8) {
+    const extra = cmp.extra;
+    const rawGuard = extra.guardCmp;
+    const guardCmp = rawGuard?.op === OP.CMP ? rawGuard : cmpFromFlags(rawGuard);
+    const guardExpr = renderCmp(guardCmp, extra.guardCond, ctx, atInst, depth + 1);
+    const unwrapSsa = (x) => (x && x.value ? x.value : x);
+    const innerLhsVal = unwrapSsa(extra.innerLhs) ?? valueOf(cmp.args?.[0]);
+    const innerRhsVal = unwrapSsa(extra.innerRhs) ?? valueOf(cmp.args?.[1]);
+    const innerA = renderValueAt(innerLhsVal, atInst, ctx);
+    const innerB = renderValueAt(innerRhsVal, atInst, ctx);
+    const innerBits = Number(extra.innerBits || cmp.bits || innerLhsVal?.bits || innerRhsVal?.bits || 64);
+    const innerOp = extra.innerOp || cmp.sub || 'sub';
+    const innerExpr = renderNZCVCondition(innerOp, cond, innerA, innerB, innerBits, {
+      address: cmp.address,
+      row: cmp.row,
+      ir: cmp.id,
+      evidence: [{ reason: `AArch64 conditional ${innerOp} NZCV semantics` }],
+    }) || `${innerA} /* ${cond || 'flags'} */`;
+    const fallbackBool = nzcvMatchesCond(extra.fallbackNzcv, cond);
+    if (fallbackBool === false) return `(${guardExpr} && ${innerExpr})`;
+    if (fallbackBool === true) return `(!(${guardExpr}) || ${innerExpr})`;
+  }
   const aValue = valueOf(cmp.args?.[0]);
   const bValue = valueOf(cmp.args?.[1]);
   const a = renderValueAt(aValue, atInst, ctx);
@@ -1528,7 +1675,8 @@ export function renderBranchCondition(inst, ctx, invert = false) {
   const kind = inst.extra?.kind || inst.sub || '';
   let s;
   if (kind === 'cbz' || kind === 'cbnz') {
-    s = `${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} ${kind === 'cbz' ? '==' : '!='} 0`;
+    const val = renderValueAt(valueOf(inst.args?.[0]), inst, ctx);
+    s = `${paren(val)} ${kind === 'cbz' ? '==' : '!='} 0`;
   } else if (kind === 'tbz' || kind === 'tbnz') {
     const bit = inst.extra?.bit ?? 0;
     s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
@@ -1649,6 +1797,97 @@ function explicitCallArgByReg(inst) {
   return byReg;
 }
 
+const PRINTF_FORMAT_ARG_INDEX = new Map([
+  ['printf', 0],
+  ['fprintf', 1],
+  ['sprintf', 1],
+  ['snprintf', 2],
+  ['dprintf', 1],
+  ['asprintf', 1],
+  ['sprintf_chk', 3],
+  ['snprintf_chk', 4],
+]);
+
+function decodeCStringLiteral(text) {
+  if (typeof text !== 'string' || text.length < 2 || text[0] !== '"' || text[text.length - 1] !== '"') return null;
+  let out = '';
+  for (let i = 1; i < text.length - 1; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      if (i + 1 >= text.length - 1) return null;
+      const esc = text[++i];
+      if (esc === 'n') out += '\n';
+      else if (esc === 'r') out += '\r';
+      else if (esc === 't') out += '\t';
+      else if (esc === '\\') out += '\\';
+      else if (esc === '"') out += '"';
+      else if (esc === "'") out += "'";
+      else if (esc === '0') out += '\0';
+      else if (esc === 'x') {
+        const hexM = /^[0-9a-fA-F]{1,2}/.exec(text.slice(i + 1, text.length - 1));
+        if (!hexM) return null;
+        out += String.fromCharCode(parseInt(hexM[0], 16));
+        i += hexM[0].length;
+      } else {
+        out += esc;
+      }
+    } else if (ch === '"') {
+      return null;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parsePrintfFormatSpecifiers(fmt) {
+  const specs = [];
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') { i++; continue; }
+    i++;
+    if (i >= fmt.length) return null;
+    if (fmt[i] === '%') { i++; continue; }
+    // Flags
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i++;
+    // Reject positional arguments (%1$d)
+    if (i < fmt.length && fmt[i] >= '1' && fmt[i] <= '9') {
+      let j = i;
+      while (j < fmt.length && fmt[j] >= '0' && fmt[j] <= '9') j++;
+      if (fmt[j] === '$') return null;
+    }
+    // Width
+    if (i < fmt.length && fmt[i] === '*') {
+      specs.push('gp');
+      i++;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+    }
+    // Precision
+    if (i < fmt.length && fmt[i] === '.') {
+      i++;
+      if (i < fmt.length && fmt[i] === '*') {
+        specs.push('gp');
+        i++;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i++;
+      }
+    }
+    // Length modifiers
+    if (i + 1 < fmt.length && (fmt.slice(i, i + 2) === 'hh' || fmt.slice(i, i + 2) === 'll')) {
+      i += 2;
+    } else if (i < fmt.length && 'hljztL'.includes(fmt[i])) {
+      i++;
+    }
+    if (i >= fmt.length) return null;
+    const conv = fmt[i++];
+    if ('aAeEfFgG'.includes(conv)) specs.push('fp');
+    else if ('diuoxXcspn'.includes(conv)) specs.push('gp');
+    else return null;
+  }
+  return specs;
+}
+
 function callRecord(inst, ctx) {
   if (ctx.callCache.has(inst.id)) {
     const trace = initialValueTraces.get(ctx), cursor = initialValueCursor(ctx);
@@ -1679,7 +1918,7 @@ function callRecord(inst, ctx) {
       name = resolved;
     }
   }
-  const cursor = initialValueCursor(ctx), argumentTickets = [];
+  const cursor = initialValueCursor(ctx), argumentTickets = [], extraArgTickets = [];
   const argText = values.map((v) => {
     const input = initialValueCursor(ctx);
     const text = v ? renderValue(v, ctx) : null;
@@ -1743,6 +1982,50 @@ function callRecord(inst, ctx) {
       logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
       sourceArgIndices = indexes.filter((i) => values[i]);
       variadicPrefixOnly = !!knownCallPrototype(name)?.variadic && !override;
+      if (variadicPrefixOnly) {
+        const normName = String(name || '').replace(/^_+/, '').replace(/@.*$/, '');
+        const fmtArgIdx = PRINTF_FORMAT_ARG_INDEX.get(normName);
+        if (fmtArgIdx != null && fmtArgIdx < argText.length) {
+          const fmtStr = decodeCStringLiteral(argText[fmtArgIdx]);
+          const specs = fmtStr != null ? parsePrintfFormatSpecifiers(fmtStr) : null;
+          if (specs) {
+            let nextGp = indexes.length;
+            let nextFp = 0;
+            const recoveredArgs = [];
+            const recoveredGpIndices = [];
+            const recoveredFpTickets = [];
+            let allResolved = true;
+            for (const kind of specs) {
+              if (kind === 'fp') {
+                if (nextFp >= 8) { allResolved = false; break; }
+                const fpVal = explicitArgs.get(`d${nextFp}`)
+                  ?? explicitArgs.get(`v${nextFp}`)
+                  ?? explicitArgs.get(`q${nextFp}`)
+                  ?? explicitArgs.get(`s${nextFp}`)
+                  ?? reachingRegisterValue(ctx.ir, inst, `d${nextFp}`)
+                  ?? reachingRegisterValue(ctx.ir, inst, `v${nextFp}`)
+                  ?? reachingRegisterValue(ctx.ir, inst, `s${nextFp}`);
+                if (!fpVal) { allResolved = false; break; }
+                const fpInput = initialValueCursor(ctx);
+                recoveredArgs.push(renderValue(fpVal, ctx));
+                if (fpInput) recoveredFpTickets.push(...fpInput.list.slice(fpInput.start));
+                nextFp++;
+              } else {
+                if (nextGp >= 8 || !values[nextGp] || argText[nextGp] == null) { allResolved = false; break; }
+                recoveredArgs.push(argText[nextGp]);
+                recoveredGpIndices.push(nextGp);
+                nextGp++;
+              }
+            }
+            if (allResolved) {
+              logicalArgs = [...logicalArgs, ...recoveredArgs];
+              sourceArgIndices = [...sourceArgIndices, ...recoveredGpIndices];
+              if (recoveredFpTickets.length) extraArgTickets.push(...recoveredFpTickets);
+              variadicPrefixOnly = false;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1762,7 +2045,7 @@ function callRecord(inst, ctx) {
   ctx.callCache.set(inst.id, rec);
   const trace = initialValueTraces.get(ctx);
   if (trace) {
-    const selected = sourceArgIndices.flatMap(index => argumentTickets[index]);
+    const selected = [...sourceArgIndices.flatMap(index => argumentTickets[index]), ...extraArgTickets];
     if (selected.length) trace.calls.set(inst.id, Object.freeze(selected));
     selectInitialValueTickets(cursor, selected);
   }
@@ -1858,7 +2141,17 @@ function renderValueText(value, ctx, flags) {
   try {
   if (flags.asBase && isReceiverAlias(value, cxxRec, ctx)) out = initialValueForm(ctx, 'cxx-this-receiver', 'this');
   if (!out && (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null))) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
-  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) {
+    const literal = stringLiteralForValue(value, ctx);
+    if (literal) {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', literal);
+    } else if (isAddressDerivedValue(value)) {
+      const sym = ctx.opts.symbolFor?.(value.const);
+      out = initialValueForm(ctx, 'address', sym ? safeIdent(sym) : `&global_${hex(value.const)}`);
+    } else {
+      out = initialValueForm(ctx, 'precomputed-integer-or-literal', formatConst(value.const, value.bits));
+    }
+  }
   if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
   if (!out && d) {
@@ -2187,7 +2480,7 @@ function earlyExitConditionalContinuation(header, yes, no, ctx, state, stop = nu
       if (!closed) break;
     }
     if (!closed) continue;
-    return { ...candidate, bodyBlocks:done, loopContinuation };
+    return { ...candidate, bodyBlocks:done, loopContinuation, bodyReachesContinuation: reachedContinuation };
   }
   return null;
 }
@@ -3577,13 +3870,20 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
         ? earlyExitConditionalContinuation(bi, yes, no, ctx, state, stop, allowed) : null;
       if (earlyExit) {
         const cond = renderBranchCondition(term2, ctx, earlyExit.invert);
+        const needsElseForPhi = earlyExit.bodyReachesContinuation && hasPhiCopiesForEdge(bi, earlyExit.continuation, ctx);
         out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
-          term2, 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
+          term2, needsElseForPhi ? 'if-else' : 'one-sided-if', { yes, no, join:earlyExit.continuation, invert:earlyExit.invert,
             bodyStart:earlyExit.bodyStart, earlyExit:true }, ctx));
         emitPhiCopiesForEdge(bi, earlyExit.bodyStart, out, ctx, indent + 1, term2);
         emitRegion(earlyExit.bodyStart, earlyExit.continuation, out, ctx, state, indent + 1, allowed, term2);
-        out.push(line('ctrl', indent, '}'));
-        emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
+        if (needsElseForPhi) {
+          out.push(line('ctrl', indent, '} else {'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent + 1, term2);
+          out.push(line('ctrl', indent, '}'));
+        } else {
+          out.push(line('ctrl', indent, '}'));
+          emitPhiCopiesForEdge(bi, earlyExit.continuation, out, ctx, indent, term2);
+        }
         prevTerm = null; bi = earlyExit.continuation; continue;
       }
       const sharedEarlyExit = join == null && branch.exact
