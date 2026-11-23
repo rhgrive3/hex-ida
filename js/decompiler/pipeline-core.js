@@ -1284,6 +1284,10 @@ function buildCanonicalExpressions(state) {
   return state;
 }
 
+function canonicalPhiName(v, state) {
+  return state.opts?.phase8Optimize === true ? `local_phi_${v.id}` : `phi_${v.id}`;
+}
+
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const ordered = state.orderedMaterializations?.get(v.id);
@@ -1293,7 +1297,22 @@ function buildValueRaw(v, state, flags = {}) {
   }
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
   if (state.expressionMemo.has(memoKey)) return state.expressionMemo.get(memoKey);
-  if (state.expressionActive.has(v.id)) return expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(v.def, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
+  if (state.expressionActive.has(v.id)) {
+    if (v.def?.op === 'phi') {
+      return expr.variable(canonicalPhiName(v, state), v.bits || 64, signedFor(state, v), origin(v.def, v), {
+        phi: true,
+        ssaId: v.id,
+        range: v.range ? { ...v.range } : null,
+      });
+    }
+    state.expressionCycleHit = true;
+    return expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(v.def, v), {
+      ssaId: v.id,
+      range: v.range ? { ...v.range } : null,
+    });
+  }
+  const prevCycleHit = state.expressionCycleHit === true;
+  state.expressionCycleHit = false;
   state.expressionActive.add(v.id);
   let out = null;
   const d = v.def;
@@ -1401,10 +1420,13 @@ function buildValueRaw(v, state, flags = {}) {
         out = expr.variable(`call_${v.id ?? d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
       }
     } else if (d.op === 'phi') {
-      const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
+      const nonSelf = (d.incoming || []).filter((x) => !(v.id != null && x?.value?.id === v.id));
+      const incoming = nonSelf.map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-      const phiName = state.opts?.phase8Optimize === true ? `local_phi_${v.id}` : `phi_${v.id}`;
-      out = unique.size === 1 ? incoming[0] : expr.variable(phiName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
+      const phiName = canonicalPhiName(v, state);
+      out = unique.size === 1
+        ? incoming[0]
+        : expr.variable(phiName, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, ssaId: v.id, incoming });
       if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
     }
   }
@@ -1412,7 +1434,9 @@ function buildValueRaw(v, state, flags = {}) {
   recordCompatMemorySelection(v, out, compatSelection, state);
   recordCompatOperationSelection(v, out, compatOperations, state);
   state.expressionActive.delete(v.id);
-  state.expressionMemo.set(memoKey, out);
+  const hitCycle = state.expressionCycleHit === true;
+  state.expressionCycleHit = prevCycleHit || hitCycle;
+  if (!hitCycle) state.expressionMemo.set(memoKey, out);
   return out;
 }
 

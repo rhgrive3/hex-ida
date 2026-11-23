@@ -12,7 +12,7 @@ const FIXED = new Map([
   ['puts', 1], ['putchar', 1], ['getchar', 0], ['fputs', 2], ['fgets', 3],
   ['fgetc', 1], ['fputc', 2], ['getc', 1], ['putc', 2], ['ungetc', 2],
   ['fopen', 2], ['fclose', 1], ['fflush', 1], ['fread', 4], ['fwrite', 4],
-  ['fseek', 3], ['ftell', 1], ['rewind', 1], ['feof', 1], ['ferror', 1],
+  ['fseek', 3], ['ftell', 1], ['rewind', 1], ['feof', 1], ['ferror', 1], ['clearerr', 1],
   ['perror', 1], ['remove', 1], ['rename', 2], ['fileno', 1],
   ['vprintf', 2], ['vfprintf', 3], ['vsprintf', 3], ['vsnprintf', 4],
   // string & memory
@@ -24,7 +24,7 @@ const FIXED = new Map([
   ['strspn', 2], ['strcspn', 2], ['strtok', 2], ['strtok_r', 3],
   ['strdup', 1], ['strndup', 2], ['strxfrm', 3],
   ['memcpy_chk', 4], ['memmove_chk', 4], ['memset_chk', 4],
-  ['strcpy_chk', 3], ['strncpy_chk', 4], ['strcat_chk', 3], ['strncat_chk', 4],
+  ['strcpy_chk', 3], ['stpcpy_chk', 3], ['strncpy_chk', 4], ['strcat_chk', 3], ['strncat_chk', 4],
   // ctype
   ['tolower', 1], ['toupper', 1], ['isalpha', 1], ['isdigit', 1], ['isalnum', 1],
   ['isspace', 1], ['isupper', 1], ['islower', 1], ['isprint', 1], ['ispunct', 1],
@@ -38,7 +38,8 @@ const FIXED = new Map([
   ['strtod', 2], ['strtof', 2], ['strtold', 2],
   ['abs', 1], ['labs', 1], ['llabs', 1], ['div', 2], ['ldiv', 2], ['lldiv', 2],
   ['qsort', 4], ['bsearch', 5],
-  ['exit', 1], ['abort', 0], ['rand', 0], ['srand', 1], ['getenv', 1], ['system', 1],
+  ['exit', 1], ['_exit', 1], ['quick_exit', 1], ['abort', 0], ['rand', 0], ['srand', 1], ['getenv', 1], ['system', 1],
+  ['stack_chk_fail', 0], ['chk_fail', 0], ['assert_fail', 4], ['longjmp', 2],
   // unistd / POSIX I/O
   ['close', 1], ['read', 3], ['write', 3], ['lseek', 3],
   // math (1-arg double/float/long double)
@@ -175,6 +176,23 @@ const SIGNATURES = new Map([
   ['ctype_toupper_loc', { retType: 'ptr', paramTypes: [] }],
   ['ctype_tolower_loc', { retType: 'ptr', paramTypes: [] }],
   ['errno_location', { retType: 'ptr', paramTypes: [] }],
+  // Checked string helpers
+  ['stpcpy_chk', { retType: 'ptr', paramTypes: ['ptr', 'ptr', 'size'] }],
+  // void / noreturn libc functions
+  ['stack_chk_fail', { retType: 'void', paramTypes: [] }],
+  ['chk_fail', { retType: 'void', paramTypes: [] }],
+  ['assert_fail', { retType: 'void', paramTypes: ['ptr', 'ptr', 'int', 'ptr'] }],
+  ['exit', { retType: 'void', paramTypes: ['int'] }],
+  ['_exit', { retType: 'void', paramTypes: ['int'] }],
+  ['quick_exit', { retType: 'void', paramTypes: ['int'] }],
+  ['abort', { retType: 'void', paramTypes: [] }],
+  ['bzero', { retType: 'void', paramTypes: ['ptr', 'size'] }],
+  ['bcopy', { retType: 'void', paramTypes: ['ptr', 'ptr', 'size'] }],
+  ['rewind', { retType: 'void', paramTypes: ['ptr'] }],
+  ['perror', { retType: 'void', paramTypes: ['ptr'] }],
+  ['srand', { retType: 'void', paramTypes: ['int'] }],
+  ['clearerr', { retType: 'void', paramTypes: ['ptr'] }],
+  ['longjmp', { retType: 'void', paramTypes: ['ptr', 'int'] }],
 ]);
 
 export function normalizeExternalSymbol(name) {

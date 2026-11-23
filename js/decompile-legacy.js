@@ -87,10 +87,10 @@ export function decompile(model, opts) {
   }
 
   const ctx = buildContext(model, o);
-  const cfg = buildFlow(model, ctx);
   const types = inferTypes(model);
   ctx.types = types;
   augmentLegacyFpSignature(model, types, ctx);
+  const cfg = buildFlow(model, ctx);
 
   /* どのラベルが本当に要るかは、構造化してみないと分からない。
      まず本体を組み立て、そのあとで使われたラベルだけを差し込む。 */
@@ -503,7 +503,23 @@ function decideMaterial(model, vg) {
    */
   const opaqueInputs = new Set();
   for (const insn of insns) {
-    if (insn.data || insn.isCall || insn.memory || insn.isBranch || insn.isReturn) continue;
+    if (insn.memory && insn.memory.kind === 'load' &&
+        (insn.memory.mode === 'post' || insn.memory.mode === 'pre') &&
+        insn.memory.base !== 'sp' && !insn.memory.stack && insn.writes.length) {
+      const loaded = vg.defAt(insn.row, insn.writes[0]);
+      if (loaded && vg.nodeDef.has(loaded)) opaqueInputs.add(loaded);
+      continue;
+    }
+    if (insn.isReturn) {
+      const bi = blockOf.get(insn.row);
+      const lastV0 = bi != null ? lastInBlock.get(bi + ':v0') : null;
+      if (lastV0 && vg.nodeDef.has(lastV0)) {
+        const def = canonical.get(lastV0) || vg.nodeDef.get(lastV0);
+        if (!def || !killedByCall(def)) opaqueInputs.add(lastV0);
+      }
+      continue;
+    }
+    if (insn.data || insn.isCall || insn.memory || insn.isBranch) continue;
     const base = (insn.mnemonic || '').toLowerCase();
     const writes = (insn.writes || []).filter((reg) => reg !== 'nzcv');
     const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base);
@@ -766,6 +782,7 @@ function liveOutSets(model, blocks, blockOf) {
       if (!insn) continue;
       for (const r of insn.reads) if (!d.has(r)) u.add(r);
       if (insn.isCall) for (let a = 0; a <= 7; a++) if (!d.has('x' + a)) u.add('x' + a);
+      if (insn.isReturn && !d.has('v0')) u.add('v0');
       for (const w of insn.writes) d.add(w);
       if (insn.isCall) for (let a = 0; a <= 17; a++) d.add('x' + a);
     }
@@ -858,7 +875,23 @@ function exprText(ctx, nodeValue, self) {
       }
       return null;
     },
-    memName: (m) => memNodeName(m, ctx),
+    memName: (m) => {
+      const named = memNodeName(m, ctx);
+      if (named != null) return named;
+      const loadInsn = m && m.row != null ? ctx.byRow.get(m.row) : null;
+      const fpW = loadInsn && loadInsn.memory && loadInsn.memory.kind === 'load'
+        ? fpRegWidth(loadInsn.ops && loadInsn.ops[0])
+        : null;
+      if (!fpW) return null;
+      const raw = renderExpr(m, { ...opts, memName: (sub) => (sub === m ? null : opts.memName(sub)) });
+      if (fpW === 'float' && /^\*\(\s*uint32\s*\*\)/.test(raw)) {
+        return raw.replace(/^\*\(\s*uint32\s*\*\)/, '*(float *)');
+      }
+      if (fpW === 'double' && /^\*\(\s*uint64\s*\*\)/.test(raw)) {
+        return raw.replace(/^\*\(\s*uint64\s*\*\)/, '*(double *)');
+      }
+      return null;
+    },
     callName: (c) => callLabel(c, ctx),
   };
   return renderExpr(nodeValue, opts);
@@ -1394,8 +1427,9 @@ function findCompare(insn, ctx) {
     if (!p) continue;
     const b = (p.mnemonic || '').toLowerCase();
     if (/^(cmp|cmn|tst|subs|adds|ands|fcmp|fcmpe|ccmp)$/.test(b)) {
-      const a = p.ops[b === 'cmp' || b === 'cmn' || b === 'tst' || b === 'fcmp' ? 0 : 1];
-      const c = p.ops[b === 'cmp' || b === 'cmn' || b === 'tst' || b === 'fcmp' ? 1 : 2];
+      const isTwoOp = b === 'cmp' || b === 'cmn' || b === 'tst' || b === 'fcmp' || b === 'fcmpe';
+      const a = p.ops[isTwoOp ? 0 : 1];
+      const c = p.ops[isTwoOp ? 1 : 2];
       return { op: b, left: a ? operandText(a, ctx, p) : '?', right: c ? operandText(c, ctx, p) : '0', row: p.row };
     }
     if (p.isCall) break;         // 呼び出しをまたぐとフラグは壊れる
@@ -1423,6 +1457,9 @@ function condText(cond, ctx) {
     if (cond.cc === 'vc') return '!flag_vs /* !overflow(' + cond.cmp.left + ', ' + cond.cmp.right + ') */';
     if (cond.cmp.op === 'tst' || cond.cmp.op === 'ands') {
       return '(' + cond.cmp.left + ' & ' + cond.cmp.right + ')' + (cond.cc === 'eq' ? ' == 0' : ' != 0');
+    }
+    if ((cond.cmp.op === 'fcmp' || cond.cmp.op === 'fcmpe') && (cond.cc === 'mi' || cond.cc === 'pl')) {
+      return cond.cmp.left + (cond.cc === 'mi' ? ' < ' : ' >= ') + cond.cmp.right;
     }
     if (/^(< 0|>= 0)$/.test(op)) return cond.cmp.left + ' ' + op;
     return cond.cmp.left + ' ' + op + ' ' + cond.cmp.right;
@@ -1508,7 +1545,7 @@ function operandText(op, ctx, insn) {
 }
 
 /** [x0, #0x20] を *(型 *)(x0 + 0x20) に。名前が分かっていれば x0->hp に。 */
-function memText(op, ctx, insn, extraDisp = 0n) {
+function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
   const base = regOf(op.base);
   const rawDisp = op.disp && op.disp.value != null ? op.disp.value : 0n;
   const disp = rawDisp + BigInt(extraDisp || 0n);
@@ -1519,14 +1556,14 @@ function memText(op, ctx, insn, extraDisp = 0n) {
 
   /* 行き先が 1 つに決まっているなら、レジスタ経由ではなくその場所を書く */
   const ref = insn ? ctx.refOf.get(insn.row) : null;
-  if (ref && ref.load && !op.index) {
+  if (ref && ref.load && !op.index && baseOverride == null) {
     const refAddr = ref.addr + BigInt(extraDisp || 0n);
     const sym = ctx.symbolFor(refAddr);
     if (sym) return sanitizeLegacyCallLabel(sym);
     return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
   }
 
-  const baseText = op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx);
+  const baseText = baseOverride != null ? baseOverride : (op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx));
   const named = ctx.fieldFor ? ctx.fieldFor(base, Number(disp), insn ? insn.row : null) : null;
   if (named && named.name) return (needsParens(baseText) ? '(' + baseText + ')' : baseText) + '->' + named.name;
 
@@ -1710,7 +1747,11 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
     if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn &&
         (node.jump != null || node.condTarget != null)) continue;
     const st = statementFor(insn, ctx, node, state);
-    if (st) stmts.push(st);
+    if (Array.isArray(st)) {
+      for (const s of st) if (s) stmts.push(s);
+    } else if (st) {
+      stmts.push(st);
+    }
   }
 
   /* 使い捨ての一時変数をたたむ（x8 = a + b; f(x8) → f(a + b)） */
@@ -1869,6 +1910,23 @@ function statementFor(insn, ctx, node, state) {
       : b;
     return mk(varOf(dst, ctx) + ' = ' + a + ' ' + BIN[base] + ' ' + expr + ';', { dst, pure: true });
   }
+  if (base === 'fabd' && insn.ops.length >= 3 && dst) {
+    const fpW = fpRegWidth(insn.ops[0]);
+    if (fpW) {
+      const a = operandText(insn.ops[1], ctx, insn);
+      const b = operandText(insn.ops[2], ctx, insn);
+      const fn = fpW === 'float' ? 'fabsf' : 'fabs';
+      return mk(varOf(dst, ctx) + ' = ' + fn + '((' + a + ') - (' + b + '));', { dst, pure: true });
+    }
+  }
+  if (base === 'fabs' && insn.ops.length >= 2 && dst) {
+    const fpW = fpRegWidth(insn.ops[0]);
+    if (fpW) {
+      const a = operandText(insn.ops[1], ctx, insn);
+      const fn = fpW === 'float' ? 'fabsf' : 'fabs';
+      return mk(varOf(dst, ctx) + ' = ' + fn + '(' + a + ');', { dst, pure: true });
+    }
+  }
   if ((base === 'neg' || base === 'negs' || base === 'fneg') && dst) {
     return mk(varOf(dst, ctx) + ' = -' + operandText(insn.ops[1], ctx, insn) + ';', { dst, pure: true });
   }
@@ -2017,7 +2075,8 @@ function valueStatement(insn, ctx, mk) {
    * 行として残すと決まったものは、これまでどおり memoryStatement が書く
    * （self->hp や var_20 という呼び名は、あちらのほうが上手い）。
    */
-  if (insn.memory && insn.memory.kind === 'load' && insn.writes.length === 1) {
+  if (insn.memory && insn.memory.kind === 'load' && insn.writes.length === 1 &&
+      insn.memory.mode !== 'post' && insn.memory.mode !== 'pre') {
     const v = vg.defAt(insn.row, insn.writes[0]);
     if (v && v.k !== 'reg' && !ctx.material.material.has(v)) return null;
     return undefined;
@@ -2138,8 +2197,31 @@ function memoryStatement(insn, ctx, mk, base) {
   const pair = base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp';
   const elemSize = pair ? Math.max(1, Number(m.size || 16) / 2) : Number(m.size || 8);
   const placeInsn = pair ? { ...insn, memory: { ...m, size: elemSize } } : insn;
-  const place = mem ? memText(mem, ctx, placeInsn) : '*(uint64 *)(uintptr_t)0 /* unknown */';
-  const place2 = pair && mem ? memText(mem, ctx, placeInsn, BigInt(elemSize)) : null;
+
+  const wbMode = m && (m.mode === 'post' || m.mode === 'pre') ? m.mode : null;
+  const baseReg = m ? (m.base || m.baseReg || (mem && mem.base ? regOf(mem.base) : null)) : null;
+  const rawWbDisp = m && m.writebackDisp != null
+    ? m.writebackDisp
+    : (mem && mem.writebackDisp && mem.writebackDisp.value != null
+      ? mem.writebackDisp.value
+      : (wbMode === 'pre' ? (m.disp != null ? m.disp : (mem && mem.disp && mem.disp.value != null ? mem.disp.value : null)) : null));
+  const hasWb = !!(wbMode && baseReg && baseReg !== 'sp' && !m.stack && rawWbDisp != null && rawWbDisp !== 0n);
+  const wbBaseName = hasWb ? varOf(baseReg, ctx) : null;
+  const wbStmt = hasWb
+    ? mk(
+        wbBaseName + ' = ' + wbBaseName + (rawWbDisp < 0n ? ' - ' + hexImm(-rawWbDisp) : ' + ' + hexImm(rawWbDisp)) + ';',
+        { dst: baseReg, reads: [baseReg], pure: false }
+      )
+    : null;
+  const wrapWb = (memStmt) => {
+    if (!hasWb || !memStmt) return memStmt;
+    return wbMode === 'pre' ? [wbStmt, memStmt] : [memStmt, wbStmt];
+  };
+
+  const accessMem = hasWb && wbMode === 'pre' && mem ? { ...mem, disp: null } : mem;
+  const baseOverride = hasWb ? wbBaseName : null;
+  const place = accessMem ? memText(accessMem, ctx, placeInsn, 0n, baseOverride) : '*(uint64 *)(uintptr_t)0 /* unknown */';
+  const place2 = pair && accessMem ? memText(accessMem, ctx, placeInsn, BigInt(elemSize), baseOverride) : null;
 
   /* 排他アクセス（スレッドどうしがぶつからないようにする読み書き） */
   if (/^(ldxr|ldaxr|ldxrb|ldaxrb|ldxrh|ldaxrh)/.test(base)) {
@@ -2162,21 +2244,24 @@ function memoryStatement(insn, ctx, mk, base) {
       const r1 = insn.ops[1] ? regOf(insn.ops[1]) : null;
       if (!r1) return null;
       const d1 = nameForDef(ctx, insn.row, r1);
-      return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + (place2 || nextSlot(place, m)) + ';',
-        { dst: insn.writes[0] });
+      return wrapWb(mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + (place2 || nextSlot(place, m)) + ';',
+        { dst: insn.writes[0], pure: false }));
     }
     const text = ctx.textOf.get(insn.row);
     if (text != null) {
-      return mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: true });
+      return wrapWb(mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: !hasWb }));
     }
     /*
      * 住所は、値グラフが持っている式のほうが正しい。
      * `*(uint64 *)(x8)` の x8 が、埋め込まれて消えた行のものだったりするので、
      * レジスタ名ではなく中身で書く。
      */
-    const node = ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
-    const viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node) : null;
-    return mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: true });
+    const node = !hasWb && ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
+    let viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node) : null;
+    const fpW = fpRegWidth(insn.ops[0]);
+    if (viaExpr && fpW === 'float') viaExpr = viaExpr.replace(/^\*\(\s*uint32\s*\*\)/, '*(float *)');
+    else if (viaExpr && fpW === 'double') viaExpr = viaExpr.replace(/^\*\(\s*uint64\s*\*\)/, '*(double *)');
+    return wrapWb(mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: !hasWb }));
   }
   /*
    * 書き込む値は、レジスタ名ではなく **その中身** で書く。
@@ -2195,9 +2280,9 @@ function memoryStatement(insn, ctx, mk, base) {
     const sr1 = insn.ops[1] ? regOf(insn.ops[1]) : null;
     if (!stored[1] && !sr1) return null;
     const s1 = stored[1] || varOf(sr1, ctx);
-    return mk(place + ' = ' + s0 + ';   ' + (place2 || nextSlot(place, m)) + ' = ' + s1 + ';', {});
+    return wrapWb(mk(place + ' = ' + s0 + ';   ' + (place2 || nextSlot(place, m)) + ' = ' + s1 + ';', { dst: null }));
   }
-  return mk(place + ' = ' + s0 + ';');
+  return wrapWb(mk(place + ' = ' + s0 + ';', { dst: null }));
 }
 
 /** その書き込み命令が置いている値を、式として。読めなければ空。 */
@@ -2418,13 +2503,71 @@ function augmentLegacyFpSignature(model, types, ctx) {
         why: [{ why: '入口で ' + (fpType === 'float' ? 's' : 'd') + fpIdx + ' を読み出している' }],
       });
       if (ctx.aliases && !ctx.aliases.has(reg)) {
-        ctx.aliases.set(reg, 'a' + (assignedIndex + 1));
+        const alias = 'a' + (assignedIndex + 1);
+        ctx.aliases.set(reg, alias);
+        if (ctx.material && ctx.material.names) {
+          for (const [v, n] of ctx.material.names) {
+            if (n === reg) ctx.material.names.set(v, alias);
+          }
+        }
       }
     }
     types.args = existingArgs;
   }
 
-  if (!types.ret || types.ret.type === 'void') {
+  /* Alias GP arg registers (x0..x7) whose only writes are post/pre memory writebacks */
+  if (ctx.aliases && Array.isArray(types.args)) {
+    const hasCall = insns.some((i) => i.isCall);
+    if (!hasCall) {
+      for (const arg of types.args) {
+        if (!arg || !/^x[0-7]$/.test(arg.reg) || ctx.aliases.has(arg.reg)) continue;
+        let wbWrites = 0;
+        let otherWrites = 0;
+        for (const insn of insns) {
+          if (!(insn.writes || []).includes(arg.reg)) continue;
+          const m = insn.memory;
+          if (m && (m.mode === 'post' || m.mode === 'pre') && m.base === arg.reg) wbWrites++;
+          else otherWrites++;
+        }
+        if (wbWrites > 0 && otherWrites === 0) {
+          const alias = 'a' + (arg.index + 1);
+          ctx.aliases.set(arg.reg, alias);
+          if (ctx.material && ctx.material.names) {
+            for (const [v, n] of ctx.material.names) {
+              if (n === arg.reg) ctx.material.names.set(v, alias);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  let checkFpRet = !types.ret || types.ret.type === 'void';
+  if (!checkFpRet) {
+    /* Also detect scalar FP return when x0 was only consumed before ret (e.g. loop counter or writeback ptr) */
+    let x0Unconsumed = false;
+    let x0Consumed = false;
+    for (let i = insns.length - 1; i >= 0; i--) {
+      const insn = insns[i];
+      const base = (insn.mnemonic || '').toLowerCase();
+      if (insn.isCall || base === 'bl' || base === 'blr') break;
+      const writes = insn.writes || [];
+      const reads = insn.reads || [];
+      if (writes.includes('x0')) {
+        const isWbOnly = !!(insn.memory && (insn.memory.mode === 'post' || insn.memory.mode === 'pre') && insn.memory.base === 'x0');
+        if (!x0Consumed && !isWbOnly) x0Unconsumed = true;
+        break;
+      }
+      if (reads.includes('x0')) {
+        const isCompare = /^(?:cmp|cmn|tst|cbz|cbnz|tbz|tbnz)\b/.test(base);
+        const isStore = insn.memory?.kind === 'store';
+        if (isCompare || isStore) x0Consumed = true;
+      }
+    }
+    if (!x0Unconsumed) checkFpRet = true;
+  }
+
+  if (checkFpRet) {
     let v0Consumed = false;
     for (let i = insns.length - 1; i >= 0; i--) {
       const insn = insns[i];
@@ -2708,6 +2851,35 @@ function declarations(ctx, types, o, body) {
     if (!byType.has(type)) byType.set(type, []);
     byType.get(type).push(name);
   }
+  /* Scalar FP registers (sN -> float, dN -> double) used in body: declare with accurate FP type instead of uint128 fallback */
+  const scalarFpKinds = new Map();
+  for (const insn of (ctx.model && ctx.model.instructions) || []) {
+    const mn = (insn.mnemonic || '').toLowerCase();
+    for (const op of insn.ops || []) {
+      if (!op || op.k !== 'reg' || (op.cls !== 'fp' && op.cls !== 'vec')) continue;
+      const reg = 'v' + op.num;
+      const w = fpRegWidth(op);
+      if (w) {
+        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
+        scalarFpKinds.get(reg).add(w);
+      } else if (!(mn === 'movi' && insn.ops[1]?.k === 'imm' && insn.ops[1].value === 0n)) {
+        if (!scalarFpKinds.has(reg)) scalarFpKinds.set(reg, new Set());
+        scalarFpKinds.get(reg).add('vec');
+      }
+    }
+  }
+  const fpVarMatches = text.match(/\bv\d+(?:_\d+)?\b/g) || [];
+  for (const name of fpVarMatches) {
+    if (seen.has(name)) continue;
+    const baseReg = name.replace(/_\d+$/, '');
+    const kinds = scalarFpKinds.get(baseReg);
+    if (!kinds || kinds.has('vec') || kinds.size === 0) continue;
+    const fpType = kinds.has('double') ? 'double' : 'float';
+    seen.add(name);
+    if (!byType.has(fpType)) byType.set(fpType, []);
+    byType.get(fpType).push(name);
+  }
+
   /* 同じ型はまとめて、1 行が長くなりすぎない範囲で折り返す。 */
   for (const [type, names] of byType) {
     for (let i = 0; i < names.length; i += 8) {
