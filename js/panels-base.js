@@ -226,23 +226,22 @@ export function showFunctionSummary(app, row) {
   sheet.body.append(bar, status);
 
   const epoch = app.backend.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
+  const isCurrent = () => sheet.root.isConnected !== false && epoch === app.backend.gen && sliceIndex === app.store?.get?.('sliceIndex');
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
     (p) => {
-      if (controller.signal.aborted) return;
-      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
+      if (controller.signal.aborted || !isCurrent()) return;
       fill.style.width = Math.round(p * 100) + '%';
     }, { architecture, signal: controller.signal })
     .then((res) => {
-      if (controller.signal.aborted) return;
-      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
+      if (controller.signal.aborted || !isCurrent()) return;
       status.remove();
       bar.remove();
       applySemantic(app, region, res);
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
-      if (controller.signal.aborted || err?.name === 'AbortError') return;
-      if (!sheet.root.isConnected || epoch !== app.backend.gen) return;
+      if (controller.signal.aborted || err?.name === 'AbortError' || !isCurrent()) return;
       status.textContent = '';
       alertDialog(t('search.failed'), userError(err));
     });
@@ -4049,10 +4048,14 @@ export function showFunctionReport(app, addr, goal) {
   const later = el('div');
   body.append(later);
 
-  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture, signal: controller.signal })
+  const reportEpoch = app.backend?.gen;
+  const reportSlice = app.store?.get?.('sliceIndex');
+  const isReportCurrent = () => !controller.signal.aborted && sheet.root.isConnected !== false
+    && reportEpoch === app.backend?.gen && reportSlice === app.store?.get?.('sliceIndex');
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => { if (isReportCurrent()) box.set({ done:p, all:1 }); }, { architecture, signal: controller.signal })
   .then((res) => {
     box.done();
-    if (controller.signal.aborted || !sheet.root.isConnected) return;
+    if (!isReportCurrent()) return;
     applySemantic(app, region, res);
     let loadingNote = null;
     let currentReport = null;
@@ -4060,7 +4063,7 @@ export function showFunctionReport(app, addr, goal) {
     let nextStepsBlkRef = null;
     const getReport = () => currentReport;
     const renderInitial = () => {
-      if (controller.signal.aborted || !sheet.root.isConnected) return;
+      if (!isReportCurrent()) return;
       const report = buildFunctionReport({
         model:res.model, region, symbols:sym, program:null, goal, name,
         fields:app.fields, owner:app.ownerOf(start),
@@ -4079,10 +4082,10 @@ export function showFunctionReport(app, addr, goal) {
     // First useful paint is function-local and cannot be failed by global graph work.
     renderInitial();
     Promise.resolve().then(() => {
-      if (controller.signal.aborted) return null;
+      if (!isReportCurrent()) return null;
       return app.ensureProgram();
     }).then((program) => {
-      if (!program || controller.signal.aborted || !sheet.root.isConnected) return;
+      if (!program || !isReportCurrent()) return;
       if (loadingNote && loadingNote.parentNode) loadingNote.remove();
       const updated = buildFunctionReport({
         model:res.model, region, symbols:sym, program, goal, name,
@@ -4694,13 +4697,16 @@ function cfgSection(app, report, region, sheet) {
 /* ── 呼び出しグラフ（上へも下へも辿れる） ───────────────── */
 
 export function showCallGraph(app, addr) {
+  const epoch = app.backend?.gen;
+  const sliceIndex = app.store?.get?.('sliceIndex');
+  const isCurrent = () => sheet.root.isConnected !== false && epoch === app.backend?.gen && sliceIndex === app.store?.get?.('sliceIndex');
   const sheet = new Sheet(pick('呼び出しの流れ', 'Call graph'), { size: 'wide' });
   const body = sheet.body;
   const box = progressBox(body, pick('呼び出し関係を調べています…', 'Mapping calls…'));
 
-  app.ensureProgram((p) => box.set(p)).then((program) => {
+  app.ensureProgram((p) => { if (isCurrent()) box.set(p); }).then((program) => {
     box.done();
-    if (!sheet.root.isConnected) return;
+    if (!isCurrent()) return;
     if (!program) {
       body.append(para(pick('呼び出し関係を取り出せませんでした。', 'No call relationships could be extracted.')));
       return;

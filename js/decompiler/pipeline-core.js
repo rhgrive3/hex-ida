@@ -500,7 +500,7 @@ function readOnlyCStringAt(addr, state) {
     }
   }
   if (!terminated) return null;
-  return cStringLiteral(String.fromCharCode(...chars));
+  return JSON.stringify(String.fromCharCode(...chars));
 }
 
 function isAddressDerivedConstant(v, state = null, depth = 0, seen = null) {
@@ -510,40 +510,46 @@ function isAddressDerivedConstant(v, state = null, depth = 0, seen = null) {
     if (visited.has(v.id)) return false;
     visited.add(v.id);
   }
-  if (v.addressDerived === true) return true;
-  const d = v.def;
-  if (!d) return false;
-  if (d.op === 'addr') return true;
-  if (d.extra?.addressDerived === true) return true;
-  const rawConst = v.const ?? (d.op === 'const' ? d.extra?.value ?? null : null);
-  if (rawConst != null && state?.model?.addressRefs?.length) {
-    let target = null;
-    try { target = BigInt(rawConst); } catch { target = null; }
-    if (target != null && target !== 0n) {
-      for (const ref of state.model.addressRefs) {
-        if (ref?.addr == null) continue;
-        let refAddr;
-        try { refAddr = BigInt(ref.addr); } catch { continue; }
-        if (refAddr !== target) continue;
-        if (d.row != null && ref.row != null && ref.row === d.row) return true;
-        if (d.op === 'const' && isDataAddressRef(ref, target, state)) return true;
+  try {
+    if (v.addressDerived === true) return true;
+    const d = v.def;
+    if (!d) return false;
+    if (d.op === 'addr') return true;
+    if (d.extra?.addressDerived === true) return true;
+    const rawConst = v.const ?? (d.op === 'const' ? d.extra?.value ?? null : null);
+    if (rawConst != null && state?.model?.addressRefs?.length) {
+      let target = null;
+      try { target = BigInt(rawConst); } catch { target = null; }
+      if (target != null && target !== 0n) {
+        for (const ref of state.model.addressRefs) {
+          if (ref?.addr == null) continue;
+          let refAddr;
+          try { refAddr = BigInt(ref.addr); } catch { continue; }
+          if (refAddr !== target) continue;
+          if (d.row != null && ref.row != null && ref.row === d.row) return true;
+          if (d.op === 'const' && isDataAddressRef(ref, target, state)) return true;
+        }
       }
     }
+    if (d.op === 'mov' || d.op === 'cast' || (d.op === 'un' && ['zext', 'sext', 'trunc', 'cast'].includes(d.sub))) {
+      return isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited);
+    }
+    if (d.op === 'bin' && (d.sub === 'add' || d.sub === 'sub')) {
+      const leftAddr = isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited);
+      const rightAddr = isAddressDerivedConstant(valueOf(d.args?.[1]), state, depth + 1, visited);
+      if (d.sub === 'sub') return leftAddr && !rightAddr;
+      return leftAddr || rightAddr;
+    }
+    if (d.op === 'phi') {
+      const nonSelf = (d.incoming || [])
+        .map((x) => (x?.value && typeof x.value === 'object' && 'id' in x.value ? x.value : (x?.id != null ? x : null)))
+        .filter((inc) => inc && !(v.id != null && inc.id === v.id));
+      return nonSelf.length > 0 && nonSelf.every((inc) => isAddressDerivedConstant(inc, state, depth + 1, visited));
+    }
+    return false;
+  } finally {
+    if (v.id != null) visited.delete(v.id);
   }
-  if (d.op === 'mov' || d.op === 'cast' || (d.op === 'un' && ['zext', 'sext', 'trunc', 'cast'].includes(d.sub))) {
-    return isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited);
-  }
-  if (d.op === 'bin' && (d.sub === 'add' || d.sub === 'sub')) {
-    if (isAddressDerivedConstant(valueOf(d.args?.[0]), state, depth + 1, visited)) return true;
-    if (d.sub === 'add' && isAddressDerivedConstant(valueOf(d.args?.[1]), state, depth + 1, visited)) return true;
-  }
-  if (d.op === 'phi') {
-    const nonSelf = (d.incoming || [])
-      .map((x) => (x?.value && typeof x.value === "object" && "id" in x.value ? x.value : (x?.id != null ? x : null)))
-      .filter((inc) => inc && !(v.id != null && inc.id === v.id));
-    return nonSelf.length > 0 && nonSelf.every((inc) => isAddressDerivedConstant(inc, state, depth + 1, visited));
-  }
-  return false;
 }
 
 function resolveConstantAddressValue(v, depth = 0, seen = null) {
@@ -677,6 +683,46 @@ function highVariableGroupById(highVariables, groupId) {
   return cached.byId.get(groupId) || null;
 }
 
+function isAArch64PipelineContext(ir, opts) {
+  const adapter = opts?.abiAdapter || null;
+  if (adapter) {
+    const id = String(adapter.id || adapter.name || '').toLowerCase();
+    const archId = String(adapter.architectureId || adapter.arch || '').toLowerCase();
+    return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
+      || /^(?:aapcs64|arm64|aarch64)/.test(id);
+  }
+  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
+  if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
+  if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
+  return true;
+}
+
+function canonicalPipelineRegister(reg, isAArch64 = false) {
+  const text = String(reg || '').toLowerCase();
+  const gp = /^[wx](\d+)$/.exec(text);
+  if (gp) return `r${gp[1]}`;
+  if (isAArch64) {
+    const fp = /^[bhsdqv]([0-9]|[12][0-9]|3[01])$/.exec(text);
+    if (fp) return `v${fp[1]}`;
+  }
+  return text;
+}
+
+function shouldSuppressRodataStringForMem(inst, loc, types, defaultSize = 0) {
+  const size = Number(inst?.addr?.size || inst?.size || loc?.size || defaultSize);
+  if (size > 1) return true;
+  if (inst?.extra?.float === true || inst?.dst?.kind === 'float') return true;
+  const dstType = types?.values?.get?.(inst?.dst?.id);
+  if (dstType && (dstType.kind === 'float' || dstType.name === 'float' || dstType.name === 'double')) return true;
+  const elem = size > 0 ? memoryElementType(inst, size, types) : null;
+  if (elem === 'float' || elem === 'double') return true;
+  return false;
+}
+
+function exprMemoKey(v, flags = {}) {
+  return `${v?.id}:${flags.forAddress ? 'a' : 'v'}${flags.suppressRodataString ? ':noStr' : ''}`;
+}
+
 function argumentName(v, state) {
   if (v?.reg === 'sp') return 'sp';
   const cxxRec = currentCppReceiver(state.opts, state.ir);
@@ -685,6 +731,20 @@ function argumentName(v, state) {
   const group = highVariableGroupById(state.highVariables, groupId);
   if (group?.name) return group.name;
   const reg = String(v?.reg || '');
+  const isAArch64 = isAArch64PipelineContext(state.ir, state.opts);
+  const typeArgs = Array.isArray(state.types?.args) ? state.types.args : [];
+  if (typeArgs.length) {
+    let matched = v?.id != null ? typeArgs.find((a) => a && a.valueId === v.id) : null;
+    if (!matched && reg) {
+      const canon = canonicalPipelineRegister(reg, isAArch64);
+      matched = typeArgs.find((a) => a?.reg && canonicalPipelineRegister(a.reg, isAArch64) === canon) || null;
+    }
+    if (matched && Number.isInteger(matched.index) && matched.index >= 0) {
+      const index = matched.index;
+      if (index === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) return 'self';
+      return state.opts?.argNames?.[index] || `a${index + 1}`;
+    }
+  }
   const location = abiArgumentLocationForRegister(state, reg);
   if (!location) return safeIdent(reg || `value_${v?.id}`);
   const index = location.index;
@@ -976,7 +1036,8 @@ function memoryLocation(inst, state) {
     const off = BigInt(loc.disp ?? addr.disp ?? 0);
     let known = null;
     try { known = state.opts?.fieldFor?.(addr.baseReg || loc.base?.reg || null, off, inst?.row) || null; } catch { known = null; }
-    let base = buildValue(loc.base || addr.base, state, { forAddress: true });
+    const suppressStr = shouldSuppressRodataStringForMem(inst, loc, state.types, 0);
+    let base = buildValue(loc.base || addr.base, state, suppressStr ? { forAddress: true, suppressRodataString: true } : { forAddress: true });
     const cxxRec = currentCppReceiver(state.opts, state.ir);
     const baseVal = loc.base || addr.base;
     const isReceiver = Boolean(cxxRec && isCppReceiverAlias(baseVal, cxxRec, state.ir));
@@ -1020,7 +1081,8 @@ function memoryLocation(inst, state) {
     return location;
   }
   if (addr.base && addr.index) {
-    const base = buildValue(addr.base, state, { forAddress: true });
+    const suppressStr = shouldSuppressRodataStringForMem(inst, loc, state.types, 0);
+    const base = buildValue(addr.base, state, suppressStr ? { forAddress: true, suppressRodataString: true } : { forAddress: true });
     const index = buildValue(addr.index, state, { forAddress: true });
     const rawScale = Number(addr.scale || 0);
     const validScale = Number.isInteger(rawScale) && rawScale >= 0 && rawScale <= 3;
@@ -1047,7 +1109,8 @@ function memoryLocation(inst, state) {
     }
   }
   if (addr.base && !addr.index && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
-    const base = buildValue(addr.base, state, { forAddress: true });
+    const suppressStr = shouldSuppressRodataStringForMem(inst, loc, state.types, 8);
+    const base = buildValue(addr.base, state, suppressStr ? { forAddress: true, suppressRodataString: true } : { forAddress: true });
     const effBytes = Number(addr.size || inst?.size || loc?.size || 8);
     const elemType = memoryElementType(inst, effBytes, state.types);
     const baseText = printExpression(base, 0, exprPrintOpts(state));
@@ -1351,7 +1414,7 @@ function buildValue(v, state, flags = {}) {
   // matching expression pointer/source is not evidence that a consumer used a
   // collapsed phi: unrelated values can legitimately share the same AST node.
   const parent = state.buildHistoryFrame, frame = { records:null };
-  const key = `${v?.id}:${flags.forAddress ? 'a' : 'v'}`;
+  const key = exprMemoKey(v, flags);
   state.buildHistoryFrame = frame;
   try {
     const result = buildValueRaw(v, state, flags);
@@ -1975,7 +2038,7 @@ function buildValueRaw(v, state, flags = {}) {
     return expr.variable(ordered.name, v.bits || 64, signedFor(state, v), origin(v.def, v),
       { ssaId:v.id, orderedMemoryObservation:true });
   }
-  const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
+  const memoKey = exprMemoKey(v, flags);
   if (state.expressionMemo.has(memoKey)) return state.expressionMemo.get(memoKey);
   if (state.expressionActive.has(v.id)) {
     if (v.def?.op === 'phi') {
@@ -2007,7 +2070,7 @@ function buildValueRaw(v, state, flags = {}) {
   if (!out && foldedConst != null && d?.op !== 'addr') {
     const selected = constantValueSelection(v, state);
     const addressDerived = isAddressDerivedConstant(v, state);
-    const literal = stringLiteralForValue(v, state, addressDerived);
+    const literal = flags.suppressRodataString ? null : stringLiteralForValue(v, state, addressDerived);
     if (literal) {
       out = expr.variable(literal, 64, false, origin(d, v), { address: foldedConst, stringLiteral: true });
     } else if (addressDerived && BigInt(foldedConst) !== 0n) {
@@ -2042,7 +2105,7 @@ function buildValueRaw(v, state, flags = {}) {
         const rc = resolveConstantAddressValue(rv);
         if (lc != null && rc != null) {
           const foldedAddr = d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
-          const literal = stringLiteralAt(foldedAddr, state);
+          const literal = !flags.suppressRodataString ? stringLiteralAt(foldedAddr, state) : null;
           if (literal) {
             out = expr.variable(literal, 64, false, origin(d, v), { address: foldedAddr, stringLiteral: true });
           } else if (foldedAddr !== 0n) {
@@ -2102,7 +2165,7 @@ function buildValueRaw(v, state, flags = {}) {
     } else if (d.op === 'sel') out = selectExpression(d, state);
     else if (d.op === 'addr') {
       const address = v.const ?? d.extra?.value ?? d.extra?.target;
-      const literal = address != null ? (stringLiteralForValue(v, state, true) || stringLiteralAt(address, state)) : null;
+      const literal = (!flags.suppressRodataString && address != null) ? (stringLiteralForValue(v, state, true) || stringLiteralAt(address, state)) : null;
       if (literal) {
         out = expr.variable(literal, 64, false, origin(d, v), { address, stringLiteral: true });
       } else {

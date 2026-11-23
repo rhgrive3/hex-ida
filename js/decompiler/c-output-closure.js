@@ -390,11 +390,12 @@ export function isStandaloneGlobalPreludeComment(text) {
 
 export function isStandaloneGlobalPreludeDeclaration(text) {
   const trimmed = String(text ?? '').trim();
+  if (/^static\s+uint8_t\s+global_[A-Za-z0-9_]+\s*\[\s*\d+\s*\]\s*=\s*\{\s*0\s*\}\s*;$/.test(trimmed)) return true;
   const bufDef = /^#define\s+(global_[A-Za-z0-9_]+)\s+\(\s*(?:\*\s*\(\s*uint128\s*\*\s*\)\s*&\s*)?(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*0\s*\]\s*\)$/.exec(trimmed);
   if (bufDef) return bufDef[2] === `__hex_${bufDef[1]}_buf`;
   const bufArr = /^static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(__hex_global_[A-Za-z0-9_]+_buf)\s*\[\s*\d+\s*\]\s*=\s*\{[\s\S]*\}\s*;$/.exec(trimmed);
   if (bufArr) return FIXED_WIDTH_TYPES.has(bufArr[1]);
-  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*(?:0|0x[0-9a-fA-F]+ULL|\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*"(?:[^"\\]|\\.)*"|\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL|\(\s*\(\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*<<\s*64\s*\)\s*\|\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*\))\s*;)$/.exec(trimmed);
+  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*(?:0|0x[0-9a-fA-F]+ULL|\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*"(?:[^"\\]|\\.)*"|\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL|\(\s*\(\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*<<\s*64\s*\)\s*\|\s*\(\s*uint128\s*\)\s*0x[0-9a-fA-F]+ULL\s*\))\s*;)$/.exec(trimmed);
   if (!match) return false;
   if (match[6] && match[7] !== `__hex_${match[6]}_backing`) return false;
   const typeName = match[1] || match[3] || match[5] || match[8];
@@ -915,6 +916,20 @@ function collectMemberBaseAccesses(text) {
     }
     rec.fields.add(field);
     rec.hasArrow = true;
+  }
+  const addrOfPattern = /\(\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  for (let match = addrOfPattern.exec(source); match; match = addrOfPattern.exec(source)) {
+    const base = match[1];
+    const field = match[2];
+    if (KEYWORDS.has(base) || KEYWORDS.has(field)) continue;
+    let rec = accesses.get(base);
+    if (!rec) {
+      rec = { fields: new Set(), hasArrow: false, hasDot: false, hasAddrOfArrow: false };
+      accesses.set(base, rec);
+    }
+    rec.fields.add(field);
+    rec.hasArrow = true;
+    rec.hasAddrOfArrow = true;
   }
   return accesses;
 }
@@ -2079,7 +2094,7 @@ function isNonStructPointerTypeText(typeText) {
   return false;
 }
 
-function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
+function buildSymbolTypeTable(sigText, lines, standaloneGlobals, arrayGlobalNames = null) {
   const ptrNames = new Set();
   const nonStructPtrNames = new Set();
   const intNames = new Set();
@@ -2196,7 +2211,15 @@ function buildSymbolTypeTable(sigText, lines, standaloneGlobals) {
   }
 
   for (const entry of standaloneGlobals || []) {
-    if (entry?.name && !ptrNames.has(entry.name)) intNames.add(entry.name);
+    if (!entry?.name) continue;
+    if (arrayGlobalNames?.has?.(entry.name)) {
+      ptrNames.add(entry.name);
+      nonStructPtrNames.add(entry.name);
+      intNames.delete(entry.name);
+      floatNames.delete(entry.name);
+    } else if (!ptrNames.has(entry.name)) {
+      intNames.add(entry.name);
+    }
   }
 
   const selfCallSpec = selfName ? { name: selfName, retType, retIsPtr, retIsInt, retIsFloat, params: selfParams } : null;
@@ -2958,8 +2981,16 @@ function rewriteScalarArrowBasesInLine(text, arrowRewriteBases) {
       if (closeIdx > i) {
         let after = closeIdx + 1;
         while (after < text.length && /\s/.test(text[after])) after++;
-        if (text.slice(after, after + 2) === '->') {
+        if (text.slice(after, after + 2) === '->' && !/\(\s*uintptr_t\s*\)\s*$/.test(out)) {
           const inner = text.slice(i + 1, closeIdx);
+          const addrOfM = /^\s*&\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(inner);
+          if (addrOfM && arrowRewriteBases.has(addrOfM[1])) {
+            const structType = arrowRewriteBases.get(addrOfM[1]);
+            out += `((${structType} *)(uintptr_t)(${inner.trim()}))->`;
+            i = after + 2;
+            changed = true;
+            continue;
+          }
           const arithM = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+]|-(?!>))[\s\S]*$/.exec(inner);
           if (arithM && arrowRewriteBases.has(arithM[1])) {
             const structType = arrowRewriteBases.get(arithM[1]);
@@ -3393,6 +3424,26 @@ export function closeFunctionOutput(result, options = {}) {
   const standaloneGlobals = [...uses.values()]
     .filter((entry) => isDeclarableStandaloneGlobal(entry, declared))
     .sort((a, b) => compareAscii(a.name, b.name));
+  const arrayGlobalNames = new Set();
+  if (bodyOpen >= 0) {
+    for (const entry of standaloneGlobals) {
+      const access = memberBaseAccesses.get(entry.name);
+      if (!access || !access.hasAddrOfArrow || !access.fields.size) continue;
+      const structType = `hex_struct_${entry.name}`;
+      if (!existingTypes.has(structType)) {
+        const fieldsText = [...access.fields].sort(compareAscii).map((field) => `uint64 ${field};`).join(' ');
+        if (!structPrelude.length) {
+          structPrelude.push({ kind: 'decl', indent: 0, text: STRUCT_PRELUDE_COMMENT, row: null, addr: null, note: null, source: entrySource });
+        }
+        structPrelude.push({
+          kind: 'decl', indent: 0, text: `typedef struct ${structType} { ${fieldsText} } ${structType};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+        existingTypes.add(structType);
+      }
+      arrowRewriteBases.set(entry.name, structType);
+    }
+  }
   const globalPrelude = [];
   if (standaloneGlobals.length) {
     const cleanedBodyForGlobals = String(renderedBody ?? '')
@@ -3470,7 +3521,7 @@ export function closeFunctionOutput(result, options = {}) {
         `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
       );
       if (castDerefRe.test(cleanedBodyForGlobals)) return true;
-      const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
+      const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
       if (unaryDerefRe.test(cleanedBodyForGlobals)) return true;
       const castArrowRe = new RegExp(
         `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*(?:uintptr_t|intptr_t)\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*(?:->|\\[)`,
@@ -3497,6 +3548,26 @@ export function closeFunctionOutput(result, options = {}) {
       }
       return false;
     };
+    const hasOnlyAddressOfUses = (globalName) => {
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`\\b${esc}\\b`, 'g');
+      let sawAny = false;
+      for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
+        sawAny = true;
+        let ampIdx = m.index - 1;
+        while (ampIdx >= 0 && /\s/.test(cleanedBodyForGlobals[ampIdx])) ampIdx--;
+        if (ampIdx < 0 || cleanedBodyForGlobals[ampIdx] !== '&') return false;
+        if (ampIdx >= 1 && cleanedBodyForGlobals[ampIdx - 1] === '&') return false;
+        const beforeAmp = previousChar(cleanedBodyForGlobals, ampIdx);
+        const isUnary = !beforeAmp
+          || '=({[,;:!?|^~+-<>*/%'.includes(beforeAmp)
+          || (beforeAmp === ')' && isCastBeforeIndex(cleanedBodyForGlobals, ampIdx))
+          || (/[A-Za-z0-9_]/.test(beforeAmp) && previousWord(cleanedBodyForGlobals, ampIdx) === 'return');
+        if (!isUnary) return false;
+      }
+      return sawAny;
+    };
+    const align16 = (v) => Math.ceil(v / 16) * 16;
     const isCastBeforeIndex = (text, idx) => {
       let closeIdx = idx - 1;
       while (closeIdx >= 0 && /\s/.test(text[closeIdx])) closeIdx -= 1;
@@ -3534,6 +3605,7 @@ export function closeFunctionOutput(result, options = {}) {
       const re = new RegExp(`(?<!&)&\\s*\\(?\\s*${esc}\\b`, 'g');
       for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
         const idx = m.index;
+        if (/^\s*\)\s*->/.test(cleanedBodyForGlobals.slice(idx + m[0].length))) continue;
         const prev = previousChar(cleanedBodyForGlobals, idx);
         if (!prev || '=({[,;:!?|^~+-<>*/%'.includes(prev)) return true;
         if (prev === ')' && isCastBeforeIndex(cleanedBodyForGlobals, idx)) return true;
@@ -3555,9 +3627,25 @@ export function closeFunctionOutput(result, options = {}) {
     const globalData = createGlobalDataResolver(result, options);
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {
+      const access = memberBaseAccesses.get(entry.name);
       const globalAddr = parseGlobalHexAddress(entry.name);
       const usedAsUint128 = isGlobalUsedAsUint128(entry.name);
-      if (isGlobalAddressTaken(entry.name)) {
+      if (access?.hasAddrOfArrow && access.fields.size && hasOnlyAddressOfUses(entry.name)) {
+        let maxFieldOffset = 0;
+        for (const field of access.fields) {
+          const fm = /^field_(?:0[xX])?([0-9A-Fa-f]+)$/.exec(field);
+          if (fm) {
+            const off = parseInt(fm[1], 16);
+            if (Number.isFinite(off) && off > maxFieldOffset) maxFieldOffset = off;
+          }
+        }
+        const byteSize = Math.min(65536, Math.max(64, align16(Math.max(maxFieldOffset + 8, access.fields.size * 8))));
+        arrayGlobalNames.add(entry.name);
+        globalPrelude.push({
+          kind: 'decl', indent: 0, text: `static uint8_t ${entry.name}[${byteSize}] = {0};`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+      } else if (isGlobalAddressTaken(entry.name)) {
         const bufName = `__hex_${entry.name}_buf`;
         const bufWords = globalData.hasData ? globalData.resolveBufferWords(globalAddr, 512) : null;
         const initText = bufWords && bufWords.length ? `{ ${bufWords.join(', ')} }` : '{0}';
@@ -3642,7 +3730,7 @@ export function closeFunctionOutput(result, options = {}) {
   }).filter(Boolean));
   const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
   const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody);
-  const syntheticStackFrameSizeForSp = (bodyText) => {
+  const syntheticStackFrameLayoutForSp = (bodyText) => {
     const cleaned = String(bodyText ?? '')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .replace(/\/\/[^\n]*/g, ' ')
@@ -3650,17 +3738,38 @@ export function closeFunctionOutput(result, options = {}) {
       .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
     const usesSpAsStackPtr = /\bsp\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
       || /\(\s*uintptr_t\s*\)\s*(?:\([^;{}]*\bsp\b[^;{}]*\)|sp\b)/.test(cleaned);
-    if (!usesSpAsStackPtr) return 0;
+    if (!usesSpAsStackPtr) return null;
     let maxSub = 0;
-    const subRe = /\bsp\s*-\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
+    const subRe = /\bsp\b\s*-\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
     for (let m = subRe.exec(cleaned); m; m = subRe.exec(cleaned)) {
       const val = (m[1].startsWith('0x') || m[1].startsWith('0X'))
         ? parseInt(m[1], 16)
         : parseInt(m[1], 10);
       if (Number.isFinite(val) && val > maxSub) maxSub = val;
     }
-    const rounded = Math.ceil((maxSub + 256) / 16) * 16;
-    return Math.min(65536, Math.max(4096, rounded));
+    const hasPositiveSpRef = /\bsp\b\s*\+\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
+      || /\(\s*uintptr_t\s*\)\s*(?:\(\s*sp\s*\)|sp\b)/.test(cleaned);
+    if (!hasPositiveSpRef) {
+      const rounded = Math.ceil((maxSub + 256) / 16) * 16;
+      return { totalSize: Math.min(65536, Math.max(4096, rounded)), belowSize: null };
+    }
+    let maxAdd = 0;
+    const addRe = /\bsp\b\s*\+\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
+    for (let m = addRe.exec(cleaned); m; m = addRe.exec(cleaned)) {
+      const val = (m[1].startsWith('0x') || m[1].startsWith('0X'))
+        ? parseInt(m[1], 16)
+        : parseInt(m[1], 10);
+      if (Number.isFinite(val) && val > maxAdd) maxAdd = val;
+    }
+    let belowSize = Math.max(4096, Math.ceil((maxSub + 256) / 16) * 16);
+    let aboveSize = Math.max(4096, Math.ceil((maxAdd + 256) / 16) * 16);
+    if (belowSize + aboveSize > 65536) {
+      const MAX_FRAME = 65536, MIN_SIDE = 256;
+      const capBelow = Math.max(MIN_SIDE, Math.min(belowSize, MAX_FRAME - Math.min(aboveSize, MAX_FRAME / 2)));
+      belowSize = Math.floor(capBelow / 16) * 16;
+      aboveSize = Math.max(MIN_SIDE, Math.floor((MAX_FRAME - belowSize) / 16) * 16);
+    }
+    return { totalSize: belowSize + aboveSize, belowSize };
   };
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
@@ -3672,15 +3781,18 @@ export function closeFunctionOutput(result, options = {}) {
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
       })();
       if (entry.name === 'sp' && declType === 'uint64') {
-        const frameSize = syntheticStackFrameSizeForSp(renderedBody);
-        if (frameSize > 0) {
+        const frame = syntheticStackFrameLayoutForSp(renderedBody);
+        if (frame && frame.totalSize > 0) {
+          const spInit = frame.belowSize == null
+            ? 'uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));'
+            : `uint64 sp = (uintptr_t)(__hex_stack_frame + ${frame.belowSize});`;
           return [
             {
-              kind: 'decl', indent: 1, text: `uint8_t __hex_stack_frame[${frameSize}] = {0};`,
+              kind: 'decl', indent: 1, text: `uint8_t __hex_stack_frame[${frame.totalSize}] = {0};`,
               row: null, addr: null, note: null, source: entrySource,
             },
             {
-              kind: 'decl', indent: 1, text: 'uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));',
+              kind: 'decl', indent: 1, text: spInit,
               row: null, addr: null, note: null, source: entrySource,
             },
           ];
@@ -3710,7 +3822,7 @@ export function closeFunctionOutput(result, options = {}) {
     for (const f of parsed.fields) fset.add(f.name);
     existingTypes.add(parsed.name);
   }
-  const symTable = buildSymbolTypeTable(sigText, withDeclarationsRaw, standaloneGlobals);
+  const symTable = buildSymbolTypeTable(sigText, withDeclarationsRaw, standaloneGlobals, arrayGlobalNames);
   const { lines: withArrowRewrites, changed: arrowChanged, syntheticArrowStructs } = rewriteNonStructArrowAccesses(withDeclarationsRaw, bodyOpen, symTable, existingTypes, existingStructFields);
   for (const structType of [...syntheticArrowStructs.keys()].sort(compareAscii)) {
     if (existingTypes.has(structType)) continue;

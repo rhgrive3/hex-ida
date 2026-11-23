@@ -18,7 +18,7 @@ const KIND_OF = {
 };
 const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
-export function reasonKind(code) { return KIND_OF[code] || 'inference'; }
+export function reasonKind(code) { return Object.hasOwn(KIND_OF, code) ? KIND_OF[code] : 'inference'; }
 export function scoreToConfidence(score) { return score > 0 ? 1 - Math.exp(-score / 45) : 0; }
 export function stars(confidence) { return confidence >= 0.85 ? 5 : confidence >= 0.7 ? 4 : confidence >= 0.5 ? 3 : confidence >= 0.3 ? 2 : 1; }
 
@@ -90,12 +90,29 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   const hasProgram = !!program;
   if (!hasProgram) notes.push('no-program-index');
 
-  const renames = symbols?.renames instanceof Map && symbols.renames.size > 0 ? symbols.renames : null;
+  let normalizedRenames = null;
+  if (symbols?.renames instanceof Map && symbols.renames.size > 0) {
+    normalizedRenames = new Map();
+    for (const [rawKey, name] of symbols.renames.entries()) {
+      if (typeof rawKey !== 'string' && typeof rawKey !== 'bigint' && typeof rawKey !== 'number') continue;
+      if (typeof rawKey === 'string' && !rawKey.trim()) continue;
+      if (typeof rawKey === 'number' && (!Number.isSafeInteger(rawKey) || rawKey < 0)) continue;
+      let a;
+      try {
+        a = typeof rawKey === 'bigint' ? rawKey : BigInt(typeof rawKey === 'string' ? rawKey.trim() : rawKey);
+        if (a < 0n) continue;
+      } catch {
+        continue;
+      }
+      normalizedRenames.set(a.toString(), { addr: a, name });
+    }
+    if (!normalizedRenames.size) normalizedRenames = null;
+  }
   const symbolNameAt = (addr) => {
     if (!symbols || addr == null) return null;
-    if (renames) {
-      const renamed = renames.get(addr.toString());
-      if (renamed) return renamed;
+    if (normalizedRenames) {
+      const renamed = normalizedRenames.get(addr.toString());
+      if (renamed && renamed.name) return renamed.name;
     }
     return typeof symbols.nameAt === 'function' ? (symbols.nameAt(addr) || null) : null;
   };
@@ -217,32 +234,23 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       if (!prev || compareNameMatch(entry, prev) < 0) bestByCand.set(candKey, entry);
     };
 
-    const seenRenameKeys = renames ? new Set() : null;
+    const seenRenameKeys = normalizedRenames ? new Set() : null;
     const symAddrs = symbols.addrs || [];
     const symNames = symbols.names || [];
     for (let i = 0; i < symAddrs.length; i++) {
       const a = symAddrs[i];
       const key = a.toString();
       let name = symNames[i];
-      if (renames && renames.has(key)) {
+      if (normalizedRenames && normalizedRenames.has(key)) {
         seenRenameKeys.add(key);
-        name = renames.get(key);
+        name = normalizedRenames.get(key).name;
       }
       if (lo != null && (a < lo || a >= hi)) continue;
       considerSymbol(a, name);
     }
-    if (renames) {
-      for (const [key, name] of renames.entries()) {
+    if (normalizedRenames) {
+      for (const [key, { addr: a, name }] of normalizedRenames.entries()) {
         if (seenRenameKeys.has(key)) continue;
-        if (typeof key !== 'string' && typeof key !== 'bigint') continue;
-        if (typeof key === 'string' && !key.trim()) continue;
-        let a;
-        try {
-          a = BigInt(key);
-          if (a < 0n) continue;
-        } catch {
-          continue;
-        }
         if (lo != null && (a < lo || a >= hi)) continue;
         considerSymbol(a, name);
       }
@@ -304,6 +312,9 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     for (const seed of seeds) {
       const seedBaseScore = baseScores.get(seed);
       const seedTainted = tainted(seed);
+      if (seedTainted) continue;
+      let calleeNameHits = 0;
+      let callerNameHits = 0;
       const range = program.functionRange(seed.addr);
       /* Unknown end means "unknown body", never "from here to EOF". Callee
          evidence is valid only for an exact, bounded containing function. */
@@ -314,8 +325,12 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
           const existingCallee = byAddr.get(callee.addr.toString());
           const calleeTainted = existingCallee ? tainted(existingCallee) : taintedName(name);
           const m = name && !calleeTainted ? matchName(goal, name) : null;
-          if (m) addReason(seed, REASON.CALLEE_NAME, POINTS[REASON.CALLEE_NAME] * m.score, { name, addr: callee.addr, site: callee.site });
-          if (seedBaseScore >= 20 && !seedTainted) {
+          if (m) {
+            const factor = calleeNameHits === 0 ? 1 : calleeNameHits === 1 ? 0.6 : calleeNameHits === 2 ? 0.35 : 0;
+            calleeNameHits++;
+            if (factor > 0) addReason(seed, REASON.CALLEE_NAME, POINTS[REASON.CALLEE_NAME] * m.score * factor, { name, addr: callee.addr, site: callee.site });
+          }
+          if (seedBaseScore >= 20) {
             const c = candidate(callee.addr, callee.site);
             if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLED_BY_MATCH)) {
               addReason(c, REASON.CALLED_BY_MATCH, POINTS[REASON.CALLED_BY_MATCH], { from: seed.addr, fromName: seed.name, site: callee.site });
@@ -330,8 +345,12 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
         const existingCaller = byAddr.get(caller.addr.toString());
         const callerTainted = existingCaller ? tainted(existingCaller) : taintedName(name);
         const m = name && !callerTainted ? matchName(goal, name) : null;
-        if (m) addReason(seed, REASON.CALLER_NAME, POINTS[REASON.CALLER_NAME] * m.score, { name, addr: caller.addr, site: caller.site });
-        if (seedBaseScore >= 20 && !seedTainted) {
+        if (m) {
+          const factor = callerNameHits === 0 ? 1 : callerNameHits === 1 ? 0.6 : callerNameHits === 2 ? 0.35 : 0;
+          callerNameHits++;
+          if (factor > 0) addReason(seed, REASON.CALLER_NAME, POINTS[REASON.CALLER_NAME] * m.score * factor, { name, addr: caller.addr, site: caller.site });
+        }
+        if (seedBaseScore >= 20) {
           const c = candidate(caller.addr, caller.site);
           if (c && c !== seed && !c.reasons.some((r) => r.code === REASON.CALLS_MATCH)) {
             addReason(c, REASON.CALLS_MATCH, POINTS[REASON.CALLS_MATCH], { to: seed.addr, toName: seed.name, site: caller.site });

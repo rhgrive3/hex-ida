@@ -805,7 +805,7 @@ function installRoutes(app, directFetch) {
 export function createAppAnalysisQueryAdapter(app) {
   const existingFetch = typeof app?._fetchFunctionModel === 'function' ? app._fetchFunctionModel : null;
   const directFetch = existingFetch?.[QUERY_ROUTED_FETCH] ?? (existingFetch ? existingFetch.bind(app) : null);
-  let metadataEpoch = null;
+  let metadataKey = null;
   let metadataTask = null;
 
   const metadataSummary = () => {
@@ -813,12 +813,34 @@ export function createAppAnalysisQueryAdapter(app) {
       app?.backend?.gen ?? app?.analysisEpoch ?? 0,
       'analysis-query-epoch-invalid',
     );
-    if (metadataEpoch === epoch && metadataTask) return metadataTask;
-    metadataEpoch = epoch;
-    metadataTask = typeof app?.backend?.binaryMetadata === 'function'
-      ? Promise.resolve(app.backend.binaryMetadata('summary')).catch(() => null)
-      : Promise.resolve(null);
-    return metadataTask;
+    const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
+    const rawSlice = storeValue(app, 'sliceIndex');
+    const sliceIndex = rawSlice == null || rawSlice === -1
+      ? -1
+      : (typeof rawSlice === 'number' && Number.isSafeInteger(rawSlice) && rawSlice >= 0 ? rawSlice : -1);
+    const key = `${epoch}:${binaryId}|slice:${sliceIndex}`;
+    if (metadataKey === key && metadataTask) return metadataTask;
+    if (typeof app?.backend?.binaryMetadata !== 'function') {
+      metadataKey = key;
+      metadataTask = Promise.resolve(null);
+      return metadataTask;
+    }
+    let raw;
+    try {
+      raw = app.backend.binaryMetadata('summary');
+    } catch {
+      return Promise.resolve(null);
+    }
+    metadataKey = key;
+    const task = Promise.resolve(raw).catch(() => {
+      if (metadataTask === task) {
+        metadataKey = null;
+        metadataTask = null;
+      }
+      return null;
+    });
+    metadataTask = task;
+    return task;
   };
 
   const abiFor = async (architecture) => {
@@ -1409,15 +1431,32 @@ export function createAppAnalysisQueryAdapter(app) {
       // streaming/export owner rather than making one query clone unbounded.
       if (ids.length > 256) return unsupported(null, 'translation-unit-function-limit');
 
+      const symbolFor = (addr) => {
+        if (addr == null) return null;
+        try {
+          const parsed = BigInt(addr);
+          return app?.symbols?.nameAt?.(parsed) ?? app?.symbols?.label?.(parsed) ?? null;
+        } catch {
+          return null;
+        }
+      };
+
       const functions = [];
+      const completenesses = [];
+      let functionReason = null;
       for (const id of ids) {
         throwIfAborted(options.signal);
         const result = await loadFunction(id, options);
         if (result?.status?.completeness === 'unsupported' || result?.value == null) {
           return unsupported(id, result?.status?.reason || 'translation-unit-function-unavailable');
         }
+        const loadedCompleteness = result?.status?.completeness ?? completenessOf(result.value, 'complete');
+        completenesses.push(loadedCompleteness);
+        if (loadedCompleteness !== 'complete' && !functionReason) {
+          functionReason = result?.status?.reason ?? result?.value?.completeness?.reason ?? null;
+        }
         const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress ?? null;
-        const name = address == null ? null : app?.symbols?.nameAt?.(address) ?? app?.symbols?.label?.(address) ?? null;
+        const name = address == null ? null : symbolFor(address);
         let producer = result.value.decompiler ?? null;
         if (!producer && result.value.model) {
           // Only positive return evidence is forwarded: `false` would force a void
@@ -1434,7 +1473,7 @@ export function createAppAnalysisQueryAdapter(app) {
                 throw new Error('C++ recovery binding changed');
               }
               try {
-                projectionIr = irFor(result.value.model, returnsValue ? { returnsValue } : {});
+                projectionIr = irFor(result.value.model, { ...(returnsValue ? { returnsValue } : {}), symbolFor });
                 cxxEvidence = entry.provider.projectForFunction({
                   functionAddress: address != null ? BigInt(address) : null,
                   functionName: name,
@@ -1450,12 +1489,18 @@ export function createAppAnalysisQueryAdapter(app) {
             ...decompilerOptionsFromQuery(options),
             name,
             addr:address,
+            symbolFor,
             ...(returnsValue ? { returnsValue } : {}),
             ...(projectionIr ? { ir:projectionIr } : {}),
             ...(cxxEvidence ? { cxxEvidence } : {}),
           });
         }
         producer ??= result.value;
+        const producerCompleteness = completenessOf(producer, 'complete');
+        completenesses.push(producerCompleteness);
+        if (producerCompleteness !== 'complete' && !functionReason) {
+          functionReason = producer?.status?.reason ?? producer?.completeness?.reason ?? producer?.reason ?? null;
+        }
         const pseudocode = producer?.pseudocode ?? producer?.text ?? producer?.code ?? null;
         if (typeof pseudocode !== 'string' || !pseudocode.trim()) {
           return unsupported(id, 'translation-unit-pseudocode-unavailable');
@@ -1476,10 +1521,13 @@ export function createAppAnalysisQueryAdapter(app) {
         });
       }
 
-      const unit = buildCTranslationUnit(functions, {
-        symbolFor:(address) => app?.symbols?.nameAt?.(BigInt(address)) ?? app?.symbols?.label?.(BigInt(address)) ?? null,
-      });
-      return wrap(unit, unit.completeness, { reason:unit.reason, schema:unit.schema });
+      const unit = buildCTranslationUnit(functions, { symbolFor });
+      const completeness = weakestCompleteness([...completenesses, unit.completeness]);
+      const reason = unit.reason ?? (completeness !== 'complete' ? functionReason : null);
+      const publishedUnit = completeness === unit.completeness && reason === unit.reason
+        ? unit
+        : { ...unit, completeness, reason };
+      return wrap(publishedUnit, completeness, { reason, schema:unit.schema });
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

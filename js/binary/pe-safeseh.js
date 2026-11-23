@@ -12,6 +12,16 @@ export function parseSafeSEHLoadConfig(
   mappedFileRangeForRva,
   mappedFileSpanForRva,
 ) {
+  if (
+    !Number.isSafeInteger(declared)
+    || declared < 4
+    || !Number.isSafeInteger(off)
+    || off < 0
+    || off + declared > r.length
+  ) {
+    budget?.partial?.('load-config:truncated', 'PE SafeSEH load-config extends past end of file');
+    return;
+  }
   if (image.bits !== 32 || image.metadata?.machine !== 0x014c || declared < 72) return;
 
   const tableVa = BigInt(r.u32(off + 64));

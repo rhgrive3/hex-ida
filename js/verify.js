@@ -168,7 +168,7 @@ function flowsToReturn(insns, load) {
     const mn = String(insn?.mnemonic || '').toLowerCase();
     if (/^(ret|retaa|retab)$/.test(mn)) return isReturnReg(cur);
     if (/^(bl|blr|br)$/.test(mn)) return false;
-    if (controlBoundary(insn)) return isReturnReg(cur);
+    if (controlBoundary(insn)) return false;
     const copy = sameWidthCopyPair(insn);
     if (copy && copy.src.cls === cur.cls && copy.src.key === cur.key && copy.src.bits === cur.bits) {
       cur = copy.dst;
@@ -247,7 +247,7 @@ export function fieldUse(model, offset, opts) {
   if (!out.sites.length) return out;
 
   for (const u of findValueUpdates(model)) {
-    if (u.kind !== 'read-modify-write' || u.location.disp !== want) continue;
+    if (u.kind !== 'read-modify-write' || !u.location || u.location.stack || u.location.disp !== want) continue;
     if (selfOnly && !u.location.self) continue;
     out.rmw.push(u);
   }
@@ -292,9 +292,11 @@ export function fieldUse(model, offset, opts) {
         if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
         continue;
       }
-      if (!next.reads.includes(reg)) continue;
+      if (!next.reads.includes(reg)) {
+        if (next.writes.includes(reg)) break;
+        continue;
+      }
       if ((mn === 'subs' || mn === 'adds') && !zeroView(next.ops?.[0]) && !hasFlagConsumer(byRow, next.row)) {
-        if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
         continue;
       }
       const imm = next.ops.find((op) => op.k === 'imm' && (op.value != null || op.float != null));

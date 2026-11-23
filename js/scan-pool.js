@@ -230,7 +230,7 @@ export class ScanWorkerPool {
     const entry = job.workerEntry;
     if (entry && !entry.terminated && entry.currentJob === job) {
       try {
-        entry.worker.postMessage({ t: 'cancel', epoch: job.epoch, requestId: job.requestId });
+        entry.worker.postMessage({ t: 'cancel', id: job.id, epoch: job.epoch, requestId: job.requestId });
       } catch {}
     }
     this._settleJobReject(job, error);
@@ -411,6 +411,11 @@ export class ScanWorkerPool {
     if (entry.terminated) return;
     const hidden = typeof document !== 'undefined' && document.hidden;
     if (this.disposed || entry.retireWhenIdle || hidden) {
+      if (hidden && !this.disposed && !entry.retireWhenIdle && this._queue.length > 0 && this._workers.size <= 1) {
+        this._pump();
+        if (!entry.busy && !entry.terminated) this._terminateWorker(entry);
+        return;
+      }
       this._terminateWorker(entry);
       if (!this.disposed && this._queue.length > 0) this._pump();
       return;

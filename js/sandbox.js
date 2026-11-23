@@ -701,8 +701,40 @@ function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1, bu
 
 function sandboxOutputSize(value) {
   const seen = new Set();
+  const buffers = new Set();
   const stack = [value];
   const over = MAX_SANDBOX_OUTPUT_BYTES + 1;
+  const measureBinary = (typeof binaryTransportBytes === 'function' && typeof BINARY_TRANSPORT_NATIVES === 'object' && BINARY_TRANSPORT_NATIVES)
+    ? (x) => binaryTransportBytes(x, buffers, BINARY_TRANSPORT_NATIVES)
+    : (() => {
+      const abByteLength = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+      );
+      const taBuffer = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+      );
+      const dvBuffer = Function.prototype.call.bind(
+        Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+      );
+      return (x) => {
+        let len = null;
+        let backing = null;
+        try {
+          len = abByteLength(x);
+        } catch {
+          if (!ArrayBuffer.isView(x)) return null;
+          try { backing = taBuffer(x); }
+          catch { try { backing = dvBuffer(x); } catch {} }
+          if (backing == null) return -1;
+          try { len = abByteLength(backing); } catch { return -1; }
+        }
+        if (typeof len !== 'number' || !(len >= 0) || len % 1 !== 0) return -1;
+        const owner = backing === null ? x : backing;
+        if (buffers.has(owner)) return 0;
+        buffers.add(owner);
+        return len;
+      };
+    })();
   let bytes = 0;
   let nodes = 0;
   while (stack.length && bytes <= MAX_SANDBOX_OUTPUT_BYTES) {
@@ -713,7 +745,12 @@ function sandboxOutputSize(value) {
     if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
     if (typeof x === 'boolean') { bytes += 4; continue; }
     if (typeof x === 'undefined') { bytes += 4; continue; }
-    if (x instanceof ArrayBuffer || ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+    const binary = measureBinary(x);
+    if (binary !== null) {
+      if (binary === -1 || binary < 0) return over;
+      bytes += binary;
+      continue;
+    }
     if (typeof x !== 'object') return over;
     if (seen.has(x)) continue;
     seen.add(x);
@@ -785,6 +822,33 @@ const MAX_TIMER_DELAY = 2_147_483_647;
 function normalizeSandboxTimeout(timeout) {
   if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0) return null;
   return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
+}
+
+const NONCE_RE = /^[A-Za-z0-9+/_-]{1,512}={0,2}$/;
+
+function inheritedCspNonce(doc = typeof document !== 'undefined' ? document : null) {
+  if (!doc) return '';
+  const readValid = (el) => {
+    const raw = (el && (el.nonce || el.getAttribute?.('nonce'))) || '';
+    const trimmed = String(raw).trim();
+    return NONCE_RE.test(trimmed) ? trimmed : '';
+  };
+  const current = readValid(doc.currentScript);
+  if (current) return current;
+  const scripts = doc.querySelectorAll?.('script') || [];
+  for (const el of scripts) {
+    const valid = readValid(el);
+    if (valid) return valid;
+  }
+  return '';
+}
+
+function buildFrameSrcdoc(nonce = inheritedCspNonce()) {
+  const validNonce = typeof nonce === 'string' && NONCE_RE.test(nonce.trim()) ? nonce.trim() : '';
+  if (!validNonce) return FRAME;
+  return FRAME
+    .replace("script-src 'unsafe-inline' blob:;", `script-src 'nonce-${validNonce}' blob:;`)
+    .replace('<script>\n', `<script nonce="${validNonce}">\n`);
 }
 
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal, expectedDefinition }) {
@@ -975,9 +1039,9 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
       }
     };
 
-    frame.srcdoc = FRAME;
+    frame.srcdoc = buildFrameSrcdoc();
     document.body.append(frame);
   });
 }
 
-export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES };
+export { MAX_PLUGIN_DEFINITIONS, MAX_PLUGIN_METADATA_BYTES, buildFrameSrcdoc, inheritedCspNonce };

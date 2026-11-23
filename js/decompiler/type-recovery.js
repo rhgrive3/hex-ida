@@ -1180,7 +1180,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       if (!tailInst) continue;
       const isCall = tailInst.op === OP.CALL;
       const tailName = calleeNameOf(tailInst);
-      const isTailBranch = (tailInst.op === OP.BR || tailInst.op === 'jmp') && Boolean(tailName);
+      const isTailBranch = (tailInst.op === OP.BR || tailInst.op === 'jmp') && (Boolean(tailName) || Boolean(tailInst.extra?.isTailCall && tailInst.extra?.target != null));
       if (!isCall && !isTailBranch) continue;
       const sig = tailName ? knownCallSignature(tailName) : null;
       const rt = sig?.retType ? callRetTypeToSemantic(sig.retType) : 'uint64';

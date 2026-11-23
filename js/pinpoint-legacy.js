@@ -32,7 +32,7 @@ import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
   extractCallableLeaf, numericSymbolRole,
 } from './goals.js';
-import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT } from './evidence.js';
+import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT, verdictRank } from './evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
@@ -88,6 +88,29 @@ const MAX_ROUNDS = 3;            // 決着が付くまで、最大この回数�
  * この opts を渡さない。field 専用の例外を location へ誤適用しないこと。
  */
 const FIELD_LIKELY_OPTS = Object.freeze({ allowTrustedTwoGroup: true });
+const UTF8_ENCODER = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+function utf8ByteLength(text) {
+  if (typeof text !== 'string' || !text.length) return 0;
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(text).byteLength;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+      else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function resultLimit(value, fallback = 12) {
+  if (value == null) return fallback;
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
 
 /**
  * 目的から、値（フィールド）を 1 個に決める。
@@ -127,7 +150,7 @@ export async function pinpointField(opts) {
   if (o.map && o.map.classes) {
     for (const c of o.map.classes) categoryOf.set(c.name, c);
   }
-  const wantCategories = GOAL_TO_CATEGORY[goal.id] || [];
+  const wantCategories = Object.hasOwn(GOAL_TO_CATEGORY, goal.id) ? GOAL_TO_CATEGORY[goal.id] : [];
 
   // その目的の文字列を参照しているクラス（実際の参照関係から）
   const classStringHits = classesReferencingGoalStrings(goal, o);
@@ -287,7 +310,7 @@ export async function pinpointField(opts) {
 
   let changeSites = [];
   const top = result.top;
-  if (top && top.source !== 'cxx' && o.scanAccess) {
+  if (top && top.source !== 'cxx' && o.scanAccess && !cancelled()) {
     try {
       changeSites = await collectChangeSites(top, o);
     } catch { changeSites = []; }
@@ -309,7 +332,7 @@ export async function pinpointField(opts) {
     margin: result.margin,
     marginRatio: result.marginRatio,
     missing: result.missing,
-    candidates: ranked.slice(0, o.limit || 12),
+    candidates: ranked.slice(0, resultLimit(o.limit, 12)),
     universe,
     checked,
     changeSites,
@@ -321,7 +344,7 @@ export async function pinpointField(opts) {
 function classContext(cls, goal, categoryOf, classStringHits, vendors) {
   const cxx = cls.source === 'cxx';
   const info = cxx ? null : categoryOf.get(cls.name) || null;
-  const wanted = GOAL_TO_CATEGORY[goal.id] || [];
+  const wanted = Object.hasOwn(GOAL_TO_CATEGORY, goal.id) ? GOAL_TO_CATEGORY[goal.id] : [];
   const nameHit = cxx && cls.classIdentity?.kind !== 'named' ? null : matchText(goal, cls.name);
   // 同じクラスに、その目的の仲間の値がいくつあるか（hp があるクラスには attack もある）
   let siblings = 0;
@@ -364,7 +387,10 @@ function classesReferencingGoalStrings(goal, o) {
   matched.sort((a, b) => b.m.score - a.m.score);
 
   for (const { s } of matched.slice(0, 120)) {
-    const span = BigInt(Math.max(1, Math.min(s.text.length, 256)));
+    const bytes = Number.isSafeInteger(s.byteLength) && s.byteLength > 0
+      ? s.byteLength
+      : utf8ByteLength(s.text);
+    const span = BigInt(Math.max(1, Math.min(bytes, 256)));
     for (const u of program.functionsReferencing(s.addr, span, 20)) {
       if (u.addr == null) continue;
       const owner = fields.ownerOf(u.addr);
@@ -708,7 +734,8 @@ export function pickMethodsToRead(methods, goal, n) {
 
 async function collectChangeSites(top, o) {
   const res = await o.scanAccess([{ offset: top.offset, size: top.size || 0 }]);
-  const list = (res && (res.get ? res.get(String(top.offset)) : res[String(top.offset)])) || [];
+  const offKey = String(top.offset);
+  const list = (res && (res.get ? res.get(offKey) : (Object.hasOwn(res, offKey) ? res[offKey] : null))) || [];
   return groupSites(list, o.program, o.fields, top.className);
 }
 
@@ -885,7 +912,7 @@ export async function pinpointLocation(opts) {
 
   /* 2. コード全体で、同じ場所を触っている命令がいくつあるかを数える */
   let list = Array.from(byKey.values());
-  if (o.scanAccess) {
+  if (o.scanAccess && !cancelled()) {
     try {
       const toScan = list.slice(0, 8);
       const scannedOffsets = new Set(toScan.map((e) => e.offset.toString()));
@@ -896,7 +923,7 @@ export async function pinpointLocation(opts) {
         const offKey = e.offset.toString();
         if (!scannedOffsets.has(offKey)) continue;
         const sites = (groups && (groups.get ? groups.get(offKey)
-          : groups[offKey])) || [];
+          : (Object.hasOwn(groups, offKey) ? groups[offKey] : null))) || [];
         e.siteCount = sites.length;
         e.sites = groupSites(sites, program, o.fields, null);
       }
@@ -914,7 +941,7 @@ export async function pinpointLocation(opts) {
    * 「0x1002f4aa0 の 5 命令がそれだ」というところまで持っていく。
    * 確かめられなかった候補は、確かめられなかったぶん点を下げる。
    */
-  await verifyShapes(list, o, progress, cancelled);
+  if (!cancelled()) await verifyShapes(list, o, progress, cancelled);
 
   /*
    * 2'''. 同じ場所を指している候補を 1 つにまとめる。
@@ -1086,7 +1113,7 @@ export async function pinpointLocation(opts) {
     margin: result.margin,
     marginRatio: result.marginRatio,
     missing: result.missing,
-    candidates: list.slice(0, o.limit || 10),
+    candidates: list.slice(0, resultLimit(o.limit, 10)),
     universe: list.length,
     checked,
     changeSites: result.top ? (result.top.sites || []) : [],
@@ -1179,7 +1206,7 @@ export async function pinpointFunction(opts) {
     marginRatio: result.marginRatio,
     missing: result.missing,
     tiedVerified,
-    candidates: candidates.slice(0, o.limit || 12),
+    candidates: candidates.slice(0, resultLimit(o.limit, 12)),
     universe, checked,
   };
 }
@@ -1359,7 +1386,7 @@ function buildFunctionCandidate(c, goal, o) {
   const owner = o.fields ? o.fields.ownerOf(c.addr) : null;
 
   for (const r of c.reasons || []) {
-    let code = REASON_TO_EVIDENCE[r.code];
+    let code = Object.hasOwn(REASON_TO_EVIDENCE, r.code) ? REASON_TO_EVIDENCE[r.code] : null;
     if (!code) continue;
     if (r.code === 'vendor') {
       code = c.vendor && c.vendor.confidence && c.vendor.confidence !== 'high'
@@ -1623,8 +1650,14 @@ function verifyFormula(c, insns, goal) {
         continue;
       }
     }
+    if (/^movn$/i.test(mn)) {
+      if (dstKey && dstKey !== 'zr') adrpRegs.delete(dstKey);
+      continue;
+    }
     const rawOps = Array.isArray(i.ops) ? i.ops : [];
-    const maxImmIdx = /^movk$/i.test(mn) ? 1 : (/^(?:add|adds|sub|subs)$/i.test(mn) ? 2 : rawOps.length - 1);
+    const maxImmIdx = /^(?:movk|movz|ccmp|ccmn)$/i.test(mn)
+      ? 1
+      : (/^(?:add|adds|sub|subs)$/i.test(mn) ? 2 : rawOps.length - 1);
     for (let idx = 0; idx < rawOps.length; idx++) {
       if (idx > maxImmIdx) break;
       const op = rawOps[idx];
@@ -1719,7 +1752,7 @@ export async function pinpoint(opts) {
    * クラス表がなくて名前から特定できなかったときは、形から場所を特定しにいく。
    * ここで諦めると、Swift だけのアプリや名前を潰したアプリで何も言えなくなる。
    */
-  if (!field.top && o.ranked && o.ranked.length) {
+  if (!field.top && ((o.ranked && o.ranked.length) || (o.shapes && o.shapes.size))) {
     const loc = await pinpointLocation(o);
     if (loc.top) field = loc;
   }
@@ -1745,10 +1778,9 @@ export async function pinpoint(opts) {
 }
 
 function bestVerdict(field, fn) {
-  const order = { confirmed: 3, likely: 2, ambiguous: 1, none: 0 };
   const a = field ? field.verdict : VERDICT.NONE;
   const b = fn ? fn.verdict : VERDICT.NONE;
-  return (order[a] || 0) >= (order[b] || 0) ? a : b;
+  return verdictRank(a) >= verdictRank(b) ? a : b;
 }
 
 export { VERDICT };

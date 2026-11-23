@@ -1391,7 +1391,7 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
   if (sections.length === 0) return;
 
   image.metadata.interpose ||= [];
-  const ptrSize = bits === 64 ? 8 : 4;
+  const ptrSize = image.arch === 'arm64_32' ? 4 : bits === 64 ? 8 : 4;
   const tupleSize = ptrSize * 2;
   const tupleSizeBig = BigInt(tupleSize);
   const recoveredTargets = new Set();
@@ -1424,8 +1424,8 @@ function parseInterposingSections(r, image, bits, metadataBudget) {
       const replacementSlotAddress = tupleAddress;
       const replaceeSlotAddress = tupleAddress + BigInt(ptrSize);
       const filePos = secFileOffset + index * tupleSize;
-      const rawReplacement = bits === 64 ? r.u64(filePos) : BigInt(r.u32(filePos));
-      const rawReplacee = bits === 64 ? r.u64(filePos + ptrSize) : BigInt(r.u32(filePos + ptrSize));
+      const rawReplacement = ptrSize === 8 ? r.u64(filePos) : BigInt(r.u32(filePos));
+      const rawReplacee = ptrSize === 8 ? r.u64(filePos + ptrSize) : BigInt(r.u32(filePos + ptrSize));
       const replacement = resolveMachOPointer(image, rawReplacement, { address: replacementSlotAddress });
       const replacee = resolveMachOPointer(image, rawReplacee, { address: replaceeSlotAddress });
       const replaceeImport = replacee == null ? importIdentityAtSite(image, replaceeSlotAddress) : null;

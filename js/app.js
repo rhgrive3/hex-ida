@@ -711,6 +711,9 @@ export class App {
     if (this.semantic) {
       this.viewer.setBlockOverlay(this.semantic.regionId, buildOverlay(this.semantic.model));
     }
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('hex:language-changed', { detail: { lang: l } }));
+    }
   }
 
   /* ── 意味の層 ─────────────────────────────────────────────── */
@@ -1206,6 +1209,7 @@ export class App {
     this.noteAttachController?.abort();
     this.notes=EMPTY_NOTES;
     this.patches=new PatchSet();
+    this.store.set({patches:0});
     this.setBusy(false);
     this.applySlice(sliceIndex,info);
     const projectReady = this.attachNotes(file,info,sliceIndex,openEpoch)
@@ -1552,6 +1556,8 @@ export class App {
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.notes=EMPTY_NOTES;
+    this.patches=new PatchSet();
+    this.store.set({patches:0});
     const file=this.store.get('file');
     const epoch=this.backend.gen;
     this.applySlice(index,info);

@@ -106,8 +106,8 @@ export function groupOf(item) {
   if (!item) return GROUP.METADATA;
   const code = typeof item === 'string' ? item : (item.code || '');
   for (const [re, g] of CODE_GROUP) if (re.test(code)) return g;
-  const family = typeof item === 'string' ? (EVIDENCE[code] || {}).family : item.family;
-  return FAMILY_GROUP[family] || GROUP.METADATA;
+  const family = typeof item === 'string' ? (Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code].family : undefined) : item.family;
+  return Object.hasOwn(FAMILY_GROUP, family) ? FAMILY_GROUP[family] : GROUP.METADATA;
 }
 
 /**
@@ -131,12 +131,18 @@ const CANONICAL_GROUPS = new Set(Object.values(GROUP));
 export function independentGroupCount(fusion) {
   if (!fusion) return 0;
   if (Array.isArray(fusion.items)) {
-    const seen = new Set();
+    const netByGroup = new Map();
     for (const it of fusion.items) {
-      const g = canonicalAppliedGroup(it);
-      if (g) seen.add(g);
+      if (!it || typeof it.applied !== 'number' || !Number.isFinite(it.applied) || it.applied === 0) continue;
+      const g = canonicalRegisteredGroup(it.code);
+      if (!g) continue;
+      netByGroup.set(g, (netByGroup.get(g) || 0) + it.applied);
     }
-    return seen.size;
+    let count = 0;
+    for (const sum of netByGroup.values()) {
+      if (sum > 0) count++;
+    }
+    return count;
   }
   if (Array.isArray(fusion.groups)) {
     const distinct = new Set();
@@ -432,17 +438,17 @@ export const EVIDENCE = deepFreeze({
 
 /** その証拠は「目的に結びつける」ものか。裏打ちするだけのものか。 */
 export function isIdentifying(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return !!(e && e.id);
 }
 
-export function evidenceInfo(code) { return EVIDENCE[code] || null; }
+export function evidenceInfo(code) { return Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null; }
 export function evidenceFamily(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return e ? e.family : FAMILY.CONTEXT;
 }
 export function evidenceKind(code) {
-  const e = EVIDENCE[code];
+  const e = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   return e ? e.kind : 'inference';
 }
 
@@ -513,7 +519,7 @@ function countAuthority(value, fallback) {
  * @param {object} [detail] 画面に出すための材料（名前・アドレス・回数…）
  */
 export function evidence(code, strength, detail, lr) {
-  const info = EVIDENCE[code];
+  const info = Object.hasOwn(EVIDENCE, code) ? EVIDENCE[code] : null;
   const s = strength == null ? 1 : finiteStrength(strength, 0);
   const fallbackLr = finitePositiveLr(info?.lr, 1);
   const normalizedLr = finitePositiveLr(lr, fallbackLr);
@@ -669,7 +675,7 @@ const DAMPING_RATE = { [FAMILY.NAMING]: 0.45 };
 
 function damping(nth, family) {
   if (nth <= 0) return 1;
-  const rate = DAMPING_RATE[family] != null ? DAMPING_RATE[family] : 1.2;
+  const rate = Object.hasOwn(DAMPING_RATE, family) ? DAMPING_RATE[family] : 1.2;
   return 1 / (1 + nth * rate);
 }
 
@@ -732,7 +738,7 @@ export function fuse(items, opts) {
     }
     const info = provenance.producer === ADAPTER_EVIDENCE_FACTORY
       ? (Object.hasOwn(ADAPTER_EVIDENCE, provenance.code) ? ADAPTER_EVIDENCE[provenance.code] : null)
-      : (EVIDENCE[provenance.code] || null);
+      : (Object.hasOwn(EVIDENCE, provenance.code) ? EVIDENCE[provenance.code] : null);
     /*
      * family/kind/id の authority は producer に対応する表が持つ。通常 evidence()
      * から adapter-only code を mint しても ADAPTER_EVIDENCE authority は得られず、
@@ -769,7 +775,7 @@ export function fuse(items, opts) {
       delta *= damping(nth, family) * scale;
 
       // 系統ごとの上限。正の寄与だけで管理し、負の証拠が上限枠を水増ししないようにする。
-      const cap = LN(FAMILY_CAP[family] != null ? FAMILY_CAP[family] : 20);
+      const cap = LN(Object.hasOwn(FAMILY_CAP, family) ? FAMILY_CAP[family] : 20);
       const posAlready = posPerFamily.get(family) || 0;
       const room = Math.max(0, cap - posAlready);
       if (delta > room) delta = room;
@@ -813,15 +819,21 @@ export function fuse(items, opts) {
    * 合成そのものはこれまでどおり系統で行い（数字は変えない）、
    * 「どれだけ独立しているか」を別に持って、判定と画面に渡す。
    */
-  const groups = new Map();
+  const byGroup = new Map();
   let verified = 0;
   for (const d of detailed) {
     if (d.applied > 0) {
       families.add(d.family);
-      const g = canonicalAppliedGroup(d);
-      if (g) groups.set(g, (groups.get(g) || 0) + d.applied);
+    }
+    if (typeof d.applied === 'number' && Number.isFinite(d.applied) && d.applied !== 0) {
+      const g = canonicalRegisteredGroup(d.code);
+      if (g) byGroup.set(g, (byGroup.get(g) || 0) + d.applied);
     }
     if (d.kind === 'verified' && d.applied > 0) verified++;
+  }
+  const positiveGroups = [];
+  for (const [g, sum] of byGroup.entries()) {
+    if (sum > 0) positiveGroups.push(g);
   }
 
   /*
@@ -849,9 +861,9 @@ export function fuse(items, opts) {
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),
     families: Array.from(families),
-    groups: Array.from(groups.keys()),
-    independentGroups: groups.size,
-    byGroup: Object.fromEntries(groups),
+    groups: positiveGroups,
+    independentGroups: positiveGroups.length,
+    byGroup: Object.fromEntries(byGroup),
     verified,
     identifying: idLogOdds,
     corroborationScale: scale,
@@ -975,15 +987,15 @@ const TRUSTED_LIKELY_GROUPS = Object.freeze([GROUP.METADATA, GROUP.STRUCTURAL]);
  * P4 strong-verdict admission must not use groupOf()'s legacy unknown→metadata
  * fallback as authority. Resolve only registered evidence codes here.
  */
-function canonicalAppliedGroup(it) {
-  if (!it || typeof it.applied !== 'number' || !Number.isFinite(it.applied) || !(it.applied > 0) || typeof it.code !== 'string') return null;
-  const info = Object.hasOwn(EVIDENCE, it.code)
-    ? EVIDENCE[it.code]
-    : (Object.hasOwn(ADAPTER_EVIDENCE, it.code) ? ADAPTER_EVIDENCE[it.code] : null);
+function canonicalRegisteredGroup(code) {
+  if (typeof code !== 'string') return null;
+  const info = Object.hasOwn(EVIDENCE, code)
+    ? EVIDENCE[code]
+    : (Object.hasOwn(ADAPTER_EVIDENCE, code) ? ADAPTER_EVIDENCE[code] : null);
   if (!info) return null;
 
-  for (const [re, g] of CODE_GROUP) if (re.test(it.code)) return g;
-  const g = FAMILY_GROUP[info.family];
+  for (const [re, g] of CODE_GROUP) if (re.test(code)) return g;
+  const g = Object.hasOwn(FAMILY_GROUP, info.family) ? FAMILY_GROUP[info.family] : null;
   return typeof g === 'string' && CANONICAL_GROUPS.has(g) ? g : null;
 }
 
@@ -994,12 +1006,18 @@ function observedGroupSet(fusion, evidenceItems) {
   const sourceItems = Array.isArray(fusion.items) ? fusion.items : evidenceItems;
   if (!Array.isArray(sourceItems)) return null;
 
-  const itemsSet = new Set();
+  const netByGroup = new Map();
   for (const it of sourceItems) {
-    if (!it || !(it.applied > 0)) continue;
-    const g = canonicalAppliedGroup(it);
+    if (!it || typeof it !== 'object') return null;
+    if (typeof it.applied !== 'number' || !Number.isFinite(it.applied)) return null;
+    if (it.applied === 0) continue;
+    const g = canonicalRegisteredGroup(it.code);
     if (!g) return null;
-    itemsSet.add(g);
+    netByGroup.set(g, (netByGroup.get(g) || 0) + it.applied);
+  }
+  const itemsSet = new Set();
+  for (const [g, sum] of netByGroup.entries()) {
+    if (sum > 0) itemsSet.add(g);
   }
   if (!itemsSet.size) return null;
 

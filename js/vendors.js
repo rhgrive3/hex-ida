@@ -32,7 +32,7 @@
 const VENDOR_PATTERNS = [
   { vendor: 'IronSource', kind: 'ads', re: /ironsource|supersonic|levelplay/i },
   { vendor: 'AppLovin', kind: 'ads', re: /applovin|\bmax(mediation|adview|reward)/i },
-  { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i },
+  { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i, textRe: /admob|googlemobileads|gadmob/i },
   { vendor: 'Unity Ads', kind: 'ads', re: /unityads|unityservices|unityanalytics/i },
   { vendor: 'Vungle', kind: 'ads', re: /vungle|liftoff/i },
   { vendor: 'Tapjoy', kind: 'ads', re: /tapjoy/i },
@@ -51,16 +51,16 @@ const VENDOR_PATTERNS = [
   { vendor: 'Meta Audience Network', kind: 'ads', re: /audiencenetwork|fbaudience|fbnativead|fbadwebkit/i },
   { vendor: 'Yandex Ads', kind: 'ads', re: /yandexmobileads/i },
 
-  { vendor: 'Adjust', kind: 'analytics', re: /\badjust(sdk)?\b|adjustattribution/i },
+  { vendor: 'Adjust', kind: 'analytics', re: /\badjust(sdk)?\b|adjustattribution/i, textRe: /\badjust(?:sdk|attribution|event|config|tracker)\b|adjust\.com|com\.adjust\./i },
   { vendor: 'AppsFlyer', kind: 'analytics', re: /appsflyer/i },
   { vendor: 'Branch', kind: 'analytics', re: /branchsdk|branchuniversal/i },
   { vendor: 'Singular', kind: 'analytics', re: /singularsdk/i },
   { vendor: 'Kochava', kind: 'analytics', re: /kochava/i },
   { vendor: 'Tenjin', kind: 'analytics', re: /tenjin/i },
-  { vendor: 'Amplitude', kind: 'analytics', re: /amplitude/i },
+  { vendor: 'Amplitude', kind: 'analytics', re: /amplitude/i, textRe: /amplitude(?:\.com|[\s._-]?(?:sdk|analytics|client|api|event|ios|android))|com\.amplitude\./i },
   { vendor: 'Mixpanel', kind: 'analytics', re: /mixpanel/i },
   { vendor: 'GameAnalytics', kind: 'analytics', re: /gameanalytics/i },
-  { vendor: 'Flurry', kind: 'analytics', re: /flurry/i },
+  { vendor: 'Flurry', kind: 'analytics', re: /flurry/i, textRe: /flurry(?:\.com|[\s._-]?(?:sdk|analytics|session|agent|ad))|com\.flurry\./i },
   { vendor: 'Adobe', kind: 'analytics', re: /adobemobile|adbmobile/i },
   { vendor: 'Firebase', kind: 'analytics', re: /firebase|\bfirapp\b|firanalytics|googleutilities|googledatatransport/i },
   { vendor: 'Crashlytics', kind: 'analytics', re: /crashlytics/i },
@@ -230,11 +230,13 @@ function prefixesOf(name) {
 }
 
 /** 名前そのものから当てる（第 1 段階）。 */
-function matchPattern(name) {
+function matchPattern(name, opts) {
   if (typeof name !== 'string') return null;
   const s = name;
+  const forText = !!(opts && opts.forText);
   for (const p of VENDOR_PATTERNS) {
-    if (p.re.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
+    const rx = forText && p.textRe ? p.textRe : p.re;
+    if (rx.test(s)) return { vendor: p.vendor, kind: p.kind, via: 'name' };
   }
   return null;
 }
@@ -438,7 +440,7 @@ export function classFromSymbol(name) {
  * ——「文字列の中にたまたま `IS` が入っていた」で SDK 扱いされては困るため。
  */
 export function vendorInText(text) {
-  const direct = matchPattern(text);
+  const direct = matchPattern(text, { forText: true });
   return direct ? Object.assign({ confidence: 'high' }, direct) : null;
 }
 

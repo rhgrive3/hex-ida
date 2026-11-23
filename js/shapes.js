@@ -215,9 +215,17 @@ export function roleOf(folded, offset) {
   const roles = assignRoles(folded);
   const values = entries.map((e) => roles.get(e.key)).filter(Boolean);
   if (!values.length) return null;
-  const names = new Set(values.map((r) => r.role));
-  if (names.size > 1) return { role: 'ambiguous', resource: Math.max(...values.map((r) => r.resource)), damage: Math.max(...values.map((r) => r.damage)), multipleObjects: true };
-  return values.sort((a, b) => Math.max(b.resource, b.damage) - Math.max(a.resource, a.damage))[0];
+  if (values.length === 1) return values[0];
+  const nonNullNames = new Set(values.map((r) => r.role).filter((r) => r != null));
+  if (nonNullNames.size > 1 || nonNullNames.has('ambiguous')) {
+    return {
+      role: 'ambiguous',
+      resource: Math.max(...values.map((r) => r.resource)),
+      damage: Math.max(...values.map((r) => r.damage)),
+      multipleObjects: true,
+    };
+  }
+  return values.sort((a, b) => (b.role != null ? 1 : 0) - (a.role != null ? 1 : 0) || Math.max(b.resource, b.damage) - Math.max(a.resource, a.damage))[0];
 }
 
 export function resources(folded, limit = 12) {
@@ -261,8 +269,21 @@ export function evidenceFor(folded, offset, goalId) {
   const res = resources(folded, 24);
   const resourceKeys = new Set();
   for (const r of res) { resourceKeys.add(locKey(r.identity, r.offset)); if (r.identity == null) resourceKeys.add(String(r.offset)); }
+  const offsetRole = roleOf(folded, offset);
+  if (offsetRole?.role === 'ambiguous') {
+    codes.push({
+      code: 'loc-role-conflict',
+      strength: 1,
+      detail: {
+        offset,
+        resource: offsetRole.resource,
+        damage: offsetRole.damage,
+        ...(offsetRole.multipleObjects ? { multipleObjects: true } : {}),
+      },
+    });
+    return { codes, shape: e, complete: folded.complete !== false };
+  }
   const role = assignRoles(folded).get(e.key) || { role: null };
-  if (role.role === 'ambiguous') codes.push({ code: 'loc-role-conflict', strength: 1, detail: { offset, resource: role.resource, damage: role.damage } });
   if (goalId === 'attack' || goalId === 'damage') {
     const dmgEntry = e.usedAsAmount > 0 ? e : (peer && peer.usedAsAmount > 0 ? peer : e);
     const dmgPeer = peerEntry(folded, dmgEntry);

@@ -722,12 +722,41 @@ function aapcs64RegionRootDescriptorProvider(options = {}, abiAdapter = null) {
   };
 }
 
+const legacyBlockInstIndexCache = new WeakMap();
+function legacyBlockInstIndexOf(blockInsts, inst) {
+  if (!Array.isArray(blockInsts) || !inst) return -1;
+  let entry = legacyBlockInstIndexCache.get(blockInsts);
+  if (!entry || entry.length !== blockInsts.length) {
+    const map = new Map();
+    for (let i = 0; i < blockInsts.length; i += 1) {
+      if (!map.has(blockInsts[i])) map.set(blockInsts[i], i);
+    }
+    entry = { length: blockInsts.length, map };
+    legacyBlockInstIndexCache.set(blockInsts, entry);
+  }
+  const idx = entry.map.get(inst);
+  if (idx !== undefined && blockInsts[idx] === inst) return idx;
+  return blockInsts.indexOf(inst);
+}
+
 function valueDominatesLegacyInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === LEGACY_VK.ARG) return true;
   const definition = value.def;
   if (!definition || definition === inst) return false;
-  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  if (definition.block === inst.block) {
+    if (inst.op === LEGACY_OP.PHI) return false;
+    if (definition.op === LEGACY_OP.PHI) return true;
+    const defRow = Number(definition.row);
+    const instRow = Number(inst.row);
+    if (defRow !== instRow) return defRow < instRow;
+    const blockInsts = projected.blocks?.[inst.block]?.insts;
+    if (!Array.isArray(blockInsts)) return false;
+    const defIdx = legacyBlockInstIndexOf(blockInsts, definition);
+    const instIdx = legacyBlockInstIndexOf(blockInsts, inst);
+    if (defIdx < 0 || instIdx < 0) return false;
+    return defIdx < instIdx;
+  }
   const dominators = projected.dominators?.[inst.block];
   return dominators instanceof Set && dominators.has(definition.block);
 }
@@ -739,7 +768,7 @@ function legacyDefinitionRecency(value, inst, projected) {
   const definition = value.def;
   const nonPhi = definition.op === LEGACY_OP.PHI ? 0 : 1;
   const blockInsts = projected.blocks?.[definition.block]?.insts;
-  const instIndex = nonPhi && Array.isArray(blockInsts) ? blockInsts.indexOf(definition) : -1;
+  const instIndex = nonPhi ? legacyBlockInstIndexOf(blockInsts, definition) : -1;
   if (definition.block === inst.block) {
     return {
       scope:2,

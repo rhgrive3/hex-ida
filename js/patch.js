@@ -99,11 +99,11 @@ export function assemble(text, at) {
   const raw = String(text || '');
   const parts = raw.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean);
   if (!parts.length) return { error: '命令が空です。' };
-  const base = BigInt(at ?? 0n);
+  const base = BigInt.asUintN(64, BigInt(at ?? 0n));
   if (parts.length === 1) return assembleOne(parts[0], base);
   const out = new Uint8Array(parts.length * 4);
   for (let i = 0; i < parts.length; i++) {
-    const built = assembleOne(parts[i], base + BigInt(i * 4));
+    const built = assembleOne(parts[i], BigInt.asUintN(64, base + BigInt(i * 4)));
     if (built.error) return { error: `${i + 1} 命令目 (${parts[i]}): ${built.error}` };
     out.set(built.bytes, i * 4);
   }
@@ -205,7 +205,7 @@ function assembleOne(text, at) {
 /** Decode a 32-bit ARM64 instruction word produced by the patch assembler. */
 export function decodeArm64PatchWord(wordVal, at = 0n) {
   const u = wordVal >>> 0;
-  const pc = BigInt(at || 0n);
+  const pc = BigInt.asUintN(64, BigInt(at ?? 0n));
   if (u === 0xD503201F) return { mn: 'nop', ops: '' };
   if (((u & 0xFFFFFC1F) >>> 0) === 0xD65F0000) {
     const rn = (u >>> 5) & 0x1F;
@@ -246,7 +246,7 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const isBl = (u >>> 31) & 1;
     const imm26 = u & 0x03FFFFFF;
     const signed = imm26 & 0x02000000 ? imm26 - 0x04000000 : imm26;
-    const target = pc + BigInt(signed) * 4n;
+    const target = BigInt.asUintN(64, pc + BigInt(signed) * 4n);
     return { mn: isBl ? 'bl' : 'b', ops: '#0x' + target.toString(16) };
   }
   if (((u & 0xFF000010) >>> 0) === 0x54000000) {
@@ -254,7 +254,7 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     if (!cond) return null;
     const imm19 = (u >>> 5) & 0x7FFFF;
     const signed = imm19 & 0x40000 ? imm19 - 0x80000 : imm19;
-    const target = pc + BigInt(signed) * 4n;
+    const target = BigInt.asUintN(64, pc + BigInt(signed) * 4n);
     return { mn: 'b.' + cond, ops: '#0x' + target.toString(16) };
   }
   if ((u & 0x7E000000) === 0x34000000) {
@@ -263,7 +263,7 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const imm19 = (u >>> 5) & 0x7FFFF;
     const rt = u & 0x1F;
     const signed = imm19 & 0x40000 ? imm19 - 0x80000 : imm19;
-    const target = pc + BigInt(signed) * 4n;
+    const target = BigInt.asUintN(64, pc + BigInt(signed) * 4n);
     const p = sf ? 'x' : 'w';
     const reg = rt === 31 ? p + 'zr' : p + rt;
     return { mn: op ? 'cbnz' : 'cbz', ops: `${reg}, #0x${target.toString(16)}` };
@@ -276,7 +276,7 @@ export function decodeArm64PatchWord(wordVal, at = 0n) {
     const imm14 = (u >>> 5) & 0x3FFF;
     const rt = u & 0x1F;
     const signed = imm14 & 0x2000 ? imm14 - 0x4000 : imm14;
-    const target = pc + BigInt(signed) * 4n;
+    const target = BigInt.asUintN(64, pc + BigInt(signed) * 4n);
     const p = b5 ? 'x' : 'w';
     const reg = rt === 31 ? p + 'zr' : p + rt;
     return { mn: op ? 'tbnz' : 'tbz', ops: `${reg}, #${bit}, #0x${target.toString(16)}` };

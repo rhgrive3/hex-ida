@@ -57,6 +57,10 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
   const budget = ensureBudget(image, sharedBudget);
   const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (head && (!Number.isSafeInteger(head.start) || head.start < 0 || head.start + 4 > r.length)) {
+    budget.partial('load-config:truncated', 'PE load-config header extends past end of file');
+    return;
+  }
   const internalSize = head ? r.u32(head.start) : 0;
   if (head && internalSize > dir.size) {
     budget.partial(
@@ -64,25 +68,32 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
     );
   }
-  const parseSafeSEH = () => {
+  const parseLoadConfigExtensions = () => {
     if (!head) return;
+    const declared = Math.min(internalSize, dir.size);
+    if (!Number.isSafeInteger(declared) || declared < 4) {
+      budget.partial('load-config:truncated', 'PE load-config declared size is smaller than 4 bytes');
+      return;
+    }
+    const full = mappedFileSpanForRva(image, dir.rva, declared);
+    if (!full) return;
+    if (!Number.isSafeInteger(full.start) || full.start < 0 || full.start + declared > r.length) {
+      budget.partial('load-config:truncated', 'PE load-config directory extends past end of file');
+      return;
+    }
     parseSafeSEHLoadConfig(
       r,
-      head.start,
-      Math.min(internalSize, dir.size),
+      full.start,
+      declared,
       image,
       budget,
       mappedFileRangeForRva,
       mappedFileSpanForRva,
     );
-  };
-
-  const parseCHPE = () => {
-    if (!head) return;
     parseCHPELoadConfig(
       r,
-      head.start,
-      Math.min(internalSize, dir.size),
+      full.start,
+      declared,
       image,
       budget,
       mappedFileRangeForRva,
@@ -93,8 +104,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
     const result = parseLoadConfigCore(r, dir, image, budget);
-    parseSafeSEH();
-    parseCHPE();
+    parseLoadConfigExtensions();
     return result;
   }
 
@@ -128,8 +138,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   };
 
   const result = parseLoadConfigCore(r, dir, loadConfigImage, budget);
-  parseSafeSEH();
-  parseCHPE();
+  parseLoadConfigExtensions();
   return result;
 }
 

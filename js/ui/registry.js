@@ -21,28 +21,28 @@ for (const route of ROUTE_LIST) Object.freeze(route);
 export const ROUTES = Object.freeze(ROUTE_LIST);
 
 export const PRIMARY_NAV = Object.freeze([
-  { route: '/investigate', routeId: 'investigate', label: '調べる', icon: '⌕' },
-  { route: '/code', routeId: 'code', label: 'コード', icon: '⌘' },
-  { route: '/explorer/functions', routeId: 'explorer', label: '索引', icon: '☷' },
-  { route: '/results', routeId: 'results', label: '結果', icon: '✓' },
+  Object.freeze({ route: '/investigate', routeId: 'investigate', label: '調べる', labelEn: 'Investigate', icon: '⌕' }),
+  Object.freeze({ route: '/code', routeId: 'code', label: 'コード', labelEn: 'Code', icon: '⌘' }),
+  Object.freeze({ route: '/explorer/functions', routeId: 'explorer', label: '索引', labelEn: 'Explorer', icon: '☷' }),
+  Object.freeze({ route: '/results', routeId: 'results', label: '結果', labelEn: 'Results', icon: '✓' }),
 ]);
 
 export const EXPLORER_SCOPES = Object.freeze([
-  { id: 'functions', label: '関数', beginner: true },
-  { id: 'strings', label: '文字列', beginner: true },
-  { id: 'classes', label: '型 / クラス', beginner: true },
-  { id: 'data', label: 'データ', beginner: false },
-  { id: 'external', label: '外部API', beginner: false },
-  { id: 'sections', label: 'セクション', beginner: false },
+  Object.freeze({ id: 'functions', label: '関数', labelEn: 'Functions', beginner: true }),
+  Object.freeze({ id: 'strings', label: '文字列', labelEn: 'Strings', beginner: true }),
+  Object.freeze({ id: 'classes', label: '型 / クラス', labelEn: 'Types / Classes', beginner: true }),
+  Object.freeze({ id: 'data', label: 'データ', labelEn: 'Data', beginner: false }),
+  Object.freeze({ id: 'external', label: '外部API', labelEn: 'External APIs', beginner: false }),
+  Object.freeze({ id: 'sections', label: 'セクション', labelEn: 'Sections', beginner: false }),
 ]);
 
 export const FUNCTION_TABS = Object.freeze([
-  { id: 'overview', label: '概要' },
-  { id: 'pseudocode', label: '疑似C' },
-  { id: 'flow', label: 'フロー' },
-  { id: 'calls', label: '呼び出し' },
-  { id: 'evidence', label: '根拠' },
-  { id: 'runtime', label: '実行' },
+  Object.freeze({ id: 'overview', label: '概要', labelEn: 'Overview' }),
+  Object.freeze({ id: 'pseudocode', label: '疑似C', labelEn: 'Pseudo-C' }),
+  Object.freeze({ id: 'flow', label: 'フロー', labelEn: 'Flow' }),
+  Object.freeze({ id: 'calls', label: '呼び出し', labelEn: 'Calls' }),
+  Object.freeze({ id: 'evidence', label: '根拠', labelEn: 'Evidence' }),
+  Object.freeze({ id: 'runtime', label: '実行', labelEn: 'Runtime' }),
 ]);
 
 /* Every exported legacy show* entrypoint in panels.js/tools.js has one disposition. */

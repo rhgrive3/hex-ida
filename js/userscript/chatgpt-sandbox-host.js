@@ -34,6 +34,9 @@ export function createChatGPTSandboxHost(options = {}) {
   const cspNonce = normalizeNonce(options.cspNonce);
   const virtualSrc = normalizeVirtualSrc(options.virtualSrc);
   const apiOrigin = new URL(virtualSrc).origin;
+  const parentOrigin = normalizeParentOrigin(
+    options.parentOrigin !== undefined ? options.parentOrigin : (windowRef?.location?.origin ?? '')
+  );
   const loaderVersion = String(options.loaderVersion || '');
   const buildId = String(options.buildId || '');
   const runtimeContentHash = normalizeRuntimeContentHash(options.runtimeContentHash);
@@ -103,6 +106,7 @@ export function createChatGPTSandboxHost(options = {}) {
         generation: currentGeneration,
         sandboxToken: createEmbedNonce(),
         apiOrigin,
+        parentOrigin,
         virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
         loaderVersion,
         buildId,
@@ -273,6 +277,7 @@ export function buildSandboxSrcdoc(config) {
   const generation = normalizeEmbedGeneration(config.generation);
   const sandboxToken = normalizeSandboxToken(config.sandboxToken);
   const apiOrigin = normalizeHttpsOrigin(config.apiOrigin);
+  const parentOrigin = normalizeParentOrigin(config.parentOrigin);
   const runtimeContentHash = normalizeRuntimeContentHash(config.runtimeContentHash);
   const virtualUrl = new URL(String(config.virtualSrc || ''));
   if (virtualUrl.protocol !== 'https:' || virtualUrl.origin !== apiOrigin) throw new TypeError('Invalid Hex virtual embed URL.');
@@ -281,6 +286,7 @@ export function buildSandboxSrcdoc(config) {
     generation,
     sandboxToken,
     apiOrigin,
+    parentOrigin,
     virtualHref: virtualUrl.href,
     loaderVersion: String(config.loaderVersion || ''),
     buildId: String(config.buildId || ''),
@@ -291,7 +297,7 @@ export function buildSandboxSrcdoc(config) {
 
 function sandboxBootstrapSource(config) {
   const literal = JSON.stringify(config).replaceAll('<', '\\u003c');
-  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)};let used=false;function post(type,extra={}){parent.postMessage({type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra},'*')}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}function hex(bytes){let out='';for(const value of bytes)out+=value.toString(16).padStart(2,'0');return out}function same(a,b){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}function genSame(v){return typeof v==='string'&&v===c.generation}function tokenSame(v){return typeof v==='string'&&v===c.sandboxToken}addEventListener('error',e=>fail(e&&e.message||'sandbox script error'));addEventListener('unhandledrejection',e=>fail(e&&e.reason&&e.reason.message||e&&e.reason||'sandbox promise rejection'));addEventListener('message',async e=>{if(used||e.source!==parent||!P.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||!genSame(d.generation)||!tokenSame(d.sandboxToken)||!(d.runtime instanceof ArrayBuffer))return;try{const digest=hex(new Uint8Array(await crypto.subtle.digest('SHA-256',d.runtime)));if(used)return;if(!same(digest,c.runtimeContentHash)){new Uint8Array(d.runtime).fill(0);return}used=true;globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){if(!used)fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
+  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)},T=c.parentOrigin?[c.parentOrigin]:P;let used=false;function post(type,extra={}){const m={type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra};for(const o of T){try{parent.postMessage(m,o)}catch{}}}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}function hex(bytes){let out='';for(const value of bytes)out+=value.toString(16).padStart(2,'0');return out}function same(a,b){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}function genSame(v){return typeof v==='string'&&v===c.generation}function tokenSame(v){return typeof v==='string'&&v===c.sandboxToken}addEventListener('error',e=>fail(e&&e.message||'sandbox script error'));addEventListener('unhandledrejection',e=>fail(e&&e.reason&&e.reason.message||e&&e.reason||'sandbox promise rejection'));addEventListener('message',async e=>{if(used||e.source!==parent||!T.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||!genSame(d.generation)||!tokenSame(d.sandboxToken)||!(d.runtime instanceof ArrayBuffer))return;try{const digest=hex(new Uint8Array(await crypto.subtle.digest('SHA-256',d.runtime)));if(used)return;if(!same(digest,c.runtimeContentHash)){new Uint8Array(d.runtime).fill(0);return}used=true;globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){if(!used)fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
 }
 
 export function createSandboxMonitor(options) {
@@ -371,6 +377,13 @@ function normalizeHttpsOrigin(value) {
   const url = new URL(text);
   if (url.protocol !== 'https:' || url.origin !== text) throw new TypeError('Expected an exact HTTPS origin.');
   return url.origin;
+}
+function normalizeParentOrigin(value) {
+  if (value == null || value === '') return '';
+  if (typeof value !== 'string' || !CHATGPT_PARENT_ORIGINS.includes(value)) {
+    throw new TypeError('Invalid ChatGPT parent origin.');
+  }
+  return value;
 }
 function normalizeNonce(value, required = true) {
   const text = String(value || '').trim();

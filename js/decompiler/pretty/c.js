@@ -332,7 +332,11 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'const': return integerText(n.value, n.bits, n.signed);
     case 'float-const': return floatText(n.value, n.bits);
     case 'var': return n.name || 'value';
-    case 'field': return `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
+    case 'field': {
+      const rawBase = printExpression(n.base, PREC.primary, opts);
+      const baseText = /^\s*&/.test(rawBase) ? `(${rawBase})` : rawBase;
+      return `${baseText}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
+    }
     case 'index': {
       const idxText = printExpression(n.index, 0, opts);
       const mustCast = opts.indexBaseIsPointer !== true;
@@ -393,8 +397,9 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       if (n.op === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
       if (n.op === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
       if (n.op === 'fcvtau' || n.op === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
-      if (n.op === 'scvtf' || n.op === 'i2f') return `((${is32 ? 'float' : 'double'})(int64_t)(${arg}))`;
-      if (n.op === 'ucvtf' || n.op === 'u2f') return `((${is32 ? 'float' : 'double'})(uint64_t)(${arg}))`;
+      const intSrcBits = Number(n.fromBits ?? n.arg?.bits ?? 64);
+      if (n.op === 'scvtf' || n.op === 'i2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'int32_t' : 'int64_t'})(${arg}))`;
+      if (n.op === 'ucvtf' || n.op === 'u2f') return `((${is32 ? 'float' : 'double'})(${intSrcBits === 32 ? 'uint32_t' : 'uint64_t'})(${arg}))`;
       if (n.op === 'fcvt') return `((${is32 ? 'float' : 'double'})(${arg}))`;
       return `${n.op}(${arg})`;
     }

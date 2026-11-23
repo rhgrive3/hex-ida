@@ -8,6 +8,16 @@ export function parseCHPELoadConfig(
   mappedFileSpanForRva,
 ) {
   if (image.metadata?._chpeParsed) return;
+  if (
+    !Number.isSafeInteger(declared)
+    || declared < 4
+    || !Number.isSafeInteger(off)
+    || off < 0
+    || off + declared > r.length
+  ) {
+    budget?.partial?.('load-config:truncated', 'PE CHPE load-config extends past end of file');
+    return;
+  }
   image.metadata._chpeParsed = true;
 
   const targetImage = (Object.getPrototypeOf(image) && Object.getPrototypeOf(image).format === 'pe')
@@ -31,8 +41,6 @@ export function parseCHPELoadConfig(
   image.metadata.hybrid = true;
   image.metadata.isHybrid = true;
   image.metadata.chpe = true;
-  image.arch = 'arm64ec';
-  targetImage.arch = 'arm64ec';
 
   let chpeMetadataRva = null;
   if (image.imageBase != null) {
@@ -145,6 +153,8 @@ export function parseCHPELoadConfig(
     });
   }
 
+  image.arch = 'arm64ec';
+  targetImage.arch = 'arm64ec';
   image.chpeCodeMap = codeMapEntries;
   targetImage.chpeCodeMap = codeMapEntries;
   image.metadata.loadConfig = {

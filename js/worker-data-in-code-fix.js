@@ -153,7 +153,8 @@ findXrefs = async function findXrefsDataInCode(args) {
 guessFunctions = async function guessFunctionsDataInCode(args) {
   const result = await __dicGuessFunctions(args);
   const region = regions.get(args.regionId);
-  if (!region || !__dicRanges(region).length || !Array.isArray(result?.starts)) return result;
+  const isTyped = result?.starts instanceof BigUint64Array;
+  if (!region || !__dicRanges(region).length || !(Array.isArray(result?.starts) || isTyped)) return result;
   const authoritative = new Set(functionStartsForRegion(region).map((value)=>BigInt(value)));
   const dataTargets = new Set();
   for (const range of __dicRanges(region)) {
@@ -172,11 +173,25 @@ guessFunctions = async function guessFunctionsDataInCode(args) {
     } catch { /* result filtering remains fail-closed without the optional target audit */ }
   }
   const ends = new Set(__dicRanges(region).map((range)=>range.end));
-  return { ...result, starts:result.starts.filter((address) => {
-    const value=BigInt(address);
+  const keep = (address) => {
+    const value = BigInt(address);
     if (authoritative.has(value)) return true;
-    return !__dicContains(region,value,4n) && !ends.has(value) && !dataTargets.has(value);
-  }) };
+    return !__dicContains(region, value, 4n) && !ends.has(value) && !dataTargets.has(value);
+  };
+  if (isTyped) {
+    const kept = [];
+    for (let i = 0; i < result.starts.length; i++) {
+      const value = result.starts[i];
+      if (keep(value)) kept.push(value);
+    }
+    const filtered = new BigUint64Array(kept);
+    const oldBuf = result.starts.buffer;
+    const transfer = Array.isArray(result.__transfer)
+      ? result.__transfer.map((buf) => (buf === oldBuf ? filtered.buffer : buf))
+      : [filtered.buffer];
+    return { ...result, starts: filtered, __transfer: transfer };
+  }
+  return { ...result, starts: result.starts.filter(keep) };
 };
 
 runSearch = async function runSearchDataInCode(args) {

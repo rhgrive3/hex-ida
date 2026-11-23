@@ -222,10 +222,22 @@
     const regionEndVm = regionVm + regionSize;
     const chunkStart = Math.max(0, Math.floor(Number(ctx.chunkStart) || 0));
     const chunkEnd = Math.max(chunkStart, Math.min(Number(regionSize), Math.floor(Number(ctx.chunkEnd) || 0)));
+    const chunkLen = chunkEnd - chunkStart;
+    const pass1Budget = Math.floor(chunkLen * 0.8);
+    const pass2Budget = chunkLen - pass1Budget;
     const chunkStartVm = regionVm + BigInt(chunkStart);
     const chunkEndVm = regionVm + BigInt(chunkEnd);
     const fnStarts = normalizeFunctionStarts(ctx.functionStarts, chunkStartVm, chunkEndVm);
     const isCancelled = typeof ctx.isCancelled === 'function' ? ctx.isCancelled : null;
+    const onProgress = typeof ctx.onProgress === 'function' ? ctx.onProgress : null;
+    let lastProgressDone = -1;
+    const reportProgress = (done, hits) => {
+      if (!onProgress) return;
+      const clamped = Math.max(lastProgressDone < 0 ? 0 : lastProgressDone, Math.min(chunkLen, done));
+      if (clamped === lastProgressDone) return;
+      lastProgressDone = clamped;
+      onProgress(clamped, chunkLen, hits);
+    };
     const readBlock = typeof ctx.readBlock === 'function'
       ? ctx.readBlock
       : (pos, len) => readFileBlock(ctx.file, regionFileOffset, pos, len);
@@ -284,6 +296,12 @@
         }
       }
       pos += count * 4;
+      if (onProgress) {
+        const p1Done = chunkLen > 0
+          ? Math.min(pass1Budget, Math.floor(((pos - chunkStart) / chunkLen) * pass1Budget))
+          : 0;
+        reportProgress(p1Done, targetSet.size + crossChunkForwardSet.size);
+      }
       if (count * 4 < want) break;
       await maybeYield();
     }
@@ -345,9 +363,17 @@
           }
         }
         pos += count * 4;
+        if (onProgress) {
+          const p2Done = chunkLen > 0
+            ? Math.min(chunkLen, pass1Budget + Math.floor(((pos - chunkStart) / chunkLen) * pass2Budget))
+            : chunkLen;
+          reportProgress(p2Done, entries.size + crossChunkForwardSet.size);
+        }
         if (count * 4 < want) break;
         await maybeYield();
       }
+    } else if (onProgress) {
+      reportProgress(chunkLen, crossChunkForwardSet.size);
     }
 
     const forwardList = Array.from(crossChunkForwardSet);
