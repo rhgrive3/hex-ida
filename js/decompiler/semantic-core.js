@@ -882,6 +882,107 @@ function cStringLiteral(text) {
   return JSON.stringify(text).replace(/\\\\([nrt])/g, '\\$1');
 }
 
+function isProvablyReadOnlyDataSection(sec) {
+  if (!sec || typeof sec !== 'object') return false;
+  if (sec.exec === true || sec.executable === true || sec.writable === true || sec.write === true
+      || sec.zerofill === true || sec.nobits === true) return false;
+  const permRaw = sec.perm ?? sec.perms ?? sec.prot;
+  if (typeof permRaw === 'string') {
+    const p = permRaw.trim().toLowerCase();
+    if (/[wx]/.test(p) || !/r/.test(p)) return false;
+  }
+  const shFlags = sec.shFlags ?? sec.sh_flags;
+  if (typeof shFlags === 'number' || typeof shFlags === 'bigint') {
+    const f = BigInt(shFlags);
+    if ((f & 1n) !== 0n || (f & 4n) !== 0n) return false; // SHF_WRITE | SHF_EXECINSTR
+  }
+  const name = String(sec.name ?? sec.section ?? sec.sectname ?? '').trim();
+  if (/^(?:\.[st]?bss(?:\.|$)|__bss$|__common$|\.[st]?data(?:\.|$)|__data$|\.text(?:\.|$)|__text$|\.plt(?:\.|$)|\.got(?:\.|$))/i.test(name)) {
+    return false;
+  }
+  if (/^(?:\.rodata(?:\.|$)|\.rdata(?:\.|$)|__cstring$|__const$|__ustring$|__TEXT,__cstring$|__TEXT,__const$)/i.test(name)) {
+    return true;
+  }
+  if (sec.readOnly === true || sec.readonly === true) return true;
+  if (sec.readable === true && sec.writable === false && sec.executable === false) return true;
+  if (typeof permRaw === 'string' && /^r-?-$/i.test(permRaw.trim())) return true;
+  return false;
+}
+
+function sectionAddressBounds(sec) {
+  if (!sec || typeof sec !== 'object') return null;
+  const rawStart = sec.addr ?? sec.vaddr ?? sec.va ?? sec.start ?? sec.address;
+  if (rawStart == null) return null;
+  let start;
+  try { start = BigInt(rawStart); } catch { return null; }
+  const rawSize = sec.size ?? sec.memsz ?? sec.length ?? sec.bytes?.length ?? sec.data?.length;
+  if (rawSize == null) return null;
+  let size;
+  try { size = BigInt(rawSize); } catch { return null; }
+  if (size <= 0n) return null;
+  return { start, end: start + size };
+}
+
+function readByteFromSection(sec, target, start, ctx) {
+  const rel = Number(target - start);
+  const inlineBytes = sec.bytes ?? sec.data;
+  if (inlineBytes && rel >= 0 && rel < inlineBytes.length) {
+    return inlineBytes[rel];
+  }
+  const fileOffset = sec.offset ?? sec.fileOffset;
+  const fileBytes = ctx.opts?.fileBytes ?? ctx.opts?.bytes ?? ctx.opts?.binary?.bytes;
+  if (fileOffset != null && fileBytes) {
+    const pos = Number(BigInt(fileOffset) + (target - start));
+    if (pos >= 0 && pos < fileBytes.length) return fileBytes[pos];
+  }
+  try {
+    const direct = ctx.opts?.readByte?.(target) ?? ctx.opts?.byteAt?.(target) ?? ctx.opts?.binary?.readByte?.(target);
+    if (typeof direct === 'number') return direct;
+    const buf = ctx.opts?.readBytes?.(target, 1) ?? ctx.opts?.binary?.readBytes?.(target, 1);
+    if (buf && buf.length >= 1) return buf[0];
+  } catch { /* optional reader */ }
+  return null;
+}
+
+function readOnlyEmptyCStringAt(addr, ctx) {
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  let matched = null;
+  let matchedStart = null;
+  try {
+    const directSec = ctx.opts?.sectionFor?.(target) ?? ctx.opts?.regionFor?.(target);
+    if (directSec) {
+      const bounds = sectionAddressBounds(directSec);
+      if (!bounds || (target >= bounds.start && target < bounds.end)) {
+        matched = directSec;
+        matchedStart = bounds ? bounds.start : target;
+      }
+    }
+  } catch { /* optional lookup */ }
+  if (!matched) {
+    const lists = [
+      ctx.opts?.sections, ctx.opts?.segments, ctx.opts?.regions,
+      ctx.opts?.binary?.sections, ctx.opts?.binary?.segments, ctx.opts?.binary?.regions,
+      ctx.model?.sections, ctx.model?.regions,
+    ];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      for (const sec of list) {
+        const bounds = sectionAddressBounds(sec);
+        if (bounds && target >= bounds.start && target < bounds.end) {
+          matched = sec;
+          matchedStart = bounds.start;
+          break;
+        }
+      }
+      if (matched) break;
+    }
+  }
+  if (!matched || !isProvablyReadOnlyDataSection(matched)) return null;
+  const byte = readByteFromSection(matched, target, matchedStart, ctx);
+  return byte === 0 ? cStringLiteral('') : null;
+}
+
 function stringLiteralAt(addr, ctx) {
   if (addr == null) return null;
   try {
@@ -892,7 +993,7 @@ function stringLiteralAt(addr, ctx) {
     if (ref?.addr == null || typeof ref.text !== 'string') continue;
     try { if (BigInt(ref.addr) === BigInt(addr)) return cStringLiteral(ref.text); } catch { /* malformed ref */ }
   }
-  return null;
+  return readOnlyEmptyCStringAt(addr, ctx);
 }
 
 function stringLiteralForValue(value, ctx) {
@@ -1003,12 +1104,38 @@ function getValuesByReg(ir) {
   const byReg = new Map();
   for (const v of values) {
     if (!v?.reg || !v.def) continue;
-    let list = byReg.get(v.reg);
-    if (!list) { list = []; byReg.set(v.reg, list); }
+    const key = canonicalRegister(v.reg);
+    let list = byReg.get(key);
+    if (!list) { list = []; byReg.set(key, list); }
     list.push(v);
   }
   VALUES_BY_REG_CACHE.set(ir, { length: values.length, byReg });
   return byReg;
+}
+
+function blockInstPosition(ir, inst) {
+  if (!ir || !inst || inst.block == null) return null;
+  const block = ir.blocks?.[inst.block];
+  if (!block) return null;
+  if (inst.op === OP.PHI) return -1;
+  const insts = block.insts || [];
+  const idx = insts.indexOf(inst);
+  return idx >= 0 ? idx : null;
+}
+
+function sameBlockPrecedes(ir, a, b) {
+  const aPos = blockInstPosition(ir, a);
+  const bPos = blockInstPosition(ir, b);
+  if (aPos != null && bPos != null) return aPos < bPos;
+  return a.row != null && b.row != null && a.row < b.row;
+}
+
+function sameBlockFollows(ir, a, b) {
+  const aPos = blockInstPosition(ir, a);
+  const bPos = blockInstPosition(ir, b);
+  if (aPos != null && bPos != null) return aPos > bPos;
+  if (a.row == null || b.row == null) return false;
+  return a.row > b.row;
 }
 
 function blockCanReach(ir, from, to) {
@@ -1019,7 +1146,7 @@ function blockCanReach(ir, from, to) {
 
 function definitionCanReachUse(ir, definition, atInst) {
   if (definition.block === atInst.block) {
-    return definition.row != null && atInst.row != null && definition.row < atInst.row;
+    return sameBlockPrecedes(ir, definition, atInst);
   }
   return blockCanReach(ir, definition.block, atInst.block);
 }
@@ -1027,39 +1154,53 @@ function definitionCanReachUse(ir, definition, atInst) {
 function definitionMayOverrideCandidate(ir, definition, candidateDefinition) {
   if (!candidateDefinition) return true;
   if (definition.block === candidateDefinition.block) {
-    if (definition.row == null || candidateDefinition.row == null) return false;
-    return definition.row > candidateDefinition.row;
+    return sameBlockFollows(ir, definition, candidateDefinition);
   }
   return blockCanReach(ir, candidateDefinition.block, definition.block);
 }
 
 export function reachingRegisterValue(ir, atInst, reg) {
   if (!ir || !atInst || !reg) return null;
-  const regValues = getValuesByReg(ir).get(reg) || [];
+  const canonReg = canonicalRegister(reg);
+  const regValues = getValuesByReg(ir).get(canonReg) || [];
   let best = ir.args?.get?.(reg) || null;
-  let bestDepth = -1, bestRow = -Infinity, bestSameBlock = false;
+  if (!best && ir.args?.entries) {
+    for (const [argReg, argVal] of ir.args.entries()) {
+      if (canonicalRegister(argReg) === canonReg) { best = argVal; break; }
+    }
+  }
+  let bestDepth = -1, bestRow = -Infinity, bestPos = -Infinity, bestSameBlock = false;
   for (const v of regValues) {
-    if (v.reg !== reg || !v.def) continue;
+    if (canonicalRegister(v.reg) !== canonReg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
-      if (d.row == null || atInst.row == null || d.row >= atInst.row) continue;
-      if (!bestSameBlock || d.row > bestRow) {
-        best = v; bestRow = d.row; bestSameBlock = true;
+      if (!sameBlockPrecedes(ir, d, atInst)) continue;
+      const dPos = blockInstPosition(ir, d);
+      const isBetter = !bestSameBlock
+        || (dPos != null && bestPos > -Infinity ? dPos > bestPos : (d.row ?? -Infinity) > bestRow);
+      if (isBetter) {
+        best = v; bestPos = dPos ?? -Infinity; bestRow = d.row ?? -Infinity; bestSameBlock = true;
       }
       continue;
     }
     if (bestSameBlock || !defBlockDominates(ir, d.block, atInst.block)) continue;
     const depth = dominatorDepth(ir, d.block);
-    if (depth > bestDepth || (depth === bestDepth && (d.row ?? -Infinity) > bestRow)) {
-      best = v; bestDepth = depth; bestRow = d.row ?? -Infinity;
+    const dPos = blockInstPosition(ir, d);
+    const sameDepthBetter = depth === bestDepth && (
+      (dPos != null && bestPos > -Infinity && best?.def?.block === d.block)
+        ? dPos > bestPos
+        : (d.row ?? -Infinity) > bestRow
+    );
+    if (depth > bestDepth || sameDepthBetter) {
+      best = v; bestDepth = depth; bestPos = dPos ?? -Infinity; bestRow = d.row ?? -Infinity;
     }
   }
   if (bestSameBlock) return best?.clobbered ? null : best;
 
   const candidateDefinition = best?.def ?? null;
   for (const v of regValues) {
-    if (v === best || v.reg !== reg || !v.def) continue;
+    if (v === best || canonicalRegister(v.reg) !== canonReg || !v.def) continue;
     const d = v.def;
     if (d === atInst || !definitionCanReachUse(ir, d, atInst)) continue;
     if (definitionMayOverrideCandidate(ir, d, candidateDefinition)) return null;
@@ -2268,12 +2409,19 @@ function callCalleeNameForOrder(inst, opts = null) {
   return null;
 }
 
+function knownVoidCall(inst, opts = null) {
+  const calleeName = callCalleeNameForOrder(inst, opts);
+  const sig = calleeName ? knownCallSignature(calleeName) : null;
+  return sig?.retType === 'void';
+}
+
 export function buildCallResultMap(ir, materialNames = null, opts = null) {
   const byInst = new Map();
   const candidatesByInst = new Map();
   for (const v of ir?.values || []) {
     const def = v?.def;
     if (!def || def.op !== OP.CALL) continue;
+    if (knownVoidCall(def, opts)) continue;
     if (def.dst === v) {
       byInst.set(def, v);
       continue;
@@ -2292,6 +2440,9 @@ export function buildCallResultMap(ir, materialNames = null, opts = null) {
   }
   for (const [inst, list] of candidatesByInst) {
     if (byInst.has(inst)) continue;
+    const calleeName = callCalleeNameForOrder(inst, opts);
+    const sig = calleeName ? knownCallSignature(calleeName) : null;
+    if (sig?.retType === 'void') continue;
     if (inst.dst) {
       byInst.set(inst, inst.dst);
       continue;
@@ -2304,8 +2455,6 @@ export function buildCallResultMap(ir, materialNames = null, opts = null) {
         continue;
       }
     }
-    const calleeName = callCalleeNameForOrder(inst, opts);
-    const sig = calleeName ? knownCallSignature(calleeName) : null;
     const prefersFp = sig?.retType === 'float' || sig?.retType === 'double' || sig?.retType === 'long double';
     const order = prefersFp ? CALL_FP_FIRST_REG_ORDER : CALL_RETURN_REG_ORDER;
     let picked = null;
@@ -2326,6 +2475,8 @@ export function buildCallResultMap(ir, materialNames = null, opts = null) {
 
 function callResultValue(inst, ctx) {
   if (!inst) return null;
+  const callOpts = ctx?.callByRow ? { ...(ctx?.opts || {}), callByRow: ctx.callByRow } : ctx?.opts;
+  if (knownVoidCall(inst, callOpts)) return null;
   if (inst.dst) return ctx.materialNames.has(inst.dst.id) ? inst.dst : null;
   const candidate = ctx.callResultByInst?.get(inst) || null;
   return candidate && ctx.materialNames.has(candidate.id) ? candidate : null;
@@ -2646,7 +2797,9 @@ function computeForLoopHandledPhis(ctx) {
     const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
     const yesInside = loop.nodes.has(yes), noInside = loop.nodes.has(no);
     if (yesInside === noInside) continue;
+    const bodyStart = yesInside ? yes : no;
     const exit = yesInside ? no : yes;
+    if (bodyStart === loop.header || blockHasObservableStatements(block, ctx)) continue;
     if (loop.exits.size !== 1) continue;
     if (loopExitHasCompetingPhiEdges(loop, exit, ctx)) continue;
     // Check if nested loop would be rejected by emitRegion's nestedLoop guard
@@ -2752,6 +2905,43 @@ export function recoverInductionVariables(ir, ctx = null) {
   return out;
 }
 
+function blockHasObservableStatements(block, ctx) {
+  const term = blockTerm(block);
+  for (const inst of block?.insts || []) {
+    if (inst === term) continue;
+    if (inst.op === OP.LOAD) {
+      if (inst.dst && ctx.materialNames.has(inst.dst.id)) return true;
+    } else if (inst.op === OP.STORE) {
+      if (!isMechanicalStackSpill(inst, ctx)) return true;
+    } else if (inst.op === OP.CALL) {
+      const c = callRecord(inst, ctx);
+      if (!shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) return true;
+    } else if (inst.op === OP.UNKNOWN) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function backedgePhisConflictWithConditionOrExit(loop, exit, cond, ctx) {
+  const backedgeCopies = activeEdgeCopies(loop.header, loop.header, ctx).filter((c) => c.value?.id !== c.dstId);
+  if (!backedgeCopies.length) return false;
+  const written = backedgeCopies.map((c) => c.dstName).filter(Boolean);
+  for (const name of written) {
+    if (exprReferencesIdent(cond, name)) return true;
+  }
+  const exitCopies = activeEdgeCopies(loop.header, exit, ctx).filter((c) => c.value?.id !== c.dstId);
+  for (const ec of exitCopies) {
+    resetInitialValueOwner(ctx);
+    const rhs = renderValue(ec.value, ctx);
+    for (const name of written) {
+      if (exprReferencesIdent(rhs, name)) return true;
+    }
+  }
+  resetInitialValueOwner(ctx);
+  return false;
+}
+
 function loopRender(loop, block, term, ctx, state, indent, stop) {
   if (!term || term.op !== OP.CBR || block.succ.length !== 2) return null;
   const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
@@ -2763,6 +2953,36 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   const earlyReturnProof = loop.exits.size === 1 ? null : provenTerminalLoopExits(loop, exit, ctx, state);
   if (loop.exits.size !== 1 && !earlyReturnProof) return null;
   const invert = !yesInside;
+  const isSelfLoop = bodyStart === loop.header;
+  const hasHeaderStmts = blockHasObservableStatements(block, ctx);
+  if (isSelfLoop || hasHeaderStmts) {
+    const lines = [retainControlRenderLine(line('ctrl', indent, 'do {', term.row, term.address, { source: controlSource(term, ctx) }),
+      term, 'while-loop', { header:loop.header, bodyStart, exit, invert, inductionValueId:null }, ctx)];
+    emitBlockStatements(block, lines, ctx, indent + 1);
+    if (isSelfLoop) {
+      const cond = renderBranchCondition(term, ctx, invert);
+      if (backedgePhisConflictWithConditionOrExit(loop, exit, cond, ctx)) {
+        const exitCond = renderBranchCondition(term, ctx, !invert);
+        lines.push(line('ctrl', indent + 1, `if (${exitCond}) break;`, term.row, term.address, { source: controlSource(term, ctx) }));
+        emitPhiCopiesForEdge(loop.header, loop.header, lines, ctx, indent + 1, term);
+        lines.push(line('ctrl', indent, '} while (1);'));
+      } else {
+        emitPhiCopiesForEdge(loop.header, loop.header, lines, ctx, indent + 1, term);
+        lines.push(line('ctrl', indent, `} while (${cond});`, term.row, term.address, { source: controlSource(term, ctx) }));
+      }
+      emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
+    } else {
+      const exitCond = renderBranchCondition(term, ctx, !invert);
+      lines.push(line('ctrl', indent + 1, `if (${exitCond}) break;`, term.row, term.address, { source: controlSource(term, ctx) }));
+      emitPhiCopiesForEdge(loop.header, bodyStart, lines, ctx, indent + 1, term);
+      const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit,
+        loopBreakProof:provenSingleExitLoop(loop, exit, ctx, state), loopEarlyReturnProof:earlyReturnProof };
+      emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
+      lines.push(line('ctrl', indent, '} while (1);'));
+      emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
+    }
+    return { lines, next: exit === stop ? stop : exit, emittedHeader: true };
+  }
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
   let head, form = 'while-loop';
   if (iv && iv.init && iv.conditionInst === term && (!ctx.phiLowering || ctx.phiLowering.skippedPhiIds.has(iv.value.id))) {
@@ -2782,7 +3002,7 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes, term);
   lines.push(line('ctrl', indent, '}'));
   emitPhiCopiesForEdge(loop.header, exit, lines, ctx, indent, term);
-  return { lines, next: exit === stop ? stop : exit };
+  return { lines, next: exit === stop ? stop : exit, emittedHeader: false };
 }
 
 // Bind a conditional `break` to the existing loop record.  This is deliberately
@@ -2935,9 +3155,16 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
       && block.insts.every(inst => ![OP.CALL,OP.STORE,OP.UNKNOWN,OP.CLOBBER].includes(inst.op));
     let term2;
     if (loop && (!state.activeLoop || nestedLoop)) {
-      term2 = emitBlockStatements(block, out, ctx, indent);
       const lr = loopRender(loop, block, term, ctx, state, indent, stop);
-      if (lr) { out.push(...lr.lines); prevTerm = term2 ?? term ?? block.insts?.[block.insts.length - 1] ?? null; bi = lr.next; continue; }
+      if (lr) {
+        if (!lr.emittedHeader) term2 = emitBlockStatements(block, out, ctx, indent);
+        else term2 = term;
+        out.push(...lr.lines);
+        prevTerm = term2 ?? term ?? block.insts?.[block.insts.length - 1] ?? null;
+        bi = lr.next;
+        continue;
+      }
+      term2 = emitBlockStatements(block, out, ctx, indent);
     } else {
       term2 = emitBlockStatements(block, out, ctx, indent);
     }

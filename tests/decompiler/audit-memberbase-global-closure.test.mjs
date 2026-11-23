@@ -123,7 +123,7 @@ test('closeFunctionOutput is strictly idempotent with member-base structs, stand
   assert.equal(result.lines.length, onceLineCount);
   assert.equal(result.pseudocode.split('hex_struct_a1;').length - 1, 1);
   assert.equal(result.pseudocode.split('hex_struct_s;').length - 1, 1);
-  assert.equal(result.pseudocode.split('extern uint64 global_13FD0;').length - 1, 1);
+  assert.equal(result.pseudocode.split('static uint64 global_13FD0 = 0;').length - 1, 1);
   assert.doesNotMatch(result.pseudocode, /\buint64 hex_struct_a1;/);
   assert.doesNotMatch(result.pseudocode, /\buint64 hex_struct_s;/);
 
@@ -144,13 +144,13 @@ test('standalone global_* closure emits marked extern prelude, ignores comments/
   closeFunctionOutput(result);
 
   assert.match(result.pseudocode, /\/\* hex: standalone external globals \(stripped by translation unit packager\)\. \*\//);
-  assert.match(result.pseudocode, /extern uint64 global_1000;/);
-  assert.match(result.pseudocode, /extern uint64 global_2000;/);
-  assert.doesNotMatch(result.pseudocode, /extern uint64 global_3000;/);
-  assert.doesNotMatch(result.pseudocode, /extern uint64 global_9999;/);
+  assert.match(result.pseudocode, /static uint64 global_1000 = 0;/);
+  assert.match(result.pseudocode, /static uint64 global_2000 = 0;/);
+  assert.doesNotMatch(result.pseudocode, /static uint64 global_3000 = 0;/);
+  assert.doesNotMatch(result.pseudocode, /static uint64 global_9999 = 0;/);
   assert.ok(
     result.pseudocode.indexOf('typedef __UINT64_TYPE__ uint64;')
-      < result.pseudocode.indexOf('extern uint64 global_1000;'),
+      < result.pseudocode.indexOf('static uint64 global_1000 = 0;'),
   );
 
   const standaloneOnly = makeResult([
@@ -206,13 +206,13 @@ test('buildCTranslationUnit strips standalone external globals prelude and prese
     { kind: 'ctrl', indent: 0, text: '}' },
   ]);
   closeFunctionOutput(closed);
-  assert.match(closed.pseudocode, /extern uint64 global_5000;/);
+  assert.match(closed.pseudocode, /static uint64 global_5000 = 0;/);
 
   // Without globalEvidence: keeps unresolved-global + byte-array fallback, strips standalone extern uint64.
   const unresolvedUnit = buildCTranslationUnit([
     { address: 0x500n, name: 'read_global', signature: 'uint64_t read_global(void)', pseudocode: closed.pseudocode },
   ]);
-  assert.doesNotMatch(unresolvedUnit.source, /extern uint64 global_5000;/);
+  assert.doesNotMatch(unresolvedUnit.source, /static uint64 global_5000 = 0;/);
   assert.ok(unresolvedUnit.unresolved.some((row) => row.kind === 'unresolved-global' && row.subject === 'global_5000'));
   assert.ok(unresolvedUnit.fallbackDeclarations.some((line) => line.startsWith('extern uint8_t global_5000[];')));
   assert.equal(unresolvedUnit.completeness, 'partial');
@@ -227,7 +227,7 @@ test('buildCTranslationUnit strips standalone external globals prelude and prese
       globalEvidence: { '20480': { type: 'uint32_t', size: 4, provenance: 'elf-symbol' } },
     },
   ]);
-  assert.doesNotMatch(resolvedUnit.source, /extern uint64 global_5000;/);
+  assert.doesNotMatch(resolvedUnit.source, /static uint64 global_5000 = 0;/);
   assert.match(resolvedUnit.source, /extern uint32_t global_5000;/);
   assert.equal(resolvedUnit.functions[0].syntaxOnly, false, JSON.stringify(resolvedUnit.unresolved));
   assert.equal(resolvedUnit.completeness, 'complete');
@@ -241,7 +241,7 @@ test('real ARM64 binaries const_param and call_weak_fn compile standalone with G
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const targets = [
     ['2/2_clang_O2_g', 'const_param', /hex_struct_a1/],
-    ['1/1_clang_O0_g', 'call_weak_fn', /extern uint64 global_13FD0;/],
+    ['1/1_clang_O0_g', 'call_weak_fn', /static uint64 global_13FD0 = 0;/],
   ];
 
   for (const [caseId, fnName, expectedPattern] of targets) {

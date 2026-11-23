@@ -112,7 +112,7 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['mbstowcs', '<stdlib.h>'], ['wcstombs', '<stdlib.h>'],
   // <string.h>
   ['strlen', '<string.h>'], ['strnlen', '<string.h>'],
-  ['strcpy', '<string.h>'], ['strncpy', '<string.h>'], ['strcat', '<string.h>'], ['strncat', '<string.h>'],
+  ['strcpy', '<string.h>'], ['stpcpy', '<string.h>'], ['strncpy', '<string.h>'], ['strcat', '<string.h>'], ['strncat', '<string.h>'],
   ['strdup', '<string.h>'], ['strndup', '<string.h>'],
   ['strcmp', '<string.h>'], ['strncmp', '<string.h>'], ['strcoll', '<string.h>'], ['strxfrm', '<string.h>'],
   ['strchr', '<string.h>'], ['strrchr', '<string.h>'], ['strstr', '<string.h>'],
@@ -237,6 +237,7 @@ const GLIBC_CHK_PROTOTYPES = Object.freeze(new Map([
   ['__strncpy_chk', { header: '<string.h>', proto: 'extern char *__strncpy_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
   ['__strcat_chk', { header: '<string.h>', proto: 'extern char *__strcat_chk(char *, const char *, size_t);', guardFortify: false }],
   ['__strncat_chk', { header: '<string.h>', proto: 'extern char *__strncat_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
+  ['__stack_chk_fail', { header: null, proto: 'extern void __stack_chk_fail(void);', guardFortify: false }],
 ]));
 
 const GLIBC_CHK_PROTO_SET = new Set([...GLIBC_CHK_PROTOTYPES.values()].map((v) => v.proto));
@@ -259,6 +260,7 @@ const GLIBC_STRIPPED_ALIAS_MAP = Object.freeze(new Map([
   ['strncpy_chk', { header: '<string.h>', target: '__strncpy_chk' }],
   ['strcat_chk', { header: '<string.h>', target: '__strcat_chk' }],
   ['strncat_chk', { header: '<string.h>', target: '__strncat_chk' }],
+  ['stack_chk_fail', { header: null, target: '__stack_chk_fail' }],
 ]));
 
 const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
@@ -266,6 +268,9 @@ const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
   ['zext', 'static inline uint64_t zext(uint64_t v) { return (uint64_t)(uint32_t)v; }'],
   ['bit_extract', 'static inline uint64_t bit_extract(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0ULL; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (v >> lsb) & m; }'],
   ['bit_insert', 'static inline uint64_t bit_insert(uint64_t dst, uint64_t src, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return dst; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (dst & ~(m << lsb)) | ((src & m) << lsb); }'],
+  ['__arm64_ubfiz', 'static inline uint64_t __arm64_ubfiz(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0ULL; uint64_t m = width >= 64U ? ~0ULL : ((1ULL << width) - 1ULL); return (v & m) << lsb; }'],
+  ['__arm64_sbfiz', 'static inline int64_t __arm64_sbfiz(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0LL; unsigned s = width >= 64U ? 0U : (64U - width); int64_t sv = (int64_t)(v << s) >> s; return (int64_t)((uint64_t)sv << lsb); }'],
+  ['__arm64_sbfx', 'static inline int64_t __arm64_sbfx(uint64_t v, unsigned lsb, unsigned width) { if (lsb >= 64U || width == 0U) return 0LL; uint64_t u = v >> lsb; unsigned s = width >= 64U ? 0U : (64U - width); return (int64_t)(u << s) >> s; }'],
   ['is_zero', 'static inline int is_zero(uint64_t v) { return v == 0ULL; }'],
   ['min', 'static inline int64_t min(int64_t a, int64_t b) { return a < b ? a : b; }'],
   ['max', 'static inline int64_t max(int64_t a, int64_t b) { return a > b ? a : b; }'],
@@ -382,8 +387,9 @@ export function isStandaloneGlobalPreludeComment(text) {
 }
 
 export function isStandaloneGlobalPreludeDeclaration(text) {
-  const match = /^extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;$/.exec(String(text ?? '').trim());
-  return !!match && FIXED_WIDTH_TYPES.has(match[1]);
+  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*0\s*;)$/.exec(String(text ?? '').trim());
+  const typeName = match?.[1] || match?.[3];
+  return !!typeName && FIXED_WIDTH_TYPES.has(typeName);
 }
 
 export function isStandalonePrototypePreludeComment(text) {
@@ -541,7 +547,7 @@ export function extractHelperPreludeBlocks(text) {
         else if (t === '#endif') depth--;
         const defM = /^#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(t);
         if (defM) { names.add(defM[1]); names.add(defM[2]); }
-        const extM = /^extern\s+[^;]*?\b(__[A-Za-z0-9_]+_chk)\s*\(/.exec(t);
+        const extM = /^extern\s+[^;]*?\b(__[A-Za-z0-9_]+_chk(?:_fail)?)\s*\(/.exec(t);
         if (extM) names.add(extM[1]);
         j++;
       }
@@ -1345,12 +1351,111 @@ function inferMutablePtrReturnLocals(renderedBody) {
     if (isPtrRetCall(rhs)) st.ptrRetAssigns++;
     else st.otherAssigns++;
   }
+  const isTypeCastExpr = (inner) => {
+    const t = inner.trim();
+    if (!t || /[+\-/%&|^~?!:=<>,.;[\]{}]/.test(t)) return false;
+    const tokens = t.replace(/\*/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return false;
+    return tokens.every((tok) =>
+      FIXED_WIDTH_TYPES.has(tok)
+      || STANDARD_KNOWN_TYPES.has(tok)
+      || /^(?:const|volatile|restrict|unsigned|signed|char|short|int|long|float|double|void|struct|union|enum|_Bool|bool|id)$/.test(tok));
+  };
+  const isPrecededByCast = (pos) => {
+    let j = pos - 1;
+    while (j >= 0 && /\s/.test(source[j])) j--;
+    if (j < 0 || source[j] !== ')') return false;
+    let depth = 0;
+    let openIdx = -1;
+    for (let k = j; k >= 0; k--) {
+      if (source[k] === ')') depth++;
+      else if (source[k] === '(') {
+        depth--;
+        if (depth === 0) { openIdx = k; break; }
+      }
+    }
+    if (openIdx < 0) return false;
+    if (!isTypeCastExpr(source.slice(openIdx + 1, j))) return false;
+    let prev = openIdx - 1;
+    while (prev >= 0 && /\s/.test(source[prev])) prev--;
+    if (prev >= 0 && /[A-Za-z0-9_)\]]/.test(source[prev])) {
+      const wordMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.slice(0, prev + 1));
+      if (!wordMatch || !/^(?:return|case)$/.test(wordMatch[1])) return false;
+    }
+    return true;
+  };
+  const hasDisqualifyingEnclosingContext = (name) => {
+    const occRe = new RegExp('\\b' + escapeRegExp(name) + '\\b', 'g');
+    for (let m = occRe.exec(source); m; m = occRe.exec(source)) {
+      const occStart = m.index;
+      const occEnd = occStart + name.length;
+      if (isPrecededByCast(occStart)) continue;
+      let curLeft = occStart;
+      let curRight = occEnd;
+      while (true) {
+        let parenDepth = 0;
+        let brackDepth = 0;
+        let openIdx = -1;
+        let openCh = '';
+        for (let k = curLeft - 1; k >= 0; k--) {
+          const ch = source[k];
+          if (ch === ')') parenDepth++;
+          else if (ch === ']') brackDepth++;
+          else if (ch === '(') {
+            if (parenDepth > 0) parenDepth--;
+            else { openIdx = k; openCh = '('; break; }
+          } else if (ch === '[') {
+            if (brackDepth > 0) brackDepth--;
+            else { openIdx = k; openCh = '['; break; }
+          } else if ((ch === ';' || ch === '{' || ch === '}') && parenDepth === 0 && brackDepth === 0) {
+            break;
+          }
+        }
+        if (openIdx < 0) break;
+        if (openCh === '[') return true;
+        const closeIdx = findMatchingDelimRaw(source, openIdx, '(', ')');
+        if (closeIdx < 0 || closeIdx < curRight) break;
+        let prev = openIdx - 1;
+        while (prev >= 0 && /\s/.test(source[prev])) prev--;
+        if (prev >= 0 && /[A-Za-z0-9_]/.test(source[prev])) {
+          const wordMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(source.slice(0, prev + 1));
+          if (!wordMatch || !/^(?:return|case)$/.test(wordMatch[1])) break;
+        }
+        if (isPrecededByCast(openIdx)) break;
+        if (prev >= 0) {
+          const pc = source[prev];
+          if (pc === '~' || pc === '-' || pc === '^' || pc === '*' || pc === '/' || pc === '%' || pc === '[') return true;
+          if (pc === '&' && source[prev - 1] !== '&') return true;
+          if (pc === '|' && source[prev - 1] !== '|') return true;
+          if ((pc === '<' && source[prev - 1] === '<') || (pc === '>' && source[prev - 1] === '>')) return true;
+        }
+        let next = closeIdx + 1;
+        while (next < source.length && /\s/.test(source[next])) next++;
+        if (next < source.length) {
+          const nc = source[next];
+          if (nc === '^' || nc === '*' || nc === '/' || nc === '%') return true;
+          if (nc === '&' && source[next + 1] !== '&') return true;
+          if (nc === '|' && source[next + 1] !== '|') return true;
+          if ((nc === '<' && source[next + 1] === '<') || (nc === '>' && source[next + 1] === '>')) return true;
+          if (nc === '-' && source[next + 1] !== '>' && source[next + 1] !== '-') {
+            let rhs = next + 1;
+            while (rhs < source.length && /\s/.test(source[rhs])) rhs++;
+            const rhsIdent = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(source.slice(rhs));
+            if (!rhsIdent || rhsIdent[1] !== name) return true;
+          }
+        }
+        curLeft = openIdx;
+        curRight = closeIdx + 1;
+      }
+    }
+    return false;
+  };
   const candidates = new Set();
   for (const [name, st] of stats.entries()) {
     if (st.ptrRetAssigns > 0 && st.otherAssigns === 0) {
       const esc = escapeRegExp(name);
-      const badOpRe = new RegExp('\\b' + esc + '\\b\\s*(?:\\+=|[*&|^%/-]|<<|>>|\\[)|(?:[*&|^%/-]|<<|>>)\\s*\\b' + esc + '\\b');
-      if (!badOpRe.test(source)) candidates.add(name);
+      const badOpRe = new RegExp('\\b' + esc + '\\b\\s*(?:\\+=|[*&|^%/-]|<<|>>|\\[)|(?:[~*&|^%/-]|<<|>>)\\s*\\b' + esc + '\\b');
+      if (!badOpRe.test(source) && !hasDisqualifyingEnclosingContext(name)) candidates.add(name);
     }
   }
   // Reject pointer+pointer additions (e.g. p + q), which are hard C errors on void */char *
@@ -1485,7 +1590,7 @@ const STDLIB_PTR_RETURN_FUNCTIONS = Object.freeze(new Set([
   // <stdlib.h>
   'malloc', 'calloc', 'realloc', 'aligned_alloc', 'bsearch', 'getenv',
   // <string.h>
-  'strcpy', 'strncpy', 'strcat', 'strncat', 'strdup', 'strndup',
+  'strcpy', 'stpcpy', 'strncpy', 'strcat', 'strncat', 'strdup', 'strndup',
   'strchr', 'strrchr', 'strstr', 'strpbrk', 'strtok', 'strtok_r', 'strerror',
   'memcpy', 'memmove', 'memset', 'memchr',
   // <strings.h>
@@ -1523,6 +1628,7 @@ const LP64_SIZE_T_BUILTIN_PTR_ARGS = Object.freeze({
   strlen: { 0: 'const char *' },
   strnlen: { 0: 'const char *' },
   strcpy: { 0: 'char *', 1: 'const char *' },
+  stpcpy: { 0: 'char *', 1: 'const char *' },
   strncpy: { 0: 'char *', 1: 'const char *' },
   strcat: { 0: 'char *', 1: 'const char *' },
   strncat: { 0: 'char *', 1: 'const char *' },
@@ -2985,7 +3091,7 @@ export function closeFunctionOutput(result, options = {}) {
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {
       globalPrelude.push({
-        kind: 'decl', indent: 0, text: `extern uint64 ${entry.name};`,
+        kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = 0;`,
         row: null, addr: null, note: null, source: entrySource,
       });
     }
@@ -3011,20 +3117,55 @@ export function closeFunctionOutput(result, options = {}) {
   }).filter(Boolean));
   const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
   const mutablePtrReturnLocals = inferMutablePtrReturnLocals(renderedBody);
+  const syntheticStackFrameSizeForSp = (bodyText) => {
+    const cleaned = String(bodyText ?? '')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ')
+      .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
+    const usesSpAsStackPtr = /\bsp\s*[+-]\s*(?:0[xX][0-9A-Fa-f]+|\d+)/.test(cleaned)
+      || /\(\s*uintptr_t\s*\)\s*(?:\([^;{}]*\bsp\b[^;{}]*\)|sp\b)/.test(cleaned);
+    if (!usesSpAsStackPtr) return 0;
+    let maxSub = 0;
+    const subRe = /\bsp\s*-\s*(0[xX][0-9A-Fa-f]+|\d+)/g;
+    for (let m = subRe.exec(cleaned); m; m = subRe.exec(cleaned)) {
+      const val = (m[1].startsWith('0x') || m[1].startsWith('0X'))
+        ? parseInt(m[1], 16)
+        : parseInt(m[1], 10);
+      if (Number.isFinite(val) && val > maxSub) maxSub = val;
+    }
+    const rounded = Math.ceil((maxSub + 256) / 16) * 16;
+    return Math.min(65536, Math.max(4096, rounded));
+  };
   const localDeclarations = [...uses.values()]
     .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
-    .map((entry) => {
+    .flatMap((entry) => {
       const declType = (() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
         const t = localDeclarationTypeFor(entry.name, result);
         if (t === 'uint64' && mutablePtrReturnLocals.has(entry.name)) return mutablePtrReturnLocals.get(entry.name);
         return t === 'uint64' && ptrTypedLocals.has(entry.name) ? 'const void *' : t;
       })();
+      if (entry.name === 'sp' && declType === 'uint64') {
+        const frameSize = syntheticStackFrameSizeForSp(renderedBody);
+        if (frameSize > 0) {
+          return [
+            {
+              kind: 'decl', indent: 1, text: `uint8_t __hex_stack_frame[${frameSize}] = {0};`,
+              row: null, addr: null, note: null, source: entrySource,
+            },
+            {
+              kind: 'decl', indent: 1, text: 'uint64 sp = (uintptr_t)(__hex_stack_frame + sizeof(__hex_stack_frame));',
+              row: null, addr: null, note: null, source: entrySource,
+            },
+          ];
+        }
+      }
       const init = entry.name === 'memory' && declType === 'uint8_t *' ? ' = (uint8_t *)0' : '';
-      return {
+      return [{
         kind: 'decl', indent: 1, text: `${declType} ${entry.name}${init};`,
         row: null, addr: null, note: null, source: entrySource,
-      };
+      }];
     });
 
   const allBodyDeclarations = [...memberBaseDeclarations, ...localDeclarations];
@@ -3131,13 +3272,13 @@ export function closeFunctionOutput(result, options = {}) {
     const chkTarget = aliasInfo ? aliasInfo.target : entry.name;
     const chkInfo = GLIBC_CHK_PROTOTYPES.get(chkTarget);
     if (chkInfo) {
-      if (!existingIncludes.has(chkInfo.header)) neededStdlibHeaders.add(chkInfo.header);
+      if (chkInfo.header && !existingIncludes.has(chkInfo.header)) neededStdlibHeaders.add(chkInfo.header);
       for (const extraH of chkInfo.extraHeaders || []) {
         if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
       }
     }
     if (aliasInfo) {
-      if (!existingIncludes.has(aliasInfo.header)) neededStdlibHeaders.add(aliasInfo.header);
+      if (aliasInfo.header && !existingIncludes.has(aliasInfo.header)) neededStdlibHeaders.add(aliasInfo.header);
       for (const extraH of aliasInfo.extraHeaders || []) {
         if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
       }
@@ -3229,6 +3370,7 @@ export function closeFunctionOutput(result, options = {}) {
       && !STANDARD_KNOWN_TYPES.has(entry.name)
       && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
       && !GLIBC_STRIPPED_ALIAS_MAP.has(entry.name)
+      && !GLIBC_CHK_PROTOTYPES.has(entry.name)
       && !isEligibleIntrinsicHelper(entry.name, renderedBody)
       && !macroDefinedCalls.has(entry.name)
       && !bitfieldHelperNames.has(entry.name)
