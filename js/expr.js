@@ -523,6 +523,19 @@ export function buildValues(model, opts) {
     });
     return hit;
   };
+  const dependsOnCallClobber = (val) => {
+    if (!val) return false;
+    let hit = false;
+    walk(val, (x) => {
+      if (hit) return;
+      if (x.k === 'reg' && CALL_CLOBBER.test(x.reg || '')) { hit = true; return; }
+      if (x.k === 'call') {
+        const d = nodeDef.get(x);
+        if (d && CALL_CLOBBER.test(d.reg || '')) hit = true;
+      }
+    });
+    return hit;
+  };
   const hasNonRodataMem = (val) => {
     if (!val) return false;
     let hit = false;
@@ -717,11 +730,14 @@ export function buildValues(model, opts) {
        * 番地が外へ出た時点で置き場の記憶は捨てる。
        */
       if (args.some((a) => escapesStack(a.value))) stack.clear();
-      const clobbered = [];
       for (const k of Array.from(regs.keys())) {
-        if (CALL_CLOBBER.test(k)) { regs.delete(k); clobbered.push(k); }
+        if (CALL_CLOBBER.test(k)) regs.delete(k);
       }
-      for (const k of clobbered) invalidateDependents(k, row);
+      for (const [otherKey, otherVal] of Array.from(regs.entries())) {
+        if (dependsOnCallClobber(otherVal)) {
+          evictReg(otherKey, otherVal, row);
+        }
+      }
       invalidateMemDependents(row);
       const callSig = name ? knownCallSignature(name) : null;
       const retReg = callSig && (callSig.retType === 'float' || callSig.retType === 'double') ? 'v0' : 'x0';
@@ -771,7 +787,7 @@ export function buildValues(model, opts) {
           }
           if (!v) {
             const baseVal = baseValBefore;
-            const absolute = baseVal && baseVal.k === 'addr'
+            const absolute = baseVal && (baseVal.k === 'addr' || baseVal.k === 'str') && baseVal.addr != null
               ? baseVal.addr + effectiveDisp : null;
             v = node('mem', {
               baseReg: m.base,
@@ -784,7 +800,7 @@ export function buildValues(model, opts) {
                * ÷100 の段が式として出なくなり、文言との一致が 93% → 78% に落ちた。
                * 置き場は baseReg と disp だけで 1 つに決まるので、木は要らない。
                */
-              base: (m.stack || baseVal == null || baseVal.k === 'reg') ? null : baseVal,
+              base: (m.stack || baseVal == null || (baseVal.k === 'reg' && !baseVal.prevDef)) ? null : baseVal,
               disp: effectiveDisp === 0n ? null : effectiveDisp,
               index: m.index ? applyShift(indexValBefore || regNode(m.index, row), memOp && memOp.shift, 64) : null,
               indexShift: memOp && memOp.shift ? { ...memOp.shift } : null,

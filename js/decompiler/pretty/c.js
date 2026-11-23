@@ -1,7 +1,7 @@
 import { effectOf } from '../ast/nodes.js';
 
-const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, shr: 10, add: 11, sub: 11, mul: 12, div: 12, sdiv: 12, udiv: 12, mod: 12, rem: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
-const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', shr: '>>', div: '/', sdiv: '/', udiv: '/', mod: '%', rem: '%', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
+const PREC = { select: 2, oror: 3, '||': 3, andand: 4, '&&': 4, or: 5, '|': 5, xor: 6, '^': 6, and: 7, '&': 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, shr: 10, add: 11, sub: 11, fadd: 11, fsub: 11, mul: 12, div: 12, fmul: 12, fdiv: 12, sdiv: 12, udiv: 12, mod: 12, rem: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
+const OP_TEXT = { add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', and: '&', or: '|', xor: '^', andand: '&&', oror: '||', shl: '<<', lshr: '>>', ashr: '>>', shr: '>>', div: '/', fdiv: '/', sdiv: '/', udiv: '/', mod: '%', rem: '%', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 const INTEGER_ONLY_BINARY_OPS = new Set([
   'and', 'or', 'xor',
   'shl', 'lshr', 'ashr', 'shr',
@@ -357,7 +357,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return `${sanitizeCallableIdent(n.name, 'unknown_intrinsic')}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     }
     case 'unary': {
-      const op = { neg: '-', not: '~', lnot: '!' }[n.op];
+      const op = { neg: '-', fneg: '-', not: '~', lnot: '!' }[n.op];
       if (op) {
         if ((n.op === 'not' || n.op === 'neg') && exprIsPointerTyped(n.arg, opts.pointerVarNames)) {
           return wrap(`${op}${printPointerAsUintptr(n.arg, opts)}`, PREC.unary, parentPrec);
@@ -373,8 +373,26 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       }
       const arg = printExpression(n.arg, 0, opts);
       const is32 = Number(n.bits) === 32;
-      if (n.op === 'fcvtzs' || n.op === 'f2i') return `((${is32 ? 'int32_t' : 'int64_t'})(double)(${arg}))`;
-      if (n.op === 'fcvtzu' || n.op === 'f2u') return `((${is32 ? 'uint32_t' : 'uint64_t'})(double)(${arg}))`;
+      const srcBits = n.arg?.bits ?? (/^s\d+$/i.test(String(n.arg?.name || '')) ? 32 : 64);
+      const srcIsFloat = Number(srcBits) === 32;
+      const dstIsFloat = n.bits != null ? is32 : srcIsFloat;
+      const sintType = is32 ? 'int32_t' : 'int64_t';
+      const uintType = is32 ? 'uint32_t' : 'uint64_t';
+      if (n.op === 'fabs') return `${dstIsFloat ? 'fabsf' : 'fabs'}(${arg})`;
+      if (n.op === 'abs') return `abs(${arg})`;
+      if (n.op === 'fsqrt' || n.op === 'sqrt') return `${dstIsFloat ? 'sqrtf' : 'sqrt'}(${arg})`;
+      if (n.op === 'frinta' || n.op === 'frintn') return `${dstIsFloat ? 'roundf' : 'round'}(${arg})`;
+      if (n.op === 'frintm') return `${dstIsFloat ? 'floorf' : 'floor'}(${arg})`;
+      if (n.op === 'frintp') return `${dstIsFloat ? 'ceilf' : 'ceil'}(${arg})`;
+      if (n.op === 'frintz') return `${dstIsFloat ? 'truncf' : 'trunc'}(${arg})`;
+      if (n.op === 'fcvtzs' || n.op === 'f2i') return `((${sintType})(double)(${arg}))`;
+      if (n.op === 'fcvtzu' || n.op === 'f2u') return `((${uintType})(double)(${arg}))`;
+      if (n.op === 'fcvtps') return `((${sintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
+      if (n.op === 'fcvtms') return `((${sintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
+      if (n.op === 'fcvtas' || n.op === 'fcvtns') return `((${sintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
+      if (n.op === 'fcvtpu') return `((${uintType})${srcIsFloat ? 'ceilf' : 'ceil'}(${arg}))`;
+      if (n.op === 'fcvtmu') return `((${uintType})${srcIsFloat ? 'floorf' : 'floor'}(${arg}))`;
+      if (n.op === 'fcvtau' || n.op === 'fcvtnu') return `((${uintType})${srcIsFloat ? 'roundf' : 'round'}(${arg}))`;
       if (n.op === 'scvtf' || n.op === 'i2f') return `((${is32 ? 'float' : 'double'})(int64_t)(${arg}))`;
       if (n.op === 'ucvtf' || n.op === 'u2f') return `((${is32 ? 'float' : 'double'})(uint64_t)(${arg}))`;
       if (n.op === 'fcvt') return `((${is32 ? 'float' : 'double'})(${arg}))`;
@@ -406,7 +424,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       const left = semanticOperands?.[0] ?? (castLeft ? printPointerAsUintptr(n.left, opts) : printExpression(n.left, p, opts));
       const right = semanticOperands?.[1] ?? (castRight
         ? printPointerAsUintptr(n.right, opts)
-        : printExpression(n.right, p + (['sub','div','sdiv','udiv','mod','rem','smod','umod','srem','urem','shl','lshr','ashr','shr'].includes(n.op) ? 1 : 0), opts));
+        : printExpression(n.right, p + (['sub','fsub','div','fdiv','sdiv','udiv','mod','rem','smod','umod','srem','urem','shl','lshr','ashr','shr'].includes(n.op) ? 1 : 0), opts));
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'select': {

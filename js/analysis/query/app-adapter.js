@@ -231,6 +231,49 @@ function ensureCxxEvidenceProviderForApp(app) {
   return entry;
 }
 
+function imageDecompilerOptions(app, model, options = {}) {
+  const slice = currentSlice(app);
+  const info = currentInfo(app);
+  const image = app?.image ?? app?.backend?.image ?? storeValue(app, 'image') ?? null;
+  const sections = options.sections ?? model?.sections ?? slice?.sections ?? info?.sections
+    ?? storeValue(app, 'sections') ?? image?.sections ?? app?.backend?.sections ?? app?.sections ?? null;
+  const regions = options.regions ?? model?.regions ?? slice?.regions
+    ?? storeValue(app, 'regions') ?? image?.regions ?? app?.backend?.regions ?? app?.regions ?? null;
+  const relocations = options.relocations ?? model?.relocations ?? slice?.relocations ?? info?.relocations
+    ?? storeValue(app, 'relocations') ?? image?.relocations ?? app?.backend?.relocations ?? app?.relocations ?? null;
+  const fileBytes = options.fileBytes ?? options.bytes ?? model?.fileBytes ?? model?.bytes
+    ?? slice?.fileBytes ?? slice?.bytes ?? info?.fileBytes ?? info?.bytes
+    ?? storeValue(app, 'fileBytes') ?? storeValue(app, 'bytes')
+    ?? image?.fileBytes ?? image?.bytes ?? app?.backend?.fileBytes ?? app?.backend?.bytes
+    ?? app?.fileBytes ?? app?.bytes ?? null;
+  const readBytes = options.readBytes
+    ?? (typeof model?.readBytes === 'function' ? model.readBytes.bind(model) : null)
+    ?? (typeof image?.readBytes === 'function' ? image.readBytes.bind(image) : null)
+    ?? (typeof app?.readBytes === 'function' ? app.readBytes.bind(app) : null)
+    ?? (typeof app?.backend?.readBytes === 'function' ? app.backend.readBytes.bind(app.backend) : null);
+  const readByte = options.readByte
+    ?? (typeof model?.readByte === 'function' ? model.readByte.bind(model) : null)
+    ?? (typeof image?.readByte === 'function' ? image.readByte.bind(image) : null)
+    ?? (typeof app?.readByte === 'function' ? app.readByte.bind(app) : null)
+    ?? (typeof app?.backend?.readByte === 'function' ? app.backend.readByte.bind(app.backend) : null);
+  const stringFor = options.stringFor
+    ?? (typeof model?.stringFor === 'function' ? model.stringFor.bind(model) : null)
+    ?? (typeof image?.stringFor === 'function' ? image.stringFor.bind(image) : null)
+    ?? (typeof app?.stringFor === 'function' ? app.stringFor.bind(app) : null)
+    ?? (typeof app?.backend?.stringFor === 'function' ? app.backend.stringFor.bind(app.backend) : null);
+  const addressRefs = options.addressRefs ?? model?.addressRefs ?? slice?.addressRefs ?? app?.addressRefs ?? null;
+  return {
+    ...(sections != null ? { sections } : {}),
+    ...(regions != null ? { regions } : {}),
+    ...(relocations != null ? { relocations } : {}),
+    ...(fileBytes != null ? { fileBytes } : {}),
+    ...(typeof readBytes === 'function' ? { readBytes } : {}),
+    ...(typeof readByte === 'function' ? { readByte } : {}),
+    ...(typeof stringFor === 'function' ? { stringFor } : {}),
+    ...(addressRefs != null ? { addressRefs } : {}),
+  };
+}
+
 export function decompilerOptionsFromQuery(options = {}) {
   if (!options || typeof options !== 'object') return {};
   const forwarded = {};
@@ -1349,6 +1392,7 @@ export function createAppAnalysisQueryAdapter(app) {
         ({projectionIr,cxxEvidence}=await projectCxxFunction(result,id,options));
       }
       const projection = decompile(result.value.model, {
+        ...imageDecompilerOptions(app, result.value.model, options),
         ...decompilerOptionsFromQuery(options),
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
@@ -1402,6 +1446,7 @@ export function createAppAnalysisQueryAdapter(app) {
             }
           }
           producer = decompile(result.value.model, {
+            ...imageDecompilerOptions(app, result.value.model, options),
             ...decompilerOptionsFromQuery(options),
             name,
             addr:address,

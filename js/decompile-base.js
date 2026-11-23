@@ -82,12 +82,13 @@ function finalize(result, model, opts) {
   }
   result = normalizeCompatibility(result);
   const prevLowerings = result?.ctx?.exactArm64FallbackLowerings || 0;
-  result = lowerArm64RawAssembly(result);
+  result = lowerArm64RawAssembly(result, { ...opts, model });
   const loweredArm64 = (result?.ctx?.exactArm64FallbackLowerings || 0) > prevLowerings;
   const closed = closePublicCOutput(result, opts, {
     forceRefreshProvenance: loweredArm64 || deferredProvenance,
     deferredProvenance,
     deferredSnapshotId,
+    model,
   });
   if (!closed?.semantic && closed?.switchRenderHistory) {
     // No semantic-mode promotion or invented analysis snapshot for fallback
@@ -156,7 +157,26 @@ function closePublicCOutput(result, opts = {}, internal = {}) {
     shouldAbort: opts.shouldAbort,
     onLinesChanged: noteLinesChanged,
   });
-  const closed = closeFunctionOutput(withoutJumps, { render: textOf, onLinesChanged: noteLinesChanged });
+  const closureOptions = {
+    ...(opts?.context !== undefined ? { context: opts.context } : {}),
+    ...(opts?.binary !== undefined ? { binary: opts.binary } : {}),
+    ...(opts?.image !== undefined ? { image: opts.image } : {}),
+    ...(opts?.model !== undefined ? { model: opts.model } : internal?.model !== undefined ? { model: internal.model } : {}),
+    ...(opts?.sections !== undefined ? { sections: opts.sections } : {}),
+    ...(opts?.segments !== undefined ? { segments: opts.segments } : {}),
+    ...(opts?.regions !== undefined ? { regions: opts.regions } : {}),
+    ...(opts?.relocations !== undefined ? { relocations: opts.relocations } : {}),
+    ...(opts?.fileBytes !== undefined ? { fileBytes: opts.fileBytes } : {}),
+    ...(opts?.bytes !== undefined ? { bytes: opts.bytes } : {}),
+    ...(opts?.readBytes !== undefined ? { readBytes: opts.readBytes } : {}),
+    ...(opts?.readByte !== undefined ? { readByte: opts.readByte } : {}),
+    ...(opts?.byteAt !== undefined ? { byteAt: opts.byteAt } : {}),
+    ...(opts?.stringFor !== undefined ? { stringFor: opts.stringFor } : {}),
+    ...(opts?.addressRefs !== undefined ? { addressRefs: opts.addressRefs } : {}),
+    render: textOf,
+    onLinesChanged: noteLinesChanged,
+  };
+  const closed = closeFunctionOutput(withoutJumps, closureOptions);
   if (linesChanged || internal.forceRefreshProvenance) refreshRenderProvenance(closed, opts, internal);
   return closed;
 }

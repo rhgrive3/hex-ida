@@ -941,6 +941,21 @@ export function lowerArm64RawAssembly(result, options = {}) {
   // Lowering can introduce new names (register destinations, intrinsic calls).
   // Close the C output again so the newly visible storage is declared too.
   return closeFunctionOutput(result, {
+    ...(options?.context !== undefined ? { context: options.context } : {}),
+    ...(options?.binary !== undefined ? { binary: options.binary } : {}),
+    ...(options?.image !== undefined ? { image: options.image } : {}),
+    ...(options?.model !== undefined ? { model: options.model } : {}),
+    ...(options?.sections !== undefined ? { sections: options.sections } : {}),
+    ...(options?.segments !== undefined ? { segments: options.segments } : {}),
+    ...(options?.regions !== undefined ? { regions: options.regions } : {}),
+    ...(options?.relocations !== undefined ? { relocations: options.relocations } : {}),
+    ...(options?.fileBytes !== undefined ? { fileBytes: options.fileBytes } : {}),
+    ...(options?.bytes !== undefined ? { bytes: options.bytes } : {}),
+    ...(options?.readBytes !== undefined ? { readBytes: options.readBytes } : {}),
+    ...(options?.readByte !== undefined ? { readByte: options.readByte } : {}),
+    ...(options?.byteAt !== undefined ? { byteAt: options.byteAt } : {}),
+    ...(options?.stringFor !== undefined ? { stringFor: options.stringFor } : {}),
+    ...(options?.addressRefs !== undefined ? { addressRefs: options.addressRefs } : {}),
     render: renderedText,
     onLinesChanged: (closed) => {
       // The line array changed after the facade already published its

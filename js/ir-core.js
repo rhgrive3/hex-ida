@@ -777,17 +777,30 @@ function valuesByRegFor(projected) {
   const values = projected?.values;
   if (!Array.isArray(values)) return new Map();
   let entry = projectedValuesByRegCache.get(projected);
-  if (!entry || entry.valuesRef !== values || entry.length > values.length) {
+  let stale = !entry || entry.valuesRef !== values || entry.length > values.length;
+  if (!stale) {
+    for (let i = 0; i < entry.length; i += 1) {
+      if (entry.items[i] !== values[i] || entry.regs[i] !== values[i]?.reg) {
+        stale = true;
+        break;
+      }
+    }
+  }
+  if (stale) {
     const byReg = new Map();
+    const items = new Array(values.length);
+    const regs = new Array(values.length);
     for (let i = 0; i < values.length; i += 1) {
       const value = values[i];
       const r = value?.reg;
+      items[i] = value;
+      regs[i] = r;
       if (r == null) continue;
       let list = byReg.get(r);
       if (!list) { list = []; byReg.set(r, list); }
       list.push(value);
     }
-    entry = { valuesRef: values, length: values.length, byReg };
+    entry = { valuesRef: values, length: values.length, byReg, items, regs };
     projectedValuesByRegCache.set(projected, entry);
     return byReg;
   }
@@ -796,6 +809,8 @@ function valuesByRegFor(projected) {
     for (let i = entry.length; i < values.length; i += 1) {
       const value = values[i];
       const r = value?.reg;
+      entry.items.push(value);
+      entry.regs.push(r);
       if (r == null) continue;
       let list = byReg.get(r);
       if (!list) { list = []; byReg.set(r, list); }
@@ -1845,6 +1860,64 @@ function invalidateEscapedStackForwarding(projected, history = null) {
   return observer;
 }
 
+function isCalleePreservedForReturn(adapter, reg) {
+  if (!reg) return false;
+  try {
+    if (typeof adapter?.isCalleeSaved === 'function') return Boolean(adapter.isCalleeSaved(reg));
+    if (Array.isArray(adapter?.calleeSavedRegisters)) return adapter.calleeSavedRegisters.includes(reg);
+  } catch { /* fall through */ }
+  return false;
+}
+
+function hasInterveningClobberingCall(projected, value, retInst, reg, adapter) {
+  if (!projected || !value || !retInst || !reg) return false;
+  const def = value.kind === LEGACY_VK.ARG ? null : (value.def ?? null);
+  const defIsPhiInRetBlock = Boolean(def && def.op === LEGACY_OP.PHI && def.block === retInst.block);
+  const defInRetBlock = Boolean(def && def.block === retInst.block);
+  const retBlock = projected.blocks?.[retInst.block];
+  const retInsts = Array.isArray(retBlock?.insts) ? retBlock.insts : [];
+  const retIdx = retInsts.indexOf(retInst);
+  const defIdx = defInRetBlock ? (defIsPhiInRetBlock ? -1 : retInsts.indexOf(def)) : -1;
+  const preserved = isCalleePreservedForReturn(adapter, reg);
+  const clobbersReg = (call) => {
+    if (!call || call.op !== LEGACY_OP.CALL || call === def || call.dst === value) return false;
+    if (call.dst?.reg === reg) return true;
+    return !preserved;
+  };
+  for (let i = 0; i < retInsts.length; i += 1) {
+    const inst = retInsts[i];
+    if (retIdx >= 0 ? i >= retIdx : Number(inst.row) >= Number(retInst.row)) break;
+    if (defInRetBlock && !defIsPhiInRetBlock) {
+      if (defIdx >= 0 ? i <= defIdx : Number(inst.row) <= Number(def.row)) continue;
+    }
+    if (clobbersReg(inst)) return true;
+  }
+  if (defInRetBlock) return false;
+  const retDoms = projected.dominators?.[retInst.block];
+  if (!(retDoms instanceof Set)) return false;
+  const defBlock = def?.block ?? null;
+  for (const domBlockIdx of retDoms) {
+    if (domBlockIdx === retInst.block) continue;
+    if (defBlock != null && domBlockIdx !== defBlock) {
+      const domDoms = projected.dominators?.[domBlockIdx];
+      if (!(domDoms instanceof Set) || !domDoms.has(defBlock)) continue;
+    }
+    const domInsts = projected.blocks?.[domBlockIdx]?.insts;
+    if (!Array.isArray(domInsts)) continue;
+    const startIdx = (defBlock != null && domBlockIdx === defBlock && def?.op !== LEGACY_OP.PHI)
+      ? domInsts.indexOf(def)
+      : -1;
+    for (let i = 0; i < domInsts.length; i += 1) {
+      const inst = domInsts[i];
+      if (domBlockIdx === defBlock && def && def.op !== LEGACY_OP.PHI) {
+        if (startIdx >= 0 ? i <= startIdx : Number(inst.row) <= Number(def.row)) continue;
+      }
+      if (clobbersReg(inst)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
@@ -1888,7 +1961,10 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}, histor
       const result = locations[0];
       const selection = binding.available ? { candidates:[], unavailable:false } : null;
       const bits = result.bits ?? null;
-      const value = selectReachingRegisterValue(projected, inst, result.reg, bits, null, selection);
+      const candidate = selectReachingRegisterValue(projected, inst, result.reg, bits, null, selection);
+      const value = candidate && !hasInterveningClobberingCall(projected, candidate, inst, result.reg, adapter)
+        ? candidate
+        : null;
       outcome = value ? 'bound' : 'no-reaching-value';
       retainAbiSelection(binding, result, 0, result.reg, bits, selection, value, value ? 'selected' : 'no-reaching-value');
       if (!value) continue;

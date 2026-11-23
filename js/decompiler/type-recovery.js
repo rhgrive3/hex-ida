@@ -386,20 +386,23 @@ function dominatedByEarlierCall(ir, atInst, callIndex = null) {
   return false;
 }
 
-function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null, allowPhi = true) {
+function hasRealValueUse(value, ir, visited = new Set(), resolveCalleeName = null, callCtx = null, allowPhi = true, viaMixedPhi = false) {
   if (!value || visited.has(value)) return false;
   visited.add(value);
   const uses = Array.isArray(value.uses) ? value.uses : [];
   for (const inst of uses) {
     if (!inst) continue;
     if (inst.op === OP.CLOBBER) continue;
+    if (inst.op === OP.RET && viaMixedPhi) continue;
     if (inst.op === OP.PHI) {
       if (!allowPhi) continue;
-      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, true)) return true;
+      const hasDefinedBranch = (inst.args || []).some((a) => valueOf(a)?.def != null);
+      const nextMixedPhi = viaMixedPhi || (!value.def && hasDefinedBranch);
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, true, nextMixedPhi)) return true;
       continue;
     }
     if (inst.op === OP.MOV) {
-      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, allowPhi)) return true;
+      if (inst.dst && hasRealValueUse(inst.dst, ir, visited, resolveCalleeName, callCtx, allowPhi, viaMixedPhi)) return true;
       continue;
     }
     if (inst.op === OP.CALL) {
@@ -819,6 +822,74 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     }
   }
 
+  // Propagate floating-point evidence and scalar 32/64-bit float widths across
+  // register-view MOV/bitcast/trunc/zext and PHI nodes so vN/qN <-> sN/dN chains
+  // recover float/double arguments and return types.
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const inst of ir.instructions || []) {
+      if (inst.op === OP.MOV && inst.dst) {
+        const src = valueOf(inst.args && inst.args[0]);
+        if (!src) continue;
+        const isScalarFpView = !inst.sub || inst.sub === 'trunc' || inst.sub === 'zext' || inst.extra?.castKind === 'bitcast';
+        if (!isScalarFpView) continue;
+        const se = eFor(src);
+        const de = eFor(inst.dst);
+        if (se && de) {
+          if (se.floating > 0 && de.floating === 0) {
+            score(de, 'floating', Math.min(5, se.floating), `row ${inst.row}: mov float prop`);
+            changed = true;
+          }
+          if (de.floating > 0 && se.floating === 0) {
+            score(se, 'floating', Math.min(5, de.floating), `row ${inst.row}: mov float back-prop`);
+            changed = true;
+          }
+          const srcScalarBits = bestWidth(se, src.bits || 64);
+          if (se.floating > 0 && (srcScalarBits === 32 || srcScalarBits === 64) && (inst.dst.bits === 128 || inst.sub === 'zext')) {
+            if ((de.widths.get(srcScalarBits) || 0) < 3) {
+              width(de, srcScalarBits, 3, `row ${inst.row}: fp scalar width prop`);
+              changed = true;
+            }
+          }
+          const dstScalarBits = bestWidth(de, inst.dst.bits || 64);
+          if (de.floating > 0 && (dstScalarBits === 32 || dstScalarBits === 64) && (src.bits === 128 || inst.sub === 'trunc')) {
+            if ((se.widths.get(dstScalarBits) || 0) < 3) {
+              width(se, dstScalarBits, 3, `row ${inst.row}: fp scalar width back-prop`);
+              changed = true;
+            }
+          }
+        }
+      } else if (inst.op === OP.PHI && inst.dst) {
+        const de = eFor(inst.dst);
+        const args = (inst.args || []).map(valueOf).filter(Boolean);
+        if (de && args.length) {
+          const floatArgs = args.filter((a) => (eFor(a)?.floating || 0) > 0);
+          if (floatArgs.length > 0 && de.floating === 0) {
+            score(de, 'floating', 4, `row ${inst.row}: phi float prop`);
+            const argWidths = new Set(floatArgs.map((a) => bestWidth(eFor(a), a.bits || 64)).filter((b) => b === 32 || b === 64));
+            if (argWidths.size === 1) {
+              const b = [...argWidths][0];
+              width(de, b, 3, `row ${inst.row}: phi float width prop`);
+            }
+            changed = true;
+          }
+          if (de.floating > 0) {
+            const dstBits = bestWidth(de, inst.dst.bits || 64);
+            for (const a of args) {
+              const ae = eFor(a);
+              if (ae && ae.floating === 0) {
+                score(ae, 'floating', 4, `row ${inst.row}: phi float back-prop`);
+                if (dstBits === 32 || dstBits === 64) width(ae, dstBits, 3, `row ${inst.row}: phi float width back-prop`);
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
   applyRuntimeHints(ir, ev, opts.runtime || opts.appleRuntime);
   const values = new Map();
   for (const v of ir.values || []) values.set(v.id, decide(eFor(v), v.bits || 64));
@@ -972,15 +1043,23 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     ? [...new Set([fpRetReg, 'd0', 's0', 'v0'].filter(Boolean))]
     : [fpRetReg].filter(Boolean);
 
+  const isFloatOrFloatChain = (val, seen = new Set()) => {
+    if (!val || seen.has(val)) return false;
+    seen.add(val);
+    const vt = values.get(val.id);
+    if (vt && (vt.kind === 'float' || vt.name === 'double' || vt.name === 'float')) return true;
+    const def = val.def;
+    if (!def) return false;
+    if (def.op === OP.MOV) return isFloatOrFloatChain(valueOf(def.args?.[0]), seen);
+    if (def.op === OP.PHI) return (def.args || []).some((a) => isFloatOrFloatChain(valueOf(a), seen));
+    return false;
+  };
   const findFpReturnVals = () => {
     for (const regName of fpCandidates) {
       const found = rets.map((r) => reachingRegisterTypeValue(ir, r, regName))
         .filter((value) => {
           if (!value || !value.def) return false;
-          if (regName === 'v0') {
-            const vt = values.get(value.id);
-            return vt && (vt.kind === 'float' || vt.name === 'double' || vt.name === 'float');
-          }
+          if (regName === 'v0') return isFloatOrFloatChain(value);
           return true;
         });
       if (found.length) return found;
@@ -988,6 +1067,19 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     return [];
   };
 
+  const hasNonRetUse = (value, visited = new Set()) => {
+    if (!value || visited.has(value)) return false;
+    visited.add(value);
+    for (const inst of value.uses || []) {
+      if (!inst || inst.op === OP.CLOBBER || inst.op === OP.RET) continue;
+      if (inst.op === OP.PHI || inst.op === OP.MOV) {
+        if (inst.dst && hasNonRetUse(inst.dst, visited)) return true;
+        continue;
+      }
+      return true;
+    }
+    return false;
+  };
   if (rets.length) {
     let vals = rets.map((r) => valueOf(r.args && r.args[0])).filter(Boolean);
     if (!vals.length && returnRegister) {
@@ -1014,7 +1106,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const maxGpRow = Math.max(...vals.map((v) => v.def?.row ?? -1));
       const maxFpRow = Math.max(...fpVals.map((v) => v.def?.row ?? -1));
       const allGpVoidCall = allGpFromHelperCall && vals.every((v) => knownCallSignature(calleeNameOf(v.def))?.retType === 'void');
-      if (allGpVoidCall || (maxFpRow > maxGpRow && (allGpFromHelperCall || (allGpConsumedInternally && allFpFreshReturn)))) {
+      const allGpUninitOrConst = vals.every((v) => !v?.def || v.def.op === OP.CONST || (v.def.op === OP.PHI && (v.def.args || []).every((a) => !valueOf(a)?.def || valueOf(a).def.op === OP.CONST)));
+      if (allGpVoidCall || allGpUninitOrConst || (maxFpRow > maxGpRow && (allGpFromHelperCall || (allGpConsumedInternally && allFpFreshReturn)))) {
         vals = fpVals;
       }
     }
@@ -1100,6 +1193,18 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     }
   }
 
+  if (ret.type === 'float' || ret.type === 'double') {
+    const filteredArgs = args.filter((a) => {
+      if (!a || !/^x[0-7]$/.test(String(a.reg || ''))) return true;
+      const v = ir.args?.get?.(a.reg);
+      if (!v || v.def) return true;
+      return hasNonRetUse(v) || passThroughRegs.has(a.reg);
+    });
+    if (filteredArgs.length !== args.length) {
+      args.length = 0;
+      filteredArgs.forEach((a, idx) => args.push({ ...a, index: idx }));
+    }
+  }
   const warnings = [];
   for (const t of values.values()) if (t.kind === 'ambiguous' && t.warning) warnings.push(t.warning);
   return { args, locals, ret, values, locations, warnings };
