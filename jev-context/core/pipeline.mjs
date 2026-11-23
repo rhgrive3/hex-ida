@@ -67,9 +67,11 @@ export function createPipeline(overrides = {}) {
   const client = overrides.client || createOpenJevClient(config, overrides.deps || {});
   const logger = overrides.logger || (() => {});
 
-  // Read the cache once up front: this detects a corrupt file even on a pass
-  // that never needs a lookup, so `jev-prune status` can report it truthfully.
+  // Read the cache and metrics once up front: this detects a corrupt cache
+  // file even on a pass that never needs a lookup, and preserves accumulated
+  // metrics across hook invocations and restarts.
   cache.load();
+  metrics.load();
 
   let lastPlan = null;
 
@@ -78,7 +80,9 @@ export function createPipeline(overrides = {}) {
     if (!config.sendTask) return "";
     const raw = String(text || "");
     if (!raw) return "";
-    return redact(raw).text;
+    const redaction = redact(raw);
+    if (mustNotTransmit(redaction, { failClosed: config.redactFailClosed })) return "";
+    return redaction.text;
   }
 
   /**
@@ -200,6 +204,24 @@ export function createPipeline(overrides = {}) {
         continue;
       }
 
+      let note = "";
+      if (item.meta && item.meta.command) {
+        const cmdRedaction = redact(String(item.meta.command));
+        stats.redactions += cmdRedaction.count;
+        if (mustNotTransmit(cmdRedaction, { failClosed: config.redactFailClosed })) {
+          item.flags.secretFailClosed = true;
+          stats.skippedUnsafe += 1;
+          verdicts[index] = {
+            ...verdict,
+            action: "keep",
+            reason: "not transmitted: possible credential",
+            flags: { ...verdict.flags, secretFailClosed: true },
+          };
+          continue;
+        }
+        note = `command=${cmdRedaction.text.slice(0, 120)}`;
+      }
+
       const qid = questionId("item", index);
       questionByItem.set(item.id, qid);
       candidates.push({
@@ -207,7 +229,7 @@ export function createPipeline(overrides = {}) {
         questionId: qid,
         redactedText: redaction.text,
         tokens: item.tokens,
-        note: item.meta && item.meta.command ? `command=${String(item.meta.command).slice(0, 120)}` : "",
+        note,
       });
     }
 

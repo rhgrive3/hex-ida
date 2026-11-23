@@ -445,10 +445,21 @@ function viewportRect() {
   return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height };
 }
 
+function isNodeLike(target) {
+  if (!target || typeof target !== 'object') return false;
+  if (typeof Node !== 'undefined') return target instanceof Node;
+  return typeof target.nodeType === 'number';
+}
+
+function isMenuTargetInside(container, target) {
+  if (!container || typeof container.contains !== 'function' || !isNodeLike(target)) return false;
+  return container.contains(target);
+}
+
 function armMenuDismiss(entry) {
   const created = Date.now();
   const outside = (e) => {
-    if (!openMenu || openMenu !== entry || entry.m.contains(e.target)) return;
+    if (!openMenu || openMenu !== entry || isMenuTargetInside(entry.m, e?.target)) return;
     if (Date.now() - created < 50) return;
     // Native context menus consume the first outside tap. Do the same here so
     // removing the transparent backdrop cannot accidentally activate a button
@@ -464,7 +475,7 @@ function armMenuDismiss(entry) {
     }
   };
   const move = (e) => {
-    if (e && e.target && entry.m.contains(e.target)) return;
+    if (e && isMenuTargetInside(entry.m, e.target)) return;
     if (Date.now() - created < 50 && (e?.type === 'resize' || e?.type === 'scroll' || e?.type === 'touchmove' || e?.type === 'orientationchange')) return;
     closeMenu();
   };

@@ -130,7 +130,7 @@ export async function readSwiftMangledName(read, address, options = {}) {
         const pointerResolver = pointerResolverFor(options);
         if (typeof pointerResolver === 'function') {
           try {
-            const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
+            const resolved = await pointerResolver(rawTarget, { address:relativeFieldAddress, swiftSymbolicReferenceKind:byte });
             if (resolved != null) resolvedTarget = BigInt(resolved);
           } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
         }

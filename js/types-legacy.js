@@ -480,15 +480,19 @@ export class TypeStore {
 
 /** 構造体 1 つを C のかたちの文字列にする（保存していないものにも使える）。 */
 export function structToC(s) {
-  {
-    const lines = ['struct ' + s.name + ' {'];
-    let cursor = 0;
-    for (const m of s.members) {
-      if (m.offset > cursor) lines.push('    uint8 pad_' + cursor.toString(16) + '[' + (m.offset - cursor) + '];');
-      lines.push('    ' + m.type + ' ' + m.name + ';' + '   // +0x' + m.offset.toString(16).toUpperCase());
-      cursor = m.offset + (m.size || 8);
-    }
-    lines.push('};   // 全体で ' + s.size + ' バイト');
-    return lines.join('\n');
+  if (!s || typeof s !== 'object') return '';
+  const name = typeof s.name === 'string' && s.name ? s.name : 'anonymous';
+  const members = Array.isArray(s.members) ? s.members : [];
+  const lines = ['struct ' + name + ' {'];
+  let cursor = 0;
+  for (const m of members) {
+    if (!m || typeof m !== 'object') continue;
+    const offset = Number.isFinite(m.offset) ? m.offset : cursor;
+    if (offset > cursor) lines.push('    uint8 pad_' + cursor.toString(16) + '[' + (offset - cursor) + '];');
+    lines.push('    ' + m.type + ' ' + m.name + ';' + '   // +0x' + offset.toString(16).toUpperCase());
+    cursor = offset + (m.size || 8);
   }
+  const size = s.size != null ? s.size : cursor;
+  lines.push('};   // 全体で ' + size + ' バイト');
+  return lines.join('\n');
 }

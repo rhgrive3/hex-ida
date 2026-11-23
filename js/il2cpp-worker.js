@@ -26,7 +26,7 @@ self.onmessage = async (event) => {
       throw error;
     }
     const buffer = await file.arrayBuffer();
-    const result = await parseMetadataAutoAsync(buffer, { yield:true });
+    const result = await parseMetadataAutoAsync(buffer, { yield:true, budget:{ maxInputBytes:maxBytes } });
     self.postMessage({ id:message.id, ok:true, result });
   } catch (error) {
     self.postMessage({

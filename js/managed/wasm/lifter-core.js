@@ -47,7 +47,17 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
 }
 
+function isTable64(tableType) {
+  if (!tableType) return false;
+  if (tableType.is64 === true) return true;
+  if (tableType.addressType === 'i64' || tableType.addressType === 0x7e) return true;
+  if (tableType.indexType === 'i64' || tableType.indexType === 0x7e) return true;
+  if (Number.isSafeInteger(tableType.flags) && (tableType.flags & 0x04) !== 0) return true;
+  return false;
+}
+
 function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-callee-index');
   const importedCount = moduleIndex.importedFunctionCount;
   let typeIndex;
   if (funcIndex < importedCount) typeIndex = moduleIndex.functionTypeIndices[funcIndex];
@@ -73,6 +83,7 @@ function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
 }
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-function-index');
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
   const moduleIndex = wasmModuleIndex(wasmModule);
   const importedFuncs = moduleIndex.importedFunctions;
@@ -130,9 +141,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const currentFrame = () => controlStack[controlStack.length - 1];
   const consume = (count, code = 'wasm-stack-underflow') => {
     if (count <= 0) return;
-    if (currentStackHeight < count) {
-      if (!currentFrame()?.polymorphic) fail(code);
-      currentStackHeight = currentFrame()?.stackHeight ?? 0;
+    const frame = currentFrame();
+    if (!frame) fail('wasm-invalid-control-stack');
+    const frameHeight = frame.stackHeight;
+    if (currentStackHeight - frameHeight < count) {
+      if (!frame.polymorphic) fail(code);
+      currentStackHeight = frameHeight;
       return;
     }
     currentStackHeight -= count;
@@ -183,9 +197,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
         mnemonic = kind;
         if (kind === 'if') { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
-        if (currentStackHeight < bt.params.length && !currentFrame().polymorphic) fail('wasm-stack-underflow-block-params');
-        const baseHeight = Math.max(0, currentStackHeight - bt.params.length);
-        currentStackHeight = baseHeight + bt.params.length;
+        consume(bt.params.length, 'wasm-stack-underflow-block-params');
+        const baseHeight = currentStackHeight;
+        produce(bt.params.length);
         const frame = { id: `frame_${frameSeq++}`, kind, startOffset: opOffset, bodyOffset: pos, stackHeight: baseHeight, params: bt.params, results: bt.results, pendingBranches: [], polymorphic: false, elseSeen: false, ifEffect: null, elseEffect: null };
         controlStack.push(frame);
         if (kind === 'if') {
@@ -199,7 +213,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'else';
         const frame = currentFrame();
         if (!frame || frame.kind !== 'if' || frame.elseSeen) fail('wasm-invalid-else');
-        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-if-then-stack');
+        if (frame.polymorphic ? currentStackHeight > frame.stackHeight + frame.results.length : currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-if-then-stack');
         frame.elseSeen = true;
         frame.polymorphic = false;
         currentStackHeight = frame.stackHeight + frame.params.length;
@@ -215,7 +229,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
         if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
-        if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
+        if (frame.polymorphic ? currentStackHeight > frame.stackHeight + frame.results.length : currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
         frame.continuationOffset = continuation;
@@ -315,18 +329,23 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
         const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        if (table.value >= moduleIndex.tableCount) fail('wasm-invalid-call-indirect-table-index');
+        const tableType = moduleIndex.tables[table.value];
+        if (!tableType) fail('wasm-invalid-call-indirect-table-index');
+        if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
+        const table64 = isTable64(tableType);
+        const selectorType = table64 ? 0x7e : 0x7f;
+        const selectorBits = table64 ? 64 : 32;
         // #8711: same pre-admission boundary as `call` (plus the selector operand).
         preChargedValues = 1 + type.params.length + type.results.length;
         budget.chargeValues(preChargedValues);
         mnemonic = 'call_indirect';
-        consumedValues.push({ id: 'func_index', bits: 32 });
+        consumedValues.push({ id: 'func_index', bits: selectorBits, type: selectorType });
         for (let i = type.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(type.params[i]), type: type.params[i] });
         consume(1 + type.params.length, 'wasm-stack-underflow-call-indirect');
         for (let i = 0; i < type.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(type.results[i]), type: type.results[i] });
         produce(type.results.length);
         callEffects.push({ typeIndex: tr.value, tableIndex: table.value, dispatchKind: 'indirect', unresolved: true, signature: { params: type.params, results: type.results } });
-        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: 'u32(selector)>=tableSize' });
+        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: table64 ? 'u64(selector)>=tableSize' : 'u32(selector)>=tableSize' });
         possibleExceptions.push({ kind: 'indirect-call-null-target', tableIndex: table.value, condition: 'selectedElement==null' });
         possibleExceptions.push({ kind: 'indirect-call-type-mismatch', tableIndex: table.value, typeIndex: tr.value, condition: 'selectedFunctionType!=declaredType' });
         break;

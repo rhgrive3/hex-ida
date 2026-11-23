@@ -1,3 +1,5 @@
+import { AuthError } from './primitives.js';
+
 export const AI_CAPABILITY_HEADER = 'x-hex-ai-capability';
 export const AI_CAPABILITY_AUDIENCE = 'hex-ai-provider';
 export const AI_CAPABILITY_TTL_MS = 60_000;
@@ -8,10 +10,15 @@ const SUBJECT = /^[a-f0-9]{64}$/;
 export async function mintAICapability({ signingKey, buildId, subject, now = Date.now(), sessionExpiresAt = Infinity } = {}) {
   const key = normalizeKey(signingKey);
   if (!key || !BUILD_ID.test(String(buildId || '')) || !SUBJECT.test(String(subject || ''))) throw new TypeError('ai-capability-config-invalid');
-  const issuedAt = Math.floor(Number(now) / 1000);
-  const expiryMs = Math.min(Number(now) + AI_CAPABILITY_TTL_MS, Number(sessionExpiresAt));
-  const expiresAt = Math.floor(expiryMs / 1000);
-  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) throw new TypeError('ai-capability-session-expired');
+  const nowMs = Number(now);
+  const sessionExpiryMs = Number(sessionExpiresAt);
+  if (!Number.isFinite(nowMs) || Number.isNaN(sessionExpiryMs) || sessionExpiryMs <= nowMs) {
+    throw new AuthError('unauthenticated', 401);
+  }
+  const issuedAt = Math.floor(nowMs / 1000);
+  const expiryMs = Math.min(nowMs + AI_CAPABILITY_TTL_MS, sessionExpiryMs);
+  const maxExpiresAt = issuedAt + Math.floor(AI_CAPABILITY_TTL_MS / 1000);
+  const expiresAt = Math.min(maxExpiresAt, Math.max(issuedAt + 1, Math.floor(expiryMs / 1000)));
   const nonce = new Uint8Array(16); crypto.getRandomValues(nonce);
   const sessionBinding = encodeBase64URL((await hmac(`session:${subject}`, key)).slice(0, 16));
   const payload = {
@@ -25,10 +32,12 @@ export async function mintAICapability({ signingKey, buildId, subject, now = Dat
   };
   const encoded = encodeBase64URL(new TextEncoder().encode(JSON.stringify(payload)));
   const signature = await hmac(encoded, key);
-  return { capability: `${encoded}.${encodeBase64URL(signature)}`, expiresAt: expiresAt * 1000 };
+  return { capability: `${encoded}.${encodeBase64URL(signature)}`, expiresAt: Math.min(expiresAt * 1000, sessionExpiryMs) };
 }
 
-export async function verifyAICapability(value, { signingKey, buildId, now = Date.now(), subject = null } = {}) {
+export async function verifyAICapability(value, options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const { signingKey, buildId, now = Date.now(), subject, requireSubject = false } = opts;
   const key = normalizeKey(signingKey);
   if (!key || !BUILD_ID.test(String(buildId || '')) || typeof value !== 'string' || value.length > 2048) return null;
   const parts = value.split('.');
@@ -43,7 +52,7 @@ export async function verifyAICapability(value, { signingKey, buildId, now = Dat
     if (payload?.v !== 1 || payload.aud !== AI_CAPABILITY_AUDIENCE || payload.bid !== buildId) return null;
     if (!/^[A-Za-z0-9_-]{22}$/.test(String(payload.sid || '')) || typeof payload.jti !== 'string' || payload.jti.length < 16 || payload.jti.length > 64) return null;
     if (!Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp) || payload.exp <= nowSeconds || payload.iat > nowSeconds + 5 || payload.exp - payload.iat > Math.ceil(AI_CAPABILITY_TTL_MS / 1000)) return null;
-    if (subject != null) {
+    if (requireSubject || Object.hasOwn(opts, 'subject')) {
       if (typeof subject !== 'string' || !SUBJECT.test(subject)) return null;
       const expectedBinding = encodeBase64URL((await hmac(`session:${subject}`, key)).slice(0, 16));
       let diff = 0;

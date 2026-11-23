@@ -235,6 +235,7 @@ export function showFunctions(app) {
   };
 
   const updateMore = (current, completeness, total) => {
+    updateStatus(completeness, total);
     if (!pager?.hasMore) {
       more?.remove();
       more = null;
@@ -245,7 +246,6 @@ export function showFunctions(app) {
       ? t('search.showMore', { n:Math.max(0, total - loaded).toLocaleString() })
       : t('search.more')));
     results.append(more);
-    updateStatus(completeness, total);
   };
 
   const loadMore = async (current) => {

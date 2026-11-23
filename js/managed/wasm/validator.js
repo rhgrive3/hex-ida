@@ -42,7 +42,17 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: type.params, results: type.results, nextOffset: result.nextOffset };
 }
 
+function isTable64(tableType) {
+  if (!tableType) return false;
+  if (tableType.is64 === true) return true;
+  if (tableType.addressType === 'i64' || tableType.addressType === I64) return true;
+  if (tableType.indexType === 'i64' || tableType.indexType === I64) return true;
+  if (Number.isSafeInteger(tableType.flags) && (tableType.flags & 0x04) !== 0) return true;
+  return false;
+}
+
 function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-callee-index');
   const typeIndex = funcIndex < moduleIndex.importedFunctionCount
     ? moduleIndex.functionTypeIndices[funcIndex]
     : wasmModule.functions[funcIndex - moduleIndex.importedFunctionCount];
@@ -52,6 +62,7 @@ function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleInd
 }
 
 export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
+  if (!Number.isSafeInteger(funcIndex) || funcIndex < 0) fail('wasm-invalid-function-index');
   const moduleIndex = wasmModuleIndex(wasmModule);
   if (funcIndex < moduleIndex.importedFunctionCount) return Object.freeze({ complete: true });
 
@@ -215,8 +226,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const tableType = tables[table.value];
         if (!tableType) fail('wasm-invalid-call-indirect-table-index');
         if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
+        const selectorType = isTable64(tableType) ? I64 : I32;
         budget.chargeValues(1 + type.params.length + type.results.length);
-        pop(I32, 'wasm-stack-underflow-call-indirect');
+        pop(selectorType, 'wasm-stack-underflow-call-indirect');
         popTypes(type.params, 'wasm-stack-underflow-call-indirect');
         pushTypes(type.results);
         break;

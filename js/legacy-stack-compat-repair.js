@@ -202,14 +202,23 @@ function sameFieldIdentity(left, right) {
     && left.disp === right.disp && left.size === right.size;
 }
 
+function dominatorContains(dominators, blockId) {
+  if (!dominators || blockId == null) return false;
+  if (typeof dominators.has === 'function') return Boolean(dominators.has(blockId));
+  if (Array.isArray(dominators)) return dominators.includes(blockId);
+  return false;
+}
+
 function valueDominatesInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === 'arg') return true;
   const definition = value.def;
   if (!definition || definition === inst) return false;
   if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
-  const dominators = projected?.dominators?.[inst.block];
-  return dominators instanceof Set && dominators.has(definition.block);
+  const dominators = projected?.dominators instanceof Map
+    ? projected.dominators.get(inst.block)
+    : projected?.dominators?.[inst.block];
+  return dominatorContains(dominators, definition.block);
 }
 
 function nextNumericId(items) {
@@ -348,6 +357,30 @@ export function restoreLegacyPrivateStackForwarding(projected, stackPointerProve
   }
   if (!repairedCalls.size) return projected;
 
+  const stackOffsetOf = (inst) => {
+    const rawDisp = inst?.loc?.disp ?? inst?.addr?.disp ?? null;
+    if (typeof rawDisp === 'bigint') return rawDisp;
+    if (typeof rawDisp === 'number' && Number.isSafeInteger(rawDisp)) return BigInt(rawDisp);
+    if (typeof rawDisp === 'string' && /^[+-]?(?:0x[0-9a-f]+|\d+)$/i.test(rawDisp.trim())) {
+      try { return BigInt(rawDisp.trim()); } catch { /* fall through */ }
+    }
+    const key = inst?.loc?.key;
+    if (typeof key === 'string') {
+      const m = /^stack:([+-]?(?:0x[0-9a-f]+|\d+))$/i.exec(key.trim());
+      if (m) {
+        try { return BigInt(m[1]); } catch { /* fall through */ }
+      }
+    }
+    return null;
+  };
+  const stackByteRange = (inst) => {
+    const offset = stackOffsetOf(inst);
+    const size = exactAccessSize(inst);
+    if (offset == null || size == null) return null;
+    return { start: offset, end: offset + BigInt(size), size };
+  };
+  const rangesOverlap = (a, b) => a.start < b.end && b.start < a.end;
+
   for (const load of projected.instructions ?? []) {
     if (load?.op !== 'load' || load.loc?.kind !== 'stack' || load.reachingStore) continue;
     if (load.memUse?.kind !== 'clobber' || !repairedCalls.has(load.memUse?.inst)) continue;
@@ -355,6 +388,7 @@ export function restoreLegacyPrivateStackForwarding(projected, stackPointerProve
     if (!block) continue;
     const loadSize = exactAccessSize(load);
     if (loadSize == null) continue;
+    const loadRange = stackByteRange(load);
 
     const prior = [...(block.insts ?? [])]
       .filter((inst) => Number(inst.row) < Number(load.row))
@@ -363,10 +397,18 @@ export function restoreLegacyPrivateStackForwarding(projected, stackPointerProve
     for (const inst of prior) {
       if (inst?.op === 'unknown') break;
       if (inst?.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) break;
-      if (inst?.op === 'store' && inst.loc?.kind === 'stack'
-          && inst.loc.key === load.loc.key && exactAccessSize(inst) === loadSize) {
-        store = inst;
-        break;
+      if (inst?.op === 'store' && inst.loc?.kind === 'stack') {
+        const storeSize = exactAccessSize(inst);
+        const storeRange = stackByteRange(inst);
+        if (inst.loc.key === load.loc.key && storeSize === loadSize) {
+          store = inst;
+          break;
+        }
+        // Any same-key different-size store, partially overlapping store, or
+        // unprovably-disjoint stack store kills forwarding of older stores.
+        if (inst.loc.key === load.loc.key || !loadRange || !storeRange || rangesOverlap(storeRange, loadRange)) {
+          break;
+        }
       }
     }
     if (!store?.memDef) continue;

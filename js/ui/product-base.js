@@ -79,7 +79,8 @@ function noFileActions(app) {
     uiButton(text('ファイルを開く', 'Open file'), {
       cls: 'ui-primary-action',
       onClick: () => {
-        if (window.__hexUi?.actions?.run) window.__hexUi.actions.run('file.open');
+        const registry = window.__hexUi?.actions;
+        if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
         else document.getElementById('file-input')?.click();
       },
     }),
@@ -1072,17 +1073,130 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
            instead of wrongly saying the architecture is unsupported. */
         if (canonical) {
           const cfg = res.value;
-          const nodes = Array.isArray(cfg.blocks) ? cfg.blocks.map((b, index) => ({
-            id: b.id ?? `b${index}`,
-            label: b.label || b.name || `Block ${index + 1}`,
-            addr: b.startAddress ?? b.address ?? b.start ?? null,
-            title: b.title ?? b.label,
-          })) : [];
-          const edges = Array.isArray(cfg.edges) ? cfg.edges.map((e) => ({
-            from: e.from ?? e.source,
-            to: e.to ?? e.target,
-            kind: e.kind ?? 'unconditional',
-          })) : [];
+          const parseBlockAddr = (value) => {
+            if (value == null) return null;
+            if (typeof value === 'bigint') return value >= 0n ? value : null;
+            if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+            if (typeof value === 'string') {
+              const trimmed = value.trim();
+              if (!trimmed) return null;
+              try {
+                const parsed = BigInt(trimmed);
+                return parsed >= 0n ? parsed : null;
+              } catch { return null; }
+            }
+            return null;
+          };
+          const originAddr = (origin) => {
+            if (!origin || typeof origin !== 'object') return null;
+            for (const candidate of [
+              origin.address, origin.virtualAddress, origin.vmAddress,
+              origin.virtualRange?.start, origin.addressRange?.start, origin.addresses?.[0],
+            ]) {
+              const parsed = parseBlockAddr(candidate);
+              if (parsed != null) return parsed;
+            }
+            return null;
+          };
+          const blockAddrOf = (b, id) => {
+            const direct = parseBlockAddr(b?.startAddress ?? b?.address ?? b?.addr ?? b?.start);
+            if (direct != null) return direct;
+            const fromOrigin = originAddr(b?.origin);
+            if (fromOrigin != null) return fromOrigin;
+            const insts = Array.isArray(b?.insts) ? b.insts : (Array.isArray(b?.instructions) ? b.instructions : null);
+            if (insts?.length) {
+              const first = parseBlockAddr(insts[0]?.address) ?? originAddr(insts[0]?.origin);
+              if (first != null) return first;
+            }
+            const idMatch = /^(?:(?:bb|block|blk|b)[_:-]?)?(0x[0-9a-f]+)$/i.exec(id);
+            if (idMatch) {
+              const parsed = parseBlockAddr(idMatch[1]);
+              if (parsed != null) return parsed;
+            }
+            if (cfg.entryBlockId != null && id === String(cfg.entryBlockId)) {
+              return parseBlockAddr(addr);
+            }
+            return null;
+          };
+          const blockLinesOf = (b) => {
+            if (Array.isArray(b?.lines)) return b.lines.map((line) => String(line));
+            const insts = Array.isArray(b?.insts) ? b.insts : (Array.isArray(b?.instructions) ? b.instructions : null);
+            if (!insts?.length) return [];
+            return insts.slice(0, 24).map((inst) => {
+              const mnemonic = String(inst?.mnemonic ?? '').trim();
+              const operands = String(inst?.operands ?? '').trim();
+              if (mnemonic) return operands ? `${mnemonic} ${operands}` : mnemonic;
+              const op = String(inst?.op ?? inst?.kind ?? '').trim();
+              const sub = String(inst?.sub ?? '').trim();
+              return sub ? `${op}.${sub}` : op;
+            }).filter(Boolean);
+          };
+          const edgeStyle = (rawKind, explicitLabel = null) => {
+            switch (rawKind) {
+              case 'conditional-true': return { kind:'true', label:explicitLabel ?? text('成り立つ', 'true') };
+              case 'conditional-false': return { kind:'false', label:explicitLabel ?? text('成り立たない', 'false') };
+              case 'true': return { kind:'true', label:explicitLabel };
+              case 'false': return { kind:'false', label:explicitLabel };
+              case 'back': return { kind:'back', label:explicitLabel };
+              case 'exception': return { kind:'jump', label:explicitLabel ?? text('例外', 'exception') };
+              case 'indirect-candidate': return { kind:'jump', label:explicitLabel ?? text('間接候補', 'indirect') };
+              case 'unknown': return { kind:'jump', label:explicitLabel ?? text('未確定', 'unknown') };
+              case 'call': return { kind:'call', label:explicitLabel ?? text('呼び出し', 'call') };
+              case 'tail-call': return { kind:'call', label:explicitLabel ?? text('末尾呼び出し', 'tail call') };
+              default: return { kind:'jump', label:explicitLabel };
+            }
+          };
+
+          const rawBlocks = Array.isArray(cfg.blocks) ? cfg.blocks : [];
+          const nodes = rawBlocks.map((b, index) => {
+            const id = String(b?.id ?? `b${index}`);
+            const nodeAddr = blockAddrOf(b, id);
+            const displayTitle = String(b?.title || b?.label || b?.name || (nodeAddr != null ? addressText(nodeAddr) : id));
+            const kind = b?.kind || (cfg.entryBlockId != null && id === String(cfg.entryBlockId) ? 'entry' : '');
+            return {
+              id,
+              title: displayTitle,
+              label: displayTitle,
+              lines: blockLinesOf(b),
+              kind,
+              addr: nodeAddr,
+              onTap: nodeAddr != null ? () => router.navigate('/code/' + nodeAddr.toString()) : null,
+            };
+          });
+          const nodeIds = new Set(nodes.map((n) => n.id));
+          const edges = [];
+          const seenEdges = new Set();
+          const pushEdge = (fromRaw, toRaw, rawKind, explicitLabel = null) => {
+            if (fromRaw == null || toRaw == null) return;
+            const from = String(fromRaw);
+            const to = String(toRaw);
+            if (!nodeIds.has(from) || !nodeIds.has(to)) return;
+            const style = edgeStyle(rawKind, explicitLabel);
+            const key = JSON.stringify([from, to, style.kind, style.label ?? '']);
+            if (seenEdges.has(key)) return;
+            seenEdges.add(key);
+            edges.push({ from, to, kind:style.kind, label:style.label });
+          };
+          rawBlocks.forEach((b, index) => {
+            const from = String(b?.id ?? `b${index}`);
+            const outgoing = Array.isArray(b?.successors)
+              ? b.successors
+              : (Array.isArray(b?.succs) ? b.succs : (Array.isArray(b?.outEdges) ? b.outEdges : []));
+            for (const edge of outgoing) {
+              if (typeof edge === 'string' || typeof edge === 'number') {
+                pushEdge(from, edge, 'branch', null);
+              } else if (edge && typeof edge === 'object') {
+                pushEdge(from, edge.to ?? edge.target ?? edge.id, edge.kind, edge.label ?? null);
+              }
+            }
+          });
+          if (Array.isArray(cfg.edges)) {
+            for (const e of cfg.edges) {
+              if (e && typeof e === 'object') {
+                pushEdge(e.from ?? e.source, e.to ?? e.target, e.kind, e.label ?? null);
+              }
+            }
+          }
           if (!nodes.length) {
             content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.')));
             return;
@@ -1094,7 +1208,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
           const rows = h('div', 'ui-list');
           nodes.forEach((node, index) => rows.append(listRow({
-            title: String(node.label || node.title || node.id || `Block ${index + 1}`),
+            title: String(node.title || node.label || node.id || `Block ${index + 1}`),
             subtitle: node.addr != null ? addressText(node.addr) : '',
             onClick: node.addr != null ? () => router.navigate('/code/' + BigInt(node.addr).toString()) : null,
           })));

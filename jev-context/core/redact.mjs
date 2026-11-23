@@ -101,10 +101,12 @@ export function redact(input) {
   for (const pattern of COMPILED) {
     const re = new RegExp(pattern.source, pattern.flags);
     let matched = false;
-    text = text.replace(re, (...args) => {
+    text = text.replace(re, (_match, ...args) => {
       matched = true;
-      // Last argument is the full match; drop offset/input bookkeeping.
-      return pattern.replacement;
+      return pattern.replacement.replace(/\$([1-9])/g, (_, groupIndex) => {
+        const captured = args[Number(groupIndex) - 1];
+        return typeof captured === "string" ? captured : "";
+      });
     });
     if (matched) {
       count += 1;

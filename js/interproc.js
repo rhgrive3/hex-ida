@@ -280,7 +280,8 @@ export function summarizeFunction(model, opts) {
   );
   const forwarding = !!(
     calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0 &&
-    branches.length === 0 && unknownPointerStores.length === 0 && trustedReturn
+    branches.length === 0 && unknownPointerStores.length === 0 &&
+    trustedReturn && trustedReturn.kind === 'call'
   );
 
   return {
@@ -327,6 +328,9 @@ function normalizeBitvector(value, bits, signed) {
 
 function composeReturn(wrapper, callee) {
   if (!wrapper || !callee || wrapper.calls.length !== 1 || callee.returns.length !== 1) return null;
+  if (!Array.isArray(wrapper.returns) || wrapper.returns.length !== 1) return null;
+  const wrapperReturn = wrapper.returns[0];
+  if (!wrapperReturn || !wrapperReturn.trusted || wrapperReturn.kind !== 'call') return null;
   const r = callee.returns[0];
   if (!r || !r.trusted) return null;
   const call = wrapper.calls[0];
@@ -421,7 +425,9 @@ export class FunctionSummaryCache {
       const summary = summarizeFunction(model, summaryOpts);
       if (!summary) return null;
 
-      if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding) {
+      const singleReturn = summary.returns.length === 1 ? summary.returns[0] : null;
+      if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding
+          && singleReturn && singleReturn.trusted && singleReturn.kind === 'call') {
         const target = summary.calls[0].target;
         if (target != null && !cancelled()) {
           const callee = await this.summaryFor(target, calleeOptions(opts, depth + 1));

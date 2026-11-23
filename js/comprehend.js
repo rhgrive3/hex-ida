@@ -539,8 +539,15 @@ export function findSink(model, vg, acc) {
     writesByRow.get(w.row).push(w);
   }
 
+  const isTailCall = (insn) => {
+    if (!insn) return false;
+    if (insn.isTailCall || insn.tailCall) return true;
+    const call = callByRow.get(insn.row);
+    return Boolean(call && (call.isTailCall || call.tailCall || call.kind === 'tail-call'));
+  };
+
   const successors = (insn) => {
-    if (!insn || insn.isReturn) return [];
+    if (!insn || insn.isReturn || isTailCall(insn)) return [];
     const fallthrough = nextRow.get(insn.row);
     if (insn.isBranch && !insn.isCall) {
       const target = insn.branchTarget == null ? null : rowAtAddress.get(insn.branchTarget.toString());

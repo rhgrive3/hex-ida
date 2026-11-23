@@ -32,8 +32,10 @@ export async function queryFunctions(app, query, { signal, offset = 0, limit = 2
   for (let attempt = 0; attempt < 2; attempt++) {
     if (signal?.aborted) throw abortError();
     const snapshot = await app.analysisQueries.snapshot({ signal });
+    if (signal?.aborted) throw abortError();
     try {
       result = await app.analysisQueries.functions(snapshot, filter, { offset, limit }, { signal });
+      if (signal?.aborted) throw abortError();
       break;
     } catch (error) {
       if (signal?.aborted) throw abortError();
@@ -56,8 +58,12 @@ function stringIndexState(rows) {
 async function normalizedStringRecord(rows, state, index, signal) {
   if (index < state.normalized) return state.records[index];
   for (let i = state.normalized; i <= index; i++) {
+    if (i < state.normalized) { i = state.normalized - 1; continue; }
     if (signal?.aborted) throw abortError();
-    if ((i & (YIELD_EVERY - 1)) === 0) await yieldControl(signal);
+    if ((i & (YIELD_EVERY - 1)) === 0) {
+      await yieldControl(signal);
+      if (i < state.normalized) { i = state.normalized - 1; continue; }
+    }
     if (signal?.aborted) throw abortError();
     const text = String(rows[i]?.text || '');
     const lower = text.toLowerCase();
@@ -72,6 +78,7 @@ export function stringQueryIndexStats(rows) {
   return { normalizedRows:state?.normalized || 0, estimatedHeapBytes:state?.heapBytes || 0 };
 }
 export async function queryStrings(rows, query, { signal, offset = 0, limit = 200 } = {}) {
+  if (signal?.aborted) throw abortError();
   const sourceRows = rows || [];
   const q = String(query || '').trim().toLowerCase();
   if (!q) return sourceRows;

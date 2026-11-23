@@ -190,7 +190,31 @@ export function showSearch(app) {
       }
       more.remove();
       const frag=document.createDocumentFragment();const end=Math.min(items.length,shown+PAGE);
-      for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{sheet.close();showCodeRoute();app.viewer.goToRow(item.row,'third');app.viewer.mark(item.row);app.viewer.select(item.row,false);app.store.set({selectedRow:item.row});}}));}
+      for(;shown<end;shown++){const item=items[shown];frag.append(tapRow(addrText(item.addr),{sub:item.text,onTap:()=>{
+        sheet.close();
+        showCodeRoute();
+        const isVariable=Boolean(app.viewer?.isVariableAsm?.());
+        if(item.addr!=null&&(typeof app.goToAddress==='function'||typeof app.viewer?.goToAddress==='function')){
+          const navigated=typeof app.goToAddress==='function'
+            ?app.goToAddress(item.addr,{announce:true})
+            :app.viewer.goToAddress(item.addr);
+          if(navigated){
+            const row=app.viewer?.rowOfAddress?.(item.addr)??(isVariable?null:item.row);
+            if(row!=null){
+              app.viewer?.mark?.(row);
+              app.viewer?.select?.(row,false);
+              app.store?.set?.({selectedRow:row});
+            }
+          }
+          return;
+        }
+        if(!isVariable&&item.row!=null){
+          app.viewer.goToRow(item.row,'third');
+          app.viewer.mark(item.row);
+          app.viewer.select(item.row,false);
+          app.store.set({selectedRow:item.row});
+        }
+      }}));}
       results.append(frag);addMore();
     };
     if(items.length)void page();

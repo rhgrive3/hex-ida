@@ -251,7 +251,9 @@ async function main() {
       // Re-enabling after `off` must never jump straight to active: pruning
       // resumes in shadow so an operator can inspect decisions first.
       const current = resolveConfig();
-      return setMode(current.mode === "off" ? "shadow" : current.mode);
+      const persisted = createSettingsStore({ path: current.statePath }).load();
+      const effectiveMode = persisted.mode || current.mode;
+      return setMode(effectiveMode === "off" ? "shadow" : effectiveMode);
     }
     case "off":
       return setMode("off");

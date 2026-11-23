@@ -208,6 +208,21 @@ function parseLiterals(ctx,budget){
     const o=index.offset+i*8;if(o+8>index.end)break;
     const len=ctx.dv.getInt32(o,true),off=ctx.dv.getInt32(o+4,true);
     if(len<0||len>1<<16||off<0||off+len>data.size)continue;
+    if(len>0)budget.check(0,0,len*2);
+    const text=utf8(ctx.u8.subarray(data.offset+off,data.offset+off+len));if(text!=null)out.push({index:i,text});
+  }return out;
+}
+async function parseLiteralsAsync(ctx,budget,options={}){
+  const index=ctx.pair('stringLiteral'),data=ctx.pair('stringLiteralData'),out=[];
+  if(!index.size||!data.size||index.size%8!==0)return out;
+  const count=Math.floor(index.size/8);
+  if(count>200000)throw budgetError('IL2CPP_METADATA_BUDGET','Too many IL2CPP string literals.');
+  for(let i=0;i<count;i++){
+    if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
+    const o=index.offset+i*8;if(o+8>index.end)break;
+    const len=ctx.dv.getInt32(o,true),off=ctx.dv.getInt32(o+4,true);
+    if(len<0||len>1<<16||off<0||off+len>data.size)continue;
+    if(len>0)budget.check(0,0,len*2);
     const text=utf8(ctx.u8.subarray(data.offset+off,data.offset+off+len));if(text!=null)out.push({index:i,text});
   }return out;
 }
@@ -281,7 +296,7 @@ async function parseLayoutAsync(ctx,layout,budget,options={}){
     const m=methods[i];const c=byIndex.get(m.classIndex);m.className=c?c.full:null;m.full=(c?c.full+'::':'')+m.name;
   }
   const images=parseImages(ctx,ctx.pair('images'),stringAt,typeCount,budget);
-  const literals=parseLiterals(ctx,budget);
+  const literals=await parseLiteralsAsync(ctx,budget,options);
   const score=(validTypeNames/Math.max(1,typeCount))*4+(validMethodNames/Math.max(1,methodCount))*3+(validOwners/Math.max(1,methodCount))*5+(validTokens/Math.max(1,validMethodNames))*2+(images.length?1:0);
   return{version,classes,methods,literals,images,warnings,typeSize:layout.type,methodSize:layout.method,layout:layout.label,_layoutScore:score,_counts:{typeCount,methodCount}};
 }

@@ -106,7 +106,7 @@ function readBodyBounded(req, maxBodyBytes) {
       }
       chunks.push(bytes);
     };
-    const onEnd = () => finish({ tooLarge: false, body: Buffer.concat(chunks, total).toString("utf8") });
+    const onEnd = () => finish({ tooLarge: false, body: Buffer.concat(chunks, total) });
     const onError = (error) => fail(error);
     const onAborted = () => fail(new Error("request aborted"));
 
@@ -155,7 +155,12 @@ export function extractResponsesInput(body) {
     }
     const isToolResult = entry.type === "function_call_output" || entry.type === "local_shell_call_output" || entry.role === "tool";
     if (isToolResult) {
-      const text = typeof entry.output === "string" ? entry.output : JSON.stringify(entry.output ?? entry.content ?? "");
+      const text =
+        typeof entry.output === "string"
+          ? entry.output
+          : typeof entry.content === "string"
+            ? entry.content
+            : JSON.stringify(entry.output ?? entry.content ?? "");
       const callId = entry.call_id || entry.id || `out_${i}`;
       items.push({
         id: String(callId),
@@ -234,32 +239,49 @@ export function extractChatMessages(body) {
 }
 
 function applyToResponses(body, extracted, plan) {
-  const dropped = new Set(plan.decisions.filter((decision) => decision.action === "drop").map((decision) => decision.id));
-  if (dropped.size === 0) return { changed: false };
+  const droppedById = new Map(
+    plan.decisions.filter((decision) => decision.action === "drop").map((decision) => [decision.id, decision]),
+  );
+  if (droppedById.size === 0) return { changed: false };
   let changed = false;
   extracted.refs.forEach((ref, index) => {
     if (ref.kind !== "responses") return;
     const item = extracted.items[index];
-    if (!dropped.has(item.id)) return;
+    const decision = droppedById.get(item.id);
+    if (!decision) return;
     const entry = body.input[ref.index];
     if (!entry) return;
-    entry.output = `[jev-prune] this tool output (${item.tokens} tokens) was omitted: superseded, duplicated or verbose.`;
+    const tokens = decision.tokens ?? item.tokens ?? 0;
+    const marker = `[jev-prune] this tool output (${tokens} tokens) was omitted: superseded, duplicated or verbose.`;
+    if (
+      Object.prototype.hasOwnProperty.call(entry, "output") ||
+      entry.type === "function_call_output" ||
+      entry.type === "local_shell_call_output"
+    ) {
+      entry.output = marker;
+    } else {
+      entry.content = marker;
+    }
     changed = true;
   });
   return { changed };
 }
 
 function applyToChat(body, extracted, plan) {
-  const dropped = new Set(plan.decisions.filter((decision) => decision.action === "drop").map((decision) => decision.id));
-  if (dropped.size === 0) return { changed: false };
+  const droppedById = new Map(
+    plan.decisions.filter((decision) => decision.action === "drop").map((decision) => [decision.id, decision]),
+  );
+  if (droppedById.size === 0) return { changed: false };
   let changed = false;
   extracted.refs.forEach((ref, index) => {
     if (ref.kind !== "chat") return;
     const item = extracted.items[index];
-    if (!dropped.has(item.id)) return;
+    const decision = droppedById.get(item.id);
+    if (!decision) return;
     const message = body.messages[ref.index];
     if (!message) return;
-    message.content = `[jev-prune] this tool output (${item.tokens} tokens) was omitted: superseded, duplicated or verbose.`;
+    const tokens = decision.tokens ?? item.tokens ?? 0;
+    message.content = `[jev-prune] this tool output (${tokens} tokens) was omitted: superseded, duplicated or verbose.`;
     changed = true;
   });
   return { changed };
@@ -272,12 +294,24 @@ export function createPruningProxy(options = {}) {
   const upstreamUrl = new URL(upstream);
   const maxBodyBytes = resolveMaxBodyBytes(options);
 
+  function isPrunableJsonRequest(req) {
+    if (req.method !== "POST") return false;
+    const encoding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    if (encoding && encoding !== "identity") return false;
+    const contentType = String(req.headers["content-type"] || "").trim().toLowerCase();
+    if (!contentType) return true;
+    const mediaType = contentType.split(";")[0].trim();
+    return mediaType === "application/json" || mediaType.endsWith("+json");
+  }
+
   async function pruneRequestBody(rawBody) {
     // Returns the body to forward. Any failure returns the original bytes.
     if (!config.usable) return rawBody;
+    const isBuffer = Buffer.isBuffer(rawBody);
+    const bodyText = isBuffer ? rawBody.toString("utf8") : rawBody;
     let parsed;
     try {
-      parsed = JSON.parse(rawBody);
+      parsed = JSON.parse(bodyText);
     } catch {
       return rawBody;
     }
@@ -310,7 +344,8 @@ export function createPruningProxy(options = {}) {
         : applyToResponses(parsed, extracted, plan);
       pipeline.saveState();
       if (!applied.changed) return rawBody;
-      return JSON.stringify(parsed);
+      const serialized = JSON.stringify(parsed);
+      return isBuffer ? Buffer.from(serialized, "utf8") : serialized;
     } catch {
       return rawBody;
     }
@@ -345,8 +380,12 @@ export function createPruningProxy(options = {}) {
     try {
       bodyResult = await readBodyBounded(req, maxBodyBytes);
     } catch {
-      if (!res.headersSent) res.writeHead(400);
-      res.end("bad request");
+      if (!res.headersSent) {
+        res.writeHead(400);
+        res.end("bad request");
+      } else if (!res.destroyed) {
+        res.destroy();
+      }
       return;
     }
     if (bodyResult.tooLarge) {
@@ -363,7 +402,7 @@ export function createPruningProxy(options = {}) {
     }
 
     let outgoingBody = rawBody;
-    if (req.method === "POST" && rawBody) {
+    if (rawBody && rawBody.length > 0 && isPrunableJsonRequest(req)) {
       try {
         outgoingBody = await pruneRequestBody(rawBody);
       } catch {
@@ -372,6 +411,7 @@ export function createPruningProxy(options = {}) {
     }
 
     const transport = target.protocol === "http:" ? http : https;
+    let activeUpstreamResponse = null;
 
     const upstreamRequest = transport.request(
       {
@@ -383,6 +423,23 @@ export function createPruningProxy(options = {}) {
         headers: { ...forwardedHeaders, "content-length": Buffer.byteLength(outgoingBody) },
       },
       (upstreamResponse) => {
+        activeUpstreamResponse = upstreamResponse;
+        upstreamResponse.on("error", (error) => {
+          if (!res.headersSent) {
+            res.writeHead(502, { "content-type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: { message: `jev-prune proxy upstream error: ${String(error && error.message ? error.message : error).slice(0, 200)}` },
+              }),
+            );
+          } else if (!res.destroyed) {
+            res.destroy(error);
+          }
+        });
+        if (res.destroyed || res.writableEnded) {
+          upstreamResponse.destroy();
+          return;
+        }
         const responseHeaders = {};
         const responseHopByHop = hopByHopHeaders(upstreamResponse.headers);
         for (const [key, value] of Object.entries(upstreamResponse.headers)) {
@@ -397,19 +454,38 @@ export function createPruningProxy(options = {}) {
     upstreamRequest.on("error", (error) => {
       // An unreachable upstream is reported as a normal upstream error; the
       // request itself was never blocked by pruning.
-      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: `jev-prune proxy upstream error: ${String(error.message).slice(0, 200)}` } }));
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: { message: `jev-prune proxy upstream error: ${String(error && error.message ? error.message : error).slice(0, 200)}` },
+          }),
+        );
+      } else if (!res.destroyed) {
+        res.destroy(error);
+      }
     });
 
-    req.on("aborted", () => upstreamRequest.destroy());
+    const abortUpstream = () => {
+      if (!upstreamRequest.destroyed) upstreamRequest.destroy();
+      if (activeUpstreamResponse && !activeUpstreamResponse.destroyed) activeUpstreamResponse.destroy();
+    };
+    req.on("aborted", abortUpstream);
+    res.on("close", () => {
+      if (!res.writableEnded) abortUpstream();
+    });
     upstreamRequest.end(outgoingBody);
   }
 
   function listen({ host = process.env.JEV_PROXY_HOST || "127.0.0.1", port = Number(process.env.JEV_PROXY_PORT || 8787) } = {}) {
     const server = http.createServer((req, res) => {
       handle(req, res).catch(() => {
-        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: "jev-prune proxy internal error" } }));
+        if (!res.headersSent) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "jev-prune proxy internal error" } }));
+        } else if (!res.destroyed) {
+          res.destroy();
+        }
       });
     });
     return new Promise((resolve) => server.listen(port, host, () => resolve(server)));

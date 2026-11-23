@@ -17,7 +17,7 @@
  */
 import { levelOf, SCORE } from './blocks.js';
 import { buildCfg } from './cfg.js';
-import { findValueUpdates, constantComparisons, hotLocations } from './dataflow.js';
+import { findValueUpdates, constantComparisons, hotLocations, selfRegisters } from './dataflow.js';
 import { matchText } from './goals.js';
 import { comprehend } from './comprehend.js';
 import { stackNaming } from './decompile.js';
@@ -124,10 +124,16 @@ export function buildFunctionReport(opts) {
    */
   const fieldIndex = o.fields || null;
   const owner = o.owner || (fieldIndex && startAddr != null ? fieldIndex.ownerOf(startAddr) : null);
-  if (fieldIndex && owner) {
+  const ownerClassName = owner ? owner.className : null;
+  if (fieldIndex) {
     for (const u of updates) {
-      u.field = fieldIndex.resolveAccess(
-        { base: u.location.base, disp: u.location.disp, self: u.location.self === true }, owner.className);
+      const selfFlag = u.location.self === true ? true : (u.location.self === false ? false : null);
+      u.field = fieldIndex.resolveAccess({
+        base: u.location.base,
+        disp: u.location.disp,
+        indexAddr: u.location.indexAddr ?? null,
+        self: selfFlag,
+      }, ownerClassName);
     }
   }
 
@@ -150,9 +156,48 @@ export function buildFunctionReport(opts) {
   }
 
   const locations = hotLocations(model);
-  if (fieldIndex && owner) {
+  if (locations.length) {
+    const insnByRow = new Map();
+    for (const insn of model.instructions || []) {
+      if (insn && insn.row != null) insnByRow.set(insn.row, insn);
+    }
+    const selfRegs = selfRegisters(model);
+    const updateByKey = new Map();
+    for (const u of updates) {
+      if (u?.location?.key && !updateByKey.has(u.location.key)) updateByKey.set(u.location.key, u.location);
+    }
     for (const loc of locations) {
-      loc.field = fieldIndex.resolveAccess({ base: loc.base, disp: loc.disp, self: loc.self === true }, owner.className);
+      const rows = Array.isArray(loc.rows) ? loc.rows : [];
+      if (loc.indexAddr === undefined) {
+        let indexAddr = null;
+        for (const row of rows) {
+          const mem = insnByRow.get(row)?.memory;
+          if (mem && mem.indexAddr != null) { indexAddr = mem.indexAddr; break; }
+        }
+        if (indexAddr == null && loc.key && updateByKey.has(loc.key)) {
+          indexAddr = updateByKey.get(loc.key).indexAddr ?? null;
+        }
+        loc.indexAddr = indexAddr;
+      }
+      if (loc.self === undefined) {
+        const matchedUpdate = loc.key ? updateByKey.get(loc.key) : null;
+        if (rows.length > 0 && rows.every((row) => selfRegs.isSelf(loc.base, row))) {
+          loc.self = true;
+        } else if (matchedUpdate && matchedUpdate.self === true) {
+          loc.self = true;
+        } else {
+          loc.self = null;
+        }
+      }
+      if (fieldIndex) {
+        const selfFlag = loc.self === true ? true : (loc.self === false ? false : null);
+        loc.field = fieldIndex.resolveAccess({
+          base: loc.base,
+          disp: loc.disp,
+          indexAddr: loc.indexAddr ?? null,
+          self: selfFlag,
+        }, ownerClassName);
+      }
     }
   }
 

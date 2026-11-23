@@ -236,6 +236,9 @@ findXrefs = async function findXrefsDataInCode(args) {
   const original = region, results = [], cap = Math.min(Number(args.limit) || 2000, 2000);
   for (const span of spans) {
     const delta = span.start - BigInt(original.vmAddr);
+    if (delta < 0n || delta % 4n !== 0n) continue;
+    const rowBaseBig = delta / 4n;
+    const rowBase = Number(rowBaseBig);
     const sub = { ...original, fileOffset:BigInt(original.fileOffset)+delta, vmAddr:span.start, size:span.end-span.start, dataInCode:[] };
     const tempKey = __dicTempRegionKey(args.regionId);
     regions.set(tempKey, sub);
@@ -246,7 +249,15 @@ findXrefs = async function findXrefsDataInCode(args) {
       regions.delete(tempKey);
     }
     if (part?.cancelled) return { results, cancelled:true, capped:false };
-    results.push(...(part.results || []));
+    for (const entry of part?.results || []) {
+      if (entry && typeof entry.row === 'number') {
+        results.push({ ...entry, row: entry.row + rowBase });
+      } else if (entry && typeof entry.row === 'bigint') {
+        results.push({ ...entry, row: entry.row + rowBaseBig });
+      } else {
+        results.push(entry);
+      }
+    }
     if (results.length >= cap) break;
   }
   return { results:results.slice(0,cap), cancelled:false, capped:results.length>=cap };
