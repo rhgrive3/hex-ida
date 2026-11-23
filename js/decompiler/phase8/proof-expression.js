@@ -91,8 +91,18 @@ function signed(value, bits) {
  * This renders an explicit operation; it does not issue proof/adoption authority.
  * Keep native C carriers and sign-bit handling identical on both paths.
  */
+function isFloatingExpressionNode(value) {
+  return value?.floating === true
+    || value?.float === true
+    || value?.kind === 'float-const'
+    || value?.kind === 'float'
+    || value?.type === 'float'
+    || value?.type === 'double';
+}
+
 export function renderBitvectorCast(value, operation, bits) {
-  if (!value || value.effect !== 'pure' || !['trunc','zext','sext'].includes(operation)
+  if (!value || value.effect !== 'pure' || isFloatingExpressionNode(value)
+    || !['trunc','zext','sext'].includes(operation)
     || !Number.isInteger(value.bits) || value.bits < 1 || value.bits > 64
     || !Number.isInteger(bits) || bits < 1 || bits > 64
     || (operation === 'trunc' ? bits >= value.bits : bits <= value.bits)) return null;

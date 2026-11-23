@@ -1059,8 +1059,8 @@ export function analyzeDataFlow(insns, opts) {
             const baseVal = m.base ? get(m.base) : null;
             // adrp（ページの先頭）＋ ldr の即値でも、指している場所は確定する。
             // __objc_selrefs からメソッド名を引くのがまさにこの形。
-            const addr = baseVal && baseVal.kind === 'address' && dDisp != null
-              ? baseVal.addr + dDisp : null;
+            const addr = baseVal && baseVal.kind === 'address' && !m.index
+              ? baseVal.addr + (dDisp != null ? dDisp : 0n) : null;
             v = value('loaded', { at: { base: m.base, disp: dDisp }, addr, size: m.size },
               SCORE.high, [ev('load', insn.row, { base: m.base, disp: dDisp, addr })], insn.row);
             flow('mem->reg', insn.row, m.base, dst, v);

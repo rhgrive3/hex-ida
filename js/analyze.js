@@ -845,7 +845,10 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
+    const ptrs = deref.map((d) => {
+      const p = pointerAt(d.bytes, pointerContext);
+      return p != null && p >= 0x40n ? p : null;
+    });
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,

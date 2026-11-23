@@ -395,6 +395,152 @@ function valueIsConsumedByOtherNode(valueId, node, context) {
 // computation. Any declared state/memory/control effect must take the
 // conservative intrinsic path so clobbers, memory barriers and physical
 // state invalidation are preserved instead of silently discarded (#5386).
+const SCALAR_FP_VIEW_RE = /^[sd](?:[0-9]|[12][0-9]|3[01])$/i;
+const ANY_FP_REG_RE = /^[bhsdqv](?:[0-9]|[12][0-9]|3[01])$/i;
+
+function isScalarFpRegisterName(name) {
+  return typeof name === 'string' && SCALAR_FP_VIEW_RE.test(name.trim());
+}
+
+function isAnyFpRegisterName(name) {
+  return typeof name === 'string' && ANY_FP_REG_RE.test(name.trim());
+}
+
+function isFpStateVariable(variable) {
+  if (!variable || typeof variable !== 'object') return false;
+  const regId = variable.physicalIdentity?.registerId ?? legacyPublicStateIdentity(variable);
+  return isAnyFpRegisterName(regId);
+}
+
+function valueWritesToScalarFpReg(valueId, context, maxDepth = 3) {
+  if (valueId == null || !context) return false;
+  const visited = new Set();
+  const queue = [{ id: valueId, depth: 0 }];
+  while (queue.length > 0) {
+    const { id, depth } = queue.shift();
+    if (id == null || visited.has(id) || depth > maxDepth) continue;
+    visited.add(id);
+    const consumers = context.consumersByValueId?.get(id)
+      ?? (context.ir?.nodes || []).filter((candidate) => candidate.inputs?.includes(id));
+    for (const consumer of consumers) {
+      if (!consumer) continue;
+      if (consumer.kind === 'state-write') {
+        const meta = operationMetadata(consumer);
+        const view = meta.architecturalViewWritten ?? meta.architecturalViewWrite ?? meta.view ?? null;
+        if (isScalarFpRegisterName(view) || isFpStateVariable(consumer.variable)) return true;
+        continue;
+      }
+      if (consumer.kind === 'zext' || consumer.kind === 'copy' || consumer.kind === 'bitcast') {
+        for (const outId of consumer.outputs || []) queue.push({ id: outId, depth: depth + 1 });
+      }
+    }
+  }
+  return false;
+}
+
+function valueReadsFromScalarFpReg(valueId, context, maxDepth = 3) {
+  if (valueId == null || !context) return false;
+  let curId = valueId;
+  const visited = new Set();
+  for (let depth = 0; depth <= maxDepth && curId != null && !visited.has(curId); depth++) {
+    visited.add(curId);
+    const producer = context.producerByValueId?.get(curId) ?? null;
+    if (!producer) break;
+    if (producer.kind === 'state-read') {
+      const meta = operationMetadata(producer);
+      const view = meta.architecturalViewRead ?? meta.view ?? null;
+      if (isScalarFpRegisterName(view) || isFpStateVariable(producer.variable)) return true;
+      break;
+    }
+    if ((producer.kind === 'trunc' || producer.kind === 'copy' || producer.kind === 'bitcast') && producer.inputs?.length === 1) {
+      const meta = operationMetadata(producer);
+      if (meta.purpose === 'arm64-fp-register-view') return true;
+      curId = producer.inputs[0];
+      continue;
+    }
+    break;
+  }
+  return false;
+}
+
+function constBitvectorForBitcopy(valueId, inputValue, context, widthBits) {
+  const direct = constForValue(valueId, context);
+  if (direct != null) return direct;
+  if (inputValue?.const != null) return safeBigInt(inputValue.const);
+  let curId = valueId;
+  const visited = new Set();
+  for (let depth = 0; depth < 3 && curId != null && !visited.has(curId); depth++) {
+    visited.add(curId);
+    const producer = context.producerByValueId?.get(curId) ?? null;
+    if (!producer) break;
+    if (producer.kind === 'const') {
+      const val = constForValue(curId, context);
+      if (val != null) return widthBits ? BigInt.asUintN(widthBits, val) : val;
+      break;
+    }
+    if ((producer.kind === 'trunc' || producer.kind === 'zext' || producer.kind === 'copy' || producer.kind === 'bitcast')
+        && producer.inputs?.length === 1) {
+      curId = producer.inputs[0];
+      continue;
+    }
+    break;
+  }
+  return null;
+}
+
+function projectArm64FpBitcopy(node, context, inst, setBasic, primaryOutput, inputValues) {
+  if (node.operator !== 'arm64.fp.bitcopy' || inputValues.length !== 1) return false;
+  const opMeta = operationMetadata(node);
+  const bundle = bundleMetadata(node);
+  const inputVal = inputValues[0];
+  const widthBits = Number(primaryOutput?.bits ?? inputVal?.bits ?? bundle.widthBits ?? 0) || null;
+  const dstView = opMeta.architecturalViewWritten ?? opMeta.architecturalViewWrite ?? opMeta.view ?? null;
+  const srcView = opMeta.architecturalViewRead ?? null;
+  const dstIsFp = opMeta.dstClass === 'fp'
+    || primaryOutput?.machineType?.kind === 'float'
+    || isAnyFpRegisterName(primaryOutput?.reg)
+    || isScalarFpRegisterName(dstView)
+    || valueWritesToScalarFpReg(node.outputs?.[0], context);
+  const srcIsFp = opMeta.srcClass === 'fp'
+    || inputVal?.machineType?.kind === 'float'
+    || isAnyFpRegisterName(inputVal?.reg)
+    || isScalarFpRegisterName(srcView)
+    || valueReadsFromScalarFpReg(node.inputs?.[0], context);
+
+  if (dstIsFp && (widthBits === 32 || widthBits === 64)) {
+    const rawConst = constBitvectorForBitcopy(node.inputs?.[0], inputVal, context, widthBits);
+    if (rawConst != null) {
+      const masked = BigInt.asUintN(widthBits, rawConst);
+      const decoded = decodeFloatBitPattern(masked, widthBits, 'ieee754');
+      if (decoded != null) {
+        setBasic(V1_OP.CONST, null, []);
+        inst.bits = widthBits;
+        inst.extra.value = null;
+        inst.extra.float = decoded;
+        inst.extra.constKind = 'float';
+        inst.extra.compatSource = 'exact-arm64-fp-bitcopy-const';
+        if (primaryOutput) {
+          primaryOutput.float = decoded;
+          primaryOutput.floatConst = decoded;
+          primaryOutput.constKind = 'float';
+        }
+        return true;
+      }
+    }
+  }
+
+  setBasic(V1_OP.MOV, 'fmov', inputValues.slice(0, 1));
+  if (widthBits) inst.bits = widthBits;
+  inst.extra.float = true;
+  if (srcIsFp && dstIsFp) {
+    inst.extra.compatSource = 'exact-arm64-fp-bitcopy-mov';
+  } else {
+    inst.extra.bitcopy = true;
+    inst.extra.compatSource = 'exact-arm64-fp-bitcopy-transfer';
+  }
+  return true;
+}
+
 function intrinsicDeclaresSideEffects(intrinsic) {
   if (!intrinsic || typeof intrinsic !== 'object') return true;
   if (intrinsic.determinism !== 'deterministic') return true;
@@ -433,6 +579,9 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
     inst.extra.float = true;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-bitwise';
     return true;
+  }
+  if (op === 'arm64.fp.bitcopy' && inputValues.length === 1) {
+    return projectArm64FpBitcopy(node, context, inst, setBasic, primaryOutput, inputValues);
   }
   if (inputValues.length >= 1) {
     const metadata = operationMetadata(node);
@@ -553,6 +702,13 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
   };
 
   const op = node.operator;
+  if (op === 'arm64.fp.bitcopy' && inputValues.length === 1) {
+    if (projectArm64FpBitcopy(node, context, inst, setBasic, outputValues[0] ?? null, inputValues)) {
+      inst.extra.intrinsic = intrinsic;
+      for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+      return true;
+    }
+  }
   if (op === 'arm64.simd.movi' && inputValues.length === 1) {
     const shift = operationMetadata(node).shift;
     const imm = constForValue(node.inputs?.[0], context) ?? inputValues[0]?.const ?? null;
@@ -1003,9 +1159,20 @@ export function projectNode(node, context) {
       }
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
+      const loadWidthBits = Number(node.memory.widthBits || 0);
+      const isScalarFpLoad = (loadWidthBits === 32 || loadWidthBits === 64) && (
+        attrs.float === true
+        || opMeta.float === true
+        || bundleMetadata(node).float === true
+        || primaryOutput?.machineType?.kind === 'float'
+        || isScalarFpRegisterName(primaryOutput?.reg)
+        || isScalarFpRegisterName(opMeta.architecturalViewWritten ?? opMeta.architecturalViewWrite ?? opMeta.view)
+        || valueWritesToScalarFpReg(node.outputs?.[0], context)
+      );
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
         signed: attrs.signed === true || opMeta.signed === true, memoryAccess: node.memory, completeness: node.completeness, attributes: attrs,
-        addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin };
+        addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin,
+        ...(isScalarFpLoad ? { float: true } : {}) };
       break;
     }
     case 'store': {
@@ -1026,9 +1193,20 @@ export function projectNode(node, context) {
       }
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
+      const storeWidthBits = Number(node.memory.widthBits || 0);
+      const storedValueIds = (node.inputs || []).filter((id) => id !== addressValueId);
+      const isScalarFpStore = (storeWidthBits === 32 || storeWidthBits === 64) && (
+        attrs.float === true
+        || opMeta.float === true
+        || bundleMetadata(node).float === true
+        || isScalarFpRegisterName(opMeta.architecturalViewRead ?? opMeta.view)
+        || stored.some((value) => value?.machineType?.kind === 'float' || isScalarFpRegisterName(value?.reg))
+        || storedValueIds.some((id) => valueReadsFromScalarFpReg(id, context))
+      );
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
         memoryAccess: node.memory, completeness: node.completeness, attributes: attrs,
-        addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin };
+        addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin,
+        ...(isScalarFpStore ? { float: true } : {}) };
       break;
     }
     case 'call': {
