@@ -972,6 +972,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     let firstRow = null;
     let lastRow = null;
     const physicalStateCurrent = new Map();
+    const stateReadComparisonCarrierByValueId = new Map();
     for (const nodeId of block.semanticNodeIds) {
       const node = nodeById.get(nodeId);
       if (!node) continue;
@@ -993,6 +994,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         firstConsumerNodeByValueId,
         multiConsumerNodeValueIds,
         physicalStateCurrent,
+        stateReadComparisonCarrierByValueId,
         blockBySemanticId,
         options,
       });

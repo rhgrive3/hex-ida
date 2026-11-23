@@ -249,10 +249,15 @@ function comparisonCarrier(valueId, context, active = new Set()) {
       // older unconditional display CMP.
       result = null;
     } else if (producer.kind === 'state-read') {
-      const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
-      const reaching = use == null ? null : context.stateProjection.definitionByValueId.get(use.valueId) ?? null;
-      const sourceValueId = reaching?.proof?.sourceSemanticValueId ?? null;
-      if (sourceValueId) result = comparisonCarrier(sourceValueId, context, active);
+      const localCarrier = context.stateReadComparisonCarrierByValueId?.get(valueId) ?? null;
+      if (localCarrier?.value) {
+        result = localCarrier;
+      } else {
+        const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
+        const reaching = use == null ? null : context.stateProjection.definitionByValueId.get(use.valueId) ?? null;
+        const sourceValueId = reaching?.proof?.sourceSemanticValueId ?? null;
+        if (sourceValueId) result = comparisonCarrier(sourceValueId, context, active);
+      }
     } else {
       const candidates = [];
       for (const inputId of producer.inputs || []) {
@@ -322,7 +327,14 @@ function recordPhysicalStateWrite(node, destination, context) {
 
 function clearPhysicalState(variable, context) {
   const identity = legacyPublicStateIdentity(variable);
-  if (identity && context.physicalStateCurrent) context.physicalStateCurrent.delete(identity);
+  if (identity && context.physicalStateCurrent) {
+    context.physicalStateCurrent.delete(identity);
+    if (identity === 'nzcv') {
+      for (const flagId of ['NZCV.N', 'NZCV.Z', 'NZCV.C', 'NZCV.V']) {
+        context.physicalStateCurrent.delete(flagId);
+      }
+    }
+  }
 }
 
 export function addWithCarryOperands(node, context) {
@@ -609,7 +621,24 @@ function scalarFpIntrinsicProjection(node, context, inst, setBasic, inputValues,
     inst.extra.intrinsic = intrinsic;
     inst.extra.compatSource = 'exact-arm64-scalar-fp-intrinsic';
     suppressSecondaryFpsr();
-    for (const state of intrinsic.stateWrites || []) clearPhysicalState(state, context);
+    const fcmpCarrier = context.comparisonCarrierByNodeId?.get(node.id) ?? primaryOutput ?? null;
+    for (const state of intrinsic.stateWrites || []) {
+      const identity = legacyPublicStateIdentity(state);
+      if (identity === 'nzcv' && fcmpCarrier && context.physicalStateCurrent) {
+        const entry = {
+          value: fcmpCarrier,
+          sourceSemanticValueId: node.outputs?.[0] ?? null,
+          compareNode: node,
+          origin: node.origin,
+          isComparisonCarrier: true,
+        };
+        for (const flagId of ['nzcv', 'NZCV.N', 'NZCV.Z', 'NZCV.C', 'NZCV.V']) {
+          context.physicalStateCurrent.set(flagId, entry);
+        }
+      } else {
+        clearPhysicalState(state, context);
+      }
+    }
     return true;
   }
 
@@ -888,6 +917,14 @@ export function projectNode(node, context) {
       inst.dst = primaryOutput; attachArgs(inst, inputValues); break;
     }
     case 'state-read': {
+      const readIdentity = legacyPublicStateIdentity(node.variable);
+      const activeCarrier = readIdentity ? context.physicalStateCurrent?.get(readIdentity) : null;
+      if (activeCarrier?.isComparisonCarrier && activeCarrier.value && node.outputs?.[0] != null) {
+        context.stateReadComparisonCarrierByValueId?.set(node.outputs[0], {
+          value: activeCarrier.value,
+          compareNode: activeCarrier.compareNode ?? null,
+        });
+      }
       const use = stateProjection.readUseByNodeId.get(node.id) ?? null;
       const canonical = use == null ? null : valuesById.get(use.valueId) ?? null;
       const local = localPhysicalStateSource(node, context);
@@ -1059,6 +1096,7 @@ export function projectNode(node, context) {
       if (abi.returnEvidence != null) inst.returnEvidence = abi.returnEvidence;
       if (node.call.memoryWrite.scope !== 'none' || node.call.completeness !== 'complete') inst.memoryBarrier = true;
       for (const state of node.call.stateWrites || []) clearPhysicalState(state, context);
+      for (const clobber of inst.clobbers || []) clearPhysicalState({ key: clobber }, context);
       break;
     }
     case 'return':

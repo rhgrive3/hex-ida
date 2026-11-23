@@ -12,6 +12,7 @@ const DECOMPILER_IR_OPTION_KEYS = [
   'returnBits', 'returnsValue', 'decoderSemanticVersion', 'binaryId', 'sliceId',
   'abiAdapter', 'rootDescriptorProvider', 'regionOptions', 'semanticIrOptions',
   'ssaOptions', 'memorySsaOptions', 'compatOptions', 'signal',
+  'symbolFor', 'callPrototypeFor', 'callPrototype', 'prototypeFor',
 ];
 
 function irOptionsFromDecompilerOptions(opts = {}) {

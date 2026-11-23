@@ -540,10 +540,57 @@ function isAddressDerivedConstant(v, state = null, depth = 0, seen = null) {
       if (d.sub === 'sub') return leftAddr && !rightAddr;
       return leftAddr || rightAddr;
     }
+    if (d.op === 'phi') {
+      const nonSelf = (d.incoming || [])
+        .map((x) => (x?.value && typeof x.value === 'object' && 'id' in x.value ? x.value : (x?.id != null ? x : null)))
+        .filter((inc) => inc && !(v.id != null && inc.id === v.id));
+      return nonSelf.length > 0 && nonSelf.every((inc) => isAddressDerivedConstant(inc, state, depth + 1, visited));
+    }
     return false;
   } finally {
     if (v.id != null) visited.delete(v.id);
   }
+}
+
+function resolveConstantAddressValue(v, depth = 0, seen = null) {
+  if (!v || depth > 8) return null;
+  const visited = new Set(seen || []);
+  if (v.id != null) {
+    if (visited.has(v.id)) return null;
+    visited.add(v.id);
+  }
+  if (v.const != null) return v.const;
+  const d = v.def;
+  if (!d) return null;
+  if (d.op === 'addr') return d.extra?.value ?? d.extra?.target ?? null;
+  if (d.op === 'const') return d.extra?.value ?? null;
+  if (d.op === 'mov' || d.op === 'cast' || (d.op === 'un' && ['zext', 'sext', 'trunc', 'cast'].includes(d.sub))) {
+    return resolveConstantAddressValue(valueOf(d.args?.[0]), depth + 1, visited);
+  }
+  if (d.op === 'bin' && (d.sub === 'add' || d.sub === 'sub')) {
+    const lc = resolveConstantAddressValue(valueOf(d.args?.[0]), depth + 1, visited);
+    const rc = resolveConstantAddressValue(valueOf(d.args?.[1]), depth + 1, visited);
+    if (lc != null && rc != null) {
+      return d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
+    }
+    return null;
+  }
+  if (d.op === 'phi') {
+    const nonSelf = (d.incoming || [])
+      .map((x) => (x?.value && typeof x.value === "object" && "id" in x.value ? x.value : (x?.id != null ? x : null)))
+      .filter((inc) => inc && !(v.id != null && inc.id === v.id));
+    if (nonSelf.length === 0) return null;
+    let resolved = null;
+    for (const inc of nonSelf) {
+      const c = resolveConstantAddressValue(inc, depth + 1, visited);
+      if (c == null) return null;
+      const bi = BigInt(c);
+      if (resolved == null) resolved = bi;
+      else if (resolved !== bi) return null;
+    }
+    return resolved;
+  }
+  return null;
 }
 
 function stringLiteralAt(addr, state) {
@@ -2054,8 +2101,8 @@ function buildValueRaw(v, state, flags = {}) {
       if ((d.sub === 'add' || d.sub === 'sub') && isAddressDerivedConstant(v, state)) {
         const lv = valueOf(d.args?.[0]);
         const rv = valueOf(d.args?.[1]);
-        const lc = lv?.const ?? (lv?.def?.op === 'addr' ? (lv.def.extra?.value ?? lv.def.extra?.target ?? null) : null);
-        const rc = rv?.const ?? (rv?.def?.op === 'addr' ? (rv.def.extra?.value ?? rv.def.extra?.target ?? null) : null);
+        const lc = resolveConstantAddressValue(lv);
+        const rc = resolveConstantAddressValue(rv);
         if (lc != null && rc != null) {
           const foldedAddr = d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
           const literal = !flags.suppressRodataString ? stringLiteralAt(foldedAddr, state) : null;
@@ -2068,7 +2115,14 @@ function buildValueRaw(v, state, flags = {}) {
         }
       }
       if (!out) {
-      const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
+      let a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
+      if (d.sub === 'add' || d.sub === 'sub') {
+        const wrapGlobalPtr = (node) => (node?.kind === 'var' && typeof node.name === 'string' && node.name.startsWith('&global_'))
+          ? expr.variable(`(uintptr_t)(${node.name})`, 64, false, node.source, { address: node.address })
+          : node;
+        a = wrapGlobalPtr(a);
+        b = wrapGlobalPtr(b);
+      }
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));

@@ -619,7 +619,8 @@ function decideMaterial(model, vg) {
     if (insn.data || insn.memory || insn.isBranch) continue;
     const base = (insn.mnemonic || '').toLowerCase();
     const writes = (insn.writes || []).filter((reg) => reg !== 'nzcv');
-    const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|fsqrt|frinta|frintn|frintm|frintp|frintz|fcvtms|fcvtps|fcvtns|fcvtas|fcvtmu|fcvtpu|fcvtnu|fcvtau|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base);
+    const resolvedFallback = /^(mov|movi|fmov|movz|movn|movk|csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg|add|adds|sub|subs|mul|udiv|sdiv|and|ands|orr|eor|bic|bics|lsl|lsr|asr|ror|fadd|fsub|fmul|fdiv|fsqrt|frinta|frintn|frintm|frintp|frintz|fcvtms|fcvtps|fcvtns|fcvtas|fcvtmu|fcvtpu|fcvtnu|fcvtau|smull|umull|neg|negs|fneg|rbit|clz|mvn|madd|msub|sxtb|sxth|sxtw|uxtb|uxth|uxtw|scvtf|ucvtf|fcvtzs|fcvtzu|fcvt|bfi|bfxil|ubfx|sbfx|ubfiz)$/.test(base) ||
+      (base === 'rev64' && insn.ops?.[0]?.arr === '2s' && insn.ops?.[1]?.arr === '2s');
     const resolvedNoWrite = SKIP_MN.test(base) || /^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn|bics|brk|udf|svc)$/.test(base);
     const modeled = writes.some((reg) => {
       const value = vg.defAt(insn.row, reg);
@@ -1197,6 +1198,71 @@ function decodeRodataIntLiteral(bytes, size, byteOffset = 0, signed = false) {
   return hexImm(val);
 }
 
+const RODATA_TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+function encodeCStringBytes(text) {
+  if (typeof text !== 'string') return null;
+  if (RODATA_TEXT_ENCODER) {
+    const utf8 = RODATA_TEXT_ENCODER.encode(text);
+    const out = new Uint8Array(utf8.length + 1);
+    out.set(utf8);
+    out[utf8.length] = 0;
+    return out;
+  }
+  const out = new Uint8Array(text.length + 1);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+  out[text.length] = 0;
+  return out;
+}
+
+function resolveRodataBytesAt(addr, size, ctx) {
+  if (addr == null || !ctx || (size !== 1 && size !== 2 && size !== 4 && size !== 8)) return null;
+  let target;
+  try { target = BigInt(addr); } catch { return null; }
+  const sz = BigInt(size);
+  const refs = (ctx.model && ctx.model.addressRefs) || [];
+  for (const r of refs) {
+    if (!r || r.addr == null) continue;
+    let baseAddr;
+    try { baseAddr = BigInt(r.addr); } catch { continue; }
+    if (target < baseAddr) continue;
+    const off = Number(target - baseAddr);
+    if (!Number.isSafeInteger(off) || off < 0) continue;
+    if (r.bytes && target + sz <= baseAddr + BigInt(r.bytes.length)) {
+      return { bytes: r.bytes, offset: off };
+    }
+    if (typeof r.text === 'string') {
+      const encoded = encodeCStringBytes(r.text);
+      if (encoded && target + sz <= baseAddr + BigInt(encoded.length)) {
+        return { bytes: encoded, offset: off };
+      }
+    }
+  }
+  const stringFor = ctx.opts && typeof ctx.opts.stringFor === 'function' ? ctx.opts.stringFor : null;
+  if (stringFor) {
+    for (const r of refs) {
+      if (!r || r.addr == null) continue;
+      let baseAddr;
+      try { baseAddr = BigInt(r.addr); } catch { continue; }
+      if (target < baseAddr || (target - baseAddr) >= 4096n) continue;
+      const s = stringFor(baseAddr);
+      if (typeof s !== 'string') continue;
+      const encoded = encodeCStringBytes(s);
+      if (encoded && target + sz <= baseAddr + BigInt(encoded.length)) {
+        return { bytes: encoded, offset: Number(target - baseAddr) };
+      }
+    }
+    const direct = stringFor(target);
+    if (typeof direct === 'string') {
+      const encoded = encodeCStringBytes(direct);
+      if (encoded && encoded.length >= size) {
+        return { bytes: encoded, offset: 0 };
+      }
+    }
+  }
+  return null;
+}
+
 /** メモリ参照の呼び名。スタックなら var_XX、名前が読めるなら self->hp。 */
 function memNodeName(m, ctx) {
   if (!m.stack && !m.index && m.row != null) {
@@ -1216,6 +1282,21 @@ function memNodeName(m, ctx) {
       if (!sym) {
         const intLit = decodeRodataIntLiteral(ref.bytes, m.size, 0, !!m.signed);
         if (intLit != null) return intLit;
+      }
+    }
+    const effAddr = m.addr != null
+      ? m.addr
+      : (m.base && (m.base.k === 'str' || m.base.k === 'addr') && m.base.addr != null
+        ? m.base.addr + (m.disp != null ? m.disp : 0n)
+        : null);
+    if (effAddr != null && !fpW && (m.size === 1 || m.size === 2 || m.size === 4 || m.size === 8)) {
+      const sym = ctx.symbolFor(effAddr);
+      if (!sym) {
+        const hit = resolveRodataBytesAt(effAddr, m.size, ctx);
+        if (hit) {
+          const intLit = decodeRodataIntLiteral(hit.bytes, m.size, hit.offset, !!m.signed);
+          if (intLit != null) return intLit;
+        }
       }
     }
   }
@@ -1910,6 +1991,10 @@ function condText(cond, ctx) {
       return '((' + castTy + ')(' + cond.cmp.left + ') - (' + castTy + ')(' + cond.cmp.right + ')) ' + rel;
     }
     if (/^(< 0|>= 0)$/.test(op)) return cond.cmp.left + ' ' + op;
+    if (/^(lo|ls|hi|hs|cc|cs)$/.test(cond.cc) && cond.cmp.op !== 'fcmp' && cond.cmp.op !== 'fcmpe') {
+      const uTy = cond.cmp.bits === 32 ? 'uint32' : 'uint64';
+      return '(' + uTy + ')(' + cond.cmp.left + ') ' + op + ' (' + uTy + ')(' + cond.cmp.right + ')';
+    }
     return cond.cmp.left + ' ' + op + ' ' + cond.cmp.right;
   }
   void ctx;
@@ -2018,15 +2103,36 @@ function memText(op, ctx, insn, extraDisp = 0n, baseOverride = null) {
     }
     const sym = ctx.symbolFor(refAddr);
     if (sym) return sanitizeLegacyCallLabel(sym);
-    if (!float && ref.bytes && (size === 1 || size === 2 || size === 4 || size === 8)) {
+    if (!float && (size === 1 || size === 2 || size === 4 || size === 8)) {
       const signed = /^(ldrs|ldurs|ldpsw)/.test((insn.mnemonic || '').toLowerCase());
-      const intLit = decodeRodataIntLiteral(ref.bytes, size, Number(extraDisp || 0n), signed);
-      if (intLit != null) return intLit;
+      if (ref.bytes) {
+        const intLit = decodeRodataIntLiteral(ref.bytes, size, Number(extraDisp || 0n), signed);
+        if (intLit != null) return intLit;
+      }
+      const hit = resolveRodataBytesAt(refAddr, size, ctx);
+      if (hit) {
+        const intLit = decodeRodataIntLiteral(hit.bytes, size, hit.offset, signed);
+        if (intLit != null) return intLit;
+      }
     }
     if (!float && size === 8) {
       return 'global_' + refAddr.toString(16).toUpperCase();
     }
     return '*(' + typeFromAccess(size, { float }) + ' *)0x' + refAddr.toString(16).toUpperCase();
+  }
+  if (!ref && !op.index && baseOverride == null && insn && ctx.values && base && !float && (size === 1 || size === 2 || size === 4 || size === 8)) {
+    const bv = ctx.values.at(insn.row, base);
+    if (bv && (bv.k === 'addr' || bv.k === 'str') && bv.addr != null) {
+      const resolvedAddr = bv.addr + disp;
+      const sym = ctx.symbolFor(resolvedAddr);
+      if (sym) return sanitizeLegacyCallLabel(sym);
+      const signed = /^(ldrs|ldurs|ldpsw)/.test((insn.mnemonic || '').toLowerCase());
+      const hit = resolveRodataBytesAt(resolvedAddr, size, ctx);
+      if (hit) {
+        const intLit = decodeRodataIntLiteral(hit.bytes, size, hit.offset, signed);
+        if (intLit != null) return intLit;
+      }
+    }
   }
 
   const baseText = baseOverride != null ? baseOverride : (op.base ? operandText(op.base, ctx, insn) : varOf(base, ctx));
@@ -2535,6 +2641,19 @@ function statementFor(insn, ctx, node, state) {
   if (base === 'rbit' && dst && insn.ops[1]) {
     return mk(varOf(dst, ctx) + ' = reverse_bits(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });
   }
+  if (base === 'rev64' && dst && insn.ops.length >= 2 &&
+      insn.ops[0]?.arr === '2s' && insn.ops[1]?.arr === '2s') {
+    const srcExpr = operandText(insn.ops[1], ctx, insn);
+    const dstVar = varOf(dst, ctx);
+    const load64 = /^[A-Za-z_]\w*$/.test(srcExpr)
+      ? 'uint64_t _r64 = 0; memcpy(&_r64, &' + srcExpr + ', 8);'
+      : 'uint64_t _r64 = (uint64_t)(' + srcExpr + ');';
+    return mk(
+      '{ ' + load64 + ' _r64 = (_r64 >> 32) | (_r64 << 32); ' +
+      dstVar + ' = 0; memcpy(&' + dstVar + ', &_r64, 8); }',
+      { dst, pure: false }
+    );
+  }
   if (base === 'clz' && dst && insn.ops[1]) {
     return mk(varOf(dst, ctx) + ' = count_leading_zeros(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });
   }
@@ -2846,7 +2965,15 @@ function memoryStatement(insn, ctx, mk, base) {
       ? mem.writebackDisp.value
       : (wbMode === 'pre' ? (m.disp != null ? m.disp : (mem && mem.disp && mem.disp.value != null ? mem.disp.value : null)) : null));
   const hasWb = !!(wbMode && baseReg && baseReg !== 'sp' && !m.stack && rawWbDisp != null && rawWbDisp !== 0n);
-  const wbBaseName = hasWb ? varOf(baseReg, ctx) : null;
+  let wbBaseName = null;
+  if (hasWb) {
+    const bv = ctx.values ? ctx.values.at(insn.row, baseReg) : null;
+    const matBv = bv && ctx.material && ctx.material.names
+      ? ctx.material.names.get(bv.k === 'reg' && bv.prevDef ? bv.prevDef : bv)
+      : null;
+    wbBaseName = matBv || varOf(baseReg, ctx);
+    if (matBv) ctx.usedVars.add(matBv);
+  }
   const wbPtrType = hasWb ? pointerTypeForReg(baseReg, ctx) : null;
   const wbSign = hasWb ? (rawWbDisp < 0n ? '-' : '+') : '+';
   const wbAbsOff = hasWb ? hexImm(rawWbDisp < 0n ? -rawWbDisp : rawWbDisp) : '0';
