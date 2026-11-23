@@ -204,6 +204,78 @@ const TYPE_LIKE_IDENTIFIERS = new Set([
   'struct', 'union', 'enum', 'typedef', 'sizeof', 'offsetof', '_Alignof', '_Bool',
 ]);
 
+function splitTopLevelCommas(text) {
+  const parts = [];
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') depthParen++;
+    else if (ch === ')' && depthParen > 0) depthParen--;
+    else if (ch === '[') depthBracket++;
+    else if (ch === ']' && depthBracket > 0) depthBracket--;
+    else if (ch === '{') depthBrace++;
+    else if (ch === '}' && depthBrace > 0) depthBrace--;
+    else if (ch === ',' && depthParen === 0 && depthBracket === 0 && depthBrace === 0) {
+      parts.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const tail = text.slice(start).trim();
+  if (tail || parts.length) parts.push(tail);
+  return parts;
+}
+
+function parsePointerParameterIndices(declaration) {
+  if (typeof declaration !== 'string') return null;
+  const open = declaration.indexOf('(');
+  const close = declaration.lastIndexOf(')');
+  if (open < 0 || close <= open) return null;
+  const inner = declaration.slice(open + 1, close).trim();
+  if (!inner || /^void$/i.test(inner)) return null;
+  const params = splitTopLevelCommas(inner);
+  const pointerIndices = new Set();
+  for (let i = 0; i < params.length; i++) {
+    const param = params[i];
+    if (!param || param === '...') continue;
+    if (param.includes('*') || /(?:^|\s)id(?:\s|$)/.test(param) || /\[[^\]]*\]\s*$/.test(param)) {
+      pointerIndices.add(i);
+    }
+  }
+  return pointerIndices.size ? pointerIndices : null;
+}
+
+function extractCallArguments(codeText, openParenIdx) {
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openParenIdx; i < codeText.length; i++) {
+    if (codeText[i] === '(') depth++;
+    else if (codeText[i] === ')') {
+      depth--;
+      if (depth === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx < 0) return null;
+  const inner = codeText.slice(openParenIdx + 1, closeIdx).trim();
+  if (!inner) return [];
+  return splitTopLevelCommas(inner);
+}
+
+function isPointerTypedArgExpr(argExpr, pointerLocals) {
+  const s = String(argExpr ?? '').trim();
+  // Empty after declarationBearingText means a string literal (e.g., "foo").
+  if (!s) return true;
+  if (/^(?:0(?:[uUlL]*)|NULL|nullptr)$/.test(s)) return true;
+  if (/^&(?!&)/.test(s)) return true;
+  if (/^\(\s*(?:[^()]*\*|id)\s*\)/.test(s)) return true;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return pointerLocals.has(s);
+  const ptrArith = /^([A-Za-z_][A-Za-z0-9_]*)\s*[+-]\s*/.exec(s);
+  if (ptrArith && pointerLocals.has(ptrArith[1])) return true;
+  return false;
+}
+
 function isFunctionPointerCastOrDeclAfterParen(after) {
   return /^\s*\*+\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*\)\s*\(/.test(String(after ?? ''));
 }
@@ -648,11 +720,17 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   const declaredLocals = new Set();
   // Selected definitions with a known recovered arity, filled by the caller.
   const knownAritySelected = new Set();
+  const pointerParamPositions = new Map();
+  for (const row of prototypes) {
+    if (!row?.declaration || !C_IDENTIFIER.test(String(row.name ?? ''))) continue;
+    const ptrIdx = parsePointerParameterIndices(row.declaration);
+    if (ptrIdx) pointerParamPositions.set(String(row.name), ptrIdx);
+  }
   const stdlibHeaderFunctions = new Set();
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, pointerParamPositions, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -683,6 +761,7 @@ function faithfulBodyEligibility(fn, context) {
   // accept the spellings the producer emits for them and mark them covered.
   const declaredLocals = context.declaredLocals;
   declaredLocals.clear();
+  const pointerLocals = new Set();
   const sigOpen = signature.indexOf('(');
   const sigClose = signature.lastIndexOf(')');
   if (sigOpen >= 0 && sigClose > sigOpen) {
@@ -690,13 +769,26 @@ function faithfulBodyEligibility(fn, context) {
       const value = group.trim();
       if (!value || /^void$/i.test(value)) continue;
       const param = /^(.*?)(?:\s+)([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
-      if (param?.[2]) declaredLocals.add(param[2]);
+      if (param?.[2]) {
+        declaredLocals.add(param[2]);
+        if (param[1].includes('*') || /(?:^|\s)id(?:\s|$)/.test(param[1])) pointerLocals.add(param[2]);
+      }
     }
   }
   const NON_TYPE_KEYWORDS = new Set(['return', 'else', 'case', 'goto', 'do', 'sizeof', 'break', 'continue', 'default']);
-  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
+  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)(\s*\*+)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
     if (NON_TYPE_KEYWORDS.has(match[2])) continue;
-    if (match[3]) declaredLocals.add(match[3]);
+    if (match[4]) {
+      declaredLocals.add(match[4]);
+      if ((match[3] && match[3].includes('*')) || match[2] === 'id') pointerLocals.add(match[4]);
+    }
+  }
+  for (const match of codeText.matchAll(/(^|\n)\s*(?:(?:const|volatile|unsigned|signed)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(\*+)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^=]|;)/g)) {
+    if (NON_TYPE_KEYWORDS.has(match[2])) continue;
+    if (match[4]) {
+      declaredLocals.add(match[4]);
+      pointerLocals.add(match[4]);
+    }
   }
   // A `/* arguments unknown */` call site has no recovered argument count.
   // declarationBearingText erases that comment, so an arity-unknown site
@@ -720,6 +812,24 @@ function faithfulBodyEligibility(fn, context) {
     }
     if (context.knownAritySelected.has(callee)) {
       return { eligible:false, reason:`arity-unknown-call-contradicts-selected-signature:${callee}` };
+    }
+  }
+  if (context.pointerParamPositions?.size) {
+    for (const match of codeText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const callee = match[1];
+      const ptrIdx = context.pointerParamPositions.get(callee);
+      if (!ptrIdx) continue;
+      const before = codeText.slice(0, match.index).trimEnd();
+      if (before.endsWith('->') || before.endsWith('.')) continue;
+      const openIdx = match.index + match[0].length - 1;
+      const args = extractCallArguments(codeText, openIdx);
+      if (!args) continue;
+      for (const idx of ptrIdx) {
+        if (idx >= args.length) continue;
+        if (!isPointerTypedArgExpr(args[idx], pointerLocals)) {
+          return { eligible:false, reason:`call-pointer-arg-mismatch:${callee}` };
+        }
+      }
     }
   }
   // A global whose type evidence is missing is declared as a byte array
@@ -1274,6 +1384,8 @@ export function buildCTranslationUnit(functions, options = {}) {
     } else {
       eligibilityContext.knownAritySelected.add(String(fn.renderedName));
     }
+    const ptrIdx = parsePointerParameterIndices(declaration);
+    if (ptrIdx) eligibilityContext.pointerParamPositions.set(String(fn.renderedName), ptrIdx);
   }
   for (const fn of normalizedFunctions) {
     const verdict = faithfulBodyEligibility(fn, eligibilityContext);
