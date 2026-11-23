@@ -256,7 +256,9 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   // an explicit truncation, matching the integer-effects path and W writes.
   // This keeps generic SSA architecture-neutral and prevents parallel 32/64
   // state variants for one physical GP register.
-  const physicalBits = reg.kind === 'gp' && reg.bits === 32 ? 64 : reg.bits;
+  const physicalBits = reg.kind === 'gp' && reg.bits === 32
+    ? 64
+    : (reg.kind === 'vector' && reg.bits < 128 ? 128 : reg.bits);
   const read = createArm64RegisterRead(reg, `${idPrefix}.source`, physicalBits);
   const operations = [read.operation];
   let value = read.value;
@@ -264,7 +266,7 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   if (valueBits !== reg.bits) {
     const view = valueOp('truncate', value, valueBits, reg.bits, `${idPrefix}.view`, {
       purpose:'memory-store-register-view',
-      reason:'a64-w-register-read-is-low-32-of-physical-x',
+      reason: reg.kind === 'vector' ? 'a64-fp-register-read-is-low-view-of-physical-v' : 'a64-w-register-read-is-low-32-of-physical-x',
     });
     operations.push(view.operation);
     value = view.output;

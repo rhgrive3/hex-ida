@@ -909,7 +909,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
         }
       } else if (inst.op === OP.LOAD && inst.dst) {
         const de = eFor(inst.dst);
-        const le = lFor(inst.loc);
+        const le = inst.loc?.kind === 'stack' ? lFor(inst.loc) : null;
         if (de && le) {
           if (de.floating > 0 && le.floating === 0) {
             score(le, 'floating', Math.min(5, de.floating), `row ${inst.row}: load loc float prop`);
@@ -923,7 +923,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       } else if (inst.op === OP.STORE) {
         const src = valueOf(inst.args && inst.args[0]);
         const se = eFor(src);
-        const le = lFor(inst.loc);
+        const le = inst.loc?.kind === 'stack' ? lFor(inst.loc) : null;
         if (se && le) {
           if (se.floating > 0 && le.floating === 0) {
             score(le, 'floating', Math.min(5, se.floating), `row ${inst.row}: store loc float prop`);
