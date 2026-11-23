@@ -903,7 +903,7 @@ export function createAppAnalysisQueryAdapter(app) {
     const returnsValue=(result?.value?.setsReturnValue??result?.value?.model?.facts?.setsReturnValue)===true?true:undefined;
     let projectionIr=null,cxxEvidence=null;
     if(result?.value?.model&&supportsArm64SemanticAnalysis(architectureOf(app))){
-      try {projectionIr=irFor(result.value.model,returnsValue?{returnsValue}:{});} catch {projectionIr=null;}
+      try {projectionIr=irFor(result.value.model,{...(returnsValue?{returnsValue}:{}),symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null});} catch {projectionIr=null;}
       if(projectionIr){
         const entry=ensureCxxEvidenceProviderForApp(app);
         if(entry){

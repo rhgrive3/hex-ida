@@ -733,20 +733,33 @@ function valueDominatesLegacyInstruction(value, inst, projected) {
 }
 
 function legacyDefinitionRecency(value, inst, projected) {
-  if (!value || value.kind === LEGACY_VK.ARG || !value.def) return { scope:0, depth:0, row:Number.NEGATIVE_INFINITY };
+  if (!value || value.kind === LEGACY_VK.ARG || !value.def) {
+    return { scope:0, depth:0, row:Number.NEGATIVE_INFINITY, nonPhi:0, instIndex:-1 };
+  }
   const definition = value.def;
+  const nonPhi = definition.op === LEGACY_OP.PHI ? 0 : 1;
+  const blockInsts = projected.blocks?.[definition.block]?.insts;
+  const instIndex = nonPhi && Array.isArray(blockInsts) ? blockInsts.indexOf(definition) : -1;
   if (definition.block === inst.block) {
-    return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY) };
+    return {
+      scope:2,
+      depth:Number.MAX_SAFE_INTEGER,
+      row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+      nonPhi,
+      instIndex,
+    };
   }
   const dominators = projected.dominators?.[inst.block];
   if (!(dominators instanceof Set) || !dominators.has(definition.block)) {
-    return { scope:-1, depth:-1, row:Number.NEGATIVE_INFINITY };
+    return { scope:-1, depth:-1, row:Number.NEGATIVE_INFINITY, nonPhi:0, instIndex:-1 };
   }
   const definitionDominators = projected.dominators?.[definition.block];
   return {
     scope:1,
     depth:definitionDominators instanceof Set ? definitionDominators.size : 0,
     row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+    nonPhi,
+    instIndex,
   };
 }
 
@@ -833,6 +846,8 @@ function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded
     if (left.recency.scope !== right.recency.scope) return right.recency.scope - left.recency.scope;
     if (left.recency.depth !== right.recency.depth) return right.recency.depth - left.recency.depth;
     if (left.recency.row !== right.recency.row) return right.recency.row - left.recency.row;
+    if (left.recency.nonPhi !== right.recency.nonPhi) return right.recency.nonPhi - left.recency.nonPhi;
+    if (left.recency.instIndex !== right.recency.instIndex) return right.recency.instIndex - left.recency.instIndex;
     if (left.width !== right.width) return right.width - left.width;
     return right.id - left.id;
   });

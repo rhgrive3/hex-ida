@@ -1198,6 +1198,16 @@ export function reachingRegisterValue(ir, atInst, reg) {
   }
   if (bestSameBlock) return best?.clobbered ? null : best;
 
+  const blockPhis = ir.blocks?.[atInst.block]?.phis;
+  if (Array.isArray(blockPhis)) {
+    for (const phi of blockPhis) {
+      const dst = phi?.dst;
+      if (dst && !dst.clobbered && canonicalRegister(dst.reg) === canonReg) {
+        return dst;
+      }
+    }
+  }
+
   const candidateDefinition = best?.def ?? null;
   for (const v of regValues) {
     if (v === best || canonicalRegister(v.reg) !== canonReg || !v.def) continue;
@@ -1558,7 +1568,53 @@ function unaryText(inst, ctx) {
   if (extMap[inst.sub]) return `(${extMap[inst.sub]})${paren(a)}`;
   if (/^sxt/.test(inst.sub || '')) return `(${inst.sub.replace('sxt', 'int')})${paren(a)}`;
   if (/^uxt/.test(inst.sub || '')) return `(${inst.sub.replace('uxt', 'uint')})${paren(a)}`;
+  const castBits = inst.bits ?? inst.dst?.bits;
+  if (inst.sub === 'fcvtzs' || inst.sub === 'f2i') return `((${castBits === 32 ? 'int32_t' : 'int64_t'})(double)${paren(a)})`;
+  if (inst.sub === 'fcvtzu' || inst.sub === 'f2u') return `((${castBits === 32 ? 'uint32_t' : 'uint64_t'})(double)${paren(a)})`;
+  if (inst.sub === 'scvtf' || inst.sub === 'i2f') return `((${castBits === 32 ? 'float' : 'double'})(int64_t)${paren(a)})`;
+  if (inst.sub === 'ucvtf' || inst.sub === 'u2f') return `((${castBits === 32 ? 'float' : 'double'})(uint64_t)${paren(a)})`;
+  if (inst.sub === 'fcvt') return `((${castBits === 32 ? 'float' : 'double'})${paren(a)})`;
   return `${safeIdent(inst.sub || 'un')}(${a})`;
+}
+
+function explicitCallArgByReg(inst) {
+  const byReg = new Map();
+  if (!inst) return byReg;
+  const callArgs = Array.isArray(inst.callArguments) ? inst.callArguments : null;
+  const args = Array.isArray(inst.args) ? inst.args : null;
+  if (callArgs) {
+    for (let k = 0; k < callArgs.length; k++) {
+      const desc = callArgs[k];
+      const reg = desc?.reg ?? desc?.location?.registerId ?? null;
+      if (!reg) continue;
+      const canon = canonicalRegister(reg);
+      const directVal = desc?.value?.value ?? desc?.value ?? (desc?.kind && Array.isArray(desc?.uses) ? desc : null);
+      if (directVal && directVal.def !== inst && !directVal.clobbered && directVal.kind !== VK.UNDEF && !byReg.has(canon)) {
+        byReg.set(canon, directVal);
+      }
+    }
+    if (args && callArgs.length === args.length) {
+      for (let k = 0; k < callArgs.length; k++) {
+        const desc = callArgs[k];
+        const reg = desc?.reg ?? desc?.location?.registerId ?? null;
+        if (!reg) continue;
+        const canon = canonicalRegister(reg);
+        const v = valueOf(args[k]);
+        if (v && v.def !== inst && !v.clobbered && v.kind !== VK.UNDEF && !byReg.has(canon)) {
+          byReg.set(canon, v);
+        }
+      }
+    }
+  }
+  if (args && (!inst.extra?.indirect || callArgs)) {
+    for (const arg of args) {
+      const v = valueOf(arg);
+      if (!v || v.def === inst || v.clobbered || v.kind === VK.UNDEF || !v.reg) continue;
+      const canon = canonicalRegister(v.reg);
+      if (!byReg.has(canon)) byReg.set(canon, v);
+    }
+  }
+  return byReg;
 }
 
 function callRecord(inst, ctx) {
@@ -1577,8 +1633,12 @@ function callRecord(inst, ctx) {
   // legacy renderer (`sub_<HEX>`), and leaves genuinely indirect calls untouched.
   if (!name && target != null) name = `sub_${hex(target)}`;
 
+  const explicitArgs = explicitCallArgByReg(inst);
   const values = [];
-  for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
+  for (let i = 0; i < 8; i++) {
+    const reg = 'x' + i;
+    values.push(explicitArgs.get(canonicalRegister(reg)) ?? reachingRegisterValue(ctx.ir, inst, reg));
+  }
   const slotEv = currentCppVirtualSlot(ctx.opts, ctx.ir, inst, values[0]);
 
   if (slotEv && slotEv.exactTargetKnown && slotEv.exactTargetAddress != null) {
@@ -3182,6 +3242,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
       out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
+      if (term2.extra?.isTailCall && term2.extra?.name) {
+        emitTailCallBranch(term2, out, ctx, indent);
+        return;
+      }
       const next = block.succ[0] ?? null;
       if (next != null) emitPhiCopiesForEdge(bi, next, out, ctx, indent, term2);
       if (state.activeLoop && next === state.loopHeader) { out.push(retainControlRenderLine(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
@@ -3457,6 +3521,18 @@ export function hasUnbalancedBracesInLines(nodes) {
   return depth !== 0;
 }
 
+function emitTailCallBranch(term, out, ctx, indent) {
+  const c = callRecord(term, ctx);
+  const callText = renderCall(term, ctx);
+  const text = knownVoidCall(term, ctx.opts) ? `${callText}; return;` : `return ${callText};`;
+  const node = line('stmt', indent, text, term.row, term.address, {
+    source: mergeSource(controlSource(term, ctx), sourceForInst(term, 'tail-call')),
+  });
+  retainStatementRenderLine(node, term, c, ctx);
+  out.push(node);
+  ctx.evidence.push(evidenceOf(term, 'tail-call'));
+}
+
 function faithfulCfg(ctx, indent = 1) {
   const out = [];
   const emittedLabels = new Set();
@@ -3510,6 +3586,8 @@ function faithfulCfg(ctx, indent = 1) {
         out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
           term, 'cfg-false-goto', { yes, no }, ctx));
       }
+    } else if (term.op === OP.BR && term.extra?.isTailCall && term.extra?.name) {
+      emitTailCallBranch(term, out, ctx, indent + 1);
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];
       emitPhiCopiesForEdge(bi, next, out, ctx, indent + 1, term);
@@ -3548,7 +3626,10 @@ function runtimeFromOpts(opts) {
 /** Main IR-first entry point. */
 export function decompileSemantic(model, rawOpts = {}) {
   const opts = applyDecompilerProfile(rawOpts);
-  const ir = opts.ir != null ? opts.ir : irFor(model, { rowOfAddress: opts.rowOfAddress });
+  const ir = opts.ir != null ? opts.ir : irFor(model, {
+    rowOfAddress: opts.rowOfAddress,
+    ...(typeof opts.symbolFor === 'function' ? { symbolFor: opts.symbolFor } : {}),
+  });
   if (!ir || !ir.instructions?.length) return null;
   const runtime = runtimeFromOpts(opts);
   const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });

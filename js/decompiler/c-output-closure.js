@@ -126,7 +126,7 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['ffs', '<strings.h>'],
   // glibc _FORTIFY_SOURCE <string.h> checked entrypoints
   ['__memcpy_chk', '<string.h>'], ['__memmove_chk', '<string.h>'], ['__memset_chk', '<string.h>'],
-  ['__strcpy_chk', '<string.h>'], ['__strncpy_chk', '<string.h>'],
+  ['__strcpy_chk', '<string.h>'], ['__stpcpy_chk', '<string.h>'], ['__strncpy_chk', '<string.h>'],
   ['__strcat_chk', '<string.h>'], ['__strncat_chk', '<string.h>'],
   // <stdio.h>
   ['printf', '<stdio.h>'], ['fprintf', '<stdio.h>'], ['sprintf', '<stdio.h>'], ['snprintf', '<stdio.h>'],
@@ -234,6 +234,7 @@ const GLIBC_CHK_PROTOTYPES = Object.freeze(new Map([
   ['__memmove_chk', { header: '<string.h>', proto: 'extern void *__memmove_chk(void *, const void *, size_t, size_t);', guardFortify: false }],
   ['__memset_chk', { header: '<string.h>', proto: 'extern void *__memset_chk(void *, int, size_t, size_t);', guardFortify: false }],
   ['__strcpy_chk', { header: '<string.h>', proto: 'extern char *__strcpy_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__stpcpy_chk', { header: '<string.h>', proto: 'extern char *__stpcpy_chk(char *, const char *, size_t);', guardFortify: false }],
   ['__strncpy_chk', { header: '<string.h>', proto: 'extern char *__strncpy_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
   ['__strcat_chk', { header: '<string.h>', proto: 'extern char *__strcat_chk(char *, const char *, size_t);', guardFortify: false }],
   ['__strncat_chk', { header: '<string.h>', proto: 'extern char *__strncat_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
@@ -257,6 +258,7 @@ const GLIBC_STRIPPED_ALIAS_MAP = Object.freeze(new Map([
   ['memmove_chk', { header: '<string.h>', target: '__memmove_chk' }],
   ['memset_chk', { header: '<string.h>', target: '__memset_chk' }],
   ['strcpy_chk', { header: '<string.h>', target: '__strcpy_chk' }],
+  ['stpcpy_chk', { header: '<string.h>', target: '__stpcpy_chk' }],
   ['strncpy_chk', { header: '<string.h>', target: '__strncpy_chk' }],
   ['strcat_chk', { header: '<string.h>', target: '__strcat_chk' }],
   ['strncat_chk', { header: '<string.h>', target: '__strncat_chk' }],
@@ -387,8 +389,11 @@ export function isStandaloneGlobalPreludeComment(text) {
 }
 
 export function isStandaloneGlobalPreludeDeclaration(text) {
-  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*0\s*;)$/.exec(String(text ?? '').trim());
-  const typeName = match?.[1] || match?.[3];
+  const trimmed = String(text ?? '').trim();
+  const match = /^(?:extern\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+|__hex_global_[A-Za-z0-9_]+_backing)\s*=\s*0\s*;|static\s+([A-Za-z_][A-Za-z0-9_]*)\s+(global_[A-Za-z0-9_]+)\s*=\s*\(\s*uint64\s*\)\s*\(\s*uintptr_t\s*\)\s*&\s*(__hex_global_[A-Za-z0-9_]+_backing)\s*;)$/.exec(trimmed);
+  if (!match) return false;
+  if (match[6] && match[7] !== `__hex_${match[6]}_backing`) return false;
+  const typeName = match[1] || match[3] || match[5];
   return !!typeName && FIXED_WIDTH_TYPES.has(typeName);
 }
 
@@ -2431,7 +2436,7 @@ const PTR_RETURNING_STDLIB_CALLS = new Set([
   '__errno_location', '__ctype_b_loc', '__ctype_tolower_loc', '__ctype_toupper_loc',
   'errno_location', 'ctype_b_loc', 'ctype_tolower_loc', 'ctype_toupper_loc',
   '__memcpy_chk', 'memcpy_chk', '__memmove_chk', 'memmove_chk', '__memset_chk', 'memset_chk',
-  '__strcpy_chk', 'strcpy_chk', '__strncpy_chk', 'strncpy_chk', '__strcat_chk', 'strcat_chk', '__strncat_chk', 'strncat_chk',
+  '__strcpy_chk', 'strcpy_chk', '__stpcpy_chk', 'stpcpy_chk', '__strncpy_chk', 'strncpy_chk', '__strcat_chk', 'strcat_chk', '__strncat_chk', 'strncat_chk',
 ]);
 
 const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
@@ -3088,12 +3093,46 @@ export function closeFunctionOutput(result, options = {}) {
     .sort((a, b) => compareAscii(a.name, b.name));
   const globalPrelude = [];
   if (standaloneGlobals.length) {
+    const cleanedBodyForGlobals = String(renderedBody ?? '')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ')
+      .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)*'/g, ' ');
+    const isGlobalDereferenced = (globalName) => {
+      const esc = globalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const arrowRe = new RegExp(`\\b${esc}\\s*->`);
+      if (arrowRe.test(cleanedBodyForGlobals)) return true;
+      const castDerefRe = new RegExp(
+        `\\*\\s*\\([^;{}()]*\\*\\s*\\)\\s*\\(?\\s*(?:\\(\\s*(?:uintptr_t|intptr_t|[A-Za-z_][A-Za-z0-9_\\s]*\\*)\\s*\\)\\s*)?\\(?\\s*${esc}\\b`,
+      );
+      if (castDerefRe.test(cleanedBodyForGlobals)) return true;
+      const unaryDerefRe = new RegExp(`(?:^|[=({[,;:!?&|^~+\-<>]|\\breturn\\b)\\s*\\*\\s*\\(?\\s*${esc}\\b`);
+      if (unaryDerefRe.test(cleanedBodyForGlobals)) return true;
+      const castArrowRe = new RegExp(
+        `\\(\\s*\\([^;{}()]*\\*\\s*\\)\\s*(?:\\(\\s*uintptr_t\\s*\\)\\s*)?\\(?\\s*${esc}\\b[^;{}]*\\)\\s*->`,
+      );
+      return castArrowRe.test(cleanedBodyForGlobals);
+    };
     globalPrelude.push({ kind: 'decl', indent: 0, text: STANDALONE_GLOBALS_COMMENT, row: null, addr: null, note: null, source: entrySource });
     for (const entry of standaloneGlobals) {
-      globalPrelude.push({
-        kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = 0;`,
-        row: null, addr: null, note: null, source: entrySource,
-      });
+      if (isGlobalDereferenced(entry.name)) {
+        const backingName = `__hex_${entry.name}_backing`;
+        globalPrelude.push(
+          {
+            kind: 'decl', indent: 0, text: `static uint64 ${backingName} = 0;`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+          {
+            kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = (uint64)(uintptr_t)&${backingName};`,
+            row: null, addr: null, note: null, source: entrySource,
+          },
+        );
+      } else {
+        globalPrelude.push({
+          kind: 'decl', indent: 0, text: `static uint64 ${entry.name} = 0;`,
+          row: null, addr: null, note: null, source: entrySource,
+        });
+      }
     }
   }
 

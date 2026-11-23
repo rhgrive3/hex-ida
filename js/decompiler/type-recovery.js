@@ -494,19 +494,25 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const a = eFor(valueOf(inst.args && inst.args[0]));
       if (/^sxt/.test(inst.sub || '')) score(a, 'signed', 5, `row ${inst.row}: sign extension`);
       if (/^uxt/.test(inst.sub || '')) score(a, 'unsigned', 5, `row ${inst.row}: zero extension`);
-      if (/^f(abs|neg|sqrt|cvt|rint|floor|ceil|round|trunc)/.test(inst.sub || '')) {
-        if (a) score(a, 'floating', 5, `row ${inst.row}: ${inst.sub}`);
-        if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${inst.sub}`);
+      const unSub = inst.sub || '';
+      const isI2F = /^(?:i2f|scvtf)/.test(unSub);
+      const isU2F = /^(?:u2f|ucvtf)/.test(unSub);
+      const isF2I = /^(?:f2i|fcvtzs)/.test(unSub);
+      const isF2U = /^(?:f2u|fcvtzu)/.test(unSub);
+      if (!isF2I && !isF2U && /^f(abs|neg|sqrt|cvt|rint|floor|ceil|round|trunc)/.test(unSub)) {
+        if (a) score(a, 'floating', 5, `row ${inst.row}: ${unSub}`);
+        if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${unSub}`);
       }
       // Numeric conversions type each side independently (#5494). i2f/u2f
-      // prove the source's integer signedness and a floating result; f2i/f2u
-      // prove a floating source and the result's integer signedness. Scoring
-      // the f2i/f2u source as integer evidence inverted the conversion's
-      // meaning and left the destination's signedness unrecovered.
-      if (/^i2f/.test(inst.sub || '')) { if (a) score(a, 'signed', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
-      if (/^u2f/.test(inst.sub || '')) { if (a) score(a, 'unsigned', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
-      if (/^f2i/.test(inst.sub || '')) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'signed', 5, `row ${inst.row}: numeric conversion`); }
-      if (/^f2u/.test(inst.sub || '')) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'unsigned', 5, `row ${inst.row}: numeric conversion`); }
+      // (and AArch64 scvtf/ucvtf) prove the source's integer signedness and a
+      // floating result; f2i/f2u (and AArch64 fcvtzs/fcvtzu) prove a floating
+      // source and the result's integer signedness. Scoring the f2i/f2u source
+      // as integer evidence inverted the conversion's meaning and left the
+      // destination's signedness unrecovered.
+      if (isI2F) { if (a) score(a, 'signed', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
+      if (isU2F) { if (a) score(a, 'unsigned', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
+      if (isF2I) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'signed', 5, `row ${inst.row}: numeric conversion`); }
+      if (isF2U) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'unsigned', 5, `row ${inst.row}: numeric conversion`); }
     }
 
     if (inst.op === OP.CMP) {
@@ -598,8 +604,11 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   // those same ids name the zero register, ra, sp, gp, tp and temporaries, so
   // assuming them would report the stack pointer as an argument.
   const anyUseTracked = (ir.values || []).some((val) => Array.isArray(val?.uses) && val.uses.length > 0);
+  const gpArgumentRegisters = isAArch64ArgSet
+    ? argumentRegisters.filter((reg) => /^x[0-7]$/.test(reg))
+    : argumentRegisters;
   const args = [];
-  argumentRegisters.forEach((reg, i) => {
+  gpArgumentRegisters.forEach((reg, i) => {
     const v = ir.args && ir.args.get ? ir.args.get(reg) : null;
     const pt = passThroughGpArgs.get(i) || null;
     if (!v) {
@@ -632,7 +641,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const presentGp = new Set(args.map((a) => a.index));
       for (let i = 0; i < maxGpIdx; i++) {
         if (presentGp.has(i)) continue;
-        const reg = argumentRegisters[i];
+        const reg = gpArgumentRegisters[i];
         if (!reg) continue;
         args.push({
           reg,

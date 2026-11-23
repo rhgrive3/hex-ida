@@ -628,7 +628,19 @@ function attachAbiProjectedArguments(projected, ir = null, valuesById = null, op
       if (!tailTarget) continue;
       inst.extra = inst.extra || {};
       inst.extra.name = tailTarget.symbolName;
+      inst.extra.isTailCall = true;
       if (inst.extra.target == null && tailTarget.target != null) inst.extra.target = tailTarget.target;
+      const block = projected.blocks?.[inst.block];
+      if (block && Array.isArray(block.succ) && block.succ.length) {
+        for (const succIdx of block.succ) {
+          const succBlock = projected.blocks?.[succIdx];
+          if (succBlock && Array.isArray(succBlock.pred)) {
+            succBlock.pred = succBlock.pred.filter((p) => p !== block.index);
+          }
+        }
+        block.succ = [];
+        block.isExit = true;
+      }
       if (Array.isArray(inst.callArguments)) {
         callArguments = inst.callArguments;
       } else {
