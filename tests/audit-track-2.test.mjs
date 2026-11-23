@@ -492,6 +492,17 @@ test('[T2-P1-3] &global_XXXX field access parenthesizes, sizes uint8_t array, re
   assert.ok(mixed.pseudocode.includes('static uint64 global_6000 = 0;'));
   assert.ok(mixed.pseudocode.includes('((hex_struct_global_6000 *)(uintptr_t)(&global_6000))->field_8 = 1;'));
 
+  const bitAndMixed = closeFunctionOutput({
+    lines: [
+      { kind: 'sig', indent: 0, text: 'uint64 fn_bitand_global(uint64 a1)' },
+      { kind: 'ctrl', indent: 0, text: '{' },
+      { kind: 'stmt', indent: 1, text: '(&global_6001)->field_8 = 1;' },
+      { kind: 'stmt', indent: 1, text: 'return a1 & global_6001;' },
+      { kind: 'ctrl', indent: 0, text: '}' },
+    ],
+  });
+  assert.ok(bitAndMixed.pseudocode.includes('static uint64 global_6001 = 0;'), `bitwise & mixed case must fall back to scalar:\n${bitAndMixed.pseudocode}`);
+
   // 4. Pointer-value deref -> keeps __hex_global_7000_backing
   const ptrDeref = closeFunctionOutput({
     lines: [

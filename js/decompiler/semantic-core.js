@@ -762,7 +762,7 @@ function isAArch64Context(ir, opts = null) {
     return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
       || /^(?:aapcs64|arm64|aarch64)/.test(id);
   }
-  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || '').toLowerCase();
+  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
   if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
   if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
   return true;
@@ -2182,22 +2182,6 @@ function resolveConstantCString(value, ctx, seen = new Set()) {
   }
 }
 
-function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat, isAArch64 = true) {
-  if (!isAArch64) return null;
-  const order = isFloat
-    ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`]
-    : [`d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`, `s${fpIdx}`];
-  for (const reg of order) {
-    const v = explicitArgs.get(reg);
-    if (v) return v;
-  }
-  for (const reg of order) {
-    const v = reachingRegisterValue(ir, inst, reg, isAArch64);
-    if (v) return v;
-  }
-  return null;
-}
-
 function callRecord(inst, ctx) {
   if (ctx.callCache.has(inst.id)) {
     const trace = initialValueTraces.get(ctx), cursor = initialValueCursor(ctx);
@@ -2279,7 +2263,9 @@ function callRecord(inst, ctx) {
         if (paramType === 'float' || paramType === 'double') {
           const idx = fpIdx++;
           const reg = paramType === 'float' ? `s${idx}` : `d${idx}`;
-          const val = explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true);
+          const val = idx < 8
+            ? (explicitArgs.get(canonicalRegister(reg, true)) ?? reachingRegisterValue(ctx.ir, inst, reg, true))
+            : null;
           const input = initialValueCursor(ctx);
           const text = val ? renderValue(val, ctx) : null;
           const tickets = input ? input.list.slice(input.start) : [];
@@ -2332,38 +2318,8 @@ function callRecord(inst, ctx) {
           ctx.unknownCallArities++;
         }
       } else {
-        const knownSig = knownCallSignature(name);
-        const fpParamTypes = !override && Array.isArray(knownSig?.paramTypes)
-          && knownSig.paramTypes.length === indexes.length
-          && knownSig.paramTypes.some((t) => t === 'double' || t === 'float')
-          ? knownSig.paramTypes
-          : null;
-        if (isAArch64 && fpParamTypes) {
-          let nextGp = 0;
-          let nextFp = 0;
-          logicalArgs = [];
-          sourceArgIndices = [];
-          for (const pType of fpParamTypes) {
-            if (pType === 'double' || pType === 'float') {
-              const fpVal = nextFp < 8 ? resolveFpCallArg(explicitArgs, ctx.ir, inst, nextFp, pType === 'float', isAArch64) : null;
-              if (fpVal) {
-                const fpInput = initialValueCursor(ctx);
-                logicalArgs.push(renderValue(fpVal, ctx));
-                if (fpInput) extraArgTickets.push(...fpInput.list.slice(fpInput.start));
-              } else {
-                logicalArgs.push('unknown');
-              }
-              nextFp++;
-            } else {
-              logicalArgs.push(nextGp < argText.length && argText[nextGp] != null ? argText[nextGp] : 'unknown');
-              if (nextGp < values.length && values[nextGp]) sourceArgIndices.push(nextGp);
-              nextGp++;
-            }
-          }
-        } else {
-          logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
-          sourceArgIndices = indexes.filter((i) => values[i]);
-        }
+        logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
+        sourceArgIndices = indexes.filter((i) => values[i]);
         variadicPrefixOnly = !!knownProto?.variadic && !override;
         if (variadicPrefixOnly) {
           const normName = knownProto?.name || String(name || '').replace(/^_+/, '').replace(/@.*$/, '');

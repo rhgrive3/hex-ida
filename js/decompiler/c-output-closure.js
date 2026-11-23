@@ -3554,10 +3554,16 @@ export function closeFunctionOutput(result, options = {}) {
       let sawAny = false;
       for (let m = re.exec(cleanedBodyForGlobals); m; m = re.exec(cleanedBodyForGlobals)) {
         sawAny = true;
-        let prev = m.index - 1;
-        while (prev >= 0 && /\s/.test(cleanedBodyForGlobals[prev])) prev--;
-        if (prev < 0 || cleanedBodyForGlobals[prev] !== '&') return false;
-        if (prev >= 1 && cleanedBodyForGlobals[prev - 1] === '&') return false;
+        let ampIdx = m.index - 1;
+        while (ampIdx >= 0 && /\s/.test(cleanedBodyForGlobals[ampIdx])) ampIdx--;
+        if (ampIdx < 0 || cleanedBodyForGlobals[ampIdx] !== '&') return false;
+        if (ampIdx >= 1 && cleanedBodyForGlobals[ampIdx - 1] === '&') return false;
+        const beforeAmp = previousChar(cleanedBodyForGlobals, ampIdx);
+        const isUnary = !beforeAmp
+          || '=({[,;:!?|^~+-<>*/%'.includes(beforeAmp)
+          || (beforeAmp === ')' && isCastBeforeIndex(cleanedBodyForGlobals, ampIdx))
+          || (/[A-Za-z0-9_]/.test(beforeAmp) && previousWord(cleanedBodyForGlobals, ampIdx) === 'return');
+        if (!isUnary) return false;
       }
       return sawAny;
     };

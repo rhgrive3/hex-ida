@@ -644,7 +644,7 @@ function isAArch64PipelineContext(ir, opts) {
     return id === 'aapcs64' || archId === 'arm64' || archId === 'aarch64'
       || /^(?:aapcs64|arm64|aarch64)/.test(id);
   }
-  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || '').toLowerCase();
+  const arch = String(ir?.arch || ir?.architecture || ir?.architectureId || ir?.compat?.architectureId || opts?.arch || opts?.architecture || opts?.architectureId || '').toLowerCase();
   if (arch) return /^(?:arm64|aarch64|aapcs64)/.test(arch);
   if (ir?.compat?.projection === 'semantic-ir-v2-to-v1') return false;
   return true;
