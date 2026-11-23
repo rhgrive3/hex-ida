@@ -1347,7 +1347,7 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
     const valid = [], checks = [];
     for (const [observer, following, needsBatch] of [[calls, typedResults, true], [returns, null, false]]) {
       if (!observer.selection || !observer.records.length || !observer.selection(following)) continue;
-      checks.push(() => observer.selection(following));
+      let batchCheck = null;
       if (needsBatch) {
         const observed = observer.batchObservation;
         if (!observed) continue;
@@ -1357,8 +1357,10 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
             && observed.current.matchesThroughWrites(combinedWriteList(chain, followingWrites)),
         }));
         if (!current()) continue;
-        checks.push(current);
+        batchCheck = current;
       }
+      checks.push(() => observer.selection(following));
+      if (batchCheck) checks.push(batchCheck);
       for (const event of observer.records) valid.push(event);
     }
     if (!valid.length) return;

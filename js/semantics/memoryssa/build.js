@@ -670,23 +670,6 @@ function buildStackEscapeCfgIndex(irFunction, cfg, stackValues) {
   };
 }
 
-function predecessorBlockClosure(startBlockId, cfgBlockById) {
-  const visited = new Set();
-  const stack = [...(cfgBlockById.get(startBlockId)?.predecessors ?? [])].map(String);
-  while (stack.length > 0) {
-    const blockId = stack.pop();
-    if (visited.has(blockId)) continue;
-    visited.add(blockId);
-    const block = cfgBlockById.get(blockId);
-    if (!block) continue;
-    for (const pred of block.predecessors ?? []) {
-      const predId = String(pred);
-      if (!visited.has(predId)) stack.push(predId);
-    }
-  }
-  return visited;
-}
-
 function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   if (node?.kind !== 'call') return false;
   const explicitArguments = [
@@ -699,7 +682,7 @@ function callMayExposeStackAddress(node, stackValues, escapeCfgIndex) {
   const callBlockId = node.blockId == null ? null : String(node.blockId);
   const callCfgBlock = callBlockId == null ? null : escapeCfgIndex.cfgBlockById.get(callBlockId);
   const callIrBlock = callBlockId == null ? null : escapeCfgIndex.irBlockById.get(callBlockId);
-  const callPos = callIrBlock?.nodeIds?.findIndex((id) => String(id) === String(node.id)) ?? -1;
+  const callPos = escapeCfgIndex.nodePosByBlock.get(callBlockId)?.get(String(node.id)) ?? -1;
   if (!callCfgBlock || !callIrBlock || callPos < 0) return true;
   // A canonical call summary may omit ABI arguments.  Recover only the
   // reaching argument definitions from canonical Semantic IR + scalar SSA

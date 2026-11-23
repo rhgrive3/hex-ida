@@ -11,7 +11,7 @@ import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { cppMemberTypeLabel, currentCppMember, currentCppReceiver, currentCppVirtualSlot, isCppReceiverAlias } from './cxx-evidence.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
-import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
+import { callArgumentIndices, knownCallPrototype, knownCallSignature } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory, renderExtendedIndex } from './address-semantics.js';
@@ -1196,6 +1196,41 @@ function cppMemberTypeSuffix(base, offset, ctx) {
   return label ? ` /* ${label} */` : '';
 }
 
+export function memoryElementType(inst, sizeBytes, types = null) {
+  const raw = Number(sizeBytes || 0);
+  const bytes = (raw === 1 || raw === 2 || raw === 4 || raw === 8 || raw === 16) ? raw : 8;
+  const val = inst?.op === OP.STORE ? inst?.args?.[0]?.value : inst?.dst;
+  const inferred = val && types?.values?.get?.(val.id);
+  const isFp = inst?.float === true
+    || inst?.isFloat === true
+    || inst?.extra?.float === true
+    || inst?.extra?.isFloat === true
+    || inst?.addr?.float === true
+    || val?.constKind === 'float'
+    || val?.floatConst != null
+    || (val?.float != null && val?.const == null)
+    || (val?.reg != null && /^[sd]\d+$/i.test(String(val.reg)))
+    || inferred?.kind === 'float'
+    || inferred?.kind === 'floating'
+    || inferred?.cType === 'float'
+    || inferred?.cType === 'double'
+    || inferred?.name === 'float'
+    || inferred?.name === 'double'
+    || (typeof inst?.sub === 'string' && /^(?:fldr|fstr|fload|fstore|movss|movsd|vmovss|vmovsd)/i.test(inst.sub))
+    || (typeof inst?.mnemonic === 'string' && /^(?:fldr|fstr|movss|movsd|vmovss|vmovsd)/i.test(inst.mnemonic));
+  if (isFp && bytes === 4) return 'float';
+  if (isFp && bytes === 8) return 'double';
+  if (bytes === 16) return 'uint128';
+  const isSigned = inst?.signed === true
+    || inst?.extra?.signed === true
+    || inst?.addr?.signed === true
+    || (typeof inst?.sub === 'string' && /^(?:ldrs[bhw]|ldurs[bhw]|sload|signed)/i.test(inst.sub))
+    || (typeof inst?.mnemonic === 'string' && /^(?:ldrs[bhw]|ldurs[bhw]|movs[xzb]|movsxd)/i.test(inst.mnemonic))
+    || (inst?.op === OP.LOAD && inst?.dst?.signed === true);
+  const prefix = isSigned ? 'int' : 'uint';
+  return `${prefix}${bytes * 8}_t`;
+}
+
 export function renderMemoryLocation(loc, inst, ctx) {
   if (!loc) return 'memory_unknown';
   if (loc.kind === MK.STACK) return stackName(ctx, loc);
@@ -1209,7 +1244,8 @@ export function renderMemoryLocation(loc, inst, ctx) {
       const base = renderValue(addr.base, ctx);
       const index = renderValue(addr.index, ctx);
       const scale = Number(addr.scale || 0);
-      const size = Number(addr.size || 0);
+      const size = Number(addr.size || inst?.size || loc?.size || 0);
+      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
       const indexed = renderIndexedMemory(base, index, {
         extend: addr.extend || null,
         scale,
@@ -1217,15 +1253,14 @@ export function renderMemoryLocation(loc, inst, ctx) {
       });
       const baseType = ctx.types?.values?.get?.(addr.base.id);
       const isPtr = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(base);
-      const scaleBytes = scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
-      const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 8}_t`;
-      if (!isPtr && size > 0 && scaleBytes === size) {
-        return `((${elemType} *)(uintptr_t)(${base}))[${renderExtendedIndex(index, addr.extend || null)}]`;
+      const scaleBytes = Number.isInteger(scale) && scale >= 0 && scale <= 4 ? (2 ** scale) : -1;
+      const elemType = memoryElementType(inst, size, ctx.types);
+      const idxExpr = renderExtendedIndex(index, addr.extend || null);
+      if (!isPtr && size > 0 && scaleBytes === size && disp === 0n) {
+        return `((${elemType} *)(uintptr_t)(${base}))[${idxExpr}]`;
       }
-      if (!isPtr && size > 0 && scaleBytes > 0 && scaleBytes !== size && ctx.opts?.phase8Optimize !== true) {
-        const idxExpr = renderExtendedIndex(index, addr.extend || null);
+      if (size > 0 && scaleBytes > 0 && ((!isPtr && (scaleBytes !== size || disp !== 0n)) || (isPtr && disp !== 0n)) && ctx.opts?.phase8Optimize !== true) {
         const offsetExpr = scaleBytes === 1 ? `(${idxExpr})` : `(${idxExpr}) * ${scaleBytes}`;
-        const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
         const dispExpr = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
         return `*(${elemType} *)((uintptr_t)(${base}) + ${offsetExpr}${dispExpr})`;
       }
@@ -1245,7 +1280,7 @@ export function renderMemoryLocation(loc, inst, ctx) {
     if (addr.base && ctx.opts?.phase8Optimize !== true) {
       const base = renderValue(addr.base, ctx);
       const size = Number(addr.size || inst?.size || loc?.size || 8);
-      const elemType = size === 16 ? 'uint128' : `uint${size === 1 ? 8 : size === 2 ? 16 : size === 4 ? 32 : size === 8 ? 64 : 64}_t`;
+      const elemType = memoryElementType(inst, size, ctx.types);
       const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
       if (disp !== 0n) {
         return disp < 0n
@@ -1631,7 +1666,11 @@ function renderValueText(value, ctx, flags) {
     } else if (d.op === OP.CALL) {
       const canonical = d.dst || ctx.callResultByInst?.get(d) || null;
       if (ctx.opts?.phase8Optimize !== true && value !== canonical && !isSameCallReturnFamily(value.reg, canonical?.reg)) {
-        out = initialValueForm(ctx, 'call-clobber', '0');
+        if (isCallClobberedValue(value)) {
+          out = initialValueForm(ctx, 'call-clobber', '0');
+        } else {
+          out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
+        }
       } else {
         out = initialValueForm(ctx, 'call', renderCall(d, ctx));
       }
@@ -2162,15 +2201,28 @@ function materialization(ctx) {
   return names;
 }
 
-const CALL_RETURN_REG_ORDER = [
+const CALL_INT_RETURN_REG_ORDER = [
   'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
+];
+const CALL_FP_RETURN_REG_ORDER = [
   'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'ymm0', 'zmm0', 'fa0', 'f10', 'st0',
 ];
-const CALL_INT_RETURN_REGS = new Set([
-  'x0', 'w0', 'rax', 'eax', 'ax', 'al', 'r0', 'a0', 'x10',
-]);
-const CALL_FP_RETURN_REGS = new Set([
-  'd0', 's0', 'v0', 'q0', 'h0', 'b0', 'xmm0', 'ymm0', 'zmm0', 'fa0', 'f10', 'st0',
+const CALL_RETURN_REG_ORDER = [
+  ...CALL_INT_RETURN_REG_ORDER,
+  ...CALL_FP_RETURN_REG_ORDER,
+];
+const CALL_FP_FIRST_REG_ORDER = [
+  ...CALL_FP_RETURN_REG_ORDER,
+  ...CALL_INT_RETURN_REG_ORDER,
+];
+const CALL_INT_RETURN_REGS = new Set(CALL_INT_RETURN_REG_ORDER);
+const CALL_FP_RETURN_REGS = new Set(CALL_FP_RETURN_REG_ORDER);
+const CALL_MULTI_RETURN_REGS = new Set([
+  'x1', 'w1', 'rdx', 'edx', 'dx', 'dl', 'r1', 'a1', 'x11',
+  'd1', 's1', 'v1', 'q1', 'h1', 'b1',
+  'd2', 's2', 'v2', 'q2', 'h2', 'b2',
+  'd3', 's3', 'v3', 'q3', 'h3', 'b3',
+  'xmm1', 'ymm1', 'zmm1', 'fa1', 'f11', 'st1',
 ]);
 
 function callReturnRegFamily(reg) {
@@ -2190,7 +2242,31 @@ export function isSameCallReturnFamily(aReg, bReg) {
   return fa != null && fa === callReturnRegFamily(b);
 }
 
-export function buildCallResultMap(ir, materialNames = null) {
+export function isCallClobberedValue(v) {
+  if (!v) return false;
+  if (v.clobbered === true) return true;
+  if (v.kind === VK.UNDEF && v.unknown === true) {
+    const r = String(v.reg || '').toLowerCase();
+    if (r && !CALL_INT_RETURN_REGS.has(r) && !CALL_FP_RETURN_REGS.has(r) && !CALL_MULTI_RETURN_REGS.has(r)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function callCalleeNameForOrder(inst, opts = null) {
+  if (!inst) return null;
+  if (inst.extra?.name) return inst.extra.name;
+  const fromRow = opts?.callByRow?.get?.(inst.row)?.name;
+  if (fromRow) return fromRow;
+  const target = inst.extra?.target ?? inst.target;
+  if (target != null && opts?.symbolFor) {
+    try { return opts.symbolFor(target) || null; } catch { return null; }
+  }
+  return null;
+}
+
+export function buildCallResultMap(ir, materialNames = null, opts = null) {
   const byInst = new Map();
   const candidatesByInst = new Map();
   for (const v of ir?.values || []) {
@@ -2226,8 +2302,12 @@ export function buildCallResultMap(ir, materialNames = null) {
         continue;
       }
     }
+    const calleeName = callCalleeNameForOrder(inst, opts);
+    const sig = calleeName ? knownCallSignature(calleeName) : null;
+    const prefersFp = sig?.retType === 'float' || sig?.retType === 'double' || sig?.retType === 'long double';
+    const order = prefersFp ? CALL_FP_FIRST_REG_ORDER : CALL_RETURN_REG_ORDER;
     let picked = null;
-    for (const reg of CALL_RETURN_REG_ORDER) {
+    for (const reg of order) {
       const match = list.find((v) => String(v.reg || '').toLowerCase() === reg);
       if (match) {
         picked = match;
@@ -3094,18 +3174,50 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null, fromTe
   }
 }
 
-function hasUnbalancedBracesInLines(nodes) {
+export function hasUnbalancedBracesInLines(nodes) {
   let depth = 0;
+  let inBlockComment = false;
   for (const n of nodes) {
     const raw = n?.text;
-    if (!raw || (!raw.includes('{') && !raw.includes('}'))) continue;
-    const stripped = raw
-      .replace(/\/\*[\s\S]*?\*\//g, ' ')
-      .replace(/\/\/.*$/g, '')
-      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-      .replace(/'(?:[^'\\]|\\.)*'/g, "''");
-    for (let i = 0; i < stripped.length; i += 1) {
-      const ch = stripped[i];
+    if (!raw) continue;
+    let inString = false;
+    let inChar = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      const ch = raw[i];
+      const next = raw[i + 1];
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (inString) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === '\'') inChar = false;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '/' && next === '/') {
+        break;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '\'') {
+        inChar = true;
+        continue;
+      }
       if (ch === '{') depth += 1;
       else if (ch === '}') {
         depth -= 1;
@@ -3274,18 +3386,23 @@ export function decompileSemantic(model, rawOpts = {}) {
   beginControlRenderHistory(ctx);
   beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
-  ctx.callResultByInst = buildCallResultMap(ir, ctx.materialNames);
+  ctx.callResultByInst = buildCallResultMap(ir, ctx.materialNames, {
+    callByRow: ctx.callByRow,
+    symbolFor: ctx.opts?.symbolFor,
+  });
   for (const v of ir.values || []) {
     const def = v?.def;
     if (!def || def.op !== OP.CALL || !ctx.materialNames.has(v.id)) continue;
     const canonical = def.dst || ctx.callResultByInst.get(def) || null;
     if (canonical && v !== canonical) {
       if (isSameCallReturnFamily(v.reg, canonical.reg)) {
-        ctx.materialNames.set(v.id, `call_${canonical.id}`);
-      } else if (ctx.opts?.phase8Optimize !== true) {
+        const canonicalCallName = `call_${canonical.id}`;
+        ctx.materialNames.set(v.id, canonicalCallName);
+        ctx.materialNames.set(canonical.id, canonicalCallName);
+      } else if (isCallClobberedValue(v) && ctx.opts?.phase8Optimize !== true) {
         ctx.materialNames.delete(v.id);
       }
-    } else if (!canonical && ctx.opts?.phase8Optimize !== true) {
+    } else if (!canonical && isCallClobberedValue(v) && ctx.opts?.phase8Optimize !== true) {
       ctx.materialNames.delete(v.id);
     }
   }
@@ -3405,15 +3522,15 @@ export function decompileSemantic(model, rawOpts = {}) {
           const updatedNodes = Object.freeze(body.slice(startIdx, endIdx + 1));
           if (updatedNodes.length === region.nodes.length && updatedNodes.every((n, idx) => n === region.nodes[idx])) return region;
           const sepIdx = region.separator ? bodyIndex.get(region.separator) : null;
+          const firstRole = region.selection?.invert ? 'no' : 'yes';
           const updatedArms = Object.freeze(region.arms.map((arm) => {
             if (region.separator && sepIdx != null) {
-              const armNodes = arm.role === "yes"
+              const armNodes = arm.role === firstRole
                 ? body.slice(startIdx + 1, sepIdx)
                 : body.slice(sepIdx + 1, endIdx);
               return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
             }
-            const activeRole = region.selection?.invert ? "no" : "yes";
-            const armNodes = arm.role === activeRole ? body.slice(startIdx + 1, endIdx) : [];
+            const armNodes = arm.role === firstRole ? body.slice(startIdx + 1, endIdx) : [];
             return Object.freeze({ ...arm, nodes: Object.freeze(armNodes) });
           }));
           return Object.freeze({ ...region, nodes: updatedNodes, arms: updatedArms });

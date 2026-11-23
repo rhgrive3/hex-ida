@@ -120,7 +120,11 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   // <strings.h>
   ['strcasecmp', '<strings.h>'], ['strncasecmp', '<strings.h>'],
   ['bzero', '<strings.h>'], ['bcopy', '<strings.h>'], ['bcmp', '<strings.h>'],
-  ['ffs', '<strings.h>'], ['index', '<strings.h>'], ['rindex', '<strings.h>'],
+  ['ffs', '<strings.h>'],
+  // glibc _FORTIFY_SOURCE <string.h> checked entrypoints
+  ['__memcpy_chk', '<string.h>'], ['__memmove_chk', '<string.h>'], ['__memset_chk', '<string.h>'],
+  ['__strcpy_chk', '<string.h>'], ['__strncpy_chk', '<string.h>'],
+  ['__strcat_chk', '<string.h>'], ['__strncat_chk', '<string.h>'],
   // <stdio.h>
   ['printf', '<stdio.h>'], ['fprintf', '<stdio.h>'], ['sprintf', '<stdio.h>'], ['snprintf', '<stdio.h>'],
   ['vprintf', '<stdio.h>'], ['vfprintf', '<stdio.h>'], ['vsprintf', '<stdio.h>'], ['vsnprintf', '<stdio.h>'],
@@ -134,6 +138,10 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['fgetpos', '<stdio.h>'], ['fsetpos', '<stdio.h>'], ['feof', '<stdio.h>'], ['ferror', '<stdio.h>'], ['clearerr', '<stdio.h>'],
   ['perror', '<stdio.h>'], ['remove', '<stdio.h>'], ['rename', '<stdio.h>'],
   ['tmpfile', '<stdio.h>'], ['tmpnam', '<stdio.h>'], ['setbuf', '<stdio.h>'], ['setvbuf', '<stdio.h>'], ['fileno', '<stdio.h>'],
+  // glibc _FORTIFY_SOURCE <stdio.h> checked entrypoints
+  ['__sprintf_chk', '<stdio.h>'], ['__snprintf_chk', '<stdio.h>'],
+  ['__fprintf_chk', '<stdio.h>'], ['__printf_chk', '<stdio.h>'],
+  ['__vsprintf_chk', '<stdio.h>'], ['__vsnprintf_chk', '<stdio.h>'],
   // <math.h>
   ['sqrt', '<math.h>'], ['sqrtf', '<math.h>'], ['sqrtl', '<math.h>'],
   ['cbrt', '<math.h>'], ['cbrtf', '<math.h>'], ['cbrtl', '<math.h>'],
@@ -190,6 +198,8 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['lgamma', '<math.h>'], ['lgammaf', '<math.h>'], ['lgammal', '<math.h>'],
   ['nan', '<math.h>'], ['nanf', '<math.h>'], ['nanl', '<math.h>'],
   ['nextafter', '<math.h>'], ['nextafterf', '<math.h>'], ['nextafterl', '<math.h>'],
+  ['isnan', '<math.h>'], ['isinf', '<math.h>'], ['isfinite', '<math.h>'],
+  ['signbit', '<math.h>'], ['fpclassify', '<math.h>'],
   // <ctype.h>
   ['isalpha', '<ctype.h>'], ['isdigit', '<ctype.h>'], ['isalnum', '<ctype.h>'],
   ['isspace', '<ctype.h>'], ['isupper', '<ctype.h>'], ['islower', '<ctype.h>'],
@@ -202,13 +212,50 @@ export const STANDARD_C_LIBRARY_HEADERS = Object.freeze(new Map([
   ['__errno_location', '<errno.h>'],
 ]));
 
-const STANDARD_C_HEADER_SET = new Set(STANDARD_C_LIBRARY_HEADERS.values());
+const STANDARD_C_HEADER_SET = new Set([
+  ...STANDARD_C_LIBRARY_HEADERS.values(),
+  '<stdarg.h>',
+  '<stddef.h>',
+  '<stdint.h>',
+  '<stdbool.h>',
+]);
+
+const GLIBC_CHK_PROTOTYPES = Object.freeze(new Map([
+  ['__sprintf_chk', { header: '<stdio.h>', proto: 'extern int __sprintf_chk(char *, int, size_t, const char *, ...);', guardFortify: true }],
+  ['__snprintf_chk', { header: '<stdio.h>', proto: 'extern int __snprintf_chk(char *, size_t, int, size_t, const char *, ...);', guardFortify: true }],
+  ['__fprintf_chk', { header: '<stdio.h>', proto: 'extern int __fprintf_chk(FILE *, int, const char *, ...);', guardFortify: true }],
+  ['__printf_chk', { header: '<stdio.h>', proto: 'extern int __printf_chk(int, const char *, ...);', guardFortify: true }],
+  ['__vsprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], proto: 'extern int __vsprintf_chk(char *, int, size_t, const char *, va_list);', guardFortify: true }],
+  ['__vsnprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], proto: 'extern int __vsnprintf_chk(char *, size_t, int, size_t, const char *, va_list);', guardFortify: true }],
+  ['__memcpy_chk', { header: '<string.h>', proto: 'extern void *__memcpy_chk(void *, const void *, size_t, size_t);', guardFortify: false }],
+  ['__memmove_chk', { header: '<string.h>', proto: 'extern void *__memmove_chk(void *, const void *, size_t, size_t);', guardFortify: false }],
+  ['__memset_chk', { header: '<string.h>', proto: 'extern void *__memset_chk(void *, int, size_t, size_t);', guardFortify: false }],
+  ['__strcpy_chk', { header: '<string.h>', proto: 'extern char *__strcpy_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__strncpy_chk', { header: '<string.h>', proto: 'extern char *__strncpy_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
+  ['__strcat_chk', { header: '<string.h>', proto: 'extern char *__strcat_chk(char *, const char *, size_t);', guardFortify: false }],
+  ['__strncat_chk', { header: '<string.h>', proto: 'extern char *__strncat_chk(char *, const char *, size_t, size_t);', guardFortify: false }],
+]));
+
+const GLIBC_CHK_PROTO_SET = new Set([...GLIBC_CHK_PROTOTYPES.values()].map((v) => v.proto));
 
 const GLIBC_STRIPPED_ALIAS_MAP = Object.freeze(new Map([
   ['ctype_b_loc', { header: '<ctype.h>', target: '__ctype_b_loc' }],
   ['ctype_tolower_loc', { header: '<ctype.h>', target: '__ctype_tolower_loc' }],
   ['ctype_toupper_loc', { header: '<ctype.h>', target: '__ctype_toupper_loc' }],
   ['errno_location', { header: '<errno.h>', target: '__errno_location' }],
+  ['sprintf_chk', { header: '<stdio.h>', target: '__sprintf_chk' }],
+  ['snprintf_chk', { header: '<stdio.h>', target: '__snprintf_chk' }],
+  ['fprintf_chk', { header: '<stdio.h>', target: '__fprintf_chk' }],
+  ['printf_chk', { header: '<stdio.h>', target: '__printf_chk' }],
+  ['vsprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], target: '__vsprintf_chk' }],
+  ['vsnprintf_chk', { header: '<stdio.h>', extraHeaders: ['<stdarg.h>'], target: '__vsnprintf_chk' }],
+  ['memcpy_chk', { header: '<string.h>', target: '__memcpy_chk' }],
+  ['memmove_chk', { header: '<string.h>', target: '__memmove_chk' }],
+  ['memset_chk', { header: '<string.h>', target: '__memset_chk' }],
+  ['strcpy_chk', { header: '<string.h>', target: '__strcpy_chk' }],
+  ['strncpy_chk', { header: '<string.h>', target: '__strncpy_chk' }],
+  ['strcat_chk', { header: '<string.h>', target: '__strcat_chk' }],
+  ['strncat_chk', { header: '<string.h>', target: '__strncat_chk' }],
 ]));
 
 const HEX_STATIC_INTRINSIC_DEFS = Object.freeze(new Map([
@@ -271,8 +318,23 @@ function hexIntrinsicHelperDef(name) {
   return `static inline int ${name}(uint64_t a, uint64_t b) { ${ut} ua = ${uaInit}, ub = ${ubInit}; ${opBody} (void)N; (void)Z; (void)C; (void)V; return ${condExpr}; }`;
 }
 
+const ARITY_GUARDED_INTRINSICS = Object.freeze(new Map([
+  ['min', 2],
+  ['max', 2],
+]));
+
 function isHexIntrinsicHelper(name) {
   return hexIntrinsicHelperDef(name) !== null;
+}
+
+function isEligibleIntrinsicHelper(name, renderedBody) {
+  if (!isHexIntrinsicHelper(name)) return false;
+  const requiredArity = ARITY_GUARDED_INTRINSICS.get(name);
+  if (requiredArity != null) {
+    const { minArgs, maxArgs } = callSiteArityRange(declarationBearingSource(renderedBody), name);
+    return minArgs === requiredArity && maxArgs === requiredArity;
+  }
+  return true;
 }
 
 const SIMPLE_DECLARABLE = /^(?:unsigned\s+)?(?:char|short|int|long|long\s+long|long\s+long\s+int|__int128)$|^void \*$/;
@@ -348,6 +410,118 @@ export function parseStandardHeaderInclude(text) {
 
 export function isStandardHeaderInclude(text) {
   return parseStandardHeaderInclude(text) !== null;
+}
+
+const ATOMIC_COMPAT_LINES = new Set([
+  '#ifndef __hex_atomic_load_defined',
+  '#define __hex_atomic_load_defined',
+  '#define __atomic_load(ptr) __atomic_load_n((ptr), __ATOMIC_SEQ_CST)',
+  '#ifndef __hex_atomic_store_defined',
+  '#define __hex_atomic_store_defined',
+  '#define __atomic_store(ptr, val) (__atomic_store_n((ptr), (val), __ATOMIC_SEQ_CST), 0)',
+]);
+
+export function isHelperPreludeLine(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return false;
+  if (trimmed === '#endif') return true;
+  if (ATOMIC_COMPAT_LINES.has(trimmed)) return true;
+  if (trimmed === '#if defined(__GLIBC__)'
+    || trimmed === '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0') return true;
+  if (GLIBC_CHK_PROTO_SET.has(trimmed)) return true;
+  const helperGuard = /^#(?:ifndef|define)\s+__hex_helper_([A-Za-z0-9_]+)_defined$/.exec(trimmed);
+  if (helperGuard && isHexIntrinsicHelper(helperGuard[1])) return true;
+  const staticInline = /^static\s+inline\s+[A-Za-z0-9_\s*]+?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmed);
+  if (staticInline) {
+    const expected = hexIntrinsicHelperDef(staticInline[1]);
+    if (expected && trimmed === expected) return true;
+  }
+  const glibcIfndef = /^#ifndef\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+  if (glibcIfndef && GLIBC_STRIPPED_ALIAS_MAP.has(glibcIfndef[1])) return true;
+  const glibcDefine = /^#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+  if (glibcDefine && GLIBC_STRIPPED_ALIAS_MAP.get(glibcDefine[1])?.target === glibcDefine[2]) return true;
+  return false;
+}
+export function extractHelperPreludeBlocks(text) {
+  const rawLines = String(text ?? '').split(/\r?\n/);
+  const blocks = [];
+  let i = 0;
+  while (i < rawLines.length) {
+    const trimmed = rawLines[i].trim();
+    if (!trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//')) { i++; continue; }
+    // Intrinsic helper block: #ifndef __hex_helper_<name>_defined ... #endif
+    const helperGuard = /^#ifndef\s+__hex_helper_([A-Za-z0-9_]+)_defined$/.exec(trimmed);
+    if (helperGuard && isHexIntrinsicHelper(helperGuard[1])) {
+      const name = helperGuard[1];
+      const blockLines = [trimmed];
+      let j = i + 1;
+      while (j < rawLines.length) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (t === '#endif') break;
+        j++;
+      }
+      if (blockLines[blockLines.length - 1] === '#endif') {
+        blocks.push({ key: `helper:${name}`, names: [name], lines: blockLines });
+        i = j + 1;
+        continue;
+      }
+    }
+    // Atomic compat block: #ifndef __hex_atomic_(load|store)_defined ... #endif
+    const atomicGuard = /^#ifndef\s+__hex_atomic_(load|store)_defined$/.exec(trimmed);
+    if (atomicGuard) {
+      const name = `__atomic_${atomicGuard[1]}`;
+      const blockLines = [trimmed];
+      let j = i + 1;
+      while (j < rawLines.length) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (t === '#endif') break;
+        j++;
+      }
+      if (blockLines[blockLines.length - 1] === '#endif') {
+        blocks.push({ key: `atomic:${name}`, names: [name], lines: blockLines });
+        i = j + 1;
+        continue;
+      }
+    }
+    // Guarded GLIBC alias / *_chk block: #if defined(__GLIBC__) ... #endif (tracks nested #if/#ifndef)
+    if (trimmed === '#if defined(__GLIBC__)') {
+      const blockLines = [trimmed];
+      const names = new Set();
+      let depth = 1;
+      let j = i + 1;
+      while (j < rawLines.length && depth > 0) {
+        const t = rawLines[j].trim();
+        blockLines.push(t);
+        if (/^#if(?:n?def)?\b/.test(t)) depth++;
+        else if (t === '#endif') depth--;
+        const defM = /^#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(t);
+        if (defM) { names.add(defM[1]); names.add(defM[2]); }
+        const extM = /^extern\s+[^;]*?\b(__[A-Za-z0-9_]+_chk)\s*\(/.exec(t);
+        if (extM) names.add(extM[1]);
+        j++;
+      }
+      if (depth === 0 && names.size > 0) {
+        const sortedNames = [...names].sort();
+        blocks.push({ key: `glibc:${sortedNames.join(',')}`, names: sortedNames, lines: blockLines });
+        i = j;
+        continue;
+      }
+    }
+    // Stop once we reach a function signature / body opening (excluding synthesized structs and other known prelude lines)
+    if (!isFixedWidthPreludeDeclaration(trimmed)
+      && !isSynthesizedStructPreludeDeclaration(trimmed)
+      && !isStandaloneGlobalPreludeDeclaration(trimmed)
+      && !isStandalonePrototypePreludeDeclaration(trimmed)
+      && !isIdTypedefPreludeDeclaration(trimmed)
+      && !isStandardHeaderInclude(trimmed)
+      && !isHelperPreludeLine(trimmed)) {
+      break;
+    }
+    i++;
+  }
+  return blocks;
 }
 
 /* Remove comments and literals so identifier scans never read prose or asm
@@ -667,7 +841,7 @@ function collectMemberBaseAccesses(text) {
     if (op === '->') rec.hasArrow = true;
     else rec.hasDot = true;
   }
-  const ptrArithPattern = /\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*[+-][^()]*\)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  const ptrArithPattern = /\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+]|-(?!>))[^()]*\)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)/g;
   for (let match = ptrArithPattern.exec(source); match; match = ptrArithPattern.exec(source)) {
     const base = match[1];
     const field = match[2];
@@ -1036,8 +1210,7 @@ function recoveredStackType(name, evidence) {
  * recovered value type), then the naming class the producer itself used, then
  * the explicit 64-bit fallback.  Never a type name this closure cannot spell.
  */
-export 
-function inferPointerTypedLocals(renderedBody, sigText) {
+export function inferPointerTypedLocals(renderedBody, sigText) {
   const source = declarationBearingSource(renderedBody);
   const sigPtrNames = new Set(signaturePointerParams(sigText).map((item) => item.paramName));
   const ptrParamRe = /(?:\bid\s+|\*\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,)])/g;
@@ -1078,7 +1251,7 @@ function inferPointerTypedLocals(renderedBody, sigText) {
   return ptrLocals;
 }
 
-function localDeclarationTypeFor(name, result) {
+export function localDeclarationTypeFor(name, result) {
   const evidence = resultEvidence(result);
   const stack = recoveredStackType(name, evidence);
   if (stack) return stack;
@@ -1099,10 +1272,10 @@ function localDeclarationTypeFor(name, result) {
   return 'uint64';
 }
 
-function isDeclarableLocal(entry, declared, declaredMemberBases = null) {
+function isDeclarableLocal(entry, declared, declaredMemberBases = null, existingTypes = null) {
   const name = entry?.name;
   if (!name || !entry.value || declared.has(name)) return false;
-  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || name === 'id' || name === '__HEX_ANY_ARGS') return false;
+  if (KEYWORDS.has(name) || FIXED_WIDTH_TYPES.has(name) || (name === 'id' && existingTypes?.has('id')) || name === '__HEX_ANY_ARGS') return false;
   const handledAsMemberBase = declaredMemberBases ? declaredMemberBases.has(name) : entry.memberBase;
   if (entry.callTarget || handledAsMemberBase || entry.castType) return false;
   // External symbols and pseudo-intrinsics are never fabricated as function-local variables.
@@ -1447,7 +1620,10 @@ function classifyExprType(expr, ptrNames, intNames, floatNames = null) {
   if (t.startsWith('[')) return 'unknown';
 
   // 11. Direct function call `fn(...)`.
-  if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(t) && t.endsWith(')')) return 'int';
+  const directCall = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(t);
+  if (directCall && t.endsWith(')')) {
+    return PTR_RETURNING_STDLIB_CALLS.has(directCall[1]) ? 'ptr' : 'int';
+  }
 
   // 12. Array subscript `base[...]` or member access `a->f` / `s.f` or postfix `a++`/`a--`.
   if (/^[A-Za-z_][A-Za-z0-9_]*\s*\[/.test(t) && t.endsWith(']')) return 'int';
@@ -1776,41 +1952,53 @@ function harmonizeMixedTernaries(expr, ptrNames, intNames, floatNames = null) {
   const lead = s.slice(0, s.indexOf(trimmed));
   const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
 
-  // First harmonize any ternaries nested inside parenthesized/subscripted subexpressions.
+  // Split top-level ternary/binary operators first so each subexpression is visited once (O(N)).
+  const tern = findTopLevelTernary(trimmed);
+  if (tern) {
+    const cond = harmonizeMixedTernaries(trimmed.slice(0, tern.qIdx), ptrNames, intNames, floatNames);
+    let arm1 = harmonizeMixedTernaries(trimmed.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames);
+    let arm2 = harmonizeMixedTernaries(trimmed.slice(tern.cIdx + 1), ptrNames, intNames, floatNames);
+    const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames);
+    const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames);
+    if (t1 === 'ptr' && t2 === 'int') {
+      const a1Trim = arm1.trim();
+      const a1Lead = arm1.slice(0, arm1.indexOf(a1Trim));
+      const a1Trail = arm1.slice(arm1.indexOf(a1Trim) + a1Trim.length);
+      arm1 = `${a1Lead}(uintptr_t)(${a1Trim})${a1Trail}`;
+    } else if (t1 === 'int' && t2 === 'ptr') {
+      const a2Trim = arm2.trim();
+      const a2Lead = arm2.slice(0, arm2.indexOf(a2Trim));
+      const a2Trail = arm2.slice(arm2.indexOf(a2Trim) + a2Trim.length);
+      arm2 = `${a2Lead}(uintptr_t)(${a2Trim})${a2Trail}`;
+    }
+    return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+  }
+
+  const bin = findLowestTopLevelBinaryOp(trimmed);
+  if (bin) {
+    const left = harmonizeMixedTernaries(trimmed.slice(0, bin.index), ptrNames, intNames, floatNames);
+    const right = harmonizeMixedTernaries(trimmed.slice(bin.index + bin.len), ptrNames, intNames, floatNames);
+    return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+  }
+
+  // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
   const withNested = rewriteParenthesizedSubexprs(
     trimmed,
     (inner) => harmonizeMixedTernaries(inner, ptrNames, intNames, floatNames),
   );
-
-  const tern = findTopLevelTernary(withNested);
-  if (!tern) {
-    // Also check binary operands at depth 0 (e.g. `x + cond ? a : b` or `lhs = rhs`).
-    const bin = findLowestTopLevelBinaryOp(withNested);
-    if (bin) {
-      const left = harmonizeMixedTernaries(withNested.slice(0, bin.index), ptrNames, intNames, floatNames);
-      const right = harmonizeMixedTernaries(withNested.slice(bin.index + bin.len), ptrNames, intNames, floatNames);
-      return `${lead}${left}${withNested.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
-    }
-    return `${lead}${withNested}${trail}`;
-  }
-  const cond = harmonizeMixedTernaries(withNested.slice(0, tern.qIdx), ptrNames, intNames, floatNames);
-  let arm1 = harmonizeMixedTernaries(withNested.slice(tern.qIdx + 1, tern.cIdx), ptrNames, intNames, floatNames);
-  let arm2 = harmonizeMixedTernaries(withNested.slice(tern.cIdx + 1), ptrNames, intNames, floatNames);
-  const t1 = classifyExprType(arm1, ptrNames, intNames, floatNames);
-  const t2 = classifyExprType(arm2, ptrNames, intNames, floatNames);
-  if (t1 === 'ptr' && t2 === 'int') {
-    const a1Trim = arm1.trim();
-    const a1Lead = arm1.slice(0, arm1.indexOf(a1Trim));
-    const a1Trail = arm1.slice(arm1.indexOf(a1Trim) + a1Trim.length);
-    arm1 = `${a1Lead}(uintptr_t)(${a1Trim})${a1Trail}`;
-  } else if (t1 === 'int' && t2 === 'ptr') {
-    const a2Trim = arm2.trim();
-    const a2Lead = arm2.slice(0, arm2.indexOf(a2Trim));
-    const a2Trail = arm2.slice(arm2.indexOf(a2Trim) + a2Trim.length);
-    arm2 = `${a2Lead}(uintptr_t)(${a2Trim})${a2Trail}`;
-  }
-  return `${lead}${cond}?${arm1}:${arm2}${trail}`;
+  return `${lead}${withNested}${trail}`;
 }
+
+const PTR_RETURNING_STDLIB_CALLS = new Set([
+  'malloc', 'calloc', 'realloc', 'aligned_alloc',
+  'strdup', 'strndup', 'strchr', 'strrchr', 'strstr', 'strpbrk', 'strtok', 'strtok_r', 'strerror',
+  'memcpy', 'memmove', 'memset', 'memchr',
+  'fopen', 'freopen', 'fgets', 'tmpfile', 'getenv', 'bsearch',
+  '__errno_location', '__ctype_b_loc', '__ctype_tolower_loc', '__ctype_toupper_loc',
+  'errno_location', 'ctype_b_loc', 'ctype_tolower_loc', 'ctype_toupper_loc',
+  '__memcpy_chk', 'memcpy_chk', '__memmove_chk', 'memmove_chk', '__memset_chk', 'memset_chk',
+  '__strcpy_chk', 'strcpy_chk', '__strncpy_chk', 'strncpy_chk', '__strcat_chk', 'strcat_chk', '__strncat_chk', 'strncat_chk',
+]);
 
 const BITWISE_BIN_OPS = new Set(['&', '|', '^', '<<', '>>', '%']);
 
@@ -1825,41 +2013,42 @@ function wrapFloatOperand(operand, floatNames) {
 function sanitizeFloatBitwiseOps(expr, floatNames) {
   const s = String(expr ?? '');
   if (!/[&|^~%]|<<|>>/.test(s)) return s;
+  if ((!floatNames || floatNames.size === 0) && !/\d\.\d|\b(?:float|double)\b/.test(s)) return s;
   const trimmed = s.trim();
   if (!trimmed) return s;
   const lead = s.slice(0, s.indexOf(trimmed));
   const trail = s.slice(s.indexOf(trimmed) + trimmed.length);
 
-  // Recurse into parenthesized/subscripted subexpressions first.
-  const withNested = rewriteParenthesizedSubexprs(
-    trimmed,
-    (inner) => sanitizeFloatBitwiseOps(inner, floatNames),
-  );
-
-  const tern = findTopLevelTernary(withNested);
+  // Split top-level ternary/binary/unary operators first so each subexpression is visited once (O(N)).
+  const tern = findTopLevelTernary(trimmed);
   if (tern) {
-    const cond = sanitizeFloatBitwiseOps(withNested.slice(0, tern.qIdx), floatNames);
-    const arm1 = sanitizeFloatBitwiseOps(withNested.slice(tern.qIdx + 1, tern.cIdx), floatNames);
-    const arm2 = sanitizeFloatBitwiseOps(withNested.slice(tern.cIdx + 1), floatNames);
+    const cond = sanitizeFloatBitwiseOps(trimmed.slice(0, tern.qIdx), floatNames);
+    const arm1 = sanitizeFloatBitwiseOps(trimmed.slice(tern.qIdx + 1, tern.cIdx), floatNames);
+    const arm2 = sanitizeFloatBitwiseOps(trimmed.slice(tern.cIdx + 1), floatNames);
     return `${lead}${cond}?${arm1}:${arm2}${trail}`;
   }
 
-  const bin = findLowestTopLevelBinaryOp(withNested);
+  const bin = findLowestTopLevelBinaryOp(trimmed);
   if (bin) {
-    let left = sanitizeFloatBitwiseOps(withNested.slice(0, bin.index), floatNames);
-    let right = sanitizeFloatBitwiseOps(withNested.slice(bin.index + bin.len), floatNames);
+    let left = sanitizeFloatBitwiseOps(trimmed.slice(0, bin.index), floatNames);
+    let right = sanitizeFloatBitwiseOps(trimmed.slice(bin.index + bin.len), floatNames);
     if (BITWISE_BIN_OPS.has(bin.op)) {
       left = wrapFloatOperand(left, floatNames);
       right = wrapFloatOperand(right, floatNames);
     }
-    return `${lead}${left}${withNested.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
+    return `${lead}${left}${trimmed.slice(bin.index, bin.index + bin.len)}${right}${trail}`;
   }
 
-  if (withNested.startsWith('~')) {
-    const inner = sanitizeFloatBitwiseOps(withNested.slice(1), floatNames);
+  if (trimmed.startsWith('~')) {
+    const inner = sanitizeFloatBitwiseOps(trimmed.slice(1), floatNames);
     return `${lead}~${wrapFloatOperand(inner, floatNames)}${trail}`;
   }
 
+  // Leaf/base case: no top-level operator; recurse into parenthesized/subscripted subexpressions once.
+  const withNested = rewriteParenthesizedSubexprs(
+    trimmed,
+    (inner) => sanitizeFloatBitwiseOps(inner, floatNames),
+  );
   return `${lead}${withNested}${trail}`;
 }
 
@@ -2179,10 +2368,11 @@ function rewriteScalarArrowBasesInLine(text, arrowRewriteBases) {
         while (after < text.length && /\s/.test(text[after])) after++;
         if (text.slice(after, after + 2) === '->') {
           const inner = text.slice(i + 1, closeIdx);
-          const arithM = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[+-][^()]*$/.exec(inner);
+          const arithM = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+]|-(?!>))[^()]*$/.exec(inner);
           if (arithM && arrowRewriteBases.has(arithM[1])) {
             const structType = arrowRewriteBases.get(arithM[1]);
-            out += `((${structType} *)(uintptr_t)(${inner.trim()}))->`;
+            const rewrittenInner = rewriteScalarArrowBasesInLine(inner.trim(), arrowRewriteBases).text;
+            out += `((${structType} *)(uintptr_t)(${rewrittenInner}))->`;
             i = after + 2;
             changed = true;
             continue;
@@ -2329,13 +2519,27 @@ export function closeFunctionOutput(result, options = {}) {
     }
   }
 
+  const idUsedAsType = signatureTypeNames(sigText).has('id')
+    || Boolean(uses.get('id')?.castType)
+    || Boolean(objcSigMatch)
+    || /(?:^|[\n;{])\s*(?:(?:const|volatile|restrict|static)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|;|\[|,)/.test(declarationBearingSource(renderedBody));
+  const idTypedefPrelude = [];
+  if (!existingTypes.has('id') && idUsedAsType) {
+    idTypedefPrelude.push({
+      kind: 'decl', indent: 0, text: 'typedef void * id;',
+      row: null, addr: null, note: null, source: entrySource,
+    });
+    existingTypes.add('id');
+    declared.add('id');
+  }
+
   const declaredMemberBaseNames = new Set(memberBaseDeclarations.map((d) => {
     const m = /([A-Za-z_][A-Za-z0-9_]*)\s*;$/.exec(d.text);
     return m ? m[1] : '';
   }).filter(Boolean));
   const ptrTypedLocals = inferPointerTypedLocals(renderedBody, sigText);
   const localDeclarations = [...uses.values()]
-    .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames))
+    .filter((entry) => isDeclarableLocal(entry, declared, declaredMemberBaseNames, existingTypes))
     .map((entry) => {
       const declType = (() => {
         if (entry.subscriptBase && (entry.name === 'memory' || !entry.nonSubscriptValue)) return 'uint8_t *';
@@ -2396,18 +2600,12 @@ export function closeFunctionOutput(result, options = {}) {
     if (m) macroDefinedCalls.add(m[1]);
   }
   const sigFuncName = signatureFunctionName(sigText);
-  const idTypedefPrelude = [];
-  if (!existingTypes.has('id') && (/\bid\b/.test(declarationBearingSource(sigText)) || uses.has('id'))) {
-    idTypedefPrelude.push({
-      kind: 'decl', indent: 0, text: 'typedef void * id;',
-      row: null, addr: null, note: null, source: entrySource,
-    });
-    existingTypes.add('id');
-    declared.add('id');
-  }
   const existingIncludes = new Set();
+  const existingLineTexts = new Set();
   for (const l of lines) {
-    const inc = /^\s*#include\s*(<[A-Za-z0-9_./+-]+>)/.exec(String(l?.text ?? ''));
+    const rawLineText = String(l?.text ?? '').trim();
+    if (rawLineText) existingLineTexts.add(rawLineText);
+    const inc = /^#include\s*(<[A-Za-z0-9_./+-]+>)/.exec(rawLineText);
     if (inc) existingIncludes.add(inc[1]);
   }
   const neededStdlibHeaders = new Set();
@@ -2417,22 +2615,79 @@ export function closeFunctionOutput(result, options = {}) {
     const m = /^\s*#define\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(String(l?.text ?? ''));
     if (m) existingMacroNames.add(m[1]);
   }
+  const emittedChkProtos = new Set();
   for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
     if (!entry?.callTarget) continue;
     if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
     const header = STANDARD_C_LIBRARY_HEADERS.get(entry.name);
     if (header && !existingIncludes.has(header)) neededStdlibHeaders.add(header);
     const aliasInfo = GLIBC_STRIPPED_ALIAS_MAP.get(entry.name);
+    const chkTarget = aliasInfo ? aliasInfo.target : entry.name;
+    const chkInfo = GLIBC_CHK_PROTOTYPES.get(chkTarget);
+    if (chkInfo) {
+      if (!existingIncludes.has(chkInfo.header)) neededStdlibHeaders.add(chkInfo.header);
+      for (const extraH of chkInfo.extraHeaders || []) {
+        if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
+      }
+    }
     if (aliasInfo) {
       if (!existingIncludes.has(aliasInfo.header)) neededStdlibHeaders.add(aliasInfo.header);
-      if (!existingMacroNames.has(entry.name)) {
+      for (const extraH of aliasInfo.extraHeaders || []) {
+        if (!existingIncludes.has(extraH)) neededStdlibHeaders.add(extraH);
+      }
+      const needAlias = !existingMacroNames.has(entry.name);
+      const needProto = Boolean(chkInfo && !existingLineTexts.has(chkInfo.proto) && !emittedChkProtos.has(chkTarget));
+      if (needAlias || needProto) {
         glibcAliasPrelude.push(
-          { kind: 'decl', indent: 0, text: `#ifndef ${entry.name}`, row: null, addr: null, note: null, source: entrySource },
-          { kind: 'decl', indent: 0, text: `#define ${entry.name} ${aliasInfo.target}`, row: null, addr: null, note: null, source: entrySource },
+          { kind: 'decl', indent: 0, text: '#if defined(__GLIBC__)', row: null, addr: null, note: null, source: entrySource },
+        );
+        if (needProto) {
+          if (chkInfo.guardFortify) {
+            glibcAliasPrelude.push(
+              { kind: 'decl', indent: 0, text: '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0', row: null, addr: null, note: null, source: entrySource },
+              { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+              { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+            );
+          } else {
+            glibcAliasPrelude.push(
+              { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+            );
+          }
+          emittedChkProtos.add(chkTarget);
+          existingLineTexts.add(chkInfo.proto);
+        }
+        if (needAlias) {
+          glibcAliasPrelude.push(
+            { kind: 'decl', indent: 0, text: `#ifndef ${entry.name}`, row: null, addr: null, note: null, source: entrySource },
+            { kind: 'decl', indent: 0, text: `#define ${entry.name} ${aliasInfo.target}`, row: null, addr: null, note: null, source: entrySource },
+            { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+          );
+          existingMacroNames.add(entry.name);
+        }
+        glibcAliasPrelude.push(
           { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
         );
-        existingMacroNames.add(entry.name);
       }
+    } else if (chkInfo && !existingLineTexts.has(chkInfo.proto) && !emittedChkProtos.has(chkTarget)) {
+      glibcAliasPrelude.push(
+        { kind: 'decl', indent: 0, text: '#if defined(__GLIBC__)', row: null, addr: null, note: null, source: entrySource },
+      );
+      if (chkInfo.guardFortify) {
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: '#if !defined(__USE_FORTIFY_LEVEL) || __USE_FORTIFY_LEVEL == 0', row: null, addr: null, note: null, source: entrySource },
+          { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+          { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+        );
+      } else {
+        glibcAliasPrelude.push(
+          { kind: 'decl', indent: 0, text: chkInfo.proto, row: null, addr: null, note: null, source: entrySource },
+        );
+      }
+      glibcAliasPrelude.push(
+        { kind: 'decl', indent: 0, text: '#endif', row: null, addr: null, note: null, source: entrySource },
+      );
+      emittedChkProtos.add(chkTarget);
+      existingLineTexts.add(chkInfo.proto);
     }
   }
   const stdlibIncludePrelude = [...neededStdlibHeaders]
@@ -2446,6 +2701,7 @@ export function closeFunctionOutput(result, options = {}) {
   for (const entry of [...uses.values()].sort((a, b) => compareAscii(a.name, b.name))) {
     if (!entry?.callTarget) continue;
     if (declared.has(entry.name) || macroDefinedCalls.has(entry.name) || entry.name === sigFuncName) continue;
+    if (!isEligibleIntrinsicHelper(entry.name, renderedBody)) continue;
     const helperDef = hexIntrinsicHelperDef(entry.name);
     if (!helperDef) continue;
     const guard = `__hex_helper_${entry.name}_defined`;
@@ -2467,7 +2723,7 @@ export function closeFunctionOutput(result, options = {}) {
       && !STANDARD_KNOWN_TYPES.has(entry.name)
       && !STANDARD_C_LIBRARY_HEADERS.has(entry.name)
       && !GLIBC_STRIPPED_ALIAS_MAP.has(entry.name)
-      && !isHexIntrinsicHelper(entry.name)
+      && !isEligibleIntrinsicHelper(entry.name, renderedBody)
       && !macroDefinedCalls.has(entry.name)
       && !/^__builtin_/.test(entry.name)
       && entry.name !== '__HEX_ANY_ARGS'

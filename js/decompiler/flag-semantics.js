@@ -269,7 +269,7 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
 function atomicOperandText(text) {
   const s = text.trim();
   if (!s) return text;
-  if (/^-?(?:0[xX][0-9A-Fa-f]+|d+)$/.test(s) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return text;
+  if (/^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(s) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return text;
   // Already wrapped in a single matching outer pair of parentheses.
   if (s[0] === '(' && s[s.length - 1] === ')') {
     let depth = 0, wrapsAll = true;
@@ -285,9 +285,15 @@ function atomicOperandText(text) {
     const ch = s[i];
     if (ch === '(' || ch === '[') depth++;
     else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
-    else if (depth === 0 && (ch === '&' || ch === '|' || ch === '^' || ch === '?' || ch === ':' || ch === '<' || ch === '>' || ch === '=')) {
-      // Skip "->" member access.
+    else if (depth === 0 && (
+      ch === '&' || ch === '|' || ch === '^' || ch === '?' || ch === ':'
+      || ch === '<' || ch === '>' || ch === '='
+      || ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === ','
+    )) {
+      // Skip "->" member access and leading unary "+", "-", "*".
       if (ch === '>' && i > 0 && s[i - 1] === '-') continue;
+      if (ch === '-' && (i === 0 || s[i + 1] === '>')) continue;
+      if ((ch === '+' || ch === '*') && i === 0) continue;
       hasTopOp = true; break;
     }
   }

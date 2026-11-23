@@ -60,6 +60,7 @@ function inferInlineSignature(pseudocode) {
   for (const rawLine of pseudocode.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('/*') || trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
+    if (/^static\s+inline\b/.test(trimmed)) continue;
     const braceIdx = trimmed.indexOf('{');
     if (braceIdx > 0) {
       const before = trimmed.slice(0, braceIdx).trim();
@@ -90,7 +91,7 @@ function adaptFunctionForTranslationUnit(fn) {
   return adapted;
 }
 
-export function reconstructSource(functions) {
+export function reconstructTranslationUnit(functions) {
   const adapted = [];
   for (const fn of Array.isArray(functions) ? functions : []) {
     const entry = adaptFunctionForTranslationUnit(fn);
@@ -98,7 +99,22 @@ export function reconstructSource(functions) {
   }
   if (adapted.length === 0) return null;
   const unit = buildCTranslationUnit(adapted);
-  return typeof unit?.source === 'string' && unit.source.trim() ? unit.source : null;
+  const source = typeof unit?.source === 'string' && unit.source.trim() ? unit.source : null;
+  if (!source) return null;
+  const unitFunctions = Array.isArray(unit?.functions) ? unit.functions : [];
+  const syntaxOnlyCount = unitFunctions.filter((fn) => fn?.syntaxOnly === true).length;
+  const faithfulCount = unitFunctions.length - syntaxOnlyCount;
+  return { source, unit, syntaxOnlyCount, faithfulCount };
+}
+
+export function reconstructSource(functions, metaOut = null) {
+  const reconstructed = reconstructTranslationUnit(functions);
+  if (!reconstructed) return null;
+  if (metaOut && typeof metaOut === 'object') {
+    metaOut.syntaxOnlyCount = reconstructed.syntaxOnlyCount;
+    metaOut.faithfulCount = reconstructed.faithfulCount;
+  }
+  return reconstructed.source;
 }
 
 export function runClang({ clang, sourceFile, mode, timeoutMs, spawnRunner = spawnSync }) {
@@ -151,10 +167,15 @@ export function createGCaseRunner({
     if (subject.state !== 'PASS') {
       return { state: 'FAIL', reason: `subject-${subject.state.toLowerCase()}:${(subject.reason || 'no-reason').slice(0, 160)}`, functions: progress };
     }
-    const source = reconstructSource(subject.functions);
-    if (source === null) return { state: 'FAIL', reason: 'no-decompiled-bodies', functions: progress };
+    const reconstructed = reconstructTranslationUnit(subject.functions);
+    if (reconstructed === null) return { state: 'FAIL', reason: 'no-decompiled-bodies', functions: progress };
+    progress.extra.syntaxOnlyCount = reconstructed.syntaxOnlyCount;
+    progress.extra.faithfulCount = reconstructed.faithfulCount;
+    if (reconstructed.faithfulCount === 0 && reconstructed.syntaxOnlyCount > 0) {
+      return { state: 'FAIL', reason: 'syntax-only-placeholders', functions: progress };
+    }
     const sourceFile = path.join(scratch, `${Buffer.from(manifestCase.id).toString('hex')}.c`);
-    fs.writeFileSync(sourceFile, source);
+    fs.writeFileSync(sourceFile, reconstructed.source);
     const syntax = runClang({ clang, sourceFile, mode: 'syntax', timeoutMs: clangTimeoutMs, spawnRunner });
     if (syntax.timedOut) return { state: 'TIMEOUT', reason: 'clang-syntax-timeout', functions: progress };
     if (!syntax.ok) return { state: 'FAIL', reason: 'syntax-failed', functions: progress };

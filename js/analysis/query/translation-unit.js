@@ -23,6 +23,8 @@ import {
   isIdTypedefPreludeDeclaration,
   isStandardHeaderInclude,
   parseStandardHeaderInclude,
+  isHelperPreludeLine,
+  extractHelperPreludeBlocks,
 } from '../../decompiler/c-output-closure.js';
 
 const FIXED_WIDTH_ALIASES = Object.freeze(new Map([
@@ -45,7 +47,7 @@ const KEYWORDS = new Set([
 ]);
 const PSEUDO_INTRINSIC = /^(?:phi|bit_extract|bit_insert|sext|zext|trunc|__arm64_[A-Za-z0-9_]*|__a64_[A-Za-z0-9_]*)$/;
 const SIMPLE_C_TYPE = /^(?:(?:const|volatile|restrict)\s+)*(?:void|bool|id|float|double|u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|uintptr_t|intptr_t|__int128|unsigned\s+__int128|(?:(?:signed|unsigned)\s+)?(?:char|short|int|long|long\s+long))(?:\s*\*)*$/;
-const ID_TYPE_USAGE = /(?:^|[\n;(,])\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id(?:\s*\*)*\s*\)|typedef\s+void\s*\*\s*id\s*;/;
+const ID_TYPE_USAGE = /(?:^|[\n;({,])\s*(?:(?:const|volatile|restrict|static|extern)\s+)*id(?:\s*\*)*\s+[A-Za-z_][A-Za-z0-9_]*|\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\*+\s*\)|(?:^|[=(,:?+\-*/%&|^<>!~;{]|\breturn\b)\s*\(\s*(?:(?:const|volatile|restrict)\s+)*id\s*\)\s*(?:[A-Za-z_0-9("'\[]|&(?!&)|\*(?!\*)|[~!](?!=))|typedef\s+void\s*\*\s*id\s*;/;
 
 function addressKey(value) {
   if (value == null) return null;
@@ -205,7 +207,8 @@ function isAllowedBodyPrefixLine(trimmed) {
     || isStandaloneGlobalPreludeDeclaration(trimmed)
     || isStandalonePrototypePreludeDeclaration(trimmed)
     || isIdTypedefPreludeDeclaration(trimmed)
-    || isStandardHeaderInclude(trimmed);
+    || isStandardHeaderInclude(trimmed)
+    || isHelperPreludeLine(trimmed);
 }
 
 /* Strip standalone external global prelude blocks emitted by c-output-closure
@@ -239,6 +242,7 @@ function stripStandaloneGlobalPreludeLines(text) {
         inStandalonePrototypes = false;
       }
       if (isStandardHeaderInclude(trimmed)) continue;
+      if (isHelperPreludeLine(trimmed)) continue;
       if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) {
         sawSignature = true;
       }
@@ -260,6 +264,7 @@ function extractSynthesizedStructTypedefs(text) {
       structs.push(parsed);
       continue;
     }
+    if (isHelperPreludeLine(trimmed)) continue;
     if (looksLikeSignature(trimmed) || trimmed === '{' || trimmed.endsWith('{')) break;
   }
   return structs;
@@ -275,6 +280,7 @@ function extractStandardHeaderIncludes(text) {
       found.push(header);
       continue;
     }
+    if (isHelperPreludeLine(trimmed)) continue;
     if (looksLikeSignature(trimmed) || (trimmed.includes('{') && !isSynthesizedStructPreludeDeclaration(trimmed))) break;
   }
   return found;
@@ -306,7 +312,8 @@ function isAccountedBodyPrefix(prefix) {
       || (sawStandaloneGlobalsMarker && isStandaloneGlobalPreludeDeclaration(line))
       || (sawStandalonePrototypesMarker && isStandalonePrototypePreludeDeclaration(line))
       || isIdTypedefPreludeDeclaration(line)
-      || isStandardHeaderInclude(line);
+      || isStandardHeaderInclude(line)
+      || isHelperPreludeLine(line);
     if (!ok) return false;
     pos = end;
   }
@@ -555,11 +562,11 @@ function identifierIsCovered(name, context) {
   if (context.declaredLocals.has(name)) return true;
   if (context.knownAliases.has(name)) return true;
   if (context.fallbackNames.has(name)) return true;
-  if (context.stdlibHeaderFunctions?.has(name)) return true;
+  if (context.hoistedHelperNames?.has(name)) return true;
   return false;
 }
 
-function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set() }) {
+function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, selectedNames, synthesizedStructs = new Map(), headers = new Set(), hoistedHelperNames = new Set() }) {
   const keywordsLike = new Set([...KEYWORDS, ...FIXED_TYPELIKE_OPERATORS, '__asm', 'asm']);
   const prototypeNames = new Set();
   const variadicPrototypes = new Set();
@@ -604,7 +611,7 @@ function bodyEligibilityContext({ prototypes, globals, fallbackDeclarations, sel
   for (const [fnName, header] of STANDARD_C_LIBRARY_HEADERS) {
     if (headers.has(header)) stdlibHeaderFunctions.add(fnName);
   }
-  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions };
+  return { keywordsLike, prototypeNames, variadicPrototypes, unprototypedFallbacks, knownAritySelected, declaredGlobals, fallbackNames, fallbackArrayGlobals, knownAliases, synthesizedStructFields, declaredLocals, selectedNames, stdlibHeaderFunctions, hoistedHelperNames };
 }
 
 function faithfulBodyEligibility(fn, context) {
@@ -689,6 +696,13 @@ function faithfulBodyEligibility(fn, context) {
     if (identifierIsCovered(name, context)) continue;
     const before = codeText.slice(0, match.index).trimEnd();
     if ((before.endsWith('->') || before.endsWith('.')) && context.synthesizedStructFields?.has(name)) continue;
+    if (context.stdlibHeaderFunctions?.has(name)) {
+      const after = codeText.slice(match.index + name.length);
+      const isCallPos = /^\s*\(/.test(after);
+      const isAddrOfPos = before.endsWith('&') && !before.endsWith('&&');
+      const isFnPtrCastPos = /\(\s*[^()]*\(\s*\*\s*\)\s*\([^()]*\)\s*\)$/.test(before);
+      if (isCallPos || isAddrOfPos || isFnPtrCastPos) continue;
+    }
     return { eligible:false, reason:`uncovered-identifier:${name}` };
   }
   return { eligible:true, reason:null, bodyText, signature };
@@ -909,6 +923,8 @@ export function buildCTranslationUnit(functions, options = {}) {
   const headers = new Set();
   const typeDeclarations = new Set();
   const synthesizedStructs = new Map();
+  const hoistedHelperBlocks = new Map();
+  const hoistedHelperNames = new Set();
   const fallbackDeclarations = [];
   const fallbackNames = new Set();
   const selectedDefinitionRows = [];
@@ -940,6 +956,14 @@ export function buildCTranslationUnit(functions, options = {}) {
     }
     for (const header of extractStandardHeaderIncludes(originalPseudocode)) {
       headers.add(header);
+    }
+    for (const helperBlock of extractHelperPreludeBlocks(originalPseudocode)) {
+      const blockText = helperBlock.lines.join('\n');
+      if (!hoistedHelperBlocks.has(helperBlock.key)) {
+        hoistedHelperBlocks.set(helperBlock.key, blockText);
+      }
+      for (const helperName of helperBlock.names) hoistedHelperNames.add(helperName);
+      headersForText(blockText, headers);
     }
     const strippedPseudocode = stripStandaloneGlobalPreludeLines(originalPseudocode);
     // A function's own typedef lines are never emitted (a faithful body is
@@ -1039,6 +1063,7 @@ export function buildCTranslationUnit(functions, options = {}) {
       if (selectedNames.has(name)) continue;
       if ([...prototypeMap.values()].some((row) => row.name === name)) continue;
       if (helperMap.has(name)) continue;
+      if (hoistedHelperNames.has(name)) continue;
       if (STANDARD_C_LIBRARY_HEADERS.has(name)) {
         headers.add(STANDARD_C_LIBRARY_HEADERS.get(name));
         continue;
@@ -1157,7 +1182,7 @@ export function buildCTranslationUnit(functions, options = {}) {
   const eligibilityContext = bodyEligibilityContext({
     prototypes, globals,
     fallbackDeclarations, selectedNames,
-    synthesizedStructs, headers,
+    synthesizedStructs, headers, hoistedHelperNames,
   });
   // A selected definition whose recovered signature carries no parameter
   // spellings is emitted unprototyped; an arity-unknown call to it cannot
@@ -1197,9 +1222,13 @@ export function buildCTranslationUnit(functions, options = {}) {
   const fallbacks = fallbackDeclarations.slice().sort();
   const orderedFunctions = normalizedFunctions.slice().sort((a, b) => compareAddressThenName(a, b) || a.index - b.index);
 
+  const hoistedHelpers = [...hoistedHelperBlocks.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, blockText]) => blockText);
   const sections = [];
   if (includes.length) sections.push(includes.map((header) => `#include ${header}`).join('\n'));
   if (typeDecls.length) sections.push(typeDecls.join('\n'));
+  if (hoistedHelpers.length) sections.push(hoistedHelpers.join('\n'));
   const declaredPrototypes = prototypes.filter((row) => row.declaration);
   if (declaredPrototypes.length) sections.push(declaredPrototypes.map((row) => row.declaration).join('\n'));
   const declaredGlobals = globals.filter((row) => row.declaration);

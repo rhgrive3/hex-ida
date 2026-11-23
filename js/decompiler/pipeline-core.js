@@ -31,7 +31,7 @@ import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory,
   readSemanticConditionalRegions, readSemanticLocalDeclaration,
   readSemanticOrderedMaterializations, readSemanticStoreCompoundAdmission,
-  buildCallResultMap, isSameCallReturnFamily } from './semantic-core.js';
+  buildCallResultMap, isSameCallReturnFamily, isCallClobberedValue, memoryElementType } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -440,32 +440,34 @@ function memoryLocation(inst, state) {
   if (addr.base && addr.index) {
     const base = buildValue(addr.base, state, { forAddress: true });
     const index = buildValue(addr.index, state, { forAddress: true });
-    const scale = 1 << Number(addr.scale || 0);
+    const rawScale = Number(addr.scale || 0);
+    const validScale = Number.isInteger(rawScale) && rawScale >= 0 && rawScale <= 3;
+    const scale = validScale ? (1 << rawScale) : -1;
     const elemBytes = Number(addr.size || inst?.size || loc?.size || 0);
-    if (elemBytes > 0 && elemBytes === scale) {
+    const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
+    if (validScale && elemBytes > 0 && elemBytes === scale && disp === 0n) {
       const baseType = state.types?.values?.get?.(addr.base.id);
       const indexBaseIsPointer = baseType?.kind === 'pointer' && baseType?.cType && baseType.cType !== 'void *' && base?.kind === 'var';
       const elemBits = elemBytes * 8;
       const access = expr.index(base, index, scale, elemBits, origin(inst));
       return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access, 0, { indexBaseIsPointer }) };
     }
-    if (!state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
+    if (validScale && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
       const effBytes = elemBytes > 0 ? elemBytes : 8;
-      const elemType = effBytes === 16 ? 'uint128' : `uint${effBytes === 1 ? 8 : effBytes === 2 ? 16 : effBytes === 4 ? 32 : effBytes === 8 ? 64 : 64}_t`;
+      const elemType = memoryElementType(inst, effBytes, state.types);
       const baseText = printExpression(base);
       const idxText = printExpression(index);
       const offsetText = scale === 1 ? `(${idxText})` : `(${idxText}) * ${scale}`;
-      const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
       const dispText = disp !== 0n ? (disp < 0n ? ` - ${(-disp).toString()}` : ` + ${disp.toString()}`) : '';
       const text = `*(${elemType} *)((uintptr_t)(${baseText}) + ${offsetText}${dispText})`;
       const access = expr.index(base, index, scale, effBytes * 8, origin(inst));
       return { kind: 'index', key: loc.key, base, index, scale, expression: access, text };
     }
   }
-  if (addr.base && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
+  if (addr.base && !addr.index && !state.preservePhase8Unknown && state.opts?.phase8Optimize !== true) {
     const base = buildValue(addr.base, state, { forAddress: true });
     const effBytes = Number(addr.size || inst?.size || loc?.size || 8);
-    const elemType = effBytes === 16 ? 'uint128' : `uint${effBytes === 1 ? 8 : effBytes === 2 ? 16 : effBytes === 4 ? 32 : effBytes === 8 ? 64 : 64}_t`;
+    const elemType = memoryElementType(inst, effBytes, state.types);
     const baseText = printExpression(base);
     const disp = addr.disp != null ? BigInt(addr.disp) : 0n;
     const text = disp !== 0n
@@ -1318,11 +1320,14 @@ function buildValueRaw(v, state, flags = {}) {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
     } else if (d.op === 'call') {
-      const callResults = (state.callResultByInst ??= buildCallResultMap(state.ir));
+      const callResults = (state.callResultByInst ??= buildCallResultMap(state.ir, null, {
+        symbolFor: state.opts?.symbolFor,
+        callByRow: state.callByRow,
+      }));
       const canonical = d.dst || callResults.get(d) || null;
       if (canonical && (v === canonical || isSameCallReturnFamily(v.reg, canonical.reg))) {
         out = expr.variable(`call_${canonical.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
-      } else if (!state.preservePhase8Unknown && state.opts?.phase8Optimize !== true && canonical !== v) {
+      } else if (!state.preservePhase8Unknown && state.opts?.phase8Optimize !== true && canonical !== v && isCallClobberedValue(v)) {
         out = expr.constant(0n, v.bits || 64, false, origin(d, v));
       } else {
         out = expr.variable(`call_${v.id ?? d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
@@ -1439,11 +1444,13 @@ function getIrQueryIndex(ir) {
   const insts = ir.instructions || EMPTY_LIST;
   const values = ir.values || EMPTY_LIST;
   const blocks = ir.blocks || EMPTY_LIST;
+  const idom = ir.idom ?? null;
   const cached = IR_QUERY_INDEX.get(ir);
   if (cached
       && cached.instsRef === insts && cached.instLen === insts.length
       && cached.valuesRef === values && cached.valLen === values.length
-      && cached.blocksRef === blocks && cached.blockLen === blocks.length) {
+      && cached.blocksRef === blocks && cached.blockLen === blocks.length
+      && cached.idomRef === idom) {
     return cached;
   }
   const instsByRow = new Map();
@@ -1480,6 +1487,7 @@ function getIrQueryIndex(ir) {
     valLen: values.length,
     blocksRef: blocks,
     blockLen: blocks.length,
+    idomRef: idom,
     instsByRow,
     instIndex,
     memByLocKey,
