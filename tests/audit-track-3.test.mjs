@@ -85,6 +85,10 @@ test('T3-P0-2: FP-returning call emits to v0, snapshots v0..v7, and expands FP a
     { mn: 'ret', ops: '' },                 // 3
   ], { symbolFor });
 
+  const vgDefault = buildValues(model, { symbolFor });
+  assert.ok(vgDefault.defAt(1, 'v0'), 'buildValues without explicit knownCallSignature must still emit FP call to v0');
+  assert.equal(vgDefault.defAt(1, 'x0'), null, 'buildValues without explicit knownCallSignature must NOT emit FP call to x0');
+
   const vg = buildValues(model, { symbolFor, knownCallSignature });
   assert.ok(vg.at(1, 'v0'), 'call row snapshot must capture v0');
   assert.ok(vg.defAt(1, 'v0'), 'FP-returning call must emit result to v0');

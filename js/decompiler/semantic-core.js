@@ -1622,7 +1622,6 @@ function isKnownStructPointerType(baseType) {
     if (label && /\*$/.test(label) && !PRIMITIVE_POINTER_RE.test(label)) return true;
   }
   return false;
-  return false;
 }
 
 export function renderMemoryLocation(loc, inst, ctx) {
@@ -2183,7 +2182,8 @@ function resolveConstantCString(value, ctx, seen = new Set()) {
   }
 }
 
-function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat) {
+function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat, isAArch64 = true) {
+  if (!isAArch64) return null;
   const order = isFloat
     ? [`s${fpIdx}`, `d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`]
     : [`d${fpIdx}`, `v${fpIdx}`, `q${fpIdx}`, `s${fpIdx}`];
@@ -2192,7 +2192,7 @@ function resolveFpCallArg(explicitArgs, ir, inst, fpIdx, isFloat) {
     if (v) return v;
   }
   for (const reg of order) {
-    const v = reachingRegisterValue(ir, inst, reg);
+    const v = reachingRegisterValue(ir, inst, reg, isAArch64);
     if (v) return v;
   }
   return null;
@@ -2338,14 +2338,14 @@ function callRecord(inst, ctx) {
           && knownSig.paramTypes.some((t) => t === 'double' || t === 'float')
           ? knownSig.paramTypes
           : null;
-        if (fpParamTypes) {
+        if (isAArch64 && fpParamTypes) {
           let nextGp = 0;
           let nextFp = 0;
           logicalArgs = [];
           sourceArgIndices = [];
           for (const pType of fpParamTypes) {
             if (pType === 'double' || pType === 'float') {
-              const fpVal = nextFp < 8 ? resolveFpCallArg(explicitArgs, ctx.ir, inst, nextFp, pType === 'float') : null;
+              const fpVal = nextFp < 8 ? resolveFpCallArg(explicitArgs, ctx.ir, inst, nextFp, pType === 'float', isAArch64) : null;
               if (fpVal) {
                 const fpInput = initialValueCursor(ctx);
                 logicalArgs.push(renderValue(fpVal, ctx));
@@ -2380,14 +2380,14 @@ function callRecord(inst, ctx) {
               let allResolved = true;
               for (const kind of specs) {
                 if (kind === 'fp') {
-                  if (nextFp >= 8) { allResolved = false; break; }
+                  if (!isAArch64 || nextFp >= 8) { allResolved = false; break; }
                   const fpVal = explicitArgs.get(`d${nextFp}`)
                     ?? explicitArgs.get(`v${nextFp}`)
                     ?? explicitArgs.get(`q${nextFp}`)
                     ?? explicitArgs.get(`s${nextFp}`)
-                    ?? reachingRegisterValue(ctx.ir, inst, `d${nextFp}`)
-                    ?? reachingRegisterValue(ctx.ir, inst, `v${nextFp}`)
-                    ?? reachingRegisterValue(ctx.ir, inst, `s${nextFp}`);
+                    ?? reachingRegisterValue(ctx.ir, inst, `d${nextFp}`, isAArch64)
+                    ?? reachingRegisterValue(ctx.ir, inst, `v${nextFp}`, isAArch64)
+                    ?? reachingRegisterValue(ctx.ir, inst, `s${nextFp}`, isAArch64);
                   if (!fpVal) { allResolved = false; break; }
                   const fpInput = initialValueCursor(ctx);
                   recoveredArgs.push(renderValue(fpVal, ctx));

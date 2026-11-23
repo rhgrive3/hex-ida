@@ -2058,7 +2058,7 @@ function buildValueRaw(v, state, flags = {}) {
         const rc = rv?.const ?? (rv?.def?.op === 'addr' ? (rv.def.extra?.value ?? rv.def.extra?.target ?? null) : null);
         if (lc != null && rc != null) {
           const foldedAddr = d.sub === 'add' ? BigInt(lc) + BigInt(rc) : BigInt(lc) - BigInt(rc);
-          const literal = stringLiteralAt(foldedAddr, state);
+          const literal = !flags.suppressRodataString ? stringLiteralAt(foldedAddr, state) : null;
           if (literal) {
             out = expr.variable(literal, 64, false, origin(d, v), { address: foldedAddr, stringLiteral: true });
           } else if (foldedAddr !== 0n) {

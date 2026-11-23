@@ -155,6 +155,28 @@ test('[T2-P0-1] AArch64 FP library calls resolve FP & mixed FP/GP args and avoid
   });
   assert.match(outLdexp.pseudocode, /ldexp\([^,]+,\s*[^)]+\)/);
   assert.ok(!outLdexp.pseudocode.includes('unknown'), `unexpected unknown in ldexp: ${outLdexp.pseudocode}`);
+
+  // 4. Non-AArch64 printf("%f") must NOT resolve ARM64 s0/v0/d0 as FP arg
+  const rvS0 = makeVal(1, { reg: 's0', bits: 64 });
+  const rvFmt = makeVal(2, { reg: 'a0', bits: 64, const: 0x3000n });
+  const rvFmtInst = makeInst(0, OP.ADDR, { extra: { value: 0x3000n } });
+  linkValue(rvFmt, rvFmtInst);
+  const rvPrintf = makeInst(1, OP.CALL, {
+    args: [rvFmt, rvS0],
+    extra: { name: 'printf', target: 0x2000n },
+    callArguments: [{ reg: 'a0', value: rvFmt }],
+  });
+  const rvRet = makeInst(2, OP.RET, { args: [] });
+  const rvPrintIr = makeSimpleIr([rvFmtInst, rvPrintf, rvRet], [rvS0, rvFmt], { arch: 'riscv64' });
+  const rvPrintOut = runSemantic(
+    rvPrintIr,
+    makeSimpleModel({
+      calls: [{ row: 1, name: 'printf', target: 0x2000n }],
+      addressRefs: [{ row: 0, addr: 0x3000n, text: '%f' }],
+    }),
+    { name: 'riscv_printf', arch: 'riscv64' },
+  );
+  assert.ok(!rvPrintOut.pseudocode.includes('printf("%f", s0)'), `non-AArch64 printf("%f") must not treat RISC-V s0 as FP arg:\n${rvPrintOut.pseudocode}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -329,6 +351,33 @@ test('[T2-P0-5] Multi-byte/FP loads suppress .rodata string substitution while 1
 
   const pipeOut = enhanceSemanticDecompilation(semOut, makeSimpleModel(), { name: 'rodata_load', sections });
   assert.ok(!/\*\(uint64_t \*\)\(uintptr_t\)\("NO"\)/.test(pipeOut.pseudocode), `pipeline multi-byte load got string base:\n${pipeOut.pseudocode}`);
+
+  // 4. OP.BIN (adrp + add) base for 8-byte load must suppress .rodata string in BOTH semantic-core and pipeline-core
+  const page = makeVal(10, { reg: 'x0', bits: 64, const: 0x4000n });
+  const pageInst = makeInst(10, OP.ADDR, { extra: { value: 0x4000n } });
+  linkValue(page, pageInst);
+  const off = makeVal(11, { bits: 64, const: 0x0n });
+  const offInst = makeInst(11, OP.CONST, { extra: { value: 0x0n } });
+  linkValue(off, offInst);
+  const binAddr = makeVal(12, { reg: 'x0', bits: 64 });
+  const binInst = makeInst(12, OP.BIN, { sub: 'add', args: [page, off] });
+  linkValue(binAddr, binInst);
+  page.uses.push(binInst);
+  off.uses.push(binInst);
+  const binLd = makeInst(13, OP.LOAD, {
+    loc: { kind: MK.MEM, base: binAddr, size: 8 },
+    addr: { kind: MK.MEM, base: binAddr, size: 8 },
+  });
+  const binLoaded = makeVal(13, { reg: 'x1', bits: 64 });
+  linkValue(binLoaded, binLd);
+  binAddr.uses.push(binLd);
+  const binRet = makeInst(14, OP.RET, { args: [binLoaded] });
+  binLoaded.uses.push(binRet);
+  const binIr = makeSimpleIr([pageInst, offInst, binInst, binLd, binRet], [page, off, binAddr, binLoaded]);
+  const binSem = runSemantic(binIr, makeSimpleModel(), { name: 'load_bin_base', sections });
+  const binPipe = enhanceSemanticDecompilation(binSem, makeSimpleModel(), { name: 'load_bin_base', sections });
+  assert.ok(!binSem.pseudocode.includes('"NO"'), `semantic OP.BIN 8-byte load base must suppress .rodata string:\n${binSem.pseudocode}`);
+  assert.ok(!binPipe.pseudocode.includes('"NO"'), `pipeline OP.BIN 8-byte load base must suppress .rodata string:\n${binPipe.pseudocode}`);
 });
 
 // ---------------------------------------------------------------------------

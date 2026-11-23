@@ -707,7 +707,8 @@ export function buildValues(model, opts) {
       }
       const name = call ? call.name : null;
       const resolvedName = name || (insn.callTarget != null && typeof o.symbolFor === 'function' ? o.symbolFor(insn.callTarget) : null);
-      const sig = (typeof o.knownCallSignature === 'function' && resolvedName) ? o.knownCallSignature(resolvedName) : null;
+      const resolveSig = typeof o.knownCallSignature === 'function' ? o.knownCallSignature : knownCallSignature;
+      const sig = resolvedName ? resolveSig(resolvedName) : null;
       const isFpRet = !!(sig && (sig.retType === 'float' || sig.retType === 'double'));
       const ret = node('call', {
         row, name: name || null,
